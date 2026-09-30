@@ -11,7 +11,7 @@ export function RoadmapBoard({ phases }: { phases: RoadmapPhase[] }) {
           <div key={p.key} className="flex flex-col rounded-[14px] border border-line-2 bg-surface/40 p-4">
             <div className="mb-1 flex items-center gap-2">
               <span className="h-2.5 w-2.5 rounded-[3px]" style={{ background: p.color }} />
-              <span className="text-[14px] font-semibold">{p.name}</span>
+              <span className="text-lead font-semibold">{p.name}</span>
               <span className="ml-auto font-mono text-[10px] text-faint">{p.window}</span>
             </div>
             <div className="mb-3 font-mono text-[10px] text-muted">
@@ -33,8 +33,8 @@ export function RoadmapBoard({ phases }: { phases: RoadmapPhase[] }) {
                     {m.done && <Check size={11} className="text-bg" />}
                   </span>
                   <div className="min-w-0">
-                    <div className="text-[12.5px] leading-snug text-fg-2">{m.title}</div>
-                    <div className="font-mono text-[9.5px] uppercase tracking-wide text-faint">{m.tag}</div>
+                    <div className="text-body leading-snug text-fg-2">{m.title}</div>
+                    <div className="font-mono text-meta uppercase tracking-wide text-faint">{m.tag}</div>
                   </div>
                 </div>
               ))}

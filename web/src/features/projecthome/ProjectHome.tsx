@@ -101,7 +101,7 @@ export function ProjectHome() {
         </span>
       </div>
       {active.description && (
-        <p className="mt-1.5 max-w-[76ch] text-[12.5px] leading-relaxed text-muted">
+        <p className="mt-1.5 max-w-[76ch] text-body leading-relaxed text-muted">
           {active.description}
         </p>
       )}
@@ -248,7 +248,7 @@ function Count({
     <span className="inline-flex items-baseline gap-1.5">
       <span className="text-faint-2">{label}</span>
       <span
-        className={`text-[12.5px] ${unknown ? "text-faint" : (tone ?? "text-fg-2")}`}
+        className={`text-body ${unknown ? "text-faint" : (tone ?? "text-fg-2")}`}
         title={unknown ? "Not read — the request failed" : undefined}
       >
         {unknown ? "—" : value.toLocaleString()}
@@ -309,7 +309,7 @@ function Dependencies({
   if (failed) {
     return (
       <section className="mt-5 rounded-[13px] border border-line bg-surface-2 px-4 pb-1 pt-4">
-        <h2 className="text-[14px] font-semibold">Cross-project dependencies</h2>
+        <h2 className="text-lead font-semibold">Cross-project dependencies</h2>
         <PlannerError
           message={`${FETCH_FAILED} What depends on this project was not read, so this panel has no answer — not even "nothing".`}
           onRetry={onRetry}
@@ -323,7 +323,7 @@ function Dependencies({
   return (
     <section className="mt-5 rounded-[13px] border border-line bg-surface-2 p-4">
       <div className="flex items-center gap-2.5">
-        <h2 className="flex-1 text-[14px] font-semibold">Cross-project dependencies</h2>
+        <h2 className="flex-1 text-lead font-semibold">Cross-project dependencies</h2>
         <Link
           to={`${ORG_BASE}/galaxy`}
           className="font-mono text-[9px] uppercase tracking-[0.06em] text-st-next"
@@ -377,10 +377,10 @@ function Direction({
                 e.fresh ? "border-line" : "border-dashed border-line opacity-60"
               }`}
             >
-              <span className="font-mono text-[11px] text-fg-2">{other(e)}</span>
+              <span className="font-mono text-small text-fg-2">{other(e)}</span>
               {/* The evidence count, because an edge with more files behind it is a
                   stronger claim than one resting on a single line. */}
-              <span className="font-mono text-[9.5px] text-faint">
+              <span className="font-mono text-meta text-faint">
                 {e.evidence.length} file{e.evidence.length === 1 ? "" : "s"}
               </span>
               {!e.fresh && (

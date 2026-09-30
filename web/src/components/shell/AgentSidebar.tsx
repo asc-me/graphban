@@ -153,7 +153,7 @@ function MemoryPanel() {
           placeholder={
             activeId ? "Semantic search over memory…" : "No project selected — nothing to search"
           }
-          className="h-9 w-full rounded-[9px] border border-control bg-surface-2 pl-8 pr-3 text-[12.5px] outline-none focus:border-control-hover disabled:cursor-not-allowed disabled:text-faint"
+          className="h-9 w-full rounded-[9px] border border-control bg-surface-2 pl-8 pr-3 text-body outline-none focus:border-control-hover disabled:cursor-not-allowed disabled:text-faint"
         />
       </form>
 
@@ -190,7 +190,7 @@ function MemoryPanel() {
                   <span className="ml-auto font-mono text-[10px] text-accent">{s.score.toFixed(2)}</span>
                 )}
               </div>
-              <p className="text-[12.5px] leading-relaxed text-fg-2">{s.text}</p>
+              <p className="text-body leading-relaxed text-fg-2">{s.text}</p>
             </div>
           ))}
         </div>
@@ -203,7 +203,7 @@ function MemoryPanel() {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             placeholder="Add a memory shard…"
-            className="h-9 flex-1 bg-transparent text-[12.5px] outline-none placeholder:text-faint"
+            className="h-9 flex-1 bg-transparent text-body outline-none placeholder:text-faint"
           />
           <button
             type="submit"
@@ -274,7 +274,7 @@ function AgentChat() {
             )}
             <div
               className={cn(
-                "max-w-[85%] whitespace-pre-wrap rounded-[12px] px-3 py-2 text-[12.5px] leading-relaxed",
+                "max-w-[85%] whitespace-pre-wrap rounded-[12px] px-3 py-2 text-body leading-relaxed",
                 m.role === "agent"
                   ? "border border-line-2 bg-surface-2 text-fg-2"
                   : "bg-accent/90 text-bg",
@@ -284,7 +284,7 @@ function AgentChat() {
             </div>
           </div>
         ))}
-        {busy && <div className="pl-9 text-[11px] text-faint">thinking…</div>}
+        {busy && <div className="pl-9 text-small text-faint">thinking…</div>}
       </div>
       <form onSubmit={send} className="flex-none border-t border-line p-3">
         <div className="flex items-center gap-2 rounded-[10px] border border-line-2 bg-surface-2 px-2.5 focus-within:border-line-hover">
@@ -292,7 +292,7 @@ function AgentChat() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Ask the agent…"
-            className="h-9 flex-1 bg-transparent text-[12.5px] outline-none placeholder:text-faint"
+            className="h-9 flex-1 bg-transparent text-body outline-none placeholder:text-faint"
           />
           <button type="submit" disabled={busy} className="rounded-md p-1 text-accent disabled:opacity-40">
             <ArrowUp size={15} />

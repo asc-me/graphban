@@ -46,9 +46,9 @@ export function OrgIntegrations() {
           {CONNECTORS.map((c) => (
             <div key={c.id} className="flex items-start gap-3 border-b border-line px-3.5 py-3">
               <span className="flex w-[160px] shrink-0 flex-col gap-1.5">
-                <span className="text-[12.5px] text-fg-2">{c.label}</span>
+                <span className="text-body text-fg-2">{c.label}</span>
                 {!c.backed && (
-                  <span className="w-fit rounded border border-purple/30 px-1.5 py-px font-mono text-[8.5px] uppercase tracking-[0.05em] text-purple">
+                  <span className="w-fit rounded border border-purple/30 px-1.5 py-px font-mono text-micro uppercase tracking-[0.05em] text-purple">
                     not backed
                   </span>
                 )}

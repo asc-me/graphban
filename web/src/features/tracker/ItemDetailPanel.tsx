@@ -43,7 +43,7 @@ export function ItemDetailPanel({
         aria-describedby={undefined}
       >
         <div className="flex flex-none items-center justify-between border-b border-line px-5 py-3.5">
-          <DialogTitle className="font-mono text-[11px] font-normal text-faint">{item.id}</DialogTitle>
+          <DialogTitle className="font-mono text-small font-normal text-faint">{item.id}</DialogTitle>
         </div>
 
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
@@ -54,7 +54,7 @@ export function ItemDetailPanel({
           <h2 className="text-[17px] font-semibold leading-snug text-fg">{item.title}</h2>
 
           {item.prd_id && (
-            <div className="font-mono text-[11px] text-purple-2">
+            <div className="font-mono text-small text-purple-2">
               Implements {item.prd_id}
               {item.prd_section ? ` · ${item.prd_section}` : ""}
             </div>
@@ -99,7 +99,7 @@ export function ItemDetailPanel({
               ))}
             </div>
             {item.fidelity === "high" && (
-              <span className="text-[11px] text-[#e0b34a]">needs a prototype</span>
+              <span className="text-small text-[#e0b34a]">needs a prototype</span>
             )}
           </div>
 
@@ -131,19 +131,19 @@ export function ItemDetailPanel({
               ))}
             </div>
             {item.reach === "deploy" && (
-              <span className="text-[11px] text-st-blocked">no agent may take this</span>
+              <span className="text-small text-st-blocked">no agent may take this</span>
             )}
           </div>
 
           {item.blocker && (
-            <div className="rounded-[10px] border border-[rgba(255,107,107,0.25)] bg-[rgba(255,107,107,0.06)] px-3 py-2.5 text-[12.5px] text-st-blocked">
+            <div className="rounded-[10px] border border-[rgba(255,107,107,0.25)] bg-[rgba(255,107,107,0.06)] px-3 py-2.5 text-body text-st-blocked">
               <span className="font-mono text-[10px] uppercase tracking-wide">Blocked · </span>
               {item.blocker}
             </div>
           )}
 
           {item.bounce_reason && (
-            <div className="rounded-[10px] border border-[rgba(224,179,74,0.3)] bg-[rgba(224,179,74,0.07)] px-3 py-2.5 text-[12.5px] text-[#e0b34a]">
+            <div className="rounded-[10px] border border-[rgba(224,179,74,0.3)] bg-[rgba(224,179,74,0.07)] px-3 py-2.5 text-body text-[#e0b34a]">
               <span className="font-mono text-[10px] uppercase tracking-wide">Bounced · </span>
               {item.bounce_reason}
             </div>
@@ -158,7 +158,7 @@ export function ItemDetailPanel({
           {(item.touchpoints?.length > 0 || item.claimed_by) && (
             <Section label="Code neighborhood">
               {item.claimed_by && (
-                <div className="mb-2 flex items-center gap-1.5 font-mono text-[11px] text-accent">
+                <div className="mb-2 flex items-center gap-1.5 font-mono text-small text-accent">
                   <span className="blink h-1.5 w-1.5 rounded-full bg-accent" />
                   claimed by {item.claimed_by}
                 </div>
@@ -197,7 +197,7 @@ export function ItemDetailPanel({
                 </div>
               )}
               {deps.length > blockedBy.length && (
-                <p className="mb-1.5 text-[11px] text-faint">
+                <p className="mb-1.5 text-small text-faint">
                   Depends on {deps.length} item{deps.length > 1 ? "s" : ""} · {deps.length - blockedBy.length} done.
                 </p>
               )}
@@ -214,10 +214,10 @@ export function ItemDetailPanel({
               <div className="rounded-[11px] border border-line-2 bg-surface-2 p-3">
                 <div className="flex items-center gap-2">
                   <GitPullRequest size={14} style={{ color: PR_STATE_COLOR[item.pr.state] }} />
-                  <span className="font-mono text-[11px]" style={{ color: PR_STATE_COLOR[item.pr.state] }}>
+                  <span className="font-mono text-small" style={{ color: PR_STATE_COLOR[item.pr.state] }}>
                     #{item.pr.number}
                   </span>
-                  <span className="truncate text-[12.5px] text-fg-2">{item.pr.title}</span>
+                  <span className="truncate text-body text-fg-2">{item.pr.title}</span>
                 </div>
                 <div className="mt-2 flex items-center gap-3 font-mono text-[10.5px] text-faint">
                   <span className="text-st-done">+{item.pr.additions}</span>
@@ -260,7 +260,7 @@ export function ItemDetailPanel({
 
           <Section label={`Linked memory · ${linked.length}`}>
             {linked.length === 0 ? (
-              <p className="text-[12.5px] text-faint">No shards linked to this item.</p>
+              <p className="text-body text-faint">No shards linked to this item.</p>
             ) : (
               <div className="space-y-2">
                 {linked.map((s) => (
@@ -287,7 +287,7 @@ export function ItemDetailPanel({
                 size={26}
               />
               <div className="leading-tight">
-                <div className="text-[12.5px] text-fg-2">{item.reporter.name}</div>
+                <div className="text-body text-fg-2">{item.reporter.name}</div>
                 <div className="font-mono text-[10px] text-faint">@{item.reporter.handle}</div>
               </div>
             </div>

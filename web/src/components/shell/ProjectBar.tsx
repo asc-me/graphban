@@ -33,7 +33,7 @@ export function ProjectBar() {
       <div className="flex items-center gap-2.5 py-2 pl-2.5">
         <Link
           to={ORG_BASE}
-          className="font-mono text-[9.5px] uppercase tracking-[0.06em] text-faint hover:text-accent"
+          className="font-mono text-meta uppercase tracking-[0.06em] text-faint hover:text-accent"
         >
           org
         </Link>
@@ -49,7 +49,7 @@ export function ProjectBar() {
             style={{ background: active.accent }}
           />
           <span className="text-[13.5px] font-semibold tracking-[-0.15px]">{active.name}</span>
-          <span className="rounded border border-line-2 px-1.5 py-px font-mono text-[9.5px] text-muted">
+          <span className="rounded border border-line-2 px-1.5 py-px font-mono text-meta text-muted">
             {active.tag}
           </span>
           <ChevronDown
@@ -61,7 +61,7 @@ export function ProjectBar() {
 
       {place && (
         <>
-          <span className="text-[11px] text-faint-2">/</span>
+          <span className="text-small text-faint-2">/</span>
           <span className="flex items-baseline gap-1.5 text-[12px] text-muted">
             <span>{place.section}</span>
             <span className="text-faint-2">·</span>
@@ -95,7 +95,7 @@ export function ProjectBar() {
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate font-mono text-[12px] text-fg-2">{p.name}</span>
-                    <span className="mt-0.5 block font-mono text-[9.5px] text-faint-2">{p.tag}</span>
+                    <span className="mt-0.5 block font-mono text-meta text-faint-2">{p.tag}</span>
                   </span>
                   {p.id === active.id && <Check size={12} style={{ color: p.accent }} />}
                 </button>

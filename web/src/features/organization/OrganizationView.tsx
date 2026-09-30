@@ -96,7 +96,7 @@ function PlanSection({ org }: { org: Org }) {
               <div key={row.key}>
                 <div className="mb-1 flex items-baseline justify-between text-[12px]">
                   <span className="text-muted">{row.label}</span>
-                  <span className="font-mono text-[11px] text-faint">
+                  <span className="font-mono text-small text-faint">
                     {used.toLocaleString()} / {max.toLocaleString()}
                   </span>
                 </div>
@@ -110,7 +110,7 @@ function PlanSection({ org }: { org: Org }) {
             );
           })}
         </div>
-        <p className="mt-4 text-[11px] text-faint">
+        <p className="mt-4 text-small text-faint">
           Need more headroom? Contact us to change your plan.
         </p>
       </div>
@@ -134,7 +134,7 @@ function MembersSection({ org }: { org: Org }) {
             <Avatar initials={m.user.initials} color={m.user.avatar} size={28} />
             <div className="min-w-0 flex-1">
               <div className="truncate text-[13px] font-medium">{m.user.name}</div>
-              <div className="truncate font-mono text-[11px] text-faint">{m.user.email}</div>
+              <div className="truncate font-mono text-small text-faint">{m.user.email}</div>
             </div>
             <span className="rounded-md bg-surface-4 px-2 py-0.5 font-mono text-[10px] uppercase text-muted">
               {m.role}
@@ -155,7 +155,7 @@ function InvitesSection({ org }: { org: Org }) {
       <SectionTitle>Pending invitations</SectionTitle>
       {manage && <InviteForm org={org} />}
       {invites.length === 0 ? (
-        <p className="text-[12.5px] text-muted">No pending invitations.</p>
+        <p className="text-body text-muted">No pending invitations.</p>
       ) : (
         <div className="overflow-hidden rounded-[12px] border border-line">
           {invites.map((inv, i) => (
@@ -209,7 +209,7 @@ function InviteForm({ org }: { org: Org }) {
       <Button type="submit" disabled={createInvite.isPending || !email.trim()}>
         {createInvite.isPending ? "Sending…" : "Invite"}
       </Button>
-      {error && <span className="text-[11px] text-st-blocked">{error}</span>}
+      {error && <span className="text-small text-st-blocked">{error}</span>}
     </form>
   );
 }
@@ -248,7 +248,7 @@ function InviteRow({
           <button
             onClick={copyLink}
             title="Copy invite link"
-            className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted hover:bg-surface-3 hover:text-fg"
+            className="flex items-center gap-1 rounded-md px-2 py-1 text-small text-muted hover:bg-surface-3 hover:text-fg"
           >
             {copied ? <Check size={13} className="text-accent" /> : <Copy size={13} />}
             {copied ? "Copied" : "Link"}
@@ -269,6 +269,6 @@ function InviteRow({
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
-    <h2 className="mb-2.5 font-mono text-[11px] uppercase tracking-wide text-faint">{children}</h2>
+    <h2 className="mb-2.5 font-mono text-small uppercase tracking-wide text-faint">{children}</h2>
   );
 }

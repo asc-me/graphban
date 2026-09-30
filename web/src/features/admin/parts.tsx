@@ -140,7 +140,7 @@ export function CardHead({
   return (
     <div className="flex items-center gap-2.5 border-b border-op-line-2 px-4 py-3">
       {icon}
-      <h2 className="flex-1 text-[14px] font-semibold">{title}</h2>
+      <h2 className="flex-1 text-lead font-semibold">{title}</h2>
       {right}
     </div>
   );
@@ -177,7 +177,7 @@ export function Pill({
 export function Empty({ title, body }: { title: string; body: React.ReactNode }) {
   return (
     <div className="rounded-[13px] border border-op-line bg-op-card px-5 py-8 text-center">
-      <div className="text-[14px] font-semibold">{title}</div>
+      <div className="text-lead font-semibold">{title}</div>
       <p className="mx-auto mt-1.5 max-w-[50ch] text-[12px] leading-relaxed text-op-muted-2">{body}</p>
     </div>
   );
@@ -202,7 +202,7 @@ export function PageHead({
           {chip}
         </div>
         {lede && (
-          <p className="mt-1.5 max-w-[78ch] text-[12.5px] leading-relaxed text-op-muted-2">{lede}</p>
+          <p className="mt-1.5 max-w-[78ch] text-body leading-relaxed text-op-muted-2">{lede}</p>
         )}
       </div>
       {right && <div className="shrink-0">{right}</div>}

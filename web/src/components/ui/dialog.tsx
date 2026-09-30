@@ -51,5 +51,5 @@ export function DialogDescription({
   className,
   ...props
 }: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Description>) {
-  return <DialogPrimitive.Description className={cn("text-[12.5px] text-muted", className)} {...props} />;
+  return <DialogPrimitive.Description className={cn("text-body text-muted", className)} {...props} />;
 }

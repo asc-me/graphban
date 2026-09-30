@@ -174,7 +174,7 @@ function SupervisorHandoff({ seats, wave }: { seats: { role: string; code: strin
       </button>
       {open && (
         <div className="mt-3 space-y-2">
-          <p className="px-1 text-[11px] text-faint">
+          <p className="px-1 text-small text-faint">
             <span className="font-mono">gbfleet</span> spawns one agent per seat, each in its own
             git worktree, and reaps them when the wave ends. It runs on <em>your</em> machine —
             this page can only hand you the pieces.
@@ -187,7 +187,7 @@ function SupervisorHandoff({ seats, wave }: { seats: { role: string; code: strin
           {/* And the client, because everything this panel produces has a terminal
               equivalent — issuing seats, reading why an agent is stuck, re-tasking one — and
               a person who is already in a shell should not have to come back here for it. */}
-          <p className="px-1 text-[11px] text-faint">
+          <p className="px-1 text-small text-faint">
             <span className="font-mono">gban</span> is the same acts from a terminal — issue
             seats, read why an agent is stuck, re-task one. Separate package: it installs on
             laptops that never run a wave and pulls no dependencies at all, which is also why
@@ -200,7 +200,7 @@ function SupervisorHandoff({ seats, wave }: { seats: { role: string; code: strin
           {/* THE SECOND CREDENTIAL, named because it is the first thing to get wrong. The
               supervisor authenticates with an ordinary API key; the seats are for its CHILDREN.
               Handing it a seat, or handing a child the key, both fail in confusing ways. */}
-          <p className="px-1 text-[11px] text-faint">
+          <p className="px-1 text-small text-faint">
             The supervisor needs its own{" "}
             <Link to={settingsPath("project/api-keys")} className="text-fg-2 underline-offset-2 hover:underline">
               API key
@@ -212,7 +212,7 @@ function SupervisorHandoff({ seats, wave }: { seats: { role: string; code: strin
             <span className="font-mono">propose_allocation</span>, nothing that claims work.
           </p>
           <div className="flex flex-wrap items-center gap-1.5 px-1">
-            <span className="text-[11px] text-faint">Adapter:</span>
+            <span className="text-small text-faint">Adapter:</span>
             {ADAPTERS.map((a) => (
               <button key={a} onClick={() => setAdapter(a)} aria-pressed={adapter === a}
                       className={cn("rounded-md border px-2 py-0.5 font-mono text-[10.5px] transition-colors",
@@ -225,7 +225,7 @@ function SupervisorHandoff({ seats, wave }: { seats: { role: string; code: strin
           <CopyRow label={`seats.txt — ${seats.length} code${seats.length === 1 ? "" : "s"}, one per line`}
                    value={seatsFile} />
           <CopyRow label="Then run" value={command} />
-          <p className="px-1 text-[11px] text-faint">
+          <p className="px-1 text-small text-faint">
             Which adapter and which model are not the same question, and the model decides
             whether this works at all — see{" "}
             <span className="font-mono">docs/fleet-adapters.md</span>.
@@ -250,7 +250,7 @@ function CopyRow({ label, value }: { label: string; value: string }) {
           {done ? <Check size={13} /> : <Copy size={13} />}
         </Button>
       </div>
-      <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] text-muted">
+      <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-small text-muted">
         {value}
       </pre>
     </div>
@@ -295,7 +295,7 @@ function AgentRow({ a, onDismiss, onRetask, roles = [], dismissed }: {
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[11px] text-faint">{a.key}</span>
+          <span className="font-mono text-small text-faint">{a.key}</span>
           <span className="truncate text-[13px] text-fg-2">{a.label || "unnamed agent"}</span>
         </div>
         <div className="mt-0.5 font-mono text-[10.5px] text-faint">
@@ -332,7 +332,7 @@ function AgentRow({ a, onDismiss, onRetask, roles = [], dismissed }: {
             problem rather than history. */}
         {a.last_refusal && (
           <div data-testid="agent-refusal"
-               className="mt-0.5 text-[11px] text-[color:var(--color-st-blocked)]">
+               className="mt-0.5 text-small text-[color:var(--color-st-blocked)]">
             refused {a.last_refusal.tool}
             {a.last_refusal.count > 1 ? ` ×${a.last_refusal.count}` : ""} — {a.last_refusal.reason}
           </div>
@@ -380,11 +380,11 @@ function AgentRow({ a, onDismiss, onRetask, roles = [], dismissed }: {
         {/* WHEN it was last heard from, not just that it is offline. `offline` alone cannot
             tell a process that died thirty seconds ago from one gone for a week, and those
             call for opposite responses: wait, or go clean up the branch it left behind. */}
-        <span className="font-mono text-[9.5px] text-faint-2" title={a.last_seen_at ?? undefined}>
+        <span className="font-mono text-meta text-faint-2" title={a.last_seen_at ?? undefined}>
           {heartbeatLabel(a.last_seen_at)}
         </span>
       </div>
-      <div className="w-40 text-right text-[11px] text-muted">
+      <div className="w-40 text-right text-small text-muted">
         {a.holdings.length === 0
           ? <span className="text-faint">holding nothing</span>
           : a.holdings.map((h) => (
@@ -404,7 +404,7 @@ function AgentRow({ a, onDismiss, onRetask, roles = [], dismissed }: {
       </div>
       {onDismiss && (
         <button onClick={() => onDismiss(a.id, dismissed)}
-                className="text-[11px] text-faint hover:text-fg-2">
+                className="text-small text-faint hover:text-fg-2">
           {dismissed ? "Restore" : "Dismiss"}
         </button>
       )}
@@ -674,12 +674,12 @@ export function FleetView() {
         <div className="flex-none border-b border-line px-5 py-2">
           <div className="flex items-center gap-2">
             <RoleCounts byRole={data.by_role ?? {}} roles={data.roles ?? []} />
-            <span className="text-[11px] text-faint">
+            <span className="text-small text-faint">
               {data.posture === "fleet"
                 ? "specialised roles — the fleet reviews itself"
                 : "single-agent — you are the reviewer"}
             </span>
-            <span className="text-[11px] text-faint">
+            <span className="text-small text-faint">
               · deterministic
             </span>
           </div>
@@ -696,7 +696,7 @@ export function FleetView() {
                 wave, wrong the moment there are two. */}
             {waves.length > 1 && (
               <div className="mb-2 flex flex-wrap items-center gap-1.5">
-                <span className="text-[11px] text-faint">Wave:</span>
+                <span className="text-small text-faint">Wave:</span>
                 {waves.map((w) => (
                   <button
                     key={w}
@@ -772,7 +772,7 @@ export function FleetView() {
               {label}
             </button>
           ))}
-          <span className="self-center pl-2 font-mono text-[11px] text-faint">{liveWave}</span>
+          <span className="self-center pl-2 font-mono text-small text-faint">{liveWave}</span>
         </div>
 
         {/* A number in a tab label is easy to miss when you are looking at something else.
@@ -784,11 +784,11 @@ export function FleetView() {
             onClick={() => setTab("work")}
             className="mb-4 flex w-full items-center gap-2 rounded-[11px] border border-[color:var(--color-st-review)]/40 bg-surface-2 px-3 py-2 text-left text-[12px] text-fg-2 hover:border-[color:var(--color-st-review)]/70"
           >
-            <span className="font-mono text-[11px] text-[color:var(--color-st-review)]">
+            <span className="font-mono text-small text-[color:var(--color-st-review)]">
               {reviewCount}
             </span>
             item{reviewCount === 1 ? "" : "s"} waiting for review
-            <span className="ml-auto text-[11px] text-muted">Work →</span>
+            <span className="ml-auto text-small text-muted">Work →</span>
           </button>
         )}
 
@@ -823,7 +823,7 @@ export function FleetView() {
                                         roles={data?.roles ?? []} />)}
               {soloAgents.length > 0 && (
                 <>
-                  <div className="pt-1 text-[11px] text-faint">
+                  <div className="pt-1 text-small text-faint">
                     {soloAgents.length} un-enrolled · single-agent — API key, no seat
                   </div>
                   {soloAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask}
@@ -832,7 +832,7 @@ export function FleetView() {
               )}
               {goneAgents.length > 0 && (
                 <button onClick={() => setShowGone((v) => !v)}
-                        className="w-full pt-1 text-left text-[11px] text-faint hover:text-fg-2">
+                        className="w-full pt-1 text-left text-small text-faint hover:text-fg-2">
                   {showGone ? "Hide" : "Show"} {goneAgents.length} gone
                 </button>
               )}
@@ -840,7 +840,7 @@ export function FleetView() {
                                         roles={data?.roles ?? []} />)}
               {dismissed.length > 0 && (
                 <button onClick={() => setShowDismissed((v) => !v)}
-                        className="w-full text-left text-[11px] text-faint hover:text-fg-2">
+                        className="w-full text-left text-small text-faint hover:text-fg-2">
                   {showDismissed ? "Hide" : "Show"} {dismissed.length} dismissed
                 </button>
               )}
@@ -874,11 +874,11 @@ export function FleetView() {
                 + {r}
               </button>
             ))}
-            <span className="font-mono text-[11px] text-faint">
+            <span className="font-mono text-small text-faint">
               {WAVE_ROLES.filter((r) => seatPlan[r]).map((r) => `${seatPlan[r]}x ${r}`).join(" · ") || "no seats yet"}
             </span>
             {Object.values(seatPlan).some(Boolean) && (
-              <button onClick={() => setSeatPlan({})} className="text-[11px] text-faint hover:text-fg-2">
+              <button onClick={() => setSeatPlan({})} className="text-small text-faint hover:text-fg-2">
                 clear
               </button>
             )}
@@ -895,7 +895,7 @@ export function FleetView() {
                 <CopyRow key={s.id} label={`${s.role} for ${scope} — prompt + seat, shown once`}
                          value={primeSnippet(s.role, s.code, scope)} />
               ))}
-              <p className="px-1 text-[11px] text-faint">
+              <p className="px-1 text-small text-faint">
                 Paste each into that agent&apos;s prompt as{" "}
                 <span className="font-mono">register_agent(enrolment_code=&quot;…&quot;)</span>. Two
                 workers need two seats: agents sharing a seat share a session and cannot review
@@ -914,7 +914,7 @@ export function FleetView() {
                       already unusable and leaving it listed as "expired" forever is the
                       clutter this button exists to clear. Consumed seats are never touched. */}
                   <button onClick={clearUnusedSeats}
-                          className="text-[11px] text-muted hover:text-[color:var(--color-st-blocked)]">
+                          className="text-small text-muted hover:text-[color:var(--color-st-blocked)]">
                     Clear the {data!.seats.filter((s) => s.state === "unused" || s.state === "expired").length} unredeemed
                   </button>
                 </div>
@@ -929,15 +929,15 @@ export function FleetView() {
                                       ROLE_TONE[s.role] ?? "text-muted border-line-2")}>
                     {s.role}
                   </span>
-                  <span className="font-mono text-[11px] text-faint">{s.wave}</span>
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
+                  <span className="font-mono text-small text-faint">{s.wave}</span>
+                  <span className="min-w-0 flex-1 truncate text-small text-muted">
                     {s.state === "consumed" ? `taken by ${s.consumed_by}` : s.state}
                     {s.reissued_from && " · reissued"}
                   </span>
                   {/* A spent seat is not deleted — it is the record that something died, and
                       Reissue is the recovery path a single-use code needs. */}
                   {s.state !== "unused" && (
-                    <button onClick={() => reissue(s.id)} className="text-[11px] text-muted hover:text-fg">
+                    <button onClick={() => reissue(s.id)} className="text-small text-muted hover:text-fg">
                       Reissue
                     </button>
                   )}
@@ -945,7 +945,7 @@ export function FleetView() {
               ))}
               {spentSeats.length > 0 && (
                 <button onClick={() => setShowSpentSeats((v) => !v)}
-                        className="w-full pt-1 text-left text-[11px] text-faint hover:text-fg-2">
+                        className="w-full pt-1 text-left text-small text-faint hover:text-fg-2">
                   {showSpentSeats ? "Hide" : "Show"} {spentSeats.length} spent
                 </button>
               )}
@@ -954,8 +954,8 @@ export function FleetView() {
                   <span className="rounded-md border border-line-2 px-2 py-0.5 font-mono text-[10px] uppercase text-muted">
                     {s.role}
                   </span>
-                  <span className="font-mono text-[11px] text-faint">{s.wave}</span>
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
+                  <span className="font-mono text-small text-faint">{s.wave}</span>
+                  <span className="min-w-0 flex-1 truncate text-small text-muted">
                     {s.state === "consumed" ? `taken by ${s.consumed_by}` : s.state}
                   </span>
                 </div>
@@ -1004,7 +1004,7 @@ export function FleetView() {
                 {expiredCreds.length > 0 && (
                   <div className="flex justify-end">
                     <button onClick={clearExpiredCredentials}
-                            className="text-[11px] text-muted hover:text-[color:var(--color-st-blocked)]">
+                            className="text-small text-muted hover:text-[color:var(--color-st-blocked)]">
                       Revoke the {expiredCreds.length} expired
                     </button>
                   </div>
@@ -1012,7 +1012,7 @@ export function FleetView() {
                 {liveCreds.length > 0 && deadCreds.length > 0 && (
                   <div className="flex justify-end">
                     <button onClick={() => setShowDeadCreds((v) => !v)}
-                            className="text-[11px] text-faint hover:text-fg-2">
+                            className="text-small text-faint hover:text-fg-2">
                       {showDeadCreds ? "Hide" : "Show"} {deadCreds.length} revoked
                     </button>
                   </div>
@@ -1021,7 +1021,7 @@ export function FleetView() {
                   <div key={c.id}
                        className={cn("flex items-center gap-3 rounded-[9px] border border-line-2 bg-surface-2 px-3 py-2",
                                      c.revoked && "opacity-50")}>
-                    <span className="font-mono text-[11px] text-muted-2">{c.prefix}</span>
+                    <span className="font-mono text-small text-muted-2">{c.prefix}</span>
                     <span className="min-w-0 flex-1 truncate text-[12px] text-fg-2">{c.name}</span>
                     {c.posture === "single" && (
                       <span className="font-mono text-[10px] text-faint">single</span>
@@ -1035,7 +1035,7 @@ export function FleetView() {
                     {c.revoked
                       ? <span className="font-mono text-[10px] text-faint">revoked</span>
                       : <button onClick={() => revokeCredential(c.id)}
-                                className="text-[11px] text-muted hover:text-[color:var(--color-st-blocked)]">
+                                className="text-small text-muted hover:text-[color:var(--color-st-blocked)]">
                           Revoke
                         </button>}
                   </div>
@@ -1117,13 +1117,13 @@ export function FleetView() {
             <div className="space-y-2">
               {data!.review_queue.map((r) => (
                 <div key={r.id} className="flex items-center gap-3 rounded-[11px] border border-line-2 bg-surface-2 px-3 py-2.5">
-                  <span className="font-mono text-[11px] text-faint">{r.key}</span>
+                  <span className="font-mono text-small text-faint">{r.key}</span>
                   <span className="min-w-0 flex-1 truncate text-[13px] text-fg-2">{r.title}</span>
                   {/* The ban rendered as a NEGATIVE on the item, not as a list of who is
                       eligible. The refusal belongs to the item, and saying it this way makes
                       the invariant legible at a glance. */}
                   {r.built_by_label && (
-                    <span className="text-[11px] text-[color:var(--color-st-blocked)]">
+                    <span className="text-small text-[color:var(--color-st-blocked)]">
                       {r.built_by_label} built it
                     </span>
                   )}
@@ -1139,7 +1139,7 @@ export function FleetView() {
                       absence reading as clean in the one place an operator looks. */}
                   {(r.reviewed_by || r.lapsed_holder) && (
                     <span data-testid="review-hold"
-                          className={cn("font-mono text-[11px]",
+                          className={cn("font-mono text-small",
                                         r.holder_state === "reviewing"
                                           ? "text-faint"
                                           : "text-[color:var(--color-st-blocked)]")}>
@@ -1158,7 +1158,7 @@ export function FleetView() {
                       as soon as an item has been picked up more than once. */}
                   {r.review_takes > 1 && (
                     <span data-testid="review-takes"
-                          className="font-mono text-[11px] text-[color:var(--color-st-blocked)]">
+                          className="font-mono text-small text-[color:var(--color-st-blocked)]">
                       taken {r.review_takes}×, no verdict
                     </span>
                   )}
@@ -1176,7 +1176,7 @@ export function FleetView() {
               {data!.clusters.map((c, i) => (
                 <div key={i} className="rounded-[11px] border border-line-2 bg-surface-2 px-3 py-2.5">
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] text-faint">{c.items.join(" · ") || "—"}</span>
+                    <span className="font-mono text-small text-faint">{c.items.join(" · ") || "—"}</span>
                     {c.predicted && (
                       <span className="rounded-md border border-line-2 px-1.5 py-0.5 text-[10px] text-muted">
                         predicted areas
@@ -1187,7 +1187,7 @@ export function FleetView() {
                   {/* Without the reason a queued cluster looks like the fleet being stuck, and
                       a human overrides the divvy. With it, they trust it. */}
                   {c.held_by && (
-                    <div className="mt-1 text-[11px] text-[color:var(--color-st-blocked)]">
+                    <div className="mt-1 text-small text-[color:var(--color-st-blocked)]">
                       collides on {c.blocked_on} — queued until {c.held_by} releases
                     </div>
                   )}
@@ -1206,7 +1206,7 @@ export function FleetView() {
 function Section({ title, desc, children }: { title: string; desc: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className="mb-7">
-      <h2 className="text-[14px] font-semibold tracking-tight">{title}</h2>
+      <h2 className="text-lead font-semibold tracking-tight">{title}</h2>
       <p className="mb-3 mt-0.5 text-[12px] text-muted">{desc}</p>
       {children}
     </section>
@@ -1215,7 +1215,7 @@ function Section({ title, desc, children }: { title: string; desc: React.ReactNo
 
 function Empty({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-[11px] border border-dashed border-line-2 px-3 py-6 text-center text-[12.5px] text-muted">
+    <div className="rounded-[11px] border border-dashed border-line-2 px-3 py-6 text-center text-body text-muted">
       <Users size={16} className="mx-auto mb-2 opacity-50" />
       {children}
     </div>

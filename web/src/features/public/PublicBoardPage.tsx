@@ -67,7 +67,7 @@ export function PublicBoardPage({ kind }: { kind: "issues" | "requests" }) {
       ) : (
         <>
           <div className="mb-6">
-            <h1 className="text-[20px] font-bold tracking-tight">{title}</h1>
+            <h1 className="text-title font-bold tracking-tight">{title}</h1>
             <p className="mt-1 text-[12px] text-muted">
               Public {kind} board · {rows.length} published
             </p>
@@ -111,11 +111,11 @@ function BoardRowCard({ row }: { row: BoardRow }) {
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none" className={voted ? "text-accent" : "text-faint"}>
             <path d="M8 2l6 10H2L8 2z" fill="currentColor" />
           </svg>
-          <span className="font-mono text-[11px] text-fg-2">{votes}</span>
+          <span className="font-mono text-small text-fg-2">{votes}</span>
         </button>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-[14px] font-medium text-fg">{row.title}</span>
+            <span className="text-lead font-medium text-fg">{row.title}</span>
             <span
               className="flex-none rounded-md border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide"
               style={{ color: STATUS_COLOR[row.status] ?? "#8b949e", borderColor: STATUS_COLOR[row.status] ?? "#8b949e" }}

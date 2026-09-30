@@ -17,9 +17,9 @@ export function MatrixTable({ rows, harnessHref }: {
     <section className="mb-7" data-testid="fleet-matrix">
       <div className="mb-3 flex items-end justify-between gap-3">
         <div>
-          <h2 className="text-[14px] font-semibold tracking-tight">Harness catalog</h2>
+          <h2 className="text-lead font-semibold tracking-tight">Harness catalog</h2>
           <p className="mt-0.5 text-[12px] text-muted">
-            What <code className="font-mono text-[11px]">spawn(tier=)</code> can resolve to.
+            What <code className="font-mono text-small">spawn(tier=)</code> can resolve to.
             Status moves by a commit, not by this page.
           </p>
         </div>
@@ -32,12 +32,12 @@ export function MatrixTable({ rows, harnessHref }: {
         </Link>
       </div>
       {rows.length === 0 ? (
-        <p className="rounded-[11px] border border-dashed border-line-2 px-3 py-6 text-center text-[12.5px] text-muted">
+        <p className="rounded-[11px] border border-dashed border-line-2 px-3 py-6 text-center text-body text-muted">
           The catalog has not been served. That is not an empty matrix.
         </p>
       ) : (
         <div className="overflow-x-auto rounded-[11px] border border-line-2">
-          <table className="w-full text-left text-[12.5px]">
+          <table className="w-full text-left text-body">
             <thead className="border-b border-line-2 bg-surface-2 font-mono text-[10px] uppercase tracking-wide text-faint">
               <tr>
                 <th className="px-3 py-2 font-medium">Harness</th>
@@ -68,7 +68,7 @@ export function MatrixTable({ rows, harnessHref }: {
                       {row.status}
                     </span>
                   </td>
-                  <td className="px-3 py-2 font-mono text-[11px] text-muted">
+                  <td className="px-3 py-2 font-mono text-small text-muted">
                     {row.cost_class}{row.local ? " · local" : ""}
                   </td>
                 </tr>

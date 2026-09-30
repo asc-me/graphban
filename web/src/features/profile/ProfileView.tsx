@@ -20,7 +20,7 @@ export function ProfileView() {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex-none border-b border-line px-5 py-4">
         <h1 className="text-[18px] font-semibold tracking-tight">Profile</h1>
-        <p className="mt-0.5 text-[12.5px] text-muted">Your account and project access.</p>
+        <p className="mt-0.5 text-body text-muted">Your account and project access.</p>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
@@ -29,7 +29,7 @@ export function ProfileView() {
           <div className="min-w-0">
             <div className="text-[17px] font-semibold">{user.name}</div>
             <div className="font-mono text-[12px] text-muted">@{user.handle}</div>
-            <div className="mt-0.5 text-[12.5px] text-muted">{user.email}</div>
+            <div className="mt-0.5 text-body text-muted">{user.email}</div>
           </div>
           <Button variant="outline" size="sm" className="ml-auto" onClick={() => navigate("/settings")}>
             Settings

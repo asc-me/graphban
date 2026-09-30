@@ -126,8 +126,8 @@ export function OrgOverviewView() {
       <div className="max-w-[720px] px-6 pb-16 pt-5">
         <h1 className="text-[17px] font-semibold">{org?.name ?? "Your organization"}</h1>
         <div className="mt-5 rounded-[13px] border border-line bg-surface p-6">
-          <h2 className="text-[14px] font-semibold">Link your first deployment</h2>
-          <p className="mt-2 max-w-[62ch] text-[12.5px] leading-relaxed text-muted">
+          <h2 className="text-lead font-semibold">Link your first deployment</h2>
+          <p className="mt-2 max-w-[62ch] text-body leading-relaxed text-muted">
             This organization has no projects yet. A project fills up when a local
             deployment pushes its code graph here, so the next step is minting a link
             key and running <code className="font-mono text-[11.5px]">graphban link</code> on
@@ -135,7 +135,7 @@ export function OrgOverviewView() {
           </p>
           <Link
             to={adminPath("deployments")}
-            className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-medium text-black hover:bg-accent-2"
+            className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-body font-medium text-black hover:bg-accent-2"
           >
             <Server size={14} /> Mint a link key
           </Link>
@@ -176,7 +176,7 @@ export function OrgOverviewView() {
         )}
       </div>
 
-      <h2 className="mb-2.5 mt-8 font-mono text-[11px] uppercase tracking-wide text-faint">
+      <h2 className="mb-2.5 mt-8 font-mono text-small uppercase tracking-wide text-faint">
         Projects
       </h2>
       <div className="overflow-hidden rounded-[13px] border border-line">
@@ -193,7 +193,7 @@ export function OrgOverviewView() {
             </Link>
             <span className="font-mono text-[10.5px] text-faint">{p.tag}</span>
             <SyncPill project={p} />
-            <span className="ml-auto flex items-center gap-4 font-mono text-[11px] text-muted">
+            <span className="ml-auto flex items-center gap-4 font-mono text-small text-muted">
               <span title="open items">{p.open_items} open</span>
               <span title="items an agent is holding right now">{p.claims.length} claimed</span>
               <span title="fresh code-graph nodes">{p.nodes} nodes</span>

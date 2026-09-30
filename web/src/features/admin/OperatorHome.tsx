@@ -152,7 +152,7 @@ function Head() {
     <PageHead
       title="Platform"
       chip={
-        <span className="rounded-full border border-st-next/30 bg-st-next/[0.07] px-2 py-0.5 font-mono text-[9.5px] tracking-[0.06em] text-st-next">
+        <span className="rounded-full border border-st-next/30 bg-st-next/[0.07] px-2 py-0.5 font-mono text-meta tracking-[0.06em] text-st-next">
           OPERATOR
         </span>
       }
@@ -181,14 +181,14 @@ function Stat({
   return (
     <div className="rounded-[13px] border border-op-line bg-op-card p-3.5">
       <div className="flex items-center gap-2">
-        <span className="font-mono text-[9.5px] uppercase tracking-[0.07em] text-op-faint">{label}</span>
+        <span className="font-mono text-meta uppercase tracking-[0.07em] text-op-faint">{label}</span>
         <span className={`h-[5px] w-[5px] shrink-0 rounded-full ${dot}`} />
       </div>
       <div className="mt-2 flex items-baseline gap-1.5">
         <span className={`font-mono text-[23px] font-medium tracking-[-0.5px] ${tone}`}>{value}</span>
-        {suffix && <span className="font-mono text-[11px] text-op-faint-2">{suffix}</span>}
+        {suffix && <span className="font-mono text-small text-op-faint-2">{suffix}</span>}
       </div>
-      <div className={`mt-2 text-[11px] ${footTone}`}>{foot}</div>
+      <div className={`mt-2 text-small ${footTone}`}>{foot}</div>
     </div>
   );
 }
@@ -217,7 +217,7 @@ function PlanMix({ orgs }: { orgs: AdminOrg[] }) {
           <div key={plan} className="flex items-center gap-3 border-b border-op-line-3 py-2.5">
             <span className="flex w-[86px] shrink-0 items-center gap-2">
               <span className={`h-[5px] w-[5px] shrink-0 rounded-full ${tint[plan]}`} />
-              <span className="text-[12.5px] capitalize text-op-fg-2">{plan}</span>
+              <span className="text-body capitalize text-op-fg-2">{plan}</span>
             </span>
             <span className="min-w-0 flex-1">
               <span className="block h-[5px] overflow-hidden rounded-sm bg-op-line-2">
@@ -227,12 +227,12 @@ function PlanMix({ orgs }: { orgs: AdminOrg[] }) {
                 />
               </span>
             </span>
-            <span className="w-[70px] shrink-0 text-right font-mono text-[11px] text-op-muted-2">
+            <span className="w-[70px] shrink-0 text-right font-mono text-small text-op-muted-2">
               {n} org{n === 1 ? "" : "s"}
             </span>
           </div>
         ))}
-        <p className="mt-2.5 text-[11px] leading-relaxed text-op-faint">
+        <p className="mt-2.5 text-small leading-relaxed text-op-faint">
           Plans are operator-assigned — no tenant can change its own, so this mix only
           moves when someone here moves it.
         </p>
@@ -267,7 +267,7 @@ function OperatorLedger({ orgs }: { orgs: AdminOrg[] }) {
       />
       <div className="px-4 pb-3 pt-1">
         {isLoading ? (
-          <div className="py-6 text-center font-mono text-[11px] text-op-faint-2">loading…</div>
+          <div className="py-6 text-center font-mono text-small text-op-faint-2">loading…</div>
         ) : rows.length === 0 ? (
           <p className="py-5 text-[12px] leading-relaxed text-op-muted-2">
             No operator has done anything on this deployment yet. This is not a quiet
@@ -278,7 +278,7 @@ function OperatorLedger({ orgs }: { orgs: AdminOrg[] }) {
           rows.map((e, i) => <LedgerRow key={`${e.ts}-${i}`} e={e} nameOf={nameOf} />)
         )}
       </div>
-      <div className="border-t border-op-line-2 px-4 py-2.5 text-[11px] leading-relaxed text-op-faint">
+      <div className="border-t border-op-line-2 px-4 py-2.5 text-small leading-relaxed text-op-faint">
         Operator actions only. What happens inside a tenant is project-scoped and is not
         readable from this plane.
       </div>
@@ -314,7 +314,7 @@ function LedgerRow({ e, nameOf }: { e: AdminActivity; nameOf: (id: string) => st
       />
       <div className="min-w-0 flex-1">
         <div className="text-[12px] leading-snug text-op-fg-2">{text}</div>
-        <div className="mt-1 font-mono text-[9.5px] text-op-faint-2">
+        <div className="mt-1 font-mono text-meta text-op-faint-2">
           {relTime(e.ts) ?? "just now"} · {e.actor_label || "an operator"}
         </div>
       </div>

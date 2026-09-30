@@ -193,7 +193,7 @@ function Chip({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className="rounded-md border border-control px-2 py-0.5 font-mono text-[11px] text-muted hover:text-fg-2 disabled:pointer-events-none disabled:opacity-50"
+      className="rounded-md border border-control px-2 py-0.5 font-mono text-small text-muted hover:text-fg-2 disabled:pointer-events-none disabled:opacity-50"
     >
       {label}
     </button>
@@ -213,7 +213,7 @@ function Clear({ disabled, onClick }: { disabled: boolean; onClick: () => void }
       aria-label="Clear"
       disabled={disabled}
       onClick={onClick}
-      className="rounded-md border border-control px-1.5 py-0.5 font-mono text-[11px] text-muted hover:text-fg-2 disabled:pointer-events-none disabled:opacity-50"
+      className="rounded-md border border-control px-1.5 py-0.5 font-mono text-small text-muted hover:text-fg-2 disabled:pointer-events-none disabled:opacity-50"
     >
       ×
     </button>
@@ -231,7 +231,7 @@ export function GitopsPanel() {
     return (
       <div className="max-w-2xl">
         <h2 className="text-[15px] font-semibold tracking-tight">Gitops</h2>
-        <p className="mt-2 text-[12.5px] text-muted">
+        <p className="mt-2 text-body text-muted">
           Select a project. Gitops is per-project until the box is linked — there is no box-wide contract.
         </p>
       </div>
@@ -239,7 +239,7 @@ export function GitopsPanel() {
   }
 
   if (isLoading || !view) {
-    return <p className="text-[12.5px] text-faint">Loading gitops…</p>;
+    return <p className="text-body text-faint">Loading gitops…</p>;
   }
 
   return <GitopsForm project={active} view={view} />;
@@ -311,13 +311,13 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
         <p className="mt-1 text-[13px] text-fg-2">
           {project.name} · {project.tag}
         </p>
-        <p className="mt-1 max-w-[60ch] text-[12.5px] leading-relaxed text-muted">
+        <p className="mt-1 max-w-[60ch] text-body leading-relaxed text-muted">
           {localUntilLinked
             ? UNTIL_LINKED
             : "The org process for the project this box is linked as."}
         </p>
         {view.plan ? (
-          <p className="mt-2 max-w-[60ch] text-[12.5px] leading-relaxed text-fg-2">
+          <p className="mt-2 max-w-[60ch] text-body leading-relaxed text-fg-2">
             Graduation checklist{" "}
             <span className="font-mono text-[12px]">{view.plan.id}</span>
             {" — "}
@@ -333,7 +333,7 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
       {view.control.message ? (
         <p
           role="status"
-          className="rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 text-[12.5px] text-st-review"
+          className="rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 text-body text-st-review"
         >
           {view.control.message}
         </p>
@@ -342,7 +342,7 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
       {showUnlinkWarning ? (
         <p
           role="alert"
-          className="rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 text-[12.5px] text-st-review"
+          className="rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 text-body text-st-review"
         >
           {UNLINK_WARNING}
         </p>
@@ -368,7 +368,7 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
               </option>
             ))}
           </select>
-          <p className="mt-1.5 text-[11px] text-faint">
+          <p className="mt-1.5 text-small text-faint">
             {modelValue === GITOPS_CUSTOM
               ? "Fields no longer match a preset. Pick one to re-apply, or leave as custom."
               : "A closed preset that writes the fields below. Base branch and release defined in are never filled by a preset. Unmeasured is first and nothing is pre-selected."}
@@ -458,7 +458,7 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
               </option>
             ))}
           </select>
-          <p className="mt-1.5 text-[11px] text-faint">
+          <p className="mt-1.5 text-small text-faint">
             Names which bar the process requires. Graphban sign_off is not a forge merge — both means both bars.
           </p>
         </Field>
@@ -478,7 +478,7 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
               </option>
             ))}
           </select>
-          <p className="mt-1.5 text-[11px] text-faint">
+          <p className="mt-1.5 text-small text-faint">
             Graphban does not invent a version. git tag is <code className="font-mono">git describe --tags --abbrev=0</code> in the worktree — no tag is unmeasured, not 1.0.0.
           </p>
         </Field>
@@ -487,13 +487,13 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
           <Label>Release defined in</Label>
           <Input
             aria-label="Release defined in"
-            className="font-mono text-[12.5px]"
+            className="font-mono text-body"
             disabled={!writable}
             placeholder={RELEASE_DEFINED_PLACEHOLDER}
             value={draft.release_defined_in}
             onChange={(e) => setDraft((d) => ({ ...d, release_defined_in: e.target.value }))}
           />
-          <p className="mt-1.5 text-[11px] text-faint">
+          <p className="mt-1.5 text-small text-faint">
             Path or URL of this repo's cut process. Unmeasured is not{" "}
             <code className="font-mono">docs/release.md</code>. Graphban does not fetch it. Not this box's Updates page.
           </p>

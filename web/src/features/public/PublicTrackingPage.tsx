@@ -57,7 +57,7 @@ export function PublicTrackingPage() {
         <>
           <div className="mb-6">
             <div className="flex items-center gap-2">
-              <h1 className="text-[20px] font-bold tracking-tight">{data.title}</h1>
+              <h1 className="text-title font-bold tracking-tight">{data.title}</h1>
               <span
                 className="rounded-md border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide"
                 style={{ color: STATUS_COLOR[data.status] ?? "#8b949e", borderColor: STATUS_COLOR[data.status] ?? "#8b949e" }}

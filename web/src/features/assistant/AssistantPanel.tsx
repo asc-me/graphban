@@ -132,7 +132,7 @@ export function AssistantPanel({
         <select
           value={`${provider}::${model || providers.find((p) => p.id === provider)?.chat_model || ""}`}
           onChange={(e) => pickModel(e.target.value)}
-          className="ml-auto rounded-md border border-control bg-surface-2 px-2 py-1 text-[11px] text-muted"
+          className="ml-auto rounded-md border border-control bg-surface-2 px-2 py-1 text-small text-muted"
         >
           {providers.length === 0 && <option value="::">no provider configured</option>}
           {providers.flatMap((p) =>
@@ -148,7 +148,7 @@ export function AssistantPanel({
       <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
         {messages.length === 0 && (
           <div className="mt-6 text-center">
-            <p className="text-[12.5px] text-faint">
+            <p className="text-body text-faint">
               Brainstorm or review this {entityType}. The assistant can propose changes — you approve them.
             </p>
             <div className="mt-3 flex flex-wrap justify-center gap-1.5">
@@ -210,7 +210,7 @@ export function AssistantPanel({
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
           rows={2}
           placeholder={`Ask about this ${entityType}, or propose a change…`}
-          className="min-h-0 flex-1 resize-none rounded-[10px] border border-control bg-surface-2 px-3 py-2 text-[12.5px] text-fg-2 outline-none focus:border-control-hover"
+          className="min-h-0 flex-1 resize-none rounded-[10px] border border-control bg-surface-2 px-3 py-2 text-body text-fg-2 outline-none focus:border-control-hover"
         />
         <button
           onClick={() => send()}

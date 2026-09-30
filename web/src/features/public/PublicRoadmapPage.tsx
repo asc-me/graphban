@@ -49,7 +49,7 @@ export function PublicRoadmapPage() {
       ) : (
         <>
           <div className="mb-6">
-            <h1 className="text-[20px] font-bold tracking-tight">Roadmap</h1>
+            <h1 className="text-title font-bold tracking-tight">Roadmap</h1>
             <p className="mt-1 text-[12px] text-muted">Public read-only roadmap</p>
           </div>
           <RoadmapBoard phases={phases} />

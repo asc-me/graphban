@@ -60,7 +60,7 @@ export function OperatorLicensing() {
         right={
           <button
             onClick={() => setMinting((v) => !v)}
-            className="inline-flex h-[30px] items-center gap-2 rounded-lg border border-st-next/35 bg-st-next/[0.12] px-3 text-[12.5px] font-semibold text-st-next hover:bg-st-next/20"
+            className="inline-flex h-[30px] items-center gap-2 rounded-lg border border-st-next/35 bg-st-next/[0.12] px-3 text-body font-semibold text-st-next hover:bg-st-next/20"
           >
             <Plus size={13} /> Mint platform invite
           </button>
@@ -80,7 +80,7 @@ export function OperatorLicensing() {
       )}
 
       <div className="mb-2.5 flex items-center gap-3">
-        <h2 className="text-[14px] font-semibold">Platform invites</h2>
+        <h2 className="text-lead font-semibold">Platform invites</h2>
         <div className="flex-1" />
         <button
           onClick={() => setHistory((v) => !v)}
@@ -96,7 +96,7 @@ export function OperatorLicensing() {
       </div>
 
       {isLoading ? (
-        <div className="rounded-[13px] border border-op-line bg-op-card px-5 py-8 text-center font-mono text-[11px] text-op-faint-2">
+        <div className="rounded-[13px] border border-op-line bg-op-card px-5 py-8 text-center font-mono text-small text-op-faint-2">
           loading…
         </div>
       ) : invites.length === 0 ? (
@@ -152,7 +152,7 @@ function SignupPolicy({ mode, expiryDays }: { mode?: string; expiryDays?: number
   return (
     <Callout icon={<Info size={15} className="text-st-next" />}>
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-mono text-[9.5px] tracking-[0.06em] text-op-faint-2">SIGNUP MODE</span>
+        <span className="font-mono text-meta tracking-[0.06em] text-op-faint-2">SIGNUP MODE</span>
         <Pill
           tone={
             mode === "open"
@@ -211,7 +211,7 @@ function MintPanel({
       className="animate-fade mb-5 rounded-[13px] border border-st-next/25 bg-op-card p-4"
     >
       <div className="mb-3.5 flex items-center gap-2.5">
-        <h2 className="flex-1 text-[14px] font-semibold">New platform invite</h2>
+        <h2 className="flex-1 text-lead font-semibold">New platform invite</h2>
         <button
           type="button"
           onClick={onClose}
@@ -256,7 +256,7 @@ function MintPanel({
               <button
                 type="button"
                 onClick={() => setPlan("")}
-                className={`h-[29px] flex-1 rounded-[7px] border font-mono text-[9.5px] tracking-[0.04em] ${
+                className={`h-[29px] flex-1 rounded-[7px] border font-mono text-meta tracking-[0.04em] ${
                   plan === "" ? PLAN_TONE.free : "border-op-line bg-op-bg text-op-faint"
                 }`}
               >
@@ -267,7 +267,7 @@ function MintPanel({
                   key={p}
                   type="button"
                   onClick={() => setPlan(p)}
-                  className={`h-[29px] flex-1 rounded-[7px] border font-mono text-[9.5px] tracking-[0.04em] ${
+                  className={`h-[29px] flex-1 rounded-[7px] border font-mono text-meta tracking-[0.04em] ${
                     plan === p ? PLAN_TONE[p] : "border-op-line bg-op-bg text-op-faint"
                   }`}
                 >
@@ -304,10 +304,10 @@ function MintPanel({
         >
           {create.isPending ? "Minting…" : "Mint invite"}
         </button>
-        <span className="text-[11px] text-op-faint">
+        <span className="text-small text-op-faint">
           The invite is emailed; the same link is copyable from the table below.
         </span>
-        {error && <span className="w-full text-[11px] text-st-blocked">{error}</span>}
+        {error && <span className="w-full text-small text-st-blocked">{error}</span>}
       </div>
 
       {minted && (
@@ -363,7 +363,7 @@ function InviteRow({ invite }: { invite: AdminInvite }) {
         </span>
       </span>
       <span
-        className={`w-[76px] shrink-0 font-mono text-[9.5px] uppercase tracking-[0.04em] ${
+        className={`w-[76px] shrink-0 font-mono text-meta uppercase tracking-[0.04em] ${
           invite.plan ? "text-op-fg-2" : "text-op-faint-2"
         }`}
       >
@@ -471,7 +471,7 @@ function OrgRequests() {
           ))}
         </div>
       )}
-      <div className="border-t border-op-line-2 px-4 py-2.5 text-[11px] leading-relaxed text-op-faint">
+      <div className="border-t border-op-line-2 px-4 py-2.5 text-small leading-relaxed text-op-faint">
         Approving grants exactly one additional org and is consumed when spent, so it
         cannot be replayed. Standing multi-org access comes from the enterprise plan instead.
       </div>
@@ -488,21 +488,21 @@ function OrgRequestRow({ req }: { req: OrgRequest }) {
         <div className="truncate text-[11.5px] text-op-muted-2">
           {req.reason || "no reason given"}
         </div>
-        <div className="mt-0.5 font-mono text-[9.5px] text-op-faint-2">
+        <div className="mt-0.5 font-mono text-meta text-op-faint-2">
           asked {relTime(req.created_at) ?? "—"}
         </div>
       </div>
       <button
         disabled={decide.isPending}
         onClick={() => decide.mutate({ id: req.id, approve: true })}
-        className="h-[26px] rounded-md border border-st-done/35 bg-st-done/[0.1] px-2.5 font-mono text-[9.5px] tracking-[0.05em] text-st-done disabled:opacity-50"
+        className="h-[26px] rounded-md border border-st-done/35 bg-st-done/[0.1] px-2.5 font-mono text-meta tracking-[0.05em] text-st-done disabled:opacity-50"
       >
         APPROVE
       </button>
       <button
         disabled={decide.isPending}
         onClick={() => decide.mutate({ id: req.id, approve: false })}
-        className="h-[26px] rounded-md border border-op-line px-2.5 font-mono text-[9.5px] tracking-[0.05em] text-op-muted disabled:opacity-50"
+        className="h-[26px] rounded-md border border-op-line px-2.5 font-mono text-meta tracking-[0.05em] text-op-muted disabled:opacity-50"
       >
         DENY
       </button>

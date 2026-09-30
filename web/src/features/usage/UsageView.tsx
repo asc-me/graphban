@@ -101,7 +101,7 @@ export function UsageView() {
         </section>
 
         <section className="mt-5 rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3">
-          <h2 className="mb-2 text-[12.5px] text-fg">MCP calls per day</h2>
+          <h2 className="mb-2 text-body text-fg">MCP calls per day</h2>
           {data.chart.note && (
             <p className="mb-2 text-[11.5px] leading-snug text-st-review">{data.chart.note}</p>
           )}
@@ -152,7 +152,7 @@ export function UsageView() {
                     })
                   }
                   className={cn(
-                    "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px]",
+                    "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-small",
                     hidden ? "border-control text-faint opacity-60" : "border-control-hover text-muted",
                   )}
                 >
@@ -169,25 +169,25 @@ export function UsageView() {
         </section>
 
         <section className="mt-5 overflow-hidden rounded-[10px] border border-line-2 bg-surface-2">
-          <div className="border-b border-line bg-surface px-4 py-2.5 text-[12.5px] text-fg">
+          <div className="border-b border-line bg-surface px-4 py-2.5 text-body text-fg">
             By project
           </div>
           <ProjectTable rows={data.by_project} />
         </section>
 
         <section className="mt-5 overflow-hidden rounded-[10px] border border-line-2 bg-surface-2">
-          <div className="border-b border-line bg-surface px-4 py-2.5 text-[12.5px] text-fg">
+          <div className="border-b border-line bg-surface px-4 py-2.5 text-body text-fg">
             License limits
           </div>
           <LimitsTable limits={data.limits} note={data.on_pace_note} />
         </section>
 
         <section className="mt-5 overflow-hidden rounded-[10px] border border-line-2 bg-surface-2">
-          <div className="border-b border-line bg-surface px-4 py-2.5 text-[12.5px] text-fg">
+          <div className="border-b border-line bg-surface px-4 py-2.5 text-body text-fg">
             Busiest API keys
           </div>
           {data.busiest_keys.length === 0 ? (
-            <p className="p-4 text-[12.5px] text-muted">
+            <p className="p-4 text-body text-muted">
               No MCP calls recorded in this range — not a quiet deployment, a window with no telemetry.
             </p>
           ) : (
@@ -203,7 +203,7 @@ export function UsageView() {
               <tbody>
                 {data.busiest_keys.map((k) => (
                   <tr key={k.id} className="border-b border-line/60">
-                    <td className="px-4 py-2 font-mono text-[11px]">{k.name}</td>
+                    <td className="px-4 py-2 font-mono text-small">{k.name}</td>
                     <td className="px-4 py-2 text-muted">{k.owner}</td>
                     <td className="px-4 py-2 text-right font-mono">{k.calls.toLocaleString()}</td>
                     <td className="px-4 py-2 text-faint">
@@ -245,9 +245,9 @@ function KpiCard({ kpi }: { kpi: UsageKpi }) {
   const sparkPeak = Math.max(1, ...kpi.sparkline.map((b) => b.value));
   return (
     <div className="rounded-[10px] border border-line-2 bg-surface-2 px-3 py-2.5">
-      <div className="text-[11px] text-faint">{kpi.label}</div>
+      <div className="text-small text-faint">{kpi.label}</div>
       <div className="mt-1 flex items-baseline gap-2">
-        <span className="font-mono text-[20px] leading-none text-fg">
+        <span className="font-mono text-title leading-none text-fg">
           {kpi.value == null ? "—" : kpi.value.toLocaleString()}
         </span>
         {kpi.delta != null && (
@@ -277,7 +277,7 @@ function ProjectTable({ rows }: { rows: UsageProjectRow[] }) {
 
   if (!rows.length) {
     return (
-      <p className="p-4 text-[12.5px] text-muted">
+      <p className="p-4 text-body text-muted">
         No projects you can read — not an empty deployment, a scope with nothing in it.
       </p>
     );
@@ -301,7 +301,7 @@ function ProjectTable({ rows }: { rows: UsageProjectRow[] }) {
         {sorted.map((r) => (
           <tr key={r.id} className="border-b border-line/60">
             <td className="px-4 py-2">
-              <span className="font-mono text-[11px] text-accent">{r.tag}</span>
+              <span className="font-mono text-small text-accent">{r.tag}</span>
               <span className="ml-2 text-muted">{r.name}</span>
             </td>
             <td className="px-4 py-2 text-right">
@@ -345,7 +345,7 @@ function LimitsTable({ limits, note }: { limits: UsageLimitRow[]; note: string |
           )}
         </div>
       ))}
-      {note && <p className="mt-2 text-[11px] leading-relaxed text-faint">{note}</p>}
+      {note && <p className="mt-2 text-small leading-relaxed text-faint">{note}</p>}
     </div>
   );
 }

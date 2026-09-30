@@ -38,7 +38,7 @@ export function EventPanel({
     >
       <div className="flex flex-none items-start gap-2 border-b border-line px-4 py-3">
         <div className="min-w-0 flex-1">
-          <p className="truncate font-mono text-[12.5px] text-accent">{e.action}</p>
+          <p className="truncate font-mono text-body text-accent">{e.action}</p>
           <p className="mt-0.5 font-mono text-[10.5px] text-faint">event {e.id}</p>
         </div>
         <VerdictChip verdict={verdictOf(e, refusals)} />
@@ -57,7 +57,7 @@ export function EventPanel({
           <ol className="flex flex-col gap-1.5 border-l border-line-2 pl-2.5">
             {chain.map((link) => (
               <li key={link.slot} className="flex items-start gap-2">
-                <span className="w-12 flex-none pt-px text-[11px] text-faint">{link.slot}</span>
+                <span className="w-12 flex-none pt-px text-small text-faint">{link.slot}</span>
                 {link.value ? (
                   <span className="min-w-0 flex-1 font-mono text-[12px] text-fg">{link.value}</span>
                 ) : (
@@ -110,7 +110,7 @@ export function EventPanel({
             >
               Everything by this actor
             </PivotButton>
-            <p className="text-[11px] leading-snug text-faint-2">
+            <p className="text-small leading-snug text-faint-2">
               Two of the design&apos;s three pivots. The third — copy trace id — needs a
               trace id on the record, and there is none.
             </p>
@@ -127,7 +127,7 @@ export function EventPanel({
               label="Trace id"
               detail="No trace id is stored, so there is nothing to copy and no trace to pivot to."
             />
-            <p className="text-[11px] leading-snug text-faint-2">
+            <p className="text-small leading-snug text-faint-2">
               Both are GRPH-979, deferred with the measurements rather than drawn as a
               plausible blank here.
             </p>
@@ -136,7 +136,7 @@ export function EventPanel({
 
         <Section title="Summary">
           {summarizeMeta(e.meta) ? (
-            <p className="break-words font-mono text-[11px] leading-relaxed text-muted">
+            <p className="break-words font-mono text-small leading-relaxed text-muted">
               {summarizeMeta(e.meta)}
             </p>
           ) : (
@@ -210,7 +210,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="flex items-baseline gap-2">
-      <dt className="w-20 flex-none text-[11px] text-faint">{label}</dt>
+      <dt className="w-20 flex-none text-small text-faint">{label}</dt>
       <dd className={cn("min-w-0 flex-1 break-words text-[12px] text-fg", mono && "font-mono text-[11.5px]")}>
         {value}
       </dd>
@@ -251,7 +251,7 @@ function NotRecorded({ label, detail }: { label: string; detail: string }) {
   return (
     <div className="rounded-[8px] border border-dashed border-line-2 px-2.5 py-2">
       <p className="text-[11.5px] text-muted">{label}</p>
-      <p className="mt-0.5 text-[11px] leading-snug text-faint-2">
+      <p className="mt-0.5 text-small leading-snug text-faint-2">
         Not recorded. {detail}
       </p>
     </div>

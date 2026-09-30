@@ -100,7 +100,7 @@ function Row({
           </span>
         )}
       </span>
-      <span className="shrink-0 text-right font-mono text-[11px] leading-tight">
+      <span className="shrink-0 text-right font-mono text-small leading-tight">
         <span className="text-accent">{lead}</span>
         <span className="text-faint-2">{sort === "inbound" ? "←" : "→"}</span>
         <br />
@@ -148,7 +148,7 @@ export function HubsPanel({
               onClick={() => onSort(s)}
               aria-pressed={sort === s}
               className={cn(
-                "px-2.5 py-1 text-[11px] first:border-r first:border-control",
+                "px-2.5 py-1 text-small first:border-r first:border-control",
                 sort === s ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
               )}
             >
@@ -165,7 +165,7 @@ export function HubsPanel({
           <p className="mb-1 text-[12px] text-muted">No edges to rank.</p>
           {/* An empty list must read as NO DATA, never as "no hubs" — this graph covers a
               minority of the tree, so blank is the state a reader will meet first. */}
-          <small className="mx-auto block max-w-[30ch] text-[11px] leading-relaxed text-faint">
+          <small className="mx-auto block max-w-[30ch] text-small leading-relaxed text-faint">
             Hubs are computed from described relations.
             {filtered
               ? " No edges of the types currently shown — try switching a chip back on."

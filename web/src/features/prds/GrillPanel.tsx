@@ -122,7 +122,7 @@ export function GrillPanel({ prdId, onApply }: { prdId: string; onApply: (body: 
             }}
             rows={2}
             placeholder="Answer the questions, or steer the grill…"
-            className="min-h-0 flex-1 resize-none rounded-lg border border-control bg-surface-2 px-3 py-2 text-[12.5px] outline-none placeholder:text-faint focus:border-control-hover"
+            className="min-h-0 flex-1 resize-none rounded-lg border border-control bg-surface-2 px-3 py-2 text-body outline-none placeholder:text-faint focus:border-control-hover"
           />
           <button
             onClick={send}
@@ -148,7 +148,7 @@ function Bubble({ msg, streaming }: { msg: GrillMessage; streaming: boolean }) {
       >
         {isAgent ? <MessageCircleQuestion size={12} /> : <UserIcon size={12} />}
       </span>
-      <div className="min-w-0 flex-1 text-[12.5px] leading-relaxed text-fg-2">
+      <div className="min-w-0 flex-1 text-body leading-relaxed text-fg-2">
         {msg.text ? <Markdown source={msg.text} /> : streaming ? <span className="text-faint">…</span> : null}
       </div>
     </div>

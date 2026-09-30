@@ -117,7 +117,7 @@ export function PrdEditorView() {
         <button onClick={() => navigate("/prds")} className="text-faint hover:text-fg">
           <ArrowLeft size={16} />
         </button>
-        <span className="font-mono text-[11px] text-faint">{prd.id}</span>
+        <span className="font-mono text-small text-faint">{prd.id}</span>
         <input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
@@ -178,7 +178,7 @@ export function PrdEditorView() {
           value={body}
           onChange={(e) => setBody(e.target.value)}
           spellCheck={false}
-          className="min-h-0 resize-none border-r border-control bg-surface/40 p-5 font-mono text-[12.5px] leading-relaxed text-fg-2 outline-none"
+          className="min-h-0 resize-none border-r border-control bg-surface/40 p-5 font-mono text-body leading-relaxed text-fg-2 outline-none"
         />
         <div className="min-h-0 overflow-y-auto p-5">
           {rightTab === "preview" ? (
@@ -257,7 +257,7 @@ function StatusMenu({
         {PRD_SETTABLE_STATUSES.map((s) => (
           <DropdownMenuItem key={s} onSelect={() => onChange(s)}>
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: PRD_STATUS_META[s].color }} />
-            <span className="font-mono text-[11px] uppercase tracking-wide" style={{ color: PRD_STATUS_META[s].color }}>
+            <span className="font-mono text-small uppercase tracking-wide" style={{ color: PRD_STATUS_META[s].color }}>
               {PRD_STATUS_META[s].label}
             </span>
           </DropdownMenuItem>
@@ -348,7 +348,7 @@ function VersionHistory({
           <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-faint">
             Diff · {diffVersion.version} → draft
           </div>
-          <div className="overflow-x-auto rounded-lg border border-line-2 bg-surface-2 p-2 font-mono text-[11px] leading-relaxed">
+          <div className="overflow-x-auto rounded-lg border border-line-2 bg-surface-2 p-2 font-mono text-small leading-relaxed">
             {lineDiff(diffVersion.body, draftBody).map((op, i) => (
               <div
                 key={i}
@@ -466,12 +466,12 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
                   </button>
                 )}
                 {s.empty && (
-                  <span className="rounded border border-[rgba(224,179,74,0.3)] px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-[#e0b34a]">
+                  <span className="rounded border border-[rgba(224,179,74,0.3)] px-1.5 py-px font-mono text-meta uppercase tracking-wide text-[#e0b34a]">
                     empty
                   </span>
                 )}
                 {s.gap ? (
-                  <span className="rounded border border-[rgba(224,179,74,0.3)] px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-[#e0b34a]">
+                  <span className="rounded border border-[rgba(224,179,74,0.3)] px-1.5 py-px font-mono text-meta uppercase tracking-wide text-[#e0b34a]">
                     no tasks
                   </span>
                 ) : (
@@ -497,7 +497,7 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
           );
         })}
         {cov.section_count === 0 && (
-          <p className="text-[12.5px] text-faint">No `##` sections in this PRD yet.</p>
+          <p className="text-body text-faint">No `##` sections in this PRD yet.</p>
         )}
       </div>
     </div>
@@ -590,7 +590,7 @@ export function PrototypeRow({ prdId, item }: { prdId: string; item: Item }) {
     <div className="rounded-[10px] border border-line-2 bg-surface-2 p-2.5">
       <div className="flex items-center gap-2">
         <FlaskConical size={13} className="flex-none text-[#e0b34a]" />
-        <span className="min-w-0 flex-1 truncate text-[12.5px] text-fg-2">{item.title}</span>
+        <span className="min-w-0 flex-1 truncate text-body text-fg-2">{item.title}</span>
         <span className="font-mono text-[10px] text-faint">{item.id}</span>
       </div>
       {pack === null ? (
@@ -661,7 +661,7 @@ export function PrototypeRow({ prdId, item }: { prdId: string; item: Item }) {
           )}
         </div>
       )}
-      {err && <p className="mt-1.5 text-[11px] text-st-blocked">{err}</p>}
+      {err && <p className="mt-1.5 text-small text-st-blocked">{err}</p>}
     </div>
   );
 }

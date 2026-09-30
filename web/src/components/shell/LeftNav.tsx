@@ -114,10 +114,10 @@ function HostedLeftNav() {
             {(org?.name ?? "?").slice(0, 1).toUpperCase()}
           </span>
           <span className="min-w-0 flex-1 text-left">
-            <span className="block truncate text-[12.5px] font-semibold leading-tight">
+            <span className="block truncate text-body font-semibold leading-tight">
               {org?.name ?? "—"}
             </span>
-            <span className="mt-0.5 block text-[9.5px] text-faint">
+            <span className="mt-0.5 block text-meta text-faint">
               {org?.plan ?? ""} plan
             </span>
           </span>
@@ -142,7 +142,7 @@ function HostedLeftNav() {
               <DropdownMenuItem
                 key={p.id}
                 onSelect={() => setActiveId(p.id)}
-                className="gap-2.5 text-[12.5px]"
+                className="gap-2.5 text-body"
               >
                 <span className="h-2.5 w-2.5 flex-none rounded-[3px]" style={{ background: p.accent }} />
                 <span className="flex-1 truncate text-left">{p.name}</span>
@@ -155,7 +155,7 @@ function HostedLeftNav() {
                 e.preventDefault();
                 setNewProjectOpen(true);
               }}
-              className="gap-2.5 text-[12.5px] text-muted"
+              className="gap-2.5 text-body text-muted"
             >
               <Plus size={14} className="flex-none" />
               <span className="flex-1 truncate text-left">New project</span>
@@ -247,10 +247,10 @@ function HostedLeftNav() {
       <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-3">
         {hosted && !canAdminister && (
           <div className="mb-2 rounded-[9px] border border-dashed border-line-2 px-2.5 py-2">
-            <div className="text-[9.5px] font-medium text-faint-2">
+            <div className="text-meta font-medium text-faint-2">
               no admin group
             </div>
-            <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
+            <p className="mt-1.5 text-small leading-relaxed text-muted">
               You are a <span className="font-mono text-fg-2">member</span>. Org administration
               belongs to an owner or admin — ask one of them if you need a change here.
             </p>
@@ -373,7 +373,7 @@ function SelfHostLeftNav() {
             <DropdownMenuItem
               key={p.id}
               onSelect={() => setActiveId(p.id)}
-              className="gap-2.5 text-[12.5px]"
+              className="gap-2.5 text-body"
             >
               <span className="h-2.5 w-2.5 flex-none rounded-[3px]" style={{ background: p.accent }} />
               <span className="flex-1 truncate text-left">{p.name}</span>
@@ -386,7 +386,7 @@ function SelfHostLeftNav() {
               e.preventDefault();
               setNewProjectOpen(true);
             }}
-            className="gap-2.5 text-[12.5px] text-muted"
+            className="gap-2.5 text-body text-muted"
           >
             <Plus size={14} className="flex-none" />
             <span className="flex-1 truncate text-left">New project</span>

@@ -409,7 +409,7 @@ export function CodeGraphView() {
       >
         ← all components
       </button>
-      <span className="font-mono text-[11px] text-fg-2">{label(entered, "")}</span>
+      <span className="font-mono text-small text-fg-2">{label(entered, "")}</span>
       <span className="text-faint">· {ids.length} nodes</span>
     </span>
   ) : (
@@ -527,15 +527,15 @@ export function CodeGraphView() {
             <div className="p-8 text-center text-[13px] text-muted">Loading graph…</div>
           ) : empty ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
-              <div className="text-[14px] font-semibold text-fg-2">No code described yet</div>
-              <p className="max-w-[420px] text-[12.5px] leading-relaxed text-muted">
+              <div className="text-lead font-semibold text-fg-2">No code described yet</div>
+              <p className="max-w-[420px] text-body leading-relaxed text-muted">
                 {/* Naming the wrong reading, rather than trusting "yet" to imply it. An empty
                     graph over a large repository looks identical to a graph of a small one,
                     and the reassuring reading — "there is not much here" — is the wrong one. */}
                 Empty because nothing has been described, not because this project has no
                 structure.
               </p>
-              <p className="max-w-[420px] text-[12.5px] leading-relaxed text-muted">
+              <p className="max-w-[420px] text-body leading-relaxed text-muted">
                 A coding agent populates this graph by calling the{" "}
                 <span className="font-mono text-accent">describe_code</span> MCP tool as it works —
                 upserting module/file/symbol nodes and their imports/calls/ownership edges. Ask a
@@ -1074,7 +1074,7 @@ function NodeInspector({
           </button>
         )}
       </div>
-      {node?.summary && <p className="mb-3 text-[12.5px] leading-relaxed text-muted">{node.summary}</p>}
+      {node?.summary && <p className="mb-3 text-body leading-relaxed text-muted">{node.summary}</p>}
 
       {!nb ? (
         <div className="font-mono text-[10px] text-faint">loading…</div>
@@ -1245,12 +1245,12 @@ function StubEvidence({ stub }: { stub: ProjectStub }) {
         {!stub.fresh && <span className="ml-2 text-st-review">stale</span>}
       </div>
       {stub.evidence.map((e, i) => (
-        <div key={i} className="mt-1 font-mono text-[11px] text-fg-2">
+        <div key={i} className="mt-1 font-mono text-small text-fg-2">
           {e.file} <span className="text-muted">→ {e.fact}</span>
         </div>
       ))}
       {stub.unanchored && (
-        <p className="mt-1.5 text-[11px] leading-relaxed text-st-review/80">
+        <p className="mt-1.5 text-small leading-relaxed text-st-review/80">
           The manifest names that file, but nothing here has described it — so the arrow is
           real and has nowhere to attach. Describing the file gives it an anchor.
         </p>
@@ -1342,25 +1342,25 @@ function InteractionHint({
           ×
         </button>
       </div>
-      <ul className="space-y-1 text-[11px] text-muted">
+      <ul className="space-y-1 text-small text-muted">
         <li>
-          <span className="font-mono text-[9.5px] text-fg-2">Hover</span>{" "}
+          <span className="font-mono text-meta text-fg-2">Hover</span>{" "}
           previews the 1-hop neighbourhood
         </li>
         <li>
-          <span className="font-mono text-[9.5px] text-fg-2">Click</span>{" "}
+          <span className="font-mono text-meta text-fg-2">Click</span>{" "}
           selects and pins the inspector
         </li>
         <li>
-          <span className="font-mono text-[9.5px] text-fg-2">Shift+click</span>{" "}
+          <span className="font-mono text-meta text-fg-2">Shift+click</span>{" "}
           widens the highlight by one ring
         </li>
         <li>
-          <span className="font-mono text-[9.5px] text-fg-2">Alt+click</span>{" "}
+          <span className="font-mono text-meta text-fg-2">Alt+click</span>{" "}
           traces a path from the selection
         </li>
         <li>
-          <span className="font-mono text-[9.5px] text-fg-2">Drag</span>{" "}
+          <span className="font-mono text-meta text-fg-2">Drag</span>{" "}
           pans the view · nodes can be pinned
         </li>
       </ul>

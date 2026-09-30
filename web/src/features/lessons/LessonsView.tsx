@@ -250,7 +250,7 @@ function LessonListPage() {
           <button
             type="button"
             onClick={() => setSelected(new Set())}
-            className="rounded-md border border-control px-1.5 py-0.5 font-mono text-[9.5px] text-faint hover:text-muted"
+            className="rounded-md border border-control px-1.5 py-0.5 font-mono text-meta text-faint hover:text-muted"
           >
             Clear
           </button>
@@ -268,7 +268,7 @@ function LessonListPage() {
           ) : (
             <>
               {allUnmeasured && activeQueue === "unmeasured" && (
-                <div className="rounded-[10px] border border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-[#e0b34a]">
+                <div className="rounded-[10px] border border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] px-3.5 py-2.5 text-body leading-relaxed text-[#e0b34a]">
                   {hasMore
                     ? `At least ${queueRows.unmeasured.length} of this page of published lessons have no outcomes yet.`
                     : `${published} published lesson${published === 1 ? " has" : "s have"} no outcomes yet.`}{" "}
@@ -290,7 +290,7 @@ function LessonListPage() {
                   {rows.length} lesson{rows.length !== 1 ? "s" : ""}
                   {hasMore ? " on this page" : ""}
                 </span>
-                <span className="ml-auto font-mono text-[9.5px] text-faint">
+                <span className="ml-auto font-mono text-meta text-faint">
                   J/K move · X select · Enter open
                 </span>
               </div>
@@ -367,7 +367,7 @@ function LessonQueueRow({
           </span>
           <CaughtChip state={row.caught_state} />
           <ClassChip lessonClass={row.lesson_class} suggested={row.suggested_class} />
-          <span className="font-mono text-[9.5px] text-faint">{row.age_state}</span>
+          <span className="font-mono text-meta text-faint">{row.age_state}</span>
           <span className="font-mono text-[9px] text-faint">{row.id}</span>
         </div>
       </button>
@@ -464,7 +464,7 @@ function LessonDetailPage({ id }: { id: string }) {
         <button
           type="button"
           onClick={() => navigate("..")}
-          className="text-[12.5px] text-muted hover:text-fg-2"
+          className="text-body text-muted hover:text-fg-2"
         >
           ← Lessons
         </button>
@@ -506,7 +506,7 @@ function LessonDetailBody({ lesson }: { lesson: LessonDetail }) {
         </button>
         <div className="min-w-0 flex-1">
           <h1 className="text-[18px] font-semibold tracking-tight">Lesson</h1>
-          <p className="mt-0.5 font-mono text-[11px] text-faint">{lesson.id}</p>
+          <p className="mt-0.5 font-mono text-small text-faint">{lesson.id}</p>
         </div>
       </div>
 
@@ -523,7 +523,7 @@ function LessonDetailBody({ lesson }: { lesson: LessonDetail }) {
               )}
             </div>
             <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-ink">{lesson.text}</p>
-            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] text-faint">
+            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 font-mono text-small text-faint">
               {lesson.originating_item ? (
                 <span>
                   item{" "}
@@ -554,19 +554,19 @@ function LessonDetailBody({ lesson }: { lesson: LessonDetail }) {
               <span className="font-mono text-[10.5px] uppercase text-faint">{trend}</span>
             </div>
             {dropReasons.length > 0 && (
-              <ul className="mt-2 flex flex-col gap-1 text-[12.5px] text-muted">
+              <ul className="mt-2 flex flex-col gap-1 text-body text-muted">
                 {dropReasons.map((r) => (
                   <li key={r}>{dropReasonCopy(r)}</li>
                 ))}
               </ul>
             )}
             {lesson.origin_path === "unindexed" && (
-              <p className="mt-2 text-[12.5px] text-muted">
+              <p className="mt-2 text-body text-muted">
                 code graph has not been indexed — not the same as a deleted path.
               </p>
             )}
             {lesson.origin_path === "gone" && !dropReasons.includes("origin_path_gone") && (
-              <p className="mt-2 text-[12.5px] text-muted">
+              <p className="mt-2 text-body text-muted">
                 originating code path no longer resolves
               </p>
             )}
@@ -606,7 +606,7 @@ function LessonDetailBody({ lesson }: { lesson: LessonDetail }) {
               Effectiveness history
             </summary>
             {history.length === 0 ? (
-              <p className="mt-2 text-[12.5px] text-muted">
+              <p className="mt-2 text-body text-muted">
                 No counted outcomes — history is empty, not a flat high score.
               </p>
             ) : (
@@ -627,7 +627,7 @@ function OutcomeStrip({ history }: { history: { at: string; score: number | null
   const last16 = history.slice(-16);
   if (last16.length === 0) {
     return (
-      <p className="text-[12.5px] text-muted">
+      <p className="text-body text-muted">
         No outcomes recorded. Nothing links this lesson to a check, so a hit can&apos;t be told apart from noise.
       </p>
     );
@@ -650,7 +650,7 @@ function OutcomeStrip({ history }: { history: { at: string; score: number | null
           );
         })}
       </div>
-      <div className="mt-1.5 flex items-center gap-3 font-mono text-[9.5px] text-faint">
+      <div className="mt-1.5 flex items-center gap-3 font-mono text-meta text-faint">
         <span className="inline-flex items-center gap-1">
           <span className="inline-block h-2 w-2 rounded-sm bg-st-done" /> caught
         </span>
@@ -671,10 +671,10 @@ function OutcomeStrip({ history }: { history: { at: string; score: number | null
 function Provenance({ lesson }: { lesson: LessonDetail }) {
   const events = lesson.events ?? [];
   if (events.length === 0 && !lesson.originating_item && !lesson.source) {
-    return <p className="mt-2 text-[12.5px] text-muted">No provenance events recorded.</p>;
+    return <p className="mt-2 text-body text-muted">No provenance events recorded.</p>;
   }
   return (
-    <ul className="mt-2 flex flex-col gap-1.5 border-l border-line pl-3 text-[12.5px] text-muted">
+    <ul className="mt-2 flex flex-col gap-1.5 border-l border-line pl-3 text-body text-muted">
       {lesson.originating_item && (
         <li>
           originating item <span className="font-mono text-fg-2">{lesson.originating_item.id}</span>
@@ -705,20 +705,20 @@ function ClusterSection({ lesson }: { lesson: LessonDetail }) {
   const unread = lesson.unread_cluster_tags ?? [];
   if (scan !== "scanned") {
     return (
-      <p className="mt-2 text-[12.5px] text-muted">
+      <p className="mt-2 text-body text-muted">
         Other-project recurrence was not scanned. That is <span className="font-medium text-fg-2">unverifiable</span>,
         not ineligible.
       </p>
     );
   }
   if (others.length === 0 && unread.length === 0) {
-    return <p className="mt-2 text-[12.5px] text-muted">no corroborating shards</p>;
+    return <p className="mt-2 text-body text-muted">no corroborating shards</p>;
   }
   return (
     <div className="mt-2 flex flex-col gap-1.5">
       {others.map((s) => (
         <div key={s.id} className="rounded-md border border-line-2 px-2.5 py-1.5">
-          <p className="line-clamp-2 text-[12.5px] text-fg-2">{s.text}</p>
+          <p className="line-clamp-2 text-body text-fg-2">{s.text}</p>
           <p className="mt-0.5 font-mono text-[10px] text-faint">
             {s.origin || ""} {s.source ? `· ${s.source}` : ""} {s.status}
           </p>
@@ -747,7 +747,7 @@ function OutcomesSection({ lesson }: { lesson: LessonDetail }) {
   return (
     <div className="mt-2 flex flex-col gap-2">
       {outcomes.length === 0 ? (
-        <p className="text-[12.5px] text-muted">No outcomes recorded.</p>
+        <p className="text-body text-muted">No outcomes recorded.</p>
       ) : (
         <table className="w-full text-left text-[12px]">
           <thead className="font-mono text-[10px] uppercase tracking-wide text-faint">
@@ -763,7 +763,7 @@ function OutcomesSection({ lesson }: { lesson: LessonDetail }) {
               <tr key={o.id} className="border-t border-line-2 text-muted">
                 <td className="py-1.5 pr-3 font-mono text-fg-2">{o.kind}</td>
                 <td className="py-1.5 pr-3">{o.source}</td>
-                <td className="py-1.5 pr-3 font-mono text-[11px]">{o.created_at}</td>
+                <td className="py-1.5 pr-3 font-mono text-small">{o.created_at}</td>
                 <td className="py-1.5">{o.detail}</td>
               </tr>
             ))}
@@ -792,7 +792,7 @@ function OutcomesSection({ lesson }: { lesson: LessonDetail }) {
             value={detail}
             onChange={(e) => setDetail(e.target.value)}
             placeholder="What happened — required"
-            className="min-h-[64px] rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12.5px] text-ink outline-none focus:border-control-hover"
+            className="min-h-[64px] rounded-md border border-control bg-surface-3 px-2 py-1.5 text-body text-ink outline-none focus:border-control-hover"
           />
           <div className="flex gap-2">
             <button
@@ -841,7 +841,7 @@ function FilterChip({
       aria-pressed={active}
       onClick={onClick}
       className={cn(
-        "rounded-md border px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide transition-colors",
+        "rounded-md border px-1.5 py-0.5 font-mono text-meta uppercase tracking-wide transition-colors",
         active
           ? "border-control-hover bg-surface-3 text-fg"
           : "border-control text-faint hover:border-control-hover hover:text-muted",
@@ -858,7 +858,7 @@ function HistorySpark({ history }: { history: { at: string; score: number | null
   const scores = history.map((h) => h.score).filter((s): s is number => s != null);
   if (scores.length === 0) {
     return (
-      <p className="mt-2 text-[12.5px] text-muted">
+      <p className="mt-2 text-body text-muted">
         No counted outcomes — history is empty, not a flat high score.
       </p>
     );
@@ -903,7 +903,7 @@ function PromotePanel({ lesson }: { lesson: LessonDetail }) {
             {overridden ? "org (overridden)" : evidenced ? "org · evidenced" : "org"}
           </Chip>
         </div>
-        <p className="mt-2 text-[12.5px] text-muted">
+        <p className="mt-2 text-body text-muted">
           {overridden
             ? "Promoted with a written override — the independence formula did not pass."
             : evidenced
@@ -926,12 +926,12 @@ function PromotePanel({ lesson }: { lesson: LessonDetail }) {
     <section className="rounded-[10px] border border-line-2 bg-surface-2 p-3.5">
       <div className="font-mono text-[10.5px] uppercase tracking-wide text-faint">Org promotion</div>
       {reasonText && (
-        <p className="mt-2 text-[12.5px] leading-relaxed text-muted" title={reasonText}>
+        <p className="mt-2 text-body leading-relaxed text-muted" title={reasonText}>
           {reasonText}
         </p>
       )}
       {unverifiable && (
-        <p className="mt-2 text-[12.5px] leading-relaxed text-muted">
+        <p className="mt-2 text-body leading-relaxed text-muted">
           Cannot tell whether this can be an org lesson: <span className="font-medium text-fg-2">distinct_users</span>{" "}
           and/or <span className="font-medium text-fg-2">distinct_projects</span> are unmeasured, or the published
           cluster was not scanned across sibling projects. Ingest still writes every transcript to one project. That
@@ -954,7 +954,7 @@ function PromotePanel({ lesson }: { lesson: LessonDetail }) {
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               placeholder="Override reason — required"
-              className="rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12.5px] text-ink outline-none focus:border-control-hover"
+              className="rounded-md border border-control bg-surface-3 px-2 py-1.5 text-body text-ink outline-none focus:border-control-hover"
             />
             <button
               type="button"
@@ -986,7 +986,7 @@ function isFailing(lesson: LessonDetail): boolean {
 
 function MutationError({ err, fallback }: { err: unknown; fallback: string }) {
   if (!err) return null;
-  return <p className="mt-2 text-[12.5px] text-st-blocked">{errorDetail(err, fallback)}</p>;
+  return <p className="mt-2 text-body text-st-blocked">{errorDetail(err, fallback)}</p>;
 }
 
 function dropReasonCopy(reason: string): string {

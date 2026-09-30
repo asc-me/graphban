@@ -363,20 +363,20 @@ export function MemoryTriageView() {
           <button
             onClick={() => handleBulkPublish([...selected])}
             disabled={review.publish.isPending}
-            className="rounded-md border border-st-done/30 bg-st-done/10 px-2 py-0.5 text-[11px] text-st-done hover:bg-st-done/15 disabled:opacity-50"
+            className="rounded-md border border-st-done/30 bg-st-done/10 px-2 py-0.5 text-small text-st-done hover:bg-st-done/15 disabled:opacity-50"
           >
             Publish all
           </button>
           <button
             onClick={() => handleBulkReject([...selected])}
             disabled={review.reject.isPending}
-            className="rounded-md border border-control px-2 py-0.5 text-[11px] text-muted hover:border-control-hover hover:text-ink disabled:opacity-50"
+            className="rounded-md border border-control px-2 py-0.5 text-small text-muted hover:border-control-hover hover:text-ink disabled:opacity-50"
           >
             Reject all
           </button>
           <button
             onClick={() => setSelected(new Set())}
-            className="rounded-md border border-control px-2 py-0.5 text-[11px] text-muted hover:border-control-hover hover:text-ink"
+            className="rounded-md border border-control px-2 py-0.5 text-small text-muted hover:border-control-hover hover:text-ink"
           >
             Clear
           </button>
@@ -392,9 +392,9 @@ export function MemoryTriageView() {
                 : "Queue clear. Pick another queue above, or search everywhere."}
             </div>
           ) : (
-            <table className="w-full text-left text-[12.5px]">
+            <table className="w-full text-left text-body">
               <thead className="sticky top-0 bg-surface">
-                <tr className="border-b border-line text-[11px] text-faint">
+                <tr className="border-b border-line text-small text-faint">
                   <th className="w-8 px-3 py-1.5">
                     <input
                       type="checkbox"
@@ -486,11 +486,11 @@ export function MemoryTriageView() {
 
       {toast.visible && (
         <div className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-line bg-surface px-4 py-2 shadow-lg">
-          <span className="text-[12.5px] text-ink">{toast.message}</span>
+          <span className="text-body text-ink">{toast.message}</span>
           {toast.undoableIds.length > 0 && (
             <button
               onClick={() => handleUndo(toast.undoableIds)}
-              className="inline-flex items-center gap-1 rounded-md border border-control px-2 py-0.5 text-[11px] text-muted hover:border-control-hover hover:text-ink"
+              className="inline-flex items-center gap-1 rounded-md border border-control px-2 py-0.5 text-small text-muted hover:border-control-hover hover:text-ink"
             >
               <RotateCcw size={11} /> Undo
             </button>
@@ -501,7 +501,7 @@ export function MemoryTriageView() {
         </div>
       )}
 
-      <div className="flex-none border-t border-line bg-surface px-5 py-1.5 text-[11px] text-faint">
+      <div className="flex-none border-t border-line bg-surface px-5 py-1.5 text-small text-faint">
         Memory policy: {active?.memory_write_mode ?? "review"} · auto-reject {active?.memory_auto_reject ? "on" : "off"}
       </div>
     </div>
@@ -556,7 +556,7 @@ function DetailPanel({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] text-faint">Detail</span>
+        <span className="text-small text-faint">Detail</span>
         <button onClick={onClose} className="text-faint hover:text-ink"><X size={14} /></button>
       </div>
 
@@ -592,7 +592,7 @@ function DetailPanel({
       </div>
 
       <div>
-        <span className="mb-1 block text-[11px] text-faint">Class</span>
+        <span className="mb-1 block text-small text-faint">Class</span>
         <span className="text-[12px] text-ink">
           {shard.scope === "global" ? "Global" : shard.scope === "item" ? "Item-scoped" : shard.scope}
         </span>
@@ -600,7 +600,7 @@ function DetailPanel({
 
       {conflictRefs.length > 0 && (
         <div>
-          <span className="mb-1 block text-[11px] text-faint">Contradicts</span>
+          <span className="mb-1 block text-small text-faint">Contradicts</span>
           {conflictRefs.map((c) => (
             <p key={c.id} className="rounded border border-line-2 bg-surface p-2 text-[11.5px] text-ink">
               <a
@@ -619,7 +619,7 @@ function DetailPanel({
 
       {cluster && (
         <div>
-          <span className="mb-1 block text-[11px] text-faint">Pick the canonical wording</span>
+          <span className="mb-1 block text-small text-faint">Pick the canonical wording</span>
           <div className="flex flex-col gap-1">
             {[cluster.representative, ...cluster.members].map((m) => (
               <button
@@ -696,14 +696,14 @@ function SweepPreviewModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-fg/20">
       <div className="mx-4 w-full max-w-lg rounded-xl border border-line bg-surface p-5 shadow-lg">
         <h2 className="mb-1 text-[15px] font-semibold text-fg">Sweep low-confidence shards</h2>
-        <p className="mb-3 text-[12.5px] text-muted">
+        <p className="mb-3 text-body text-muted">
           This will reject {targets.length} shard{targets.length === 1 ? "" : "s"} with confidence below {Math.round(SWEEP_THRESHOLD * 100)}%.
           You can undo each one from the toast.
         </p>
         <div className="mb-4 max-h-48 overflow-y-auto rounded-lg border border-line-2">
           {targets.map((t) => (
             <div key={t.shard.id} className="flex items-center gap-2 border-b border-line-2 px-3 py-1.5 last:border-b-0">
-              <span className="text-[11px] text-faint">{Math.round((t.score?.confidence ?? 0) * 100)}%</span>
+              <span className="text-small text-faint">{Math.round((t.score?.confidence ?? 0) * 100)}%</span>
               <span className="flex-1 truncate text-[12px] text-ink">{t.shard.text}</span>
             </div>
           ))}

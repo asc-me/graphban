@@ -60,7 +60,7 @@ export function CloudOrgLinkPanel() {
     <div className="max-w-2xl space-y-6">
       <div>
         <h2 className="text-[15px] font-semibold tracking-tight">Cloud link</h2>
-        <p className="mt-1 max-w-[62ch] text-[12.5px] leading-relaxed text-muted">
+        <p className="mt-1 max-w-[62ch] text-body leading-relaxed text-muted">
           This org is the cloud side. A self-hosted box links here with a{" "}
           <span className="text-fg-2">link key</span> you mint below — a{" "}
           <code className="font-mono text-[11.5px] text-fg-2">sync</code>-scoped link key
@@ -71,9 +71,9 @@ export function CloudOrgLinkPanel() {
       <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
         <div className="mb-3.5 flex items-center gap-2.5">
           <KeyRound size={16} className="text-accent" />
-          <div className="text-[14px] font-semibold">Mint a link key</div>
+          <div className="text-lead font-semibold">Mint a link key</div>
         </div>
-        <p className="mb-3 max-w-[62ch] text-[12.5px] leading-relaxed text-muted">
+        <p className="mb-3 max-w-[62ch] text-body leading-relaxed text-muted">
           The name is the deployment&rsquo;s identity on{" "}
           <NavLink to={adminPath("deployments")} className="text-fg-2 underline-offset-2 hover:underline">
             Deployments
@@ -121,9 +121,9 @@ export function CloudOrgLinkPanel() {
       <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
         <div className="mb-3 flex items-center gap-2.5">
           <Link2 size={16} className="text-accent" />
-          <div className="text-[14px] font-semibold">On the local box</div>
+          <div className="text-lead font-semibold">On the local box</div>
         </div>
-        <ol className="max-w-[62ch] list-decimal space-y-2 pl-5 text-[12.5px] leading-relaxed text-muted">
+        <ol className="max-w-[62ch] list-decimal space-y-2 pl-5 text-body leading-relaxed text-muted">
           <li>
             Run <code className="font-mono text-[11.5px] text-fg-2">graphban link</code> with
             this org&rsquo;s URL and the plaintext, or paste both into the box&rsquo;s Settings
@@ -145,7 +145,7 @@ export function CloudOrgLinkPanel() {
           Link keys in this org
         </div>
         {syncKeys.length === 0 ? (
-          <p className="text-[12.5px] leading-relaxed text-muted">
+          <p className="text-body leading-relaxed text-muted">
             None minted yet. A box cannot link until one exists.
           </p>
         ) : (
@@ -156,13 +156,13 @@ export function CloudOrgLinkPanel() {
                 className="flex items-center gap-3 border-b border-line px-3.5 py-2 last:border-b-0"
               >
                 <span className="min-w-0 flex-1 truncate text-[13px] text-fg-2">{k.name}</span>
-                <code className="font-mono text-[11px] text-faint">{k.prefix}…</code>
-                <span className="font-mono text-[11px] text-muted">{projectName(k.project_id)}</span>
+                <code className="font-mono text-small text-faint">{k.prefix}…</code>
+                <span className="font-mono text-small text-muted">{projectName(k.project_id)}</span>
               </div>
             ))}
           </div>
         )}
-        <p className="mt-2 text-[11px] leading-relaxed text-faint">
+        <p className="mt-2 text-small leading-relaxed text-faint">
           Plaintext is never shown again. Rotate by minting a new key and pasting it on the box.
         </p>
       </div>

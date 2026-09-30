@@ -27,7 +27,7 @@ export function GuidanceTab({ guidance }: { guidance?: HarnessGuidance }) {
           cells; a column with no server field reads as not measured rather than being dropped.
         </p>
         {routingRows.length === 0 ? (
-          <div className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted">
+          <div className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted">
             No measured routing served yet. A row appears once a delegation finishes in this
             window.
           </div>
@@ -92,7 +92,7 @@ export function GuidanceTab({ guidance }: { guidance?: HarnessGuidance }) {
                 <span className="rounded-full border border-line-2 px-1.5 py-0.5 font-mono text-[10px] text-faint">
                   {rule.id}
                 </span>
-                <span className="text-[12.5px] font-medium">{rule.title}</span>
+                <span className="text-body font-medium">{rule.title}</span>
               </div>
               <p className="mt-1 text-[12px] text-muted">{rule.detail}</p>
               <div
@@ -124,7 +124,7 @@ export function GuidanceTab({ guidance }: { guidance?: HarnessGuidance }) {
         </p>
         <pre
           data-testid="guidance-fleet-status"
-          className="max-h-80 overflow-auto rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 font-mono text-[11px] text-muted"
+          className="max-h-80 overflow-auto rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 font-mono text-small text-muted"
         >
           {fleetStatusText}
         </pre>

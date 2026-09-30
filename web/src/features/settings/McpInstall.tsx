@@ -204,7 +204,7 @@ export function McpInstall({
             }}
             aria-pressed={sel === c.id}
             className={cn(
-              "rounded-md border px-2 py-1 text-[11px] transition-colors",
+              "rounded-md border px-2 py-1 text-small transition-colors",
               sel === c.id ? "border-accent/50 bg-surface-3 text-fg" : "border-control text-muted hover:text-fg-2",
             )}
           >

@@ -6,27 +6,35 @@
   --font-sans: "IBM Plex Sans", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
-  /* Type scale — ≤6 roles, each ≥1.2× the step below. Prefer these over arbitrary text-[Npx]. */
-  --text-display: 1.6875rem; /* 27px — rare numeric KPI */
-  --text-display--line-height: 1.2;
-  --text-display--letter-spacing: -0.02em;
+  /* Type scale — six roles, taken from the design set (`*.dc.html`) rather than invented.
+     Prefer these over arbitrary `text-[Npx]`: a size the designs use for a ROLE gets a token,
+     and a size that carries no role stays arbitrary rather than being rounded into one.
 
-  --text-title: 1.375rem; /* 22px — page h1 */
-  --text-title--line-height: 1.25;
-  --text-title--letter-spacing: -0.015em;
-
-  --text-body: 1.125rem; /* 18px — primary copy, row titles */
-  --text-body--line-height: 1.5;
-
-  --text-secondary: 0.9375rem; /* 15px — supporting one-liners */
-  --text-secondary--line-height: 1.45;
-
-  --text-meta: 0.75rem; /* 12px — chips, timestamps */
-  --text-meta--line-height: 1.4;
-
-  --text-micro: 0.625rem; /* 10px — IDs, keys, tabular (IBM Plex Mono at use sites) */
+     The previous scale ran 10/12/15/18/22/27px on a "each step ≥1.2× the last" rule that no
+     design ever asserted, and nothing in the app consumed it — 677 call sites set these same
+     six sizes by hand while the tokens sat unused (GRPH-1004). The designs are tighter than
+     that rule: 9.5/8.5 is 1.118. The designs win; see the loosened floor in
+     `__tests__/design-tokens.test.ts`, and do NOT round a size to satisfy the old ratio. */
+  --text-micro: 0.53125rem; /* 8.5px — IDs and keys (IBM Plex Mono at use sites) */
   --text-micro--line-height: 1.35;
-  --text-micro--letter-spacing: 0.02em;
+  --text-micro--letter-spacing: 0.05em;
+
+  --text-meta: 0.59375rem; /* 9.5px — tracked-out mono labels */
+  --text-meta--line-height: 1.4;
+  --text-meta--letter-spacing: 0.063em;
+
+  --text-small: 0.6875rem; /* 11px — chips, timestamps, table cells */
+  --text-small--line-height: 1.45;
+
+  --text-body: 0.78125rem; /* 12.5px — primary copy, row titles */
+  --text-body--line-height: 1.55;
+
+  --text-lead: 0.875rem; /* 14px — panel and section headings */
+  --text-lead--line-height: 1.4;
+
+  --text-title: 1.25rem; /* 20px — page h1 */
+  --text-title--line-height: 1.2;
+  --text-title--letter-spacing: -0.015em;
 
   /* Radius — three steps: control / card / overlay */
   --radius-control: 0.5rem; /* 8px — buttons, inputs, chips */

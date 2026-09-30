@@ -79,12 +79,12 @@ export function OrgGitops() {
 
   if (!org) {
     return (
-      <div className="max-w-[1180px] px-6 py-8 font-mono text-[11px] text-faint-2">loading…</div>
+      <div className="max-w-[1180px] px-6 py-8 font-mono text-small text-faint-2">loading…</div>
     );
   }
   if (isLoading) {
     return (
-      <div className="max-w-[1180px] px-6 py-8 font-mono text-[11px] text-faint-2">loading…</div>
+      <div className="max-w-[1180px] px-6 py-8 font-mono text-small text-faint-2">loading…</div>
     );
   }
   if (isError || !house) {
@@ -97,7 +97,7 @@ export function OrgGitops() {
 
   return (
     <div className="max-w-[1180px] px-6 pb-16 pt-5">
-      <p className="mb-4 max-w-[80ch] text-[12.5px] leading-relaxed text-muted">
+      <p className="mb-4 max-w-[80ch] text-body leading-relaxed text-muted">
         House process for this organization. Unset fields are{" "}
         <span className="text-fg-2">unmeasured</span> — not main and not “no requirements”.
         A project overlay is empty until someone sets it; empty inherits.
@@ -138,7 +138,7 @@ function HouseForm({ orgId, view }: { orgId: string; view: GitopsView }) {
   return (
     <section className="rounded-[13px] border border-line bg-surface-2 p-4">
       <h2 className="text-[15px] font-semibold">House process</h2>
-      <p className="mt-1 max-w-[70ch] text-[12.5px] leading-relaxed text-muted">
+      <p className="mt-1 max-w-[70ch] text-body leading-relaxed text-muted">
         Applies to every project unless that project sets an overlay.
       </p>
       <div className="mt-4 flex flex-col gap-3">
@@ -161,7 +161,7 @@ function HouseForm({ orgId, view }: { orgId: string; view: GitopsView }) {
               </option>
             ))}
           </select>
-          <span className="text-[11px] text-faint">
+          <span className="text-small text-faint">
             {modelValue === GITOPS_CUSTOM
               ? "Fields no longer match a preset. Pick one to re-apply, or leave as custom."
               : "Writes the fields below. Base branch and release defined in are never filled by a preset."}
@@ -202,12 +202,12 @@ function OverlayRoster({ projects }: { projects: GitopsProjectRef[] }) {
   return (
     <section className="mt-6">
       <h2 className="text-[15px] font-semibold">Project overlay</h2>
-      <p className="mt-1 max-w-[70ch] text-[12.5px] leading-relaxed text-muted">
+      <p className="mt-1 max-w-[70ch] text-body leading-relaxed text-muted">
         An overlay that has not been set inherits the house value. × clears a set overlay
         back to inherit. Saving with no edits sends nothing.
       </p>
       {projects.length === 0 ? (
-        <div className="mt-3 rounded-[13px] border border-line bg-surface-2 px-5 py-6 font-mono text-[11px] text-faint-2">
+        <div className="mt-3 rounded-[13px] border border-line bg-surface-2 px-5 py-6 font-mono text-small text-faint-2">
           no projects yet
         </div>
       ) : (
@@ -235,15 +235,15 @@ function OverlayRow({ project }: { project: GitopsProjectRef }) {
   return (
     <div className="rounded-[13px] border border-line bg-surface-2 p-4">
       <div className="flex items-baseline gap-2">
-        <span className="font-mono text-[11px] text-accent">{project.tag}</span>
+        <span className="font-mono text-small text-accent">{project.tag}</span>
         <span className="text-[13px] font-medium">{project.name}</span>
       </div>
       {isLoading ? (
-        <div className="mt-3 font-mono text-[11px] text-faint-2">loading overlay…</div>
+        <div className="mt-3 font-mono text-small text-faint-2">loading overlay…</div>
       ) : isError || !data ? (
         <div className="mt-3">
-          <p className="text-[12.5px] text-st-blocked">could not load overlay</p>
-          <p className="mt-1 text-[11px] text-faint">unmeasured — this row, not the house form</p>
+          <p className="text-body text-st-blocked">could not load overlay</p>
+          <p className="mt-1 text-small text-faint">unmeasured — this row, not the house form</p>
         </div>
       ) : (
         <>
@@ -575,12 +575,12 @@ function FieldRow({
 }) {
   return (
     <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-3">
-      <span className="w-[170px] shrink-0 pt-2 font-mono text-[9.5px] uppercase tracking-[0.06em] text-faint">
+      <span className="w-[170px] shrink-0 pt-2 font-mono text-meta uppercase tracking-[0.06em] text-faint">
         {label}
       </span>
       <div className="min-w-0 flex-1">
         {children}
-        {hint && <div className="mt-1 text-[11px] text-faint">{hint}</div>}
+        {hint && <div className="mt-1 text-small text-faint">{hint}</div>}
       </div>
     </div>
   );

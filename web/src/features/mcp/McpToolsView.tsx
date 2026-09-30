@@ -215,7 +215,7 @@ function ConnectAgent() {
   return (
     <section className="rounded-[13px] border border-line-2 bg-surface-2">
       <div className="border-b border-line px-4 py-3">
-        <h2 className="text-[14px] font-semibold text-fg">Connect an agent</h2>
+        <h2 className="text-lead font-semibold text-fg">Connect an agent</h2>
         <p className="mt-0.5 text-[12px] leading-relaxed text-muted">
           Add the MCP server to your agent&apos;s config. The API key lives in{" "}
           <Link to={settingsPath("project/api-keys")} className="text-accent hover:underline">
@@ -270,7 +270,7 @@ function LoopByRole({ tools }: { tools: McpToolInfo[] }) {
   return (
     <section className="rounded-[13px] border border-line-2 bg-surface-2">
       <div className="border-b border-line px-4 py-3">
-        <h2 className="text-[14px] font-semibold text-fg">The loop, by role</h2>
+        <h2 className="text-lead font-semibold text-fg">The loop, by role</h2>
         <p className="mt-0.5 text-[12px] leading-relaxed text-muted">
           The ordered call sequence — why each step, and what goes wrong if you skip it.
         </p>
@@ -310,7 +310,7 @@ function LoopByRole({ tools }: { tools: McpToolInfo[] }) {
                   )}
                 </div>
                 <p className="mb-1.5 text-[12px] leading-relaxed text-muted">{step.why}</p>
-                <p className="text-[11px] leading-relaxed text-st-review/80">
+                <p className="text-small leading-relaxed text-st-review/80">
                   <span className="font-mono text-[9px] uppercase tracking-wide text-st-review/60">Avoid: </span>
                   {step.avoid}
                 </p>
@@ -356,7 +356,7 @@ function ToolReference({ tools }: { tools: McpToolInfo[] }) {
     <section className="rounded-[13px] border border-line-2 bg-surface-2">
       <div className="border-b border-line px-4 py-3">
         <div className="flex items-center gap-3">
-          <h2 className="text-[14px] font-semibold text-fg">Tool reference</h2>
+          <h2 className="text-lead font-semibold text-fg">Tool reference</h2>
           <span className="font-mono text-[10px] text-faint">{tools.length} tools</span>
         </div>
         <div className="relative mt-2.5">
@@ -395,7 +395,7 @@ function ToolReference({ tools }: { tools: McpToolInfo[] }) {
                 return (
                   <div key={groupLabel}>
                     <div className="mb-1.5 flex items-baseline gap-2">
-                      <h3 className="font-mono text-[11px] uppercase tracking-wide text-faint">
+                      <h3 className="font-mono text-small uppercase tracking-wide text-faint">
                         {groupLabel}
                       </h3>
                       {meta && (
@@ -478,7 +478,7 @@ function ToolDetail({ tool, onClose }: { tool: McpToolInfo; onClose: () => void 
         </div>
       ) : (
         <div className="rounded-lg border border-line bg-surface p-2.5">
-          <span className="font-mono text-[11px] text-faint">No parameters — this tool takes no input.</span>
+          <span className="font-mono text-small text-faint">No parameters — this tool takes no input.</span>
         </div>
       )}
     </div>
@@ -498,7 +498,7 @@ function ParamRow({ param }: { param: McpParamDetail }) {
         )}
       </div>
       {param.description && (
-        <p className="text-[11px] leading-relaxed text-muted">{param.description}</p>
+        <p className="text-small leading-relaxed text-muted">{param.description}</p>
       )}
       {param.enum && param.enum.length > 0 && (
         <div className="mt-1 flex flex-wrap gap-1">

@@ -26,12 +26,12 @@ export function Histogram({
   return (
     <section className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3">
       <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-        <h2 className="text-[12.5px] text-fg">
+        <h2 className="text-body text-fg">
           {bars.length} × {bucketWidthLabel(histogram.bucket_seconds)} bars
         </h2>
         <Legend />
         {histogram.coverage === "full" && peak > 0 && (
-          <span className="ml-auto text-[11px] text-faint">
+          <span className="ml-auto text-small text-faint">
             {bars.reduce((n, b) => n + bucketTotal(b), 0).toLocaleString()} events in range
           </span>
         )}
@@ -40,9 +40,9 @@ export function Histogram({
       {bars.length === 0 ? (
         // `not_requested`: there is no window, so there is nothing to draw and no zero to
         // report. A flat chart here would be the absence reading as a quiet project.
-        <p className="py-6 text-center text-[12.5px] leading-relaxed text-muted">{note}</p>
+        <p className="py-6 text-center text-body leading-relaxed text-muted">{note}</p>
       ) : peak === 0 ? (
-        <p className="py-6 text-center text-[12.5px] leading-relaxed text-muted">
+        <p className="py-6 text-center text-body leading-relaxed text-muted">
           {note ??
             "Nothing recorded in this range. That is a true zero over the whole window, not a chart that failed to load."}
         </p>
@@ -112,7 +112,7 @@ function Legend() {
   return (
     <ul className="flex flex-wrap items-center gap-x-3 gap-y-1">
       {SERIES.map((s) => (
-        <li key={s.key} className="flex items-center gap-1.5 text-[11px] text-muted">
+        <li key={s.key} className="flex items-center gap-1.5 text-small text-muted">
           <span className={cn("h-2 w-2 rounded-[2px]", s.bar)} aria-hidden />
           {s.label}
         </li>

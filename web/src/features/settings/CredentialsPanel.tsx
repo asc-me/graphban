@@ -219,9 +219,9 @@ function AddCredentialDialog({
             </Field>
 
             {missing.length > 0 && (
-              <p className="text-[11px] text-amber-300">{picked.label} needs {missing.join(" and ")}</p>
+              <p className="text-small text-amber-300">{picked.label} needs {missing.join(" and ")}</p>
             )}
-            {error && <p className="text-[11px] text-rose-300" role="alert">{error}</p>}
+            {error && <p className="text-small text-rose-300" role="alert">{error}</p>}
 
             <div className="flex gap-2">
               <Button disabled={missing.length > 0 || create.isPending} onClick={() => create.mutate()}>
@@ -297,7 +297,7 @@ function EditCredentialDialog({
                 and its retry budget resets. Worth saying, or the operator wonders whether to
                 press Test connection afterwards. */}
             <p className="text-[10.5px] text-faint">Saving re-checks the provider.</p>
-            {error && <p className="text-[11px] text-rose-300" role="alert">{error}</p>}
+            {error && <p className="text-small text-rose-300" role="alert">{error}</p>}
             <div className="flex gap-2">
               <Button disabled={save.isPending} onClick={() => save.mutate()}>Save</Button>
               <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
@@ -436,7 +436,7 @@ function TaskRoles({
     <section className="flex flex-col gap-3" data-testid="task-roles">
       <header>
         <h3 className="text-[13px] font-medium text-fg">Task models</h3>
-        <p className="text-[11px] text-faint">
+        <p className="text-small text-faint">
           Classify, critique, and the memory judge can use a different credential. Unset inherits this project&apos;s chat.
           A named credential that cannot be used is ungraded — not a quieter model.
         </p>
@@ -525,7 +525,7 @@ function OverrideRules({
       <header className="flex items-center justify-between">
         <div>
           <h3 className="text-[13px] font-medium text-fg">Override rules</h3>
-          <p className="text-[11px] text-faint">
+          <p className="text-small text-faint">
             Projects listed here use their own credential. Everything else uses the deployment default.
           </p>
         </div>
@@ -665,7 +665,7 @@ export function CredentialsPanel() {
         <header className="flex items-center justify-between">
           <div>
             <h2 className="text-[13px] font-medium text-fg">Credentials</h2>
-            <p className="text-[11px] text-faint">
+            <p className="text-small text-faint">
               Every LLM credential configured on this deployment. Projects inherit the default unless they override it.
               These are LLM credentials — not Graphban API keys.
             </p>

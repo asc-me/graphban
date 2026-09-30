@@ -43,14 +43,14 @@ export function EventRow({
         <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[13px]">
           <span className="font-medium text-ink">{primary}</span>
           {principal && agent && (
-            <span className="text-[11px] text-faint">
+            <span className="text-small text-faint">
               via <span className="text-purple">{agent}</span>
             </span>
           )}
           <span className="font-mono text-[11.5px] text-accent">{e.action}</span>
-          {e.target_id && <span className="font-mono text-[11px] text-muted">{e.target_id}</span>}
+          {e.target_id && <span className="font-mono text-small text-muted">{e.target_id}</span>}
           {!e.target_id && e.target_type && (
-            <span className="font-mono text-[11px] text-faint">{e.target_type}</span>
+            <span className="font-mono text-small text-faint">{e.target_type}</span>
           )}
         </span>
         {summarizeMeta(e.meta) && (

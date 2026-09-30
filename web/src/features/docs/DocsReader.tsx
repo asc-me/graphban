@@ -129,7 +129,7 @@ export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
                   <span className="text-[13.5px] font-semibold">Docs</span>
                   <span className="font-mono text-[9px] tracking-[0.6px] text-faint-2">{doc.badge}</span>
                 </div>
-                <div className="text-[11px] text-muted">Help for the page you’re on</div>
+                <div className="text-small text-muted">Help for the page you’re on</div>
               </div>
               <button
                 onClick={() => closeDocs("pointer")}
@@ -143,7 +143,7 @@ export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
             {/* Body */}
             <div className="min-h-0 flex-1 overflow-y-auto p-4">
               <h2 className="text-[16px] font-semibold tracking-tight">{doc.title}</h2>
-              <p className="mb-4 mt-0.5 text-[12.5px] text-muted">{doc.tagline}</p>
+              <p className="mb-4 mt-0.5 text-body text-muted">{doc.tagline}</p>
 
               {doc.sections.map((s) => (
                 <div key={s.num} className="mb-4 flex gap-3">
@@ -152,7 +152,7 @@ export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
                   </span>
                   <div className="min-w-0">
                     <div className="text-[13px] font-semibold text-fg">{s.h}</div>
-                    <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted">{s.b}</div>
+                    <div className="mt-0.5 text-body leading-relaxed text-muted">{s.b}</div>
                   </div>
                 </div>
               ))}
@@ -161,7 +161,7 @@ export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
                 <div className="mb-2.5 font-mono text-[9px] tracking-[0.6px] text-faint-2">SHORTCUTS</div>
                 <div className="space-y-1.5">
                   {[...GLOBAL_SHORTCUTS, ...(doc.shortcuts ?? [])].map((sc) => (
-                    <div key={sc.k} className="flex items-center gap-3 text-[12.5px]">
+                    <div key={sc.k} className="flex items-center gap-3 text-body">
                       <span className="min-w-[26px] rounded-[5px] border border-line-2 px-1.5 py-0.5 text-center font-mono text-[10px] text-muted-2">
                         {sc.k}
                       </span>
@@ -179,7 +179,7 @@ export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
                       <button
                         key={r.to}
                         onClick={() => goRelated(r.to)}
-                        className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left text-[12.5px] text-fg-2 transition-colors hover:bg-surface-3"
+                        className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left text-body text-fg-2 transition-colors hover:bg-surface-3"
                       >
                         <ExternalLink size={13} className="flex-none text-faint" />
                         {r.label}

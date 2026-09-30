@@ -127,12 +127,12 @@ function OutpostCard({ post }: { post: ReturnType<typeof groupOutposts>[number] 
         <h2 className="font-mono text-[13px] font-medium">
           {post.specified ? post.host : "unspecified host"}
         </h2>
-        <span className="font-mono text-[11px] text-faint">
+        <span className="font-mono text-small text-faint">
           {post.online} of {post.agents.length} online
         </span>
       </div>
       {showFixHint && (
-        <div className="mb-2 rounded-[7px] bg-surface-2 px-2.5 py-1.5 text-[11px] text-muted" data-testid="fix-hint">
+        <div className="mb-2 rounded-[7px] bg-surface-2 px-2.5 py-1.5 text-small text-muted" data-testid="fix-hint">
           {offlineCount} agent{offlineCount !== 1 ? "s" : ""} offline. Check the machine is reachable and the agent process is running.
         </div>
       )}
@@ -146,13 +146,13 @@ function OutpostCard({ post }: { post: ReturnType<typeof groupOutposts>[number] 
             )}
           >
             <div className="flex flex-wrap items-center gap-2 text-[12px]">
-              <span className="font-mono text-[11px]">{agent.key}</span>
+              <span className="font-mono text-small">{agent.key}</span>
               <span className="text-muted">{agent.label || "no label"}</span>
               <span className="ml-auto font-mono text-[10px] uppercase text-faint">
                 {agent.state}
               </span>
             </div>
-            <dl className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 font-mono text-[11px] text-muted sm:grid-cols-3">
+            <dl className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 font-mono text-small text-muted sm:grid-cols-3">
               <div><dt className="inline text-faint">vendor </dt><dd className="inline">{agent.vendor || "—"}</dd></div>
               <div><dt className="inline text-faint">model </dt><dd className="inline">{agent.model || "—"}</dd></div>
               <div><dt className="inline text-faint">tier </dt><dd className="inline">{agent.tier || "—"}</dd></div>
@@ -172,7 +172,7 @@ function OutpostCard({ post }: { post: ReturnType<typeof groupOutposts>[number] 
 
 function HostDefinitionFootnote() {
   return (
-    <div className="rounded-[9px] border border-line-2 bg-surface-2 px-3 py-2 text-[11px] text-muted" data-testid="host-footnote">
+    <div className="rounded-[9px] border border-line-2 bg-surface-2 px-3 py-2 text-small text-muted" data-testid="host-footnote">
       <p>
         A host is whoever registered an agent with a <code className="font-mono text-[10px]">host</code> capability
         or a label of the form <code className="font-mono text-[10px]">model @ host</code>.
@@ -187,17 +187,17 @@ function ThreeToolsSection() {
   return (
     <section className="rounded-[11px] border border-line-2 p-3" data-testid="three-tools">
       <h3 className="mb-2 font-mono text-[12px] font-medium">Three tools, one machine</h3>
-      <div className="space-y-2 text-[11px] text-muted">
+      <div className="space-y-2 text-small text-muted">
         <div className="rounded-[7px] bg-surface-2 px-2.5 py-1.5">
-          <span className="font-mono text-[11px] font-medium">gban</span>
+          <span className="font-mono text-small font-medium">gban</span>
           <span className="ml-2">The CLI. Runs on the developer's machine. Registers agents, links projects, and dispatches to adapters.</span>
         </div>
         <div className="rounded-[7px] bg-surface-2 px-2.5 py-1.5">
-          <span className="font-mono text-[11px] font-medium">gbfleet</span>
+          <span className="font-mono text-small font-medium">gbfleet</span>
           <span className="ml-2">The fleet supervisor. Runs on one machine, spawns workers on seats, and coordinates the wave.</span>
         </div>
         <div className="rounded-[7px] bg-surface-2 px-2.5 py-1.5">
-          <span className="font-mono text-[11px] font-medium">gbagent</span>
+          <span className="font-mono text-small font-medium">gbagent</span>
           <span className="ml-2">The thin adapter that ships with gbfleet. Runs on each worker machine, executes the agent loop, and reports back.</span>
         </div>
       </div>
@@ -222,7 +222,7 @@ function SetUpThisMachineSection() {
           <select
             value={installMethod}
             onChange={(e) => setInstallMethod(e.target.value)}
-            className="rounded-[5px] border border-control bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-fg-2"
+            className="rounded-[5px] border border-control bg-surface-2 px-1.5 py-0.5 font-mono text-small text-fg-2"
             data-testid="install-method-picker"
           >
             {INSTALL_METHODS.map((m) => (
@@ -235,7 +235,7 @@ function SetUpThisMachineSection() {
           <select
             value={adapter}
             onChange={(e) => setAdapter(e.target.value)}
-            className="rounded-[5px] border border-control bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-fg-2"
+            className="rounded-[5px] border border-control bg-surface-2 px-1.5 py-0.5 font-mono text-small text-fg-2"
             data-testid="adapter-picker"
           >
             {ADAPTERS.map((a) => (
@@ -246,7 +246,7 @@ function SetUpThisMachineSection() {
       </div>
       <ol className="space-y-1.5">
         {allSteps.map((step, i) => (
-          <li key={i} className="flex items-start gap-2 text-[11px]">
+          <li key={i} className="flex items-start gap-2 text-small">
             <span className="flex h-4 w-4 flex-none items-center justify-center rounded-full bg-surface-2 font-mono text-[9px] text-faint">
               {i + 1}
             </span>

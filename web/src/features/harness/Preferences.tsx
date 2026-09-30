@@ -31,7 +31,7 @@ function parseMix(raw: string): Record<string, number> | null | "invalid" {
 function Section({ title, desc, children }: { title: string; desc: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className="mb-7">
-      <h2 className="text-[14px] font-semibold tracking-tight">{title}</h2>
+      <h2 className="text-lead font-semibold tracking-tight">{title}</h2>
       <p className="mb-3 mt-0.5 text-[12px] text-muted">{desc}</p>
       {children}
     </section>
@@ -151,7 +151,7 @@ export function Preferences({ projectId, scope, profile, policy, onSaved }: {
     }
   }
 
-  const field = "h-8 w-full rounded-md border border-control bg-transparent px-2 text-[12.5px]";
+  const field = "h-8 w-full rounded-md border border-control bg-transparent px-2 text-body";
   return (
     <Section
       title="Harness preferences"
@@ -166,8 +166,8 @@ export function Preferences({ projectId, scope, profile, policy, onSaved }: {
       <div className="grid gap-4 md:grid-cols-2">
         <div className="rounded-[11px] border border-line-2 p-3" data-testid="fleet-profile">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-[12.5px] font-medium">Your profile</span>
-            <span className="text-[11px] text-muted" data-testid="fleet-profile-scope">
+            <span className="text-body font-medium">Your profile</span>
+            <span className="text-small text-muted" data-testid="fleet-profile-scope">
               {profile ? (profile.scope === "project" ? `override for ${scope}` : "your default")
                        : "none recorded — matrix order and policy alone"}
             </span>
@@ -215,7 +215,7 @@ export function Preferences({ projectId, scope, profile, policy, onSaved }: {
                    onChange={(e) => setMix(e.target.value)}
                    placeholder="claude:0.4, grok:0.4, gbagent:0.2" />
           </label>
-          <p className="mt-1 text-[11px] text-muted">
+          <p className="mt-1 text-small text-muted">
             Weights are 0–1 and normalised; blank or 0 means indifferent, not excluded. Measured
             axes (quality, latency) count only once five attempts exist. A budget target scores
             rows at or under it 1.0 on cost and does not remove them. A mix is a share of the
@@ -236,8 +236,8 @@ export function Preferences({ projectId, scope, profile, policy, onSaved }: {
 
         <div className="rounded-[11px] border border-line-2 p-3" data-testid="fleet-policy">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-[12.5px] font-medium">Project policy</span>
-            <span className="text-[11px] text-muted" data-testid="fleet-policy-state">
+            <span className="text-body font-medium">Project policy</span>
+            <span className="text-small text-muted" data-testid="fleet-policy-state">
               {policy ? "constraints on" : "no constraint"}
             </span>
           </div>
@@ -293,7 +293,7 @@ export function Preferences({ projectId, scope, profile, policy, onSaved }: {
               <option value="month">month</option>
             </select>
           </label>
-          <p className="mt-1 text-[11px] text-muted">
+          <p className="mt-1 text-small text-muted">
             A constraint removes rows before anything is scored. Saving with everything off
             stores no policy at all. A cap drops a row that does not report tokens.
             A per-period cap needs a period — <span className="font-mono">per_period_tokens</span> without

@@ -84,7 +84,7 @@ export function LiveView() {
             >
               {paused ? "Resume" : "Pause"}
             </button>
-            <Link to={fleetTo} className="text-[12.5px] text-muted hover:text-fg-2">
+            <Link to={fleetTo} className="text-body text-muted hover:text-fg-2">
               Fleet.v1
             </Link>
           </div>
@@ -94,7 +94,7 @@ export function LiveView() {
       {board?.truncated && (
         <div
           role="status"
-          className="flex-none border-b border-st-review/30 bg-st-review/[0.06] px-5 py-2 font-mono text-[11px] text-st-review"
+          className="flex-none border-b border-st-review/30 bg-st-review/[0.06] px-5 py-2 font-mono text-small text-st-review"
         >
           Showing {payloadAgents} of {board.total_agents} agents
         </div>

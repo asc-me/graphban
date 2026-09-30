@@ -76,7 +76,7 @@ export function FeedbackKitView() {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex-none border-b border-line px-5 py-4">
         <h1 className="text-[18px] font-semibold tracking-tight">Feedback Kit</h1>
-        <p className="mt-0.5 text-[12.5px] text-muted">
+        <p className="mt-0.5 text-body text-muted">
           A themeable, embeddable feedback widget with built-in duplicate detection. Configure, preview, and copy the snippet.
         </p>
         <div className="mt-3 flex gap-1">
@@ -143,7 +143,7 @@ export function FeedbackKitView() {
                 />
               ))}
               <label
-                className="flex h-7 items-center gap-2 rounded-md border border-line-2 bg-surface-2 px-2 font-mono text-[11px] text-muted"
+                className="flex h-7 items-center gap-2 rounded-md border border-line-2 bg-surface-2 px-2 font-mono text-small text-muted"
                 title="Custom color"
               >
                 <input
@@ -164,7 +164,7 @@ export function FeedbackKitView() {
                   key={r}
                   onClick={() => set("radius", r)}
                   className={cn(
-                    "rounded-md border px-3 py-1.5 font-mono text-[11px] transition-colors",
+                    "rounded-md border px-3 py-1.5 font-mono text-small transition-colors",
                     cfg.radius === r ? "border-control-hover bg-surface-3 text-fg" : "border-control bg-surface-2 text-muted hover:text-fg-2",
                   )}
                 >
@@ -207,16 +207,16 @@ export function FeedbackKitView() {
 
           <Section label="Options">
             <div className="flex flex-col gap-2">
-              <label className="flex cursor-pointer items-center gap-2 text-[12.5px] text-fg-2">
+              <label className="flex cursor-pointer items-center gap-2 text-body text-fg-2">
                 <input type="checkbox" checked={cfg.showEmail} onChange={(e) => set("showEmail", e.target.checked)} />
                 Collect email
               </label>
-              <label className="flex cursor-pointer items-center gap-2 text-[12.5px] text-fg-2">
+              <label className="flex cursor-pointer items-center gap-2 text-body text-fg-2">
                 <input type="checkbox" checked={cfg.attachments} onChange={(e) => set("attachments", e.target.checked)} />
                 Allow screenshot attachments
               </label>
             </div>
-            <p className="mt-2 text-[11px] text-faint">
+            <p className="mt-2 text-small text-faint">
               {cfg.turnstileSitekey ? "Cloudflare Turnstile is on for this project. " : ""}
               Spam protection (rate limit, captcha) is configured in{" "}
               <span className="text-muted">Settings → Integrations</span>.
@@ -229,7 +229,7 @@ export function FeedbackKitView() {
               value={cfg.ingestToken}
               onChange={(v) => set("ingestToken", v)}
             />
-            <p className="mt-1.5 text-[11px] text-faint">
+            <p className="mt-1.5 text-small text-faint">
               {platform?.ingest_token_prefix
                 ? `Current token: ${platform.ingest_token_prefix}…`
                 : "No token minted yet — mint one in Settings → Integrations → Ingest token."}
@@ -238,7 +238,7 @@ export function FeedbackKitView() {
 
           <Section label="Embed snippet">
             <div className="relative">
-              <pre className="max-h-64 overflow-auto rounded-lg border border-line-2 bg-surface-2 p-3 pr-10 font-mono text-[11px] leading-relaxed text-muted-2">
+              <pre className="max-h-64 overflow-auto rounded-lg border border-line-2 bg-surface-2 p-3 pr-10 font-mono text-small leading-relaxed text-muted-2">
                 {snippet}
               </pre>
               <button
@@ -250,7 +250,7 @@ export function FeedbackKitView() {
               </button>
             </div>
             {cfg.mode === "launcher" && (
-              <p className="mt-2 text-[11px] text-faint">
+              <p className="mt-2 text-small text-faint">
                 Paste before <code className="font-mono">&lt;/body&gt;</code>. Adds a floating “{cfg.launcherLabel}” button.
               </p>
             )}
@@ -291,7 +291,7 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 }
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
-  return <div className="mb-1 font-mono text-[9.5px] uppercase tracking-wide text-faint-2">{children}</div>;
+  return <div className="mb-1 font-mono text-meta uppercase tracking-wide text-faint-2">{children}</div>;
 }
 
 function TextField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
@@ -301,7 +301,7 @@ function TextField({ label, value, onChange }: { label: string; value: string; o
       <input
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="h-8 w-full rounded-md border border-control bg-surface-2 px-2.5 text-[12.5px] text-fg-2 outline-none focus:border-control-hover"
+        className="h-8 w-full rounded-md border border-control bg-surface-2 px-2.5 text-body text-fg-2 outline-none focus:border-control-hover"
       />
     </label>
   );

@@ -39,7 +39,7 @@ export function OrgBilling() {
 
   if (isLoading || !billing) {
     return (
-      <div className="max-w-[1180px] px-6 py-8 font-mono text-[11px] text-faint-2">loading…</div>
+      <div className="max-w-[1180px] px-6 py-8 font-mono text-small text-faint-2">loading…</div>
     );
   }
 
@@ -62,7 +62,7 @@ export function OrgBilling() {
         </div>
         {selfServe && checkoutEligible ? (
           <>
-            <p className="mt-2 max-w-[70ch] text-[12.5px] leading-relaxed text-muted">
+            <p className="mt-2 max-w-[70ch] text-body leading-relaxed text-muted">
               Checkout upgrades Pro or Team. An operator can still assign a plan by hand.
               There is no invoice list on this page.
             </p>
@@ -97,7 +97,7 @@ export function OrgBilling() {
           </>
         ) : selfServe ? (
           <>
-            <p className="mt-2 max-w-[70ch] text-[12.5px] leading-relaxed text-muted">
+            <p className="mt-2 max-w-[70ch] text-body leading-relaxed text-muted">
               Enterprise is operator-assigned. Checkout is Pro/Team only — not a missing button.
             </p>
             {admin && billing.has_customer && (
@@ -114,7 +114,7 @@ export function OrgBilling() {
             )}
           </>
         ) : (
-          <p className="mt-2 max-w-[70ch] text-[12.5px] leading-relaxed text-muted">
+          <p className="mt-2 max-w-[70ch] text-body leading-relaxed text-muted">
             Contact your operator to change plan. Plans are assigned by a platform operator on this
             deployment — self-serve is off, not missing. This screen does not pretend otherwise.
           </p>
@@ -136,7 +136,7 @@ export function OrgBilling() {
               pct >= 100 ? "text-st-blocked" : pct >= 80 ? "text-st-review" : "text-muted";
             return (
               <div key={c.key} className="flex items-center gap-3 py-2">
-                <span className="w-[130px] shrink-0 font-mono text-[9.5px] uppercase tracking-[0.06em] text-faint">
+                <span className="w-[130px] shrink-0 font-mono text-meta uppercase tracking-[0.06em] text-faint">
                   {c.label}
                 </span>
                 <span className="h-1 min-w-0 flex-1 overflow-hidden rounded-sm bg-line">
@@ -148,7 +148,7 @@ export function OrgBilling() {
               </div>
             );
           })}
-          <p className="mt-3 text-[11px] leading-relaxed text-faint">
+          <p className="mt-3 text-small leading-relaxed text-faint">
             A seat is a membership or a pending invite, so the seat row counts both. Enterprise
             caps are large but finite — 500 projects, 1,000 seats, 1M shards, 10M calls — and are
             shown as numbers rather than as “unlimited”.

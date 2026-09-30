@@ -42,7 +42,7 @@ export function SpeculativeHeader({
       </div>
       <p className="mt-2 max-w-[74ch] text-[12px] leading-relaxed text-purple-2/70">{blocker}</p>
       {children && (
-        <p className="mt-2 max-w-[74ch] text-[12.5px] leading-relaxed text-muted">{children}</p>
+        <p className="mt-2 max-w-[74ch] text-body leading-relaxed text-muted">{children}</p>
       )}
     </div>
   );

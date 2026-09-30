@@ -89,7 +89,7 @@ function OperatorRail({ email }: { email: string }) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto p-2.5">
-        <div className="px-2 pb-2 font-mono text-[9.5px] tracking-[0.09em] text-op-faint-2">
+        <div className="px-2 pb-2 font-mono text-meta tracking-[0.09em] text-op-faint-2">
           CROSS-TENANT
         </div>
         <div className="flex flex-col gap-px">
@@ -99,7 +99,7 @@ function OperatorRail({ email }: { email: string }) {
               to={n.to}
               end={n.end}
               className={({ isActive }) =>
-                `flex items-center gap-2.5 rounded-[7px] px-2.5 py-1.5 text-[12.5px] ${
+                `flex items-center gap-2.5 rounded-[7px] px-2.5 py-1.5 text-body ${
                   isActive
                     ? "bg-[#131922] font-semibold text-op-fg"
                     : "font-medium text-op-muted-2 hover:bg-[#11151c]"
@@ -127,7 +127,7 @@ function OperatorRail({ email }: { email: string }) {
           <div className="font-mono text-[9px] tracking-[0.06em] text-op-faint-2">
             WHAT THIS PLANE CAN DO
           </div>
-          <p className="mt-1.5 text-[11px] leading-relaxed text-op-muted-2">
+          <p className="mt-1.5 text-small leading-relaxed text-op-muted-2">
             Read every tenant. Assign a plan. Issue a platform invite. Decide an
             additional-org request. Nothing else — no impersonation, no data edits, no
             password resets.
@@ -155,11 +155,11 @@ function RouteStamp() {
   const { pathname } = useLocation();
   return (
     <div className="flex shrink-0 items-center gap-3 border-b border-op-line-2 bg-op-rail px-5 py-2">
-      <span className="font-mono text-[9.5px] tracking-[0.08em] text-op-faint-2">
+      <span className="font-mono text-meta tracking-[0.08em] text-op-faint-2">
         CROSS-TENANT · METADATA ONLY
       </span>
       <div className="flex-1" />
-      <span className="font-mono text-[9.5px] text-op-faint-3">{pathname}</span>
+      <span className="font-mono text-meta text-op-faint-3">{pathname}</span>
     </div>
   );
 }

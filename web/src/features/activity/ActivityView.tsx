@@ -364,7 +364,7 @@ function facetLabel(values: { value: string; label: string }[], value: string): 
 
 function Chip({ label, onClear }: { label: string; onClear: () => void }) {
   return (
-    <span className="inline-flex max-w-[22rem] items-center gap-1.5 rounded-md border border-line-hover bg-surface-3 px-2 py-0.5 text-[11px] text-fg">
+    <span className="inline-flex max-w-[22rem] items-center gap-1.5 rounded-md border border-line-hover bg-surface-3 px-2 py-0.5 text-small text-fg">
       <span className="truncate">{label}</span>
       <button
         type="button"

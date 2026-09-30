@@ -114,7 +114,7 @@ export function MemoryReviewView() {
       <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-4">
         <div>
           <h1 className="text-[18px] font-semibold tracking-tight">Memory review</h1>
-          <p className="mt-0.5 text-[12.5px] text-muted">
+          <p className="mt-0.5 text-body text-muted">
             Agent-written memory is a candidate until you publish it. Only published shards surface in
             search — so an unverified note never becomes ground truth for the next agent.
           </p>
@@ -237,7 +237,7 @@ function AutoActionsLane({
             onClick={onToggleUnvetted}
             aria-pressed={unvettedOnly}
             className={cn(
-              "rounded-md border px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide transition-colors",
+              "rounded-md border px-1.5 py-0.5 font-mono text-meta uppercase tracking-wide transition-colors",
               unvettedOnly
                 ? "border-[#a78bfa] bg-[rgba(167,139,250,0.12)] text-[#a78bfa]"
                 : "border-control text-faint hover:border-control-hover hover:text-muted",
@@ -283,7 +283,7 @@ function AutoActionsLane({
                   {SOURCE_LABEL[s.scoring_source] ?? s.scoring_source}
                 </span>
               )}
-              <p className="min-w-0 flex-1 truncate text-[12.5px] text-fg-2" title={s.text}>
+              <p className="min-w-0 flex-1 truncate text-body text-fg-2" title={s.text}>
                 {s.text}
               </p>
               {s.auto_confidence != null && (
@@ -295,7 +295,7 @@ function AutoActionsLane({
                 onClick={() => onUndo(s.id)}
                 disabled={busy}
                 title="Return to the review queue"
-                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-control px-2 py-1 text-[11px] text-muted transition-colors hover:border-control-hover hover:text-ink disabled:opacity-50"
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-control px-2 py-1 text-small text-muted transition-colors hover:border-control-hover hover:text-ink disabled:opacity-50"
               >
                 <RotateCcw size={11} /> Undo
               </button>

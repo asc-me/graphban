@@ -57,7 +57,7 @@ export function LinkDialog({ request }: { request: RequestItem }) {
                 style={{ background: STATUS_META[it.status].color }}
               />
               <span className="w-[52px] flex-none font-mono text-[10px] text-faint">{it.id}</span>
-              <span className="min-w-0 flex-1 truncate text-[12.5px] text-fg-2">{it.title}</span>
+              <span className="min-w-0 flex-1 truncate text-body text-fg-2">{it.title}</span>
               {request.linked_to === it.id && <Check size={13} className="text-accent" />}
             </button>
           ))}

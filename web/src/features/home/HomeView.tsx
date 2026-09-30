@@ -77,7 +77,7 @@ export function HomeView() {
 
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         {stale && (
-          <div className="mb-4 rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 font-mono text-[11px] uppercase tracking-wide text-st-review">
+          <div className="mb-4 rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 font-mono text-small uppercase tracking-wide text-st-review">
             stale — last good counts
           </div>
         )}
@@ -85,7 +85,7 @@ export function HomeView() {
         <div className="rounded-[14px] border border-line-2 bg-surface-2 p-5">
           <div className="text-[11.5px] font-medium uppercase tracking-wide text-muted">Needs attention</div>
           <div className="mt-1 text-[40px] font-semibold leading-none tracking-tight text-fg">{needsAttention}</div>
-          <p className="mt-2 text-[12.5px] text-muted">
+          <p className="mt-2 text-body text-muted">
             In progress, review, blocked, and memory waiting — not inventory totals.
           </p>
         </div>
@@ -118,7 +118,7 @@ export function HomeView() {
         </div>
 
         <div className="mt-6">
-          <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-faint">Inventory</div>
+          <div className="mb-2 text-small font-medium uppercase tracking-wide text-faint">Inventory</div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Inventory label="Items" value={itemsTotal} icon={<Boxes size={13} />} />
             <Inventory label="PRDs" value={prdTotal} />

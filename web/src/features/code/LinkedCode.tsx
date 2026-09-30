@@ -31,7 +31,7 @@ export function LinkedCode({ refId, projectId }: { refId: string; projectId?: st
   return (
     <div>
       {rows.length === 0 ? (
-        <p className="text-[12.5px] text-faint">No code linked yet.</p>
+        <p className="text-body text-faint">No code linked yet.</p>
       ) : (
         <div className="space-y-1.5">
           {rows.map((r) => (
@@ -41,7 +41,7 @@ export function LinkedCode({ refId, projectId }: { refId: string; projectId?: st
             >
               <span className="flex-none font-mono text-[9px] uppercase tracking-wide text-purple-2">{r.relation}</span>
               <span
-                className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg-2"
+                className="min-w-0 flex-1 truncate font-mono text-small text-fg-2"
                 title={r.node?.summary ?? "not described yet"}
               >
                 {r.path}
@@ -67,12 +67,12 @@ export function LinkedCode({ refId, projectId }: { refId: string; projectId?: st
           value={path}
           onChange={(e) => setPath(e.target.value)}
           placeholder="backend/app/services/x.py"
-          className="h-8 min-w-0 flex-1 rounded-[8px] border border-control bg-surface-2 px-2 font-mono text-[11px] outline-none placeholder:text-faint focus:border-control-hover"
+          className="h-8 min-w-0 flex-1 rounded-[8px] border border-control bg-surface-2 px-2 font-mono text-small outline-none placeholder:text-faint focus:border-control-hover"
         />
         <select
           value={relation}
           onChange={(e) => setRelation(e.target.value as CodeRelation)}
-          className="h-8 flex-none rounded-[8px] border border-control bg-surface-2 px-1.5 text-[11px] text-muted outline-none"
+          className="h-8 flex-none rounded-[8px] border border-control bg-surface-2 px-1.5 text-small text-muted outline-none"
         >
           {RELATIONS.map((r) => (
             <option key={r} value={r}>{r}</option>
@@ -81,7 +81,7 @@ export function LinkedCode({ refId, projectId }: { refId: string; projectId?: st
         <button
           type="submit"
           disabled={!path.trim() || link.isPending}
-          className="flex h-8 flex-none items-center gap-1 rounded-[8px] border border-control bg-surface-2 px-2 text-[11px] text-accent disabled:opacity-40"
+          className="flex h-8 flex-none items-center gap-1 rounded-[8px] border border-control bg-surface-2 px-2 text-small text-accent disabled:opacity-40"
         >
           <Plus size={13} /> Link
         </button>

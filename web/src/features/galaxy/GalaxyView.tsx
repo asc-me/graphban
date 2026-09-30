@@ -69,7 +69,7 @@ export function GalaxyView() {
   }
 
   if (isLoading || !answered) {
-    return <div className="px-6 py-10 font-mono text-[11px] text-faint-2">loading…</div>;
+    return <div className="px-6 py-10 font-mono text-small text-faint-2">loading…</div>;
   }
 
   return (
@@ -77,11 +77,11 @@ export function GalaxyView() {
       <div className="max-w-[1300px] px-6 pt-6">
         <div className="flex flex-wrap items-center gap-2.5">
           <h1 className="text-[19px] font-semibold tracking-[-0.3px]">Galaxy</h1>
-          <span className="rounded-full border border-purple/30 bg-purple/[0.07] px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.06em] text-purple">
+          <span className="rounded-full border border-purple/30 bg-purple/[0.07] px-2 py-0.5 font-mono text-meta uppercase tracking-[0.06em] text-purple">
             {nodes.length} repos · {edges.length} edges
           </span>
         </div>
-        <p className="mt-1.5 max-w-[80ch] text-[12.5px] leading-relaxed text-muted">
+        <p className="mt-1.5 max-w-[80ch] text-body leading-relaxed text-muted">
           How this org's repositories depend on each other. Every edge comes from a manifest a
           deployment actually pushed — hover one to see the file that proves it. Nothing here is
           inferred from similarity.
@@ -103,7 +103,7 @@ export function GalaxyView() {
           <button
             onClick={() => setShowStale((v) => !v)}
             aria-pressed={showStale}
-            className={`h-[30px] rounded-lg border px-2.5 font-mono text-[9.5px] uppercase tracking-[0.05em] ${
+            className={`h-[30px] rounded-lg border px-2.5 font-mono text-meta uppercase tracking-[0.05em] ${
               showStale
                 ? "border-st-review/40 bg-st-review/[0.1] text-st-review"
                 : "border-control text-muted hover:text-fg"
@@ -228,19 +228,19 @@ function Evidence({ edge, nodes }: { edge: GalaxyEdge; nodes: GalaxyNode[] }) {
       </div>
       <div className="mt-1.5 flex flex-col gap-1">
         {edge.evidence.map((ev, i) => (
-          <div key={i} className="font-mono text-[11px] text-fg-2">
+          <div key={i} className="font-mono text-small text-fg-2">
             {ev.file} <span className="text-muted">→ {ev.fact}</span>
           </div>
         ))}
       </div>
       {!edge.fresh && (
-        <p className="mt-1.5 text-[11px] leading-relaxed text-st-review/80">
+        <p className="mt-1.5 text-small leading-relaxed text-st-review/80">
           No longer declared on the last push. Kept, not deleted — a dependency that quietly
           disappeared is information.
         </p>
       )}
       {edge.reason && (
-        <p className="mt-1.5 text-[11px] leading-relaxed text-muted">{edge.reason}</p>
+        <p className="mt-1.5 text-small leading-relaxed text-muted">{edge.reason}</p>
       )}
     </div>
   );

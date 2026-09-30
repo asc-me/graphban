@@ -57,7 +57,7 @@ export function GrillProgress({ state, prdId }: { state: GrillState; prdId: stri
       {!state.graded && (
         <div className="mb-2.5 flex gap-2 rounded-[9px] border border-[#4a3a12] bg-[rgba(224,179,74,0.08)] px-2.5 py-2">
           <AlertTriangle size={13} className="mt-0.5 flex-none text-[#e0b34a]" />
-          <p className="text-[11px] leading-snug text-fg-2">
+          <p className="text-small leading-snug text-fg-2">
             <span className="font-medium text-[#e0b34a]">Not judged this round.</span>{" "}
             {state.ungraded_reason ||
               "the grader could not be asked, so the outcomes below are the previous round's."}
@@ -70,7 +70,7 @@ export function GrillProgress({ state, prdId }: { state: GrillState; prdId: stri
           point at the author's answers for something the grader did. */}
       {state.graded && state.stall?.stalled && !state.complete && (
         <div className="mb-2.5 rounded-[9px] border border-line-2 bg-surface-3/40 px-2.5 py-2">
-          <p className="text-[11px] leading-snug text-fg-2">
+          <p className="text-small leading-snug text-fg-2">
             <span className="font-medium">
               {state.stall.answers_since_progress} answers, nothing moved.
             </span>{" "}
@@ -99,7 +99,7 @@ export function GrillProgress({ state, prdId }: { state: GrillState; prdId: stri
       </div>
 
       {state.complete ? (
-        <p className="mt-2.5 text-[11px] leading-snug text-faint">
+        <p className="mt-2.5 text-small leading-snug text-faint">
           Approved because every dimension was answered or explicitly deferred — not by
           anyone setting a status.
           {stubGraded > 0 && (
@@ -107,7 +107,7 @@ export function GrillProgress({ state, prdId }: { state: GrillState; prdId: stri
           )}
         </p>
       ) : (
-        <p className="mt-2.5 text-[11px] leading-snug text-faint">
+        <p className="mt-2.5 text-small leading-snug text-faint">
           Approval is earned, not picked — Approved unlocks when every question has an
           answer the eval accepts.
         </p>
@@ -152,13 +152,13 @@ function DimensionRow({
         <button
           onClick={() => onConfirm(reason.trim())}
           disabled={!reason.trim() || pending}
-          className="flex-none rounded-md border border-control px-2 py-1 font-mono text-[9.5px] uppercase text-[#e0b34a] transition-colors hover:bg-surface-3 disabled:opacity-40"
+          className="flex-none rounded-md border border-control px-2 py-1 font-mono text-meta uppercase text-[#e0b34a] transition-colors hover:bg-surface-3 disabled:opacity-40"
         >
           Defer
         </button>
         <button
           onClick={onCancel}
-          className="flex-none rounded-md px-1.5 py-1 font-mono text-[9.5px] uppercase text-faint transition-colors hover:text-fg-2"
+          className="flex-none rounded-md px-1.5 py-1 font-mono text-meta uppercase text-faint transition-colors hover:text-fg-2"
         >
           Cancel
         </button>
@@ -174,7 +174,7 @@ function DimensionRow({
         {meta.label}
       </span>
       {state.note && (
-        <span className="min-w-0 flex-1 truncate text-[11px] text-faint" title={state.note}>
+        <span className="min-w-0 flex-1 truncate text-small text-faint" title={state.note}>
           {state.note}
         </span>
       )}
@@ -206,7 +206,7 @@ export function ApprovedIsEarned({ complete }: { complete: boolean }) {
   return (
     <div
       className={cn(
-        "border-t border-line px-2 py-1.5 font-mono text-[9.5px] leading-snug",
+        "border-t border-line px-2 py-1.5 font-mono text-meta leading-snug",
         complete ? "text-[#5fd07a]" : "text-faint",
       )}
     >

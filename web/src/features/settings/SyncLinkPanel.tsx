@@ -74,25 +74,25 @@ export function SyncLinkPanel() {
     );
   }
 
-  if (isLoading || !status) return <p className="text-[12.5px] text-faint">Loading sync status…</p>;
+  if (isLoading || !status) return <p className="text-body text-faint">Loading sync status…</p>;
 
   return (
     <div className="max-w-2xl space-y-6">
       <div>
         <h2 className="text-[15px] font-semibold tracking-tight">Sync / Link</h2>
-        <p className="mt-1 max-w-[60ch] text-[12.5px] leading-relaxed text-muted">
+        <p className="mt-1 max-w-[60ch] text-body leading-relaxed text-muted">
           Connect this self-hosted instance to a cloud org. Mint the link key there — Settings
           → Sync / Link, or API keys → Link key — then paste the cloud URL and link key
           below. This box builds the graph; the cloud holds items, claims, and memory.
           Vectors never leave the box; the cloud re-embeds.
         </p>
         {reason === "missing" && (
-          <p className="mt-3 rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 text-[12.5px] text-st-review">
+          <p className="mt-3 rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 text-body text-st-review">
             No cloud URL is linked. Connect a tenant here rather than opening a blank address.
           </p>
         )}
         {reason === "malformed" && (
-          <p className="mt-3 rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 text-[12.5px] text-st-review">
+          <p className="mt-3 rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 text-body text-st-review">
             The stored cloud URL is not a usable http(s) address, so it was not opened.
           </p>
         )}
@@ -138,7 +138,7 @@ function ContributionCard({
   return (
     <div data-testid="sync-contribution" className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3">
       <h3 className="text-[13px] font-medium">Capability contribution</h3>
-      <p className="mt-1 text-[12.5px] text-muted">
+      <p className="mt-1 text-body text-muted">
         When on, this instance posts capability rollups nightly over the deployment-sync
         credential — the D11 field set only, never a path, item or reviewer. Resist
         casual re-identification, never anonymous. Opting out stops posting and the
@@ -154,7 +154,7 @@ function ContributionCard({
         {on ? "Sharing rollups" : "Not sharing"}
       </button>
       {err && <p className="mt-2 text-[12px] text-st-review">{err}</p>}
-      <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[11px] text-faint">
+      <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-small text-faint">
         <dt>last contribution</dt>
         <dd data-testid="sync-contribution-last">
           {status.last_contribution_at ?? "never"}
@@ -241,7 +241,7 @@ function CloudLinkCard({
     <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
       <div className="mb-3.5 flex items-center gap-2.5">
         <Link2 size={16} className="text-accent" />
-        <div className="text-[14px] font-semibold">Cloud link</div>
+        <div className="text-lead font-semibold">Cloud link</div>
         <span
           className={cn(
             "ml-auto flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wide",
@@ -277,7 +277,7 @@ function CloudLinkCard({
           <ProjectsTable projects={status.projects} scopedId={scopedId} onScope={onScope} />
 
           {status.source === "env" ? (
-            <p className="mt-4 border-t border-line pt-3 text-[11px] leading-relaxed text-faint">
+            <p className="mt-4 border-t border-line pt-3 text-small leading-relaxed text-faint">
               This link comes from the <code className="font-mono text-[10.5px]">SYNC_CLOUD_URL</code> env
               var. Manage it where the instance is configured, or link from here to override it.
             </p>
@@ -287,7 +287,7 @@ function CloudLinkCard({
                 <Unlink size={13} />
                 Unlink
               </Button>
-              <span className="text-[11px] text-faint">
+              <span className="text-small text-faint">
                 Stops all sync. Local data is untouched; cloud items remain.
               </span>
             </div>
@@ -309,11 +309,11 @@ function CloudLinkCard({
             </Label>
             <Input value={org} onChange={(e) => setOrg(e.target.value)} placeholder="acme" />
           </div>
-          {err && <p className="text-[11px] text-st-blocked">{err}</p>}
+          {err && <p className="text-small text-st-blocked">{err}</p>}
           <Button size="sm" onClick={link} disabled={busy || !cloudUrl.trim() || !apiKey}>
             {busy ? "Linking…" : "Link instance"}
           </Button>
-          <p className="text-[11px] leading-relaxed text-faint">
+          <p className="text-small leading-relaxed text-faint">
             The link key is stored encrypted at rest and never shown again — the same handling as
             your provider keys.
           </p>
@@ -349,7 +349,7 @@ function ProjectsTable({
         <span className="font-mono text-[10px] text-faint-2">{projects.length} readable</span>
       </div>
       <div className="overflow-hidden rounded-[9px] border border-line bg-surface">
-        <div className="flex items-center gap-3 border-b border-line bg-surface-2 px-3.5 py-1.5 font-mono text-[9.5px] uppercase tracking-wide text-faint-2">
+        <div className="flex items-center gap-3 border-b border-line bg-surface-2 px-3.5 py-1.5 font-mono text-meta uppercase tracking-wide text-faint-2">
           <span className="flex-1">Project</span>
           <span className="w-24">Graph</span>
           <span className="w-32">Sync</span>
@@ -383,17 +383,17 @@ function ProjectsTable({
                 <span className={cn("h-1.5 w-1.5 flex-none rounded-full", meta.dot)} />
                 <span className={cn("font-mono text-[10.5px] tracking-wide", meta.cls)}>{meta.label}</span>
                 {p.pending > 0 && p.sync_graph && (
-                  <span className="font-mono text-[9.5px] text-faint-2">+{p.pending}</span>
+                  <span className="font-mono text-meta text-faint-2">+{p.pending}</span>
                 )}
               </span>
-              <span className="w-14 text-right font-mono text-[9.5px] text-faint-2">
+              <span className="w-14 text-right font-mono text-meta text-faint-2">
                 {p.last_synced_at ? ago(p.last_synced_at) : ""}
               </span>
             </button>
           );
         })}
       </div>
-      <p className="mt-2 text-[11px] leading-relaxed text-faint">
+      <p className="mt-2 text-small leading-relaxed text-faint">
         Each row is a project on <span className="text-muted">this deployment</span> and its push
         status up to the linked cloud org. Select one to scope the controls below.
       </p>
@@ -416,13 +416,13 @@ function ScopeBar({ scoped, onClear }: { scoped: SyncProjectState | null; onClea
       <span className={cn("font-mono text-[12px]", scoped ? "text-fg-2" : "text-faint")}>
         {scoped ? scoped.name : "No project selected"}
       </span>
-      <span className="ml-auto text-[11px] text-faint">
+      <span className="ml-auto text-small text-faint">
         {scoped ? "Controls below apply to this project only" : "Select a project above to enable the controls below"}
       </span>
       {scoped && (
         <button
           onClick={onClear}
-          className="rounded-md border border-control px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-wide text-faint hover:border-control-hover hover:text-fg-2"
+          className="rounded-md border border-control px-2 py-0.5 font-mono text-meta uppercase tracking-wide text-faint hover:border-control-hover hover:text-fg-2"
         >
           Clear
         </button>
@@ -470,7 +470,7 @@ function GraphPrivacyCard({
 
   return (
     <ScopedCard title="Code-graph privacy" scoped={scoped} icon={<Boxes size={16} className="text-accent" />}>
-      <p className="mb-3 max-w-[62ch] text-[12.5px] leading-relaxed text-muted">
+      <p className="mb-3 max-w-[62ch] text-body leading-relaxed text-muted">
         The local instance summarizes your code graph and pushes it to the cloud so triage and
         collision-clustering can reason across the whole repo. Vectors are never sent — the cloud
         re-embeds from summaries.
@@ -492,10 +492,10 @@ function GraphPrivacyCard({
           {on && <Check size={10} strokeWidth={3.5} className="text-bg" />}
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-[12.5px] font-medium text-fg-2">
+          <span className="block text-body font-medium text-fg-2">
             Sync this project&rsquo;s code graph to the cloud.
           </span>
-          <span className="mt-0.5 block text-[11px] text-faint">
+          <span className="mt-0.5 block text-small text-faint">
             Summaries and structure only · re-embedded cloud-side
           </span>
         </span>
@@ -516,7 +516,7 @@ function GraphPrivacyCard({
           <Trash2 size={13} />
           Purge cloud graph
         </Button>
-        <span className="text-[11px] leading-relaxed text-faint">
+        <span className="text-small leading-relaxed text-faint">
           Removes this project&rsquo;s pushed graph from the cloud. Re-enabling sync re-pushes it.
         </span>
       </div>
@@ -591,7 +591,7 @@ function GraphPushCard({
           <RefreshCw size={13} className={busy ? "animate-spin" : ""} />
           {busy ? "Syncing…" : "Push now"}
         </Button>
-        <span className="text-[11px] leading-relaxed text-faint">
+        <span className="text-small leading-relaxed text-faint">
           {note ?? "Incremental — only changed nodes are sent; resumable if interrupted."}
         </span>
       </div>
@@ -671,7 +671,7 @@ function PortableBundleCard({
         </span>
       }
     >
-      <p className="mb-3 text-[12.5px] leading-relaxed text-muted">
+      <p className="mb-3 text-body leading-relaxed text-muted">
         No direct connection? Move the graph as an export file — the target re-embeds on import.
       </p>
 
@@ -684,7 +684,7 @@ function PortableBundleCard({
         )}
       >
         <Upload size={20} className="text-faint" />
-        <span className="text-[12.5px] text-muted-2">
+        <span className="text-body text-muted-2">
           Click to choose an export bundle <span className="text-accent">(.json)</span>
         </span>
         <span className="font-mono text-[10px] uppercase tracking-wide text-faint-2">
@@ -700,7 +700,7 @@ function PortableBundleCard({
           </span>
           <button
             onClick={() => setBundle(null)}
-            className="flex-none rounded-md border border-control px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-wide text-faint hover:border-st-blocked/35 hover:text-st-blocked"
+            className="flex-none rounded-md border border-control px-2 py-0.5 font-mono text-meta uppercase tracking-wide text-faint hover:border-st-blocked/35 hover:text-st-blocked"
           >
             Clear
           </button>
@@ -715,7 +715,7 @@ function PortableBundleCard({
           <Download size={13} />
           Export bundle
         </Button>
-        <span className="text-[11px] text-faint">
+        <span className="text-small text-faint">
           {note ?? `${scoped?.total_nodes ?? 0} nodes · vector-free`}
         </span>
       </div>
@@ -749,7 +749,7 @@ function ScopedCard({
     >
       <div className="mb-3 flex items-center gap-2.5">
         {icon}
-        <div className="text-[14px] font-semibold">{title}</div>
+        <div className="text-lead font-semibold">{title}</div>
         <span className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono text-[10px] tracking-wide text-muted">
           {scoped ? scoped.name : "—"}
         </span>
