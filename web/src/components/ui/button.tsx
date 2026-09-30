@@ -20,8 +20,8 @@ const buttonVariants = cva(
           // Disabled: a clean neutral look instead of a faded accent (50%-opacity lime muddies to olive).
           "disabled:opacity-100 disabled:bg-surface-3 disabled:text-faint disabled:shadow-none",
         outline:
-          "border border-line-2 bg-surface-2 text-fg " +
-          "[@media(hover:hover)_and_(pointer:fine)]:hover:border-line-hover " +
+          "border border-control bg-surface-2 text-fg " +
+          "[@media(hover:hover)_and_(pointer:fine)]:hover:border-control-hover " +
           "[@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface-3",
         ghost:
           "text-muted [@media(hover:hover)_and_(pointer:fine)]:hover:text-fg " +

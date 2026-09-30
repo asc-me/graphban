@@ -130,7 +130,7 @@ function RequestRow({
       <div className="flex items-center gap-3 px-3 py-2.5">
         <button
           onClick={onVote}
-          className="flex flex-none flex-col items-center gap-0.5 rounded-lg border border-line-2 bg-surface px-2 py-1.5 transition-colors hover:border-accent/40"
+          className="flex flex-none flex-col items-center gap-0.5 rounded-lg border border-control bg-surface px-2 py-1.5 transition-colors hover:border-accent/40"
           title="Upvote"
         >
           <ChevronUp size={13} className="text-accent" />
@@ -181,7 +181,7 @@ function RequestRow({
             "flex flex-none items-center gap-1 rounded-md border px-2 py-1 font-mono text-[10px] uppercase tracking-wide transition-colors",
             isPublished
               ? "border-green-500/30 bg-green-500/10 text-green-400 hover:border-green-500/50"
-              : "border-line-2 bg-surface text-muted hover:border-line-hover hover:text-fg-2",
+              : "border-control bg-surface text-muted hover:border-control-hover hover:text-fg-2",
           )}
           title={isPublished ? "Unpublish (remove from public board)" : "Publish (show on public board)"}
         >
@@ -208,7 +208,7 @@ function RequestRow({
               onChange={(e) => setCommentBody(e.target.value)}
               rows={2}
               placeholder="Write a comment…"
-              className="w-full rounded-md border border-line-2 bg-surface px-2 py-1.5 text-[12px] text-fg-2 placeholder:text-faint focus:border-accent/50 focus:outline-none"
+              className="w-full rounded-md border border-control bg-surface px-2 py-1.5 text-[12px] text-fg-2 placeholder:text-faint focus:border-accent/50 focus:outline-none"
             />
             <div className="flex items-center gap-2">
               <label className="flex items-center gap-1.5 text-[11px] text-fg-2">
@@ -223,7 +223,7 @@ function RequestRow({
               <button
                 type="submit"
                 disabled={!commentBody.trim() || addComment.isPending}
-                className="ml-auto flex items-center gap-1 rounded-md border border-line-2 bg-surface px-2.5 py-1 font-mono text-[10px] text-fg-2 transition-colors hover:border-accent/40 disabled:opacity-50"
+                className="ml-auto flex items-center gap-1 rounded-md border border-control bg-surface px-2.5 py-1 font-mono text-[10px] text-fg-2 transition-colors hover:border-accent/40 disabled:opacity-50"
               >
                 <Send size={10} />
                 {addComment.isPending ? "Posting…" : "Post"}
@@ -293,8 +293,8 @@ function Chip({
       className={cn(
         "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11.5px] transition-colors",
         active
-          ? "border-line-hover bg-surface-3 text-fg"
-          : "border-line-2 bg-surface-2 text-muted hover:border-line-3 hover:text-fg-2",
+          ? "border-control-hover bg-surface-3 text-fg"
+          : "border-control bg-surface-2 text-muted hover:border-control-hover hover:text-fg-2",
       )}
     >
       {color && <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />}

@@ -222,7 +222,7 @@ function SetUpThisMachineSection() {
           <select
             value={installMethod}
             onChange={(e) => setInstallMethod(e.target.value)}
-            className="rounded-[5px] border border-line-2 bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-fg-2"
+            className="rounded-[5px] border border-control bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-fg-2"
             data-testid="install-method-picker"
           >
             {INSTALL_METHODS.map((m) => (
@@ -235,7 +235,7 @@ function SetUpThisMachineSection() {
           <select
             value={adapter}
             onChange={(e) => setAdapter(e.target.value)}
-            className="rounded-[5px] border border-line-2 bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-fg-2"
+            className="rounded-[5px] border border-control bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-fg-2"
             data-testid="adapter-picker"
           >
             {ADAPTERS.map((a) => (

@@ -333,7 +333,7 @@ function IntegrationsPanel() {
               {origin}/api/public/github/webhook
             </code>
             <button
-              className="rounded-md border border-line-2 bg-surface-3 p-1.5 text-muted hover:text-fg"
+              className="rounded-md border border-control bg-surface-3 p-1.5 text-muted hover:text-fg"
               onClick={() =>
                 copyText(`${origin}/api/public/github/webhook`).then(
                   (ok) => ok && (setCopied(true), setTimeout(() => setCopied(false), 1500)),
@@ -470,7 +470,7 @@ function IntegrationsPanel() {
               {origin}/embed/roadmap?token={cfg.share_token}
             </code>
             <button
-              className="rounded-md border border-line-2 bg-surface-3 p-1.5 text-muted hover:text-fg"
+              className="rounded-md border border-control bg-surface-3 p-1.5 text-muted hover:text-fg"
               onClick={() => copyText(`${origin}/embed/roadmap?token=${cfg.share_token}`).then((ok) => ok && (setCopied(true), setTimeout(() => setCopied(false), 1500)))}
               title="Copy public roadmap link"
             >
@@ -507,7 +507,7 @@ function IntegrationsPanel() {
                 {mintedToken}
               </code>
               <button
-                className="flex-none rounded-md border border-line-2 bg-surface-3 p-1.5 text-muted hover:text-fg"
+                className="flex-none rounded-md border border-control bg-surface-3 p-1.5 text-muted hover:text-fg"
                 onClick={() =>
                   copyText(mintedToken).then(
                     (ok) => ok && (setTokenCopied(true), setTimeout(() => setTokenCopied(false), 1500)),
@@ -893,7 +893,7 @@ function GateKeyInstall({ apiKey }: { apiKey: string }) {
           {snippet}
         </pre>
         <button
-          className="rounded-md border border-line-2 bg-surface-3 p-1.5 text-muted hover:text-fg"
+          className="rounded-md border border-control bg-surface-3 p-1.5 text-muted hover:text-fg"
           aria-label="Copy CI secrets"
           onClick={() =>
             copyText(snippet).then(
@@ -1040,7 +1040,7 @@ export function ApiKeysPanel() {
           <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-accent">Copy now — shown once</div>
           <div className="flex items-center gap-2">
             <code className="flex-1 overflow-x-auto font-mono text-[12px] text-fg-2">{created.plaintext}</code>
-            <button className="rounded-md border border-line-2 bg-surface-3 p-1.5 text-muted hover:text-fg"
+            <button className="rounded-md border border-control bg-surface-3 p-1.5 text-muted hover:text-fg"
               onClick={() => copyText(created.plaintext).then((ok) => ok && (setCopied(true), setTimeout(() => setCopied(false), 1500)))}>
               {copied ? <Check size={13} className="text-accent" /> : <Copy size={13} />}
             </button>
@@ -1071,7 +1071,7 @@ export function ApiKeysPanel() {
             title={desc}
             className={cn(
               "rounded-md border px-2.5 py-1 text-[11.5px] transition-colors",
-              kind === id ? "border-accent/50 bg-surface-3 text-fg" : "border-line-2 text-muted hover:text-fg-2",
+              kind === id ? "border-accent/50 bg-surface-3 text-fg" : "border-control text-muted hover:text-fg-2",
             )}
           >
             {label}
@@ -1095,7 +1095,7 @@ export function ApiKeysPanel() {
           <select
             value={syncTarget}
             onChange={(e) => setSyncProject(e.target.value)}
-            className="rounded-md border border-line-2 bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
+            className="rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
             aria-label={kind === "gate" ? "Gate target project" : "Link key target project"}
           >
             {projects.map((p) => (
@@ -1106,7 +1106,7 @@ export function ApiKeysPanel() {
         <select
           value={expiryDays ?? ""}
           onChange={(e) => setExpiryDays(e.target.value ? Number(e.target.value) : null)}
-          className="rounded-md border border-line-2 bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
+          className="rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
           aria-label="Key expiry"
         >
           <option value="">No expiry</option>
@@ -1141,7 +1141,7 @@ export function ApiKeysPanel() {
                     "rounded-md border px-2.5 py-1 text-[11.5px] transition-colors",
                     on
                       ? "border-accent/50 bg-surface-3 text-fg"
-                      : "border-line-2 text-muted hover:text-fg-2",
+                      : "border-control text-muted hover:text-fg-2",
                   )}
                 >
                   {label}
@@ -1184,7 +1184,7 @@ export function ApiKeysPanel() {
                 aria-pressed={scope === id}
                 className={cn(
                   "rounded-md border px-2.5 py-1 text-[11.5px] transition-colors",
-                  scope === id ? "border-accent/50 bg-surface-3 text-fg" : "border-line-2 text-muted hover:text-fg-2",
+                  scope === id ? "border-accent/50 bg-surface-3 text-fg" : "border-control text-muted hover:text-fg-2",
                 )}
               >
                 {label}

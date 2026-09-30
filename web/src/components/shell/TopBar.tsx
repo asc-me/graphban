@@ -57,13 +57,13 @@ export function TopBar({
             e.target.blur();
             onOpenPalette();
           }}
-          className="h-[34px] w-full cursor-pointer rounded-[9px] border border-line-2 bg-surface-2 pl-9 pr-12 text-[13px] outline-none transition-colors focus:border-line-hover focus:bg-surface-3"
+          className="h-[34px] w-full cursor-pointer rounded-[9px] border border-control bg-surface-2 pl-9 pr-12 text-[13px] outline-none transition-colors focus:border-control-hover focus:bg-surface-3"
         />
         <button
           type="button"
           aria-label="Open command palette"
           onClick={onOpenPalette}
-          className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-[5px] border border-line-2 px-1.5 py-0.5 font-mono text-[10px] text-faint-2 hover:border-line-hover hover:text-faint"
+          className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-[5px] border border-control px-1.5 py-0.5 font-mono text-[10px] text-faint-2 hover:border-control-hover hover:text-faint"
         >
           ⌘K
         </button>
@@ -89,7 +89,7 @@ export function TopBar({
           <DropdownMenuTrigger asChild>
             <button
               aria-label={user.name}
-              className="flex h-9 items-center gap-2 rounded-full border border-line-2 bg-surface py-0.5 pl-0.5 pr-2 transition-colors hover:border-line-hover"
+              className="flex h-9 items-center gap-2 rounded-full border border-control bg-surface py-0.5 pl-0.5 pr-2 transition-colors hover:border-control-hover"
             >
               <Avatar initials={user.initials} color={user.avatar} size={28} />
               <ChevronDown size={12} className="text-faint" />

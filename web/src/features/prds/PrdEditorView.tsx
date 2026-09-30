@@ -178,7 +178,7 @@ export function PrdEditorView() {
           value={body}
           onChange={(e) => setBody(e.target.value)}
           spellCheck={false}
-          className="min-h-0 resize-none border-r border-line bg-surface/40 p-5 font-mono text-[12.5px] leading-relaxed text-fg-2 outline-none"
+          className="min-h-0 resize-none border-r border-control bg-surface/40 p-5 font-mono text-[12.5px] leading-relaxed text-fg-2 outline-none"
         />
         <div className="min-h-0 overflow-y-auto p-5">
           {rightTab === "preview" ? (
@@ -243,7 +243,7 @@ function StatusMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button className="inline-flex items-center gap-1.5 rounded-md border border-line-2 px-2 py-1 hover:border-line-hover">
+        <button className="inline-flex items-center gap-1.5 rounded-md border border-control px-2 py-1 hover:border-control-hover">
           <span className="h-1.5 w-1.5 rounded-full" style={{ background: meta.color }} />
           <span className="font-mono text-[10.5px] uppercase tracking-wide" style={{ color: meta.color }}>
             {meta.label}
@@ -277,7 +277,7 @@ function LinkItemsMenu({ prdId, linked, onChange }: { prdId: string; linked: str
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button className="inline-flex items-center gap-1.5 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted hover:text-fg">
+        <button className="inline-flex items-center gap-1.5 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted hover:text-fg">
           <Link2 size={12} />
           Linked · {linked.length}
         </button>
@@ -328,7 +328,7 @@ function VersionHistory({
             onClick={() => onSelect(diffVersion?.id === v.id ? null : v)}
             className={cn(
               "flex w-full items-start gap-2.5 rounded-[10px] border p-2.5 text-left transition-colors",
-              diffVersion?.id === v.id ? "border-line-hover bg-surface-3" : "border-line-2 bg-surface-2 hover:border-line-hover",
+              diffVersion?.id === v.id ? "border-control-hover bg-surface-3" : "border-control bg-surface-2 hover:border-control-hover",
             )}
           >
             <span className="rounded bg-surface-4 px-1.5 py-0.5 font-mono text-[10px] text-muted-2">{v.version}</span>
@@ -610,7 +610,7 @@ export function PrototypeRow({ prdId, item }: { prdId: string; item: Item }) {
             </pre>
             <button
               onClick={copy}
-              className="absolute right-1.5 top-1.5 rounded border border-line-2 bg-surface p-1 text-faint hover:text-fg"
+              className="absolute right-1.5 top-1.5 rounded border border-control bg-surface p-1 text-faint hover:text-fg"
               title="Copy the prompt-pack"
             >
               {copied ? <Check size={12} className="text-st-done" /> : <Copy size={12} />}
@@ -625,14 +625,14 @@ export function PrototypeRow({ prdId, item }: { prdId: string; item: Item }) {
                 type="file"
                 accept="image/png,image/jpeg,image/gif,image/webp"
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                className="block w-full font-mono text-[10.5px] text-faint file:mr-2 file:rounded file:border file:border-line-2 file:bg-surface-4 file:px-2 file:py-1 file:text-[10.5px]"
+                className="block w-full font-mono text-[10.5px] text-faint file:mr-2 file:rounded file:border file:border-control file:bg-surface-4 file:px-2 file:py-1 file:text-[10.5px]"
               />
               <textarea
                 value={verdict}
                 onChange={(e) => setVerdict(e.target.value)}
                 rows={2}
                 placeholder="What the prototype settled, in words — this text is what the grill grades"
-                className="w-full rounded-lg border border-line-2 bg-surface-2 p-2 text-[12px] text-fg-2 outline-none placeholder:text-faint focus:border-line-hover"
+                className="w-full rounded-lg border border-control bg-surface-2 p-2 text-[12px] text-fg-2 outline-none placeholder:text-faint focus:border-control-hover"
               />
               <Button size="sm" onClick={submitVerdict} disabled={busy}>
                 {busy ? "Carrying…" : "Send verdict to grill"}

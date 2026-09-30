@@ -34,7 +34,7 @@ export function EventRow({
       aria-current={focused ? "true" : undefined}
       className={cn(
         "flex w-full items-center gap-3 rounded-[10px] border px-3.5 py-2.5 text-left transition-colors",
-        focused ? "border-line-hover bg-surface-3" : "border-line-2 bg-surface-2 hover:border-line-hover",
+        focused ? "border-control-hover bg-surface-3" : "border-control bg-surface-2 hover:border-control-hover",
       )}
     >
       <ActorGlyph actorType={e.actor_type} name={primary} agent={agent} />

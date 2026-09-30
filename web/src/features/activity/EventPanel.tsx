@@ -236,8 +236,8 @@ function PivotButton({
       disabled={disabled}
       title={title}
       className={cn(
-        "rounded-md border border-line-2 px-2 py-1 text-left text-[11.5px] text-muted transition-colors",
-        disabled ? "cursor-not-allowed text-faint-2" : "hover:border-line-hover hover:text-ink",
+        "rounded-md border border-control px-2 py-1 text-left text-[11.5px] text-muted transition-colors",
+        disabled ? "cursor-not-allowed text-faint-2" : "hover:border-control-hover hover:text-ink",
       )}
     >
       {children}

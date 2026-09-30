@@ -45,10 +45,15 @@ describe("design token foundation (GRPH-908)", () => {
     expect(contrastRatio(faint, TOKENS["color-surface-3"]!)).toBeGreaterThanOrEqual(4.5);
   });
 
-  it("raises faint-2 copy above 4.5:1 on bg and surface-3", () => {
+  // faint-2 is the dimmer of the two faint roles. On the design's surface ramp there is no
+  // value both dimmer than faint and above 4.5:1 on surface-3 — luminance decides contrast,
+  // so "dimmer" and "passes on the lightest surface" are the same axis. It therefore holds
+  // the floor on the surfaces it is actually used on, and a source scan below keeps it there.
+  it("raises faint-2 copy above 4.5:1 on every surface it is used on", () => {
     const faint2 = TOKENS["color-faint-2"]!;
-    expect(contrastRatio(faint2, TOKENS["color-bg"]!)).toBeGreaterThanOrEqual(4.5);
-    expect(contrastRatio(faint2, TOKENS["color-surface-3"]!)).toBeGreaterThanOrEqual(4.5);
+    for (const key of ["color-bg", "color-surface", "color-surface-2"] as const) {
+      expect(contrastRatio(faint2, TOKENS[key]!)).toBeGreaterThanOrEqual(4.5);
+    }
   });
 
   it("sabotage: legacy faint #5c656e fails the login/tagline floor", () => {
@@ -56,11 +61,29 @@ describe("design token foundation (GRPH-908)", () => {
     expect(contrastRatio(TOKENS["color-faint"]!, TOKENS["color-bg"]!)).toBeGreaterThanOrEqual(4.5);
   });
 
-  it("input borders meet 3:1 on surface-2", () => {
-    const bg = TOKENS["color-surface-2"]!;
-    for (const key of ["color-line", "color-line-2", "color-line-hover"] as const) {
-      expect(contrastRatio(TOKENS[key]!, bg)).toBeGreaterThanOrEqual(3);
+  it("control borders meet 3:1 on every surface a control sits on", () => {
+    for (const key of ["color-control", "color-control-hover"] as const) {
+      for (const surf of ["color-surface", "color-surface-2", "color-surface-3"] as const) {
+        expect(contrastRatio(TOKENS[key]!, TOKENS[surf]!)).toBeGreaterThanOrEqual(3);
+      }
     }
+  });
+
+  // The counterpart of the rule above, and the reason this split exists. A panel edge is
+  // decorative under WCAG 1.4.11; raising it to the control floor is what outlined every
+  // card in the app in a 3.5:1 grey. If a later pass brightens these, this fails.
+  it("keeps hairlines below the control floor — structure is not a control", () => {
+    const s2 = TOKENS["color-surface-2"]!;
+    for (const key of ["color-line", "color-line-2", "color-line-hover", "color-line-3"] as const) {
+      expect(contrastRatio(TOKENS[key]!, s2)).toBeLessThan(2);
+    }
+  });
+
+  it("pins the hairlines to the design's own values", () => {
+    expect(TOKENS["color-line"]).toBe("#2a333a");
+    expect(TOKENS["color-line-2"]).toBe("#1e242a");
+    expect(TOKENS["color-line-hover"]).toBe("#2f3a42");
+    expect(TOKENS["color-line-3"]).toBe("#3a444c");
   });
 
   it("focus accent meets 3:1 on every surface it lands on", () => {
@@ -81,10 +104,10 @@ describe("design token foundation (GRPH-908)", () => {
     expect(contrastRatio(faint, bg)).toBeGreaterThanOrEqual(4.5);
     // Field labels: uppercase mono text-faint on form surface-3
     expect(contrastRatio(faint, s3)).toBeGreaterThanOrEqual(4.5);
-    // Input default border: border-line-2 on bg-surface-2
-    expect(contrastRatio(TOKENS["color-line-2"]!, s2)).toBeGreaterThanOrEqual(3);
-    // Input hover border: border-line-hover on bg-surface-2
-    expect(contrastRatio(TOKENS["color-line-hover"]!, s2)).toBeGreaterThanOrEqual(3);
+    // Input default border: border-control on bg-surface-2
+    expect(contrastRatio(TOKENS["color-control"]!, s2)).toBeGreaterThanOrEqual(3);
+    // Input hover border: border-control-hover on bg-surface-2
+    expect(contrastRatio(TOKENS["color-control-hover"]!, s2)).toBeGreaterThanOrEqual(3);
     // Focus ring: outline color-focus on surfaces behind inputs
     for (const surface of [bg, s2, s3] as const) {
       expect(contrastRatio(focus, surface)).toBeGreaterThanOrEqual(3);
@@ -93,6 +116,10 @@ describe("design token foundation (GRPH-908)", () => {
 
   it("does not reuse line-hover as the focus token", () => {
     expect(TOKENS["color-focus"]).not.toBe(TOKENS["color-line-hover"]);
+  });
+
+  it("keeps faint's floor on surface-3, the lightest surface it lands on", () => {
+    expect(contrastRatio(TOKENS["color-faint"]!, TOKENS["color-surface-3"]!)).toBeGreaterThanOrEqual(4.5);
   });
 
   it("defines a collapsed type scale (≤7 steps, ≥1.2× apart)", () => {

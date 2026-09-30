@@ -154,7 +154,7 @@ export function LinksGraphView() {
                 onKeyDown={(e) => e.key === "Escape" && find.clear()}
                 placeholder="Find  /"
                 aria-label="Find a node"
-                className="w-[168px] rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-fg placeholder:text-faint focus:border-line-hover focus:outline-none"
+                className="w-[168px] rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-fg placeholder:text-faint focus:border-control-hover focus:outline-none"
               />
               {find.active && (
                 <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[10px] text-faint">
@@ -166,7 +166,7 @@ export function LinksGraphView() {
             <button
               onClick={view.reset}
               title="Reset the view (or double-click the background)"
-              className="mr-1 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+              className="mr-1 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-control-hover hover:text-fg"
             >
               Reset view
             </button>
@@ -175,7 +175,7 @@ export function LinksGraphView() {
             <button
               onClick={pinsApi.clearPins}
               title="Release every pinned node"
-              className="mr-1 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+              className="mr-1 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-control-hover hover:text-fg"
             >
               Unpin {pinsApi.pinCount}
             </button>
@@ -187,7 +187,7 @@ export function LinksGraphView() {
               onClick={() => relayout(shown.map((l) => ({ a: l.a, b: l.b })))}
               disabled={pending}
               title="Recompute positions from the visible links only"
-              className="mr-1 inline-flex items-center gap-1.5 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg disabled:opacity-50"
+              className="mr-1 inline-flex items-center gap-1.5 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-control-hover hover:text-fg disabled:opacity-50"
             >
               {pending ? "Laying out…" : "Re-layout to visible"}
             </button>
@@ -198,7 +198,7 @@ export function LinksGraphView() {
               onClick={() => setEnabled((e) => ({ ...e, [t]: !e[t] }))}
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11.5px] transition-colors",
-                enabled[t] ? "border-line-hover bg-surface-3 text-fg" : "border-line-2 bg-surface-2 text-faint",
+                enabled[t] ? "border-control-hover bg-surface-3 text-fg" : "border-control bg-surface-2 text-faint",
               )}
             >
               <span className="h-2 w-2 rounded-full" style={{ background: LINK_META[t].color, opacity: enabled[t] ? 1 : 0.35 }} />

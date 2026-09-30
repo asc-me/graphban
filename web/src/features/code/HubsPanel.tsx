@@ -148,7 +148,7 @@ export function HubsPanel({
               onClick={() => onSort(s)}
               aria-pressed={sort === s}
               className={cn(
-                "px-2.5 py-1 text-[11px] first:border-r first:border-line-2",
+                "px-2.5 py-1 text-[11px] first:border-r first:border-control",
                 sort === s ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
               )}
             >

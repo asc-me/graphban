@@ -132,7 +132,7 @@ export function AssistantPanel({
         <select
           value={`${provider}::${model || providers.find((p) => p.id === provider)?.chat_model || ""}`}
           onChange={(e) => pickModel(e.target.value)}
-          className="ml-auto rounded-md border border-line-2 bg-surface-2 px-2 py-1 text-[11px] text-muted"
+          className="ml-auto rounded-md border border-control bg-surface-2 px-2 py-1 text-[11px] text-muted"
         >
           {providers.length === 0 && <option value="::">no provider configured</option>}
           {providers.flatMap((p) =>
@@ -157,7 +157,7 @@ export function AssistantPanel({
                   key={label}
                   onClick={() => send(prompt)}
                   disabled={streaming}
-                  className="rounded-full border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg-2 disabled:opacity-50"
+                  className="rounded-full border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-control-hover hover:text-fg-2 disabled:opacity-50"
                 >
                   {label}
                 </button>
@@ -189,7 +189,7 @@ export function AssistantPanel({
                         <Check size={12} /> Approve
                       </button>
                       <button onClick={() => decide(mi, pi, false)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-[11.5px] text-muted hover:text-ink">
+                        className="inline-flex items-center gap-1 rounded-lg border border-control px-2 py-1 text-[11.5px] text-muted hover:text-ink">
                         <X size={12} /> Reject
                       </button>
                     </div>
@@ -210,7 +210,7 @@ export function AssistantPanel({
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
           rows={2}
           placeholder={`Ask about this ${entityType}, or propose a change…`}
-          className="min-h-0 flex-1 resize-none rounded-[10px] border border-line-2 bg-surface-2 px-3 py-2 text-[12.5px] text-fg-2 outline-none focus:border-line-hover"
+          className="min-h-0 flex-1 resize-none rounded-[10px] border border-control bg-surface-2 px-3 py-2 text-[12.5px] text-fg-2 outline-none focus:border-control-hover"
         />
         <button
           onClick={() => send()}

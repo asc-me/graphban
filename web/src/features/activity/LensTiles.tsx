@@ -47,8 +47,8 @@ function LensTile({
       className={cn(
         "flex flex-col gap-1 rounded-[10px] border px-3 py-2.5 text-left transition-colors",
         active
-          ? "border-line-hover bg-surface-3"
-          : "border-line-2 bg-surface-2 hover:border-line-hover",
+          ? "border-control-hover bg-surface-3"
+          : "border-control bg-surface-2 hover:border-control-hover",
       )}
     >
       <span className="flex items-baseline justify-between gap-2">

@@ -67,12 +67,12 @@ export function LinkedCode({ refId, projectId }: { refId: string; projectId?: st
           value={path}
           onChange={(e) => setPath(e.target.value)}
           placeholder="backend/app/services/x.py"
-          className="h-8 min-w-0 flex-1 rounded-[8px] border border-line-2 bg-surface-2 px-2 font-mono text-[11px] outline-none placeholder:text-faint focus:border-line-hover"
+          className="h-8 min-w-0 flex-1 rounded-[8px] border border-control bg-surface-2 px-2 font-mono text-[11px] outline-none placeholder:text-faint focus:border-control-hover"
         />
         <select
           value={relation}
           onChange={(e) => setRelation(e.target.value as CodeRelation)}
-          className="h-8 flex-none rounded-[8px] border border-line-2 bg-surface-2 px-1.5 text-[11px] text-muted outline-none"
+          className="h-8 flex-none rounded-[8px] border border-control bg-surface-2 px-1.5 text-[11px] text-muted outline-none"
         >
           {RELATIONS.map((r) => (
             <option key={r} value={r}>{r}</option>
@@ -81,7 +81,7 @@ export function LinkedCode({ refId, projectId }: { refId: string; projectId?: st
         <button
           type="submit"
           disabled={!path.trim() || link.isPending}
-          className="flex h-8 flex-none items-center gap-1 rounded-[8px] border border-line-2 bg-surface-2 px-2 text-[11px] text-accent disabled:opacity-40"
+          className="flex h-8 flex-none items-center gap-1 rounded-[8px] border border-control bg-surface-2 px-2 text-[11px] text-accent disabled:opacity-40"
         >
           <Plus size={13} /> Link
         </button>

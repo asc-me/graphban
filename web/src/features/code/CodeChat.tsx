@@ -105,7 +105,7 @@ export function CodeChat({
                 key={node.id}
                 onClick={() => onSelectPath?.(node.path)}
                 title={node.summary}
-                className="inline-flex items-center gap-1.5 rounded-md border border-line-2 bg-surface-2 px-2 py-1 text-[11px] transition-colors hover:border-line-hover"
+                className="inline-flex items-center gap-1.5 rounded-md border border-control bg-surface-2 px-2 py-1 text-[11px] transition-colors hover:border-control-hover"
               >
                 <span className="max-w-[180px] truncate font-mono text-fg-2">{node.path}</span>
                 <span className="font-mono text-[10px] text-accent">{score.toFixed(2)}</span>

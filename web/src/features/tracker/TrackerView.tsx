@@ -229,8 +229,8 @@ function FilterChip({
       className={cn(
         "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[12px] transition-colors",
         active
-          ? "border-line-hover bg-surface-3 text-fg"
-          : "border-line-2 bg-surface-2 text-muted hover:border-line-3 hover:text-fg-2",
+          ? "border-control-hover bg-surface-3 text-fg"
+          : "border-control bg-surface-2 text-muted hover:border-control-hover hover:text-fg-2",
       )}
     >
       {color && <Dot color={color} />}

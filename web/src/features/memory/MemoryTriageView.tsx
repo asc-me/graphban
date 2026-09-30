@@ -289,7 +289,7 @@ export function MemoryTriageView() {
             {sweepTargets.length > 0 && (
               <button
                 onClick={() => setSweepOpen(true)}
-                className="inline-flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-ink"
+                className="inline-flex items-center gap-1 rounded-md border border-control px-2 py-1 text-[11.5px] text-muted transition-colors hover:border-control-hover hover:text-ink"
               >
                 <Eye size={12} /> Sweep {sweepTargets.length} low-confidence
               </button>
@@ -308,7 +308,7 @@ export function MemoryTriageView() {
               "rounded-md border px-2 py-1 text-[11.5px] transition-colors",
               queue === q.id
                 ? "border-fg bg-fg/5 text-fg"
-                : "border-line-2 text-muted hover:border-line-hover hover:text-ink",
+                : "border-control text-muted hover:border-control-hover hover:text-ink",
             )}
           >
             {q.label}
@@ -323,13 +323,13 @@ export function MemoryTriageView() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search…"
-              className="rounded-md border border-line-2 bg-surface py-1 pl-7 pr-2 text-[12px] text-ink placeholder:text-faint focus:border-line-hover focus:outline-none"
+              className="rounded-md border border-control bg-surface py-1 pl-7 pr-2 text-[12px] text-ink placeholder:text-faint focus:border-control-hover focus:outline-none"
             />
           </div>
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as SortKey)}
-            className="rounded-md border border-line-2 bg-surface px-2 py-1 text-[12px] text-ink focus:border-line-hover focus:outline-none"
+            className="rounded-md border border-control bg-surface px-2 py-1 text-[12px] text-ink focus:border-control-hover focus:outline-none"
           >
             <option value="newest">Newest</option>
             <option value="oldest">Oldest</option>
@@ -348,7 +348,7 @@ export function MemoryTriageView() {
                 "rounded-md border px-1.5 py-0.5 text-[10.5px] transition-colors",
                 facet === origin
                   ? "border-fg bg-fg/5 text-fg"
-                  : "border-line-2 text-faint hover:border-line-hover hover:text-muted",
+                  : "border-control text-faint hover:border-control-hover hover:text-muted",
               )}
             >
               {origin} ({count})
@@ -370,13 +370,13 @@ export function MemoryTriageView() {
           <button
             onClick={() => handleBulkReject([...selected])}
             disabled={review.reject.isPending}
-            className="rounded-md border border-line px-2 py-0.5 text-[11px] text-muted hover:border-line-hover hover:text-ink disabled:opacity-50"
+            className="rounded-md border border-control px-2 py-0.5 text-[11px] text-muted hover:border-control-hover hover:text-ink disabled:opacity-50"
           >
             Reject all
           </button>
           <button
             onClick={() => setSelected(new Set())}
-            className="rounded-md border border-line px-2 py-0.5 text-[11px] text-muted hover:border-line-hover hover:text-ink"
+            className="rounded-md border border-control px-2 py-0.5 text-[11px] text-muted hover:border-control-hover hover:text-ink"
           >
             Clear
           </button>
@@ -401,7 +401,7 @@ export function MemoryTriageView() {
                       checked={allSelected}
                       onChange={toggleSelectAll}
                       aria-label="Select all visible rows"
-                      className="rounded border-line-2"
+                      className="rounded border-control"
                     />
                   </th>
                   <th className="px-2 py-1.5">Shard</th>
@@ -427,7 +427,7 @@ export function MemoryTriageView() {
                         checked={selected.has(row.shard.id)}
                         onChange={() => toggleSelect(row.shard.id)}
                         aria-label={`Select ${row.shard.id}`}
-                        className="rounded border-line-2"
+                        className="rounded border-control"
                       />
                     </td>
                     <td className="max-w-md truncate px-2 py-1.5 text-ink" title={row.shard.text}>
@@ -490,7 +490,7 @@ export function MemoryTriageView() {
           {toast.undoableIds.length > 0 && (
             <button
               onClick={() => handleUndo(toast.undoableIds)}
-              className="inline-flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-[11px] text-muted hover:border-line-hover hover:text-ink"
+              className="inline-flex items-center gap-1 rounded-md border border-control px-2 py-0.5 text-[11px] text-muted hover:border-control-hover hover:text-ink"
             >
               <RotateCcw size={11} /> Undo
             </button>
@@ -629,7 +629,7 @@ function DetailPanel({
                   "rounded border px-2 py-1.5 text-left text-[11.5px] transition-colors",
                   pickedCanonical === m.id
                     ? "border-fg bg-fg/5 text-ink"
-                    : "border-line-2 text-muted hover:border-line-hover hover:text-ink",
+                    : "border-control text-muted hover:border-control-hover hover:text-ink",
                 )}
               >
                 <span className="line-clamp-2">{m.text}</span>

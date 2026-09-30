@@ -34,7 +34,7 @@ export function LinkDialog({ request }: { request: RequestItem }) {
       <DialogTrigger asChild>
         <button
           onClick={(e) => e.stopPropagation()}
-          className="inline-flex items-center gap-1 rounded-md border border-line-2 px-2 py-1 font-mono text-[10px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+          className="inline-flex items-center gap-1 rounded-md border border-control px-2 py-1 font-mono text-[10px] text-muted transition-colors hover:border-control-hover hover:text-fg"
         >
           <Link2 size={11} />
           {request.linked_to ?? "link"}
@@ -50,7 +50,7 @@ export function LinkDialog({ request }: { request: RequestItem }) {
             <button
               key={it.id}
               onClick={() => choose(it.id)}
-              className="flex w-full items-center gap-2.5 rounded-lg border border-line-2 bg-surface-2 px-3 py-2 text-left transition-colors hover:border-line-hover"
+              className="flex w-full items-center gap-2.5 rounded-lg border border-control bg-surface-2 px-3 py-2 text-left transition-colors hover:border-control-hover"
             >
               <span
                 className="h-1.5 w-1.5 flex-none rounded-full"

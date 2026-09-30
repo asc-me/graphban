@@ -98,7 +98,7 @@ function CardRow({
             aria-label={`Accept ${card.title}`}
             data-testid="harness-accept"
             onClick={() => onMark("accept")}
-            className="inline-flex items-center gap-1 rounded-[8px] border border-line-2 px-2 py-1 text-[11.5px] hover:bg-surface"
+            className="inline-flex items-center gap-1 rounded-[8px] border border-control px-2 py-1 text-[11.5px] hover:bg-surface"
           >
             <Check size={12} /> Accept
           </button>
@@ -107,7 +107,7 @@ function CardRow({
             aria-label={`Dismiss ${card.title}`}
             data-testid="harness-dismiss"
             onClick={() => onMark("dismiss")}
-            className="inline-flex items-center gap-1 rounded-[8px] border border-line-2 px-2 py-1 text-[11.5px] text-muted hover:bg-surface"
+            className="inline-flex items-center gap-1 rounded-[8px] border border-control px-2 py-1 text-[11.5px] text-muted hover:bg-surface"
           >
             <X size={12} /> Dismiss
           </button>
