@@ -441,6 +441,43 @@ def _record_applied_lessons(db: Session, item: Item, shard_ids: list[str]) -> No
         )
 
 
+def touchpoint_intake(existing, incoming) -> dict:
+    """What the server DID with a touchpoints payload: sent, added, and what it KEPT (GRPH-985).
+
+    The same receipt `evidence_intake` gives, for the same reason and a worse silence.
+    `union_touchpoints` cannot remove a path — deliberately, because a write that dropped a
+    declared area would read as "this item collides with nothing" — but a narrowing write is
+    ACCEPTED and then ignored, with nothing in the reply to say so. `update_item` returns the
+    item, so the truth is there; a caller that got a success back has no reason to diff it.
+
+    That cost a wave. Widening two items' touchpoints to stop an `UNDECLARED` refusal collapsed
+    three independent clusters into one — 34 points of effort behind a single child — and the
+    narrowing write sent to undo it was accepted and discarded:
+
+        sent:   [projecthome/, SyncLinkPanel.tsx, project-home.test.tsx, sync-link.test.tsx]
+        stored: [...those four..., web/src/lib/api.ts, queries.ts, types.ts]
+
+    No error, no warning, no diff. The item had to be re-filed as GRPH-986 to get a correct
+    list, which lost its history — the same unrecoverable shape as GRPH-955's false attestation.
+
+    `retained` is the load-bearing field: stored paths this call did NOT name. Non-empty means
+    the caller tried to narrow and did not. `added` counts what this call put on the record,
+    and an identical resend is a retry rather than a refusal, exactly as in `evidence_intake`.
+
+    Report it only where touchpoints were actually SENT. `retained: []` on a call that carried
+    none would say "nothing was kept back" when the truth is that nobody looked.
+    """
+    incoming = [incoming] if isinstance(incoming, str) else list(incoming or [])
+    sent = [q.strip() for q in incoming if isinstance(q, str) and q.strip()]
+    before = [q for q in (existing or []) if isinstance(q, str) and q.strip()]
+    after = union_touchpoints(existing, incoming)
+    return {"touchpoint_intake": {
+        "sent": len(sent),
+        "added": len([q for q in after if q not in before]),
+        "retained": [q for q in before if q not in sent],
+    }}
+
+
 def union_touchpoints(existing, incoming) -> list[str]:
     """Add measured paths without removing declared ones (GRPH-611 / P30 D10).
 
