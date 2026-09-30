@@ -100,6 +100,14 @@ def item_keys(*texts: str) -> list[str]:
 
     Order is stable so a run attests the same items in the same sequence — a set would make
     the log a different shape every time and hide a change in what was matched.
+
+    GRPH-992 is open on whether the PR BODY should be a source at all. Scanning cannot tell
+    "this PR implements GRPH-797" from "GRPH-397 explains why", and GRPH-955 was made
+    permanently undelegable by two PRs that named it only to say what they were NOT. GRPH-983
+    stopped those receipts being READ as delivery; narrowing what gets WRITTEN changes what
+    every contributor has to put in a PR body, so it is left as a decision rather than taken
+    here. What this does carry is `matched_by`, so a receipt says how its id was found and a
+    reader can weigh a prose match without the ids being wrong.
     """
     named = declared(*texts)
     if named is not None:
@@ -116,7 +124,20 @@ def item_keys(*texts: str) -> list[str]:
     return seen
 
 
-def attestation(*, commit: str, branch: str, run_url: str = "") -> dict:
+def matched_by(*texts: str) -> str:
+    """How `item_keys` found them, recorded on the receipt so a reader can weigh it without
+    re-deriving it (GRPH-992).
+
+    `explicit` when an `Attests:` line named them — a human said exactly this. `prose`
+    otherwise, which is the weaker claim: the id was found by scanning, and scanning cannot
+    tell an implementation from a reference. A reader who sees `prose` on an attestation for an
+    item a PR merely mentioned now has something to go on.
+    """
+    return "explicit" if declared(*texts) is not None else "prose"
+
+
+def attestation(*, commit: str, branch: str, run_url: str = "",
+                matched: str = "") -> dict:
     """The receipt. One predicate, because CI checks exactly one thing: the suite passed.
 
     Naming it `suite_green` rather than something broader matters — the gate records WHICH
@@ -133,6 +154,9 @@ def attestation(*, commit: str, branch: str, run_url: str = "") -> dict:
         # receipt as unnamed — and "unnamed" is the believed case, so the failure would be a
         # guard quietly switching itself off.
         "branch": branch,
+        # GRPH-992: how the item was matched — `explicit` or `branch`. Provenance on the
+        # receipt, so a reader weighing an attestation does not have to reconstruct it.
+        "matched": matched,
         "run_ref": run_url,
         "predicates": [{
             "name": "suite_green",
@@ -219,7 +243,8 @@ def main(argv: list[str] | None = None) -> int:
         print("no Graphban item key in the branch or PR text — nothing to attest")
         return 0
 
-    receipt = attestation(commit=args.commit, branch=args.branch, run_url=args.run_url)
+    receipt = attestation(commit=args.commit, branch=args.branch, run_url=args.run_url,
+                          matched=matched_by(args.text))
     failures = []
     #: Ids this key was refused. Held rather than reported immediately, because whether they
     #: are FOREIGN or evidence of a broken key is decided by whether anything else worked.
