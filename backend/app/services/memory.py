@@ -667,7 +667,8 @@ _JUDGE_PUBLISH_MIN = 0.75
 # not the script's 2% cut (that cut auto-kept two holdout rejects). Highest reject
 # on the set was 0.461; one labelled keep sat at 0.147. Quality is the 90%-precision
 # level on human-published. `DECIDER_CHOICE_MIN` is unmeasured (review-pass
-# `contradicts` was not in S0) and is a conservative floor.
+# `contradicts` was not in S0) and is a conservative floor until
+# `scripts/decider_calibrate.py --review-pass` runs on a conflict-labelled holdout.
 DECIDER_KEEP_MIN = 0.55
 DECIDER_REJECT_MAX = 0.15
 DECIDER_QUALITY_MIN = 0.6468

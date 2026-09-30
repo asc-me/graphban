@@ -37,6 +37,9 @@ Usage::
 
     # JSON output for piping:
     cd backend && python ../scripts/decider_calibrate.py --json
+
+    # Review-pass `contradicts` calibration (needs conflict-labelled shards):
+    cd backend && python ../scripts/decider_calibrate.py --review-pass --json
 """
 from __future__ import annotations
 
@@ -116,6 +119,38 @@ class HeadReport:
     decisions: list[HeadDecision] = field(default_factory=list)
 
 
+@dataclass
+class ReviewSample:
+    """One candidate shard for the review-pass `contradicts` calibration."""
+    shard_id: str
+    candidate_text: str
+    published: list[tuple[str, str]]  # (id, text), top-k by project
+    label_choice: str  # published shard id, or "none"
+
+
+@dataclass
+class ReviewDecision:
+    """What one head said on the review pass."""
+    grounded_p: float
+    ready_p: float
+    contradicts: str
+    contradicts_conf: float | None
+    latency_ms: float
+
+
+@dataclass
+class ReviewReport:
+    """Calibration metrics for the review-pass `contradicts` question."""
+    head: str
+    n_labelled: int = 0
+    choice_accuracy: float | None = None
+    choice_min_at_90_precision: float | None = None
+    latency_p50_ms: float = 0.0
+    latency_p95_ms: float = 0.0
+    measured: bool = False
+    decisions: list[ReviewDecision] = field(default_factory=list)
+
+
 def _discover_heads(endpoint: str, client: httpx.Client) -> list[str]:
     """Read loaded models from /health. Returns [] when the endpoint does not answer."""
     try:
@@ -188,6 +223,221 @@ def _parse_answers(data: dict) -> tuple[float, float]:
     top = len(_QUALITY_LEVELS) - 1
     q = min(max(float(quality["score"]) / top, 0.0), 1.0)
     return float(keep["noul"]), q
+
+
+def _review_state(sample: ReviewSample) -> str:
+    """PRD-45 D6 review-pass state — mirrors `memory._decider_review_state`."""
+    parts = [f"CANDIDATE:\n{sample.candidate_text.strip() or '(empty)'}"]
+    if sample.published:
+        numbered = "\n".join(
+            f"{i}. [{sid}] {text}" for i, (sid, text) in enumerate(sample.published, 1)
+        )
+        parts.append("PUBLISHED MEMORY (trusted):\n" + numbered)
+    else:
+        parts.append("PUBLISHED MEMORY: none — there is no trusted memory to contradict.")
+    return "\n\n".join(parts)
+
+
+def _review_questions(published: list[tuple[str, str]]) -> dict:
+    """PRD-45 D6 review-pass questions — mirrors `memory._decider_review_questions`."""
+    opts: dict[str, str] = {"none": "does not contradict any published note"}
+    for sid, _text in published:
+        opts[sid] = f"published shard {sid}"
+    return {
+        "grounded": {
+            "type": "noul",
+            "instructions": (
+                "The candidate is consistent with the numbered published memory; "
+                "it does not contradict any of it."
+            ),
+            "criteria": {
+                "true": "consistent with the published notes",
+                "false": "contradicts a published note",
+            },
+        },
+        "ready": {
+            "type": "noul",
+            "instructions": "Specific, durable and non-trivial enough to publish as-is.",
+            "criteria": {
+                "true": "specific, durable and non-trivial enough to publish as-is",
+                "false": "vague, transient, or not ready to publish",
+            },
+        },
+        "contradicts": {
+            "type": "choice",
+            "instructions": "Which published note, if any, the candidate contradicts.",
+            "criteria": opts,
+        },
+    }
+
+
+def _review_request_body(head: str, sample: ReviewSample) -> dict:
+    return {
+        "model": head,
+        "state": _review_state(sample),
+        "questions": _review_questions(sample.published),
+    }
+
+
+def _parse_review_answers(data: dict) -> ReviewDecision:
+    """`grounded`, `ready`, and `contradicts` from a System One reply."""
+    answers = data.get("answers")
+    if not isinstance(answers, dict):
+        raise ValueError(f"no answers in reply: {str(data)[:120]}")
+    grounded = answers.get("grounded") or {}
+    ready = answers.get("ready") or {}
+    contra = answers.get("contradicts") or {}
+    if not isinstance(grounded.get("noul"), (int, float)):
+        raise ValueError(f"grounded is not a noul: {grounded}")
+    if not isinstance(ready.get("noul"), (int, float)):
+        raise ValueError(f"ready is not a noul: {ready}")
+    choice_val = contra.get("choice")
+    if not isinstance(choice_val, str) or not choice_val:
+        raise ValueError(f"contradicts is not a choice: {contra}")
+    conf = contra.get("confidence")
+    confidence = float(conf) if isinstance(conf, (int, float)) and not isinstance(conf, bool) else None
+    return ReviewDecision(
+        grounded_p=float(grounded["noul"]),
+        ready_p=float(ready["noul"]),
+        contradicts=choice_val,
+        contradicts_conf=confidence,
+        latency_ms=0.0,
+    )
+
+
+def _effective_choice(decision: ReviewDecision, *, choice_min: float) -> str:
+    """Apply `DECIDER_CHOICE_MIN` the way `memory._decider_review_judge` does."""
+    if not decision.contradicts or decision.contradicts == "none":
+        return "none"
+    conf = decision.contradicts_conf
+    if conf is None or conf >= choice_min:
+        return decision.contradicts
+    return "none"
+
+
+def _choice_min_at_precision(labels: list[str], choices: list[str], confidences: list[float | None],
+                             min_precision: float) -> float | None:
+    """Confidence floor where precision on non-`none` predictions crosses `min_precision`."""
+    scored = [(c, l, ch) for c, l, ch in zip(confidences, labels, choices)
+              if c is not None and ch != "none"]
+    if len(scored) < 3:
+        return None
+    thresholds = sorted({c for c, _, _ in scored}, reverse=True)
+    for thr in thresholds:
+        preds = [ch for c, _, ch in scored if c >= thr]
+        truths = [l for c, l, _ in scored if c >= thr]
+        if len(preds) < 3:
+            continue
+        correct = sum(1 for p, t in zip(preds, truths) if p == t)
+        if correct / len(preds) >= min_precision:
+            return round(thr, 4)
+    return None
+
+
+def _load_review_samples(db) -> list[ReviewSample]:
+    """Shards with a resolvable `contradicts` label against published ids in the project."""
+    from sqlalchemy import select
+    from app.models import MemoryShard
+
+    pubs_by_project: dict[str | None, list[tuple[str, str]]] = {}
+    pub_stmt = select(MemoryShard).where(
+        MemoryShard.status == "published",
+        MemoryShard.text.isnot(None),
+    )
+    for row in db.scalars(pub_stmt):
+        pubs_by_project.setdefault(row.project_id, []).append((row.id, row.text or ""))
+
+    stmt = select(MemoryShard).where(
+        MemoryShard.review_judge_verdict.isnot(None),
+        MemoryShard.text.isnot(None),
+    )
+    samples: list[ReviewSample] = []
+    for row in db.scalars(stmt):
+        verdict = row.review_judge_verdict or {}
+        if not isinstance(verdict, dict):
+            continue
+        published = pubs_by_project.get(row.project_id, [])[:5]
+        pub_ids = {sid for sid, _ in published}
+        conflicts = verdict.get("conflicts") or []
+        label = "none"
+        if conflicts:
+            for raw in conflicts:
+                token = str(raw).strip()
+                if token in pub_ids:
+                    label = token
+                    break
+            if label == "none":
+                # Chat-judge labels are often quotes, not ids — skip until a corpus exists.
+                continue
+        samples.append(ReviewSample(
+            shard_id=row.id,
+            candidate_text=row.text or "",
+            published=published,
+            label_choice=label,
+        ))
+    return samples
+
+
+def _decide_review(endpoint: str, head: str, sample: ReviewSample, client: httpx.Client,
+                   *, api_key: str = "") -> ReviewDecision:
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    t0 = time.perf_counter()
+    r = client.post(
+        f"{endpoint}/v1/systemone",
+        json=_review_request_body(head, sample),
+        headers=headers,
+        timeout=30.0,
+    )
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+    r.raise_for_status()
+    data = r.json()
+    routed = (data.get("routing") or {}).get("model") if isinstance(data.get("routing"), dict) else None
+    if routed and routed != head:
+        logger.warning("head %s was answered by %s — the endpoint routed the name", head, routed)
+    decision = _parse_review_answers(data)
+    decision.latency_ms = latency_ms
+    return decision
+
+
+def _run_review_head(endpoint: str, head: str, samples: list[ReviewSample],
+                     client: httpx.Client, *, api_key: str = "",
+                     choice_min: float = 0.70) -> ReviewReport:
+    report = ReviewReport(head=head)
+    latencies: list[float] = []
+    labels: list[str] = []
+    preds: list[str] = []
+    confidences: list[float | None] = []
+
+    for sample in samples:
+        if not sample.candidate_text.strip():
+            continue
+        try:
+            decision = _decide_review(endpoint, head, sample, client, api_key=api_key)
+        except Exception as e:
+            logger.warning("head %s: review call failed on shard %s: %s", head, sample.shard_id, e)
+            continue
+        report.decisions.append(decision)
+        latencies.append(decision.latency_ms)
+        report.n_labelled += 1
+        labels.append(sample.label_choice)
+        preds.append(_effective_choice(decision, choice_min=choice_min))
+        confidences.append(decision.contradicts_conf)
+
+    if report.n_labelled >= 2:
+        report.choice_accuracy = round(
+            sum(1 for p, l in zip(preds, labels) if p == l) / report.n_labelled, 4)
+        report.choice_min_at_90_precision = _choice_min_at_precision(
+            labels, preds, confidences, _QUALITY_PRECISION_MIN)
+        report.measured = report.choice_min_at_90_precision is not None
+
+    if latencies:
+        report.latency_p50_ms = round(statistics.median(latencies), 1)
+        sorted_lat = sorted(latencies)
+        p95_idx = max(0, int(len(sorted_lat) * 0.95) - 1)
+        report.latency_p95_ms = round(sorted_lat[p95_idx], 1)
+    return report
 
 
 def _decide(endpoint: str, head: str, text: str, client: httpx.Client,
@@ -582,6 +832,60 @@ def _report_dict(reports: list[HeadReport], *, n_labelled: int, n_scored: int,
     }
 
 
+def _format_review_report(reports: list[ReviewReport], *, n_samples: int,
+                          choice_min: float) -> str:
+    lines = [
+        "# Decider Review-Pass Calibration Report",
+        "",
+        f"Corpus: {n_samples} shards with resolvable `contradicts` labels",
+        f"Applied floor while scoring: DECIDER_CHOICE_MIN = {choice_min}",
+        "",
+    ]
+    for r in reports:
+        status = "MEASURED" if r.measured else "UNMEASURED"
+        lines.append(f"## Head: {r.head} [{status}]")
+        lines.append("")
+        lines.append("| Metric | Value |")
+        lines.append("|---|---|")
+        lines.append(f"| Labelled shards | {r.n_labelled} |")
+        lines.append(f"| Choice accuracy @ {choice_min} | {r.choice_accuracy if r.choice_accuracy is not None else '—'} |")
+        lines.append(
+            f"| Suggested CHOICE_MIN @ 90% precision | "
+            f"{r.choice_min_at_90_precision if r.choice_min_at_90_precision is not None else '—'} |"
+        )
+        lines.append(f"| Latency p50 | {r.latency_p50_ms} ms |")
+        lines.append(f"| Latency p95 | {r.latency_p95_ms} ms |")
+        lines.append("")
+    if not any(r.measured for r in reports):
+        lines.append(
+            "**No head produced a measured `DECIDER_CHOICE_MIN`.** "
+            "Either the corpus is too small, labels are missing, or the endpoint was unreachable."
+        )
+    return "\n".join(lines)
+
+
+def _review_report_dict(reports: list[ReviewReport], *, n_samples: int,
+                        choice_min: float) -> dict:
+    return {
+        "mode": "review-pass",
+        "corpus": {"conflict_labelled": n_samples},
+        "choice_min_applied": choice_min,
+        "heads": [
+            {
+                "head": r.head,
+                "n_labelled": r.n_labelled,
+                "choice_accuracy": r.choice_accuracy,
+                "choice_min_at_90_precision": r.choice_min_at_90_precision,
+                "latency_p50_ms": r.latency_p50_ms,
+                "latency_p95_ms": r.latency_p95_ms,
+                "measured": r.measured,
+            }
+            for r in reports
+        ],
+        "any_measured": any(r.measured for r in reports),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Calibrate a decider against Graphban's labelled shards")
     parser.add_argument("--endpoint", default=os.environ.get("DECIDER_ENDPOINT", "http://localhost:8090"),
@@ -603,6 +907,21 @@ def main() -> None:
             "full-DB load includes train shards and is not an honest S0."
         ),
     )
+    parser.add_argument(
+        "--review-pass",
+        action="store_true",
+        help=(
+            "Calibrate the review-pass `contradicts` choice (PRD-45 D6/D7) instead of "
+            "write-path keep/quality. Reports choice accuracy and a suggested "
+            "DECIDER_CHOICE_MIN when a conflict-labelled corpus exists."
+        ),
+    )
+    parser.add_argument(
+        "--choice-min",
+        type=float,
+        default=0.70,
+        help="Confidence floor applied while scoring review-pass choice accuracy (default: 0.70)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -618,11 +937,40 @@ def main() -> None:
     # Load corpora from the database.
     db = _get_session()
     try:
-        labelled = _load_labelled_shards(db)
-        scored = _load_scored_shards(db)
-        judged = _load_judged_shards(db)
+        if args.review_pass:
+            review_samples = _load_review_samples(db)
+        else:
+            labelled = _load_labelled_shards(db)
+            scored = _load_scored_shards(db)
+            judged = _load_judged_shards(db)
     finally:
         db.close()
+
+    if args.review_pass:
+        if args.shard_ids_file:
+            want = _load_id_set(args.shard_ids_file)
+            review_samples = [s for s in review_samples if s.shard_id in want]
+            logger.info("restricted review corpus to %d ids from %s", len(review_samples),
+                        args.shard_ids_file)
+        if args.max_shards:
+            review_samples = review_samples[:args.max_shards]
+        logger.info("review corpus: %d conflict-labelled shards", len(review_samples))
+        if not review_samples:
+            print("No conflict-labelled shards found. Seed a review corpus whose "
+                  "`review_judge_verdict.conflicts` names published shard ids.")
+            sys.exit(1)
+        reports = [
+            _run_review_head(endpoint, head, review_samples, client, api_key=args.api_key,
+                             choice_min=args.choice_min)
+            for head in heads
+        ]
+        if args.json:
+            print(json.dumps(_review_report_dict(reports, n_samples=len(review_samples),
+                                                 choice_min=args.choice_min), indent=2))
+        else:
+            print(_format_review_report(reports, n_samples=len(review_samples),
+                                        choice_min=args.choice_min))
+        return
 
     if args.shard_ids_file:
         want = _load_id_set(args.shard_ids_file)
