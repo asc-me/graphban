@@ -55,6 +55,32 @@ _PLATFORMS = (
     "railway|vercel|fly|flyctl|heroku|aws|gcloud|az|doctl|kubectl|helm|terraform|tofu"
     "|netlify|render|supabase|cloudflare|wrangler"
 )
+#: What a platform name may NOT be followed by for `platform-command` to fire.
+#:
+#: Two kinds, and the second is GRPH-989. The first is READING subcommands — `vercel logs`,
+#: `kubectl get` — which are how a worker investigates; refusing those would make the rule fire
+#: on every diagnostic and turn the acknowledgement into reflex.
+#:
+#: The second is English FUNCTION WORDS. Several platform names are ordinary English — `render`
+#: most of all, and this tracker is used for UI work — so "must not render as \"off\"" read as
+#: an infrastructure CLI and refused a Settings panel three times in one day: once on the item
+#: being built, once on a note explaining the trap, and once on GRPH-989 itself, whose
+#: description had to quote the phrase to report it.
+#:
+#: An infrastructure subcommand is a verb or a noun (`deploy`, `up`, `apply`, `variables`); it
+#: is never `as`, `the` or `it`. A function word after the platform name means the sentence is
+#: using the word as English. That is why this is the discriminator rather than a longer
+#: platform list or a hand-maintained exception per item.
+_NOT_SUBCOMMANDS = (
+    # reading, not changing
+    "logs|get|status|version|--help"
+    # articles, conjunctions, prepositions and copulas — grammar, not a command
+    "|a|an|the|as|at|by|for|from|in|into|of|off|on|onto|out|over|to|up-to|with|within"
+    "|and|or|but|if|so|than|then|that|this|these|those|which|while|when|whether"
+    "|is|are|was|were|be|been|being|it|its|them|their|there|they"
+    "|not|no|never|only|also|just|still|already|rather|instead"
+)
+
 #: Verbs that CHANGE a running system. Reading verbs are absent on purpose: `vercel logs` and
 #: `kubectl get` are how a worker investigates, and refusing those would make this fire on
 #: every diagnostic.
@@ -71,7 +97,7 @@ _SECRETS = r"key|keys|secret|secrets|token|tokens|credential|credentials|passwor
 _RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
         "platform-command",
-        re.compile(rf"\b({_PLATFORMS})\s+(?!logs\b|get\b|status\b|version\b|--help\b)[a-z][\w-]+",
+        re.compile(rf"\b({_PLATFORMS})\s+(?!(?:{_NOT_SUBCOMMANDS})\b)[a-z][\w-]+",
                    re.I),
         "names an infrastructure CLI with a subcommand",
     ),
