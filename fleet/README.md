@@ -69,7 +69,9 @@ uv tool install graphban-fleet
 That gives you `gbfleet` and `gbagent` — the coding agent is an entry point of this package
 rather than one of its own, because the supervisor resolves it on PATH like any other vendor
 binary. `uv tool update-shell` once if uv says its bin directory is not on your PATH, and
-`uv tool upgrade graphban-fleet` to move it forward.
+`uv tool install graphban-fleet@latest` to move it forward — `uv tool upgrade` is a
+no-op on a pinned install and exits saying "Nothing to upgrade", which reads as
+confirmation that you are current (GRPH-984).
 
 [`gban`](https://github.com/asc-me/graphban/blob/main/cli/README.md), the client for a human
 at a terminal, is `uv tool install graphban-cli` — a separate package because it installs on

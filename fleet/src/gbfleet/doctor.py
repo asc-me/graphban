@@ -22,6 +22,7 @@ quietly acquired one would be the authority model leaking out through the back.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
 import subprocess
@@ -545,6 +546,7 @@ def run(
     check_seats(report, seats_file)
     check_supervision_mode(report)
     check_service(report)
+    check_installed_matches_checkout(report, root)
     check_matrix(report, matrix_path, server=server, api_key=api_key, project=project)
     if surface:
         check_surface(
@@ -553,6 +555,95 @@ def run(
 
     report.render(out)
     return report
+
+
+def _package_digest(root: Path) -> str | None:
+    """A stable digest of EVERY file under a gbfleet package tree, or None.
+
+    Every file, not just `*.py` — that was the first version and it read a package-data change
+    as a match. `matrix.toml` ships inside the package and decides model and tier selection, and
+    `aac27865` (the qwen-code model row) was one of the three commits that motivated the 0.10.0
+    release this check exists because of. A digest that cannot see it would have passed the
+    exact drift it was written for.
+
+    `__pycache__` and compiled artefacts are excluded because they are derived: an installed
+    tree has them and a fresh checkout does not, so including them would report every install
+    as drifted and the check would be ignored within a day.
+    """
+    try:
+        files = sorted(q for q in root.rglob("*")
+                       if q.is_file() and "__pycache__" not in q.parts
+                       and q.suffix not in (".pyc", ".pyo"))
+    except OSError:
+        return None
+    if not files:
+        return None
+    h = hashlib.sha256()
+    for q in files:
+        try:
+            h.update(q.relative_to(root).as_posix().encode())
+            h.update(q.read_bytes())
+        except OSError:
+            return None
+    return h.hexdigest()
+
+
+def check_installed_matches_checkout(report: Report, repo: Path | str | None) -> None:
+    """Is the gbfleet RUNNING here the gbfleet in the checkout it supervises? (GRPH-984)
+
+    `--version` cannot answer this and reads as though it can. GRPH-974's commit instruction
+    merged without a version bump, so `fleet/pyproject.toml` and the installed wheel both said
+    `0.9.0` while differing in behaviour, `uv tool install` had no reason to refresh, and a
+    whole wave ran on the old instruction text. The near-miss was writing that wave up as field
+    validation of a fix that was not running.
+
+    Compared by CONTENT, not by version, because the version string is the thing that lied. An
+    editable install resolves into the checkout itself, so the two trees are the same object and
+    the digests match by construction — which is the honest answer for that setup rather than a
+    special case.
+
+    **Three outcomes.** "Could not compare" is its own result and never agreement: an
+    unreadable tree, a repo with no `fleet/src`, or a package installed somewhere this cannot
+    see are all UNKNOWN. Reporting those as PASS would make the check a green tick on the one
+    situation it exists to catch, which is worse than not having it.
+
+    The remedy names `uv tool install graphban-fleet@latest`, not `uv tool upgrade`: upgrade is
+    a NO-OP on a pinned install and exits saying "Nothing to upgrade", which reads as
+    confirmation that you are current.
+    """
+    # This module lives inside the package that is RUNNING, whatever installed it.
+    installed = Path(__file__).resolve().parent
+    if repo is None:
+        report.add("installed matches checkout", UNKNOWN, "no repository to compare against")
+        return
+    checkout = Path(repo).resolve() / "fleet" / "src" / "gbfleet"
+    if not checkout.is_dir():
+        report.add("installed matches checkout", UNKNOWN,
+                   f"{checkout} is not a directory — not a gbfleet checkout")
+        return
+    if installed == checkout.resolve():
+        report.add("installed matches checkout", PASS,
+                   f"editable install, same tree ({installed})")
+        return
+    mine, theirs = _package_digest(installed), _package_digest(checkout)
+    if mine is None or theirs is None:
+        report.add("installed matches checkout", UNKNOWN,
+                   "could not read one of the package trees", "check permissions on both paths")
+        return
+    if mine == theirs:
+        report.add("installed matches checkout", PASS,
+                   f"{__version__} installed at {installed} matches the checkout")
+        return
+    # Which side is AHEAD cannot be answered: the version strings are equal in the case this
+    # exists for, and file contents carry no order. Saying so is the honest answer — inventing
+    # a direction would send an operator to reinstall when the checkout was the stale one.
+    report.add(
+        "installed matches checkout", FAIL,
+        f"the installed gbfleet ({__version__} at {installed}) DIFFERS from {checkout}; "
+        f"both report {__version__}, so the version strings cannot say which is ahead",
+        "uv tool install graphban-fleet@latest  (`uv tool upgrade` is a no-op on a pinned "
+        "install and says 'Nothing to upgrade', which reads as confirmation)",
+    )
 
 
 def check_service(report: Report, name: str = "") -> None:
