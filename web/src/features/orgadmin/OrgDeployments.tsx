@@ -181,7 +181,7 @@ function DeploymentCard({
               onChange={(e) => setDraft(e.target.value)}
               placeholder={d.base_url || "http://localhost:8080"}
               aria-label={`Address override for ${d.label}`}
-              className="h-[26px] min-w-[240px] rounded-md border border-line-2 bg-surface px-2 font-mono text-[11.5px] outline-none"
+              className="h-[26px] min-w-[240px] rounded-md border border-control bg-surface px-2 font-mono text-[11.5px] outline-none"
             />
             <button
               onClick={() => {
@@ -229,7 +229,7 @@ function DeploymentCard({
             </span>
             <button
               onClick={() => setEditing(true)}
-              className="h-[24px] rounded-md border border-line-2 px-2 font-mono text-[9px] uppercase tracking-[0.05em] text-muted hover:text-fg"
+              className="h-[24px] rounded-md border border-control px-2 font-mono text-[9px] uppercase tracking-[0.05em] text-muted hover:text-fg"
             >
               Set one
             </button>

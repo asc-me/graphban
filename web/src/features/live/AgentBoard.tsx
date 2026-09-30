@@ -300,7 +300,7 @@ function AgentFeed({
             onClick={() => setFilter(f)}
             className={cn(
               "rounded border px-1.5 py-0.5 font-mono text-[10px]",
-              filter === f ? "border-line-hover bg-surface-3 text-fg" : "border-line-2 text-muted hover:text-fg-2",
+              filter === f ? "border-control-hover bg-surface-3 text-fg" : "border-control text-muted hover:text-fg-2",
             )}
           >
             {f}

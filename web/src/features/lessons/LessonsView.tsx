@@ -226,8 +226,8 @@ function LessonListPage() {
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10.5px] uppercase tracking-wide transition-colors",
                 activeQueue === key
-                  ? "border-line-hover bg-surface-3 text-fg"
-                  : "border-line-2 text-faint hover:border-line-hover hover:text-muted",
+                  ? "border-control-hover bg-surface-3 text-fg"
+                  : "border-control text-faint hover:border-control-hover hover:text-muted",
               )}
             >
               {QUEUE_META[key].label}
@@ -250,7 +250,7 @@ function LessonListPage() {
           <button
             type="button"
             onClick={() => setSelected(new Set())}
-            className="rounded-md border border-line px-1.5 py-0.5 font-mono text-[9.5px] text-faint hover:text-muted"
+            className="rounded-md border border-control px-1.5 py-0.5 font-mono text-[9.5px] text-faint hover:text-muted"
           >
             Clear
           </button>
@@ -283,7 +283,7 @@ function LessonListPage() {
                   type="checkbox"
                   checked={selected.size === rows.length && rows.length > 0}
                   onChange={selectAll}
-                  className="h-3.5 w-3.5 rounded border-line-2 accent-accent"
+                  className="h-3.5 w-3.5 rounded border-control accent-accent"
                   aria-label="Select all in this queue"
                 />
                 <span className="font-mono text-[10px] uppercase tracking-wide text-faint">
@@ -351,7 +351,7 @@ function LessonQueueRow({
         checked={selected}
         onChange={(e) => { e.stopPropagation(); onToggleSelect(); }}
         onClick={(e) => e.stopPropagation()}
-        className="mt-1 h-3.5 w-3.5 shrink-0 rounded border-line-2 accent-accent"
+        className="mt-1 h-3.5 w-3.5 shrink-0 rounded border-control accent-accent"
         aria-label={`Select ${row.id}`}
       />
       <button
@@ -792,7 +792,7 @@ function OutcomesSection({ lesson }: { lesson: LessonDetail }) {
             value={detail}
             onChange={(e) => setDetail(e.target.value)}
             placeholder="What happened — required"
-            className="min-h-[64px] rounded-md border border-line-2 bg-surface-3 px-2 py-1.5 text-[12.5px] text-ink outline-none focus:border-line-hover"
+            className="min-h-[64px] rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12.5px] text-ink outline-none focus:border-control-hover"
           />
           <div className="flex gap-2">
             <button
@@ -805,7 +805,7 @@ function OutcomesSection({ lesson }: { lesson: LessonDetail }) {
             <button
               type="button"
               onClick={() => setOpen(false)}
-              className="rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-muted"
+              className="rounded-lg border border-control px-2.5 py-1.5 text-[12px] text-muted"
             >
               Cancel
             </button>
@@ -816,7 +816,7 @@ function OutcomesSection({ lesson }: { lesson: LessonDetail }) {
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="self-start rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-muted hover:border-line-hover hover:text-ink"
+          className="self-start rounded-lg border border-control px-2.5 py-1.5 text-[12px] text-muted hover:border-control-hover hover:text-ink"
         >
           Record outcome
         </button>
@@ -843,8 +843,8 @@ function FilterChip({
       className={cn(
         "rounded-md border px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide transition-colors",
         active
-          ? "border-line-hover bg-surface-3 text-fg"
-          : "border-line-2 text-faint hover:border-line-hover hover:text-muted",
+          ? "border-control-hover bg-surface-3 text-fg"
+          : "border-control text-faint hover:border-control-hover hover:text-muted",
       )}
     >
       {label}
@@ -954,7 +954,7 @@ function PromotePanel({ lesson }: { lesson: LessonDetail }) {
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               placeholder="Override reason — required"
-              className="rounded-md border border-line-2 bg-surface-3 px-2 py-1.5 text-[12.5px] text-ink outline-none focus:border-line-hover"
+              className="rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12.5px] text-ink outline-none focus:border-control-hover"
             />
             <button
               type="button"
@@ -962,7 +962,7 @@ function PromotePanel({ lesson }: { lesson: LessonDetail }) {
               onClick={() =>
                 promote.mutate({ id: lesson.id, override_reason: reason.trim() })
               }
-              className="self-start rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-muted hover:border-line-hover hover:text-ink disabled:opacity-50"
+              className="self-start rounded-lg border border-control px-2.5 py-1.5 text-[12px] text-muted hover:border-control-hover hover:text-ink disabled:opacity-50"
             >
               Override with reason
             </button>

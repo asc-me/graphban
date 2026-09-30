@@ -233,7 +233,7 @@ function ConnectAgent() {
                 "rounded-lg border px-2.5 py-1 text-[11.5px] transition-colors",
                 i === activeClient
                   ? "border-accent/50 bg-accent/10 text-accent"
-                  : "border-line-2 bg-surface text-muted hover:border-line-hover hover:text-fg",
+                  : "border-control bg-surface text-muted hover:border-control-hover hover:text-fg",
               )}
             >
               {c.label}
@@ -246,7 +246,7 @@ function ConnectAgent() {
           </pre>
           <button
             onClick={copy}
-            className="absolute right-2 top-2 rounded border border-line-2 bg-surface-2 px-2 py-0.5 font-mono text-[10px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+            className="absolute right-2 top-2 rounded border border-control bg-surface-2 px-2 py-0.5 font-mono text-[10px] text-muted transition-colors hover:border-control-hover hover:text-fg"
           >
             {copied ? "Copied" : "Copy"}
           </button>
@@ -284,8 +284,8 @@ function LoopByRole({ tools }: { tools: McpToolInfo[] }) {
               className={cn(
                 "rounded-lg border px-2.5 py-1 text-[11.5px] transition-colors",
                 i === activeRole
-                  ? "border-line-hover bg-surface-3 text-fg"
-                  : "border-line-2 bg-surface text-muted hover:border-line-hover hover:text-fg",
+                  ? "border-control-hover bg-surface-3 text-fg"
+                  : "border-control bg-surface text-muted hover:border-control-hover hover:text-fg",
               )}
             >
               <span className="mr-1.5 inline-block h-2 w-2 rounded-full" style={{ background: r.color }} />
@@ -365,7 +365,7 @@ function ToolReference({ tools }: { tools: McpToolInfo[] }) {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search tools, params, descriptions…"
             aria-label="Search tools"
-            className="w-full rounded-lg border border-line-2 bg-surface px-3 py-1.5 pr-8 text-[12px] text-fg placeholder:text-faint focus:border-line-hover focus:outline-none"
+            className="w-full rounded-lg border border-control bg-surface px-3 py-1.5 pr-8 text-[12px] text-fg placeholder:text-faint focus:border-control-hover focus:outline-none"
           />
           {query && (
             <button

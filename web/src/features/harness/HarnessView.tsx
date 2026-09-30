@@ -78,7 +78,7 @@ export function HarnessView() {
               id="harness-versions"
               aria-label="Binary versions"
               data-testid="harness-versions"
-              className="rounded-[8px] border border-line-2 bg-surface-2 px-2 py-1 text-[12px]"
+              className="rounded-[8px] border border-control bg-surface-2 px-2 py-1 text-[12px]"
               value={versions}
               onChange={(e) => setVersions(e.target.value as "current" | "all")}
             >
@@ -674,7 +674,7 @@ function ProbePanel({
                 className={`rounded-[6px] border px-2 py-1 font-mono text-[11px] transition-colors ${
                   active
                     ? "border-st-done bg-[rgba(80,200,120,0.12)] text-st-done"
-                    : "border-line-2 bg-surface text-muted hover:border-line"
+                    : "border-control bg-surface text-muted hover:border-control"
                 }`}
               >
                 {s.vendor}:{s.model}

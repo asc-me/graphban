@@ -42,7 +42,7 @@ export function ProjectBar() {
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           aria-label="Switch project"
-          className="flex items-center gap-2.5 rounded-lg border border-line-2 px-2.5 py-1 hover:border-line-hover"
+          className="flex items-center gap-2.5 rounded-lg border border-control px-2.5 py-1 hover:border-control-hover"
         >
           <span
             className="h-[7px] w-[7px] shrink-0 rounded-sm"
@@ -87,7 +87,7 @@ export function ProjectBar() {
                     setOpen(false);
                     navigate(projectPath(p.tag, view));
                   }}
-                  className="flex w-full items-center gap-2.5 border-b border-line px-3 py-2 text-left hover:bg-surface-3"
+                  className="flex w-full items-center gap-2.5 border-b border-control px-3 py-2 text-left hover:bg-surface-3"
                 >
                   <span
                     className="h-[7px] w-[7px] shrink-0 rounded-sm"

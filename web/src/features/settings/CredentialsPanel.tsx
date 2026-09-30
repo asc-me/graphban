@@ -126,7 +126,7 @@ function TinyButton({ children, className, ...props }: React.ButtonHTMLAttribute
     <button
       type="button"
       {...props}
-      className={cn("rounded border border-line-2 px-2.5 py-1 font-mono text-[10px] uppercase tracking-wide text-muted hover:text-fg disabled:opacity-40 disabled:hover:text-muted", className)}
+      className={cn("rounded border border-control px-2.5 py-1 font-mono text-[10px] uppercase tracking-wide text-muted hover:text-fg disabled:opacity-40 disabled:hover:text-muted", className)}
     >
       {children}
     </button>
@@ -187,7 +187,7 @@ function AddCredentialDialog({
                   setModel(p.chat_model || "");
                   setBaseUrl(p.base_url || "");
                 }}
-                className="flex items-center gap-2 rounded border border-line px-3 py-2.5 text-left hover:border-accent/50">
+                className="flex items-center gap-2 rounded border border-control px-3 py-2.5 text-left hover:border-accent/50">
                 <span className="text-[13px] font-medium text-fg">{p.label}</span>
                 <span className={cn(chip, "ml-auto text-faint")}>
                   {p.kind === "openai" ? "OpenAI-compat" : p.kind}
@@ -348,7 +348,7 @@ function AddRuleDialog({
         <div className="flex flex-col gap-3" data-testid="rule-form">
           <Field label="Project">
             <select data-testid="rule-project" value={pid} onChange={(e) => setPid(e.target.value)}
-              className="w-full rounded border border-line-2 bg-transparent px-2 py-1.5 text-[12px]">
+              className="w-full rounded border border-control bg-transparent px-2 py-1.5 text-[12px]">
               <option value="">Choose a project…</option>
               {available.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
             </select>
@@ -362,7 +362,7 @@ function AddRuleDialog({
                 // actually use rather than an empty box the reader has to interpret.
                 setModel(credentials.find((c) => c.id === e.target.value)?.model ?? "");
               }}
-              className="w-full rounded border border-line-2 bg-transparent px-2 py-1.5 text-[12px]">
+              className="w-full rounded border border-control bg-transparent px-2 py-1.5 text-[12px]">
               <option value="">Choose a credential…</option>
               {credentials.map((c) => (
                 // Provider AND model: two credentials can share a provider and differ only by
@@ -449,7 +449,7 @@ function TaskRoles({
               aria-label={r.label}
               value={roles[r.id]?.credential_id ?? ""}
               onChange={(e) => setRole(r.id, e.target.value)}
-              className="min-w-0 flex-1 rounded border border-line-2 bg-transparent px-2 py-1 text-[12px]"
+              className="min-w-0 flex-1 rounded border border-control bg-transparent px-2 py-1 text-[12px]"
             >
               <option value="">Inherit project chat</option>
               {credentials.map((c) => (
@@ -478,7 +478,7 @@ function TaskRoles({
             aria-label="memory.decide"
             value={roles["memory.decide"]?.credential_id ?? ""}
             onChange={(e) => setRole("memory.decide", e.target.value)}
-            className="min-w-0 flex-1 rounded border border-line-2 bg-transparent px-2 py-1 text-[12px]"
+            className="min-w-0 flex-1 rounded border border-control bg-transparent px-2 py-1 text-[12px]"
           >
             <option value="">Inherit project / deployment decider</option>
             <option value="none">none — chat judge, then similarity</option>

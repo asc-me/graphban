@@ -47,16 +47,26 @@
     0 0 0 1px rgb(255 255 255 / 0.06);
 
   --color-bg: #0a0b0d;
-  --color-surface: #0e0e11;
-  --color-surface-2: #121215;
-  --color-surface-3: #151418;
-  --color-surface-4: #18171b;
+  --color-surface: #0f1317;
+  --color-surface-2: #12171b;
+  --color-surface-3: #1b2127;
+  --color-surface-4: #202831;
   --color-header: rgba(12, 15, 17, 0.72);
 
-  --color-line: #5a636c;
-  --color-line-2: #646d76;
-  --color-line-hover: #6e7780;
-  --color-line-3: #78828c;
+  /* Hairlines — structure, not controls. These are the design's own values. A panel edge
+     or a divider is decorative under WCAG 1.4.11, so it is drawn at 1.1–1.9:1 and must not
+     be raised to a control floor: doing that is what outlined every card in a 3.5:1 grey.
+     Anything a person operates takes --color-control below instead. */
+  --color-line: #2a333a;
+  --color-line-2: #1e242a;
+  --color-line-hover: #2f3a42;
+  --color-line-3: #3a444c;
+
+  /* Control borders. An input's boundary IS the thing that identifies the control, so these
+     hold ≥3:1 against every surface a control actually sits on (1.4.11). Solved against
+     surface-3 — the lightest surface the rendered audit finds a control on. */
+  --color-control: #626c75;
+  --color-control-hover: #6e7780;
 
   --color-fg: #e6e9ec;
   --color-fg-2: #dfe3e7;

@@ -80,7 +80,7 @@ export function LiveView() {
             <button
               type="button"
               onClick={togglePause}
-              className="rounded-lg border border-line-2 px-2.5 py-1 text-[12px] text-muted hover:border-line-hover hover:text-fg-2"
+              className="rounded-lg border border-control px-2.5 py-1 text-[12px] text-muted hover:border-control-hover hover:text-fg-2"
             >
               {paused ? "Resume" : "Pause"}
             </button>

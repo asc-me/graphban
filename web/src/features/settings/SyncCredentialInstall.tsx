@@ -54,7 +54,7 @@ export function SyncCredentialInstall({ apiKey, projectId }: { apiKey: string; p
             }}
             className={cn(
               "rounded-md border px-2 py-1 text-[11px] transition-colors",
-              method === id ? "border-accent/50 bg-surface-3 text-fg" : "border-line-2 text-muted hover:text-fg-2",
+              method === id ? "border-accent/50 bg-surface-3 text-fg" : "border-control text-muted hover:text-fg-2",
             )}
           >
             {label}
@@ -67,7 +67,7 @@ export function SyncCredentialInstall({ apiKey, projectId }: { apiKey: string; p
         </pre>
         <button
           onClick={() => copyText(snippet).then((ok) => ok && (setCopied(true), setTimeout(() => setCopied(false), 1500)))}
-          className="absolute right-1.5 top-1.5 rounded-md border border-line-2 bg-surface-3 p-1.5 text-muted hover:text-fg"
+          className="absolute right-1.5 top-1.5 rounded-md border border-control bg-surface-3 p-1.5 text-muted hover:text-fg"
           title="Copy"
         >
           {copied ? <Check size={13} className="text-accent" /> : <Copy size={13} />}

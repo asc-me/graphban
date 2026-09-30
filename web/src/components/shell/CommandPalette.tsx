@@ -224,7 +224,7 @@ export function CommandPalette({
             onKeyDown={onInputKeyDown}
             placeholder={COMMAND_PALETTE_PLACEHOLDER}
             aria-label="Command palette search"
-            className="h-[36px] w-full rounded-[9px] border border-line-2 bg-surface-2 px-3 text-[13px] outline-none focus:border-line-hover focus:bg-surface-2"
+            className="h-[36px] w-full rounded-[9px] border border-control bg-surface-2 px-3 text-[13px] outline-none focus:border-control-hover focus:bg-surface-2"
             autoComplete="off"
             spellCheck={false}
           />

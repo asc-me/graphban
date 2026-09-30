@@ -59,7 +59,7 @@ export function PrdListView() {
                 <button
                   key={p.id}
                   onClick={() => navigate(`/prds/${p.id}`)}
-                  className="flex w-full items-center gap-3 rounded-[12px] border border-line-2 bg-surface-2 px-4 py-3 text-left transition-colors hover:border-line-hover"
+                  className="flex w-full items-center gap-3 rounded-[12px] border border-control bg-surface-2 px-4 py-3 text-left transition-colors hover:border-control-hover"
                 >
                   <FileText size={16} className="flex-none text-muted" />
                   <span className="w-[52px] flex-none font-mono text-[11px] text-faint">{p.id}</span>
@@ -176,8 +176,8 @@ function NewPrdDialog({ onCreated }: { onCreated: (id: string) => void }) {
                     className={
                       "flex-1 rounded-lg border px-3 py-2 text-[12.5px] capitalize transition-colors " +
                       (template === t
-                        ? "border-line-hover bg-surface-3 text-fg"
-                        : "border-line-2 bg-surface-2 text-muted hover:text-fg-2")
+                        ? "border-control-hover bg-surface-3 text-fg"
+                        : "border-control bg-surface-2 text-muted hover:text-fg-2")
                     }
                   >
                     {t} template

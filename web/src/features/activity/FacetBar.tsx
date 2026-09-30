@@ -83,8 +83,8 @@ function FacetGroup({
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11.5px] transition-colors",
                 isSel
-                  ? "border-line-hover bg-surface-3 text-fg"
-                  : "border-line-2 text-muted hover:border-line-hover hover:text-ink",
+                  ? "border-control-hover bg-surface-3 text-fg"
+                  : "border-control text-muted hover:border-control-hover hover:text-ink",
               )}
             >
               <span className="max-w-[14rem] truncate">{v.label}</span>

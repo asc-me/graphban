@@ -165,7 +165,7 @@ export function FeedbackKitView() {
                   onClick={() => set("radius", r)}
                   className={cn(
                     "rounded-md border px-3 py-1.5 font-mono text-[11px] transition-colors",
-                    cfg.radius === r ? "border-line-hover bg-surface-3 text-fg" : "border-line-2 bg-surface-2 text-muted hover:text-fg-2",
+                    cfg.radius === r ? "border-control-hover bg-surface-3 text-fg" : "border-control bg-surface-2 text-muted hover:text-fg-2",
                   )}
                 >
                   {r}px
@@ -243,7 +243,7 @@ export function FeedbackKitView() {
               </pre>
               <button
                 onClick={copy}
-                className="absolute right-2 top-2 rounded-md border border-line-2 bg-surface-3 p-1.5 text-muted hover:text-fg"
+                className="absolute right-2 top-2 rounded-md border border-control bg-surface-3 p-1.5 text-muted hover:text-fg"
                 title="Copy"
               >
                 {copied ? <Check size={13} className="text-accent" /> : <Copy size={13} />}
@@ -301,7 +301,7 @@ function TextField({ label, value, onChange }: { label: string; value: string; o
       <input
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="h-8 w-full rounded-md border border-line-2 bg-surface-2 px-2.5 text-[12.5px] text-fg-2 outline-none focus:border-line-hover"
+        className="h-8 w-full rounded-md border border-control bg-surface-2 px-2.5 text-[12.5px] text-fg-2 outline-none focus:border-control-hover"
       />
     </label>
   );

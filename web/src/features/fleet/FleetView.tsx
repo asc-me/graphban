@@ -217,7 +217,7 @@ function SupervisorHandoff({ seats, wave }: { seats: { role: string; code: strin
               <button key={a} onClick={() => setAdapter(a)} aria-pressed={adapter === a}
                       className={cn("rounded-md border px-2 py-0.5 font-mono text-[10.5px] transition-colors",
                                     adapter === a ? "border-accent/50 bg-surface-3 text-fg"
-                                                  : "border-line-2 text-muted hover:text-fg-2")}>
+                                                  : "border-control text-muted hover:text-fg-2")}>
                 {a}
               </button>
             ))}
@@ -351,7 +351,7 @@ function AgentRow({ a, onDismiss, onRetask, roles = [], dismissed }: {
             data-testid="agent-role"
             className={cn("rounded-md border bg-transparent px-1.5 py-0.5 font-mono",
                           "text-[10px] uppercase",
-                          ROLE_TONE[a.active_role] ?? "text-muted border-line-2")}
+                          ROLE_TONE[a.active_role] ?? "text-muted border-control")}
             value={a.active_role}
             onChange={(e) => onRetask(a.id, e.target.value)}
           >
@@ -705,7 +705,7 @@ export function FleetView() {
                     className={cn("rounded-md border px-2 py-0.5 font-mono text-[10.5px] transition-colors",
                                   (confirmWave ?? liveWave) === w
                                     ? "border-accent/50 bg-surface-3 text-fg"
-                                    : "border-line-2 text-muted hover:text-fg-2")}
+                                    : "border-control text-muted hover:text-fg-2")}
                   >
                     {w}
                   </button>
@@ -767,7 +767,7 @@ export function FleetView() {
               aria-pressed={tab === id}
               className={cn("rounded-[9px] border px-3 py-1.5 text-[12px] transition-colors",
                             tab === id ? "border-accent/50 bg-surface-3 text-fg"
-                                       : "border-line-2 text-muted hover:text-fg-2")}
+                                       : "border-control text-muted hover:text-fg-2")}
             >
               {label}
             </button>
@@ -869,7 +869,7 @@ export function FleetView() {
               <button
                 key={r}
                 onClick={() => setSeatPlan({ ...seatPlan, [r]: (seatPlan[r] ?? 0) + 1 })}
-                className="rounded-[9px] border border-line-2 px-3 py-1.5 text-[12px] text-muted transition-colors hover:text-fg-2"
+                className="rounded-[9px] border border-control px-3 py-1.5 text-[12px] text-muted transition-colors hover:text-fg-2"
               >
                 + {r}
               </button>
@@ -1079,7 +1079,7 @@ export function FleetView() {
                 className={cn("rounded-[9px] border px-3 py-1.5 text-[12px] transition-colors",
                               role === r
                                 ? "border-accent/50 bg-surface-3 text-fg"
-                                : "border-line-2 text-muted hover:text-fg-2")}>
+                                : "border-control text-muted hover:text-fg-2")}>
                 {r}
               </button>
             ))}

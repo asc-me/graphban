@@ -147,7 +147,7 @@ function ContributionCard({
       <button
         type="button"
         data-testid="sync-contribution-toggle"
-        className="mt-2 rounded-[8px] border border-line-2 px-2 py-1 text-[12px]"
+        className="mt-2 rounded-[8px] border border-control px-2 py-1 text-[12px]"
         disabled={busy}
         onClick={() => void toggle()}
       >
@@ -363,7 +363,7 @@ function ProjectsTable({
               key={p.project_id}
               onClick={() => onScope(p.project_id)}
               className={cn(
-                "flex w-full items-center gap-3 border-b border-line px-3.5 py-2 text-left transition-colors last:border-b-0 hover:bg-surface-2",
+                "flex w-full items-center gap-3 border-b border-control px-3.5 py-2 text-left transition-colors last:border-b-0 hover:bg-surface-2",
                 sel && "bg-[rgba(198,242,78,0.05)] shadow-[inset_2px_0_0_0_var(--color-accent)]",
               )}
             >
@@ -422,7 +422,7 @@ function ScopeBar({ scoped, onClear }: { scoped: SyncProjectState | null; onClea
       {scoped && (
         <button
           onClick={onClear}
-          className="rounded-md border border-line-2 px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-wide text-faint hover:border-line-hover hover:text-fg-2"
+          className="rounded-md border border-control px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-wide text-faint hover:border-control-hover hover:text-fg-2"
         >
           Clear
         </button>
@@ -480,7 +480,7 @@ function GraphPrivacyCard({
         onClick={toggle}
         disabled={!canWrite || busy}
         className={cn(
-          "flex w-full items-start gap-2.5 rounded-[9px] border border-line bg-surface px-3 py-2.5 text-left transition-colors hover:border-line-hover disabled:cursor-not-allowed",
+          "flex w-full items-start gap-2.5 rounded-[9px] border border-control bg-surface px-3 py-2.5 text-left transition-colors hover:border-control-hover disabled:cursor-not-allowed",
         )}
       >
         <span
@@ -680,7 +680,7 @@ function PortableBundleCard({
         onClick={() => canWrite && fileRef.current?.click()}
         disabled={!canWrite}
         className={cn(
-          "flex w-full flex-col items-center justify-center gap-2 rounded-[10px] border border-dashed border-line-3 bg-surface px-4 py-6 transition-colors hover:border-accent/45 disabled:cursor-not-allowed disabled:hover:border-line-3",
+          "flex w-full flex-col items-center justify-center gap-2 rounded-[10px] border border-dashed border-control-hover bg-surface px-4 py-6 transition-colors hover:border-accent/45 disabled:cursor-not-allowed disabled:hover:border-control-hover",
         )}
       >
         <Upload size={20} className="text-faint" />
@@ -700,7 +700,7 @@ function PortableBundleCard({
           </span>
           <button
             onClick={() => setBundle(null)}
-            className="flex-none rounded-md border border-line-2 px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-wide text-faint hover:border-st-blocked/35 hover:text-st-blocked"
+            className="flex-none rounded-md border border-control px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-wide text-faint hover:border-st-blocked/35 hover:text-st-blocked"
           >
             Clear
           </button>

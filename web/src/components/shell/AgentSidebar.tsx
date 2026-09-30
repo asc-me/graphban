@@ -153,7 +153,7 @@ function MemoryPanel() {
           placeholder={
             activeId ? "Semantic search over memory…" : "No project selected — nothing to search"
           }
-          className="h-9 w-full rounded-[9px] border border-line-2 bg-surface-2 pl-8 pr-3 text-[12.5px] outline-none focus:border-line-hover disabled:cursor-not-allowed disabled:text-faint"
+          className="h-9 w-full rounded-[9px] border border-control bg-surface-2 pl-8 pr-3 text-[12.5px] outline-none focus:border-control-hover disabled:cursor-not-allowed disabled:text-faint"
         />
       </form>
 

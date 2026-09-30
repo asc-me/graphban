@@ -71,8 +71,8 @@ export function UsageView() {
                 className={cn(
                   "rounded-md border px-2.5 py-1 font-mono text-[10.5px] transition-colors",
                   range === d
-                    ? "border-line-hover bg-surface-3 text-fg"
-                    : "border-line-2 text-muted hover:border-line-hover",
+                    ? "border-control-hover bg-surface-3 text-fg"
+                    : "border-control text-muted hover:border-control-hover",
                 )}
               >
                 {d}d
@@ -153,7 +153,7 @@ export function UsageView() {
                   }
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px]",
-                    hidden ? "border-line-2 text-faint opacity-60" : "border-line-hover text-muted",
+                    hidden ? "border-control text-faint opacity-60" : "border-control-hover text-muted",
                   )}
                 >
                   <span

@@ -240,7 +240,7 @@ function AutoActionsLane({
               "rounded-md border px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide transition-colors",
               unvettedOnly
                 ? "border-[#a78bfa] bg-[rgba(167,139,250,0.12)] text-[#a78bfa]"
-                : "border-line-2 text-faint hover:border-line-hover hover:text-muted",
+                : "border-control text-faint hover:border-control-hover hover:text-muted",
             )}
           >
             {unvettedOnly ? "showing" : "show"} {unvettedCount} nobody reviewed
@@ -295,7 +295,7 @@ function AutoActionsLane({
                 onClick={() => onUndo(s.id)}
                 disabled={busy}
                 title="Return to the review queue"
-                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] text-muted transition-colors hover:border-line-hover hover:text-ink disabled:opacity-50"
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-control px-2 py-1 text-[11px] text-muted transition-colors hover:border-control-hover hover:text-ink disabled:opacity-50"
               >
                 <RotateCcw size={11} /> Undo
               </button>
@@ -444,7 +444,7 @@ function CandidateCard({
         <button
           onClick={onReject}
           disabled={busy}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:border-line-hover hover:text-ink disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-control px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:border-control-hover hover:text-ink disabled:opacity-50"
         >
           <X size={13} /> Reject
         </button>
@@ -453,7 +453,7 @@ function CandidateCard({
             onClick={() => judge.mutate(shard.id, { onSuccess: setAsked })}
             disabled={busy || judge.isPending}
             title="Re-ask keep/quality. Does not replace groundedness on the list."
-            className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:border-line-hover hover:text-ink disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-control px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:border-control-hover hover:text-ink disabled:opacity-50"
           >
             {judge.isPending ? "Asking…" : "Ask the judge"}
           </button>

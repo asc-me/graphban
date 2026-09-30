@@ -106,7 +106,7 @@ export function GalaxyView() {
             className={`h-[30px] rounded-lg border px-2.5 font-mono text-[9.5px] uppercase tracking-[0.05em] ${
               showStale
                 ? "border-st-review/40 bg-st-review/[0.1] text-st-review"
-                : "border-line-2 text-muted hover:text-fg"
+                : "border-control text-muted hover:text-fg"
             }`}
           >
             show stale{staleCount > 0 && ` · ${staleCount}`}

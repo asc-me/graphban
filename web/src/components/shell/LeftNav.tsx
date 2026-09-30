@@ -125,7 +125,7 @@ function HostedLeftNav() {
       ) : (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className="flex h-10 w-full items-center gap-2.5 rounded-[10px] border border-line-2 bg-surface-2 px-3 transition-colors hover:border-line-hover">
+            <button className="flex h-10 w-full items-center gap-2.5 rounded-[10px] border border-control bg-surface-2 px-3 transition-colors hover:border-control-hover">
               <span
                 className="h-2.5 w-2.5 flex-none rounded-[3px]"
                 style={{ background: active?.accent ?? "#c6f24e" }}
@@ -356,7 +356,7 @@ function SelfHostLeftNav() {
     <aside className="flex w-[216px] flex-none flex-col border-r border-line bg-[rgba(9,11,13,0.5)] px-3 py-4">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button className="flex h-10 w-full items-center gap-2.5 rounded-[10px] border border-line-2 bg-surface-2 px-3 transition-colors hover:border-line-hover">
+          <button className="flex h-10 w-full items-center gap-2.5 rounded-[10px] border border-control bg-surface-2 px-3 transition-colors hover:border-control-hover">
             <span
               className="h-2.5 w-2.5 flex-none rounded-[3px]"
               style={{ background: active?.accent ?? "#c6f24e" }}

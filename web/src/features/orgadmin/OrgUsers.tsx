@@ -111,7 +111,7 @@ function MembersTab() {
           <button
             onClick={() => setInviting((v) => !v)}
             disabled={atCap}
-            className="inline-flex h-[30px] items-center gap-2 rounded-lg border border-accent/35 bg-accent/[0.14] px-3 text-[12.5px] font-semibold text-accent disabled:border-line disabled:bg-transparent disabled:text-faint-2"
+            className="inline-flex h-[30px] items-center gap-2 rounded-lg border border-accent/35 bg-accent/[0.14] px-3 text-[12.5px] font-semibold text-accent disabled:border-control disabled:bg-transparent disabled:text-faint-2"
           >
             <UserPlus size={13} /> Invite
           </button>
@@ -284,7 +284,7 @@ function MemberRow({ member, orgId }: { member: OrgMember; orgId: string }) {
                 : undefined
           }
           onChange={(e) => setRole.mutate({ userId: user.id, role: e.target.value })}
-          className="h-[23px] rounded-md border border-line-2 bg-surface px-1.5 font-mono text-[10px] disabled:cursor-not-allowed disabled:text-faint-2"
+          className="h-[23px] rounded-md border border-control bg-surface px-1.5 font-mono text-[10px] disabled:cursor-not-allowed disabled:text-faint-2"
         >
           <option value="owner" disabled>
             owner
@@ -302,7 +302,7 @@ function MemberRow({ member, orgId }: { member: OrgMember; orgId: string }) {
                 ? "You cannot remove yourself."
                 : undefined
           }
-          className="h-[23px] rounded-md border border-st-blocked/30 px-2 font-mono text-[9px] uppercase tracking-[0.05em] text-st-blocked disabled:cursor-not-allowed disabled:border-line disabled:text-faint-2"
+          className="h-[23px] rounded-md border border-st-blocked/30 px-2 font-mono text-[9px] uppercase tracking-[0.05em] text-st-blocked disabled:cursor-not-allowed disabled:border-control disabled:text-faint-2"
         >
           Remove
         </button>
@@ -360,7 +360,7 @@ function RemoveConfirm({
         <div className="mt-4 flex justify-end gap-2">
           <button
             onClick={onClose}
-            className="h-[30px] rounded-lg border border-line-2 px-3 text-[12.5px] text-muted hover:text-fg"
+            className="h-[30px] rounded-lg border border-control px-3 text-[12.5px] text-muted hover:text-fg"
           >
             Cancel
           </button>
@@ -422,13 +422,13 @@ function InviteForm({ orgId, onDone }: { orgId: string; onDone: () => void }) {
         onChange={(e) => setEmail(e.target.value)}
         placeholder="teammate@company.dev"
         aria-label="Invitee email"
-        className="h-[30px] min-w-[220px] flex-1 rounded-lg border border-line-2 bg-surface px-2.5 font-mono text-[12px] outline-none focus:border-accent/50"
+        className="h-[30px] min-w-[220px] flex-1 rounded-lg border border-control bg-surface px-2.5 font-mono text-[12px] outline-none focus:border-accent/50"
       />
       <select
         value={role}
         onChange={(e) => setRole(e.target.value)}
         aria-label="Role"
-        className="h-[30px] rounded-lg border border-line-2 bg-surface px-2 text-[12px]"
+        className="h-[30px] rounded-lg border border-control bg-surface px-2 text-[12px]"
       >
         <option value="member">member</option>
         <option value="admin">admin</option>
@@ -490,7 +490,7 @@ function InviteRow({ invite, orgId }: { invite: Invite; orgId: string }) {
               setTimeout(() => setCopied(false), 1600);
             }
           }}
-          className="inline-flex h-[23px] items-center gap-1 rounded-md border border-line-2 px-2 font-mono text-[9px] uppercase tracking-[0.05em] text-muted hover:border-accent/40 hover:text-accent"
+          className="inline-flex h-[23px] items-center gap-1 rounded-md border border-control px-2 font-mono text-[9px] uppercase tracking-[0.05em] text-muted hover:border-accent/40 hover:text-accent"
         >
           {copied ? <Check size={10} /> : <Copy size={10} />}
           {copied ? "COPIED" : "COPY LINK"}

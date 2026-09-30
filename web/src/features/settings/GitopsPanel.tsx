@@ -193,7 +193,7 @@ function Chip({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className="rounded-md border border-line-2 px-2 py-0.5 font-mono text-[11px] text-muted hover:text-fg-2 disabled:pointer-events-none disabled:opacity-50"
+      className="rounded-md border border-control px-2 py-0.5 font-mono text-[11px] text-muted hover:text-fg-2 disabled:pointer-events-none disabled:opacity-50"
     >
       {label}
     </button>
@@ -213,7 +213,7 @@ function Clear({ disabled, onClick }: { disabled: boolean; onClick: () => void }
       aria-label="Clear"
       disabled={disabled}
       onClick={onClick}
-      className="rounded-md border border-line-2 px-1.5 py-0.5 font-mono text-[11px] text-muted hover:text-fg-2 disabled:pointer-events-none disabled:opacity-50"
+      className="rounded-md border border-control px-1.5 py-0.5 font-mono text-[11px] text-muted hover:text-fg-2 disabled:pointer-events-none disabled:opacity-50"
     >
       ×
     </button>
@@ -221,7 +221,7 @@ function Clear({ disabled, onClick }: { disabled: boolean; onClick: () => void }
 }
 
 const selectClass =
-  "h-9 w-full rounded-[9px] border border-line-2 bg-surface-2 px-3 text-[13px] text-fg outline-none disabled:cursor-not-allowed";
+  "h-9 w-full rounded-[9px] border border-control bg-surface-2 px-3 text-[13px] text-fg outline-none disabled:cursor-not-allowed";
 
 export function GitopsPanel() {
   const { active, activeId } = useProjectCtx();
