@@ -186,6 +186,59 @@ def heartbeat_interval_seconds(lease_seconds: int = DEFAULT_LEASE_SECONDS) -> in
     return max(1, presence_ttl_seconds(lease_seconds) // 3)
 
 
+def seen_floor_seconds(lease_seconds: int = DEFAULT_LEASE_SECONDS) -> int:
+    """How stale a presence stamp must be before an ordinary call rewrites it (GRPH-932).
+
+    Half a heartbeat interval. DERIVED rather than a constant, for the same reason the TTL
+    is: the three numbers must not drift. A stamp at most one interval old can never be read
+    as offline, because the TTL is three intervals — so this bounds the write rate without
+    ever narrowing the window it protects.
+    """
+    return max(1, heartbeat_interval_seconds(lease_seconds) // 2)
+
+
+def seen(db: Session, agent_id: str | None, *, api_key_id: str | None = None,
+         now: datetime | None = None,
+         lease_seconds: int = DEFAULT_LEASE_SECONDS) -> bool:
+    """Record that this agent is alive because it just called us (GRPH-932).
+
+    **Presence only.** It never extends an item lease, never changes `state`, and never
+    creates a row. Returns True when a stamp was written.
+
+    WHY THIS EXISTS. Presence used to be refreshed by `heartbeat` alone, so an agent that
+    spent its turns READING — `get_item_details`, `search_code`, a long `conftest.py` dump —
+    was declared offline while the server was busy answering its calls. The supervisor then
+    released its item (GRPH-850) and the agent's next heartbeat was refused as `not the lease
+    holder`. Measured on wave p48a: four of six children died that way in one wave, 6.73
+    MILLION tokens for zero deliverables, every one exiting `success` with `is_error: false`.
+    Reading is not a failure to work, and a ledger that watches an agent make authenticated
+    calls and calls it dead is measuring the wrong thing.
+
+    **`state` is deliberately untouched.** `touch` moves an agent to `working` because a
+    heartbeat carrying an item id says what it is doing; an arbitrary read says only that it
+    is there. Writing `working` here would report a reviewer reading a diff as building, and
+    would let a QUARANTINED agent read its way back to healthy.
+
+    **Ownership is required, not assumed.** Only a call on the credential that owns the agent
+    refreshes it. Without that check any key could keep another credential's dead agent
+    looking alive, which is this repo's favourite defect wearing a new hat.
+    """
+    if not agent_id or is_credential(agent_id):
+        return False
+    agent = db.get(Agent, agent_id)
+    if agent is None:
+        return False
+    if api_key_id is not None and agent.api_key_id != api_key_id:
+        return False
+    now = now or datetime.now(timezone.utc)
+    seen_at = _aware(agent.last_seen_at)
+    if seen_at is not None and now - seen_at < timedelta(seconds=seen_floor_seconds(lease_seconds)):
+        return False
+    agent.last_seen_at = now
+    db.commit()
+    return True
+
+
 def retired(agent: Agent, *, now: datetime | None = None) -> bool:
     """Can this agent never come back? (GRPH-814)
 

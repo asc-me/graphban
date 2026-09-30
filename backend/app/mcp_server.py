@@ -3484,6 +3484,12 @@ def _record_call(db: Session, key: ApiKey, name: str, args: Any, result: Any,
         # dispatcher's project local by name; this helper deliberately does not use it.
         project = scope.get("project_id") or key.project_id
         agent_id = _agent_for_call(db, key, args, session_id)
+        # GRPH-932: this call IS the evidence the agent is alive, so stamp presence here —
+        # the feed row and the presence stamp are the same observation, and resolving the
+        # agent twice per call to keep them apart would buy nothing. Refusals count: a
+        # heartbeat refused as `not the lease holder` still proves the caller is running.
+        # Presence only — never the item lease, never `state`. See fleet_svc.seen.
+        fleet_svc.seen(db, agent_id, api_key_id=key.id)
         extra: dict = {}
         if ok and reported and reported.get("changed"):
             extra = {"source": "reported", "status": reported.get("status") or "",
