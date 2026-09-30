@@ -156,6 +156,19 @@ have done (GRPH-800). It then reads the tool manifest and refuses again if `dele
 shipped in different releases, and passing only the first is the wave that reports as scoped
 while its workers are not. Needs both server-side halves; upgrade if you see either refusal.
 
+### The build servers a project grants
+
+`--mcp-server NAME` copies one of your MCP servers from `~/.claude.json` into each child's seat,
+by exact name (GRPH-816). A project can commit the same grant so a wave does not depend on
+someone remembering the flag: `<repo>/.gbfleet/servers`, one exact name per line, `#` comments
+and blank lines ignored (GRPH-998). It is read from the repository root and unions with the
+flag, through the same rules — no patterns, `graphban`/`gbfleet` reserved, and a name missing
+from `~/.claude.json` refuses the wave before spawn, naming the file it came from. An absent file
+grants nothing beyond the seat; one that exists and cannot be read refuses. Names only — the
+credentials stay in `~/.claude.json`. qwen-code's `--allowed-mcp-server-names` gets the same
+names. Grok still merges the operator's servers; this adds the build ones to Claude and Qwen.
+`gbfleet surface` does not read this file — it reports what a child loads with no wave grant.
+
 ### What a child can reach, and what it cannot
 
 `--strict-mcp-config` bounds the child's **tool** surface (GRPH-802). It bounds nothing else:

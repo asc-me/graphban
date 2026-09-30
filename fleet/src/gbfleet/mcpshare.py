@@ -17,6 +17,12 @@ read the empty result as the model being bad at the task.
 and a child can send what it reads anywhere. That is a fine trade for a docs server and a bad
 one for anything holding write access, so the refusal message says it rather than assuming the
 operator has thought it through.
+
+**A project can name its own build servers** (GRPH-998). `<repo>/.gbfleet/servers` holds one
+exact name per line and unions with `--mcp-server`, through the same `select` and so the same
+refusals. It exists because a Harness rate compares vendors as if they had been handed the same
+build tools, and a grant that depends on someone remembering a flag is not that. Names only —
+credentials stay in the source file.
 """
 from __future__ import annotations
 
@@ -32,6 +38,9 @@ DEFAULT_SOURCE = "~/.claude.json"
 #: the child's OWN credential; copying the operator's would hand a child a key with different
 #: reach and make `independent()` meaningless — two agents, one credential.
 RESERVED = frozenset({"graphban", "gbfleet"})
+
+#: The project's grant, relative to the repository root. Committed, names only.
+PROJECT_FILE = ".gbfleet/servers"
 
 
 class ShareRefused(RuntimeError):
@@ -65,12 +74,15 @@ def available(source: str = "") -> dict[str, dict]:
     return {k: v for k, v in found.items() if isinstance(v, dict)}
 
 
-def select(names: list[str], source: str = "") -> dict[str, dict]:
+def select(names: list[str], source: str = "", label: str = "--mcp-server") -> dict[str, dict]:
     """The named servers, or a refusal naming the one that is missing.
 
     Deliberately does NOT list what was available. The file it just read is the one holding
     the operator's mail and calendar, and printing its contents into a wave log — or into a
     child's error output — would be a smaller version of the leak this whole area is about.
+
+    `label` says where the names came from, so a typo committed to the project file does not
+    tell the operator to fix a flag they never typed.
     """
     wanted = [n.strip() for n in names if n and n.strip()]
     if not wanted:
@@ -78,17 +90,52 @@ def select(names: list[str], source: str = "") -> dict[str, dict]:
     for name in wanted:
         if any(c in name for c in "*?["):
             raise ShareRefused(
-                f"--mcp-server {name!r}: patterns are refused. Name each server exactly — a "
+                f"{label} {name!r}: patterns are refused. Name each server exactly — a "
                 "glob is how a child ends up holding servers nobody chose for it")
         if name in RESERVED:
             raise ShareRefused(
-                f"--mcp-server {name!r}: reserved. The seat writes that one itself, with the "
+                f"{label} {name!r}: reserved. The seat writes that one itself, with the "
                 "child's own credential; sharing yours would give two agents one key")
     have = available(source)
     missing = [n for n in wanted if n not in have]
     if missing:
         raise ShareRefused(
-            f"{', '.join(missing)} not in {source_path(source)}. Refusing rather than "
+            f"{label}: {', '.join(missing)} not in {source_path(source)}. Refusing rather than "
             "spawning without it: a child missing the server it was meant to have reads as a "
             "model that is bad at the task")
     return {n: have[n] for n in wanted}
+
+
+def project_path(repo: Path | str) -> Path:
+    return Path(repo) / PROJECT_FILE
+
+
+def project_names(repo: Path | str) -> list[str]:
+    """The names the project commits, in file order. `#` comments and blank lines ignored.
+
+    A file that does not exist is "this project listed no build servers" and gives `[]`. A
+    file that exists and cannot be read is NOT that — it refuses, or a broken grant would read
+    as a deliberate empty one and the wave would run without the servers it was meant to have.
+    """
+    path = project_path(repo)
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        raise ShareRefused(f"could not read {path}: {exc}") from exc
+    names = []
+    for raw in text.splitlines():
+        name = raw.split("#", 1)[0].strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def grants(flag_names: list[str], repo: Path | str, source: str = "") -> dict[str, dict]:
+    """`--mcp-server` UNION the project file. Two `select` calls, not one concatenated list, so
+    each refusal names the list it came from."""
+    return {
+        **select(flag_names, source),
+        **select(project_names(repo), source, label=str(project_path(repo))),
+    }

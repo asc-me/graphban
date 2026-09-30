@@ -122,7 +122,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--mcp-server", action="append", default=[], metavar="NAME",
         help="share one of YOUR MCP servers with each child, by exact name (e.g. context7). "
              "Repeatable. Exact names only — no patterns — and an unknown name refuses the "
-             "run. Sharing a server shares its credential")
+             "run. Unions with the repo's .gbfleet/servers. Sharing a server shares its "
+             "credential")
     run.add_argument(
         "--allow", action="append", default=[], metavar="NAME",
         help="let children run this command despite the default deny-list (e.g. psql for "
@@ -220,7 +221,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--mcp-server", action="append", default=[], metavar="NAME",
         help="share one of YOUR MCP servers with each child, by exact name (e.g. context7). "
              "Repeatable. Exact names only — no patterns — and an unknown name refuses the "
-             "run. Sharing a server shares its credential")
+             "run. Unions with the repo's .gbfleet/servers. Sharing a server shares its "
+             "credential")
     stdio.add_argument(
         "--allow", action="append", default=[], metavar="NAME",
         help="let children run this command despite the default deny-list (e.g. psql for "
@@ -334,7 +336,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--mcp-server", action="append", default=[], metavar="NAME",
         help="share one of YOUR MCP servers with each child, by exact name (e.g. context7). "
              "Repeatable. Exact names only — no patterns — and an unknown name refuses the "
-             "run. Sharing a server shares its credential")
+             "run. Unions with the repo's .gbfleet/servers. Sharing a server shares its "
+             "credential")
     until.add_argument(
         "--allow", action="append", default=[], metavar="NAME",
         help="let children run this command despite the default deny-list (e.g. psql for "
@@ -829,11 +832,20 @@ def _shared_servers(args) -> dict:
 
     Resolved HERE rather than per child so a typo refuses the run instead of the fourth
     worktree, and so the refusal reaches a terminal rather than a child's stderr.
+
+    Unions with the project's `.gbfleet/servers` (GRPH-998), read from the repository ROOT:
+    `--repo` may be a subdirectory, and reading beside it would find nothing and grant nothing
+    — a mis-pointed flag passing as a project that listed no servers.
     """
     from . import mcpshare
 
     try:
-        return mcpshare.select(list(getattr(args, "mcp_server", []) or []))
+        root = repo_root(Path(getattr(args, "repo", ".") or "."))
+    except NotARepository as exc:
+        print(f"gbfleet: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        return mcpshare.grants(list(getattr(args, "mcp_server", []) or []), root)
     except mcpshare.ShareRefused as exc:
         print(f"gbfleet: {exc}", file=sys.stderr)
         raise SystemExit(2)
