@@ -558,9 +558,22 @@ def run(
 
 
 def _package_digest(root: Path) -> str | None:
-    """A stable digest of the `.py` files under a gbfleet package tree, or None."""
+    """A stable digest of EVERY file under a gbfleet package tree, or None.
+
+    Every file, not just `*.py` — that was the first version and it read a package-data change
+    as a match. `matrix.toml` ships inside the package and decides model and tier selection, and
+    `aac27865` (the qwen-code model row) was one of the three commits that motivated the 0.10.0
+    release this check exists because of. A digest that cannot see it would have passed the
+    exact drift it was written for.
+
+    `__pycache__` and compiled artefacts are excluded because they are derived: an installed
+    tree has them and a fresh checkout does not, so including them would report every install
+    as drifted and the check would be ignored within a day.
+    """
     try:
-        files = sorted(q for q in root.rglob("*.py") if "__pycache__" not in q.parts)
+        files = sorted(q for q in root.rglob("*")
+                       if q.is_file() and "__pycache__" not in q.parts
+                       and q.suffix not in (".pyc", ".pyo"))
     except OSError:
         return None
     if not files:
@@ -621,10 +634,13 @@ def check_installed_matches_checkout(report: Report, repo: Path | str | None) ->
         report.add("installed matches checkout", PASS,
                    f"{__version__} installed at {installed} matches the checkout")
         return
+    # Which side is AHEAD cannot be answered: the version strings are equal in the case this
+    # exists for, and file contents carry no order. Saying so is the honest answer — inventing
+    # a direction would send an operator to reinstall when the checkout was the stale one.
     report.add(
         "installed matches checkout", FAIL,
-        f"the installed gbfleet ({__version__} at {installed}) DIFFERS from "
-        f"{checkout} — both may report the same version while behaving differently",
+        f"the installed gbfleet ({__version__} at {installed}) DIFFERS from {checkout}; "
+        f"both report {__version__}, so the version strings cannot say which is ahead",
         "uv tool install graphban-fleet@latest  (`uv tool upgrade` is a no-op on a pinned "
         "install and says 'Nothing to upgrade', which reads as confirmation)",
     )

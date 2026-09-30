@@ -142,10 +142,78 @@ def test_an_empty_package_tree_is_unknown_not_a_match(tmp_path: Path):
     assert doctor_mod._package_digest(dest) is None
 
 
-def test_doctor_runs_the_check(tmp_path: Path):
-    """The CALL. A correct check nobody invokes reports nothing, and this one is only useful
-    at the moment an operator is asking whether their setup is sane."""
-    import inspect
+def test_package_data_counts_as_a_difference(tmp_path: Path):
+    """`matrix.toml` ships INSIDE the package and decides model and tier selection. A digest of
+    `*.py` alone read a change to it as a match — and `aac27865`, the qwen-code model row, was
+    one of the three commits that motivated the 0.10.0 release this check exists because of. So
+    the first version would have passed the exact drift it was written for."""
+    repo = _fake_checkout(tmp_path / "repo", from_installed=_installed())
+    toml = repo / "fleet" / "src" / "gbfleet" / "matrix.toml"
+    assert toml.exists(), "matrix.toml must be in the package for this to mean anything"
+    toml.write_text(toml.read_text() + '\n# a model row added without a version bump\n')
+    report = Report()
 
-    src = inspect.getsource(doctor_mod.run)
-    assert "check_installed_matches_checkout(report" in src
+    check_installed_matches_checkout(report, repo)
+
+    assert _only(report).status == FAIL
+
+
+def test_compiled_artefacts_are_not_a_difference(tmp_path: Path):
+    """The other half. An installed tree has `__pycache__` and a fresh checkout does not, so
+    counting derived files would report every install as drifted and the check would be ignored
+    within a day."""
+    repo = _fake_checkout(tmp_path / "repo", from_installed=_installed())
+    cache = repo / "fleet" / "src" / "gbfleet" / "__pycache__"
+    cache.mkdir(exist_ok=True)
+    (cache / "doctor.cpython-312.pyc").write_bytes(b"\x00compiled")
+    report = Report()
+
+    check_installed_matches_checkout(report, repo)
+
+    assert _only(report).status == PASS
+
+
+def test_the_failure_names_both_sides_and_does_not_invent_an_order(tmp_path: Path):
+    """Acceptance says the FAIL names both sides, and asserting only "DIFFERS" left that
+    unpinned — dropping the checkout path from the message stayed green.
+
+    It must also NOT claim which side is ahead: the version strings are equal in the case this
+    exists for and file contents carry no order, so inventing a direction would send an operator
+    to reinstall when the checkout was the stale one."""
+    repo = _fake_checkout(tmp_path / "repo", from_installed=_installed())
+    seat = repo / "fleet" / "src" / "gbfleet" / "seat.py"
+    seat.write_text(seat.read_text() + "\n# drift\n")
+    report = Report()
+
+    check_installed_matches_checkout(report, repo)
+
+    detail = _only(report).detail
+    assert str(_installed()) in detail, "the installed path is not named"
+    assert str(repo / "fleet" / "src" / "gbfleet") in detail, "the checkout path is not named"
+    assert "cannot say which is ahead" in detail
+
+
+def test_doctor_actually_reports_the_finding(tmp_path: Path, monkeypatch):
+    """THE CALL, and the reviewer of PR #902 showed why a source grep is not it: with `run()`
+    changed to `check_installed_matches_checkout(report, None)` every test here still passed,
+    and every real doctor run would report UNKNOWN 'no repository' forever with nothing
+    noticing. Commenting the call out keeps the substring too.
+
+    So this runs `doctor.run` and reads the finding it produced."""
+    import io
+
+    repo = _fake_checkout(tmp_path / "repo", from_installed=_installed())
+    seat = repo / "fleet" / "src" / "gbfleet" / "seat.py"
+    seat.write_text(seat.read_text() + "\n# drift\n")
+    # The slow and networked checks are not what this is about.
+    for name in ("check_host", "check_memory", "check_sandbox", "check_credential_protection",
+                 "check_state_and_lock", "check_workspace", "check_seats",
+                 "check_supervision_mode", "check_service", "check_matrix"):
+        monkeypatch.setattr(doctor_mod, name, lambda *a, **k: None)
+    monkeypatch.setattr(doctor_mod, "check_repository", lambda report, repo: Path(repo))
+
+    report = doctor_mod.run(repo=repo, out=io.StringIO())
+
+    rows = [f for f in report.findings if f.name == "installed matches checkout"]
+    assert rows, "doctor produced no such finding — the check is not wired in"
+    assert rows[0].status == FAIL, rows[0].detail
