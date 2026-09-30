@@ -483,6 +483,46 @@ def test_a_holder_still_heartbeating_keeps_the_item(client, auth, key, proj, db)
     assert fleet_svc.review_claim_lapse(db.get(Item, claimed["item"]["id"])) is None
 
 
+def test_a_reviewer_returning_from_a_long_round_does_not_lapse_its_own_hold(
+        client, auth, key, proj, db):
+    """GRPH-932's principle, applied to the review hold — and a defect the presence-lapse above
+    introduced, found by reading the call order rather than by a test.
+
+    `heartbeat` derived the state it reports from a presence stamp the SAME CALL was about to
+    refresh, and a review claim now lapses when its holder stops heartbeating. So a reviewer
+    coming back from one long round — a diff read, a slow suite, the ordinary case here rather
+    than the exotic one — lapsed its OWN hold and then reported itself `idle`. That is GRPH-771's
+    defect arriving through the fix for PRD-48 S5, and the roster word is the cheap half: with
+    the hold lapsed, `claim_review` offers the item to somebody else while its holder is on the
+    phone to us.
+
+    Sabotage: move the `fleet_svc.seen` stamp back below `presence_for_heartbeat` and this fails
+    on the state, on the holder, and on the other reviewer's claim."""
+    from app.models import Item
+
+    builder = _agent(client, key, "builder", "worker")
+    reviewer = _agent(client, key, "reviewer", "worker")
+    item_id = _item_in_review(client, key, proj, builder)
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": reviewer}))
+
+    # One long round: presence has gone stale, the hold itself is still young.
+    _stop_heartbeating(db, reviewer)
+
+    assert _ok(_mcp(client, key, "heartbeat", {"agent_id": reviewer}))["state"] == "reviewing", \
+        "an agent that is calling us is not offline, and is still reviewing"
+
+    db.expire_all()
+    stored = db.get(Item, item_id)
+    assert stored.review_claimed_by == reviewer, "its own heartbeat lapsed its hold"
+    assert fleet_svc.review_claim_holder(stored) == reviewer
+
+    # The consequence that matters, not just the column: nobody else can take it.
+    other = _agent(client, key, "somebody else", "worker")
+    assert not _ok(_mcp(client, key, "claim_review",
+                        {"project_id": proj, "agent_id": other})).get("claimed"), \
+        "a reviewer that just called us must not lose the item to the next one"
+
+
 def test_a_holder_the_roster_cannot_find_is_left_to_the_clock(client, key, proj, db):
     """"I could not find the holder" is NOT "the holder is gone" — `_offline_holders`' rule, and
     the safe direction to be wrong in. A hold written for a human or a bare credential has no

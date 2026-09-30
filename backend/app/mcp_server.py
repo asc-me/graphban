@@ -3013,6 +3013,18 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # reviewer heartbeats through here too and used to be filed as idle (GRPH-771).
             # The server owns the truth about that hold, so it derives the state rather than
             # taking the client's word or defaulting.
+            #
+            # STAMP PRESENCE BEFORE DERIVING THE STATE, not after (GRPH-991). A review claim
+            # now lapses when its holder stops heartbeating, and `presence_for_heartbeat`
+            # consults presence to decide whether the hold it reports is still live — so
+            # deriving from a stamp this same call was about to refresh let a reviewer coming
+            # back from one long round lapse its OWN hold and then report itself `idle`. The
+            # roster word is the cheap half of that: with the hold lapsed, `claim_review`
+            # offers the item to somebody else while its holder is on the phone to us.
+            # GRPH-932's principle is that this call IS the evidence the agent is alive; it has
+            # to be applied before the decision that reads it. Presence only — `touch` below
+            # still owns `state`, and a quarantined agent must not read its way back to healthy.
+            fleet_svc.seen(db, agent, api_key_id=key.id)
             live = fleet_svc.touch(db, agent,
                                    state=fleet_svc.presence_for_heartbeat(db, agent))
             if live is None:
