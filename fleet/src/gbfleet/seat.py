@@ -120,6 +120,12 @@ class Seat:
     #: MCP servers the operator chose to share with this child, by exact name (GRPH-816).
     #: Empty is the default and the only safe one: a child reaches the ledger and nothing else.
     shared: dict = field(default_factory=dict)
+    #: A seat that may hold review work and may NOT take build work (GRPH-988). Set by `until`
+    #: when it mints for the review branch, and only a hint on this side — the server stores it
+    #: on the enrolment and refuses `claim_next`/`claim_item`/`claim_cluster` itself, so a
+    #: child that ignores the instruction it drives is stopped anyway. Last field, so a seat
+    #: built positionally anywhere keeps its meaning.
+    review_only: bool = False
 
     def mcp_config(self, name: str = "graphban") -> dict:
         """The vendor-neutral core of every adapter's config file.
@@ -251,8 +257,37 @@ BOUND_INSTRUCTION = (
 )
 
 
+#: GRPH-988. The child on a review-only seat is told the limit up front, and told that a
+#: refusal is the seat working. The second half matters more than the first: the loop every
+#: other child is taught ends in "EXIT when both are empty", so a reviewer that reads
+#: `claim_cluster`'s refusal as an empty queue goes home believing the board had nothing, and
+#: the one report that would have said otherwise is a reason string nobody prints.
+#:
+#: NOT the control, exactly like BOUNDARY. The seat is: `items.review_only_seat` refuses
+#: `claim_next` and `claim_item` server-side, and `claim_cluster` refuses before its loop. This
+#: is here because a turn spent walking into a refusal is a turn not spent reviewing.
+REVIEW_ONLY_INSTRUCTION = (
+    "Register with `register_agent` using enrolment_code={code!r}, worktree={worktree!r} "
+    "and branch={branch!r}.\n"
+    "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
+    "no parent. Declaring one would make you and your reviewer count as one call tree, "
+    "and review across this fleet would stop meaning anything.\n"
+    + BOUNDARY + DEPENDENCY + COMMIT +
+    "This seat is REVIEW-ONLY: you may hold review work and you may NOT take build work. "
+    "Do NOT call claim_cluster or claim_next — the server refuses both on this seat, and "
+    "that refusal is the seat working, not an empty board. Call claim_review with "
+    "wait_seconds=0 and review what you did NOT build — sign_off, or bounce with a reason — "
+    "and call it again until it answers claimed=false; then EXIT. An empty review queue is "
+    "the normal end of a review-only run, not a failure."
+)
+
+
 def instruction_for(seat: Seat, worktree: Path, branch: str) -> str:
-    if seat.item:
+    # `review_only` first. A seat cannot be both that and bound — the server refuses to mint
+    # one that is — and if that ever changed, the narrower promise is the one to state.
+    if seat.review_only:
+        tmpl = REVIEW_ONLY_INSTRUCTION
+    elif seat.item:
         tmpl = BOUND_INSTRUCTION
     else:
         tmpl = INSTRUCTION

@@ -60,6 +60,8 @@ def _clients(
     search_fails: str | None = None,
     minted_roles: list | None = None,
     on_mint=None,
+    minted_args: list | None = None,
+    mint_review_only: bool = True,
     cluster_items: list | None = None,
     delegations: list | None = None,
     delegate_fails: str | None = None,
@@ -82,6 +84,25 @@ def _clients(
         if ack is not None:
             return ack
         body = json.loads(request.content)
+        if body["method"] == "tools/list":
+            # GRPH-988: a wave that builds nothing probes the manifest before it spawns, and
+            # `params` carries no `name` — without this branch the line below KeyErrors. The
+            # manifest is not trimmed by role (PRD-17 D-b), so `mint_enrolment` is in it for
+            # every caller, exactly as the real server serves it.
+            #
+            # NOT `_mcp`, and that is not a shortcut: `_mcp` wraps its payload in the tool-call
+            # envelope (`content` / `structuredContent`), while `list_tools` reads `tools` off
+            # the RESULT itself. Answering through `_mcp` produces a manifest that reads as
+            # empty, so the probe falls through to "unverified" and every assertion below it
+            # passes without the probe having run at all.
+            props = {"agent_id": {"type": "string"}, "role": {"type": "string"}}
+            if mint_review_only:
+                props["review_only"] = {"type": "boolean"}
+            return httpx.Response(200, json={
+                "jsonrpc": "2.0", "id": body["id"],
+                "result": {"tools": [{"name": "mint_enrolment",
+                                      "inputSchema": {"properties": props}}]},
+            })
         tool = body["params"]["name"]
         args = body["params"].get("arguments") or {}
         rid = body["id"]
@@ -133,9 +154,12 @@ def _clients(
             role = args.get("role") or "worker"
             if minted_roles is not None:
                 minted_roles.append(role)
+            if minted_args is not None:
+                minted_args.append(dict(args))
             if on_mint is not None:
                 on_mint(role)
-            return _mcp({"enrolment_code": mint_code, "role": role, "seat_id": "s1"}, rid)
+            return _mcp({"enrolment_code": mint_code, "role": role, "seat_id": "s1",
+                         "review_only": bool(args.get("review_only"))}, rid)
         if tool == "search_items":
             if search_fails:
                 return _error(search_fails, f"search failed ({search_fails})", rid)
@@ -587,6 +611,112 @@ def test_until_does_not_spawn_for_held_review(
     assert roles == [], roles
     assert result.reason == "idle"
     assert result.spawned == 0
+
+
+def test_a_review_only_supervisor_mints_seats_that_cannot_claim(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-988, and the acceptance criterion. `--max-workers 0` pins `need` at 0, so the
+    delegation branch cannot fire and the review branch is this supervisor's ONLY spawner.
+    The board here has BOTH halves of the reported situation: a ready unclaimed cluster and an
+    unheld review row. Every seat the wave mints must be one the server will not let claim
+    build work, or the child spawned to review takes the cluster instead — which is what
+    happened to GRPH-965, built on the reviewer's branch by a wave told to build nothing.
+
+    Sabotage: drop `review_only=True` from the review branch's `_take_seat` and this fails."""
+    workspace = tmp_path / "ws"
+    mints: list[dict] = []
+    delegated: list[dict] = []
+    planner, supervisor = _clients(
+        workspace,
+        clusters=1,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": ""}],
+        minted_args=mints,
+        delegations=delegated,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=0),
+    )
+    assert mints, f"the wave minted nothing, so this proved nothing: {result.as_json()}"
+    # THE CALL: the seat it hands every child is one the server refuses `claim_next` on.
+    assert all(m.get("review_only") is True for m in mints), mints
+    # The role is unchanged — `reviewer` merged into `worker` in S3 and this is a seat kind,
+    # not a job title.
+    assert all((m.get("role") or "worker") == "worker" for m in mints), mints
+    # And the flag means what it reads as: nothing was delegated, so nothing was built.
+    assert delegated == [], delegated
+
+
+def test_a_review_only_wave_refuses_pre_minted_seats(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-988. A `--seats` file carries codes, and only the server can grant the limit — so
+    a pre-minted seat is always a seat that can claim. Handing one to a reviewer child is the
+    defect walked back in through a flag combination, which is the same reason `--prd` refuses
+    pre-minted seats two tests above.
+
+    Refused as a config error: before the lock, before any worktree, before a credential is
+    spent."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        seats=[Seat(code="WORKER-AAAAAA", server_url="http://gb.invalid", api_key=KEY)],
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+        limits=Limits(max_workers=0),
+    )
+    assert result.reason == "config"
+    assert result.exit == 2
+    assert "--max-workers 0" in result.detail and "pre-minted seats" in result.detail
+    assert "Drop --seats" in result.detail, "refused without saying how to proceed"
+
+
+def test_a_review_only_wave_refuses_a_server_that_cannot_mint_one(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-988. A server that has never heard of `review_only` does not refuse the argument —
+    it drops it and answers with a plain worker seat. Without the probe that is the original
+    bug wearing the fix's clothes: the operator reads `--max-workers 0` as a promise and the
+    wave builds anyway, with nothing anywhere to say so."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": ""}],
+        mint_review_only=False,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=0),
+    )
+    assert result.reason == "config", result.as_json()
+    assert result.exit == 2
+    assert "review_only" in result.detail, result.detail
+    assert "Upgrade the server" in result.detail, "refused without a remedy"
+
+
+def test_review_only_instruction_forbids_claiming_and_still_teaches_review():
+    """GRPH-988. The child is told the limit and told that a refusal is the seat working —
+    because the loop every other child is taught ends in "EXIT when both are empty", so a
+    reviewer that reads `claim_cluster`'s refusal as an empty queue reports a drained board.
+    Not the control; the seat is. This is the turn it saves."""
+    from gbfleet.seat import Seat, instruction_for
+    text = instruction_for(
+        Seat(code="W-1", server_url="https://x", api_key="k", review_only=True),
+        Path("/wt"), "gb/r-1",
+    )
+    assert "REVIEW-ONLY" in text
+    assert "claim_review" in text
+    assert "Do NOT call claim_cluster or claim_next" in text
+    assert "sign_off" in text
+    assert "not an empty board" in text
 
 
 def test_review_unsigned_after_exactly_three_empty_spawns(
