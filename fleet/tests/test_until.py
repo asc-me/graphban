@@ -1521,3 +1521,113 @@ def test_already_in_base_no_pr_with_unmerged_sha_is_not_in_base(tmp_path, monkey
         "evidence": [{"commit": pre_squash}],
     }
     assert _already_in_base(details, repo, "main") is False
+
+
+# ---- GRPH-988, bounce 1: the two unpinned `_take_seat` call sites -------------------------
+#
+# The reviewer of PR #899 mutated both and got 0 failures each:
+#   1. `if pool and not review_only:` -> `if pool:`
+#   2. dropping `review_only=review_only` from the minted `Seat(...)`
+#
+# The startup refusal only covers `--max-workers 0` + `--seats`. At `--max-workers > 0` the
+# review branch is still reachable and the pool is still live, so (1) is the only thing
+# standing between a reviewer child and a pre-minted, claim-capable seat. (2) is not a safety
+# hole — the server refuses the claim regardless — but it decides which INSTRUCTION the child
+# is handed, and a child told to `claim_cluster` spends its run walking into refusals.
+
+
+def test_a_review_only_seat_is_never_taken_from_the_pre_minted_pool():
+    """THE GAP THE BOUNCE FOUND, pinned where the guard actually is.
+
+    The startup refusal only covers `--max-workers 0` + `--seats`. At `--max-workers > 0` the
+    review branch is still reachable with a live pool, and `if pool and not review_only` is
+    the only thing between a reviewer child and a pre-minted, claim-capable seat. A seats file
+    carries codes, never powers: there is no way to pre-mint a seat that may review but not
+    claim, so popping one here hands a reviewer the `claim_next` its wave was forbidden.
+
+    Asserted directly on `_take_seat` rather than through `run`. I tried the integration route
+    first and it proved nothing twice: with ready work the worker branch pops the only pooled
+    seat before the review branch looks, and without it the wave never reached the guard — the
+    mutation stayed green both times. The mutation is IN this function, so this is where the
+    claim belongs; the wave-level behaviour is already covered by the two tests above.
+
+    Sabotage: `if pool and not review_only:` -> `if pool:` → this fails.
+    """
+    from gbfleet.until import _take_seat
+
+    class _Minter:
+        def __init__(self):
+            self.args: list[dict] = []
+
+        def call(self, tool, **args):
+            self.args.append(args)
+            return {"enrolment_code": "WORKER-REVONLY"}
+
+    pooled = Seat(code="WORKER-POOLED", server_url="http://gb.invalid", api_key=KEY)
+    pool = [pooled]
+    minter = _Minter()
+
+    seat, minted = _take_seat(
+        pool, minter, "GRPH-A1", "w", "http://gb.invalid", KEY,
+        mint_left=1, mint_deadline=9e9, sleep=lambda _: None, review_only=True,
+    )
+
+    assert minted is True, "a review-only seat was taken from the pool instead of minted"
+    assert seat.code != pooled.code
+    assert pool == [pooled], "the pre-minted seat was popped for a reviewer child"
+    assert minter.args and minter.args[0].get("review_only") is True, minter.args
+
+
+def test_a_plain_worker_still_takes_from_the_pool():
+    """The control, and the reason the guard is `and not review_only` rather than a blanket
+    refusal: an ordinary worker must still consume the `--seats` pool, or this fix would
+    quietly disable the flag it is written for."""
+    from gbfleet.until import _take_seat
+
+    class _NoMint:
+        def call(self, tool, **args):  # pragma: no cover — must not be reached
+            raise AssertionError("minted instead of taking the pooled seat")
+
+    pooled = Seat(code="WORKER-POOLED", server_url="http://gb.invalid", api_key=KEY)
+    pool = [pooled]
+
+    seat, minted = _take_seat(
+        pool, _NoMint(), "GRPH-A1", "w", "http://gb.invalid", KEY,
+        mint_left=1, mint_deadline=9e9, sleep=lambda _: None,
+    )
+
+    assert minted is False and seat is pooled
+    assert pool == [], "the pool was not consumed"
+
+
+def test_the_seat_the_review_branch_returns_carries_the_flag(monkeypatch):
+    """The second mutation. `_take_seat` may mint correctly and still hand back a Seat with
+    the flag dropped — the server refuses the claim either way, so no test failed. What breaks
+    is the CHILD's instruction: without the flag it is handed INSTRUCTION, which tells it to
+    `claim_cluster`, instead of REVIEW_ONLY_INSTRUCTION.
+
+    Sabotage: drop `review_only=review_only` from the returned `Seat(...)` → this fails.
+    """
+    from gbfleet.seat import INSTRUCTION, instruction_for
+    from gbfleet.until import _take_seat
+
+    class _Minter:
+        def call(self, tool, **args):
+            assert tool == "mint_enrolment"
+            assert args.get("review_only") is True, args
+            return {"enrolment_code": "WORKER-REVONLY"}
+
+    seat, minted = _take_seat(
+        [], _Minter(), "GRPH-A1", "w", "http://gb.invalid", KEY,
+        mint_left=1, mint_deadline=9e9, sleep=lambda _: None, review_only=True,
+    )
+
+    assert minted is True
+    assert seat.review_only is True, "the minted seat dropped the flag"
+    text = instruction_for(seat, Path("/tmp/wt"), "gb/w-1")
+    # Both templates open identically, and REVIEW_ONLY names `claim_cluster` in order to
+    # FORBID it — so the distinguishing phrase is the one that tells the child a refusal is
+    # the seat working rather than an empty board.
+    assert "that refusal is the seat working" in text, text[:300]
+    assert "that refusal is the seat working" not in INSTRUCTION, \
+        "the phrase this test keys on is in BOTH templates, so it distinguishes nothing"
