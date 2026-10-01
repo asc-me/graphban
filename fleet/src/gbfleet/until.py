@@ -31,7 +31,7 @@ from .lock import hold
 from .seat import Seat
 from .tiers import TierTable
 from . import matrix as matrix_mod
-from .spawn import Child
+from .spawn import Child, build_holdings
 from . import spend as spend_mod
 from . import touchpoints as tp_mod
 from .spawn import VendorLimit
@@ -1842,7 +1842,9 @@ def _any_holdings(supervisor: Graphban) -> bool:
         # A `stale` hold is a lease older than the presence TTL — a builder that exited with
         # its item in review still shows it. Counting that as "somebody is working" kept a
         # wave waiting on a dead process forever (PRD-39 acceptance walk, run 3).
-        if any((h or {}).get("phase") != "stale" for h in (agent.get("holdings") or [])):
+        # Build leases only (GRPH-1001): a reviewer holding an item is not a builder working,
+        # and counting it kept `until` spinning while the only "work in progress" was a review.
+        if any((h or {}).get("phase") != "stale" for h in build_holdings(agent)):
             return True
     return False
 

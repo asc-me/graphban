@@ -16,7 +16,7 @@ import time
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, object_session
 
 from app.models import Agent, AreaReservation, Enrolment, Item, Project
@@ -638,11 +638,27 @@ def list_agents(db: Session, project_id: str | None = None, *,
     # fresh all-in-one credential was minted and the client kept presenting the previous one).
     keys = {k.id: k for k in db.scalars(select(ApiKey)).all()}
     dead_keys = {kid for kid, k in keys.items() if k.revoked}
-    held: dict[str, list[Item]] = {}
+    # BOTH kinds of hold. The roster's question is "what is stuck with them", and a review
+    # claim stops an item as surely as a build lease does — but grouping on `claimed_by`
+    # alone answered `holdings: []` for every reviewer in the fleet. Measured on the live
+    # instance: 0 of 3044 agents reported a holding, while an item in review named its holder
+    # on the ITEM and nowhere on the roster. A wave then spun for the better part of an hour
+    # on "1 cluster(s) held by review; no expiry reported" — no holder, no clock — because
+    # the one surface built to say who holds what could not see that kind of hold (GRPH-1001).
+    #
+    # An item claimed by one agent and reviewed by another belongs on both rows, so the two
+    # arms are tested separately rather than with an elif.
+    held: dict[str, list[tuple[Item, str]]] = {}
     if agents:
         ids = [a.id for a in agents]
-        for it in db.scalars(select(Item).where(Item.claimed_by.in_(ids))).all():
-            held.setdefault(it.claimed_by, []).append(it)
+        mine = set(ids)
+        rows = db.scalars(select(Item).where(
+            or_(Item.claimed_by.in_(ids), Item.review_claimed_by.in_(ids)))).all()
+        for it in rows:
+            if it.claimed_by in mine:
+                held.setdefault(it.claimed_by, []).append((it, "build"))
+            if it.review_claimed_by in mine:
+                held.setdefault(it.review_claimed_by, []).append((it, "review"))
     assigned = _assigned_for(db, agents)
     out = []
     for a in agents:
@@ -700,7 +716,7 @@ def list_agents(db: Session, project_id: str | None = None, *,
             # `phase` and `phase_basis` are DERIVED server-side rather than reported by the child,
             # because three of the four adapters are vendors we do not control — see
             # `holding_phase`. They cost no extra query: `held` already loaded the full rows.
-            "holdings": [_holding_dict(i, state) for i in held.get(a.id, [])],
+            "holdings": [_holding_dict(i, state, hold) for i, hold in held.get(a.id, [])],
             # PRD-36 D15: what a BOUND seat handed this agent, derived from the seat and the
             # item at read time so the supervisor can echo it from the roster. None on an
             # unbound seat or no seat.
@@ -2467,8 +2483,12 @@ def holding_phase(item: Item, state: str) -> tuple[str, str]:
     return "unknown", f"no signal matched (status {item.status})"
 
 
-def _holding_dict(item: Item, state: str) -> dict:
+def _holding_dict(item: Item, state: str, hold: str = "build") -> dict:
     """One roster holding: what it is, and what is being done with it.
+
+    `hold` says WHICH claim this is — a build lease or a review claim. Both stop an item and
+    they are cleared by different verbs, so a caller that cannot tell them apart cannot act
+    on either (GRPH-1001). It survives `lean` for that reason.
 
     `id` is the RENDERED key, matching `_item_dict` and every other item the MCP surface
     emits (PRD-13). The stored id is frozen and internal; emitting it as `id` would hand an
@@ -2477,7 +2497,7 @@ def _holding_dict(item: Item, state: str) -> dict:
     """
     phase, basis = holding_phase(item, state)
     return {"id": item.key, "stored_id": item.id, "title": item.title, "status": item.status,
-            "phase": phase, "phase_basis": basis, "bounced": was_bounced(item)}
+            "hold": hold, "phase": phase, "phase_basis": basis, "bounced": was_bounced(item)}
 
 
 def was_bounced(item: Item) -> bool:

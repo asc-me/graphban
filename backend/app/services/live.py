@@ -239,14 +239,21 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
             "id": h.get("id"),
             "title": h.get("title"),
             "status": h.get("status"),
+            "hold": h.get("hold", "build"),
             "phase": h.get("phase"),
             "phase_basis": h.get("phase_basis"),
             "pr": _holding_pr(items.get(h.get("stored_id"))),
         } for h in holdings_in]
         state = a.get("state") or "offline"
-        file_state = _file_state(state, holdings, files)
+        # Only a BUILD lease speaks for files. A reviewer reserves no areas, so once the
+        # roster started reporting review claims (GRPH-1001) an inclusive list would have
+        # moved every reviewer from `idle` to `unreserved` and attributed the item's
+        # touchpoints to it as declared files — a change of meaning smuggled in by a
+        # change of visibility. The review hold still shows on the row.
+        leased_in = [h for h in holdings_in if h.get("hold", "build") != "review"]
+        file_state = _file_state(state, leased_in, files)
         if file_state == "unreserved":
-            files = files + _declared_files(holdings_in, items)
+            files = files + _declared_files(leased_in, items)
         # Reported files ride along whatever the lease state says; they are labelled and do
         # not change it (PRD-34 D7). Skip any path already shown as a lease.
         shown = {f["area"] for f in files}

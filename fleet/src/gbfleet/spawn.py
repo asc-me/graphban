@@ -140,6 +140,26 @@ class VendorLimit(LaunchFailed):
         self.said = said
 
 
+def build_holdings(agent: dict) -> list[dict]:
+    """The agent's BUILD leases only — never its review claims (GRPH-1001).
+
+    The roster reports both kinds since GRPH-1001, tagged `hold: build | review`, because a
+    review claim stops an item as surely as a lease does and a supervisor could not see it.
+    Everything in gbfleet that consumes `holdings`, though, was written when the list could
+    only be build leases, and acts on them accordingly: it salvages a reaped child's branch
+    onto them, releases them, and counts them as work in progress. A review claim is none of
+    those things — releasing one is `claim_review`'s business, and attaching a reviewer's
+    salvage branch to the item it was reviewing would file the reviewer's work under the
+    BUILDER's name.
+
+    An older server sends no `hold` at all. Default to "build", because that is what every
+    holding meant before the field existed — treating an unlabelled hold as a review claim
+    would make a current supervisor stop salvaging against an older deployment.
+    """
+    return [h for h in (agent.get("holdings") or [])
+            if (h or {}).get("hold", "build") != "review"]
+
+
 @dataclass(frozen=True)
 class Launch:
     """Everything one adapter needs to start one child. GRPH-449 builds these."""
@@ -416,7 +436,7 @@ def await_registration(
                 got = agent.get("assigned")
                 child.assigned = got if isinstance(got, dict) else None
                 child.registration_latency = time.monotonic() - child.started_at
-                held = [h.get("id") for h in (agent.get("holdings") or []) if h.get("id")]
+                held = [h.get("id") for h in build_holdings(agent) if h.get("id")]
                 if held:
                     child.held_items = held
                 return agent
