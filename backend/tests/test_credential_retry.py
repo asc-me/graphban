@@ -140,6 +140,67 @@ def test_an_unreachable_row_is_not_picked_up_again(db, monkeypatch):
     assert cr.run_once(db) == 0
 
 
+def test_a_runtime_decide_failure_is_retried_by_the_sweep(db, monkeypatch):
+    """GRPH-995. `note_decide_failure` writes unreachable + DECIDE_FAIL_PREFIX.
+    Probe-unreachable stays settled; this mark is a blip the sweep must revisit,
+    or a project pointer is routed off until Test connection.
+
+    Sabotage: drop `_runtime_fail_retryable` from `due`. The pending-only tests
+    above stay green.
+    """
+    monkeypatch.setattr(cr.probe, "known_models", lambda *a, **k: frozenset({"laya-1"}))
+    monkeypatch.setattr(cr.systemone, "ping_decide", lambda *a, **k: None)
+    cred = _cred(db, "cred_1", state=cr.UNREACHABLE, kind="systemone", model="laya-1")
+    cred.last_error = f"{cr.DECIDE_FAIL_PREFIX}: RuntimeError: timeout"
+    cred.next_attempt_at = None
+    db.commit()
+
+    assert cr.run_once(db) == 1
+    row = db.get(Credential, "cred_1")
+    assert row.state == cr.VALID
+    assert row.last_error == ""
+    assert row.next_attempt_at is None
+
+
+def test_a_probe_unreachable_is_still_not_retried_even_with_a_due_schedule(
+        db, monkeypatch):
+    """The prefix is the whole distinction. Collapsing it would retry every
+    settled miss, which is the thing `unreachable` exists to stop."""
+    _answers(monkeypatch, {"claude-x"})
+    cred = _cred(db, "cred_1", state=cr.UNREACHABLE, attempts=0)
+    cred.last_error = "connection refused"
+    cred.next_attempt_at = None
+    db.commit()
+
+    assert cr.run_once(db) == 0
+    assert db.get(Credential, "cred_1").state == cr.UNREACHABLE
+
+
+def test_a_runtime_fail_row_stops_at_the_budget(db, monkeypatch):
+    """Same MAX_ATTEMPTS ceiling as pending. Without it the sweep hammers a
+    host that is actually down, forever."""
+    def boom(*a, **k):
+        raise RuntimeError("still down")
+
+    monkeypatch.setattr(cr.probe, "known_models", lambda *a, **k: None)
+    monkeypatch.setattr(cr.systemone, "ping_decide", boom)
+    cred = _cred(db, "cred_1", state=cr.UNREACHABLE, kind="systemone", model="laya-1")
+    cred.last_error = f"{cr.DECIDE_FAIL_PREFIX}: RuntimeError: timeout"
+    db.commit()
+
+    for _ in range(cr.MAX_ATTEMPTS + 2):
+        row = db.get(Credential, "cred_1")
+        row.next_attempt_at = None
+        db.commit()
+        cr.run_once(db)
+
+    row = db.get(Credential, "cred_1")
+    assert row.state == cr.UNREACHABLE
+    assert row.validation_attempts == cr.MAX_ATTEMPTS
+    assert row.next_attempt_at is None
+    assert cr.run_once(db) == 0
+
+
 def test_a_successful_probe_clears_the_schedule(db, monkeypatch):
     _answers(monkeypatch, {"claude-x"})
     _cred(db, "cred_1")

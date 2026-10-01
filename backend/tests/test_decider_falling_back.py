@@ -216,7 +216,7 @@ def test_a_blip_then_recovers_clears_falling_back(client, auth, db, monkeypatch)
 
     Measured on the deployment default because an unreachable default is still
     resolved and called (S2). A project pointer is routed off after one timeout
-    and never asked again, so a later answer cannot restore it.
+    (`usable` is False) and recovered by the retry sweep, not this path.
 
     Sabotage the CALL: delete `note_decide_success` from `_decider_judge`. This fails,
     and every one-way recording test above stays green.
@@ -402,6 +402,57 @@ def test_a_project_pointer_that_fails_at_runtime_is_named_and_fallen_past(
         "a project pointer that cannot answer is fallen past, not retried on every write")
     status = _status(client, auth, pid)
     assert status["falling_back"] is True and status["judge"] == "similarity"
+
+
+def test_a_project_pointer_blip_recovers_via_the_retry_sweep(
+        client, auth, db, monkeypatch):
+    """THE BOUNCE (project half). After one failed `decide()`, `usable()` is False
+    so `resolve_decider` never calls this pointer again and `note_decide_success`
+    cannot fire. The sweep must reclaim a runtime-fail `unreachable` row;
+    `ping_decide` restoring it is what lets the next write grade on the PROJECT
+    decider.
+
+    Sabotage the CALL: drop `_runtime_fail_retryable` from `due` (or from
+    `claim`'s WHERE). This fails, and the deployment-default blip test stays
+    green — S2 still calls an unreachable default.
+    """
+    from app.services import credential_retry as cr
+
+    pid = _proj(client, auth, "OwnPointerBlip")
+    _judge_on(client, auth, pid)
+    key = _key(client, auth, project_id=pid)
+    cred = _decider_row(db, "cred_own_blip", model="laya-1")
+    platform_svc.set_project_decider(db, pid, decider_credential_id=cred.id)
+    boom = _build(monkeypatch, MuteDecider())
+
+    first = _mcp(client, key, "add_memory",
+                 {"text": "always pin the pgvector image to pg16 in CI"})
+    assert boom.calls == 1
+    db.refresh(cred)
+    assert cred.state == "unreachable"
+    assert first["scoring_source"] != "decider"
+    assert platform_svc.resolve_decider(db, pid).credential_id != cred.id
+    assert _status(client, auth, pid)["falling_back"] is True
+
+    monkeypatch.setattr(cr.probe, "known_models",
+                        lambda *a, **k: frozenset({"laya-1"}))
+    monkeypatch.setattr(cr.systemone, "ping_decide", lambda *a, **k: None)
+    assert cr.run_once(db) == 1, (
+        "the sweep did not pick up the runtime-fail row — due()/claim() still "
+        "filter state==pending only")
+    db.refresh(cred)
+    assert cred.state == "valid"
+    assert not (cred.last_error or "").startswith("decide() failed at runtime")
+
+    good = _build(monkeypatch, AnsweringDecider())
+    _mcp(client, key, "add_memory",
+         {"text": "HNSW not ivfflat — ivfflat built empty silently loses recall"})
+    assert good.calls == 1, (
+        "the project pointer was not asked after the sweep restored it")
+    db.refresh(cred)
+    assert cred.state == "valid"
+    status = _status(client, auth, pid)
+    assert status["falling_back"] is False and status["judge"] == "decider"
 
 
 # ---- the page ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.config import settings as app_settings
 from app import providers
 from app.services import failover
+from app.services.credential_retry import DECIDE_FAIL_PREFIX as _DECIDE_FAIL_PREFIX
 from app.providers import probe
 from app.providers import registry as provider_registry
 from app.providers.base import ChatModel, Extractor
@@ -200,6 +201,9 @@ def note_decide_failure(db: Session, credential_id: str, detail: str = "") -> bo
     where the original failure is the one that matters. An empty id is normal, not an error
     — a decider built by a test or by a caller that did not come from a credential row has
     nothing to record against.
+
+    A runtime-fail mark is due immediately so `credential_retry.due` can restore a
+    project pointer; probe-unreachable is not.
     """
     if not credential_id:
         return False
@@ -207,11 +211,26 @@ def note_decide_failure(db: Session, credential_id: str, detail: str = "") -> bo
         cred = db.get(Credential, credential_id)
         if cred is None:
             return False
-        message = f"decide() failed at runtime: {detail}".rstrip(": ")[:500]
+        message = f"{_DECIDE_FAIL_PREFIX}: {detail}".rstrip(": ")[:500]
+        already_runtime = (cred.last_error or "").startswith(_DECIDE_FAIL_PREFIX)
         if cred.state == UNREACHABLE and cred.last_error == message:
             return True
         cred.state = UNREACHABLE
         cred.last_error = message
+        # Fresh budget + due immediately, so the sweep can restore a project
+        # pointer without waiting out a backoff the live call never earned.
+        # Leave an in-flight runtime-fail schedule alone — another miss with
+        # the same prefix must not reset MAX_ATTEMPTS.
+        if not already_runtime:
+            cred.validation_attempts = 0
+            cred.next_attempt_at = None
+        # Commit, not flush. This runs after decide() raised and before triage
+        # writes scoring_source (that happens only on a verdict). The review
+        # queue is a GET that does not commit on an error, so a flush is rolled
+        # back on close and the mark never lands — which is how a mute judge
+        # stayed `valid`. The success path flushes because it runs mid-write
+        # with a verdict still being assembled; a commit there persisted
+        # scoring_source empty.
         db.commit()
         logger.warning("decider credential %s could not answer a live request: %s",
                        credential_id, detail[:200])
@@ -222,26 +241,22 @@ def note_decide_failure(db: Session, credential_id: str, detail: str = "") -> bo
         return False
 
 
-_DECIDE_FAIL_PREFIX = "decide() failed at runtime"
-
-
 def note_decide_success(db: Session, credential_id: str) -> bool:
     """Restore a row this path marked after a later `decide()` answers (GRPH-995).
 
     `note_decide_failure` is one-way without this: a single timeout becomes a permanent
-    `unreachable`, so a project pointer is routed off its own decider for good and the
-    Memory review banner keeps saying the judge is down while it is grading. Only a
-    `last_error` this path wrote (prefix `_DECIDE_FAIL_PREFIX`) is ours to clear — a
-    probe-unreachable row is a different fact, and restoring it because one call
-    succeeded would hide a host that still cannot be listed.
+    `unreachable`. The deployment default is still called (S2) so a later answer can
+    restore it here. A project pointer is routed off (`usable` is False), so this
+    path never runs for that case — `credential_retry.due` revisits the runtime-fail
+    mark instead. Only a `last_error` this path wrote (prefix `_DECIDE_FAIL_PREFIX`)
+    is ours to clear — a probe-unreachable row is a different fact, and restoring it
+    because one call succeeded would hide a host that still cannot be listed.
 
     Never raises: called on the success path of a memory write, where the verdict is
     the fact that matters. An empty id is a no-op, same as `note_decide_failure`.
 
     Flush, do not commit: the caller still holds the shard in this session. A commit
-    here would persist a half-written verdict (scoring_source empty) and is the
-    opposite of `note_decide_failure`, which commits because it runs after the
-    write has already failed.
+    here would persist a half-written verdict (scoring_source empty).
     """
     if not credential_id:
         return False

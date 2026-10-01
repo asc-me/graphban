@@ -834,7 +834,8 @@ def _decider_judge(db: Session, resolved, shard: MemoryShard) -> tuple[dict | No
             db, resolved.credential_id, f"{type(exc).__name__}: {exc}")
         return None, "error"
     # A later answer must undo the runtime mark, or one timeout is a permanent banner
-    # (and a project pointer is routed off its own decider for good).
+    # on the deployment default (S2 still calls it). A project pointer is recovered
+    # by the retry sweep, not this path (usable() is False so we never get here).
     platform_svc.note_decide_success(db, resolved.credential_id)
     keep_ans = (decision.answers or {}).get("keep")
     if keep_ans is None:
