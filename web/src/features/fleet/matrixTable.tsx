@@ -156,7 +156,7 @@ export function TierMapPanel({ projectId, harnessHref }: {
     <section className="mb-7" data-testid="fleet-tier-map">
       <div className="mb-3 flex items-end justify-between gap-3">
         <div>
-          <h2 className="text-[14px] font-semibold tracking-tight">Tier map</h2>
+          <h2 className="text-lead font-semibold tracking-tight">Tier map</h2>
           <p className="mt-0.5 text-[12px] text-muted">Which model each harness runs when</p>
         </div>
         <div className="flex shrink-0 items-center gap-3 text-[12px]">
@@ -190,7 +190,7 @@ export function TierMapPanel({ projectId, harnessHref }: {
         // Also where a page with no active project lands: the query is gated off, nothing was
         // served, and that really is "no catalog" rather than a failure.
         <p
-          className="rounded-[11px] border border-dashed border-line-2 px-3 py-6 text-center text-[12.5px] text-muted"
+          className="rounded-[11px] border border-dashed border-line-2 px-3 py-6 text-center text-body text-muted"
           data-testid="tier-map-empty"
         >
           No harness to map until the catalog is served.
@@ -282,7 +282,7 @@ function TierMapForm({ cells, saving, clearing, saveError, clearError, onSave, o
   return (
     <>
       <div className="overflow-x-auto rounded-[11px] border border-line-2">
-        <table className="w-full text-left text-[12.5px]">
+        <table className="w-full text-left text-body">
           <thead className="border-b border-line-2 bg-surface-2 font-mono text-[10px] uppercase tracking-wide text-faint">
             <tr>
               <th className="px-3 py-2 font-medium">Harness</th>
@@ -303,7 +303,7 @@ function TierMapForm({ cells, saving, clearing, saveError, clearError, onSave, o
                     // The catalog has no model for this harness at this tier. Not a cleared
                     // override and not an error — it is a square the matrix does not cover.
                     return (
-                      <td key={tier} className="px-3 py-2 text-[11px] text-faint">
+                      <td key={tier} className="px-3 py-2 text-small text-faint">
                         not in catalog
                       </td>
                     );
@@ -346,18 +346,18 @@ function TierMapForm({ cells, saving, clearing, saveError, clearError, onSave, o
                         </select>
                         <div className="flex flex-wrap items-center gap-1.5">
                           <span
-                            className={cn("font-mono text-[11px]", overridden ? "text-accent" : "text-fg-2")}
+                            className={cn("font-mono text-small", overridden ? "text-accent" : "text-fg-2")}
                             data-testid="tier-map-effective"
                           >
                             {effectiveOf(cell, value) || "—"}
                           </span>
                           {overridden && (
-                            <span className="rounded-md border border-accent/40 px-1 font-mono text-[9.5px] text-accent">
+                            <span className="rounded-md border border-accent/40 px-1 font-mono text-meta text-accent">
                               override
                             </span>
                           )}
                           {unsaved && (
-                            <span className="rounded-md border border-control px-1 font-mono text-[9.5px] text-muted">
+                            <span className="rounded-md border border-control px-1 font-mono text-meta text-muted">
                               unsaved
                             </span>
                           )}
