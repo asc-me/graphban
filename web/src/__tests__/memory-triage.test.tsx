@@ -271,6 +271,48 @@ describe("Memory triage — keyboard affordance", () => {
 
     await user.keyboard("{Enter}");
     expect(await screen.findByText("Detail")).toBeInTheDocument();
+
+    // J and K must MOVE the cursor, and the only way to see that is to act on a DIFFERENT
+    // row afterwards and name which one. The first version of this test pressed neither:
+    // deleting `case "j"` and `case "k"` outright left it green (review bounce, PR #914).
+    //
+    // The queue renders "Weak signal…" first and "Use retry…" second, so the cursor starts
+    // on the former. Asserted inside the detail panel, because both strings also appear in
+    // the row list — a bare findByText would match the row and pass with no cursor at all.
+    // The panel root is the grandparent of the "Detail" label: the label sits in a header
+    // row, and the shard text is that row's SIBLING. Scoping to `.closest("div")` grabs the
+    // header alone and finds nothing — which is a scoping bug, not a cursor bug, and would
+    // have read as one.
+    // The panel's FIRST paragraph is the shard's own text. Scope to it rather than
+    // searching the panel: the panel also lists near-duplicates and conflicts, so a text
+    // query matches more than once and throws — and asserting on the row list instead
+    // would pass with no cursor at all, since both strings are in the rows too.
+    const openShardText = () =>
+      screen.getByText("Detail").parentElement!.parentElement!.querySelector("p")
+        ?.textContent ?? "";
+    expect(openShardText()).toMatch(/Weak signal: maybe use a cache layer/);
+
+    await user.keyboard("{Escape}");
+    await user.keyboard("j");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("Detail")).toBeInTheDocument();
+    expect(openShardText()).toMatch(/Use retry with exponential backoff for HTTP calls/);
+
+    // ...and k moves back. Without this half, a `k` bound to nothing at all still satisfies
+    // everything above.
+    //
+    // What this does NOT catch, recorded rather than left for the next reader to discover:
+    // the SIZE of j's step. `moveCursor` clamps to `visible.length - 1`, and this queue
+    // renders two rows, so moveCursor(2) from row 0 lands on row 1 exactly as moveCursor(1)
+    // does — the mutation is equivalent at this fixture size and no assertion here can see
+    // it. Catching it needs a third row in the Needs-review queue, which is a fixture change
+    // the rest of this file shares. The bindings and their direction are pinned; the
+    // magnitude is not.
+    await user.keyboard("{Escape}");
+    await user.keyboard("k");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("Detail")).toBeInTheDocument();
+    expect(openShardText()).toMatch(/Weak signal: maybe use a cache layer/);
   });
 });
 
