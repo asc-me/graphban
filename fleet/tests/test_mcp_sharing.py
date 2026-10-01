@@ -226,7 +226,7 @@ def test_a_file_name_missing_from_the_source_refuses_and_names_the_file(tmp_path
         mcpshare.grants([], repo, str(config))
 
     msg = str(exc.value)
-    assert "contex7" in msg and ".gbfleet/servers" in msg and "--mcp-server" not in msg
+    assert "contex7" in msg and str(Path(".gbfleet/servers")) in msg and "--mcp-server" not in msg
     assert "gmail" not in msg
 
 
@@ -289,7 +289,7 @@ def test_the_cli_refuses_the_wave_on_a_bad_file_name(tmp_path, config, monkeypat
         cli._shared_servers(argparse.Namespace(repo=str(repo), mcp_server=[]))
 
     assert exc.value.code == 2
-    assert ".gbfleet/servers" in capsys.readouterr().err
+    assert str(Path(".gbfleet/servers")) in capsys.readouterr().err
 
 
 def test_qwen_allows_a_server_named_only_in_the_project_file(tmp_path, config):
