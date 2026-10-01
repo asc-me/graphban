@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
 import { Download } from "lucide-react";
+import { Link } from "react-router-dom";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import {
   FETCH_FAILED,
   KpiGridSkeleton,
+  PlannerEmpty,
   PlannerError,
   TableSkeleton,
 } from "@/components/planner/PlannerStates";
@@ -12,13 +14,29 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { api } from "@/lib/api";
 import { useUsage } from "@/lib/queries";
-import type { UsageKpi, UsageLimitRow, UsageProjectRow } from "@/lib/types";
+import { lastProjectTag, projectPath } from "@/lib/routes";
+import type {
+  UsageKpi,
+  UsageLimitRow,
+  UsageModelRow,
+  UsageModelUsage,
+  UsageProjectRow,
+} from "@/lib/types";
 
 const RANGES = [7, 30, 90] as const;
 
+/** PRD-47 S14's footnote, verbatim — D3: the design's copy is the mechanism, not decoration. */
+const MODEL_USAGE_FOOTNOTE =
+  "Cost is estimated from list prices of the tokens agents reported. Local models (gbagent) show $0.";
+
 /**
- * PRD-47 S14 — deployment-wide usage. One aggregate fetch; no model cost column
- * (deferred to GRPH-980). Undeclared limits render as undeclared, never as a %.
+ * PRD-47 S14 — deployment-wide usage. One aggregate fetch. Undeclared limits render as
+ * undeclared, never as a %.
+ *
+ * The model-usage panel is fed by PRD-38 attempt records, and keeps GRPH-980's objection —
+ * a cost column over tokens nobody reports is a table of zeroes — by never printing one.
+ * An unmeasured pair reads `not reported` and an unpriced one `not priced`; `$0` is reserved
+ * for compute that really is free.
  */
 export function UsageView() {
   const [range, setRange] = useState<number>(30);
@@ -180,6 +198,17 @@ export function UsageView() {
             License limits
           </div>
           <LimitsTable limits={data.limits} note={data.on_pace_note} />
+        </section>
+
+        <section
+          className="mt-5 overflow-hidden rounded-[10px] border border-line-2 bg-surface-2"
+          data-testid="usage-model-usage"
+        >
+          <div className="flex items-center justify-between gap-3 border-b border-line bg-surface px-4 py-2.5">
+            <span className="text-body text-fg">Model usage</span>
+            <HarnessLink tags={data.by_project.map((p) => p.tag)} />
+          </div>
+          <ModelUsagePanel usage={data.model_usage} />
         </section>
 
         <section className="mt-5 overflow-hidden rounded-[10px] border border-line-2 bg-surface-2">
@@ -346,6 +375,134 @@ function LimitsTable({ limits, note }: { limits: UsageLimitRow[]; note: string |
         </div>
       ))}
       {note && <p className="mt-2 text-small leading-relaxed text-faint">{note}</p>}
+    </div>
+  );
+}
+
+/**
+ * Where "Performance on Harness" can go. Usage is deployment-wide and there is no ambient
+ * project (PRD-21 D1.1), so this resolves the last-used tag and only when it is one this
+ * caller can read. Otherwise the link is not drawn: pointing at a project that 404s or 403s
+ * is worse than no link, and guessing one would invent a scope the page does not have.
+ */
+function HarnessLink({ tags }: { tags: string[] }) {
+  const last = lastProjectTag();
+  const tag = last && tags.includes(last) ? last : tags[0];
+  if (!tag) return null;
+  return (
+    <Link
+      to={projectPath(tag, "harness")}
+      className="text-[11.5px] text-accent hover:underline"
+      data-testid="usage-models-harness-link"
+    >
+      Performance on Harness →
+    </Link>
+  );
+}
+
+function ModelUsagePanel({ usage }: { usage: UsageModelUsage }) {
+  if (!usage.rows.length) {
+    return (
+      <PlannerEmpty
+        title="No attempts in this window"
+        description="Nothing finished a delegation here, so there is no model spend to price. That is a window with no attempts in it — not a deployment whose agents cost nothing."
+      />
+    );
+  }
+  const peak = Math.max(1, ...usage.rows.map((r) => r.tokens ?? 0));
+  return (
+    <div data-testid="usage-models">
+      <table className="w-full text-left text-[12px]">
+        <thead>
+          <tr className="border-b border-line text-faint">
+            <th className="px-4 py-2 font-normal">Harness · Model</th>
+            <th className="px-4 py-2 font-normal text-right">Spawns</th>
+            <th className="px-4 py-2 font-normal text-right">Tokens</th>
+            <th className="px-4 py-2 font-normal text-right">Est. cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {usage.rows.map((row) => (
+            <ModelRow key={`${row.vendor}:${row.model}`} row={row} peak={peak} />
+          ))}
+        </tbody>
+      </table>
+      <div className="px-4 py-2.5">
+        {usage.note && (
+          <p className="text-small leading-relaxed text-st-review" data-testid="usage-models-note">
+            {usage.note}
+          </p>
+        )}
+        <p className={cn("text-small leading-relaxed text-faint", usage.note && "mt-1")}>
+          {MODEL_USAGE_FOOTNOTE}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ModelRow({ row, peak }: { row: UsageModelRow; peak: number }) {
+  // A sum over the attempts that reported, beside the count it rests on. Without the count a
+  // partial numerator reads as a total — the failure `harness.COST_COVERAGE` exists to stop.
+  const partial = row.tokens_reported < row.spawns;
+  return (
+    <tr className="border-b border-line/60" data-testid={`usage-model-row-${row.vendor}`}>
+      <td className="px-4 py-2">
+        <span className="text-muted">{row.vendor}</span>
+        <span className="ml-2 font-mono text-small text-accent">{row.model}</span>
+      </td>
+      <td className="px-4 py-2 text-right font-mono">{row.spawns.toLocaleString()}</td>
+      <td className="px-4 py-2 text-right">
+        {row.tokens == null ? (
+          <NotReported
+            label="not reported"
+            detail={`${row.spawns.toLocaleString()} spawns in this window, none carried a token count.`}
+          />
+        ) : (
+          <div className="flex items-center justify-end gap-2">
+            <span className="h-1 w-16 overflow-hidden rounded-sm bg-line">
+              <span
+                className="block h-full bg-accent"
+                style={{ width: `${(row.tokens / peak) * 100}%` }}
+              />
+            </span>
+            <span className="w-20 font-mono">{row.tokens.toLocaleString()}</span>
+            {partial && (
+              <span className="w-[86px] text-right text-[10.5px] text-faint-2">
+                {row.tokens_reported}/{row.spawns} reported
+              </span>
+            )}
+          </div>
+        )}
+      </td>
+      <td
+        className="px-4 py-2 text-right"
+        title={
+          row.cost_usd == null
+            ? "No list price matches this model, so there is no estimate to show."
+            : partial
+              ? `Prices only the ${row.tokens_reported} of ${row.spawns} attempts that reported tokens.`
+              : undefined
+        }
+      >
+        {row.cost_usd == null ? (
+          <span className="text-[11.5px] text-st-review">not priced</span>
+        ) : (
+          <span className="font-mono">${row.cost_usd.toFixed(2)}</span>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+/** The seam, mirroring Activity's `NotRecorded`: a labelled gap in the shape of the thing that
+ *  would go there. Not a blank and not a zero — a zero in a token column claims the harness ran
+ *  and used nothing, which is the one reading this page must not offer. */
+function NotReported({ label, detail }: { label: string; detail: string }) {
+  return (
+    <div className="ml-auto inline-block max-w-[240px] rounded-[8px] border border-dashed border-line-2 px-2.5 py-1.5 text-left">
+      <p className="text-[11.5px] text-muted">{label}</p>
+      <p className="mt-0.5 text-small leading-snug text-faint-2">Not reported. {detail}</p>
     </div>
   );
 }
