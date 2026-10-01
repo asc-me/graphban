@@ -205,6 +205,21 @@ rule is that nothing carrying a credential goes on argv, and the supervisor's ch
 environment — so a cloud endpoint that wants a token (the Qwen and OpenAI-compatible hosts) is reachable
 without a flag, and an unset key is a local Ollama, which is what every walk in the table above used.
 
+**What it can reach besides the ledger (GRPH-997).** Every server stanza in the seat file other
+than `graphban` is a build grant, and this child dials it: `cli.read_shared` hands the stanzas to
+`gbagent.buildtools`, which fetches each server's own `tools/list` and advertises what came back
+as `mcp__<server>__<tool>` — the spelling qwen and claude both use, so a model that has seen the
+prefix in another harness types it correctly here. Before that, `read_seat` kept the credential
+and dropped the rest of the file, so `--mcp-server context7` bought a qwen child a docs server and
+bought this one nothing; gbagent is the one harness with no shell and no web, i.e. the one for
+which a docs server and a browser are not things it can fake with `curl`. Three failure shapes are
+all results rather than exits — a server that will not connect, one that answers and lists no
+tools, and a call a server refuses — and each is still *named* to the model, so an unusable grant
+reads as "granted, not callable, and here is why" instead of as "there is no docs server here".
+Only HTTP(S) stanzas are dialed: a `command` stanza is a program to run, and this agent has no
+shell. The grant never enters the worktree, because it rides in the same private temp file the
+credential does, and `worktree.SEAT_FILES` still has no entry for it.
+
 **Two knobs, neither of them a name to check.** `--turns` is the budget from D6 (one turn is
 22–45s against a local model) and `--window` is the model's context size, of which compaction
 takes 70% (D7). Neither has a default in `loop.run` and neither gets one here: assume the

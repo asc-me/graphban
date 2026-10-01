@@ -13,6 +13,12 @@ so it shells out to here.
 calls `claim_cluster` itself, which is in `coord.WORKER_TOOLS` along with the rest of
 `COORDINATION_TOOLS` (P30 D3). `claim_next` is not advertised: it reserves no files.
 
+**The seat file is also the build grant (GRPH-997).** Every stanza in it besides the ledger's
+own is an MCP server an operator chose to share, and `read_shared` hands those to
+`buildtools`, which advertises their tools to the model. gbagent has no shell and no web, so a
+docs server and a browser are the build tools it cannot fake with `curl` — and before this it
+read the seat, kept the credential, and dropped the rest of the file on the floor.
+
 This paragraph used to say the opposite, and was true when written — a later slice wired the
 thing it described as unwired, and the prose did not follow (GRPH-562). Corrected rather than
 deleted, because the mistake is worth not repeating: **a tool set is a declaration of intent,
@@ -37,7 +43,7 @@ from pathlib import Path
 
 import gbfleet
 
-from . import loop
+from . import buildtools, loop
 from .config import ConfigRefused, load, prepare
 from .coord import (
     MERGED_COORDINATION, MERGED_TOOLS, REVIEWER_COORDINATION, REVIEWER_TOOLS,
@@ -222,6 +228,34 @@ def read_seat(path: Path) -> tuple[str, str]:
     return url[: -len("/api/mcp")] if url.endswith("/api/mcp") else url, key
 
 
+def read_shared(path: Path) -> dict[str, dict]:
+    """Every server stanza in the seat file, as written (GRPH-997).
+
+    This is the whole build grant, and it is the file the supervisor wrote: nothing here reads
+    `~/.claude.json`, discovers a server, or takes a name from the model. `mcpshare.select`
+    already refused a pattern and refused an unknown name before spawn, so what arrives is what
+    an operator typed at `--mcp-server` — plus, once GRPH-998 lands, what the project listed.
+
+    **Policy is not applied here.** The ledger's own reserved names are filtered by
+    `buildtools.build`, beside the rest of the rule about what may be called, so a reader of
+    this function does not have to know which half of the seat is a credential and which is a
+    grant.
+
+    Returns `{}` rather than refusing, whatever the file says. `read_seat` has already refused
+    a seat this agent cannot use, and that is the refusal worth exiting 78 for: a shared stanza
+    that is malformed is one docs server the model cannot call, and killing a build over it
+    would spend the run on something the work does not depend on.
+    """
+    try:
+        servers = json.loads(Path(path).read_text(encoding="utf-8"))["mcpServers"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    if not isinstance(servers, dict):
+        return {}
+    return {str(name): dict(stanza) for name, stanza in servers.items()
+            if isinstance(stanza, dict)}
+
+
 def _models(base_url: str) -> list[str]:
     """What the endpoint serves, one per line. Empty when there is nothing to ask."""
     if not base_url:
@@ -324,6 +358,7 @@ def _run(args: argparse.Namespace) -> int:
     heartbeat = Heartbeat(coordinator)
     heartbeat.start()
     session = None
+    build_servers = None
     try:
         try:
             # AFTER register. The executable check inside `load` is what an unbuilt
@@ -345,14 +380,24 @@ def _run(args: argparse.Namespace) -> int:
         except OrientationUnavailable as exc:
             print(f"gbagent: {exc}", file=sys.stderr)
             return 78
-        toolset = Toolset(root=root, cfg=cfg, orientation=orientation)
+        # GRPH-997: the seat's OTHER stanzas, which is the whole build grant — a docs server,
+        # a browser. Connected here rather than in `read_seat` or at import, because it is a
+        # network call per server and must neither delay registration (P30 D8) nor refuse a
+        # run the ledger can still reach: a grant that fails is a smaller tool list the model
+        # is TOLD about, not an exit.
+        build_servers = buildtools.build(read_shared(Path(args.mcp_config)))
+        if build_servers.granted:
+            print(f"gbagent: build servers: {build_servers.one_line()}", file=sys.stderr)
+        toolset = Toolset(root=root, cfg=cfg, orientation=orientation,
+                          build_servers=build_servers)
         # The heartbeat thread was started before the toolset existed; from here on it
         # reports what the model is doing (PRD-34 D12).
         coordinator.status_source = toolset.activity
         session = OllamaSession(
             args.base_url, args.model,
             system=SYSTEM,
-            task=f"{task}\n\n{assignment}".strip(),
+            task="\n\n".join(part for part in (task, assignment, build_servers.instruction())
+                             if part).strip(),
             api_key=endpoint_key(),
         )
         try:
@@ -380,6 +425,11 @@ def _run(args: argparse.Namespace) -> int:
         heartbeat.stop()
         if session is not None:
             session.close()
+        if build_servers is not None:
+            # Sockets a granted server is holding. Closed beside the model session's own,
+            # because a child that exits without dropping them leaves the operator's docs
+            # server carrying a connection per dead run.
+            build_servers.close()
 
 
 def _result_record(outcome) -> dict:
