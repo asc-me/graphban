@@ -6,6 +6,7 @@ when it cut something rather than dropping it silently.
 """
 from __future__ import annotations
 
+import inspect
 import os
 
 from gbagent import cli
@@ -96,3 +97,17 @@ def test_this_repository_is_truncated_not_dropped():
     assert "--- AGENTS.md ---" in text
     assert "left unread" in text
     assert "--- .claude/skills/" in text
+
+
+def test_run_hands_the_worktree_prompt_to_the_session():
+    """THE CALL. `system_prompt` can be right and `_run` can still pass `SYSTEM`.
+
+    That is the bounce on PR #917: reverting `system=system_prompt(root)` to
+    `system=SYSTEM` left every test of the function green, and a spawned child
+    never saw AGENTS.md. Same shape as the `build_servers=` pin in
+    `test_gbagent_build_tools.py`.
+    """
+    src = inspect.getsource(cli._run)
+    assert "system=system_prompt(root)" in src, (
+        "cli._run no longer passes the worktree's instructions to the session, "
+        "so a spawned child starts from the fixed paragraph and never sees AGENTS.md")
