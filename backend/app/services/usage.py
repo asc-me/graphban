@@ -196,6 +196,12 @@ def _model_usage(db: Session, project_ids: list[str], since: datetime) -> dict[s
             AttemptTelemetry.tokens_in,
             AttemptTelemetry.tokens_out,
         ).where(
+            # THE TENANT BOUNDARY. Usage is deployment-wide and this panel prices real money,
+            # so this line is the only thing stopping a caller from seeing every org's harness
+            # spend. It shipped untested: deleting it left all 11 backend tests green, and a
+            # review sabotage caught it (GRPH-1002 bounce). Two tests now hold it — a row that
+            # must stay absent, and a vendor/model present in BOTH projects whose spawns must
+            # not grow. Change this line and both go red.
             AttemptTelemetry.project_id.in_(project_ids),
             # `derived_at` NOT NULL IS the population: finished delegations only. Redundant
             # beside the window filter today (NULL >= since is never true), but it is the line
@@ -204,6 +210,10 @@ def _model_usage(db: Session, project_ids: list[str], since: datetime) -> dict[s
             AttemptTelemetry.derived_at.is_not(None),
             AttemptTelemetry.derived_at >= since,
         )
+    # The `if project_ids` arm is an optimisation, NOT the boundary: `.in_([])` is already a
+    # false condition, so removing it changes no result. Measured — with a caller who is a
+    # member of nothing, deleting the arm leaves all 14 tests green, which makes it an
+    # equivalent mutant rather than an untested guard. The boundary is the `in_` above.
     ).all() if project_ids else []
 
     groups: dict[tuple[str, str], dict[str, int]] = {}

@@ -205,7 +205,7 @@ export function UsageView() {
           data-testid="usage-model-usage"
         >
           <div className="flex items-center justify-between gap-3 border-b border-line bg-surface px-4 py-2.5">
-            <span className="text-[12.5px] text-fg">Model usage</span>
+            <span className="text-body text-fg">Model usage</span>
             <HarnessLink tags={data.by_project.map((p) => p.tag)} />
           </div>
           <ModelUsagePanel usage={data.model_usage} />
@@ -429,11 +429,11 @@ function ModelUsagePanel({ usage }: { usage: UsageModelUsage }) {
       </table>
       <div className="px-4 py-2.5">
         {usage.note && (
-          <p className="text-[11px] leading-relaxed text-st-review" data-testid="usage-models-note">
+          <p className="text-small leading-relaxed text-st-review" data-testid="usage-models-note">
             {usage.note}
           </p>
         )}
-        <p className={cn("text-[11px] leading-relaxed text-faint", usage.note && "mt-1")}>
+        <p className={cn("text-small leading-relaxed text-faint", usage.note && "mt-1")}>
           {MODEL_USAGE_FOOTNOTE}
         </p>
       </div>
@@ -449,7 +449,7 @@ function ModelRow({ row, peak }: { row: UsageModelRow; peak: number }) {
     <tr className="border-b border-line/60" data-testid={`usage-model-row-${row.vendor}`}>
       <td className="px-4 py-2">
         <span className="text-muted">{row.vendor}</span>
-        <span className="ml-2 font-mono text-[11px] text-accent">{row.model}</span>
+        <span className="ml-2 font-mono text-small text-accent">{row.model}</span>
       </td>
       <td className="px-4 py-2 text-right font-mono">{row.spawns.toLocaleString()}</td>
       <td className="px-4 py-2 text-right">
@@ -502,7 +502,7 @@ function NotReported({ label, detail }: { label: string; detail: string }) {
   return (
     <div className="ml-auto inline-block max-w-[240px] rounded-[8px] border border-dashed border-line-2 px-2.5 py-1.5 text-left">
       <p className="text-[11.5px] text-muted">{label}</p>
-      <p className="mt-0.5 text-[11px] leading-snug text-faint-2">Not reported. {detail}</p>
+      <p className="mt-0.5 text-small leading-snug text-faint-2">Not reported. {detail}</p>
     </div>
   );
 }

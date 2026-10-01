@@ -175,3 +175,80 @@ def test_model_usage_honours_the_range_window(client, auth, db, proj):
     assert ("anthropic", "claude-sonnet-4") in inside
     outside = _rows(client.get("/api/usage", params={"range_days": 7}, headers=auth).json())
     assert outside == {}
+
+
+def _unreadable_project(db, pid="usage-other-tenant"):
+    """A project the logged-in user is not a member of.
+
+    Readability is membership (`security/authz.readable_project_ids`), so a Project row with
+    no ProjectMember for the caller is one this caller must never see through /api/usage.
+    """
+    from app.models import Project
+
+    db.add(Project(id=pid, name="Other Tenant", tag="OT"))
+    db.commit()
+    return pid
+
+
+def test_model_usage_never_prices_a_project_the_caller_cannot_read(client, auth, db, proj):
+    """Usage is deployment-wide, and the panel it feeds prices real money.
+
+    Review of a2126e96 found this untested: deleting `AttemptTelemetry.project_id.in_(
+    project_ids)` from `_model_usage` left all 11 backend tests green. On a multi-tenant host
+    that filter is the only thing stopping the panel from pricing every org's harness spend
+    for any caller — and nothing would have noticed.
+    """
+    other = _unreadable_project(db)
+    _attempt(db, "tenant-only", other, vendor="openai", model="gpt-5-secret",
+             tin=900_000, tout=100_000)
+    db.commit()
+
+    rows = _rows(client.get("/api/usage", headers=auth).json())
+
+    assert ("openai", "gpt-5-secret") not in rows, rows
+
+
+def test_model_usage_does_not_add_another_tenants_attempts_to_a_shared_model(
+    client, auth, db, proj
+):
+    """The sharper half. An absent ROW can be explained away — a vendor nobody else uses is
+    absent for lots of reasons. A vendor/model present in BOTH projects cannot: if the filter
+    goes, the readable project's own row silently grows by the other tenant's spawns and
+    tokens, which is the same leak wearing the reader's own numbers.
+    """
+    other = _unreadable_project(db, "usage-other-tenant-2")
+    _attempt(db, "mine", proj, vendor="anthropic", model="claude-sonnet-4", tin=1000, tout=500)
+    _attempt(db, "theirs", other, vendor="anthropic", model="claude-sonnet-4",
+             tin=9_000_000, tout=1_000_000)
+    db.commit()
+
+    row = _rows(client.get("/api/usage", headers=auth).json())[("anthropic", "claude-sonnet-4")]
+
+    assert row["spawns"] == 1, row
+    assert row["tokens"] == 1500, row
+
+
+def test_a_caller_with_no_readable_projects_is_shown_no_model_usage(client, db):
+    """The boundary at zero. A user who is a member of nothing must see an empty panel, not
+    the deployment's whole spend — the case where `project_ids` is `[]` and every `.in_()`
+    below it decides what an unauthorised caller gets.
+    """
+    from app.models import User
+    from app.security.passwords import hash_password
+
+    other = _unreadable_project(db, "usage-no-member-tenant")
+    _attempt(db, "elsewhere", other, vendor="openai", model="gpt-5-elsewhere",
+             tin=5_000_000, tout=1_000_000)
+    db.add(User(id="u-nomember", name="No Member", handle="nomember",
+                email="nomember@example.com", initials="NM",
+                password_hash=hash_password("graphban1")))
+    db.commit()
+
+    token = client.post("/api/auth/login",
+                        json={"email": "nomember@example.com", "password": "graphban1"})
+    assert token.status_code == 200, token.text
+    headers = {"Authorization": f"Bearer {token.json()['access_token']}"}
+
+    body = client.get("/api/usage", headers=headers).json()
+
+    assert body["model_usage"]["rows"] == [], body["model_usage"]
