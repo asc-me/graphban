@@ -306,12 +306,28 @@ def db(client):
         s.close()
 
 
-def _reviewable(db, *, effort=1):
-    """An item in `review`, built by somebody other than the agent that will sign it."""
+#: A base distinct from ATTESTED_SHA: the point of recording one is that sign_off can compare
+#: the attested commit against it, and a fixture where the two match exercises the REFUSAL
+#: (`AttestedTheBase`) rather than the pass.
+BASE_SHA = "0000111122223333444455556666777788889999"
+
+
+def _reviewable(db, *, effort=1, base=BASE_SHA):
+    """An item in `review`, built by somebody other than the agent that will sign it.
+
+    Carries a recorded base by default, because a supervised item has one: `gbfleet` posts the
+    marker when it cuts the worktree. Without it `commit_is_not_the_base` has nothing to
+    compare against, and since GRPH-1007 a predicate whose check could not run reports
+    `passed: False` and blocks completion rather than claiming a comparison nobody made.
+    Pass `base=None` for the unsupervised case.
+    """
     it = items_svc.create_item(db, title="built elsewhere", project_id="core",
                                effort=effort)
     it.status = "review"
     it.built_by = "builder-agent"
+    if base:
+        it.evidence = items_svc.append_evidence(it.evidence, [{
+            "kind": "note", "detail": f"{items_svc.CUT_FROM_MARKER}{base} (`gb/fixture-1`)"}])
     db.commit()
     db.refresh(it)
     return it

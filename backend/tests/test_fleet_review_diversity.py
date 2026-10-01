@@ -61,6 +61,14 @@ def _signed(client, key, *, builder_caps, reviewer_caps):
     _ok(client, key, "create_item", {"title": "a slice", "status": "next", "effort": 1})
     c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
     item = c["item"]["id"]
+    # A base, because these tests are about reviewer DIVERSITY and since GRPH-1007 a sign-off
+    # whose `commit_is_not_the_base` could not run is refused — without it every test here
+    # would fail on a predicate it is not about.
+    _ok(client, key, "update_item",
+        {"id": item, "agent_id": worker["agent_id"],
+         "evidence": [{"kind": "note",
+                       "detail": "gbfleet: branch cut from "
+                                 "1111222233334444555566667777888899990000 (`gb/d-1`)"}]})
     _ok(client, key, "update_item",
         {"id": item, "status": "review", "agent_id": worker["agent_id"]})
     reviewer = _ok(client, key, "register_agent",

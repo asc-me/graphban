@@ -63,13 +63,29 @@ SABOTAGE = {"kind": "sabotage", "claim": "the veto holds back an accept",
             "mutation": "return True from may_auto_publish", "tests_failed": 2}
 
 
-def _ready_for_review(client, key, effort):
-    """An item built by one agent and waiting for another — the state a reviewer acts on."""
+#: The base a supervisor recorded when it cut the worktree. Distinct from any commit these
+#: tests attest, so `commit_is_not_the_base` compares and PASSES rather than refusing.
+CUT_FROM = "0000111122223333444455556666777788889999"
+
+
+def _ready_for_review(client, key, effort, base=CUT_FROM):
+    """An item built by one agent and waiting for another — the state a reviewer acts on.
+
+    Records a base, because a supervised item has one: `gbfleet` posts the marker when it cuts
+    the tree. Since GRPH-1007 a predicate whose check could not run reports `passed: False`
+    and blocks completion rather than claiming a comparison nobody made, so a fixture with no
+    base is an UNSUPERVISED item and mints nothing a reviewer can read back.
+    """
     worker = _ok(client, key, "register_agent",
                  {"branch": "gb/test", "label": "w", "capabilities": {"instance": "w"}})
     made = _ok(client, key, "create_item",
                {"title": "some work", "status": "next", "effort": effort})
     c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
+    if base:
+        _ok(client, key, "update_item",
+            {"id": c["item"]["id"], "agent_id": worker["agent_id"],
+             "evidence": [{"kind": "note",
+                           "detail": f"gbfleet: branch cut from {base} (`gb/test`)"}]})
     _ok(client, key, "update_item",
         {"id": c["item"]["id"], "status": "review", "agent_id": worker["agent_id"]})
     reviewer = _ok(client, key, "register_agent",
@@ -276,14 +292,22 @@ DESC_ONE_CLAUSE = """\
 """
 
 
-def _ready_with_description(client, key, *, effort, description):
-    """Like `_ready_for_review` but stamps a description on the item at creation."""
+def _ready_with_description(client, key, *, effort, description, base=CUT_FROM):
+    """Like `_ready_for_review` but stamps a description on the item at creation.
+
+    Records a base for the same reason — see `_ready_for_review`.
+    """
     worker = _ok(client, key, "register_agent",
                  {"branch": "gb/test", "label": "w", "capabilities": {"instance": "w"}})
     made = _ok(client, key, "create_item",
                {"title": "some work", "status": "next", "effort": effort,
                 "description": description})
     c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
+    if base:
+        _ok(client, key, "update_item",
+            {"id": c["item"]["id"], "agent_id": worker["agent_id"],
+             "evidence": [{"kind": "note",
+                           "detail": f"gbfleet: branch cut from {base} (`gb/test`)"}]})
     _ok(client, key, "update_item",
         {"id": c["item"]["id"], "status": "review", "agent_id": worker["agent_id"]})
     reviewer = _ok(client, key, "register_agent",
@@ -654,8 +678,14 @@ def test_receipt_and_item_carry_the_reviewers_tier(client, key):
         "capabilities": {"instance": "r", "tier": "cheap", "vendor": "alibaba",
                          "model": "qwen3-coder"}})
 
+    # This item is built inline rather than through a supervised helper, so no base is
+    # recorded and `commit_is_not_the_base` cannot compare — since GRPH-1007 it reports
+    # `passed: False` rather than claiming a comparison nobody made. That is the case the
+    # waiver exists for, and signing off over MCP is the only place the whole path runs:
+    # the arg reaches the dispatcher, the predicate records the reason, the gate admits it.
     out = _ok(client, key, "sign_off", {
-        "id": item, "agent_id": reviewer["agent_id"], "commit": PROBE_SHA})
+        "id": item, "agent_id": reviewer["agent_id"], "commit": PROBE_SHA,
+        "waive": {"commit_is_not_the_base": "built inline by this test, with no supervisor to record a base"}})
 
     from app.services import items as items_svc
     [att] = [a for a in items_svc.valid_attestations(out["evidence"], commit=PROBE_SHA)
@@ -672,3 +702,54 @@ def test_an_undeclared_reviewer_reads_undeclared_not_absent(client, key):
     _ok(client, key, "sign_off", {"id": item, "agent_id": reviewer["agent_id"]})
     got = _ok(client, key, "get_item_details", {"id": item})
     assert got["reviewer"]["tier"] == "undeclared", got.get("reviewer")
+
+
+# ---- the sign-off refusal (GRPH-1007, review bounce on PR #921) ----------------------------
+
+def test_sign_off_refuses_an_uncompared_check_with_no_waiver(client, key):
+    """THE bounce. `_predicate` reported honestly and `_predicate_admits` read it, but the gate
+    those two serve lives in `update_item` — and `sign_off` writes `item.status = "done"`
+    itself. So the honest flag was cosmetic: the item reached `done` carrying a receipt that
+    `valid_attestations` rejects, which is worse than the lie it replaced.
+
+    This is the reviewer's own experiment: the same inline item as
+    `test_receipt_and_item_carry_the_reviewers_tier`, with the waiver dropped.
+    """
+    worker = _ok(client, key, "register_agent",
+                 {"branch": "gb/test", "label": "w", "capabilities": {"instance": "w"}})
+    _ok(client, key, "create_item", {"title": "w", "status": "next", "effort": 1})
+    c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
+    item = c["item"]["id"]
+    _ok(client, key, "update_item",
+        {"id": item, "status": "review", "agent_id": worker["agent_id"]})
+    reviewer = _ok(client, key, "register_agent",
+                   {"label": "r", "role_hint": "reviewer", "capabilities": {"instance": "r"}})
+
+    res = _rpc(client, key, "sign_off",
+               {"id": item, "agent_id": reviewer["agent_id"], "commit": PROBE_SHA})
+
+    assert res.get("isError"), res
+    text = res["content"][0]["text"]
+    assert "commit_is_not_the_base" in text, text
+    # The refusal has to say how to satisfy it, or it is a wall rather than a gate.
+    assert "waive" in text, text
+
+
+def test_the_refused_item_is_not_left_done(client, key, db):
+    """A refusal that still wrote the status would be the worst of both: blocked in the
+    message, completed in the row."""
+    worker = _ok(client, key, "register_agent",
+                 {"branch": "gb/test", "label": "w", "capabilities": {"instance": "w"}})
+    _ok(client, key, "create_item", {"title": "w", "status": "next", "effort": 1})
+    c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
+    item = c["item"]["id"]
+    _ok(client, key, "update_item",
+        {"id": item, "status": "review", "agent_id": worker["agent_id"]})
+    reviewer = _ok(client, key, "register_agent",
+                   {"label": "r", "role_hint": "reviewer", "capabilities": {"instance": "r"}})
+
+    _rpc(client, key, "sign_off",
+         {"id": item, "agent_id": reviewer["agent_id"], "commit": PROBE_SHA})
+
+    from app.models import Item
+    assert db.get(Item, item).status == "review"

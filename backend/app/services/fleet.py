@@ -1811,6 +1811,17 @@ class MissingAdversarialEvidence(Exception):
     """Above-threshold work signed off with nothing that tried to break it."""
 
 
+class UncomparedPredicate(Exception):
+    """A sign-off whose receipt carries a check that could not run, and no waiver (GRPH-1007).
+
+    Raised rather than minted, because `sign_off` writes `item.status = "done"` itself and
+    never passes through the completion gate in `items.py`. Without this the honest flag was
+    cosmetic: the item reached `done` carrying a receipt that `valid_attestations` rejects,
+    which is worse than the lie it replaced — a completed item whose own attestation does not
+    validate, and nothing anywhere said so.
+    """
+
+
 class AttestedTheBase(Exception):
     """The reviewer attested the commit its branch was cut FROM (GRPH-970)."""
 
@@ -1907,6 +1918,18 @@ def extract_acceptance_clauses(description: str) -> list[str]:
 #: commonest honest test summary there is.
 _NEGATIVE_EVIDENCE = re.compile(r"\b(not delivered|skipped|cannot|failed)\b")
 _ZERO_FAILED = re.compile(r"\b0 (?:tests? )?failed\b")
+#: A pytest summary's own skip COUNT, stripped for the same reason as `0 failed` above:
+#: "4656 passed, 34 skipped, 0 red" is the literal summary line of a fully green run, and
+#: those skips are collection-level (optional deps, engine-specific paths) rather than
+#: anything the builder chose to leave out. Reading it as a denial refused a receipt that was
+#: MORE complete than the one the gate accepts, and the remedy it prescribed was to delete the
+#: number — so the gate rewarded the thinner receipt, in a repo whose recurring defect is
+#: absence reading as clean (GRPH-1008).
+#:
+#: A digit immediately before the word is what separates a count from a claim. "34 skipped" is
+#: data; "skipped the Postgres run" and "I skipped that test" carry no count and still deny,
+#: which is the abuse GRPH-945 exists for.
+_SKIP_COUNT = re.compile(r"\b\d+ (?:tests? )?skipped\b")
 
 
 def acceptance_contradicted(clauses: list[str], evidence: list[dict]) -> dict[str, str]:
@@ -1930,7 +1953,7 @@ def acceptance_contradicted(clauses: list[str], evidence: list[dict]) -> dict[st
             for c in clauses:
                 if c in out or c.lower() not in low:
                     continue
-                residue = _ZERO_FAILED.sub(" ", low.replace(c.lower(), " "))
+                residue = _SKIP_COUNT.sub(" ", _ZERO_FAILED.sub(" ", low.replace(c.lower(), " ")))
                 if _NEGATIVE_EVIDENCE.search(residue):
                     out[c] = line.strip()
     return out
@@ -2068,8 +2091,30 @@ def needs_adversarial_evidence(item: Item) -> bool:
     return (item.effort or 0) >= ADVERSARIAL_EFFORT_THRESHOLD
 
 
+def _predicate(name: str, *, compared: bool, detail: str, waived: dict) -> dict:
+    """One sign-off predicate, honest about whether its check actually ran (GRPH-1007).
+
+    These five used to hardcode `passed: True` and put the truth in the prose. Two of them
+    have a branch where the comparison never happens — no base recorded, no `built_by` — and
+    the prose said so while the flag said otherwise. Nothing that gates reads prose: the
+    completion gate asks `all(q["passed"])` and the receipt summary prints "all passed", so an
+    item reached `done` carrying "5 predicate(s), all passed" with two of the five unperformed.
+
+    So an uncompared predicate now reports `passed: False` and carries `compared: False`. That
+    blocks completion, which is the point — but a hand-built item legitimately has no recorded
+    base, and a first item legitimately has no author, so a reviewer may record a `waived`
+    reason to admit it anyway. The waiver does not make the predicate pass; it records who
+    accepted its absence and why, and it is honoured ONLY where the check could not run.
+    """
+    out = {"name": name, "passed": bool(compared), "compared": bool(compared), "detail": detail}
+    if not compared and waived.get(name):
+        out["waived"] = waived[name]
+    return out
+
+
 def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None = None,
-             api_key=None, commit: str | None = None) -> Item:
+             api_key=None, commit: str | None = None,
+             waive: dict | None = None) -> Item:
     """Take a reviewed item to `done`.
 
     The second of two independent gates on the invariant. `claim_review` already filters by
@@ -2241,6 +2286,11 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             "back with its builder via bounce."
         )
 
+    # A waiver is only ever honoured on a predicate whose check COULD NOT RUN — never on one
+    # that ran and failed. Waiving a real failure would launder it, which is the opposite of
+    # what the override exists for (GRPH-1007).
+    waived = {str(k): str(v).strip() for k, v in (waive or {}).items() if str(v or "").strip()}
+
     reviewer = declared_capabilities(db, agent_id)
     builder = declared_capabilities(db, item.built_by)
     diverse, diversity_detail = review_diversity(
@@ -2272,9 +2322,10 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             "adapter": "fleet.sign_off",
             "commit": commit,
             "predicates": [
-                {"name": "independent_review",
-                 "passed": True,
-                 "detail": f"signed off by {agent_id} (tier {reviewer['tier']}, vendor "
+                _predicate(
+                    "independent_review",
+                    compared=bool(danger or item.built_by),
+                    detail=f"signed off by {agent_id} (tier {reviewer['tier']}, vendor "
                            f"{reviewer['vendor']}, model {reviewer['model']})"
                            + (" under danger mode — no independent agent was available"
                               if danger
@@ -2283,7 +2334,8 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                               # (GRPH-848): with no author there was nobody to be
                               # independent of, and "the author" read as if there were.
                               else "; author unrecorded — the item reached review with no "
-                                   "built_by, so independence was not compared")},
+                                   "built_by, so independence was not compared"),
+                    waived=waived),
                 {"name": "adversarial_evidence",
                  "passed": True,
                  "detail": (f"effort {item.effort} needs adversarial evidence and the item "
@@ -2301,13 +2353,15 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                  # beside the builder's bare agent id (GRPH-971).
                  "passed": True,
                  "detail": diversity_detail},
-                {"name": "commit_is_not_the_base",
-                 "passed": True,
-                 "detail": (f"{commit[:12]} is not among the {len(cut_from)} base commit(s) "
+                _predicate(
+                    "commit_is_not_the_base",
+                    compared=bool(cut_from),
+                    detail=(f"{commit[:12]} is not among the {len(cut_from)} base commit(s) "
                             "this item's branches were cut from"
                             if cut_from
                             else "no supervisor recorded a base for this item, so the attested "
-                                 "commit was NOT compared against one")},
+                                 "commit was NOT compared against one"),
+                    waived=waived),
                 {"name": "acceptance_coverage",
                  "passed": True,
                  "detail": (f"all {len(clauses)} acceptance clause(s) have a named test "
@@ -2324,6 +2378,24 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # signed it off in the same minute — the defect the cooldown tests name — sailed
     # through. Same helper, same message.
     items_svc.refuse_if_pr_cooling_down(db, item, evidence or [], commit=commit)
+    # THE CALL, again (GRPH-1007). `_predicate` reports honestly and `_predicate_admits` reads
+    # it, but the gate those two serve lives in `update_item` — and this function writes the
+    # status directly. So the refusal has to be made HERE, next to the cooldown refusal that
+    # exists for the same reason: a guarantee enforced only on a path this one does not take
+    # is not enforced.
+    unwaived = sorted(q["name"] for a in fresh
+                      if a.get("kind") == "attestation"
+                      for q in (a.get("predicates") or [])
+                      if q.get("compared") is False and not str(q.get("waived") or "").strip())
+    if unwaived:
+        raise UncomparedPredicate(
+            f"{item.key}: " + ", ".join(unwaived) + " could not be checked, so this sign-off "
+            "would record a pass nobody earned. Record what is missing — a supervisor's "
+            "`gbfleet: branch cut from <sha>` note gives `commit_is_not_the_base` something "
+            "to compare, and `built_by` gives `independent_review` somebody to compare "
+            "against — or accept the absence on the record with "
+            "waive={\"" + unwaived[0] + "\": \"<why>\"}."
+        )
     release_reservations(db, item_id=item.id)
     item.reviewed_by = agent_id
     # Who reviewed it, by tier (GRPH-945). Kept whether or not a commit was attested: the

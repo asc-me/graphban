@@ -169,21 +169,38 @@ def test_the_receipt_says_the_commit_was_compared(client, key):
 
 
 def test_an_unrecorded_base_says_so_instead_of_implying_a_check(client, key):
-    """A supervisor that failed to post the receipt degrades to the old behaviour — which is
-    acceptable — but the receipt must not read as though a comparison happened. An unrecorded
-    base looking identical to a checked one is how this whole class of defect survives.
+    """The receipt must not read as though a comparison happened. An unrecorded base looking
+    identical to a checked one is how this whole class of defect survives.
+
+    POLICY CHANGED under it, deliberately and by the repo owner (GRPH-1007, 2026-10-01). This
+    used to assert `status == "done"` with the reasoning "a supervisor that failed to post the
+    receipt degrades to the old behaviour — which is acceptable". It is no longer acceptable:
+    the prose was honest and nothing read it, so the completion gate admitted items whose own
+    receipts it would reject. An uncompared check now refuses the sign-off, and a reviewer who
+    accepts the absence says so with `waive`.
+
+    What GRPH-970 was protecting is unchanged and still asserted below — the wording. Only who
+    gets to proceed without it has changed.
     """
     item, reviewer = _ready_for_review(client, key, base=None)
 
-    out = _ok(client, key, "sign_off",
-              {"id": item, "agent_id": reviewer["agent_id"], "commit": BASE})
+    unwaived = _rpc(client, key, "sign_off",
+                    {"id": item, "agent_id": reviewer["agent_id"], "commit": BASE})
+    assert unwaived.get("isError"), "an unrecorded base is no longer a free pass"
+    assert "commit_is_not_the_base" in unwaived["content"][0]["text"]
 
-    assert out["status"] == "done", "no base recorded, so nothing to compare against"
+    out = _ok(client, key, "sign_off",
+              {"id": item, "agent_id": reviewer["agent_id"], "commit": BASE,
+               "waive": {"commit_is_not_the_base": "no supervisor posted the cut-from receipt"}})
+
+    assert out["status"] == "done", "accepted on the record, not silently"
     got = _ok(client, key, "get_item_details", {"id": item})
     signed = [e for e in got["evidence"]
               if e.get("kind") == "attestation" and e.get("adapter") == "fleet.sign_off"]
     named = {p["name"]: p for p in signed[-1]["predicates"]}
     assert "NOT compared" in named["commit_is_not_the_base"]["detail"]
+    assert named["commit_is_not_the_base"]["passed"] is False, "it did not pass; it was waived"
+    assert named["commit_is_not_the_base"]["waived"], "and who accepted it is on the receipt"
 
 
 def test_the_refusal_is_in_the_ledger(client, key, db):

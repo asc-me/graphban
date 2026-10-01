@@ -1774,6 +1774,16 @@ _FLEET_ONLY_ARGS = {
         },
     },
     "mint_enrolment": dict(_SEAT_SCOPE_ARG),
+    # GRPH-1007, and fleet-only for the reason every entry here is: the ceiling is measured on
+    # the base manifest, and only a reviewer ever sends this. A predicate whose check could not
+    # run now reports `passed: false` and blocks completion; this is how a reviewer admits one
+    # anyway, on the record. It cannot launder a predicate that ran and failed.
+    "sign_off": {"waive": {
+        "type": "object",
+        "description": "Admit a predicate whose check COULD NOT run, as {predicate: reason} "
+                       "— e.g. {\"commit_is_not_the_base\": \"built by hand, PR #913\"}. "
+                       "Recorded on the receipt. Ignored for a predicate that ran and failed.",
+    }},
     # GRPH-807. Measured on a live instance: 177 agents, 27,391 tokens, of which ONE was live.
     # A planner polling a wave paid nearly twice the whole manifest, per poll.
     "fleet_status": {"view": {
@@ -2837,7 +2847,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             item = fleet_svc.sign_off(
                 db, item_id=keys.resolve_item(db, args["id"]) or args["id"],
                 agent_id=agent, evidence=args.get("evidence"), api_key=key,
-                commit=args.get("commit"))
+                commit=args.get("commit"), waive=args.get("waive"))
         except fleet_svc.NotInReview as e:
             # Conflict, not unauthorized, for the same reason the evidence gate below is: the
             # caller is permitted to sign this off, the work simply has not been handed over.
@@ -2874,6 +2884,18 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 "attest the head of the branch you reviewed — `git rev-parse HEAD` in the "
                 "worktree — not the commit it was cut from; if `git log base..HEAD` is empty "
                 "there is nothing to review and this belongs in a bounce"))
+        except fleet_svc.UncomparedPredicate as e:
+            # Audited like its neighbours (GRPH-970's rule): a gate nobody can see being
+            # routed around is a gate on paper.
+            events_svc.record_key(
+                db, key, action="sign_off_refused", target_type="item",
+                target_id=args.get("id", ""), project_id=pid,
+                meta={"reason": str(e), "agent_id": args.get("agent_id")})
+            # Conflict, not unauthorized: the caller may sign this off, the receipt simply
+            # would not stand behind it.
+            raise errors.Conflict(str(e), hint=(
+                "a predicate that could not run is not a pass — give it something to compare "
+                "against, or waive it on the record with waive={\"<predicate>\": \"<why>\"}"))
         except fleet_svc.MissingAcceptanceCoverage as e:
             events_svc.record_key(
                 db, key, action="sign_off_refused", target_type="item",

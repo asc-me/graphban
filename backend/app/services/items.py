@@ -186,6 +186,13 @@ def _normalize_predicates(raw) -> list[dict]:
     — which asks `all(p["passed"])` — would read a failure as a pass. Rejecting the row is
     right rather than coercing it, because there is no reading of `"false"` that is safe to
     guess at.
+
+    `compared` and `waived` are carried through because the gate reads them (GRPH-1007): a
+    predicate whose check could not run reports `passed: False, compared: False`, and a
+    reviewer's `waived` reason is what admits it. This function REBUILDS each row from named
+    fields rather than copying it, so anything not named here is silently dropped — which is
+    how the pair would have survived every in-memory test and been inert the moment an
+    attestation was stored and read back. Add a field the gate consults, add it here.
     """
     out: list[dict] = []
     for p in raw or []:
@@ -195,8 +202,15 @@ def _normalize_predicates(raw) -> list[dict]:
         passed = p.get("passed")
         if not name or not isinstance(passed, bool):
             continue
-        out.append({"name": name, "passed": passed,
-                    "detail": str(p.get("detail") or "").strip()})
+        row = {"name": name, "passed": passed,
+               "detail": str(p.get("detail") or "").strip()}
+        # Only when actually present: absent is "this adapter does not report it", which is
+        # not the same claim as `compared: False` ("the check did not run").
+        if isinstance(p.get("compared"), bool):
+            row["compared"] = p["compared"]
+        if str(p.get("waived") or "").strip():
+            row["waived"] = str(p["waived"]).strip()
+        out.append(row)
     return out
 
 
@@ -334,11 +348,25 @@ def normalize_evidence_report(raw) -> tuple[list[dict], list[dict]]:
                     "schema_version": schema_version,
                 })
                 if not detail:
-                    failed = [q["name"] for q in preds if not q["passed"]]
+                    # "all passed" must not be printable while a predicate never ran. The
+                    # summary is what a human reads, and it said "all passed" over receipts
+                    # carrying two unperformed checks (GRPH-1007).
+                    failed = [q["name"] for q in preds
+                              if not q["passed"] and q.get("compared") is not False]
+                    waived = [q["name"] for q in preds
+                              if q.get("compared") is False and q.get("waived")]
+                    uncompared = [q["name"] for q in preds
+                                  if q.get("compared") is False and not q.get("waived")]
+                    parts = []
+                    if failed:
+                        parts.append("FAILED: " + ", ".join(failed))
+                    if uncompared:
+                        parts.append("NOT COMPARED: " + ", ".join(uncompared))
+                    if waived:
+                        parts.append("WAIVED: " + ", ".join(waived))
                     row["detail"] = (
                         f"{adapter} attested {commit[:12]} — {len(preds)} predicate(s), "
-                        + ("all passed" if not failed
-                           else "FAILED: " + ", ".join(failed)))
+                        + ("; ".join(parts) if parts else "all passed"))
             else:
                 # Demoted, never DISAPPEARED — same reasoning as the sabotage branch above.
                 row["kind"] = "note"
@@ -672,6 +700,25 @@ def same_commit(a: str | None, b: str | None) -> bool:
     return x.startswith(y) or y.startswith(x)
 
 
+def _predicate_admits(q) -> bool:
+    """Whether one predicate lets its attestation through the completion gate.
+
+    `passed is True` is the ordinary answer, and `passed` must be a real bool: a JSON client
+    sending `"false"` would otherwise store a truthy string (GRPH-542).
+
+    The exception is a predicate whose check COULD NOT RUN — no base recorded, no `built_by`.
+    Those report `passed: False, compared: False` rather than claiming a comparison nobody
+    made (GRPH-1007), which would otherwise block a hand-built item forever. A reviewer may
+    record a `waived` reason to admit one, and only one of those: a predicate that ran and
+    FAILED (`compared: True, passed: False`) is a real refusal and no waiver reaches it.
+    """
+    if not isinstance(q, dict):
+        return False
+    if q.get("passed") is True:
+        return True
+    return q.get("compared") is False and bool(str(q.get("waived") or "").strip())
+
+
 def valid_attestations(evidence, *, commit: str | None = None) -> list[dict]:
     """Attestations that actually attest something: at least one predicate, all passed.
 
@@ -692,9 +739,7 @@ def valid_attestations(evidence, *, commit: str | None = None) -> list[dict]:
         # predate that check (and other writers skip it); `all(q.get("passed"))` is
         # True for the JSON-client string `"false"` — the exact case GRPH-542 exists
         # to stop, and the empty-predicate stored-row hole wearing different clothes.
-        if not preds or not all(
-            isinstance(q, dict) and q.get("passed") is True for q in preds
-        ):
+        if not preds or not all(_predicate_admits(q) for q in preds):
             continue
         if commit is not None and a.get("commit") != commit:
             continue
@@ -734,9 +779,15 @@ def attested_predicates(evidence, *, commit: str | None = None) -> set[str]:
     named here instead, and `test_predicates_are_read_only_from_sound_receipts` sabotages the
     real one.
     """
+    # PASSED, not merely present. A waived predicate rides on an admitted receipt
+    # (GRPH-1007) and its name would otherwise satisfy `missing_predicates`, so a reason
+    # string would stand in for a check that never ran — the laundering path the waiver is
+    # explicitly not meant to open. A waiver admits ONE item past completion; it does not
+    # make a required guarantee true for anything that asks whether it holds.
     return {str(q.get("name") or "")
             for a in valid_attestations(evidence, commit=commit)
-            for q in (a.get("predicates") or [])} - {""}
+            for q in (a.get("predicates") or [])
+            if q.get("passed") is True} - {""}
 
 
 def missing_predicates(evidence, required, *, commit: str | None = None) -> list[str]:
