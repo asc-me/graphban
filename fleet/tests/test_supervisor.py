@@ -657,9 +657,13 @@ def test_main_up_prints_the_wave_report_after_a_wave(tmp_path: Path, monkeypatch
     failure of a supervisor — and it hid behind the missing `--project` for as long as
     that came first. This drives `main(["up", ...])` to the report line with the wave itself
     stubbed, so the parser, the env, the seats file and the tail all run for real."""
+    import subprocess
+
     from gbfleet import cli
     from gbfleet.supervisor import Wave
 
+    # A repository, because the build-server grant is read from its root (GRPH-998).
+    subprocess.run(["git", "init", "-q", str(tmp_path)], capture_output=True, check=True)
     seats = tmp_path / "seats.txt"
     seats.write_text("WORKER-AAA\n", encoding="utf-8")
     monkeypatch.setenv(cli.API_KEY_ENV, KEY)

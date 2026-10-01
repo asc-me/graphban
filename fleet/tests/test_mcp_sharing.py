@@ -170,3 +170,153 @@ def test_claude_still_gets_strict_so_the_grant_is_the_whole_list(tmp_path):
         instruction, Path("/usr/bin/true")).argv
 
     assert "--strict-mcp-config" in argv
+
+
+# ---- the project's own grant: .gbfleet/servers (GRPH-998) -----------------------------------
+
+def _project(tmp_path, text: str | None) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    if text is not None:
+        (repo / ".gbfleet").mkdir(exist_ok=True)
+        (repo / ".gbfleet" / "servers").write_text(text)
+    return repo
+
+
+def test_a_name_only_in_the_project_file_is_granted(tmp_path, config):
+    repo = _project(tmp_path, "context7\n")
+
+    assert list(mcpshare.grants([], repo, str(config))) == ["context7"]
+
+
+def test_the_flag_unions_with_the_file(tmp_path, config):
+    """Neither list displaces the other: the flag is for this invocation, the file for every
+    wave."""
+    repo = _project(tmp_path, "context7\n")
+
+    assert set(mcpshare.grants(["railway"], repo, str(config))) == {"context7", "railway"}
+
+
+def test_an_absent_file_grants_exactly_what_the_flag_did(tmp_path, config):
+    """"This project listed no build servers" — never "share what the laptop has"."""
+    repo = _project(tmp_path, None)
+
+    assert list(mcpshare.grants(["context7"], repo, str(config))) == ["context7"]
+    assert mcpshare.grants([], repo, str(config)) == {}
+
+
+def test_a_file_that_names_nothing_grants_nothing(tmp_path, config):
+    repo = _project(tmp_path, "# nothing yet\n\n   \n")
+
+    assert mcpshare.grants([], repo, str(config)) == {}
+
+
+def test_comments_blank_lines_and_inline_comments_are_ignored(tmp_path, config):
+    repo = _project(tmp_path, "# docs\n\ncontext7  # the docs server\n  railway\n")
+
+    assert mcpshare.project_names(repo) == ["context7", "railway"]
+
+
+def test_a_file_name_missing_from_the_source_refuses_and_names_the_file(tmp_path, config):
+    """A typo committed to the file must not tell the operator to fix a flag they never
+    typed."""
+    repo = _project(tmp_path, "contex7\n")
+
+    with pytest.raises(mcpshare.ShareRefused) as exc:
+        mcpshare.grants([], repo, str(config))
+
+    msg = str(exc.value)
+    assert "contex7" in msg and str(Path(".gbfleet/servers")) in msg and "--mcp-server" not in msg
+    assert "gmail" not in msg
+
+
+def test_a_pattern_in_the_file_is_refused(tmp_path, config):
+    repo = _project(tmp_path, "g*\n")
+
+    with pytest.raises(mcpshare.ShareRefused) as exc:
+        mcpshare.grants([], repo, str(config))
+
+    assert "patterns are refused" in str(exc.value)
+
+
+@pytest.mark.parametrize("name", sorted(mcpshare.RESERVED))
+def test_a_reserved_name_in_the_file_is_refused(name, tmp_path, config):
+    repo = _project(tmp_path, f"{name}\n")
+
+    with pytest.raises(mcpshare.ShareRefused):
+        mcpshare.grants([], repo, str(config))
+
+
+def test_a_grant_file_that_exists_but_cannot_be_read_refuses(tmp_path, config):
+    """Not the same as absent. A broken grant read as an empty one is a wave that runs without
+    the servers the project said it needs."""
+    repo = _project(tmp_path, None)
+    (repo / ".gbfleet" / "servers").mkdir(parents=True)
+
+    with pytest.raises(mcpshare.ShareRefused):
+        mcpshare.grants([], repo, str(config))
+
+
+def test_the_cli_reads_the_file_from_the_repo_root(tmp_path, config, monkeypatch):
+    """THE CALL. A correct `grants` that nobody calls would pass every test above. And a
+    `--repo` pointing at a subdirectory still finds the ROOT's file."""
+    import argparse
+    import subprocess
+
+    from gbfleet import cli
+
+    repo = _project(tmp_path, "context7\n")
+    subprocess.run(["git", "init", "-q", str(repo)], capture_output=True, check=True)
+    (repo / "backend").mkdir()
+    monkeypatch.setattr(mcpshare, "DEFAULT_SOURCE", str(config))
+
+    got = cli._shared_servers(argparse.Namespace(repo=str(repo / "backend"), mcp_server=["railway"]))
+
+    assert set(got) == {"context7", "railway"}
+
+
+def test_the_cli_refuses_the_wave_on_a_bad_file_name(tmp_path, config, monkeypatch, capsys):
+    import argparse
+    import subprocess
+
+    from gbfleet import cli
+
+    repo = _project(tmp_path, "contex7\n")
+    subprocess.run(["git", "init", "-q", str(repo)], capture_output=True, check=True)
+    monkeypatch.setattr(mcpshare, "DEFAULT_SOURCE", str(config))
+
+    with pytest.raises(SystemExit) as exc:
+        cli._shared_servers(argparse.Namespace(repo=str(repo), mcp_server=[]))
+
+    assert exc.value.code == 2
+    assert str(Path(".gbfleet/servers")) in capsys.readouterr().err
+
+
+def test_qwen_allows_a_server_named_only_in_the_project_file(tmp_path, config):
+    """Present and not on qwen's allowlist is a server that exists and cannot be called."""
+    import subprocess
+
+    from gbfleet.adapters import ADAPTERS
+    from gbfleet.worktree import Worktree
+
+    repo = _project(tmp_path, "context7\n")
+    tree = tmp_path / "wt3"
+    tree.mkdir()
+    subprocess.run(["git", "init", "-q", str(tree)], capture_output=True)
+    instruction = tmp_path / "instr3"
+    instruction.write_text("x")
+
+    argv = ADAPTERS["qwen-code"].launch(
+        _seat(shared=mcpshare.grants([], repo, str(config))),
+        Worktree(path=tree, branch="b", repo=tree), instruction, Path("/usr/bin/true")).argv
+
+    allowed = argv[argv.index("--allowed-mcp-server-names") + 1].split(",")
+    assert "context7" in allowed
+
+
+def test_this_repository_commits_its_build_servers():
+    """The grant the ticket asked for. Tracked, not ignored — a `.gbfleet/` ignore rule would
+    make every other clone's wave grant nothing while looking configured."""
+    root = Path(__file__).resolve().parents[2]
+
+    assert mcpshare.project_names(root) == ["context7", "browser", "browser-use"]
