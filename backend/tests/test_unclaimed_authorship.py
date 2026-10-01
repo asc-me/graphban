@@ -40,7 +40,15 @@ def _sent_unclaimed(client, key, title="inline work", agent_id=None):
     # is, or `review` is refused as having nothing to read (GRPH-946).
     from app.db import SessionLocal
     with SessionLocal() as s:
-        _row(s, item_id).branch = "gb/inline"
+        row = _row(s, item_id)
+        row.branch = "gb/inline"
+        # And where it was cut from. These tests are about AUTHORSHIP, not about bases: since
+        # GRPH-1007 a sign-off whose `commit_is_not_the_base` could not run is refused, so
+        # without this every test here would fail on the predicate it is not about.
+        from app.services import items as _items
+        row.evidence = _items.append_evidence(row.evidence, [{
+            "kind": "note",
+            "detail": f"{_items.CUT_FROM_MARKER}9999888877776666555544443333222211110000 (`gb/inline`)"}])
         s.commit()
     args = {"id": item_id, "status": "review"}
     if agent_id:
@@ -196,8 +204,20 @@ def test_the_receipt_says_author_unrecorded_when_there_is_none(client, agent_key
     item_id = _ok(client, agent_key, "create_item", {"title": "old row", "status": "review"})["id"]
     assert _row(db, item_id).built_by is None
     me = _register(client, agent_key, "worker")
+    # `independent_review` cannot compare without a `built_by`, and since GRPH-1007 an
+    # uncompared check refuses the sign-off rather than reporting a pass. Waiving it is the
+    # whole point of this row: the comparison did not happen, somebody said so on the record,
+    # and the receipt still has to word it honestly — which is what GRPH-848 fixed and what
+    # the assertions below still hold.
     _ok(client, agent_key, "sign_off",
         {"id": item_id, "agent_id": me["agent_id"], "commit": "abc1234",
+         "waive": {
+             "independent_review": "row predates the built_by stamp; backfill is out of scope",
+             # This row is created straight into `review` rather than through a supervisor, so
+             # it has no recorded base either. Both absences are real and both are accepted
+             # here on the record — which is what the override is for.
+             "commit_is_not_the_base": "created inline in review; no supervisor cut a tree",
+         },
          "evidence": [{"kind": "note", "detail": "read the diff"}]})
 
     pred = _attestation(client, agent_key, item_id)
@@ -214,6 +234,7 @@ def test_the_receipt_says_author_unrecorded_when_there_is_none(client, agent_key
     # The wording GRPH-848 fixed is still asserted below — that part was right and stands.
     assert pred["passed"] is False, "a comparison nobody made is not a pass"
     assert pred["compared"] is False, pred
+    assert pred["waived"], "the reviewer's acceptance of the absence is on the receipt"
     assert "author unrecorded" in pred["detail"], pred
     assert "independent of" not in pred["detail"], pred
 

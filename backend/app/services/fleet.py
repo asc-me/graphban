@@ -1811,6 +1811,17 @@ class MissingAdversarialEvidence(Exception):
     """Above-threshold work signed off with nothing that tried to break it."""
 
 
+class UncomparedPredicate(Exception):
+    """A sign-off whose receipt carries a check that could not run, and no waiver (GRPH-1007).
+
+    Raised rather than minted, because `sign_off` writes `item.status = "done"` itself and
+    never passes through the completion gate in `items.py`. Without this the honest flag was
+    cosmetic: the item reached `done` carrying a receipt that `valid_attestations` rejects,
+    which is worse than the lie it replaced — a completed item whose own attestation does not
+    validate, and nothing anywhere said so.
+    """
+
+
 class AttestedTheBase(Exception):
     """The reviewer attested the commit its branch was cut FROM (GRPH-970)."""
 
@@ -2367,6 +2378,24 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # signed it off in the same minute — the defect the cooldown tests name — sailed
     # through. Same helper, same message.
     items_svc.refuse_if_pr_cooling_down(db, item, evidence or [], commit=commit)
+    # THE CALL, again (GRPH-1007). `_predicate` reports honestly and `_predicate_admits` reads
+    # it, but the gate those two serve lives in `update_item` — and this function writes the
+    # status directly. So the refusal has to be made HERE, next to the cooldown refusal that
+    # exists for the same reason: a guarantee enforced only on a path this one does not take
+    # is not enforced.
+    unwaived = sorted(q["name"] for a in fresh
+                      if a.get("kind") == "attestation"
+                      for q in (a.get("predicates") or [])
+                      if q.get("compared") is False and not str(q.get("waived") or "").strip())
+    if unwaived:
+        raise UncomparedPredicate(
+            f"{item.key}: " + ", ".join(unwaived) + " could not be checked, so this sign-off "
+            "would record a pass nobody earned. Record what is missing — a supervisor's "
+            "`gbfleet: branch cut from <sha>` note gives `commit_is_not_the_base` something "
+            "to compare, and `built_by` gives `independent_review` somebody to compare "
+            "against — or accept the absence on the record with "
+            "waive={\"" + unwaived[0] + "\": \"<why>\"}."
+        )
     release_reservations(db, item_id=item.id)
     item.reviewed_by = agent_id
     # Who reviewed it, by tier (GRPH-945). Kept whether or not a commit was attested: the

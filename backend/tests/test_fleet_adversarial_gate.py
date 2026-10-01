@@ -702,3 +702,54 @@ def test_an_undeclared_reviewer_reads_undeclared_not_absent(client, key):
     _ok(client, key, "sign_off", {"id": item, "agent_id": reviewer["agent_id"]})
     got = _ok(client, key, "get_item_details", {"id": item})
     assert got["reviewer"]["tier"] == "undeclared", got.get("reviewer")
+
+
+# ---- the sign-off refusal (GRPH-1007, review bounce on PR #921) ----------------------------
+
+def test_sign_off_refuses_an_uncompared_check_with_no_waiver(client, key):
+    """THE bounce. `_predicate` reported honestly and `_predicate_admits` read it, but the gate
+    those two serve lives in `update_item` — and `sign_off` writes `item.status = "done"`
+    itself. So the honest flag was cosmetic: the item reached `done` carrying a receipt that
+    `valid_attestations` rejects, which is worse than the lie it replaced.
+
+    This is the reviewer's own experiment: the same inline item as
+    `test_receipt_and_item_carry_the_reviewers_tier`, with the waiver dropped.
+    """
+    worker = _ok(client, key, "register_agent",
+                 {"branch": "gb/test", "label": "w", "capabilities": {"instance": "w"}})
+    _ok(client, key, "create_item", {"title": "w", "status": "next", "effort": 1})
+    c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
+    item = c["item"]["id"]
+    _ok(client, key, "update_item",
+        {"id": item, "status": "review", "agent_id": worker["agent_id"]})
+    reviewer = _ok(client, key, "register_agent",
+                   {"label": "r", "role_hint": "reviewer", "capabilities": {"instance": "r"}})
+
+    res = _rpc(client, key, "sign_off",
+               {"id": item, "agent_id": reviewer["agent_id"], "commit": PROBE_SHA})
+
+    assert res.get("isError"), res
+    text = res["content"][0]["text"]
+    assert "commit_is_not_the_base" in text, text
+    # The refusal has to say how to satisfy it, or it is a wall rather than a gate.
+    assert "waive" in text, text
+
+
+def test_the_refused_item_is_not_left_done(client, key, db):
+    """A refusal that still wrote the status would be the worst of both: blocked in the
+    message, completed in the row."""
+    worker = _ok(client, key, "register_agent",
+                 {"branch": "gb/test", "label": "w", "capabilities": {"instance": "w"}})
+    _ok(client, key, "create_item", {"title": "w", "status": "next", "effort": 1})
+    c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
+    item = c["item"]["id"]
+    _ok(client, key, "update_item",
+        {"id": item, "status": "review", "agent_id": worker["agent_id"]})
+    reviewer = _ok(client, key, "register_agent",
+                   {"label": "r", "role_hint": "reviewer", "capabilities": {"instance": "r"}})
+
+    _rpc(client, key, "sign_off",
+         {"id": item, "agent_id": reviewer["agent_id"], "commit": PROBE_SHA})
+
+    from app.models import Item
+    assert db.get(Item, item).status == "review"

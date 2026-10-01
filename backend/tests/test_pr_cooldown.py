@@ -50,8 +50,23 @@ def cooldown(monkeypatch):
     return 60
 
 
-def _item(db, **kw):
-    return items_svc.create_item(db, project_id="core", title="Built it", **kw)
+#: Distinct from any commit these tests attest, so `commit_is_not_the_base` compares and
+#: passes rather than refusing — these tests are about the PR COOLDOWN, not about bases.
+CUT_FROM = "1111222233334444555566667777888899990000"
+
+
+def _item(db, base=CUT_FROM, **kw):
+    it = items_svc.create_item(db, project_id="core", title="Built it", **kw)
+    if base:
+        # Since GRPH-1007 a sign-off whose `commit_is_not_the_base` could not run is refused
+        # rather than reporting a pass, so an item with no recorded base is an unsupervised
+        # one and cannot be signed off without a waiver.
+        it.evidence = items_svc.append_evidence(it.evidence, [{
+            "kind": "note",
+            "detail": f"{items_svc.CUT_FROM_MARKER}{base} (`gb/cooldown`)"}])
+        db.commit()
+        db.refresh(it)
+    return it
 
 
 def _backdate(db, item, seconds):

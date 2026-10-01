@@ -10,7 +10,8 @@ clause, and told them to delete the number, rewarding the thinner receipt.
 import pytest
 
 from app.services.fleet import _predicate, acceptance_contradicted
-from app.services.items import _normalize_predicates, valid_attestations
+from app.services.items import (
+    _normalize_predicates, attested_predicates, missing_predicates, valid_attestations)
 
 
 def _att(preds, commit="c0ffee123456"):
@@ -202,3 +203,48 @@ def test_a_waived_reason_that_is_blank_is_not_stored():
         "name": "x", "passed": False, "detail": "d", "compared": False, "waived": "   "}])
 
     assert "waived" not in row
+
+
+# ── the review bounce on PR #921 ───────────────────────────────────────────────────────
+
+def test_a_waived_predicate_does_not_count_as_attested():
+    """A waiver admits ONE item past completion. It does not make a required guarantee true.
+
+    `attested_predicates` unioned every name on an admitted receipt, so a waived
+    `independent_review` satisfied `missing_predicates([...], ["independent_review"])` and a
+    reason string stood in for a check that never ran — the laundering path the waiver is
+    explicitly not meant to open (review bounce, PR #921).
+    """
+    att = _att([_p("suite_green"),
+                _p("independent_review", passed=False, compared=False,
+                   waived="no built_by on this row")])
+
+    assert len(valid_attestations(att)) == 1, "the item is still admitted"
+    assert attested_predicates(att) == {"suite_green"}
+    assert missing_predicates(att, ["independent_review"]) == ["independent_review"]
+
+
+def test_a_passing_predicate_still_counts_as_attested():
+    """The control: a filter that counted nothing would satisfy the assertion above."""
+    att = _att([_p("suite_green"), _p("independent_review")])
+
+    assert attested_predicates(att) == {"suite_green", "independent_review"}
+    assert missing_predicates(att, ["independent_review"]) == []
+
+
+def test_the_service_refusal_itself_says_how_to_satisfy_it():
+    """Pinned at the SERVICE, not through MCP.
+
+    The MCP handler adds its own hint that also mentions `waive`, so an assertion on the
+    combined text passes even when the service message says nothing useful — measured: a
+    sabotage that stripped `waive` from the service message left the end-to-end test green.
+    A caller using the service directly gets only this string.
+    """
+    from app.services.fleet import UncomparedPredicate, sign_off
+
+    assert UncomparedPredicate.__doc__, "the refusal explains itself to whoever reads the class"
+    src = __import__("inspect").getsource(sign_off)
+    msg = src[src.index("raise UncomparedPredicate("):]
+    msg = msg[:msg.index("\n    )") + 1] if "\n    )" in msg else msg[:600]
+    assert "waive=" in msg, "the refusal must name the escape hatch, or it is a wall"
+    assert "cut from" in msg, "and name what would let the check actually run"

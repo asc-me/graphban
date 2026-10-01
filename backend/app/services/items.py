@@ -779,9 +779,15 @@ def attested_predicates(evidence, *, commit: str | None = None) -> set[str]:
     named here instead, and `test_predicates_are_read_only_from_sound_receipts` sabotages the
     real one.
     """
+    # PASSED, not merely present. A waived predicate rides on an admitted receipt
+    # (GRPH-1007) and its name would otherwise satisfy `missing_predicates`, so a reason
+    # string would stand in for a check that never ran — the laundering path the waiver is
+    # explicitly not meant to open. A waiver admits ONE item past completion; it does not
+    # make a required guarantee true for anything that asks whether it holds.
     return {str(q.get("name") or "")
             for a in valid_attestations(evidence, commit=commit)
-            for q in (a.get("predicates") or [])} - {""}
+            for q in (a.get("predicates") or [])
+            if q.get("passed") is True} - {""}
 
 
 def missing_predicates(evidence, required, *, commit: str | None = None) -> list[str]:

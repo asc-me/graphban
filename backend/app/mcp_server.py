@@ -2884,6 +2884,18 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 "attest the head of the branch you reviewed — `git rev-parse HEAD` in the "
                 "worktree — not the commit it was cut from; if `git log base..HEAD` is empty "
                 "there is nothing to review and this belongs in a bounce"))
+        except fleet_svc.UncomparedPredicate as e:
+            # Audited like its neighbours (GRPH-970's rule): a gate nobody can see being
+            # routed around is a gate on paper.
+            events_svc.record_key(
+                db, key, action="sign_off_refused", target_type="item",
+                target_id=args.get("id", ""), project_id=pid,
+                meta={"reason": str(e), "agent_id": args.get("agent_id")})
+            # Conflict, not unauthorized: the caller may sign this off, the receipt simply
+            # would not stand behind it.
+            raise errors.Conflict(str(e), hint=(
+                "a predicate that could not run is not a pass — give it something to compare "
+                "against, or waive it on the record with waive={\"<predicate>\": \"<why>\"}"))
         except fleet_svc.MissingAcceptanceCoverage as e:
             events_svc.record_key(
                 db, key, action="sign_off_refused", target_type="item",
