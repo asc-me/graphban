@@ -23,9 +23,14 @@ import httpx
 
 from app import errors
 from app.providers.base import provider_errors
-from app.providers.decide import CHOICE, NOUL, SCORE, Answer, Decision, Question
+from app.providers.decide import CHOICE, NOUL, SCORE, Answer, Decision, Question, noul
 
 PATH = "/v1/systemone"
+
+#: Smoke decide for credential validation (PRD-45 D10). State and question are fixed so a
+#: test connection proves the key can decide, not merely reach /health.
+PING_STATE = "ping"
+PING_QUESTION = noul("ping", "The state is the word ping")
 
 
 def _timeout() -> httpx.Timeout:
@@ -126,6 +131,15 @@ class SystemOneDecider:
             llm_meter.record_usage(input=usage.get("input_tokens"),
                                    output=usage.get("output_tokens", 0))
         return decision
+
+
+def ping_decide(base_url: str, api_key: str, model: str) -> None:
+    """One decide against a System One endpoint to validate a credential (PRD-45 D10).
+
+    Raises `errors.Unavailable` on auth failure, wrong shape, or transport errors — the
+    same surface `credential_retry` and the UI read through `last_error`.
+    """
+    SystemOneDecider(base_url, api_key, model).decide(state=PING_STATE, questions=[PING_QUESTION])
 
 
 def decider(*, base_url: str, api_key: str, model: str) -> SystemOneDecider:

@@ -256,8 +256,12 @@ class TestProbe:
         result = probe._systemone("http://localhost:8090", "")
         assert result == {"english", "multilingual"}
 
-    def test_systemone_probe_404_returns_none(self, monkeypatch):
-        """A 404 from /health means 'cannot be asked', not 'has nothing'."""
+    def test_systemone_probe_404_is_cannot_be_asked_not_an_empty_catalog(self, monkeypatch):
+        """No /health endpoint is not a catalog of zero heads (PRD-45 D10 / GRPH-996).
+
+        `None` means cannot be asked; empty set means asked and listed none. Collapsing
+        them 422s every named head on TypeSafe, which has no listing endpoint.
+        """
         from app.providers import probe
 
         class Fake404:
@@ -272,3 +276,32 @@ class TestProbe:
 
         result = probe._systemone("http://typesafe.example.com", "key")
         assert result is None
+
+    def test_systemone_probe_health_with_no_loaded_is_an_empty_catalog(self, monkeypatch):
+        """TypeSafe `/health` 200 `{status: ok}` names no heads — asked, listed none."""
+        from app.providers import probe
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {"status": "ok"}
+
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: FakeResponse())
+        result = probe._systemone("https://api.typesafe.ai", "")
+        assert result == set()
+
+
+class TestPingDecide:
+    def test_ping_uses_the_protocol_smoke_question(self, monkeypatch):
+        from app.providers.systemone import PING_QUESTION, PING_STATE, ping_decide
+
+        seen: list = []
+
+        def fake_decide(self, *, state, questions):
+            seen.append((state, questions))
+            return None
+
+        monkeypatch.setattr(SystemOneDecider, "decide", fake_decide)
+        ping_decide("https://api.typesafe.ai", "sk", "jev-1.13.0")
+        assert seen == [(PING_STATE, [PING_QUESTION])]

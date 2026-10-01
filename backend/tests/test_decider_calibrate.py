@@ -189,6 +189,71 @@ class TestWire:
             cal._parse_answers({"answers": {"keep": {"type": "noul"}, "quality": {"score": 1}}})
 
 
+class TestReviewPass:
+    def test_review_body_declares_the_three_questions(self):
+        sample = cal.ReviewSample(
+            shard_id="m_cand",
+            candidate_text="Always heartbeat while you work",
+            published=[("m_pub", "Claim before you start")],
+            label_choice="none",
+        )
+        body = cal._review_request_body("typed-decisions", sample)
+        assert body["model"] == "typed-decisions"
+        assert "CANDIDATE:" in body["state"]
+        assert "[m_pub]" in body["state"]
+        q = body["questions"]
+        assert q["grounded"]["type"] == "noul"
+        assert q["ready"]["type"] == "noul"
+        assert q["contradicts"]["type"] == "choice"
+        assert set(q["contradicts"]["criteria"]) == {"none", "m_pub"}
+
+    def test_a_laya_review_reply_is_parsed(self):
+        decision = cal._parse_review_answers({
+            "answers": {
+                "grounded": {"type": "noul", "noul": 0.91},
+                "ready": {"type": "noul", "noul": 0.88},
+                "contradicts": {"type": "choice", "choice": "m_pub", "confidence": 0.82},
+            },
+        })
+        assert decision.grounded_p == 0.91
+        assert decision.contradicts == "m_pub"
+        assert decision.contradicts_conf == 0.82
+
+    def test_choice_min_suppresses_low_confidence_conflicts(self):
+        low = cal.ReviewDecision(0.9, 0.9, "m_pub", 0.55, 1.0)
+        high = cal.ReviewDecision(0.9, 0.9, "m_pub", 0.82, 1.0)
+        assert cal._effective_choice(low, choice_min=0.70) == "none"
+        assert cal._effective_choice(high, choice_min=0.70) == "m_pub"
+
+    def test_choice_min_at_precision_finds_a_floor(self):
+        labels = ["m_a", "m_a", "m_a", "m_b", "none"]
+        choices = ["m_a", "m_a", "m_a", "m_b", "m_a"]
+        confidences = [0.95, 0.92, 0.88, 0.85, 0.70]
+        thr = cal._choice_min_at_precision(labels, choices, confidences, 0.90)
+        assert thr is not None
+        assert thr >= 0.85
+
+    def test_review_loader_keeps_only_resolvable_labels(self, db):
+        from app.models import MemoryShard
+
+        db.add_all([
+            MemoryShard(id="m_pub", project_id=None, text="published rule", status="published"),
+            MemoryShard(
+                id="m_ok", project_id=None, text="candidate", status="candidate",
+                review_judge_verdict={"grounded": False, "ready": True,
+                                      "conflicts": ["m_pub"]},
+            ),
+            MemoryShard(
+                id="m_quote", project_id=None, text="other", status="candidate",
+                review_judge_verdict={"grounded": False, "ready": True,
+                                      "conflicts": ["published: no timeouts"]},
+            ),
+        ])
+        db.commit()
+        got = {s.shard_id for s in cal._load_review_samples(db)}
+        assert got == {"m_ok"}
+
+
 class TestLabelledCorpus:
     def test_a_human_decision_counts_and_a_scored_one_does_not(self, db):
         from app.models import MemoryShard

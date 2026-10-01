@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.config import settings as app_settings
 from app import providers
 from app.services import failover
+from app.services.credential_retry import DECIDE_FAIL_PREFIX as _DECIDE_FAIL_PREFIX
 from app.providers import probe
 from app.providers import registry as provider_registry
 from app.providers.base import ChatModel, Extractor
@@ -183,6 +184,131 @@ def usable(cred: "Credential | None") -> bool:
     broken default forever.
     """
     return cred is not None and cred.state != UNREACHABLE
+
+
+def note_decide_failure(db: Session, credential_id: str, detail: str = "") -> bool:
+    """Record that a decider credential was ASKED and did not answer (GRPH-995).
+
+    The probe cannot see this. `_probe_state` asks the provider's health/models endpoint,
+    so an empty-model row comes back `valid` — and a `valid` row is indistinguishable from
+    a working judge right up to the moment a shard comes back ungraded. `unreachable`
+    already means exactly "it WAS asked and did not answer", so a runtime `decide()`
+    failure is the same fact from better evidence, and writing it there means every reader
+    of `state` — `usable`, `resolve_decider`, `list_credentials`'s `falling_back`, the
+    console chip — agrees without a second vocabulary.
+
+    Never raises: this is called from inside an exception handler on the memory write path,
+    where the original failure is the one that matters. An empty id is normal, not an error
+    — a decider built by a test or by a caller that did not come from a credential row has
+    nothing to record against.
+
+    A runtime-fail mark is due immediately so `credential_retry.due` can restore a
+    project pointer; probe-unreachable is not.
+    """
+    if not credential_id:
+        return False
+    try:
+        cred = db.get(Credential, credential_id)
+        if cred is None:
+            return False
+        message = f"{_DECIDE_FAIL_PREFIX}: {detail}".rstrip(": ")[:500]
+        already_runtime = (cred.last_error or "").startswith(_DECIDE_FAIL_PREFIX)
+        if cred.state == UNREACHABLE and cred.last_error == message:
+            return True
+        cred.state = UNREACHABLE
+        cred.last_error = message
+        # Fresh budget + due immediately, so the sweep can restore a project
+        # pointer without waiting out a backoff the live call never earned.
+        # Leave an in-flight runtime-fail schedule alone — another miss with
+        # the same prefix must not reset MAX_ATTEMPTS.
+        if not already_runtime:
+            cred.validation_attempts = 0
+            cred.next_attempt_at = None
+        # Commit, not flush. This runs after decide() raised and before triage
+        # writes scoring_source (that happens only on a verdict). The review
+        # queue is a GET that does not commit on an error, so a flush is rolled
+        # back on close and the mark never lands — which is how a mute judge
+        # stayed `valid`. The success path flushes because it runs mid-write
+        # with a verdict still being assembled; a commit there persisted
+        # scoring_source empty.
+        db.commit()
+        logger.warning("decider credential %s could not answer a live request: %s",
+                       credential_id, detail[:200])
+        return True
+    except Exception:  # noqa: BLE001 — recording a failure must not become one
+        db.rollback()
+        logger.exception("decider failure: could not record state on %s", credential_id)
+        return False
+
+
+def note_decide_success(db: Session, credential_id: str) -> bool:
+    """Restore a row this path marked after a later `decide()` answers (GRPH-995).
+
+    `note_decide_failure` is one-way without this: a single timeout becomes a permanent
+    `unreachable`. The deployment default is still called (S2) so a later answer can
+    restore it here. A project pointer is routed off (`usable` is False), so this
+    path never runs for that case — `credential_retry.due` revisits the runtime-fail
+    mark instead. Only a `last_error` this path wrote (prefix `_DECIDE_FAIL_PREFIX`)
+    is ours to clear — a probe-unreachable row is a different fact, and restoring it
+    because one call succeeded would hide a host that still cannot be listed.
+
+    Never raises: called on the success path of a memory write, where the verdict is
+    the fact that matters. An empty id is a no-op, same as `note_decide_failure`.
+
+    Flush, do not commit: the caller still holds the shard in this session. A commit
+    here would persist a half-written verdict (scoring_source empty).
+    """
+    if not credential_id:
+        return False
+    try:
+        cred = db.get(Credential, credential_id)
+        if cred is None:
+            return False
+        if not (cred.last_error or "").startswith(_DECIDE_FAIL_PREFIX):
+            return False
+        cred.state = "valid"
+        cred.last_error = ""
+        db.flush()
+        return True
+    except Exception:  # noqa: BLE001 — restoring must not become a write-path failure
+        logger.exception("decider success: could not restore state on %s", credential_id)
+        return False
+
+
+def decider_health(db: Session, project_id: str) -> dict:
+    """Can this project's decider answer? (GRPH-995)
+
+    `configured` and `usable` are separate facts and collapsing them is the defect this
+    exists to prevent: the deployment default is returned even when unreachable (the S2
+    asymmetry), so a resolution that succeeded says nothing about whether adjudication is
+    happening. `configured and not usable` is the falling-back case.
+
+    Reads only. Safe on a request path — resolution builds an adapter but makes no call.
+
+    Resolution is guarded for the same reason `_resolved_decider` guards it: this feeds the
+    page that reports a broken judge, and a 500 there renders as NO banner, which is the
+    absence reading as a clean result one level up. An unresolvable decider reports
+    `configured: False` and lets the caller fall through to the next rung, which says so.
+    """
+    try:
+        resolved = resolve_decider(db, project_id)
+    except Exception:  # noqa: BLE001 — a broken pointer must not break the page reporting it
+        logger.exception("decider health: resolution failed for project %s", project_id)
+        return {
+            "configured": False, "usable": False, "credential_id": "", "label": "",
+            "state": "", "last_error": "", "source": "unresolved", "fell_back_from": "",
+        }
+    cred = db.get(Credential, resolved.credential_id) if resolved.credential_id else None
+    return {
+        "configured": cred is not None,
+        "usable": usable(cred),
+        "credential_id": resolved.credential_id,
+        "label": (cred.label or cred.id) if cred is not None else "",
+        "state": cred.state if cred is not None else "",
+        "last_error": cred.last_error if cred is not None else "",
+        "source": resolved.source,
+        "fell_back_from": resolved.fell_back_from,
+    }
 
 
 def _fallback_for(db: Session, scope: str, primary_id: str):
@@ -817,6 +943,32 @@ def list_credentials(db: Session, scope: str = "") -> list[dict]:
     embed_id = row.embed_credential_id if row else None
     decider_id = row.decider_credential_id if row else None
 
+    # Projects that INHERIT the scope's default decider (GRPH-995). `decider_used` above
+    # only ever sees an explicit `decider_credential_id`, so a default that cannot answer
+    # reported an empty `falling_back` — the console showed a green row while every project
+    # on the deployment scored memory on similarity alone. Same derivation as resolution
+    # (`resolve_decider`): a role override or a usable pointer of its own means the project
+    # is not inheriting, and `memory.decide: none` means it asked for no decider at all,
+    # which is a choice and not a fallback.
+    decider_inherited: list[str] = []
+    if decider_id and not usable(in_scope.get(decider_id)):
+        for pid, org_id, pointer, chat_roles in db.query(
+            Project.id, Project.org_id, Project.decider_credential_id, Project.chat_roles
+        ).all():
+            if (org_id or "") != (scope or ""):
+                continue
+            spec = (chat_roles or {}).get("memory.decide") or {}
+            role_cred = spec.get("credential_id") if isinstance(spec, dict) else None
+            if role_cred:
+                continue
+            own = in_scope.get(pointer) if pointer else None
+            if own is not None and usable(own) and provider_registry.serves_decide(own.kind):
+                continue
+            decider_inherited.append(pid)
+        decider_fallen[decider_id] = sorted(
+            set(decider_fallen.get(decider_id, [])) | set(decider_inherited)
+        )
+
     return [
         {
             "id": c.id,
@@ -894,6 +1046,12 @@ def _probe_state(kind: str, base_url: str, api_key: str, model: str) -> str:
     """
     known = probe.known_models(kind, base_url or "", api_key or "")
     if known is None:
+        return UNPROVEN
+    # System One: an empty listing is not a catalog. TypeSafe `/health` 200
+    # `{status: ok}` with no `loaded` returns set(); 422ing a named head because
+    # health listed nothing is the GRPH-996 create-path hole. Laya that actually
+    # names heads still refuses an unknown one below.
+    if not known and provider_registry.kind(kind) == "systemone":
         return UNPROVEN
     if model and model not in known:
         raise ValueError(

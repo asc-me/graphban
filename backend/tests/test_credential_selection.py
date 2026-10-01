@@ -239,6 +239,34 @@ def test_a_provider_that_answers_and_has_the_model_is_valid(db, project, monkeyp
     assert cred.state == "valid"
 
 
+def test_systemone_empty_catalog_does_not_422_a_named_head_on_create(db, project, monkeypatch):
+    """THE CALL (GRPH-996). TypeSafe `/health` 200 `{status: ok}` with no `loaded` is
+    an empty set, not a catalog that refused `jev-1.13.0`. 422ing here is the demo
+    walk's create-path hole; Test connection (retry) already pings decide.
+
+    Sabotage: drop the System One empty-catalog branch in `_probe_state`. This
+    raises ValueError; the retry-path empty-catalog test still passes.
+    """
+    monkeypatch.setattr(platform_svc.probe, "known_models", lambda *a, **k: frozenset())
+
+    cred = platform_svc.create_credential(
+        db, "", kind="typesafe", model="jev-1.13.0",
+        base_url="https://api.typesafe.ai", api_key="")
+
+    assert cred.state == "pending_validation"
+
+
+def test_systemone_that_listed_heads_still_refuses_an_unknown_model(db, project, monkeypatch):
+    """Empty catalog is the exception; a host that named heads still 422s a miss."""
+    monkeypatch.setattr(platform_svc.probe, "known_models",
+                        lambda *a, **k: frozenset({"english", "multilingual"}))
+
+    with pytest.raises(ValueError, match="does not have model"):
+        platform_svc.create_credential(
+            db, "", kind="systemone", model="jev-1.13.0",
+            base_url="http://localhost:8090")
+
+
 def test_a_resave_resets_the_retry_budget(db, project, monkeypatch):
     """A resave is new information: the thing that could not be asked may now be answerable.
     A row that stayed `unreachable` after being corrected would report the old failure."""

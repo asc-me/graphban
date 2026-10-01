@@ -7,7 +7,8 @@ import { MemoryReviewView } from "@/features/memory/MemoryReviewView";
 import { MemoryRouter } from "react-router-dom";
 
 import { ProjectProvider } from "@/features/ProjectContext";
-import type { CandidateJudge, Shard } from "@/lib/types";
+import { settingsPath } from "@/lib/routes";
+import type { CandidateJudge, JudgeStatus, Shard } from "@/lib/types";
 
 const candidate: Shard = {
   id: "m9", text: "Agent guess: batch writes for perf.", scope: "item", source: "lesson from AL-12",
@@ -37,7 +38,7 @@ const unvetted: Shard = {
 };
 
 // Hoisted so the (hoisted) vi.mock factory can reference the spies eagerly.
-const { publishSpy, undoSpy, judgeSpy } = vi.hoisted(() => ({
+const { publishSpy, undoSpy, judgeSpy, judgeStatusSpy } = vi.hoisted(() => ({
   publishSpy: vi.fn(async () => ({})),
   undoSpy: vi.fn(async () => ({})),
   judgeSpy: vi.fn(async (id: string): Promise<CandidateJudge> => ({
@@ -45,6 +46,15 @@ const { publishSpy, undoSpy, judgeSpy } = vi.hoisted(() => ({
     verdict: null,
     cause: "no_provider",
     cause_detail: "no independent chat model is configured for this project",
+  })),
+  // Healthy by default: every test that predates GRPH-995 must keep rendering no banner.
+  judgeStatusSpy: vi.fn(async (): Promise<JudgeStatus> => ({
+    judge_on: true,
+    judge: "decider",
+    decider_configured: true,
+    credential_label: "Laya",
+    falling_back: false,
+    reason: "",
   })),
 }));
 
@@ -68,6 +78,7 @@ vi.mock("@/lib/api", () => ({
     promoteCluster: vi.fn(async () => ({ published: "", rejected: [] })),
     undoAutoShard: undoSpy,
     judgeShard: judgeSpy,
+    judgeStatus: judgeStatusSpy,
   },
 }));
 
@@ -83,6 +94,19 @@ function renderView() {
     </QueryClientProvider>,
   );
 }
+
+// Reset OUTSIDE every describe, so a test that makes the judge mute cannot leak into the next
+// one. The banner is the assertion here, and a leaked banner reads as a passing test.
+beforeEach(() => {
+  judgeStatusSpy.mockResolvedValue({
+    judge_on: true,
+    judge: "decider",
+    decider_configured: true,
+    credential_label: "Laya",
+    falling_back: false,
+    reason: "",
+  });
+});
 
 describe("Memory review queue", () => {
   beforeEach(async () => {
@@ -292,5 +316,68 @@ describe("on-demand LLM judge (GRPH-650)", () => {
     await userEvent.click(await screen.findByRole("button", { name: /Ask the judge/ }));
     expect(await screen.findByText(/Judge: 90%/)).toBeInTheDocument();
     expect(screen.getByText(/durable specific convention/)).toBeInTheDocument();
+  });
+});
+
+describe("a judge that cannot answer (GRPH-995)", () => {
+  // The incident: a decider row that probed `valid` — the probe only asks about health — and
+  // then failed every `decide()`. Nothing on this page said so.
+  const MUTE: JudgeStatus = {
+    judge_on: true,
+    judge: "similarity",
+    decider_configured: true,
+    credential_label: "Laya (empty model)",
+    falling_back: true,
+    reason:
+      "the decider (Laya (empty model)) could not be reached: decide() failed at runtime: " +
+      "RuntimeError: model '' is not served by this endpoint",
+  };
+
+  it("says the project is falling back to similarity, and names what failed", async () => {
+    judgeStatusSpy.mockResolvedValue(MUTE);
+    renderView();
+
+    const banner = await screen.findByTestId("judge-falling-back");
+    expect(banner.textContent).toMatch(/falling back to similarity/i);
+    expect(banner.textContent).toContain("Laya (empty model)");
+    expect(banner.textContent).toContain("decide() failed at runtime");
+    // The remedy is a credential, so the copy has to lead to where credentials are.
+    expect(within(banner).getByRole("link", { name: /fix the credential/i })).toHaveAttribute(
+      "href",
+      settingsPath("deployment/providers"),
+    );
+  });
+
+  it("says so over an EMPTY queue — an empty queue is not a clean one", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.candidateShards).mockResolvedValueOnce([]);
+    vi.mocked(api.autoActions).mockResolvedValueOnce([]);
+    judgeStatusSpy.mockResolvedValue(MUTE);
+    renderView();
+
+    expect(await screen.findByText(/Nothing to review/)).toBeInTheDocument();
+    expect(screen.getByTestId("judge-falling-back")).toBeInTheDocument();
+  });
+
+  it("renders nothing when the judge can answer", async () => {
+    renderView();
+
+    expect(await screen.findByText(/Agent guess: batch writes/)).toBeInTheDocument();
+    expect(screen.queryByTestId("judge-falling-back")).not.toBeInTheDocument();
+  });
+
+  it("renders nothing when the judge is OFF — a choice is not a fallback", async () => {
+    judgeStatusSpy.mockResolvedValue({
+      judge_on: false,
+      judge: "off",
+      decider_configured: false,
+      credential_label: "",
+      falling_back: false,
+      reason: "llm judge is off for this project",
+    });
+    renderView();
+
+    expect(await screen.findByText(/Agent guess: batch writes/)).toBeInTheDocument();
+    expect(screen.queryByTestId("judge-falling-back")).not.toBeInTheDocument();
   });
 });

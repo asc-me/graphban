@@ -1,9 +1,11 @@
-import { Check, Layers, RotateCcw, Sparkles, X } from "lucide-react";
+import { AlertTriangle, Check, Layers, RotateCcw, Sparkles, X } from "lucide-react";
 import * as React from "react";
+import { Link } from "react-router-dom";
 
 import { MemoryReviewSkeleton, PlannerError } from "@/components/planner/PlannerStates";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { cn } from "@/lib/cn";
+import { settingsPath } from "@/lib/routes";
 import { useProjectCtx } from "@/features/ProjectContext";
 import {
   useAutoActions,
@@ -11,12 +13,13 @@ import {
   useCandidateShards,
   useCounts,
   useJudgeShard,
+  useJudgeStatus,
   usePromoteCluster,
   useReviewShard,
   useScoredCandidates,
   useUndoAutoShard,
 } from "@/lib/queries";
-import type { CandidateJudge, ReviewSuggestion, ScoredCandidate, Shard, ShardCluster } from "@/lib/types";
+import type { CandidateJudge, JudgeStatus, ReviewSuggestion, ScoredCandidate, Shard, ShardCluster } from "@/lib/types";
 
 /** AL-49: the review queue. Agent-written memory enters as a candidate and only
  *  reaches the trusted retrieval path once a human publishes it here.
@@ -38,6 +41,7 @@ export function MemoryReviewView() {
   const { data: clusters } = useCandidateClusters(activeId);
   const { data: scored } = useScoredCandidates(activeId);
   const { data: autoActions } = useAutoActions(activeId);
+  const { data: judgeStatus } = useJudgeStatus(activeId);
   const { publish, reject } = useReviewShard();
   const promoteCluster = usePromoteCluster();
   const undoAuto = useUndoAutoShard();
@@ -134,6 +138,7 @@ export function MemoryReviewView() {
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5">
         <div className="mx-auto flex max-w-3xl flex-col gap-2.5">
+          {judgeStatus?.falling_back && <JudgeFallbackBanner status={judgeStatus} />}
           {candidates.length === 0 ? (
             <div className="py-16 text-center text-[13px] text-muted">
               {unvettedTotal > 0 ? (
@@ -184,6 +189,34 @@ export function MemoryReviewView() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** The judge this project asked for cannot answer (GRPH-995).
+ *
+ *  Rendered above the queue, and above an EMPTY queue too. A decider that probed `valid` and
+ *  then failed every `decide()` leaves rows that look merely unasked, so the page used to
+ *  show nothing at all — and the reassuring reading of a quiet queue is always that nothing
+ *  is wrong with it. The copy states what IS grading these candidates, not only what is not. */
+function JudgeFallbackBanner({ status }: { status: JudgeStatus }) {
+  return (
+    <div
+      data-testid="judge-falling-back"
+      className="flex items-start gap-2 rounded-[10px] border border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] px-3 py-2 text-[12px] text-[#e0b34a]"
+    >
+      <AlertTriangle size={13} className="mt-px flex-none" />
+      <span className="min-w-0 flex-1 leading-relaxed">
+        <span className="font-medium">This project is falling back to similarity.</span>{" "}
+        {status.reason} Everything below is ungraded, not approved —{" "}
+        <Link
+          to={settingsPath("deployment/providers")}
+          className="underline underline-offset-2 hover:text-fg-2"
+        >
+          fix the credential in AI providers
+        </Link>
+        .
+      </span>
     </div>
   );
 }

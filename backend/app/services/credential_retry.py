@@ -33,11 +33,12 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, update
+from sqlalchemy import and_, or_, update
 from sqlalchemy.orm import Session
 
+from app import errors
 from app.models import Credential
-from app.providers import probe
+from app.providers import probe, registry, systemone
 from app.security import secrets
 
 logger = logging.getLogger("graphban.credential_retry")
@@ -54,6 +55,44 @@ PENDING = "pending_validation"
 VALID = "valid"
 UNREACHABLE = "unreachable"
 
+#: Matches the prefix `note_decide_failure` writes. A runtime `decide()` miss is a
+#: blip, not a settled probe-miss, so the sweep revisits it (GRPH-995). Probe-
+#: unreachable rows stay out of `due()` — retrying those is Test connection.
+DECIDE_FAIL_PREFIX = "decide() failed at runtime"
+
+#: Auth failures from decide are settled — retrying cannot mint a key (PRD-45 D10).
+_AUTH_FAILURE = frozenset({401, 403})
+_SHAPE_REFUSAL = "answered, but not in the System One shape"
+
+
+def _runtime_fail_retryable():
+    """UNREACHABLE because a live `decide()` failed, and the budget is not spent.
+
+    Sabotage the CALL: drop this from `due` (or from `claim`'s WHERE). The
+    deployment-default blip test stays green — S2 still calls an unreachable
+    default. A project pointer is routed off and never asked again.
+    """
+    return and_(
+        Credential.state == UNREACHABLE,
+        Credential.last_error.startswith(DECIDE_FAIL_PREFIX),
+        Credential.validation_attempts < MAX_ATTEMPTS,
+    )
+
+
+def _remember_miss(cred: Credential, message: str) -> None:
+    """Keep the runtime-fail prefix so a later ping miss stays in `due()`.
+
+    `_attempt_systemone` used to overwrite `last_error` with the ping body, which
+    dropped the prefix after one try and left a project pointer stranded again.
+    Settled misses (401/403, wrong shape, unknown model) go through
+    `_settled_unreachable` and deliberately drop it.
+    """
+    text = (message or "")[:500]
+    if ((cred.last_error or "").startswith(DECIDE_FAIL_PREFIX)
+            and not text.startswith(DECIDE_FAIL_PREFIX)):
+        text = f"{DECIDE_FAIL_PREFIX}: {text}"[:500]
+    cred.last_error = text
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -64,11 +103,17 @@ def due(db: Session, now: datetime | None = None) -> list[Credential]:
 
     `next_attempt_at IS NULL` is included and means "never scheduled" — a row saved while the
     provider was unreachable is due immediately, not after a first backoff it never earned.
+
+    Also: an `unreachable` row whose `last_error` starts with `DECIDE_FAIL_PREFIX`, under
+    the same backoff and `MAX_ATTEMPTS` ceiling. `note_decide_failure` writes that mark
+    after a live `decide()` miss; without this, a project pointer is routed off its own
+    decider until a human clicks Test connection (GRPH-995). Probe-unreachable stays
+    settled — `test_an_unreachable_row_is_not_picked_up_again` is that fact.
     """
     now = now or _now()
     return list(
         db.query(Credential)
-        .filter(Credential.state == PENDING)
+        .filter(or_(Credential.state == PENDING, _runtime_fail_retryable()))
         .filter(or_(Credential.next_attempt_at.is_(None), Credential.next_attempt_at <= now))
         .order_by(Credential.id)
         .all()
@@ -95,11 +140,64 @@ def claim(db: Session, cred: Credential, now: datetime | None = None) -> bool:
     )
     result = db.execute(
         update(Credential)
-        .where(Credential.id == cred.id, Credential.state == PENDING, predicate)
+        .where(
+            Credential.id == cred.id,
+            or_(Credential.state == PENDING, _runtime_fail_retryable()),
+            predicate,
+        )
         .values(validation_attempts=Credential.validation_attempts + 1, next_attempt_at=nxt)
     )
     db.commit()
     return result.rowcount == 1
+
+
+def _settled_unreachable(db: Session, cred: Credential, message: str) -> str:
+    cred.state = UNREACHABLE
+    cred.last_error = message[:500]
+    cred.next_attempt_at = None
+    db.commit()
+    return UNREACHABLE
+
+
+def _attempt_systemone(db: Session, cred: Credential, api_key: str) -> str:
+    """System One validation: optional /health catalog, then one smoke decide (PRD-45 D10)."""
+    base = cred.base_url or ""
+    try:
+        known = probe.known_models(cred.kind, base, api_key)
+    except Exception as exc:  # noqa: BLE001
+        known, exc_text = None, str(exc)
+        _remember_miss(cred, exc_text)
+    else:
+        exc_text = ""
+
+    try:
+        systemone.ping_decide(base, api_key, cred.model or "english")
+    except errors.Unavailable as exc:
+        status = getattr(exc, "status", None)
+        msg = str(exc)
+        if status in _AUTH_FAILURE or _SHAPE_REFUSAL in msg:
+            return _settled_unreachable(db, cred, msg)
+        _remember_miss(cred, msg)
+    except Exception as exc:  # noqa: BLE001
+        _remember_miss(cred, str(exc))
+    else:
+        if known and cred.model and cred.model not in known:
+            return _settled_unreachable(
+                db, cred, f"{cred.kind} does not have model {cred.model!r}")
+        cred.state = VALID
+        cred.last_error = ""
+        cred.next_attempt_at = None
+        db.commit()
+        return VALID
+
+    if not cred.last_error:
+        _remember_miss(
+            cred, exc_text or f"{cred.kind} at {base or '(no endpoint)'} could not be asked")
+    if cred.validation_attempts >= MAX_ATTEMPTS:
+        cred.state = UNREACHABLE
+        cred.next_attempt_at = None
+    db.commit()
+    return cred.state
 
 
 def attempt(db: Session, credential_id: str, now: datetime | None = None) -> str:
@@ -112,12 +210,15 @@ def attempt(db: Session, credential_id: str, now: datetime | None = None) -> str
     if cred is None:
         return ""
 
+    api_key = secrets.decrypt(cred.api_key) if cred.api_key else ""
+    if registry.kind(cred.kind) == "systemone":
+        return _attempt_systemone(db, cred, api_key)
+
     try:
-        known = probe.known_models(cred.kind, cred.base_url or "",
-                                   secrets.decrypt(cred.api_key) if cred.api_key else "")
+        known = probe.known_models(cred.kind, cred.base_url or "", api_key)
     except Exception as exc:  # noqa: BLE001 — a probe must never propagate into the loop
         known, exc_text = None, str(exc)
-        cred.last_error = exc_text[:500]
+        _remember_miss(cred, exc_text)
     else:
         exc_text = ""
 
@@ -138,7 +239,8 @@ def attempt(db: Session, credential_id: str, now: datetime | None = None) -> str
         return UNREACHABLE
 
     if not cred.last_error:
-        cred.last_error = f"{cred.kind} at {cred.base_url or '(no endpoint)'} could not be asked"
+        _remember_miss(
+            cred, exc_text or f"{cred.kind} at {cred.base_url or '(no endpoint)'} could not be asked")
     if cred.validation_attempts >= MAX_ATTEMPTS:
         # Budget spent. `next_attempt_at` is cleared so nothing reads this row as scheduled —
         # a row that says it will try again and will not is the thing this state prevents.

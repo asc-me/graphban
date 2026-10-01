@@ -48,6 +48,15 @@ def _answers(monkeypatch, models):
                         lambda *a, **k: None if models is None else frozenset(models))
 
 
+def _unavailable(message: str, *, status: int | None = None):
+    from app import errors
+
+    exc = errors.Unavailable(message)
+    if status is not None:
+        exc.status = status
+    raise exc
+
+
 # ---- the race -----------------------------------------------------------------------------
 
 
@@ -128,6 +137,67 @@ def test_an_unreachable_row_is_not_picked_up_again(db, monkeypatch):
     _answers(monkeypatch, None)
     _cred(db, "cred_1", state=cr.UNREACHABLE, attempts=cr.MAX_ATTEMPTS)
 
+    assert cr.run_once(db) == 0
+
+
+def test_a_runtime_decide_failure_is_retried_by_the_sweep(db, monkeypatch):
+    """GRPH-995. `note_decide_failure` writes unreachable + DECIDE_FAIL_PREFIX.
+    Probe-unreachable stays settled; this mark is a blip the sweep must revisit,
+    or a project pointer is routed off until Test connection.
+
+    Sabotage: drop `_runtime_fail_retryable` from `due`. The pending-only tests
+    above stay green.
+    """
+    monkeypatch.setattr(cr.probe, "known_models", lambda *a, **k: frozenset({"laya-1"}))
+    monkeypatch.setattr(cr.systemone, "ping_decide", lambda *a, **k: None)
+    cred = _cred(db, "cred_1", state=cr.UNREACHABLE, kind="systemone", model="laya-1")
+    cred.last_error = f"{cr.DECIDE_FAIL_PREFIX}: RuntimeError: timeout"
+    cred.next_attempt_at = None
+    db.commit()
+
+    assert cr.run_once(db) == 1
+    row = db.get(Credential, "cred_1")
+    assert row.state == cr.VALID
+    assert row.last_error == ""
+    assert row.next_attempt_at is None
+
+
+def test_a_probe_unreachable_is_still_not_retried_even_with_a_due_schedule(
+        db, monkeypatch):
+    """The prefix is the whole distinction. Collapsing it would retry every
+    settled miss, which is the thing `unreachable` exists to stop."""
+    _answers(monkeypatch, {"claude-x"})
+    cred = _cred(db, "cred_1", state=cr.UNREACHABLE, attempts=0)
+    cred.last_error = "connection refused"
+    cred.next_attempt_at = None
+    db.commit()
+
+    assert cr.run_once(db) == 0
+    assert db.get(Credential, "cred_1").state == cr.UNREACHABLE
+
+
+def test_a_runtime_fail_row_stops_at_the_budget(db, monkeypatch):
+    """Same MAX_ATTEMPTS ceiling as pending. Without it the sweep hammers a
+    host that is actually down, forever."""
+    def boom(*a, **k):
+        raise RuntimeError("still down")
+
+    monkeypatch.setattr(cr.probe, "known_models", lambda *a, **k: None)
+    monkeypatch.setattr(cr.systemone, "ping_decide", boom)
+    cred = _cred(db, "cred_1", state=cr.UNREACHABLE, kind="systemone", model="laya-1")
+    cred.last_error = f"{cr.DECIDE_FAIL_PREFIX}: RuntimeError: timeout"
+    db.commit()
+
+    for _ in range(cr.MAX_ATTEMPTS + 2):
+        row = db.get(Credential, "cred_1")
+        row.next_attempt_at = None
+        db.commit()
+        cr.run_once(db)
+
+    row = db.get(Credential, "cred_1")
+    assert row.state == cr.UNREACHABLE
+    assert row.validation_attempts == cr.MAX_ATTEMPTS
+    assert row.next_attempt_at is None
     assert cr.run_once(db) == 0
 
 
@@ -257,6 +327,101 @@ def test_the_retry_endpoint_404s_for_another_scope(client, auth, db):
     r = client.post("/api/platform/credentials/cred_theirs/retry", headers=auth)
 
     assert r.status_code == 404
+
+
+# ---- System One: health is not enough; decide is the authority (PRD-45 D10) ---------------
+
+def _systemone_cred(db, cid="cred_so", *, model="jev-1.13.0", kind="typesafe",
+                    base_url="https://api.typesafe.ai"):
+    c = _cred(db, cid, kind=kind, model=model)
+    c.base_url = base_url
+    db.commit()
+    return c
+
+
+def test_systemone_health_without_decide_is_not_valid(db, monkeypatch):
+    """Sabotage the CALL: a green /health must not mark the row valid without decide."""
+    monkeypatch.setattr(cr.probe, "known_models", lambda *a, **k: frozenset())
+    monkeypatch.setattr(cr.systemone, "ping_decide",
+                        lambda *a, **k: _unavailable(
+                            "systemone returned HTTP 403: Must supply an API key!", status=403))
+    _systemone_cred(db)
+
+    cr.run_once(db)
+
+    row = db.get(Credential, "cred_so")
+    assert row.state == cr.UNREACHABLE
+    assert "403" in row.last_error
+    assert "Must supply an API key" in row.last_error
+
+
+def test_systemone_decide_403_with_green_health_is_unreachable(db, monkeypatch):
+    monkeypatch.setattr(cr.probe, "known_models",
+                        lambda *a, **k: frozenset({"status": "ok"}))
+    monkeypatch.setattr(cr.systemone, "ping_decide",
+                        lambda *a, **k: _unavailable(
+                            "systemone returned HTTP 403: Must supply an API key!", status=403))
+    _systemone_cred(db)
+
+    cr.run_once(db)
+
+    row = db.get(Credential, "cred_so")
+    assert row.state == cr.UNREACHABLE
+    assert "Must supply an API key" in row.last_error
+
+
+def test_systemone_health_404_still_runs_decide(db, monkeypatch):
+    pinged = {"n": 0}
+    monkeypatch.setattr(cr.probe, "known_models", lambda *a, **k: None)
+    monkeypatch.setattr(cr.systemone, "ping_decide",
+                        lambda *a, **k: pinged.__setitem__("n", pinged["n"] + 1))
+    _systemone_cred(db)
+
+    cr.run_once(db)
+
+    assert pinged["n"] == 1
+    assert db.get(Credential, "cred_so").state == cr.VALID
+
+
+def test_systemone_wrong_shape_is_unreachable(db, monkeypatch):
+    monkeypatch.setattr(cr.probe, "known_models", lambda *a, **k: frozenset())
+    monkeypatch.setattr(cr.systemone, "ping_decide",
+                        lambda *a, **k: _unavailable(
+                            "systemone answered, but not in the System One shape: no `answers`"))
+    _systemone_cred(db)
+
+    cr.run_once(db)
+
+    row = db.get(Credential, "cred_so")
+    assert row.state == cr.UNREACHABLE
+    assert "answered, but not in the System One shape" in row.last_error
+
+
+def test_systemone_empty_health_catalog_does_not_422_a_named_head(db, monkeypatch):
+    """Empty `loaded` is not a model list — decide success is enough."""
+    monkeypatch.setattr(cr.probe, "known_models", lambda *a, **k: frozenset())
+    monkeypatch.setattr(cr.systemone, "ping_decide", lambda *a, **k: None)
+    _systemone_cred(db, model="jev-1.13.0")
+
+    cr.run_once(db)
+
+    row = db.get(Credential, "cred_so")
+    assert row.state == cr.VALID
+    assert row.last_error == ""
+
+
+def test_systemone_a_listed_head_that_health_named_still_refuses(db, monkeypatch):
+    monkeypatch.setattr(cr.probe, "known_models",
+                        lambda *a, **k: frozenset({"english", "multilingual"}))
+    monkeypatch.setattr(cr.systemone, "ping_decide", lambda *a, **k: None)
+    _systemone_cred(db, kind="systemone", model="typed-decisions",
+                    base_url="http://localhost:8090")
+
+    cr.run_once(db)
+
+    row = db.get(Credential, "cred_so")
+    assert row.state == cr.UNREACHABLE
+    assert "does not have model" in row.last_error
 
 
 def test_the_button_defers_when_the_loop_already_took_the_attempt(db, monkeypatch):
