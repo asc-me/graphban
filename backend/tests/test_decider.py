@@ -256,8 +256,12 @@ class TestProbe:
         result = probe._systemone("http://localhost:8090", "")
         assert result == {"english", "multilingual"}
 
-    def test_systemone_probe_404_is_an_empty_catalog_not_unreachable(self, monkeypatch):
-        """No /health endpoint is not a failure — decide is the authority (PRD-45 D10)."""
+    def test_systemone_probe_404_is_cannot_be_asked_not_an_empty_catalog(self, monkeypatch):
+        """No /health endpoint is not a catalog of zero heads (PRD-45 D10 / GRPH-996).
+
+        `None` means cannot be asked; empty set means asked and listed none. Collapsing
+        them 422s every named head on TypeSafe, which has no listing endpoint.
+        """
         from app.providers import probe
 
         class Fake404:
@@ -271,6 +275,20 @@ class TestProbe:
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: Fake404())
 
         result = probe._systemone("http://typesafe.example.com", "key")
+        assert result is None
+
+    def test_systemone_probe_health_with_no_loaded_is_an_empty_catalog(self, monkeypatch):
+        """TypeSafe `/health` 200 `{status: ok}` names no heads — asked, listed none."""
+        from app.providers import probe
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {"status": "ok"}
+
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: FakeResponse())
+        result = probe._systemone("https://api.typesafe.ai", "")
         assert result == set()
 
 

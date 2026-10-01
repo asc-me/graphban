@@ -666,9 +666,10 @@ _JUDGE_PUBLISH_MIN = 0.75
 # pass_keep and pass_quality. Operating point is the certainty tails, not 0.5 and
 # not the script's 2% cut (that cut auto-kept two holdout rejects). Highest reject
 # on the set was 0.461; one labelled keep sat at 0.147. Quality is the 90%-precision
-# level on human-published. `DECIDER_CHOICE_MIN` is unmeasured (review-pass
-# `contradicts` was not in S0) and is a conservative floor until
-# `scripts/decider_calibrate.py --review-pass` runs on a conflict-labelled holdout.
+# level on human-published. `DECIDER_CHOICE_MIN` is a provisional prior, not a
+# measured threshold: review-pass `contradicts` was not in S0, and no
+# conflict-labelled holdout exists to run `scripts/decider_calibrate.py
+# --review-pass` against. D7 names it as such.
 DECIDER_KEEP_MIN = 0.55
 DECIDER_REJECT_MAX = 0.15
 DECIDER_QUALITY_MIN = 0.6468
@@ -832,6 +833,9 @@ def _decider_judge(db: Session, resolved, shard: MemoryShard) -> tuple[dict | No
         platform_svc.note_decide_failure(
             db, resolved.credential_id, f"{type(exc).__name__}: {exc}")
         return None, "error"
+    # A later answer must undo the runtime mark, or one timeout is a permanent banner
+    # (and a project pointer is routed off its own decider for good).
+    platform_svc.note_decide_success(db, resolved.credential_id)
     keep_ans = (decision.answers or {}).get("keep")
     if keep_ans is None:
         return None, "unparseable"
@@ -937,6 +941,7 @@ def _decider_review_judge(
         platform_svc.note_decide_failure(
             db, resolved.credential_id, f"{type(exc).__name__}: {exc}")
         return None, "error"
+    platform_svc.note_decide_success(db, resolved.credential_id)
     g_ans = (decision.answers or {}).get("grounded")
     r_ans = (decision.answers or {}).get("ready")
     if g_ans is None or r_ans is None:

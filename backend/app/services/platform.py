@@ -222,6 +222,44 @@ def note_decide_failure(db: Session, credential_id: str, detail: str = "") -> bo
         return False
 
 
+_DECIDE_FAIL_PREFIX = "decide() failed at runtime"
+
+
+def note_decide_success(db: Session, credential_id: str) -> bool:
+    """Restore a row this path marked after a later `decide()` answers (GRPH-995).
+
+    `note_decide_failure` is one-way without this: a single timeout becomes a permanent
+    `unreachable`, so a project pointer is routed off its own decider for good and the
+    Memory review banner keeps saying the judge is down while it is grading. Only a
+    `last_error` this path wrote (prefix `_DECIDE_FAIL_PREFIX`) is ours to clear — a
+    probe-unreachable row is a different fact, and restoring it because one call
+    succeeded would hide a host that still cannot be listed.
+
+    Never raises: called on the success path of a memory write, where the verdict is
+    the fact that matters. An empty id is a no-op, same as `note_decide_failure`.
+
+    Flush, do not commit: the caller still holds the shard in this session. A commit
+    here would persist a half-written verdict (scoring_source empty) and is the
+    opposite of `note_decide_failure`, which commits because it runs after the
+    write has already failed.
+    """
+    if not credential_id:
+        return False
+    try:
+        cred = db.get(Credential, credential_id)
+        if cred is None:
+            return False
+        if not (cred.last_error or "").startswith(_DECIDE_FAIL_PREFIX):
+            return False
+        cred.state = "valid"
+        cred.last_error = ""
+        db.flush()
+        return True
+    except Exception:  # noqa: BLE001 — restoring must not become a write-path failure
+        logger.exception("decider success: could not restore state on %s", credential_id)
+        return False
+
+
 def decider_health(db: Session, project_id: str) -> dict:
     """Can this project's decider answer? (GRPH-995)
 
@@ -993,6 +1031,12 @@ def _probe_state(kind: str, base_url: str, api_key: str, model: str) -> str:
     """
     known = probe.known_models(kind, base_url or "", api_key or "")
     if known is None:
+        return UNPROVEN
+    # System One: an empty listing is not a catalog. TypeSafe `/health` 200
+    # `{status: ok}` with no `loaded` returns set(); 422ing a named head because
+    # health listed nothing is the GRPH-996 create-path hole. Laya that actually
+    # names heads still refuses an unknown one below.
+    if not known and provider_registry.kind(kind) == "systemone":
         return UNPROVEN
     if model and model not in known:
         raise ValueError(

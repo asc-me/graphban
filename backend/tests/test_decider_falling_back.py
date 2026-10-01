@@ -205,6 +205,66 @@ def test_recording_a_failure_with_no_row_is_a_no_op(client, db):
     `decide()` exists to prevent."""
     assert platform_svc.note_decide_failure(db, "") is False
     assert platform_svc.note_decide_failure(db, "cred_never_existed") is False
+    assert platform_svc.note_decide_success(db, "") is False
+    assert platform_svc.note_decide_success(db, "cred_never_existed") is False
+
+
+def test_a_blip_then_recovers_clears_falling_back(client, auth, db, monkeypatch):
+    """THE BOUNCE. Recording is one-way without this: one timeout becomes a permanent
+    banner. The Memory review page then says the judge is down while it is grading —
+    the inverse of the absence this file exists to catch.
+
+    Measured on the deployment default because an unreachable default is still
+    resolved and called (S2). A project pointer is routed off after one timeout
+    and never asked again, so a later answer cannot restore it.
+
+    Sabotage the CALL: delete `note_decide_success` from `_decider_judge`. This fails,
+    and every one-way recording test above stays green.
+    """
+    pid = _proj(client, auth, "BlipThenRecovers")
+    _judge_on(client, auth, pid)
+    key = _key(client, auth, project_id=pid)
+    cred = _decider_row(db, "cred_blip", model="laya-1")
+    # Deployment default, not a project pointer: an unreachable default is still
+    # resolved and called (S2 asymmetry), so the later answer can restore the row.
+    # A project pointer would be routed off after one timeout and never asked again.
+    platform_svc.set_scope_defaults(db, "", decider_credential_id=cred.id)
+    boom = _build(monkeypatch, MuteDecider())
+
+    first = _mcp(client, key, "add_memory",
+                 {"text": "always pin the pgvector image to pg16 in CI"})
+    assert boom.calls == 1
+    db.refresh(cred)
+    assert cred.state == "unreachable"
+    assert first["scoring_source"] != "decider"
+    assert _status(client, auth, pid)["falling_back"] is True
+
+    good = _build(monkeypatch, AnsweringDecider())
+    second = _mcp(client, key, "add_memory",
+                  {"text": "HNSW not ivfflat — ivfflat built empty silently loses recall"})
+    assert good.calls == 1, (
+        "the unreachable default was not asked again — S2 still returns it")
+    # Assert on the WRITE path before GET scored: that path runs `_decider_review_judge`,
+    # which has its own `note_decide_success`, and would mask a deleted write-path call.
+    db.refresh(cred)
+    assert cred.state == "valid", "a later answer must undo the runtime mark"
+    assert not (cred.last_error or "").startswith("decide() failed at runtime")
+    status = _status(client, auth, pid)
+    assert status["falling_back"] is False and status["judge"] == "decider"
+
+
+def test_a_probe_unreachable_row_is_not_restored_by_a_live_answer(client, db):
+    """`note_decide_success` only clears a mark THIS path wrote. A probe-unreachable
+    row is a different fact — restoring it because one call succeeded would hide a
+    host that still cannot be listed."""
+    cred = _decider_row(db, "cred_probe_down", state="unreachable")
+    cred.last_error = "connection refused"
+    db.commit()
+
+    assert platform_svc.note_decide_success(db, cred.id) is False
+    db.refresh(cred)
+    assert cred.state == "unreachable"
+    assert cred.last_error == "connection refused"
 
 
 def test_a_decider_that_cannot_even_be_built_still_reports(client, auth, db, monkeypatch):

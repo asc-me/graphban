@@ -61,16 +61,17 @@ def _systemone(base_url: str, api_key: str) -> set[str] | None:
         r.raise_for_status()
     except httpx.HTTPStatusError as e:
         # No /health is not a failure for decide (PRD-45 D10) — TypeSafe has no listing
-        # endpoint. Return an empty catalog so callers do not treat health as authoritative.
-        if e.response.status_code == 404:
-            return set()
+        # endpoint. 404 is "cannot be asked" (None), not "has none" (empty set): collapsing
+        # them 422s every named head on an endpoint that simply does not list. Other HTTP
+        # errors are the same answer: cannot be asked.
         return None
     data = r.json()
     loaded = data.get("loaded") if isinstance(data, dict) else None
     if isinstance(loaded, list) and loaded:
         return {str(m) for m in loaded if m}
-    # /health answered but named no heads — reachable but uninformative. Return empty set
-    # so the caller knows the endpoint lives; model validation is S0's job, not the probe's.
+    # /health answered but named no heads — reachable, and that listing is not a catalog.
+    # Empty set, not None: the host was asked. `_probe_state` must not 422 a named head
+    # for System One on this answer (GRPH-996).
     return set()
 
 
