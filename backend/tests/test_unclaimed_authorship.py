@@ -201,7 +201,19 @@ def test_the_receipt_says_author_unrecorded_when_there_is_none(client, agent_key
          "evidence": [{"kind": "note", "detail": "read the diff"}]})
 
     pred = _attestation(client, agent_key, item_id)
-    assert pred["passed"] is True, "the gate still opens; the wording is what changes"
+    # POLICY REVERSED, deliberately and by the repo owner (GRPH-1007, 2026-10-01). This line
+    # read `is True` with the message "the gate still opens; the wording is what changes" —
+    # GRPH-848's choice: say the comparison was not made, then admit the item anyway.
+    #
+    # The prose was honest and nothing read it. The completion gate asks `all(q["passed"])`
+    # and the receipt summary printed "all passed", so an item reached `done` carrying
+    # "5 predicate(s), all passed" with two of the five never performed. A check that could
+    # not run now reports `passed: False` and BLOCKS, and a reviewer who accepts that absence
+    # records a `waive` reason on the receipt instead of the gate silently accepting it.
+    #
+    # The wording GRPH-848 fixed is still asserted below — that part was right and stands.
+    assert pred["passed"] is False, "a comparison nobody made is not a pass"
+    assert pred["compared"] is False, pred
     assert "author unrecorded" in pred["detail"], pred
     assert "independent of" not in pred["detail"], pred
 
