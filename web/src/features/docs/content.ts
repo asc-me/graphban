@@ -156,10 +156,11 @@ const CONTENT: Record<string, DocEntry> = {
   "/fleet.v2": {
     badge: "FLEET.V2",
     title: "Fleet.v2",
-    tagline: "The catalog of harnesses and how you allocate them.",
+    tagline: "Which model each harness runs, the catalog behind it, and how you allocate them.",
     sections: [
-      { num: 1, h: "Catalog", b: "The harness × model × tier table is the committed matrix. Performance and rankings live on Observe → Harness — this page does not rank models." },
-      { num: 2, h: "Allocation", b: "Mix is your share of recent spawns — off means the scorer always picks the winner. Unregistered harnesses cannot take a share. Roster, seats, and waves are Fleet.v1." },
+      { num: 1, h: "Tier map", b: "Harness × tier, editable, for THIS deployment. An override is stored beside the committed matrix rather than in it, so clearing one falls back to the packaged model instead of to nothing. Inherit from performance grading fills only the cells grading has measured; an unmeasured cell is left exactly as it was and says so, because a value invented there would be an override nobody chose wearing a measurement's authority. Save is off until the draft differs from what is stored." },
+      { num: 2, h: "Catalog", b: "The harness × model × tier table is the committed matrix, and it is read-only: a commit changes it, this page does not. Performance and rankings live on Observe → Harness — this page does not rank models." },
+      { num: 3, h: "Allocation", b: "Mix is your share of recent spawns — off means the scorer always picks the winner. Unregistered harnesses cannot take a share. Roster, seats, and waves are Fleet.v1." },
     ],
     related: [
       { label: "Fleet.v1", to: "/fleet.v1" },

@@ -4,14 +4,19 @@ import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useConfig, useFleet } from "@/lib/queries";
 import { projectPath } from "@/lib/routes";
-import { MatrixTable } from "./matrixTable";
+import { MatrixTable, TierMapPanel } from "./matrixTable";
 import { MixAllocation } from "./MixAllocation";
 
 /**
- * Fleet.v2 — catalog and spawn mix only (GRPH-866).
+ * Fleet.v2 — tier map, catalog and spawn mix only (GRPH-866, GRPH-1003).
  *
  * Roster, seats, and wave controls stay on Fleet.v1. Mixing those into this page
  * made the redesign look like a banner on the old UI.
+ *
+ * The tier map reads `/fleet/tier-map` itself instead of taking `matrix.cells` off the
+ * polled `useFleet` this view already makes: the panel holds an unsaved draft, and a 15s poll
+ * landing underneath it is how an operator loses an edit. Both are keyed on the same project
+ * id, so they cannot disagree about which deployment they are describing.
  */
 export function FleetV2View() {
   const { activeId, active } = useProjectCtx();
@@ -25,7 +30,7 @@ export function FleetV2View() {
     <div className="flex h-full min-h-0 flex-col" data-testid="fleet-v2">
       <PlaceHeader
         viewName={`Fleet.v2 ${scope}`}
-        purpose="What can run, and how you allocate it. Roster and waves are Fleet.v1."
+        purpose="What can run, which model each harness runs, and how you allocate it. Roster and waves are Fleet.v1."
         action={
           <div className="flex items-center gap-3 text-[12px]">
             <Link to={viewHref("harness")} className="text-muted transition-colors hover:text-fg-2">
@@ -41,6 +46,10 @@ export function FleetV2View() {
         }
       />
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
+        <TierMapPanel
+          projectId={activeId}
+          harnessHref={viewHref("harness")}
+        />
         <MatrixTable
           rows={data?.matrix?.rows ?? []}
           harnessHref={viewHref("harness")}

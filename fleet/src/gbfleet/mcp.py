@@ -192,18 +192,51 @@ TOOLS: list[dict[str, Any]] = [
 
 
 def read_preferences(client) -> tuple["matrix_mod.Profile | None", "matrix_mod.Policy", str,
-                                      "matrix_mod.Measured", "matrix_mod.CapMeasured"]:
+                                      "matrix_mod.Measured", "matrix_mod.CapMeasured",
+                                      "TierMap"]:
     """PRD-37 D9/D10: the key owner's profile and the project's policy ride on `fleet_status`,
     read ONCE at launch — a profile change is read at the next launch, not mid-run (PRD-36
     D16). A server that cannot be reached leaves both empty and says so, so a resolution made
-    without them is explained as `profile: none` rather than mistaken for a preference."""
-    profile, policy, note, measured, _bands, cap, _suggestions = read_status(client)
-    return profile, policy, note, measured, cap
+    without them is explained as `profile: none` rather than mistaken for a preference.
+
+    GRPH-1003 adds the tier map on the same call, for the same reason: it is routing, and a
+    wave's routing has to be READ rather than inferred from the wheel version now that a
+    deployment can retune its own.
+    """
+    profile, policy, note, measured, _bands, cap, _suggestions, tiers = read_status(client)
+    return profile, policy, note, measured, cap, tiers
+
+
+@dataclass(frozen=True)
+class TierMap:
+    """This deployment's tier map as the server stated it at wave start (GRPH-1003).
+
+    `reachable` is the load-bearing half, and the reason this is a class rather than the bare
+    dict `matrix.tier_map_of` returns. An empty `overrides` with `reachable=True` means the
+    packaged matrix governs — a decision the deployment made and can see. An empty `overrides`
+    with `reachable=False` means NOBODY ASKED. A supervisor that treated those alike would
+    route a wave on the wheel's defaults and report that as the operator's choice, which is
+    this repo's recurring defect class: an absence reading as a clean result.
+    """
+
+    overrides: dict = field(default_factory=dict)
+    reachable: bool = True
+
+    def apply(self, matrix: "matrix_mod.Matrix") -> tuple["matrix_mod.Matrix", list[str]]:
+        """The matrix this wave resolves against, plus anything layering had to say.
+
+        Unreachable returns the PACKAGED matrix and no note of its own: `read_status` already
+        put the unreachability in the launch note, and saying it twice in one stderr is noise
+        where the operator is trying to read what happened.
+        """
+        if not self.reachable:
+            return matrix, []
+        return matrix_mod.apply_tier_overrides(matrix, self.overrides)
 
 
 def read_status(client) -> tuple["matrix_mod.Profile | None", "matrix_mod.Policy", str,
                                  "matrix_mod.Measured", "matrix_mod.Bands",
-                                 "matrix_mod.CapMeasured", list]:
+                                 "matrix_mod.CapMeasured", list, "TierMap"]:
     """`read_preferences` plus the band breakdown (PRD-38 D9), on ONE `fleet_status` call.
 
     Two entry points rather than a fifth element on the old tuple: the resolver's callers must
@@ -215,19 +248,23 @@ def read_status(client) -> tuple["matrix_mod.Profile | None", "matrix_mod.Policy
         status = client.fleet_status() or {}
     except Exception as exc:  # noqa: BLE001 - the note is the point
         return (None, matrix_mod.Policy(),
-                f"fleet_status unreachable ({str(exc)[:80]}); resolving with no profile or policy",
-                {}, {}, {}, [])
+                f"fleet_status unreachable ({str(exc)[:80]}); resolving with no profile or "
+                "policy and the packaged matrix — the tier map was not read, not empty",
+                {}, {}, {}, [], TierMap(reachable=False))
     profile = matrix_mod.Profile.of(status.get("profile"))
     policy = matrix_mod.Policy.of(status.get("policy"))
     measured = matrix_mod.measured_of(status.get("measured"))
     bands = matrix_mod.bands_of(status.get("measured"))
     cap = matrix_mod.cap_measured_of(status.get("measured"))
     suggestions = list(status.get("probe_suggestions") or [])
+    tier_map = TierMap(overrides=matrix_mod.tier_map_of(status.get("tier_map")))
     n_cells = len(cap) or len(measured)
     note = (f"profile {profile.user} ({len(profile.defaults)} default(s))" if profile else "profile: none") + \
            ("; policy on" if status.get("policy") else "; policy: none") + \
-           f"; measured cells: {n_cells}"
-    return profile, policy, note, measured, bands, cap, suggestions
+           f"; measured cells: {n_cells}" + \
+           (f"; tier map: {len(tier_map.overrides)} override(s)" if tier_map.overrides
+            else "; tier map: packaged")
+    return profile, policy, note, measured, bands, cap, suggestions, tier_map
 
 
 @dataclass
@@ -255,6 +292,11 @@ class Fleet:
     tiers: TierTable = field(default_factory=TierTable)
     #: PRD-37: the committed matrix, resolved through when a tier has no --tier flag.
     matrix: "matrix_mod.Matrix | None" = None
+    #: GRPH-1003: this deployment's tier map as the server stated it at wave start, applied to
+    #: `matrix` before the first resolve. Kept as read — including whether the server was
+    #: reachable — so a wave's routing can be explained from the record rather than inferred
+    #: from the wheel version.
+    tier_map: TierMap = field(default_factory=TierMap)
     #: MCP servers the operator named at launch to share with every child (GRPH-816).
     #: Fixed for the life of the process, like the tier table: a grant that could change
     #: mid-wave would make "what could that child reach" unanswerable after the fact.
