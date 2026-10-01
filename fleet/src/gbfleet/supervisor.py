@@ -47,7 +47,7 @@ from .observe import NEVER_REGISTERED, ChildRecord
 from .seat import Seat, instruction_for
 from .spawn import (
     REGISTRATION_WINDOW, Child, Launch, LaunchFailed, Reason, VendorLimit,
-    await_registration,
+    await_registration, build_holdings,
     spawn, stop,
 )
 from .worktree import Reaped, Worktree
@@ -450,8 +450,14 @@ def item_status(client: Graphban) -> dict[str, dict]:
 
 
 def _holdings(roster: dict) -> dict[str, list[str]]:
+    """Build leases per agent. Review claims are excluded — see `build_holdings`.
+
+    This feeds `partition.held`, `_remember_holdings` and from there the salvage subject, so
+    a review claim arriving here would end up as an item a reaped reviewer's branch is filed
+    against (GRPH-1001 review bounce).
+    """
     return {
-        a["id"]: [h.get("id") for h in (a.get("holdings") or [])]
+        a["id"]: [h.get("id") for h in build_holdings(a)]
         for a in (roster.get("agents") or [])
         if a.get("id")
     }
