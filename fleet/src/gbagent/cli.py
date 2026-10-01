@@ -58,6 +58,7 @@ from .orient import (
     build as build_orientation,
 )
 from .toolset import Toolset
+from .workspace import OutsideWorktree, safe_path
 
 #: Where the model endpoint lives. Named, never discovered — the same argument D3 makes
 #: about the test command.
@@ -83,6 +84,95 @@ SYSTEM = (
     "\n" + ORIENT_INSTRUCTION + "\n"
     "\nWhen the tests pass, say DONE and stop calling tools."
 )
+
+
+#: The repository's own instructions, read from the worktree root (GRPH-999). Grok and Claude
+#: open these themselves; gbagent's prompt is fixed text plus the brief, so without this the
+#: build rules every other child follows are markdown it never reads.
+INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
+#: Where project skills live, relative to the worktree. Never a home directory: the operator's
+#: personal skills are theirs, and copying them into a child's prompt is the MCP leak again.
+SKILL_DIRS = (".claude/skills", ".grok/skills", ".agents/skills")
+#: One budget for all of it — the same order as `orient.MAX_RESULT_CHARS`.
+INSTRUCTIONS_CAP = 12_000
+
+
+def _instruction_sources(root: Path) -> list[tuple[str, Path]]:
+    """Every instruction file in the worktree, in prompt order, each resolved inside it.
+
+    `safe_path` on every candidate, so a symlinked `AGENTS.md`, skill file or skills
+    directory that leaves the worktree is skipped rather than read. `os.walk` does not
+    descend symlinked directories, and a directory link that stays inside is found by
+    its real path anyway.
+    """
+    found: list[tuple[str, Path]] = []
+    for name in INSTRUCTION_FILES:
+        try:
+            path = safe_path(root, name)
+        except OutsideWorktree:
+            continue
+        if path.is_file():
+            found.append((name, path))
+    for rel in SKILL_DIRS:
+        try:
+            base = safe_path(root, rel)
+        except OutsideWorktree:
+            continue
+        if not base.is_dir():
+            continue
+        skills = []
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames.sort()
+            if "SKILL.md" in filenames:
+                candidate = Path(dirpath) / "SKILL.md"
+                try:
+                    path = safe_path(root, str(candidate))
+                except OutsideWorktree:
+                    continue
+                if path.is_file():
+                    skills.append((candidate.relative_to(root.resolve()).as_posix(), path))
+        found.extend(sorted(skills))
+    return found
+
+
+def project_instructions(root: Path, cap: int = INSTRUCTIONS_CAP) -> str:
+    """The worktree's AGENTS.md, CLAUDE.md and project skills, as prompt text under `cap`.
+
+    Absent is normal and returns "" — a repo with no instructions starts the run with none.
+    A file that does not fit is cut at the cap and SAYS so, with how much went unread; a file
+    after the cap is spent is named with its size. Dropping either silently would read as a
+    repo with no instructions, which is the one wrong conclusion this exists to prevent.
+    """
+    sections: list[str] = []
+    left = cap
+    for name, path in _instruction_sources(root):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not text.strip():
+            continue
+        if left <= 0:
+            sections.append(f"--- {name} ---\n[not included: the {cap}-character budget for "
+                            f"project instructions was spent; {len(text)} characters unread. "
+                            f"read_file {name} if you need it.]")
+            continue
+        body = text[:left]
+        if len(text) > left:
+            body += (f"\n[truncated at the {cap}-character budget: {len(text) - left} of "
+                     f"{len(text)} characters left unread. read_file {name} for the rest.]")
+        left -= min(len(text), left)
+        sections.append(f"--- {name} ---\n{body}")
+    if not sections:
+        return ""
+    return ("This repository's own instructions, from the worktree. Follow them.\n\n"
+            + "\n\n".join(sections))
+
+
+def system_prompt(root: Path) -> str:
+    """`SYSTEM`, plus the repository's instructions when it has any."""
+    extra = project_instructions(root)
+    return f"{SYSTEM}\n\n{extra}" if extra else SYSTEM
 
 
 def assignment_for(item: str, role: str = "worker") -> str:
@@ -395,7 +485,7 @@ def _run(args: argparse.Namespace) -> int:
         coordinator.status_source = toolset.activity
         session = OllamaSession(
             args.base_url, args.model,
-            system=SYSTEM,
+            system=system_prompt(root),
             task="\n\n".join(part for part in (task, assignment, build_servers.instruction())
                              if part).strip(),
             api_key=endpoint_key(),
