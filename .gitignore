@@ -28,7 +28,13 @@ fleet/.pytest_cache/
 *.egg-info/
 
 # Node
-web/node_modules/
+# No trailing slash on this one, deliberately. A trailing slash matches a DIRECTORY, and
+# git does not follow symlinks — so a worktree whose `web/node_modules` is a link to
+# another checkout's did not match, `git status` reported the link as untracked work, and
+# gbfleet's `reap` refused to remove a tree that looked like it held something. Disk
+# growing was chosen over deleting work; this pattern made that choice fire on nothing
+# (GRPH-1013). The bare pattern ignores the link and a real directory alike.
+web/node_modules
 web/dist/
 web/.vite/
 web/*.tsbuildinfo

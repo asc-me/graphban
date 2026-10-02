@@ -8,6 +8,7 @@ succeeds by forcing away the work salvage exists to keep.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -36,6 +37,10 @@ from gbfleet.worktree import (
 
 SEAT = SEAT_FILES[0]
 SECRET = "gbf_live_seat_do_not_commit"
+
+#: The repository these tests ship in. A test about what its `.gitignore` does has to read
+#: the file as shipped: a pattern retyped into the test passes however the real one reads.
+REPO = Path(__file__).resolve().parents[2]
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -312,6 +317,42 @@ def test_an_unexpected_leftover_is_left_alone_rather_than_forced(
     assert not reaped.removed
     assert wt.path.exists(), "forced away a worktree it could not account for"
     assert "not forcing" in reaped.reason
+
+
+def test_a_symlinked_node_modules_is_not_uncommitted_work(git_repo: Path, tmp_path: Path):
+    """A link to another checkout's `node_modules` must not keep a finished worktree.
+
+    Measured, not assumed (GRPH-1013): the shipped `.gitignore` said `web/node_modules/`,
+    and a trailing slash matches a DIRECTORY only. Git does not follow symlinks, so the
+    link did not match it — `git status` reported it as untracked, `reap` called the tree
+    dirty, and `git worktree remove` refused with 128 because an untracked file was in the
+    way. The worktree stayed on disk for the life of the checkout, and reap's own rule is
+    why it was never cleaned up: disk growing beats deleting something that looks like work.
+
+    The `.gitignore` is COPIED from the repository rather than written here, so restoring
+    the trailing slash fails this test. A pattern retyped into the test would not.
+    """
+    shutil.copyfile(REPO / ".gitignore", git_repo / ".gitignore")
+    _git(git_repo, "add", ".gitignore")
+    _git(git_repo, "commit", "-qm", "the .gitignore this repository ships")
+
+    shared = tmp_path / "shared-node-modules"
+    (shared / "left-pad").mkdir(parents=True)
+
+    wt = create(git_repo, tmp_path / "w1", "wave-1", "GRPH-A1")
+    (wt.path / "web").mkdir(parents=True, exist_ok=True)
+    link = wt.path / "web" / "node_modules"
+    link.symlink_to(shared, target_is_directory=True)
+    assert link.is_symlink(), "the fixture did not make a link, so this tests nothing"
+
+    assert porcelain(wt.path) == [], "a shared node_modules reads as uncommitted work"
+
+    reaped = reap(wt)
+    assert reaped.disposition is Disposition.CLEAN, "salvaged a symlink onto the branch"
+    assert reaped.removed and not wt.path.exists(), "left a finished worktree on disk"
+    # The link is what is shared; eating the tree it points at would take the parent
+    # checkout's dependencies with it, which is the loss reap exists to prevent.
+    assert (shared / "left-pad").is_dir(), "removing the worktree ate the shared tree"
 
 
 # --- orphans ----------------------------------------------------------------------
