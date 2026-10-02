@@ -593,8 +593,12 @@ supervisor already owns and none of them acted on:
   nobody asked both land on `origin/main`, and only the second is an accident that reads as a
   decision. An unmeasured gitops base is reported as unmeasured, never as a rule that named
   `main`. Fetched before the first worktree is cut, so the base is current rather than as
-  fresh as this clone's last fetch. `gbfleet mcp` resolves the same three once at startup and
-  `spawn` repeats the answer in its reply, per child.
+  fresh as this clone's last fetch. `gbfleet mcp` resolves the same three once at startup —
+  the RULE is fixed for the life of the process — and fetches the ref again before every
+  worktree `spawn` cuts, because that process outlives the fetch by hours and a child cut
+  from the startup one would be built on a trunk that has since moved. `spawn` repeats the
+  answer in its reply, per child, and a fetch it could not complete says so there rather than
+  letting the resolve-time note pass a stale ref off as current.
 - `COLLIDED <path>: changed on <branch>, <branch>` — two workers changed the same file. The
   failure the partition exists to prevent, observed rather than predicted: exact paths, no
   coverage rule, and true whether the touchpoints were wrong or the divvy was.

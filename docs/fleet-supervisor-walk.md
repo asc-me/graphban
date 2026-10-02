@@ -218,8 +218,12 @@ reported as unmeasured rather than as a rule that named `main`.
 
 `up` and MCP `spawn` resolve the same three. Before this they cut from the checkout's HEAD, so
 a supervisor standing on a feature branch built every child on it, and a second clone whose
-`origin/main` had never been fetched looked current to itself. `gbfleet mcp` resolves once for
-the life of the process and `spawn` repeats the answer in its reply.
+`origin/main` had never been fetched looked current to itself. `gbfleet mcp` resolves the RULE
+once for the life of the process — which of the three answered is a fact about the process,
+fixed like its tier table — but fetches the REF again before every worktree `spawn` cuts,
+because that process runs for hours and a child cut from the startup fetch would be built on a
+trunk that has since moved. `spawn` repeats the answer in its reply, per child, and a fetch
+that could not be completed is reported there as stale rather than passed off as current.
 
 With no `--base` and no measured project rule, the base is the remote's default ref, which is
 right for independent items. For a PRD whose slices strictly depend on each other
