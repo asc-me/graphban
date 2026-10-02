@@ -11,6 +11,7 @@ top of it.
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from collections.abc import Sequence
@@ -1822,6 +1823,49 @@ class UncomparedPredicate(Exception):
     """
 
 
+class WaiverShape(ValueError):
+    """`waive` arrived in a shape the server cannot read as {predicate: reason} (GRPH-1007).
+
+    Distinct from an EMPTY waiver, which is not an error: `{}` names no predicate, so the gate
+    simply refuses with its own message. This is for an argument that is not a mapping at all.
+    Reading that as "waived nothing" would answer a caller who meant to waive something with
+    the gate's message about a missing base — a different problem from the one they have.
+    """
+
+
+def _waiver(waive) -> dict[str, str]:
+    """`waive` as {predicate: reason}, with blank reasons dropped.
+
+    Tolerates a JSON *string*. An MCP client that serialises an object-typed argument as text
+    is not sending bad input: the manifest it was handed declares `waive` as `object`, nothing
+    between the JSON-RPC envelope and here coerces it, and the comprehension below used to run
+    `.items()` straight on whatever arrived — `AttributeError` for a string, surfacing as
+    `internal error executing 'sign_off'`. That teaches a reviewer the documented escape hatch
+    is broken rather than that it sent the wrong shape, and it is how GRPH-1003 sat unsignable
+    through two retries after the gate it was waiting on had already been fixed and deployed.
+
+    Why this is a separate function with its own tests: every GRPH-1007 test reached the waiver
+    by calling `_predicate(..., waived={...})` or by hand-building an attestation row. Sixteen
+    tests, none of which called `sign_off(waive=...)`, so the one path production takes was the
+    one path unproven.
+    """
+    if waive is None or waive == "":
+        return {}
+    if isinstance(waive, str):
+        try:
+            waive = json.loads(waive)
+        except ValueError:
+            raise WaiverShape(
+                "waive must be an object of {predicate: reason}; this was a string that is "
+                'not JSON. Example: waive={"commit_is_not_the_base": "<why>"}') from None
+    if not isinstance(waive, dict):
+        raise WaiverShape(
+            f"waive must be an object of {{predicate: reason}}, not "
+            f"{type(waive).__name__}. "
+            'Example: waive={"commit_is_not_the_base": "<why>"}')
+    return {str(k): str(v).strip() for k, v in waive.items() if str(v or "").strip()}
+
+
 class AttestedTheBase(Exception):
     """The reviewer attested the commit its branch was cut FROM (GRPH-970)."""
 
@@ -2340,7 +2384,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # A waiver is only ever honoured on a predicate whose check COULD NOT RUN — never on one
     # that ran and failed. Waiving a real failure would launder it, which is the opposite of
     # what the override exists for (GRPH-1007).
-    waived = {str(k): str(v).strip() for k, v in (waive or {}).items() if str(v or "").strip()}
+    waived = _waiver(waive)
 
     reviewer = declared_capabilities(db, agent_id)
     builder = declared_capabilities(db, item.built_by)

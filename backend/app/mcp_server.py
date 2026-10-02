@@ -2848,6 +2848,15 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 db, item_id=keys.resolve_item(db, args["id"]) or args["id"],
                 agent_id=agent, evidence=args.get("evidence"), api_key=key,
                 commit=args.get("commit"), waive=args.get("waive"))
+        except fleet_svc.WaiverShape as e:
+            # `validation`, not `conflict`: the state is fine and the argument is malformed,
+            # which is the one case here a caller fixes by changing its call rather than by
+            # finding another agent or waiting. Listed FIRST because it subclasses ValueError
+            # and a broader handler added later would otherwise swallow it (GRPH-1007).
+            raise errors.Validation(str(e), hint=(
+                'waive takes an object: waive={"commit_is_not_the_base": "<why>"}. A JSON '
+                "string of that object is accepted too; a list, a number or a bare string "
+                "names no predicate and no reason, so there is nothing to record"))
         except fleet_svc.NotInReview as e:
             # Conflict, not unauthorized, for the same reason the evidence gate below is: the
             # caller is permitted to sign this off, the work simply has not been handed over.
