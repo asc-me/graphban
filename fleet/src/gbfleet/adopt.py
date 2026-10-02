@@ -15,15 +15,16 @@ import json
 import os
 import shutil
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .hostos import pid_is_alive, process_start_token, restrict_to_owner
-from .lock import lock_state
+from .lock import LockState, sweep_hold
 from .observe import emit
 from .progress import Output
 from .spawn import Child
-from .state import NotARepository, repo_key, repo_root, state_root
+from .state import NotARepository, lock_path, repo_key, repo_root, state_root
 from .worktree import Disposition, Worktree, reap as reap_tree, registered_worktrees
 
 GENERATION = 1
@@ -401,6 +402,9 @@ class Sweep:
     #: already gone is a clone this pass cannot see at all, which is the hole it exists to
     #: stop growing, so the count says which of the two a zero means.
     repos: int = 0
+    #: Records this pass READ. A roster whose lock is held is not read at all — reading it
+    #: would mean holding a copy this pass is not allowed to act on — so it contributes
+    #: nothing here and `locked` is what says it was walked past.
     records: int = 0
     removed: int = 0
     #: `reap` refused to remove it. Distinct from `removed` and from `absent`: the tree is
@@ -442,6 +446,11 @@ def sweep(state: Path | str | None = None) -> Sweep:
       spared". A supervisor mid-wave owns that roster and writes it constantly, and a lock
       this pass could not read is treated as held. A dead pid in the file is NOT held: the
       kernel released the flock when that process exited, however it exited.
+    * The lock is HELD for the pass, not consulted. `lock.sweep_hold` keeps the flock from
+      the moment the repository answers "free" until that roster has been rewritten, so a
+      supervisor cannot start into the middle of a pass: it would adopt the trees being
+      removed and then have its own roster replaced by the copy this pass read before it
+      arrived. Asking and acting are one step or they are a race.
     * Removal goes through the existing `reap`, without `--force`. A tree `reap` did not
       remove STAYS IN THE RECORD so the next pass still sees it — dropping it is exactly
       how `persist` loses a `LEFT_DIRTY` path today.
@@ -456,33 +465,67 @@ def sweep(state: Path | str | None = None) -> Sweep:
     """
     out = Sweep()
     try:
-        _walk(Path(state) if state else state_root(), state, out)
+        _walk(Path(state) if state else state_root(), out)
     except Exception as exc:  # noqa: BLE001 — reported, never fatal to the caller
         out.unreadable += 1
         out.lines.append(f"the sweep stopped early: {exc}")
     return out
 
 
-def _walk(root: Path, state: Path | str | None, out: Sweep) -> None:
+def _walk(root: Path, out: Sweep) -> None:
     if not root.is_dir():
         out.lines.append(f"{root}: no state directory, so nothing names a worktree")
         return
     for roster in sorted(root.glob("*.children.json")):
         out.repos += 1
+        _sweep_roster(roster, out)
+
+
+def _lock_beside(roster: Path) -> Path:
+    """The lock guarding `roster`, taken from its NAME rather than from anything inside it.
+
+    `children_path` and `lock_path` key the same `repo_key`, so `<key>.children.json` and
+    `<key>.lock` are siblings by construction. Deriving the repository from the records
+    instead would leave the rewrite unprotected exactly when the records are worst: a
+    roster whose every tree is already gone names no repository at all, and that is the
+    ordinary state of the clone nobody supervises any more — the clone this exists for.
+    """
+    return roster.with_name(f"{roster.name.removesuffix('.children.json')}.lock")
+
+
+def _sweep_roster(roster: Path, out: Sweep) -> None:
+    """One roster, from the lock check through the rewrite, under the lock guarding it.
+
+    The lock is taken BEFORE the read and not merely before the reaping: what this pass
+    writes at the end is the copy it read at the start, so a read taken outside the lock
+    is a stale write waiting to happen.
+    """
+    with sweep_hold(_lock_beside(roster)) as answer:
+        if not answer.free:
+            # Nothing of this repository is read, reaped or rewritten. A lock this pass
+            # could not even open counts as held, and `describe` says which of the two.
+            out.locked += 1
+            out.lines.append(
+                f"{roster.name}: {answer.describe()} — left unread, so left alone")
+            return
         loaded = load(roster)
         if isinstance(loaded, UnadoptableFile):
             # A roster we cannot read is a FULL roster we cannot read (P30 D7). Rewriting
             # it would turn "we do not know what is out there" into "nothing is".
             out.unreadable += 1
             out.lines.append(f"{roster.name}: {loaded} — left as it is")
-            continue
+            return
         out.records += len(loaded)
-        _sweep_roster(roster, loaded, state, out)
+        _sweep_records(roster, loaded, out, own=answer)
 
 
-def _sweep_roster(
-    roster: Path, loaded: list[Snapshot], state: Path | str | None, out: Sweep
+def _sweep_records(
+    roster: Path, loaded: list[Snapshot], out: Sweep, own: LockState
 ) -> None:
+    # The directory this roster lives in, named explicitly rather than left to
+    # `state_root()`: the pass walks the directory it was given, and every lock it takes
+    # has to be a file in that same one.
+    state = roster.parent
     by_repo: dict[Path, list[Snapshot]] = {}
     kept: list[Snapshot] = []
     removed: list[Snapshot] = []
@@ -507,51 +550,67 @@ def _sweep_roster(
             continue
         by_repo.setdefault(repo, []).append(snap)
 
-    for repo, snaps in by_repo.items():
-        answer = lock_state(repo, state)
-        if not answer.free:
-            out.locked += 1
-            kept.extend(snaps)
-            out.lines.append(
-                f"{repo}: {answer.describe()} — {len(snaps)} recorded tree(s) untouched")
-            continue
-        # Asked of git rather than taken from the record. `reap` salvages INSIDE the path
-        # before it asks git to remove it, so a recorded path that is not a worktree of
-        # this repository is not a no-op — see `registered_worktrees`.
-        try:
-            ours = registered_worktrees(repo)
-        except Exception as exc:  # noqa: BLE001 — a repo we cannot list is a repo we skip
-            out.unreadable += 1
-            kept.extend(snaps)
-            out.lines.append(
-                f"{repo}: git would not list its worktrees ({exc}); "
-                f"{len(snaps)} record(s) left")
-            continue
-        main = repo.resolve()
-        for snap in snaps:
-            path = _resolved(snap.worktree)
-            if path == main or path not in ours:
-                out.unreadable += 1
-                kept.append(snap)
-                what = ("that is the clone itself" if path == main
-                        else f"git does not list it as a worktree of {repo}")
+    with ExitStack() as stack:
+        # The roster's own lock is held by `_sweep_roster` already, and flock belongs to an
+        # open file description rather than to a process — so asking for that file again
+        # would refuse THIS pass and report the repository as held by itself. Any other
+        # repository a record reaches is asked once and held to the end as well: a record
+        # is a path read out of a JSON file, and one that resolves into a different
+        # checkout is a different supervisor's business.
+        answers: dict[Path, LockState] = {_lock_beside(roster): own}
+        for repo in sorted(by_repo, key=str):
+            guard = lock_path(repo, state)
+            if guard not in answers:
+                answers[guard] = stack.enter_context(sweep_hold(guard))
+
+        for repo in sorted(by_repo, key=str):
+            snaps = by_repo[repo]
+            answer = answers[lock_path(repo, state)]
+            if not answer.free:
+                out.locked += 1
+                kept.extend(snaps)
                 out.lines.append(
-                    f"{snap.branch}: {snap.worktree} — {what}; left in the record")
+                    f"{repo}: {answer.describe()} — {len(snaps)} recorded tree(s) untouched")
                 continue
-            (removed if _reap_one(repo, snap, out) else kept).append(snap)
+            # Asked of git rather than taken from the record. `reap` salvages INSIDE the
+            # path before it asks git to remove it, so a recorded path that is not a
+            # worktree of this repository is not a no-op — see `registered_worktrees`.
+            try:
+                ours = registered_worktrees(repo)
+            except Exception as exc:  # noqa: BLE001 — a repo we cannot list is a repo we skip
+                out.unreadable += 1
+                kept.extend(snaps)
+                out.lines.append(
+                    f"{repo}: git would not list its worktrees ({exc}); "
+                    f"{len(snaps)} record(s) left")
+                continue
+            main = repo.resolve()
+            for snap in snaps:
+                path = _resolved(snap.worktree)
+                if path == main or path not in ours:
+                    out.unreadable += 1
+                    kept.append(snap)
+                    what = ("that is the clone itself" if path == main
+                            else f"git does not list it as a worktree of {repo}")
+                    out.lines.append(
+                        f"{snap.branch}: {snap.worktree} — {what}; left in the record")
+                    continue
+                (removed if _reap_one(repo, snap, out) else kept).append(snap)
 
-    # After the whole roster is decided, because a log directory is only safe to remove
-    # once every record that might name it has been kept or dropped.
-    protected = {_resolved(s.log_dir) for s in kept if s.log_dir}
-    for snap in removed:
-        _drop_logs(snap, protected, out)
+        # After the whole roster is decided, because a log directory is only safe to remove
+        # once every record that might name it has been kept or dropped.
+        protected = {_resolved(s.log_dir) for s in kept if s.log_dir}
+        for snap in removed:
+            _drop_logs(snap, protected, out)
 
-    # Only when a record actually went. Rewriting an unchanged roster is not the no-op it
-    # looks like: the file this reads may belong to a supervisor that is running RIGHT NOW
-    # on another repository, writing it several times a second, and an `os.replace` of our
-    # stale copy would clobber children it has spawned since we looked.
-    if len(kept) != len(loaded):
-        save(roster, kept)
+        # Only when a record actually went, and only HERE — inside the lock this roster was
+        # read under, which is what makes the write safe rather than merely atomic. Both
+        # halves are load-bearing: rewriting an unchanged roster is not the no-op it looks
+        # like, because the file belongs to a supervisor that may be writing it several
+        # times a second; and writing a copy read outside the lock drops whatever that
+        # supervisor recorded in between, leaving live children named nowhere.
+        if len(kept) != len(loaded):
+            save(roster, kept)
 
 
 def _reap_one(repo: Path, snap: Snapshot, out: Sweep) -> bool:

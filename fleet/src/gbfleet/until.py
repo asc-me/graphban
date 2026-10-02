@@ -307,8 +307,8 @@ def run(
             # GRPH-1011. The same sweep `gc` runs, over EVERY repository this state
             # directory names rather than only this one — the trees that need it belong to
             # the clone nobody starts a supervisor on again. Inside the lock, so this
-            # repository answers "held" to the sweep's own probe and is skipped by the rule
-            # that protects every other live supervisor.
+            # repository answers "held" to the sweep's own try-acquire and is skipped by the
+            # rule that protects every other live supervisor.
             for line in adopt_mod.sweep(state).lines:
                 observe.emit("gc", detail=line)
 
