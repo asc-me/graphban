@@ -318,6 +318,11 @@ reads as a crash afterwards. A supervisor that starts while a repository is bein
 ordinary `RepoLocked` refusal for the seconds that sweep takes, and there is deliberately no retry
 behind it: `hold` never waits, because a supervisor that queues behind another one is a supervisor
 nobody asked for, and `mcp` already answers a refusal by attaching read-only rather than dying.
+Read-only is a fact `mcp` states about itself, not one it infers from the lock file naming a
+holder — which matters exactly here, because this pass leaves that file empty and an empty lock
+file is a *held* one. An `mcp` that guessed from the record would read the sweep's empty file as
+nobody home and serve as a full supervisor without the lock, spawning past `--max-workers` beside
+the holder it could not see.
 
 A removed slot's log directory goes with it; a directory any kept record still names stays,
 because a live child's logs are not this command's to reclaim. `gc` exits 1 when something is on

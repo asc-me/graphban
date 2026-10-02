@@ -859,6 +859,12 @@ def _serve_attached(root: Path, workspace: Path, client: Graphban,
         matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
         shared=_shared_servers(args),
         attached_holder=holder,
+        # GRPH-1011: attach mode is STATED here, not read off `holder`. `holder` is None
+        # whenever the lock file was empty, and an empty lock file is not an unheld one —
+        # a gc sweep holds the flock for the length of its pass and deliberately writes no
+        # record (see `lock.sweep_hold`). Inferring read-only from a parseable holder let an
+        # `mcp` started during any sweep serve as a FULL supervisor without the lock.
+        attached=True,
     )
     fleet.children.extend(children)
     fleet.profile, fleet.policy, pref_note, fleet.measured, fleet.cap_measured, tier_map = read_preferences(client)
