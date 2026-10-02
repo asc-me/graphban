@@ -274,6 +274,51 @@ publishes the branch and simply has nobody to hand the receipt to. A tree whose 
 uncommitted file was the seat is still not published: `ONLY_CREDENTIAL` is not `SALVAGED`, and
 a pushed empty branch per dead child would make every crash look like work.
 
+### Worktrees nobody is supervising any more
+
+Adoption only reaches the trees of the lock it takes. `reap` runs inside the supervisor that
+owns a repository, and `recover` runs it again only when a **later** supervisor takes that same
+lock — so a clone nobody starts a supervisor on again keeps every worktree it ever cut.
+Measured on one such clone: 1.4 GB, six worktrees left by two days of waves, 1,584 log
+directories, and no supervisor running on it.
+
+```bash
+gbfleet gc
+```
+
+walks the state directory rather than one `--repo`, and where a repository's lock is **not**
+held it reaps every recorded worktree whose pid is dead. Three refusals bound it, and each is a
+rule rather than a judgement made at runtime:
+
+- Removal goes through the same `reap` a supervisor runs, so it is never forced — and so a
+  tree with uncommitted work in it is salvaged onto its own branch first, the commit staying
+  local for `orphans` and resume to find, exactly as a supervisor's reap leaves it. What
+  `reap` will not remove — content still standing after salvage, or a tree a person
+  `git worktree lock`ed — is printed and left **in the record**, so the next pass still sees
+  it. Dropping it is what `persist` does with a `LEFT_DIRTY` child today, and a directory
+  named nowhere is a directory nobody ever reaps.
+- A repository whose lock is held is not touched at all — not "its live children are spared". A
+  supervisor mid-wave owns that roster and rewrites it several times a second. A lock this pass
+  could not read counts as held. A dead pid in the lock file does not: the kernel released that
+  flock when the process exited, however it exited, which is what makes "nobody is running
+  here" a measurement rather than a guess.
+- The clone itself is never deleted, and neither is any recorded path git does not list as one
+  of that repository's worktrees. A record is a path in a JSON file in the temp directory, and
+  `reap` salvages *inside* that path before it asks git to remove it, so a stale one pointing
+  somewhere else would be a commit in somebody else's checkout rather than a no-op. That
+  checkout is another agent's supervisor, and one lock per repository is what lets two agents
+  work at once.
+
+A removed slot's log directory goes with it; a directory any kept record still names stays,
+because a live child's logs are not this command's to reclaim. `gc` exits 1 when something is on
+disk that the pass could not take away, so a scheduled `gc` is an alarm rather than a no-op —
+and it reports a record whose directory was already gone as *absent*, not as removed, since
+"the disk is smaller" and "the roster went stale on its own" are different facts.
+
+`up`, `until` and `mcp` run the same sweep at startup, inside the lock they hold — which is what
+makes their own repository answer "held" and be skipped by the rule that protects every other
+live supervisor. `gc` is that pass with nobody's wave attached, for reading it on its own.
+
 ### When a branch reaches the reviewer
 
 A child hands work over by moving its item to `review`, and that makes the item visible to

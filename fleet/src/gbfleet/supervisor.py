@@ -593,6 +593,14 @@ def up(
             # rely on.
             publish_salvaged(wave, repo, recovered.salvaged, client=client,
                              base_branch=base)
+        # GRPH-1011. The same sweep `gc` runs, over EVERY repository this state directory
+        # names rather than only this one: the trees that need it belong to the clone
+        # nobody starts a supervisor on again, and `recover` above only ever reaches the
+        # trees of the lock we just took. Inside the lock, so this repository answers
+        # "held" to the sweep's own probe and is skipped by the rule that protects every
+        # other live supervisor. Notes rather than failures — `sweep` does not raise.
+        for line in adopt_mod.sweep(state).lines:
+            observe.emit("gc", detail=line)
         wave.before = _read_allocation(client, wave)
         if wave.offline:
             # D-i: no new spawns while the server is unreachable. A child that cannot

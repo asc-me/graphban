@@ -41,7 +41,7 @@ from typing import Iterator
 
 from . import __version__
 from .hostos import AlreadyLocked, lock_exclusive, read_at, restrict_to_owner, write_at
-from .state import lock_path, repo_root
+from .state import NotARepository, lock_path, repo_root
 
 _FILE_MODE = 0o600
 
@@ -232,3 +232,59 @@ def probe(repo: Path | str, state: Path | str | None = None) -> None:
             raise RepoLocked(path, Holder.parse(raw) if raw else None) from None
     finally:
         os.close(fd)
+
+
+@dataclass(frozen=True)
+class LockState:
+    """May this repository's abandoned trees be touched? THREE answers, not two.
+
+    `free` and `locked` are what the kernel says. `unknown` is the question not being
+    answerable — the checkout is gone, or the lock file would not open — and it is treated
+    as `locked`, because collapsing it into `free` is the version of this that deletes a
+    live supervisor's worktrees. It is NOT collapsed into `locked` either: a caller that
+    reports why it skipped a repository has to be able to say "somebody is running here"
+    and "I could not ask" apart.
+
+    An unreadable holder record is `locked`, not `unknown`. The flock does not care what
+    is written in the file, so a record we cannot parse is still a lock somebody holds —
+    which is the same reason `RepoLocked` refuses to say "nobody" about it.
+    """
+
+    state: str  # free | locked | unknown
+    holder: "Holder | None" = None
+    why: str = ""
+
+    @property
+    def free(self) -> bool:
+        return self.state == "free"
+
+    def describe(self) -> str:
+        if self.state == "free":
+            return "no supervisor holds this repository"
+        if self.holder is not None:
+            return f"held by pid {self.holder.pid} since {self.holder.acquired_at}"
+        if self.state == "locked":
+            return "held by a supervisor that has not finished writing its record"
+        return f"the lock could not be read ({self.why})"
+
+
+def lock_state(repo: Path | str, state: Path | str | None = None) -> LockState:
+    """Ask who holds this repository, without taking the lock or writing anything.
+
+    `probe` answers the same question by raising, which suits a startup that must stop
+    there. A sweep across every repository the state directory still names has to keep
+    going past the ones it may not touch, and has to say why — so this is the same read
+    with the answer returned instead of thrown.
+
+    **A dead pid in the file is not a held lock.** The flock lives on an open descriptor
+    and the kernel dropped it when that process exited, however it exited, so `free` is a
+    measurement rather than a guess about liveness. That is what lets a sweep act on a
+    repository whose supervisor is gone without a pid-reuse window to get wrong.
+    """
+    try:
+        probe(repo, state)
+    except RepoLocked as exc:
+        return LockState("locked", holder=exc.holder)
+    except (NotARepository, OSError) as exc:
+        return LockState("unknown", why=str(exc)[:200])
+    return LockState("free")
