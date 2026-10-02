@@ -232,3 +232,100 @@ def probe(repo: Path | str, state: Path | str | None = None) -> None:
             raise RepoLocked(path, Holder.parse(raw) if raw else None) from None
     finally:
         os.close(fd)
+
+
+@dataclass(frozen=True)
+class LockState:
+    """May this repository's abandoned trees be touched? THREE answers, not two.
+
+    `free` and `locked` are what the kernel says. `unknown` is the question not being
+    answerable — the lock file would not open — and it is treated as `locked`, because
+    collapsing it into `free` is the version of this that deletes a live supervisor's
+    worktrees. It is NOT collapsed into `locked` either: a caller that reports why it
+    skipped a repository has to be able to say "somebody is running here" and "I could
+    not ask" apart.
+
+    An unreadable holder record is `locked`, not `unknown`. The flock does not care what
+    is written in the file, so a record we cannot parse is still a lock somebody holds —
+    which is the same reason `RepoLocked` refuses to say "nobody" about it.
+    """
+
+    state: str  # free | locked | unknown
+    holder: "Holder | None" = None
+    why: str = ""
+
+    @property
+    def free(self) -> bool:
+        return self.state == "free"
+
+    def describe(self) -> str:
+        if self.state == "free":
+            return "no supervisor holds this repository"
+        if self.holder is not None:
+            return f"held by pid {self.holder.pid} since {self.holder.acquired_at}"
+        if self.state == "locked":
+            return "held by a supervisor that has not finished writing its record"
+        return f"the lock could not be read ({self.why})"
+
+
+@contextmanager
+def sweep_hold(lock_file: Path | str) -> Iterator[LockState]:
+    """Hold one repository's lock for the length of a tidy-up pass, without claiming it.
+
+    Yields the same three answers `LockState` carries and, when the answer is `free`,
+    KEEPS the flock until the block ends. Holding is the whole difference from `probe`,
+    and it is not a refinement. `probe` answers and closes its descriptor, so between its
+    answer and the caller's `git worktree remove` a supervisor can start on that
+    repository: it adopts the very trees the caller is about to delete, and the caller's
+    rewrite of the roster then drops the children that supervisor recorded in between —
+    live children named nowhere, which is the exact failure `gc` exists to stop
+    (GRPH-1011, on review). Acting on a question you asked a minute ago is racing every
+    supervisor that starts while you work.
+
+    Takes the lock FILE rather than a repository, because the caller usually has the file
+    first: `<key>.children.json` and `<key>.lock` are the same `repo_key`, so a roster
+    names the lock guarding it even when not one of its records still resolves to a
+    checkout — the ordinary case for the clone nobody supervises any more, which is the
+    clone this exists for.
+
+    **Writes no holder record and truncates nothing**, exactly like `probe`, for the
+    reason `hold`'s own comment gives: the file's contents are how the next supervisor
+    tells a crash from a clean shutdown, and a sweep is not a supervisor. Writing itself
+    in would leave a record reading "a supervisor held this and died" whenever the sweep
+    is killed mid-pass, and the next `up` would report a takeover that never happened.
+
+    So a supervisor refused while a sweep runs reads the file as the sweep left it — empty,
+    which `RepoLocked` reports as "a process that has not yet written its record". True of
+    a sweeper, and over in the seconds one repository's reaps take. There is deliberately
+    no retry: `hold` never waits, because a supervisor that queues behind another one is a
+    supervisor nobody asked for, and `mcp` already answers a refusal by attaching
+    read-only instead of dying (GRPH-881).
+    """
+    path = Path(lock_file)
+    try:
+        # O_CREAT, because the lock has to be TAKEN: a repository nobody has supervised
+        # since the last reboot has no lock file yet, and answering `free` because the
+        # file is missing — what `probe` does — would leave the pass holding nothing.
+        # No O_TRUNC: the previous holder's record is the crash signal.
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, _FILE_MODE)
+    except OSError as exc:
+        yield LockState("unknown", why=str(exc)[:200])
+        return
+    try:
+        # Same reason `hold` does it: O_CREAT's mode is masked by the umask on POSIX and
+        # means almost nothing on Windows (GRPH-584).
+        restrict_to_owner(path)
+        try:
+            lock_exclusive(fd)
+        except AlreadyLocked:
+            raw = read_at(fd, 4096, 0).decode("utf-8", "replace").strip()
+            yield LockState("locked", holder=Holder.parse(raw) if raw else None)
+            return
+        yield LockState("free")
+    finally:
+        # Closing is the release, and it is the kernel's rather than ours: a sweep killed
+        # mid-reap drops the lock however it died. Nothing to un-truncate, because
+        # nothing was written. Safe on the refused path too — flock is held per open file
+        # description, so closing ours does not release theirs.
+        os.close(fd)
+

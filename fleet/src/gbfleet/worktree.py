@@ -641,6 +641,29 @@ def _checked_out_branches(repo: Path) -> set[str]:
     }
 
 
+def registered_worktrees(repo: Path) -> set[Path]:
+    """The paths git itself lists as worktrees of `repo`, resolved.
+
+    For anything about to DELETE a directory on the strength of a path it read out of a
+    JSON file in the temp directory (GRPH-1011's `gc`, which walks rosters no supervisor
+    is answerable for). `reap` runs `git status` and then `git add -A` + commit inside the
+    path before it ever asks git to remove it, so a path that is not one of ours is not a
+    no-op: it is a salvage commit in somebody else's checkout. Asking git first is what
+    keeps the deletion scoped to trees this repository cut.
+
+    Includes the MAIN working tree, which is the entry a caller must not act on — the
+    clone is another agent's supervisor, and one lock per repository is what lets two
+    agents work at once.
+    """
+    out = _git(repo, "worktree", "list", "--porcelain")
+    prefix = "worktree "
+    return {
+        Path(line[len(prefix):].strip()).resolve()
+        for line in out.splitlines()
+        if line.startswith(prefix)
+    }
+
+
 def orphans(repo: Path) -> list[Orphan]:
     """Every `gb/` branch with no worktree on it.
 

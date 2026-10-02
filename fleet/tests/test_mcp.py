@@ -754,10 +754,10 @@ def test_a_failed_shutdown_reap_is_reported_and_does_not_raise(fleet: Fleet, mon
 # --- GRPH-881: attach mode when the lock is held by another supervisor ---------------
 
 
-def _attached_fleet(git_repo: Path, tmp_path: Path) -> Fleet:
-    """A Fleet in attach mode: no lock, with a holder record."""
-    holder = Holder(pid=99999, repo=str(git_repo),
-                    acquired_at="2026-09-13T00:00:00+00:00", version="0.0.0")
+def _fleet_attached_to(git_repo: Path, tmp_path: Path, holder: Holder | None) -> Fleet:
+    """A Fleet in attach mode, built the way `cli._serve_attached` builds it: no lock,
+    `attached` STATED, and `attached_holder` set to whatever the lock file yielded —
+    None when the file was empty, which is not the same as unheld (GRPH-1011)."""
     return Fleet(
         repo=git_repo,
         workspace=tmp_path / "ws",
@@ -766,7 +766,16 @@ def _attached_fleet(git_repo: Path, tmp_path: Path) -> Fleet:
             RuntimeError("spawn must not be reached in attach mode")
         ),
         attached_holder=holder,
+        attached=True,
     )
+
+
+def _attached_fleet(git_repo: Path, tmp_path: Path) -> Fleet:
+    """A Fleet in attach mode: no lock, with a holder record (the GRPH-881 case)."""
+    return _fleet_attached_to(git_repo, tmp_path, Holder(
+        pid=99999, repo=str(git_repo),
+        acquired_at="2026-09-13T00:00:00+00:00", version="0.0.0",
+    ))
 
 
 def test_initialize_succeeds_when_the_lock_is_held_by_another_supervisor(
@@ -823,6 +832,108 @@ def test_tick_is_a_noop_in_attach_mode(git_repo: Path, tmp_path: Path):
     # Should not raise, should not write anything.
     fleet.tick()
     assert fleet.wave.failures == []
+
+
+# --- GRPH-1011: attach mode when the lock file names nobody --------------------------
+
+
+def test_spawn_refuses_when_the_lock_file_names_nobody(git_repo: Path, tmp_path: Path):
+    """`lock.sweep_hold` holds the flock for the length of a gc pass and deliberately
+    writes no record, so the `RepoLocked` reaching `_serve_attached` carries holder=None.
+    An EMPTY lock file is a held one. Refusing is what stops an `mcp` started mid-sweep
+    from spawning past --max-workers beside a holder it could not see."""
+    fleet = _fleet_attached_to(git_repo, tmp_path, None)
+    result = _call(fleet, "spawn", enrolment_code="WORKER-1")
+    assert result["isError"] is True
+    msg = result["content"][0]["text"]
+    assert "read-only" in msg
+    assert "has not written its record" in msg
+    assert "gc sweep" in msg
+    assert "PRD-22 D-h" in msg
+
+
+def test_tick_writes_no_roster_when_the_lock_file_names_nobody(git_repo: Path, tmp_path: Path):
+    """The other half of the same hole: `tick` persists children.json, and a process the
+    lock never admitted overwriting the real holder's roster is damage that outlives the
+    sweep that caused it."""
+    from gbfleet import adopt
+
+    fleet = _fleet_attached_to(git_repo, tmp_path, None)
+    fleet.tick()
+    roster = adopt.children_path(git_repo)
+    assert not roster.exists(), f"an attached process wrote {roster}"
+    assert fleet.wave.failures == []
+
+
+def _run_mcp(git_repo: Path, workspace: Path, monkeypatch) -> Fleet:
+    """Run the real `gbfleet mcp`, capturing the Fleet instead of blocking on stdin."""
+    from gbfleet import cli
+    from tests.test_supervisor import KEY
+
+    served: list = []
+    monkeypatch.setattr(cli, "serve", lambda fleet: served.append(fleet))
+    monkeypatch.setenv("GBFLEET_API_KEY", KEY)
+    monkeypatch.chdir(git_repo)
+    code = cli.main(["mcp", "--repo", str(git_repo),
+                     "--server", "http://gb.invalid",
+                     "--workspace", str(workspace)])
+    assert code == 0, "gbfleet mcp exited nonzero"
+    assert len(served) == 1, f"gbfleet mcp reached serve() {len(served)} time(s)"
+    return served[0]
+
+
+def test_mcp_refused_by_a_sweep_serves_read_only(git_repo: Path, tmp_path: Path,
+                                                 monkeypatch, capsys):
+    """THE CALL. `_serve_attached` is the only place attach mode is stated, and a Fleet
+    built with `attached=True` inside a test proves nothing about the process that builds
+    one in production. This holds the lock the way a gc sweep does — flock taken, file
+    left empty — and runs the real command end to end, then drives both gates off the
+    Fleet that command built.
+
+    Sabotage: drop `attached=True` from `cli._serve_attached`, or gate `tick`/`spawn` on
+    `attached_holder is not None` again. Each fails here and nowhere else."""
+    from gbfleet import adopt
+    from gbfleet.lock import sweep_hold
+    from gbfleet.state import lock_path
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    with sweep_hold(lock_path(git_repo)) as answer:
+        assert answer.free, "something else already held this repository's lock"
+        fleet = _run_mcp(git_repo, workspace, monkeypatch)
+
+    err = capsys.readouterr().err
+    assert "attached read-only" in err, err
+    assert "unknown holder" in err, err
+
+    assert fleet.attached is True
+    assert fleet.attached_holder is None
+    assert fleet.lock is None
+    refused = _call(fleet, "spawn", enrolment_code="WORKER-1")
+    assert refused["isError"] is True
+    # The REFUSAL, and not merely an error: with the spawn gate bypassed, `spawn` falls
+    # through to adapter resolution and fails there too, so `isError` on its own is
+    # satisfied by exactly the hole this test exists to catch.
+    assert "attached read-only" in refused["content"][0]["text"]
+    fleet.tick()
+    roster = adopt.children_path(git_repo)
+    assert not roster.exists(), f"an attached process wrote {roster}"
+
+
+def test_mcp_that_got_the_lock_is_not_attached(git_repo: Path, tmp_path: Path, monkeypatch):
+    """The other side of the flag, so `attached=True` cannot be pasted into both entry
+    points and pass: a supervisor the lock ADMITTED holds it, writes its own roster, and
+    is not refused spawn."""
+    from gbfleet import adopt
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    fleet = _run_mcp(git_repo, workspace, monkeypatch)
+
+    assert fleet.attached is False
+    assert fleet.lock is not None, "a supervisor that was admitted holds no lock"
+    fleet.tick()
+    assert adopt.children_path(git_repo).exists(), "the holder wrote no roster"
 
 
 def test_spawn_sets_per_child_wall_clock_cap(git_repo: Path, tmp_path: Path, scripts):

@@ -314,7 +314,21 @@ class Fleet:
     #: GRPH-881: when this supervisor could not take the exclusive lock because another
     #: supervisor already holds it, this is the holder's record. `spawn` refuses with a
     #: tool error naming the holder; `ps`/`stop`/`orphans` observe the holder's children.
+    #: NONE when the lock file was empty — which does NOT mean nobody holds it, and is the
+    #: reason `attached` below is a fact of its own rather than a reading of this field.
     attached_holder: Holder | None = None
+    #: GRPH-1011: this process was refused the lock, so it observes for its whole life.
+    #: Set by `cli._serve_attached` and never inferred. It cannot be inferred: a gc sweep
+    #: holds the flock for the length of its pass and deliberately writes no record (see
+    #: `lock.sweep_hold`, whose docstring says why), so the `RepoLocked` that reaches
+    #: `_serve_attached` carries holder=None — as does one caught in the microseconds
+    #: before `hold` writes its own. Gating read-only on a PARSEABLE holder let an `mcp`
+    #: started while any sweep held its repository serve as a FULL supervisor without
+    #: holding the lock, for its whole life: spawning past --max-workers beside the real
+    #: holder, and persisting children.json from a process nothing had admitted.
+    #: Not `Child.attached`, which is per-child and says that one was adopted from a
+    #: previous roster rather than spawned here.
+    attached: bool = False
     #: GRPH-1012: the ref every child this process cuts, and the rule that named it —
     #: resolved ONCE, by `cli._serve_stdio` at startup or by the first `spawn` that finds it
     #: unset, and fixed for the life of the process like `tiers` and `shared`, so "what were
@@ -334,9 +348,10 @@ class Fleet:
         """One pass of the same watch loop `up` runs. Tests call this; `serve` ticks it.
 
         In attach mode (GRPH-881) this is a no-op: we do not own these children and must
-        neither watch them nor overwrite the holder's children.json.
+        neither watch them nor overwrite the holder's children.json. Gated on `attached`
+        rather than on a holder record, which a sweep leaves empty (GRPH-1011).
         """
-        if self.attached_holder is not None:
+        if self.attached:
             return
         watch_tick(self.wave, self.children, self.limits, self.client, debug=debug)
         adopt_mod.persist(adopt_mod.children_path(self.repo), self.children)
@@ -516,11 +531,22 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
     """Dispatch one tool. Raises nothing the caller has to translate — failures return
     a message, and `handle` wraps them in `isError`."""
     if name == "spawn":
-        if fleet.attached_holder is not None:
+        if fleet.attached:
             h = fleet.attached_holder
-            who = f"pid {h.pid} (since {h.acquired_at}, gbfleet {h.version})"
+            # holder=None is NOT "nobody holds it": the lock file was empty, which is what a
+            # gc sweep leaves behind for the seconds its pass takes, and what a supervisor
+            # leaves before `hold` writes its record (GRPH-1011). Saying "free" would invite
+            # the planner to retry into the same refusal, and saying "nobody" would invite
+            # it to delete a live lock — the two readings `RepoLocked` refuses for the same
+            # reason.
+            who = (
+                f"pid {h.pid} (since {h.acquired_at}, gbfleet {h.version})"
+                if h is not None
+                else "a process that has not written its record (possibly a gc sweep)"
+            )
             raise ValueError(
-                f"this supervisor is attached read-only: {h.repo} is held by {who}. "
+                f"this supervisor is attached read-only: "
+                f"{h.repo if h is not None else fleet.repo} is held by {who}. "
                 f"spawn refuses while another supervisor holds the lock "
                 f"(PRD-22 D-h). Lock: {fleet.repo}"
             )

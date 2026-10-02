@@ -304,6 +304,14 @@ def run(
                 publish_salvaged(wave, repo, recovered.salvaged, client=planner,
                                  base_branch=chosen_base.ref)
 
+            # GRPH-1011. The same sweep `gc` runs, over EVERY repository this state
+            # directory names rather than only this one — the trees that need it belong to
+            # the clone nobody starts a supervisor on again. Inside the lock, so this
+            # repository answers "held" to the sweep's own try-acquire and is skipped by the
+            # rule that protects every other live supervisor.
+            for line in adopt_mod.sweep(state).lines:
+                observe.emit("gc", detail=line)
+
             children: list[Child] = list(leftover)
             roster_path = adopt_mod.children_path(repo, state)
 
