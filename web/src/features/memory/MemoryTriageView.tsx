@@ -239,7 +239,9 @@ export function MemoryTriageView() {
   // The reason this view was wired differently is real and is handled here rather than
   // avoided: a window listener fires over the sweep modal and the detail panel, where j/k/x
   // would act on the row list behind whatever the user is looking at. So the listener stands
-  // down while an overlay has focus. The detail panel keeps Escape, which is its close key.
+  // down while the sweep modal is open — gated on sweepOpen state, not focus, because clicking
+  // the Sweep button leaves focus on the trigger outside the dialog. The detail panel is a side
+  // panel, not a modal: j/k stay live there and Escape closes it.
   React.useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const t = e.target;
@@ -720,8 +722,6 @@ function SweepPreviewModal({
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-fg/20">
-      {/* role="dialog" is what the window key listener looks for to stand down (GRPH-1009);
-          it is also simply the right role for a modal. */}
       <div role="dialog" aria-modal="true" aria-labelledby="sweep-title"
            className="mx-4 w-full max-w-lg rounded-xl border border-line bg-surface p-5 shadow-lg">
         <h2 id="sweep-title" className="mb-1 text-[15px] font-semibold text-fg">Sweep low-confidence shards</h2>
