@@ -9,7 +9,7 @@ clause, and told them to delete the number, rewarding the thinner receipt.
 """
 import pytest
 
-from app.services.fleet import _predicate, acceptance_contradicted
+from app.services.fleet import _predicate, acceptance_contradicted, denial_in
 from app.services.items import (
     _normalize_predicates, attested_predicates, missing_predicates, valid_attestations)
 
@@ -323,3 +323,97 @@ def test_a_long_explanation_before_the_clause_is_still_not_a_denial():
                f"older seed cannot produce was dropped from the fixture. {CLAUSE} — held by "
                "test_pin_lapses, 3 passed.")
     assert acceptance_contradicted([CLAUSE], [{"kind": "test", "detail": receipt}]) == {}
+
+
+# ── GRPH-1008 clause 3: the refusal names the word it matched, and the rule ────────────
+
+def test_the_denial_refusal_names_the_matched_word_and_the_rule(client, auth):
+    """THE criterion for clause 3: "whatever distinguishes them is stated in the refusal
+    text, so a builder who hits it is told what to change rather than told to delete a
+    number".
+
+    Driven through the real `sign_off` and asserted on the message it RAISES, not on the
+    source of the string. The file's own neighbour test explains why it reads source — the
+    MCP handler adds a hint that can mask a useless service message — but source inspection
+    is the weaker instrument: it passes on a message that is never reachable, and it cannot
+    show that the word named is the word actually matched. This builds the refusal for real
+    and reads the word out of it.
+    """
+    import pytest as _pytest
+
+    from app.db import SessionLocal
+    from app.services import fleet as fleet_svc
+    from app.services import items as items_svc
+
+    clause = "both DB engines green"
+    # The clause is denied in its OWN sentence, so the gate is right to refuse. What is
+    # under test is whether it SAYS WHY.
+    receipt = f"Clause: {clause} — cannot run Postgres on this machine."
+
+    proj = client.post("/api/projects", json={"name": "DenialRule"}, headers=auth).json()["id"]
+    key = client.post("/api/api-keys", json={"name": "dr", "project_id": proj},
+                      headers=auth).json()["plaintext"]
+    db = SessionLocal()
+    try:
+        it = items_svc.create_item(
+            db, project_id=proj, title="a slice", effort=1,
+            description=f"## Acceptance\n\n- {clause}\n")
+        items_svc.update_item(db, item_id=it.id, status="review",
+                              evidence=[{"kind": "test", "detail": receipt}])
+        with _pytest.raises(fleet_svc.MissingAcceptanceCoverage) as caught:
+            fleet_svc.sign_off(db, item_id=it.id, agent_id="GRPH-AX", api_key=key,
+                               evidence=[{"kind": "test", "detail": receipt}])
+    finally:
+        db.close()
+
+    msg = str(caught.value)
+    # 1. The word it matched, not merely the line it came from.
+    assert '"cannot"' in msg, ("the refusal must name the word read as the verdict, or the "
+                               f"builder is left diffing their own prose: {msg}")
+    # 2. The rule, both halves of it — the count half and the sentence half.
+    assert "34 skipped" in msg and "0 failed" in msg, (
+        f"a count is not a verdict, and the refusal must say so: {msg}")
+    assert "own sentence" in msg.lower() and "neighbouring sentence" in msg, (
+        f"the second pass made scope part of the rule; the refusal must state it: {msg}")
+    # 3. And what to do, which is the clause's actual ask.
+    assert "IS delivered" in msg, f"the refusal must name the fix, not just the fault: {msg}"
+
+
+def test_the_named_word_is_the_one_actually_matched(client, auth):
+    """The control, and the half a hardcoded string would pass. Two receipts denying the
+    same clause with DIFFERENT words must produce different refusals — otherwise "the word
+    read as its verdict" is decoration that happens to be true once."""
+    from app.services.fleet import denial_in
+
+    clause = "the fleet suite is green"
+    assert denial_in(clause, f"Clause: {clause} — cannot run it here.") == "cannot"
+    assert denial_in(clause, f"Clause: {clause} — NOT DELIVERED.") == "not delivered"
+    assert denial_in(clause, f"Clause: {clause} — I skipped it.") == "skipped"
+    # And the shapes that are data, not verdicts, name nothing at all.
+    assert denial_in(clause, f"Clause: {clause}. 4656 passed, 34 skipped, 0 failed.") == ""
+    assert denial_in(clause, f"Clause: {clause}. Delivered. A later note cannot resolve "
+                             "four design literals from a checkout.") == ""
+
+
+def test_the_rule_the_refusal_states_is_the_rule_the_gate_applies():
+    """One implementation, asserted. `acceptance_contradicted` and the refusal must agree
+    about which word matched, because the refusal recomputing it would be a second copy of
+    the pipeline — and a message drifting from the rule it describes is worse than no
+    message, since it sends the builder to fix the wrong word with authority."""
+    clause = "the migration runs from empty"
+    line = f"Clause: {clause} — cannot verify without a fresh database."
+
+    assert acceptance_contradicted([clause], [{"kind": "test", "detail": line}]) == {
+        clause: line}
+    assert denial_in(clause, line) == "cannot"
+
+    import inspect
+
+    from app.services import fleet as fleet_svc
+    src = inspect.getsource(fleet_svc.acceptance_contradicted)
+    assert "denial_in(" in src, (
+        "acceptance_contradicted must defer to denial_in rather than re-applying the "
+        "regexes, or the gate and its explanation can disagree")
+    assert "_NEGATIVE_EVIDENCE" not in src, (
+        "the scan belongs in denial_in alone — a second copy here is the drift this "
+        "guards against")

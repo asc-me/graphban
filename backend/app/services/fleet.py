@@ -2026,6 +2026,38 @@ def _clause_scope(low: str, clause: str) -> str:
     return " ".join(scopes) if scopes else low
 
 
+def denial_in(clause: str, line: str) -> str:
+    """The word in `line` that reads as a verdict against `clause`, or "" for none.
+
+    THE ONE PLACE the denial scan is applied (GRPH-1008 clause 3). The refusal has to name
+    the word it matched — a builder who hits this gate never sees a source comment, and the
+    rule is now two rules (a skip count or `0 failed` is a count; a denial outside the
+    clause's own sentence is explanation), so "the evidence says this was not done" sends
+    them guessing. Measured by a reviewer on this very gate: two refusals and a wrong first
+    diagnosis, removing the word "failed" when the trigger was different negation entirely.
+
+    Returning the word rather than a bool is what lets `acceptance_contradicted` and the
+    refusal share one implementation. Recomputing it at the refusal site would be a second
+    copy of the pipeline, and a second copy is how the message and the rule drift apart —
+    which is this repo's own recurring defect, not a hypothetical.
+    """
+    low = line.lower()
+    scope = _clause_scope(low, clause.lower())
+    residue = _SKIP_COUNT.sub(" ", _ZERO_FAILED.sub(" ", scope.replace(clause.lower(), " ")))
+    m = _NEGATIVE_EVIDENCE.search(residue)
+    return m.group(1) if m else ""
+
+
+#: Why a receipt was read as denying its clause, stated at the point of refusal rather than
+#: in a source comment. One string, so the gate and its explanation cannot disagree.
+DENIAL_RULE = (
+    "A denial counts only inside the clause's OWN sentence: a skip count (`34 skipped`) and "
+    "a zero failure count (`0 failed`) are read as counts, though `3 failed` still denies, "
+    "and a denial word in a neighbouring sentence is explanation. If the clause IS delivered, say so in the sentence that names it and keep "
+    "the caveat in a sentence of its own"
+)
+
+
 def acceptance_contradicted(clauses: list[str], evidence: list[dict]) -> dict[str, str]:
     """Each clause some evidence line names AND says was not done, mapped to that line.
 
@@ -2047,9 +2079,7 @@ def acceptance_contradicted(clauses: list[str], evidence: list[dict]) -> dict[st
             for c in clauses:
                 if c in out or c.lower() not in low:
                     continue
-                scope = _clause_scope(low, c.lower())
-                residue = _SKIP_COUNT.sub(" ", _ZERO_FAILED.sub(" ", scope.replace(c.lower(), " ")))
-                if _NEGATIVE_EVIDENCE.search(residue):
+                if denial_in(c, line):
                     out[c] = line.strip()
     return out
 
@@ -2337,8 +2367,11 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
         if contradicted:
             problems.append(
                 f"{len(contradicted)} acceptance clause(s) the evidence says were not done: "
-                + "; ".join(f'"{c}" — evidence reads "{line}"'
-                            for c, line in contradicted.items()))
+                + "; ".join(
+                    f'"{c}" — evidence reads "{line}", and the word read as its verdict is '
+                    f'"{denial_in(c, line)}"'
+                    for c, line in contradicted.items())
+                + ". " + DENIAL_RULE)
         if uncovered:
             problems.append(
                 f"{len(uncovered)} acceptance clause(s) with no named test: "
