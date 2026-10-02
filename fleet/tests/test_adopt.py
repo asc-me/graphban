@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -13,9 +15,9 @@ import pytest
 from gbfleet import adopt
 from gbfleet.adopt import Snapshot, UnadoptableFile, classify, load, save
 from gbfleet.hostos import spawn_kwargs
-from gbfleet.lock import hold
+from gbfleet.lock import RepoLocked, hold
 from gbfleet.supervisor import Limits, up, watch_tick
-from gbfleet.worktree import create
+from gbfleet.worktree import create, registered_worktrees
 
 from tests.test_supervisor import _factory, _seats, _server
 
@@ -693,6 +695,215 @@ def test_gc_leaves_a_repository_whose_lock_is_held(
     assert "hand_written" in roster.read_text(encoding="utf-8"), (
         "gc rewrote a roster it had no reason to touch — a live supervisor's own writes "
         "since this pass looked would have been clobbered by the stale copy")
+
+
+def _sweep_in_a_thread(state: Path):
+    """Run a sweep off the main thread, so the main thread can be the supervisor that
+    tries to start during it.
+
+    `sweep` does not raise by contract, but a bug in the lock handling would, and a thread
+    that died quietly would leave the test hanging at the join instead of naming a cause.
+    So the exception is captured and the caller asserts on it.
+    """
+    result: dict = {}
+
+    def run() -> None:
+        try:
+            result["swept"] = adopt.sweep(state)
+        except BaseException as exc:  # noqa: BLE001 - re-raised by the caller's assert
+            result["raised"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    return worker, result
+
+
+def test_a_sweep_holds_the_repository_until_it_has_finished(
+    git_repo: Path, tmp_path: Path, state: Path, monkeypatch
+):
+    """THE BOUNCE. The pass used to ASK the lock and then act on the answer: `probe` took
+    the flock and released it by closing its descriptor, so between that answer and the
+    reap a supervisor could start on this repository, adopt the tree being removed, and
+    then have its own roster replaced by the copy the pass read before it arrived.
+
+    So the pass holds the flock, and a supervisor that starts mid-pass is refused until it
+    finishes. Sabotage: close the descriptor before `sweep_hold` yields — probe-then-act —
+    and the `hold` below gets in.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tree = create(git_repo, workspace / "wave-1", "wave", "1")
+    roster = adopt.children_path(git_repo, state)
+    save(roster, [_snap(tree, _dead_pid())])
+
+    reached = threading.Event()
+    finish = threading.Event()
+    listing = registered_worktrees
+
+    def paused(repo):
+        # After the lock check and before anything is removed: as wide as the window the
+        # bounced code ever opened, and where the reap of a 274 MB tree spends its seconds.
+        reached.set()
+        assert finish.wait(timeout=60), "the test never let the sweep finish"
+        return listing(repo)
+
+    monkeypatch.setattr(adopt, "registered_worktrees", paused)
+    worker, result = _sweep_in_a_thread(state)
+    try:
+        assert reached.wait(timeout=60), f"the sweep never reached {git_repo}"
+        with pytest.raises(RepoLocked) as exc:
+            with hold(git_repo, state):
+                pass
+        # The sweeper writes no holder record, so the refusal says what is true of it —
+        # something has this repository and has not identified itself — rather than naming
+        # a supervisor that died. `sweep_hold` states why, and why there is no retry.
+        assert "not yet written its record" in str(exc.value), exc.value
+    finally:
+        finish.set()
+        worker.join(timeout=120)
+
+    assert "raised" not in result, result["raised"]
+    swept = result["swept"]
+    assert not worker.is_alive(), "the sweep never finished"
+    assert not tree.path.exists(), swept.lines
+    assert (swept.removed, swept.locked) == (1, 0), swept.lines
+    # ...and it is the same repository, not merely a refusal: once the pass ends, a
+    # supervisor gets in. A lock a tidy-up leaked would refuse every later wave on this
+    # checkout until that process happened to exit.
+    with hold(git_repo, state) as acquired:
+        assert acquired.takeover is None
+
+
+def test_the_roster_is_rewritten_under_the_lock_it_was_read_under(
+    git_repo: Path, tmp_path: Path, state: Path, monkeypatch
+):
+    """The other half of the bounce: the REWRITE. `save` replaces the roster with the copy
+    this pass read at the start, so a lock released after the last reap would still let a
+    supervisor start, record the children it spawned, and have them dropped by a write
+    that was decided before it existed — live children named nowhere, which is the exact
+    failure `gc` exists to stop.
+
+    Sabotage: close the descriptor before `sweep_hold` yields; the `hold` below gets in
+    mid-write. Releasing the lock between the reaping and the writing is what this pins.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tree = create(git_repo, workspace / "wave-1", "wave", "1")
+    roster = adopt.children_path(git_repo, state)
+    save(roster, [_snap(tree, _dead_pid())])
+
+    reached = threading.Event()
+    finish = threading.Event()
+    writing = save
+
+    def pausing_save(path, snapshots):
+        reached.set()
+        assert finish.wait(timeout=60), "the test never let the sweep write"
+        return writing(path, snapshots)
+
+    monkeypatch.setattr(adopt, "save", pausing_save)
+    worker, result = _sweep_in_a_thread(state)
+    try:
+        assert reached.wait(timeout=60), "the sweep never reached the rewrite"
+        assert not tree.path.exists(), "the pass had not finished reaping yet"
+        with pytest.raises(RepoLocked):
+            with hold(git_repo, state):
+                pass
+    finally:
+        finish.set()
+        worker.join(timeout=120)
+
+    assert "raised" not in result, result["raised"]
+    assert not load(roster), result["swept"].lines
+    with hold(git_repo, state):
+        pass
+
+
+def test_a_roster_whose_trees_are_all_gone_is_still_rewritten_under_its_lock(
+    git_repo: Path, tmp_path: Path, state: Path
+):
+    """WHICH lock guards a roster, when nothing in it resolves to a repository any more.
+
+    The records are all a per-record lock check has to work from, and the clone this
+    command exists for has none left: every tree is already gone, so all the pass is doing
+    is dropping stale records. It still may not rewrite that file unless it holds the lock,
+    because a supervisor starting on that repository writes the same file. So the lock is
+    named by the ROSTER — `<key>.children.json` and `<key>.lock` are the same `repo_key` —
+    rather than by a record.
+
+    Sabotage: `_lock_beside` returns `<key>.sweep.lock`; the pass holds a file no
+    supervisor ever opens, rewrites this roster under a live lock, and the record is gone.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tree = create(git_repo, workspace / "wave-1", "wave", "1")
+    roster = adopt.children_path(git_repo, state)
+
+    def plant() -> str:
+        save(roster, [_snap(tree, _dead_pid())])
+        # A key `load` tolerates and `save` drops, so "the file was rewritten" is visible
+        # even though the record it names is gone either way.
+        raw = json.loads(roster.read_text(encoding="utf-8"))
+        raw["children"][0]["hand_written"] = "still here"
+        roster.write_text(json.dumps(raw), encoding="utf-8")
+        return json.dumps(raw)
+
+    # The control half, first: with nobody holding this repository, the stale record IS
+    # dropped. Without it, the assertion below could pass on a pass that never writes.
+    shutil.rmtree(tree.path)
+    plant()
+    open_sweep = adopt.sweep(state)
+    assert (open_sweep.absent, open_sweep.removed) == (1, 0), open_sweep.lines
+    assert not load(roster), open_sweep.lines
+
+    planted = plant()
+    with hold(git_repo, state) as acquired:
+        swept = adopt.sweep(state)
+        # Not read, so nothing about it is claimed: no `absent` here, and `records` stays
+        # at zero. The count that says a roster was walked past is `locked`.
+        assert (swept.locked, swept.removed, swept.absent) == (1, 0, 0), swept.lines
+        assert str(acquired.holder.pid) in " ".join(swept.lines), swept.lines
+
+    assert roster.read_text(encoding="utf-8") == planted, (
+        "gc rewrote the roster of a repository a supervisor is running on")
+
+
+def test_a_record_reaching_another_repository_asks_that_one_too(
+    git_repo: Path, other_repo: Path, tmp_path: Path, state: Path
+):
+    """The roster's own lock is not the only one a record can need.
+
+    A record is a path read out of a JSON file, and one that resolves into a DIFFERENT
+    checkout belongs to a different supervisor with its own lock and its own wave running
+    under it. Holding only the roster's would reap that repository's trees on the strength
+    of somebody else's file — which is the same act, on a smaller roster, that the bounce
+    was about.
+
+    Sabotage: drop the per-repository `sweep_hold` in `_sweep_records`; the other
+    repository's tree goes and this fails.
+    """
+    mine = tmp_path / "ws"
+    mine.mkdir()
+    theirs = tmp_path / "theirs"
+    theirs.mkdir()
+    own_tree = create(git_repo, mine / "wave-1", "wave", "1")
+    their_tree = create(other_repo, theirs / "wave-2", "wave", "2")
+    roster = adopt.children_path(git_repo, state)
+    save(roster, [
+        _snap(own_tree, _dead_pid(), slot="1"),
+        _snap(their_tree, _dead_pid(), slot="2"),
+    ])
+
+    with hold(other_repo, state) as acquired:
+        swept = adopt.sweep(state)
+        assert (swept.removed, swept.locked) == (1, 1), swept.lines
+        assert str(acquired.holder.pid) in " ".join(swept.lines), swept.lines
+
+    assert not own_tree.path.exists(), swept.lines
+    assert their_tree.path.exists(), (
+        f"gc reaped under another repository's live lock: {swept.lines}")
+    assert [s.branch for s in load(roster)] == [their_tree.branch], (
+        "a tree gc would not touch must stay in the record")
 
 
 def test_gc_leaves_a_recorded_child_that_is_still_running(

@@ -597,8 +597,8 @@ def up(
         # names rather than only this one: the trees that need it belong to the clone
         # nobody starts a supervisor on again, and `recover` above only ever reaches the
         # trees of the lock we just took. Inside the lock, so this repository answers
-        # "held" to the sweep's own probe and is skipped by the rule that protects every
-        # other live supervisor. Notes rather than failures — `sweep` does not raise.
+        # "held" to the sweep's own try-acquire and is skipped by the rule that protects
+        # every other live supervisor. Notes rather than failures — `sweep` does not raise.
         for line in adopt_mod.sweep(state).lines:
             observe.emit("gc", detail=line)
         wave.before = _read_allocation(client, wave)

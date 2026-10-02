@@ -309,6 +309,16 @@ rule rather than a judgement made at runtime:
   checkout is another agent's supervisor, and one lock per repository is what lets two agents
   work at once.
 
+That lock is **held**, not consulted — from the moment the answer is "free" until the roster has
+been rewritten. Asking and then acting is a race: between the two, a supervisor can start on that
+repository, adopt the very trees being removed, and have its own roster replaced by the copy the
+pass read before it arrived, leaving live children named nowhere. The pass writes nothing into the
+lock file either, so it is not mistaken for a supervisor and the record a crashed one left still
+reads as a crash afterwards. A supervisor that starts while a repository is being swept gets the
+ordinary `RepoLocked` refusal for the seconds that sweep takes, and there is deliberately no retry
+behind it: `hold` never waits, because a supervisor that queues behind another one is a supervisor
+nobody asked for, and `mcp` already answers a refusal by attaching read-only rather than dying.
+
 A removed slot's log directory goes with it; a directory any kept record still names stays,
 because a live child's logs are not this command's to reclaim. `gc` exits 1 when something is on
 disk that the pass could not take away, so a scheduled `gc` is an alarm rather than a no-op —

@@ -361,10 +361,10 @@ def test_a_second_drain_on_the_same_repo_still_exits_3(
     assert exc.value.holder is not None
 
 
-# --- GRPH-1011: asking the lock a question it answers without raising ----------------
+# --- GRPH-1011: holding the lock for the length of a tidy-up pass ---------------------
 
 
-def test_lock_state_answers_free_locked_and_unknown_separately(
+def test_sweep_hold_answers_free_locked_and_unknown_separately(
     git_repo: Path, state: Path, tmp_path: Path
 ):
     """`free` and `locked` are the kernel's two answers. `unknown` is the third, and it
@@ -372,27 +372,33 @@ def test_lock_state_answers_free_locked_and_unknown_separately(
     here" would delete a live supervisor's worktrees, while collapsing it into `locked`
     would leave the report unable to say which of the two happened.
 
-    Sabotage: return `LockState("free")` from `lock_state`'s except branch; the third
+    Sabotage: yield `LockState("free")` from `sweep_hold`'s except branch; the third
     assertion fails.
     """
-    from gbfleet.lock import LockState, lock_state
+    from gbfleet.lock import LockState, sweep_hold
+
+    guard = lock_path(repo_root(git_repo), state)
 
     # No lock file at all is the ordinary free case, and it is free because the kernel
     # released the flock when the last holder exited — not because the file is missing a
     # pid we could have misread as live.
-    free = lock_state(git_repo, state)
-    assert free.state == "free" and free.free, free
-    assert "no supervisor" in free.describe()
+    with sweep_hold(guard) as free:
+        assert free.state == "free" and free.free, free
+        assert "no supervisor" in free.describe()
 
     with hold(git_repo, state) as acquired:
-        held = lock_state(git_repo, state)
-        assert held.state == "locked" and not held.free, held
-        assert held.holder is not None and held.holder.pid == acquired.holder.pid
-        assert str(acquired.holder.pid) in held.describe()
+        with sweep_hold(guard) as held:
+            assert held.state == "locked" and not held.free, held
+            assert held.holder is not None and held.holder.pid == acquired.holder.pid
+            assert str(acquired.holder.pid) in held.describe()
 
-    unknown = lock_state(tmp_path / "not-a-repository", state)
-    assert unknown.state == "unknown" and not unknown.free, unknown
-    assert unknown.why, "an unanswerable question still has to say it was asked"
+    # A lock file that cannot be opened at all. A directory is how that happens without
+    # depending on a permission the suite cannot rely on.
+    wedged = tmp_path / "wedged.lock"
+    wedged.mkdir()
+    with sweep_hold(wedged) as unknown:
+        assert unknown.state == "unknown" and not unknown.free, unknown
+        assert unknown.why, "an unanswerable question still has to say it was asked"
 
     # Held, with a record we cannot name — the partial write a crash leaves behind. Said
     # without "nobody" in it, because a report reading "nobody holds this" is an
@@ -412,9 +418,9 @@ def test_a_dead_pid_in_the_lock_file_is_not_a_held_lock(git_repo: Path, state: P
     dropped it when that process exited, however it exited. A sweep that read a leftover
     pid as a live holder would skip exactly the repositories it exists to clean.
 
-    Sabotage: make `lock_state` answer `locked` when the file names a pid; this fails.
+    Sabotage: make `sweep_hold` answer `locked` when the file names a pid; this fails.
     """
-    from gbfleet.lock import lock_state
+    from gbfleet.lock import sweep_hold
 
     path = lock_path(repo_root(git_repo), state)
     path.write_text(json.dumps({
@@ -422,8 +428,47 @@ def test_a_dead_pid_in_the_lock_file_is_not_a_held_lock(git_repo: Path, state: P
         "acquired_at": "2026-09-27T00:00:00+00:00", "version": "test",
     }), encoding="utf-8")
     try:
-        answer = lock_state(git_repo, state)
-        assert answer.state == "free", answer
-        assert answer.free
+        with sweep_hold(path) as answer:
+            assert answer.state == "free", answer
+            assert answer.free
     finally:
         path.unlink(missing_ok=True)
+
+
+def test_sweep_hold_writes_no_holder_record_of_its_own(git_repo: Path, state: Path):
+    """A sweep is not a supervisor, so it must not look like one in the lock file.
+
+    What is written there is how the NEXT supervisor tells a crash from a clean shutdown,
+    and a crash is what makes it adopt rather than start blind beside a fleet (GRPH-599).
+    A pass that wrote itself in — or merely truncated on the way out, which is what `hold`
+    does — would erase that, and every symptom of the loss is a lock that appears to work.
+
+    Sabotage: truncate and write a `Holder` in `sweep_hold` the way `hold` does; the
+    record asserted on here is gone and the takeover below is never reported.
+    """
+    from gbfleet.lock import sweep_hold
+
+    path = lock_path(repo_root(git_repo), state)
+    crashed = Holder(
+        pid=424242, repo=str(repo_root(git_repo)),
+        acquired_at="2026-09-27T00:00:00+00:00", version="test")
+    path.write_text(crashed.as_json(), encoding="utf-8")
+
+    with sweep_hold(path) as answer:
+        assert answer.free, answer
+        assert path.read_text(encoding="utf-8") == crashed.as_json()
+        # What a supervisor starting during the sweep sees and hears. The refusal is the
+        # existing one, and it names the record the file actually holds rather than
+        # inventing a holder — see `sweep_hold` for why that is the honest answer.
+        with pytest.raises(RepoLocked) as exc:
+            with hold(git_repo, state):
+                pass
+        assert exc.value.holder is not None
+        assert exc.value.holder.pid == crashed.pid
+
+    assert path.read_text(encoding="utf-8") == crashed.as_json(), (
+        "the pass left something of itself in the lock file")
+    with hold(git_repo, state) as acquired:
+        assert acquired.takeover is not None, "the crash was erased by a tidy-up pass"
+        assert acquired.takeover.holder is not None
+        assert acquired.takeover.holder.pid == crashed.pid
