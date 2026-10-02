@@ -199,11 +199,42 @@ class Partition:
         return f"tolerated up to {self.ceiling:.0f}s (one presence TTL); longest gap {self.longest:.0f}s"
 
 
+@dataclass(frozen=True)
+class WaveBase:
+    """The ref this wave's children are cut from, and which rule named it (GRPH-1012).
+
+    Three rules, in order: the operator's `--base`, the project's MEASURED
+    `gitops.base_branch`, and the remote's own default ref. `source` says which one
+    answered, because "cut from `origin/main`" does not tell an operator whether the
+    project chose that or nobody did — and the second is the reading that has to stay
+    visible, since it is the one that looks like a decision.
+
+    `ref` is empty only when this repository has no remote to cut from. That is a fact
+    about the repo, not a failure to ask, and `source` is then `head`: children are cut
+    from whatever the checkout happens to be standing on.
+    """
+
+    ref: str
+    #: `flag` | `gitops` | `remote_default` | `head`.
+    source: str
+    #: One line for the operator. Carries what gitops said even when gitops was NOT the
+    #: answer, because "the project stated no base" is the half that would otherwise be
+    #: inferred from a branch name that looks like everybody's default.
+    note: str
+
+    def describe(self) -> str:
+        return f"{self.ref or 'the checkout HEAD'} — {self.note}"
+
+
 @dataclass
 class Wave:
     """What one `up` actually did. Every field is something that happened."""
 
     lock: Acquired | None = None
+    #: The base this wave cut its children from, resolved once at startup (GRPH-1012).
+    #: None means this wave never resolved one — which is not the same as `WaveBase(ref="")`,
+    #: a repo with no remote. Reported by `cli.report` so the summary names the rule.
+    base: "WaveBase | None" = None
     before: AllocationRead | None = None
     after: AllocationRead | None = None
     spawned: list[Child] = field(default_factory=list)
@@ -519,17 +550,29 @@ def up(
     debug: bool = False,
     items: dict | None = None,
     merger: "Merger | None" = None,
-    base: str = "",
+    base_branch: str = "",
+    wave_base: "WaveBase | None" = None,
 ) -> Wave:
     """Run one wave to completion and return what happened.
 
     Holds the repo lock for the whole wave (D-h), so a second supervisor on this
     repository refuses to start rather than exceeding `max_workers` between them.
+
+    `base_branch` is the operator's `--base`, and `wave_base` an already-resolved answer
+    from a caller that needed the ref itself (`cli` builds `--merge`'s Merger out of it).
+    Given neither, this resolves one — so there is no route from here to `_tree_for` that
+    does not pass a FETCHED base, which is the guarantee GRPH-1012 exists for.
     """
     repo, workspace = _rooted(repo, workspace)
     wave = Wave()
 
     observe.configure(state)
+
+    chosen = wave_base if wave_base is not None else resolve_wave_base(
+        repo, client, base_branch=base_branch)
+    wave.base = chosen
+    observe.emit("base", detail=chosen.note)
+    base = chosen.ref
 
     with hold(repo, state) as acquired:
         wave.lock = acquired
@@ -605,6 +648,104 @@ def up(
     return wave
 
 
+def gitops_base_branch(client) -> tuple[str, str]:
+    """The project's MEASURED `base_branch`, or "" plus the reason it is not one.
+
+    Read, never inferred. `source: unmeasured` means the project has stated no base —
+    which is not `main`, and is not "no requirements" either. Inventing a trunk here
+    would be the same move `gbagent.orient.INSTRUCTION` warns a child off ("do not guess
+    main"), made by the one party that can act on it silently: the supervisor cuts the
+    worktrees, so a guess becomes every child's history.
+
+    An UNREADABLE `get_context` is reported as unreadable rather than folded into
+    unmeasured. Both fall through to the remote's default ref, but they are different
+    facts about the project and the note is the only place either one survives.
+    """
+    if client is None:
+        return "", "gitops.base_branch not asked (no ledger client on this call path)"
+    try:
+        ctx = client.call("get_context") or {}
+    except Exception as exc:  # noqa: BLE001 - a base we could not ask for is reported, not fatal
+        return "", f"gitops.base_branch unreadable ({str(exc)[:80]})"
+    gitops = ctx.get("gitops") if isinstance(ctx, dict) else None
+    row = gitops.get("base_branch") if isinstance(gitops, dict) else None
+    row = row if isinstance(row, dict) else {}
+    source = str(row.get("source") or "unmeasured")
+    value = row.get("value")
+    if source == "unmeasured" or not isinstance(value, str) or not value.strip():
+        return "", f"gitops.base_branch unmeasured (source {source})"
+    return value.strip(), f"gitops.base_branch is {value.strip()!r} (source {source})"
+
+
+def resolve_wave_base(repo: Path, client=None, *, base_branch: str = "",
+                      remote: str = "") -> WaveBase:
+    """THE ref this wave cuts children from — resolved once, and FETCHED here (GRPH-1012).
+
+    Three rules, first answer wins:
+
+    1. `base_branch`, the operator's `--base`. Refuses when the remote does not have it,
+       which is `wt_mod.resolve_base`'s existing behaviour and stays it.
+    2. `gitops.base_branch`, when `get_context` reports it MEASURED. A project that has
+       stated its trunk is stating where its work lands, and a supervisor that cut from
+       the remote default instead would be overruling it without saying so.
+    3. The remote's own default ref (`wt_mod.default_ref`), read from the recorded
+       `origin/HEAD` symref and never guessed from a list of likely names.
+
+    Every one of them is fetched before this returns, because a remote-tracking ref is
+    only as fresh as the last fetch: cutting a child from a stale `origin/main` builds it
+    on a world that no longer exists, and the diff a reviewer reads is against that world.
+    Rules 1 and 2 fetch inside `resolve_base`; rule 3 fetches here, and a fetch that
+    FAILED is said so in the note rather than reported as a current base.
+
+    **The checkout's HEAD is not one of the three.** That was the defect: `up` and MCP
+    `spawn` cut from `HEAD`, so a supervisor standing on a feature branch built every
+    child on that branch, and a separate clone whose `origin/main` had never been fetched
+    looked current to itself. HEAD is reached now only when the repository has no remote
+    at all, and then `source` says `head` out loud.
+    """
+    remote = remote or wt_mod.remote_for(repo)
+    if not remote:
+        return WaveBase(
+            ref="", source="head",
+            note="this repository has no remote, so there is nothing to fetch and cut "
+                 "from — children are cut from the checkout HEAD",
+        )
+    if base_branch:
+        ref = wt_mod.resolve_base(repo, remote, base_branch)
+        return WaveBase(ref=ref, source="flag",
+                        note=f"--base {base_branch} → {ref}, fetched")
+
+    branch, gitops_note = gitops_base_branch(client)
+    if branch:
+        try:
+            ref = wt_mod.resolve_base(repo, remote, branch)
+        except wt_mod.BaseBranchNotFound as exc:
+            # Refused, not fallen past. A measured project rule naming a branch this
+            # remote does not have is a misconfiguration the operator has to see: quietly
+            # cutting from the default ref instead would put every child of the wave on a
+            # base the project never chose, and the wave summary would read as normal.
+            raise wt_mod.BaseBranchNotFound(
+                f"{gitops_note}, but {exc}. Pass --base to name the ref this wave cuts "
+                "from, or correct the project's git process."
+            ) from exc
+        return WaveBase(ref=ref, source="gitops", note=f"{gitops_note} → {ref}, fetched")
+
+    ref = wt_mod.default_ref(repo, remote)
+    if not ref:
+        return WaveBase(
+            ref="", source="head",
+            note=f"{gitops_note}; and {remote} has no default ref recorded here, so "
+                 "children are cut from the checkout HEAD",
+        )
+    fetched = wt_mod.refresh_ref(repo, remote, ref)
+    return WaveBase(
+        ref=ref, source="remote_default",
+        note=f"{gitops_note}, so this cuts from {remote}'s default ref {ref}"
+             + (", fetched" if fetched else
+                " — THE FETCH FAILED, so this ref is only as fresh as the last one"),
+    )
+
+
 def _tree_for(repo: Path, workspace: Path, wave_name: str, slot: str,
               base: str = "") -> Worktree:
     """One worktree on its own branch.
@@ -615,9 +756,11 @@ def _tree_for(repo: Path, workspace: Path, wave_name: str, slot: str,
     stands in — deterministic, collision-free within a wave, and the roster ties agent to
     worktree once the child registers.
 
-    `base` (GRPH-847) is the ref the worktree is cut from. Empty means HEAD (the default
-    `wt_mod.create` behaviour); a resolved remote ref like `origin/integration` cuts
-    children from that instead.
+    `base` (GRPH-847) is the ref the worktree is cut from, and every caller now arrives
+    here with one resolved by `resolve_wave_base` (GRPH-1012) — so it is a fetched remote
+    ref whenever this repository has a remote, and never the checkout's HEAD by accident.
+    Empty means HEAD (the default `wt_mod.create` behaviour), which is what a repository
+    with no remote falls back to.
     """
     try:
         workspace.mkdir(parents=True, exist_ok=True)

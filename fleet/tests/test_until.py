@@ -69,6 +69,7 @@ def _clients(
     bound_seats: bool = False,
     bound_refused: bool = False,
     sticky_clusters: bool = False,
+    gitops: dict | None = None,
 ):
     """Planner + supervisor clients sharing one mock Graphban."""
     # GRPH-885: `_delegate_next` only seeds a cluster that names an item. Fixtures that
@@ -108,6 +109,12 @@ def _clients(
         rid = body["id"]
         if calls is not None:
             calls.append(tool)
+        if tool == "get_context":
+            # GRPH-1012: the ref this wave cuts its children from. Empty by default, which
+            # is what the real server answers for a project that has measured no git
+            # process — so every other test here exercises the unmeasured path whether it
+            # knows it or not.
+            return _mcp({"project_id": "core", "gitops": dict(gitops or {})}, rid)
         if tool == "get_item_details":
             return _mcp({"id": args.get("id"), "title": "seed", "status": "next", "brief": {
                 "lane": {"value": "backend", "basis": ["backend/app/x.py"]},
@@ -201,6 +208,12 @@ def test_allowed_tools_stays_two_and_planner_holds_mint():
     assert "mint_enrolment" not in ALLOWED_TOOLS
     assert "collision_clusters" in PLANNER_TOOLS
     assert PLANNER_TOOLS & ALLOWED_TOOLS == ALLOWED_TOOLS
+    # GRPH-1012: the base read is the planner's, and NOT the supervisor's own. Dropping it
+    # here is the quiet failure — `resolve_wave_base` treats a refused call as an unreadable
+    # gitops, so every project's measured trunk would read as unmeasured and every wave would
+    # fall through to the remote default with a note that looks like a clean answer.
+    assert "get_context" in PLANNER_TOOLS
+    assert "get_context" not in ALLOWED_TOOLS
 
 
 def test_a_key_that_cannot_mint_is_refused_at_start(
@@ -1631,3 +1644,102 @@ def test_the_seat_the_review_branch_returns_carries_the_flag(monkeypatch):
     assert "that refusal is the seat working" in text, text[:300]
     assert "that refusal is the seat working" not in INSTRUCTION, \
         "the phrase this test keys on is in BOTH templates, so it distinguishes nothing"
+
+
+# --- GRPH-1012: the base is the fetched one, whichever of the three rules named it --------
+
+
+def _sh(cwd: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
+                          check=True).stdout.strip()
+
+
+def test_a_measured_project_base_cuts_children_from_that_branch(
+    tmp_path: Path, scripts, state: Path,
+):
+    """Rule 2, end to end through `run` with no `--base` anywhere in sight.
+
+    The project has measured its trunk, so the wave cuts from it — and says which rule
+    answered. That second half is the point: on a repository whose remote default is `main`,
+    a child built on `origin/integration` is either a decision the project made or a bug, and
+    nothing else in the output distinguishes them.
+
+    Sabotage: skip the gitops step in `resolve_wave_base`, or hand `_loop` a base resolved
+    somewhere else → the child's base is main and `source` reads `remote_default`.
+    """
+    repo = _repo_with_remote(tmp_path)
+    workspace = tmp_path / "ws"
+    integration_sha = _sh(repo, "rev-parse", "origin/integration")
+    main_sha = _sh(repo, "rev-parse", "origin/main")
+    assert integration_sha != main_sha, "the fixture has to make the two rules differ"
+
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=0,
+        gitops={"base_branch": {"value": "integration", "source": "project"}},
+    )
+    result = run(
+        repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert result.spawned == 1, result.detail
+    assert result.wave.base is not None
+    assert result.wave.base.source == "gitops"
+    assert result.wave.base.ref == "origin/integration"
+    assert result.wave.spawned[0].base == integration_sha
+
+
+def test_an_unmeasured_project_base_falls_to_the_remote_default_and_says_it_was_unmeasured(
+    tmp_path: Path, scripts, state: Path,
+):
+    """Rule 3, on the shape this project actually has: `base_branch` null, source
+    `unmeasured`, so the base is the remote's own default ref, fetched.
+
+    The wave that carried this item was cut exactly that way, and the reading it must not
+    invite is the defect: "the project's base is main" is a claim nobody made. The ref and
+    the note are asserted together because either one alone is the wrong answer — the ref
+    without the note reads as a project rule, and the note without the ref reads as a wave
+    that could not start.
+
+    Sabotage: cut from the checkout HEAD instead, or drop the gitops half of the note → this
+    fails.
+    """
+    repo = _repo_with_remote(tmp_path)
+    # `git init` + `remote add` never writes `refs/remotes/origin/HEAD`, and `default_ref`
+    # reads that symref rather than guessing a trunk name. A clone has one; this fixture is
+    # not a clone, so the test writes the one a clone would have arrived with.
+    _sh(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    # Stand the checkout somewhere that is NOT the base, so "cut from HEAD" and "cut from
+    # the fetched default ref" are different commits and the assertion can tell them apart.
+    _sh(repo, "checkout", "-q", "-b", "feature")
+    (repo / "wip.txt").write_text("wip\n", encoding="utf-8")
+    _sh(repo, "add", "-A")
+    _sh(repo, "commit", "-qm", "work nobody merged")
+    workspace = tmp_path / "ws"
+    main_sha = _sh(repo, "rev-parse", "origin/main")
+    head_sha = _sh(repo, "rev-parse", "HEAD")
+
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    result = run(
+        repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert result.spawned == 1, result.detail
+    assert result.wave.base.source == "remote_default"
+    assert result.wave.base.ref == "origin/main"
+    assert "unmeasured" in result.wave.base.note
+    assert result.wave.spawned[0].base == main_sha != head_sha
+
+    import io
+
+    from gbfleet.until import emit
+
+    out = io.StringIO()
+    emit(result, out=out)
+    printed = out.getvalue()
+    assert "BASE origin/main" in printed
+    assert "[remote_default]" in printed
+    assert "unmeasured" in printed, "the summary must keep saying no project rule named it"

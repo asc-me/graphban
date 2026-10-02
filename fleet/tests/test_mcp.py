@@ -20,10 +20,10 @@ from gbfleet import mcp
 from gbfleet.lock import Holder
 from gbfleet.mcp import METHOD_NOT_FOUND, PARSE_ERROR, TOOLS, Fleet, handle, serve
 from gbfleet.spawn import Reason
-from gbfleet.supervisor import Limits
+from gbfleet.supervisor import Limits, WaveBase
 from gbfleet.worktree import create, orphans, reap, salvage_message
 
-from tests.test_supervisor import _factory, _seats, _server
+from tests.test_supervisor import _cloned_repo, _factory, _g, _seats, _server
 
 
 @pytest.fixture
@@ -296,6 +296,186 @@ def test_spawn_resumes_a_salvage_orphan_without_injected_items(
     try:
         assert value["branch"] == dead.branch, value
         assert (Path(value["worktree"]) / "wip.py").read_text(encoding="utf-8") == "keep-me\n"
+    finally:
+        _call(fleet, "stop", agent_id=value["agent_id"])
+
+
+# --- GRPH-1012: the ref is fetched per spawn, the rule is not -------------------------
+
+
+def _clone_fleet(repo: Path, workspace: Path, scripts, **kw) -> Fleet:
+    return Fleet(
+        repo=repo,
+        workspace=workspace,
+        client=_server(workspace),
+        launch_for=lambda name, model="", tuning=None: _factory(
+            scripts, "works_then_waits", adapter=name
+        ),
+        **kw,
+    )
+
+
+def test_a_later_spawn_refetches_the_base_an_earlier_spawn_resolved(
+    tmp_path: Path, scripts,
+):
+    """THE BOUNCE. `fleet.base` caches which RULE named the ref, not how fresh the ref is.
+
+    A `gbfleet mcp` process lives for hours — the item measured seven of them on one
+    repository — so a base resolved and fetched once at startup cut every later child from
+    the trunk as it stood then. That is the "only as fresh as this clone's last fetch"
+    failure the item exists to remove, wearing a process lifetime instead of a checkout.
+
+    The trunk moves between the two spawns from the OTHER clone, so this is a real fetch
+    against a real remote and not a monkeypatched one.
+
+    Sabotage: drop the per-spawn `refresh_ref` from `call_tool('spawn')` → the second child
+    is cut from the first sha and this fails.
+    """
+    repo = _cloned_repo(tmp_path)
+    seed = tmp_path / "seed"
+    workspace = tmp_path / "ws"
+    fleet = _clone_fleet(repo, workspace, scripts, limits=Limits(max_workers=2))
+
+    first = _value(_call(fleet, "spawn", adapter="fake", enrolment_code="WORKER-1"))
+    startup_sha = _g(repo, "rev-parse", "origin/main")
+    try:
+        assert first["base"]["commit"] == startup_sha, first["base"]
+        assert first["base"]["source"] == "remote_default"
+        assert first["base"]["ref"] == "origin/main"
+
+        (seed / "landed-later.txt").write_text("merged after startup\n", encoding="utf-8")
+        _g(seed, "add", "-A")
+        _g(seed, "commit", "-qm", "landed while the supervisor lived")
+        _g(seed, "push", "-q", "origin", "main")
+        moved_sha = _g(seed, "rev-parse", "main")
+        assert moved_sha != startup_sha, "the fixture has to move the trunk"
+        assert _g(repo, "rev-parse", "origin/main") == startup_sha, (
+            "this clone has not fetched since, so the second spawn has to be the thing "
+            "that finds out"
+        )
+
+        second = _value(_call(fleet, "spawn", adapter="fake", enrolment_code="WORKER-2"))
+        assert second["base"]["commit"] == moved_sha, (
+            f"the second child was cut from {second['base']['commit'][:12]}; the trunk moved "
+            f"to {moved_sha[:12]} while this process lived and startup fetched "
+            f"{startup_sha[:12]}"
+        )
+        # The RULE is still the cached one — nothing re-read `--base` or re-asked the ledger.
+        assert second["base"]["source"] == "remote_default"
+        assert second["base"]["ref"] == "origin/main"
+        assert fleet.base is not None and fleet.base.ref == "origin/main"
+        assert "FETCH FAILED" not in second["base"]["note"]
+    finally:
+        for child in list(fleet.children):
+            _call(fleet, "stop", agent_id=child.agent_id)
+
+
+def test_a_spawn_whose_fetch_failed_says_the_ref_is_stale(
+    tmp_path: Path, scripts, monkeypatch,
+):
+    """A fetch that could not complete is a fact about THIS child, not about the resolve.
+
+    The cached note said "fetched" hours ago and was telling the truth then; it cannot
+    retract itself, so the reply carries the warning. Without it a child cut from a ref this
+    process could not reach reports exactly what a child cut from a current one does —
+    absence reading as clean, on the one field that says what the work is built on.
+    """
+    repo = _cloned_repo(tmp_path)
+    workspace = tmp_path / "ws"
+    fleet = _clone_fleet(
+        repo, workspace, scripts, limits=Limits(max_workers=1),
+        base=WaveBase(
+            ref="origin/main", source="remote_default",
+            note="gitops.base_branch unmeasured (source unmeasured), so this cuts from "
+                 "origin's default ref origin/main, fetched",
+        ),
+    )
+    fetched: list[str] = []
+
+    def _cannot_fetch(_repo, _remote, ref):
+        fetched.append(ref)
+        return False
+
+    monkeypatch.setattr(mcp.wt_mod, "refresh_ref", _cannot_fetch)
+
+    value = _value(_call(fleet, "spawn", adapter="fake", enrolment_code="WORKER-1"))
+    try:
+        assert fetched == ["origin/main"], "the ref has to be fetched for this spawn"
+        assert "FETCH FAILED" in value["base"]["note"], value["base"]
+        assert "as of the last successful fetch" in value["base"]["note"]
+        assert value["base"]["ref"] == "origin/main"
+        assert value["base"]["source"] == "remote_default"
+        # The process-wide note is not rewritten: the next spawn's fetch may well succeed,
+        # and a cached warning would then be the stale claim.
+        assert fleet.base is not None
+        assert "FETCH FAILED" not in fleet.base.note
+    finally:
+        _call(fleet, "stop", agent_id=value["agent_id"])
+
+
+def test_a_repository_with_no_remote_spawns_without_fetching(
+    git_repo: Path, tmp_path: Path, scripts, monkeypatch,
+):
+    """The quiet half: `WaveBase(ref="")` is a repo with nothing to fetch, not a failure.
+
+    A fetch attempted there could only fail, and reporting FETCH FAILED for a repository
+    that has no remote would train an operator to skip the warning that matters.
+    """
+    workspace = tmp_path / "ws"
+    fleet = _clone_fleet(git_repo, workspace, scripts)
+
+    def _no_fetch_here(*_a):
+        raise AssertionError("there is no remote, so there is nothing to fetch")
+
+    monkeypatch.setattr(mcp.wt_mod, "refresh_ref", _no_fetch_here)
+
+    value = _value(_call(fleet, "spawn", adapter="fake", enrolment_code="WORKER-1"))
+    try:
+        assert fleet.base is not None and fleet.base.ref == ""
+        assert fleet.base.source == "head"
+        assert value["base"]["source"] == "head"
+        assert value["base"]["ref"] == "the checkout HEAD"
+        assert "FETCH FAILED" not in value["base"]["note"]
+    finally:
+        _call(fleet, "stop", agent_id=value["agent_id"])
+
+
+def test_a_resumed_child_does_not_report_the_base_this_process_resolved(
+    git_repo: Path, tmp_path: Path, scripts,
+):
+    """`resume` is a source of its own, and a process that HOLDS a base still has to say it.
+
+    `cli._serve_stdio` resolves at startup, so `fleet.base` is set in production. A child
+    that inherited an orphaned branch was not cut from it: reporting the cached rule there
+    pairs `ref: origin/main` with a commit from somewhere else, and reads as a normal cut of
+    a child that was never cut at all.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    dead = create(git_repo, workspace / "dead", "wave", "1")
+    (dead.path / "wip.py").write_text("keep-me\n", encoding="utf-8")
+    reap(dead, message=salvage_message("fake", ["GRPH-1"]))
+
+    fleet = Fleet(
+        repo=git_repo,
+        workspace=workspace,
+        client=_server(
+            workspace,
+            items=[{"id": "GRPH-1", "status": "next", "claimed_by": ""}],
+        ),
+        launch_for=lambda name, model="", tuning=None: _factory(
+            scripts, "works_then_waits", adapter=name
+        ),
+        base=WaveBase(ref="origin/main", source="remote_default",
+                      note="resolved at startup, before this child was resumed"),
+    )
+    value = _value(_call(fleet, "spawn", adapter="fake", enrolment_code="WORKER-1"))
+    try:
+        assert value["branch"] == dead.branch, value
+        assert value["base"]["source"] == "resume", value["base"]
+        assert value["base"]["ref"] == "resumed branch"
+        assert dead.branch in value["base"]["note"]
+        assert "resolved at startup" not in value["base"]["note"]
     finally:
         _call(fleet, "stop", agent_id=value["agent_id"])
 
