@@ -29,11 +29,11 @@ from .state import NotARepository
 from .lock import hold
 from .mcp import Fleet, serve, read_preferences
 from .state import repo_root
-from .supervisor import DEFAULT_MAX_WORKERS, Limits, Merger, Wave, up
+from .supervisor import DEFAULT_MAX_WORKERS, Limits, Merger, Wave, resolve_wave_base, up
 from .tiers import TierTable
 from . import matrix as matrix_mod
 from .until import PLANNER_TOOLS, emit as emit_until, run as run_until
-from .worktree import Worktree, default_ref, remote_for
+from .worktree import BaseBranchNotFound, Worktree, default_ref, remote_for
 
 _DESCRIPTION = """\
 Spawn and retire Graphban fleet members on this machine.
@@ -58,7 +58,13 @@ API_KEY_ENV = "GBFLEET_API_KEY"
 #: the row `in_progress` so `choose_resume` skipped the salvage. The supervisor
 #: table is still two reads; this set is the CLI/MCP process. The server still
 #: bounds `release_item` by role (the dead child's worker id).
-SPAWN_READS: frozenset[str] = ALLOWED_TOOLS | frozenset({"search_items", "release_item"})
+#:
+#: `get_context` is the GRPH-1012 base read. Step 2 of the three rules that name the ref a
+#: child is cut from is the project's MEASURED `gitops.base_branch`, and `get_context` is
+#: the only way to ask for it. A read, like the other two named here — and `ALLOWED_TOOLS`
+#: above stays the supervisor's own two, which `test_supervisor.py` pins.
+SPAWN_READS: frozenset[str] = ALLOWED_TOOLS | frozenset(
+    {"search_items", "release_item", "get_context"})
 
 #: What `up --merge` needs beyond `SPAWN_READS` (GRPH-846): the item and its attestations,
 #: the dependency rows, and ONE write — the receipt naming the merge commit. Only under the
@@ -463,6 +469,20 @@ def report(wave: Wave, out=None) -> None:
     if wave.lock and wave.lock.takeover:
         print(f"took over a lock: {wave.lock.takeover.describe()}", file=out)
 
+    # WHAT THE CHILDREN WERE CUT FROM, and which of the three rules named it (GRPH-1012).
+    # First, because everything below is a diff against this ref — and because the two
+    # readings of `origin/main` are different facts an operator acts on differently: the
+    # project measured that as its trunk, or nobody measured anything and it is merely the
+    # remote's default. `source` is printed alongside so the note cannot be read as one
+    # when it says the other.
+    if wave.base is not None:
+        print(f"BASE {wave.base.describe()} [{wave.base.source}]", file=out)
+    elif wave.spawned:
+        # Children were cut and nothing records the base they were cut from. Not printed for
+        # a wave that spawned nothing: there was no cut to explain, and a line that claims
+        # otherwise is noise an operator learns to skip past.
+        print("BASE unrecorded: this wave cut children without resolving a base", file=out)
+
     if wave.before:
         note = (
             "  (no live agents yet — this describes the server's ignorance, not the work)"
@@ -748,6 +768,17 @@ def _serve_stdio(args) -> int:
             fleet.profile, fleet.policy, pref_note, fleet.measured, fleet.cap_measured, tier_map = read_preferences(client)
             print(f"gbfleet mcp: {pref_note}", file=sys.stderr)
             _apply_tier_map(fleet, tier_map)
+            # GRPH-1012: the ref every child this process cuts, resolved ONCE here and
+            # fetched, so `spawn` cannot inherit whatever branch this checkout happens to be
+            # standing on. A base the remote does not have is printed and left UNRESOLVED
+            # rather than exiting: the MCP client has already opened a handshake and dying
+            # here breaks it (GRPH-881), while `spawn` then refuses as a tool error naming
+            # it — which is where a planner can actually read the reason.
+            try:
+                fleet.base = resolve_wave_base(root, client)
+                print(f"gbfleet mcp: base {fleet.base.describe()}", file=sys.stderr)
+            except BaseBranchNotFound as exc:
+                print(f"gbfleet mcp: base unresolved — {exc}", file=sys.stderr)
             if acquired.takeover:
                 leftover, _occupied, notes = adopt_mod.recover(root, workspace)
                 fleet.children.extend(leftover)
@@ -1068,27 +1099,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     repo = Path(args.repo)
-    base_ref = ""
-    if args.base:
-        from .worktree import resolve_base, BaseBranchNotFound
-        remote = remote_for(repo)
-        try:
-            base_ref = resolve_base(repo, remote, args.base)
-        except BaseBranchNotFound as exc:
-            print(f"gbfleet up: {exc}", file=sys.stderr)
-            return 2
-
-    merger = None
+    # Built before the base is resolved, because step 2 of the three rules asks the ledger
+    # for the project's measured `gitops.base_branch` (GRPH-1012). Until now `up` resolved
+    # only `--base` and otherwise passed nothing, so `_tree_for` fell back to `HEAD` and a
+    # supervisor standing on a feature branch built every child on it.
     if args.merge:
         # The ONE widening, under the one flag that asks for it (GRPH-846).
         client = Graphban(base_url=args.server, api_key=api_key,
                           allowed=SPAWN_READS | MERGE_TOOLS, project_id=args.project)
-        remote = remote_for(repo)
-        merger = Merger(repo, client, enabled=True, remote=remote,
-                        base=base_ref or (default_ref(repo, remote) if remote else ""))
     else:
         client = Graphban(base_url=args.server, api_key=api_key, allowed=SPAWN_READS, project_id=args.project)
     try:
+        try:
+            chosen = resolve_wave_base(repo, client, base_branch=args.base or "")
+        except BaseBranchNotFound as exc:
+            print(f"gbfleet up: {exc}", file=sys.stderr)
+            return 2
+
+        merger = None
+        if args.merge:
+            # `chosen.ref` IS the resolved ref — the remote's default when neither `--base`
+            # nor a measured gitops base named one — so the Merger measures against the same
+            # commit the children are cut from instead of working out a second answer.
+            merger = Merger(repo, client, enabled=True, remote=remote_for(repo),
+                            base=chosen.ref)
         wave = up(
             repo,
             seats,
@@ -1104,7 +1138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             workspace=Path(args.workspace) if args.workspace else None,
             debug=args.debug,
-            base=base_ref,
+            wave_base=chosen,
         )
     except RepoLocked as exc:
         print(f"gbfleet up: {exc}", file=sys.stderr)

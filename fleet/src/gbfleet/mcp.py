@@ -52,8 +52,8 @@ from .spawn import Child, LaunchFailed, Reason, stop
 from .progress import NEVER_WROTE
 from . import adopt as adopt_mod
 from .supervisor import (
-    Limits, LaunchFactory, Partition, Wave, _tree_for, item_status, start_one,
-    watch_tick,
+    Limits, LaunchFactory, Partition, Wave, WaveBase, _tree_for, item_status,
+    resolve_wave_base, start_one, watch_tick,
 )
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -71,7 +71,10 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Start ONE fleet member on a seat you already minted, in its own worktree. "
             "Takes no count: mint a seat and call this per child. Returns its agent id "
-            "once it registers, or an error naming the adapter if it never does."
+            "once it registers, or an error naming the adapter if it never does. The "
+            "reply's `base` names the ref that worktree was cut from and which rule chose "
+            "it — `--base`, the project's measured `gitops.base_branch`, or the remote's "
+            "default ref; never this checkout's HEAD."
         ),
         "inputSchema": {
             "type": "object",
@@ -312,6 +315,12 @@ class Fleet:
     #: supervisor already holds it, this is the holder's record. `spawn` refuses with a
     #: tool error naming the holder; `ps`/`stop`/`orphans` observe the holder's children.
     attached_holder: Holder | None = None
+    #: GRPH-1012: the ref every child this process cuts, resolved ONCE and fetched — by
+    #: `cli._serve_stdio` at startup, or by the first `spawn` that finds it unset. Fixed for
+    #: the life of the process like `tiers` and `shared`, so "what were those children built
+    #: on?" stays answerable after the fact. `None` means nobody has resolved one yet, which
+    #: is NOT `WaveBase(ref="")` — that is a repository with no remote to cut from.
+    base: "WaveBase | None" = None
 
     def __post_init__(self) -> None:
         # One partition object. `start_one` is given `fleet.partition`; `watch_tick`
@@ -569,13 +578,20 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                 fleet.wave.resumed.append(orphan.branch)
             except wt_mod.ResumeFailed:
                 tree = None
+        if tree is None and fleet.base is None:
+            # GRPH-1012. Resolved here when startup did not — a Fleet that never went
+            # through `cli._serve_stdio`, or a startup whose base the remote refused. The
+            # point is that no worktree is cut before this has run: `spawn` used to call
+            # `_tree_for` with no base at all, so every child inherited whatever branch this
+            # checkout was standing on. Cached, so a process resolves and fetches once.
+            fleet.base = resolve_wave_base(fleet.repo, fleet.client)
         while tree is None:
             fleet.started += 1
             if fleet.started > 1000:
                 raise ValueError("no free gb/ slot under 1000")
             slot = str(fleet.started)
             try:
-                tree = _tree_for(fleet.repo, fleet.workspace, wave, slot)
+                tree = _tree_for(fleet.repo, fleet.workspace, wave, slot, base=fleet.base.ref)
             except wt_mod.BranchExists:
                 continue
         declare = matrix_mod.declaration(adapter, model or "", tier if via_tier else None,
@@ -655,6 +671,20 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
         described["tier"] = tier if via_tier else None
         described["assigned"] = child.assigned
         described["resolution"] = resolution
+        # GRPH-1012: what this child was built on, and which of the three rules named it.
+        # The planner is the party who has to explain a wave that built on the wrong trunk,
+        # so the answer travels with the child rather than staying in a startup stderr line
+        # nobody captured. `resume` is its own source and not an omitted key: a child that
+        # inherited an orphaned branch keeps THAT branch's base, and a reply with no `base`
+        # in it would read as "cut from the resolved one".
+        described["base"] = (
+            {"ref": fleet.base.ref or "the checkout HEAD", "commit": tree.base,
+             "source": fleet.base.source, "note": fleet.base.note}
+            if fleet.base is not None else
+            {"ref": "resumed branch", "commit": tree.base, "source": "resume",
+             "note": f"resumed {tree.branch}, so it keeps the base that branch was cut "
+                     "from; this process resolved no base of its own"}
+        )
         # Said once, at spawn, for the same reason the wave summary says it: an operator
         # who asked for debug and gets a quiet log from an adapter that has no debug flag
         # would reasonably conclude the child is fine.

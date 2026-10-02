@@ -208,22 +208,39 @@ SKIPPED`, and a merge the forge refuses is the forge's reason on the summary lin
 
 ## Stacked slices (GRPH-847)
 
-`until` resolves its base once at startup as the remote's default ref and cuts every child
-from it. That is right for independent items. For a PRD whose slices strictly depend on each
-other (S1 → S2 → S3), each slice is held (GRPH-798) until the previous one is merged to main,
+`until` resolves its base once at startup and cuts every child from it. Three rules name it,
+first answer wins (GRPH-1012): the operator's `--base`; else the project's MEASURED
+`gitops.base_branch` off `get_context`; else the remote's own default ref. Whichever answered
+is fetched before the first worktree is cut, and the summary's `BASE` line says which one it
+was — because "cut from `origin/main`" does not distinguish a project that measured its trunk
+from a project nobody asked, and only the second is an accident. An unmeasured gitops base is
+reported as unmeasured rather than as a rule that named `main`.
+
+`up` and MCP `spawn` resolve the same three. Before this they cut from the checkout's HEAD, so
+a supervisor standing on a feature branch built every child on it, and a second clone whose
+`origin/main` had never been fetched looked current to itself. `gbfleet mcp` resolves once for
+the life of the process and `spawn` repeats the answer in its reply.
+
+With no `--base` and no measured project rule, the base is the remote's default ref, which is
+right for independent items. For a PRD whose slices strictly depend on each other
+(S1 → S2 → S3), each slice is held (GRPH-798) until the previous one is merged to main,
 so the wave serialises on a person's merges.
 
-`--base <branch>` cuts children from `origin/<branch>` instead of the default ref, and the
-GRPH-798 dependency check reads "merged into `<branch>`" — so a slice that landed on the
-integration branch unblocks the next slice without waiting for a trunk merge. PRs are
-proposed against the integration branch. The operator merges it to main once at the end, as
-one reviewed PR whose parts were each reviewed already.
+`--base <branch>` cuts children from `origin/<branch>` instead of whatever the other two rules
+would have named, and the GRPH-798 dependency check reads "merged into `<branch>`" — so a
+slice that landed on the integration branch unblocks the next slice without waiting for a
+trunk merge. PRs are proposed against the integration branch. The operator merges it to main
+once at the end, as one reviewed PR whose parts were each reviewed already.
 
 **When to use it:** a PRD whose slices are sequential and each depends on the previous one
 landing. Create the integration branch on the remote, run `gbfleet until --prd <id> --base
-<integration>`, and merge the integration branch to main when the wave finishes.
+<integration>`, and merge the integration branch to main when the wave finishes. A project
+whose trunk is not its remote's default does not need the flag on every wave: measure
+`gitops.base_branch` once and rule 2 carries it.
 
 **When not to:** independent items, or items whose dependencies are already on main. The
-default behaviour (cut from the remote's default ref) is right for those — `--base` is the
-exception for stacked slices, not the rule. A `--base` that does not exist on the remote
-refuses at startup; it does not fall back.
+default behaviour (the project's measured base, else the remote's default ref) is right for
+those — `--base` is the exception for stacked slices, not the rule. A `--base` that does not
+exist on the remote refuses at startup; it does not fall back. Neither does a measured
+`gitops.base_branch` the remote does not have: that refusal names the project rule it came
+from and points at `--base` as the way past it.

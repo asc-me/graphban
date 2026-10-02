@@ -582,10 +582,19 @@ roster the supervisor polls and reads a backlog that is not its own. `gbfleet mc
 fails a multi-project key that gives none. The child learns its project from the
 registration reply and names it afterwards (GRPH-718, GRPH-719).
 
-**What a wave reports about itself.** Beyond spawn and reap, `up` and `until` print three
+**What a wave reports about itself.** Beyond spawn and reap, `up` and `until` print four
 findings the signing agent otherwise has no way to see, all measured from the worktrees the
 supervisor already owns and none of them acted on:
 
+- `BASE <ref> — <which rule named it> [<source>]` — what every child of this wave was cut
+  from. Three rules can name it, first answer wins: the operator's `--base`, the project's
+  MEASURED `gitops.base_branch`, or the remote's own default ref (GRPH-1012). The ref alone
+  cannot say which, and that is the finding: a project that measured its trunk and a project
+  nobody asked both land on `origin/main`, and only the second is an accident that reads as a
+  decision. An unmeasured gitops base is reported as unmeasured, never as a rule that named
+  `main`. Fetched before the first worktree is cut, so the base is current rather than as
+  fresh as this clone's last fetch. `gbfleet mcp` resolves the same three once at startup and
+  `spawn` repeats the answer in its reply, per child.
 - `COLLIDED <path>: changed on <branch>, <branch>` — two workers changed the same file. The
   failure the partition exists to prevent, observed rather than predicted: exact paths, no
   coverage rule, and true whether the touchpoints were wrong or the divvy was.
@@ -597,7 +606,7 @@ supervisor already owns and none of them acted on:
   trunk while the child worked. Two agents can each be green on their own base and conflict
   on merge, and nothing else in the system can see it: the server has no git, the signing agent
   gets a branch with no indication of what its diff is against, and the child was cut from
-  HEAD at spawn and never looked again. The trunk is fetched once per wave before measuring —
+  its base at spawn and never looked again. The trunk is fetched once per wave before measuring —
   a remote-tracking ref is only as fresh as its last fetch, and a check that skipped it would
   report every branch as current. `BEHIND unmeasured: <reason>` when it could not be asked,
   because that is not the same as nothing having moved.

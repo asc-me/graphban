@@ -38,8 +38,9 @@ from .spawn import VendorLimit
 from .headroom import Headroom
 from .supervisor import (
     _declared_into,
-    DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Merger, Wave, _reap_all,
-    _rooted, _report_exits, _start, item_status, publish_salvaged, watch_tick,
+    DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Merger, Wave, WaveBase,
+    _reap_all, _rooted, _report_exits, _start, item_status, publish_salvaged,
+    resolve_wave_base, watch_tick,
 )
 
 #: Planner-held tools. `register_agent` is how this process gets an `agent_id` to mint
@@ -54,6 +55,12 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
     "fleet_status",
     "register_agent",
     "search_items",
+    # GRPH-1012: the base this wave cuts children from. Step 2 of the three is the
+    # project's MEASURED `gitops.base_branch`, and `get_context` is the only way to ask
+    # for it — a read, exactly like `search_items` above. It stays OFF `ALLOWED_TOOLS`:
+    # the supervisor's own two reads still decide how many children of an already
+    # authorised kind to run, and nothing else.
+    "get_context",
     # PRD-35 D12: the delegation is written BEFORE the seat is minted, for the seed of the
     # next free cluster; `get_item_details` is where the brief (lane/tier suggestion) lives.
     "get_item_details",
@@ -218,9 +225,13 @@ def run(
     `tiers` is the operator's tier table (PRD-36 D6): when the requested tier is mapped,
     `launch_for(adapter, model)` builds the child's launch; otherwise `launch_factory` does.
 
-    `base_branch` (GRPH-847) cuts children from `origin/<branch>` instead of the remote's
-    default ref, for PRDs whose slices are sequential. Refuses at startup when the branch
-    does not exist on the remote — no silent fallback.
+    `base_branch` (GRPH-847) is the operator's `--base`, and cuts children from
+    `origin/<branch>` for PRDs whose slices are sequential. Refuses at startup when the
+    branch does not exist on the remote — no silent fallback. Without it, the wave takes
+    the project's MEASURED `gitops.base_branch` when `get_context` reports one, and the
+    remote's own default ref otherwise (GRPH-1012). It never takes this checkout's HEAD:
+    a supervisor standing on a feature branch used to build every child on it. The wave
+    report says which of the three named the base.
     """
     if planner.allowed & {"mint_enrolment"} and "mint_enrolment" in ALLOWED_TOOLS:
         raise ConfigError("ALLOWED_TOOLS must not include mint_enrolment")
@@ -264,6 +275,14 @@ def run(
                 "--max-workers 0 cannot be combined with pre-minted seats: every child this "
                 "supervisor spawns is a reviewer, and only the server can mint a seat that may "
                 "review but not claim. Drop --seats and let the loop mint review-only seats")
+        # GRPH-1012. Resolved ONCE for the wave, before anything is cut from it or
+        # published against it: the operator's `--base`, else the project's MEASURED
+        # gitops base, else the remote's default ref — fetched, and never this checkout's
+        # HEAD. Inside the try, so a base the remote does not have comes back as the same
+        # `{"ok": false, "reason": "config"}` every other startup refusal does.
+        chosen_base = resolve_wave_base(repo, planner, base_branch=base_branch or "")
+        wave.base = chosen_base
+        observe.emit("base", detail=chosen_base.note)
         with hold(repo, state) as acquired:
             wave.lock = acquired
             leftover: list[Child] = []
@@ -278,13 +297,12 @@ def run(
                 # finished child gets — pushed, and named on the item it belongs to. Before
                 # this the commit stayed local and the item was re-delegated and rebuilt from
                 # `main`, so the recovery and the loss were the same event.
-                remote = wt_mod.remote_for(repo)
-                if base_branch:
-                    salvage_base = wt_mod.resolve_base(repo, remote, base_branch)
-                else:
-                    salvage_base = wt_mod.default_ref(repo, remote) if remote else ""
+                #
+                # The SAME resolved base, not a second resolution (GRPH-1012): a salvage
+                # published against a different ref than the wave's children are cut from
+                # is a PR opened against the wrong trunk.
                 publish_salvaged(wave, repo, recovered.salvaged, client=planner,
-                                 base_branch=salvage_base)
+                                 base_branch=chosen_base.ref)
 
             children: list[Child] = list(leftover)
             roster_path = adopt_mod.children_path(repo, state)
@@ -312,7 +330,7 @@ def run(
                 matrix=matrix,
                 adapter=adapter,
                 merge=merge,
-                base_branch=base_branch,
+                wave_base=chosen_base,
             )
             result.wave = wave
             minted = result.minted
@@ -425,7 +443,7 @@ def _loop(
     matrix: "matrix_mod.Matrix | None" = None,
     adapter: str = "",
     merge: bool = False,
-    base_branch: str | None = None,
+    wave_base: "WaveBase | None" = None,
 ) -> Report:
     from .mcp import _runner_up, read_preferences
     profile, policy, pref_note, measured, cap_measured, tier_map = read_preferences(supervisor)
@@ -464,16 +482,13 @@ def _loop(
     if limits.max_workers <= 0:
         check_review_only_is_honoured(planner)
     remote = wt_mod.remote_for(repo)
-    # GRPH-847. An explicit `--base` resolves to `origin/<branch>` and refuses when the
-    # branch does not exist on the remote — no silent fallback to the default ref. A fallback
-    # would cut children from the wrong base and the dependency check would measure against
-    # the wrong ref, which is the exact absence-reads-as-clean failure the chain prevents.
-    if base_branch:
-        base = wt_mod.resolve_base(repo, remote, base_branch)
-    else:
-        base = wt_mod.default_ref(repo, remote) if remote else ""
-    if base:
-        wt_mod.refresh_ref(repo, remote, base)
+    # GRPH-847, GRPH-1012. Handed in by `run`, which resolved and FETCHED it once for the
+    # whole wave. Deliberately not resolved again here: a second resolution is a second
+    # answer waiting to disagree with the first, and the dependency check below, the ref
+    # children are cut from, and the base a PR is proposed against at reap all have to be
+    # the SAME ref. An explicit `--base` still refuses at startup when the remote does not
+    # have it — that refusal now happens in `resolve_wave_base`, before the lock.
+    base = wave_base.ref if wave_base is not None else ""
     # GRPH-846, GRPH-880. Built whether or not `merge` was asked for, and inert when it was not:
     # `enabled` is the flag, read once here, so the loop below has one call site and no
     # branch on it — the branch is inside, where a test can see it stay closed. `prd_id`
