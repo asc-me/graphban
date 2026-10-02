@@ -231,22 +231,45 @@ export function MemoryTriageView() {
     setCursor((c) => Math.max(0, Math.min(visible.length - 1, c + delta)));
   }
 
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-    switch (e.key) {
-      case "j": e.preventDefault(); moveCursor(1); break;
-      case "k": e.preventDefault(); moveCursor(-1); break;
-      case "x": e.preventDefault(); if (visible[cursor]) toggleSelect(visible[cursor].shard.id); break;
-      case "Enter":
-        e.preventDefault();
-        if (visible[cursor]) setDetailId(visible[cursor].shard.id);
-        break;
-      case "Escape":
-        e.preventDefault();
-        setDetailId(null);
-        break;
+  // A WINDOW listener, like Lessons and Activity — not onKeyDown on the root div. The root
+  // div only hears keys while something inside it has focus, and after a left-nav click
+  // nothing does: the hint below promised J/K/X/Enter and every one of them was dead until
+  // the user clicked a row (GRPH-1009). Keyboard-first means on arrival.
+  //
+  // The reason this view was wired differently is real and is handled here rather than
+  // avoided: a window listener fires over the sweep modal and the detail panel, where j/k/x
+  // would act on the row list behind whatever the user is looking at. So the listener stands
+  // down while the sweep modal is open — gated on sweepOpen state, not focus, because clicking
+  // the Sweep button leaves focus on the trigger outside the dialog. The detail panel is a side
+  // panel, not a modal: j/k stay live there and Escape closes it.
+  React.useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const t = e.target;
+      if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement
+          || t instanceof HTMLSelectElement) return;
+      // Gated on STATE, not on where focus is. Clicking the Sweep button opens the modal and
+      // leaves focus on that button — outside the dialog — so a focus-based guard would let
+      // `x` straight through to the row list behind it. While the modal is up, only Escape
+      // gets through, and it closes the modal rather than the detail panel.
+      if (sweepOpen && e.key !== "Escape") return;
+      switch (e.key) {
+        case "j": e.preventDefault(); moveCursor(1); break;
+        case "k": e.preventDefault(); moveCursor(-1); break;
+        case "x": e.preventDefault(); if (visible[cursor]) toggleSelect(visible[cursor].shard.id); break;
+        case "Enter":
+          e.preventDefault();
+          if (visible[cursor]) setDetailId(visible[cursor].shard.id);
+          break;
+        case "Escape":
+          e.preventDefault();
+          if (sweepOpen) setSweepOpen(false); else setDetailId(null);
+          break;
+      }
     }
-  }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, cursor, sweepOpen]);
 
   React.useEffect(() => {
     setVisibleCount(PAGE_SIZE);
@@ -279,7 +302,7 @@ export function MemoryTriageView() {
   const allSelected = visible.length > 0 && selected.size === visible.length;
 
   return (
-    <div className="flex h-full min-h-0 flex-col" onKeyDown={handleKeyDown}>
+    <div className="flex h-full min-h-0 flex-col">
       <PlaceHeader
         viewName="Memory triage"
         purpose="Route candidates, sweep low-confidence auto-actions, and pick canonical wording for near-duplicates."
@@ -335,11 +358,11 @@ export function MemoryTriageView() {
             <option value="oldest">Oldest</option>
             <option value="confidence">Confidence</option>
           </select>
-          {/* handleKeyDown has always bound these; only the affordance was missing, so a
+          {/* The window listener above has always bound these; only the affordance was missing, so a
               keyboard-first queue nobody could discover was not keyboard-first (GRPH-1005).
               Says "Enter open" and not the design's "Enter first action" because Enter opens
               the detail panel here — there is no default bulk action to take. */}
-          <span className="font-mono text-meta text-faint">J/K move · X select · Enter open</span>
+          <span className="font-mono text-meta text-faint">J/K move · X select · Enter open · Esc close</span>
         </div>
       </div>
 
@@ -699,8 +722,9 @@ function SweepPreviewModal({
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-fg/20">
-      <div className="mx-4 w-full max-w-lg rounded-xl border border-line bg-surface p-5 shadow-lg">
-        <h2 className="mb-1 text-[15px] font-semibold text-fg">Sweep low-confidence shards</h2>
+      <div role="dialog" aria-modal="true" aria-labelledby="sweep-title"
+           className="mx-4 w-full max-w-lg rounded-xl border border-line bg-surface p-5 shadow-lg">
+        <h2 id="sweep-title" className="mb-1 text-[15px] font-semibold text-fg">Sweep low-confidence shards</h2>
         <p className="mb-3 text-body text-muted">
           This will reject {targets.length} shard{targets.length === 1 ? "" : "s"} with confidence below {Math.round(SWEEP_THRESHOLD * 100)}%.
           You can undo each one from the toast.
