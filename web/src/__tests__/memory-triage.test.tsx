@@ -253,16 +253,18 @@ describe("Memory triage — keyboard affordance", () => {
   // keyboard-first queue nobody could discover was not keyboard-first (GRPH-1005). Each
   // key the hint names is asserted against what it does, so the line cannot outlive the
   // behaviour it describes.
-  it("shows the shortcut hint, and every key it names does what it says", async () => {
+  it("shows the shortcut hint, and every key it names does what it says — on arrival", async () => {
     const user = userEvent.setup();
     renderView();
     await screen.findByText(/Use retry with exponential backoff/);
 
-    expect(screen.getByText("J/K move · X select · Enter open")).toBeInTheDocument();
+    expect(screen.getByText("J/K move · X select · Enter open · Esc close")).toBeInTheDocument();
 
-    // Focus a control inside the view so the keys reach the handler. Not the search field:
-    // the handler ignores keystrokes from an input or a select.
-    await user.click(screen.getByText("Needs review"));
+    // No click into the view first. That click used to be load-bearing: the handler sat on
+    // the root div and heard nothing until something inside it had focus, so a user arriving
+    // from the left nav found every advertised key dead (GRPH-1009). The test clicked in and
+    // so could not see it. Focus is on document.body here, exactly as after a navigation.
+    expect(document.activeElement).toBe(document.body);
 
     expect(screen.queryByText("Detail")).not.toBeInTheDocument();
 
@@ -313,6 +315,35 @@ describe("Memory triage — keyboard affordance", () => {
     await user.keyboard("{Enter}");
     expect(await screen.findByText("Detail")).toBeInTheDocument();
     expect(openShardText()).toMatch(/Weak signal: maybe use a cache layer/);
+
+    // Esc close — the hint names it now, so it is held to the same standard.
+    await user.keyboard("{Escape}");
+    expect(screen.queryByText("Detail")).not.toBeInTheDocument();
+  });
+
+  it("stands down while the sweep modal is open, and Esc closes the modal", async () => {
+    // The reason this view was wired differently from Lessons and Activity: a window
+    // listener fires over the modal, where x would select a row behind it. The guard is on
+    // state, not focus — clicking the Sweep button leaves focus on that button, OUTSIDE the
+    // dialog, which is exactly the case a focus-based guard misses.
+    const user = userEvent.setup();
+    renderView();
+    await screen.findByText(/Use retry with exponential backoff/);
+
+    await user.click(await screen.findByText(/Sweep.*low-confidence/));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+
+    await user.keyboard("x");
+    expect(screen.queryByText("1 selected")).not.toBeInTheDocument();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByText("Detail")).not.toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    // ...and the keys work again the moment it is gone.
+    await user.keyboard("x");
+    expect(await screen.findByText("1 selected")).toBeInTheDocument();
   });
 });
 
