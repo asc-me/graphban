@@ -591,3 +591,453 @@ def test_wall_clock_cap_survives_an_older_supervisor(tmp_path: Path):
     loaded = load(path)
     assert not isinstance(loaded, UnadoptableFile)
     assert loaded[0].wall_clock_cap is None
+
+
+# --- GRPH-1011: gbfleet gc -----------------------------------------------------------
+#
+# `worktree.reap` runs inside the supervisor that owns the repository, and `recover`
+# runs it again only when a LATER supervisor takes the same lock. A clone nobody starts
+# a supervisor on again therefore keeps every worktree it ever cut. These drive
+# `adopt.sweep`, which is what `gc` is and what `up`/`until`/`mcp` run at startup.
+
+
+def _dead_pid() -> int:
+    """A pid that was ours and is not any more.
+
+    The takeover tests above plant a made-up large number, which answers the same
+    question. A real exited child is what `gc` actually meets, so that is what these use.
+    """
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=30)
+    return proc.pid
+
+
+def _snap(tree, pid: int, slot: str = "1", log_dir: str = "") -> Snapshot:
+    return Snapshot(
+        pid=pid, worktree=str(tree.path), branch=tree.branch, adapter="fake",
+        slot=slot, base=tree.base, log_dir=log_dir, started_wall=time.time(),
+    )
+
+
+def _lock_worktree(repo: Path, tree) -> None:
+    """Make `reap` refuse. Its own comment names this as the deliberate human act that
+    `--force --force` would walk straight past, so it is the honest way to reach
+    `LEFT_DIRTY` without inventing a second refusal path."""
+    subprocess.run(["git", "worktree", "lock", str(tree.path)], cwd=repo,
+                   check=True, capture_output=True)
+
+
+def _unlock_worktree(repo: Path, tree) -> None:
+    subprocess.run(["git", "worktree", "unlock", str(tree.path)], cwd=repo,
+                   check=False, capture_output=True)
+
+
+def test_gc_reaps_a_clean_worktree_whose_supervisor_pid_is_dead(
+    git_repo: Path, tmp_path: Path, state: Path
+):
+    """THE acceptance case. Sabotage: return False from `_reap_one` without reaping;
+    the directory survives and this fails."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tree = create(git_repo, workspace / "wave-1", "wave", "1")
+    roster = adopt.children_path(git_repo, state)
+    save(roster, [_snap(tree, _dead_pid())])
+
+    swept = adopt.sweep(state)
+
+    assert not tree.path.exists(), f"gc left {tree.path} on disk: {swept.lines}"
+    assert (swept.removed, swept.repos, swept.records) == (1, 1, 1), swept.lines
+    assert not load(roster), "the roster still names a worktree that is gone"
+    listed = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=git_repo,
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert str(tree.path) not in listed, listed
+    # The clone itself is another agent's supervisor, and one lock per repository is
+    # what lets two agents work at once. It is not this command's to delete.
+    assert (git_repo / ".git").exists() and (git_repo / "README.md").exists()
+
+
+def test_gc_leaves_a_repository_whose_lock_is_held(
+    git_repo: Path, tmp_path: Path, state: Path
+):
+    """The other half of the acceptance: a LIVE lock is not touched. Not "its live
+    children are spared" — nothing of that repository at all, because a supervisor
+    mid-wave owns that roster and rewrites it several times a second.
+
+    Sabotage: drop the `answer.free` branch in `_sweep_roster`; the dead child's tree
+    goes and this fails.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tree = create(git_repo, workspace / "wave-1", "wave", "1")
+    roster = adopt.children_path(git_repo, state)
+    save(roster, [_snap(tree, _dead_pid())])
+    # A roster this pass will not change must not be REWRITTEN either. The file belongs to
+    # a supervisor that may be running on another repository right now, writing it several
+    # times a second, and an `os.replace` of our stale copy clobbers whatever it added
+    # since we looked. The hand-written key is what makes that visible: `load` tolerates
+    # a field it does not know and `save` would drop it.
+    raw = json.loads(roster.read_text(encoding="utf-8"))
+    raw["children"][0]["hand_written"] = "still here"
+    roster.write_text(json.dumps(raw), encoding="utf-8")
+
+    with hold(git_repo, state) as acquired:
+        swept = adopt.sweep(state)
+        assert (swept.locked, swept.removed) == (1, 0), swept.lines
+        assert str(acquired.holder.pid) in " ".join(swept.lines), swept.lines
+
+    assert tree.path.exists(), f"gc reaped under a live lock: {swept.lines}"
+    assert [s.branch for s in load(roster)] == [tree.branch], (
+        "gc rewrote the roster of a repository a supervisor is running on")
+    assert "hand_written" in roster.read_text(encoding="utf-8"), (
+        "gc rewrote a roster it had no reason to touch — a live supervisor's own writes "
+        "since this pass looked would have been clobbered by the stale copy")
+
+
+def test_gc_leaves_a_recorded_child_that_is_still_running(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """An unheld lock is NOT evidence that nothing is running: children outlive their
+    supervisor (`JOB_LIMIT_FLAGS = 0`), so a dead supervisor with a live child is the
+    ordinary crash rather than an edge case.
+
+    Sabotage: drop the `pid_is_alive` branch in `_reap_one`; this tree and its log
+    directory both go.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    logs = tmp_path / "logs" / "wave-1"
+    logs.mkdir(parents=True)
+    (logs / "stdout.log").write_text("working\n", encoding="utf-8")
+    sleeper = subprocess.Popen(
+        [str(scripts["python"]), str(scripts["sleeper"])], **spawn_kwargs())
+    try:
+        tree = create(git_repo, workspace / "wave-1", "wave", "1")
+        roster = adopt.children_path(git_repo, state)
+        save(roster, [_snap(tree, sleeper.pid, log_dir=str(logs))])
+
+        swept = adopt.sweep(state)
+
+        assert (swept.live, swept.removed, swept.logs) == (1, 0, 0), swept.lines
+        assert tree.path.exists(), swept.lines
+        assert (logs / "stdout.log").exists(), "a live child's logs went with the tree"
+        assert [s.pid for s in load(roster)] == [sleeper.pid]
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=10)
+
+
+def test_a_tree_reap_refuses_to_remove_stays_in_the_record(
+    git_repo: Path, tmp_path: Path, state: Path
+):
+    """`persist` writes running children only, so a reap that returns `removed=False`
+    drops the path out of the roster and the directory is then named NOWHERE — the hole
+    this item exists to close. Dirty is printed and left, and left IN THE RECORD.
+
+    Sabotage: append to `removed` instead of `kept` on the `not reaped.removed` branch;
+    the roster loses the path and the second assertion fails.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tree = create(git_repo, workspace / "wave-1", "wave", "1")
+    _lock_worktree(git_repo, tree)
+    roster = adopt.children_path(git_repo, state)
+    save(roster, [_snap(tree, _dead_pid())])
+    try:
+        swept = adopt.sweep(state)
+
+        assert tree.path.exists(), f"gc forced a removal: {swept.lines}"
+        assert (swept.left_dirty, swept.removed) == (1, 0), swept.lines
+        assert swept.needs_a_human, swept.lines
+        assert [s.branch for s in load(roster)] == [tree.branch], (
+            "the next gc can no longer see this tree")
+
+        # ...and the next gc DOES still see it, rather than the first pass having been
+        # the only one that ever could.
+        again = adopt.sweep(state)
+        assert (again.left_dirty, again.removed) == (1, 0), again.lines
+        assert tree.path.exists(), again.lines
+    finally:
+        _unlock_worktree(git_repo, tree)
+
+
+def test_the_log_directory_goes_with_its_worktree(
+    git_repo: Path, tmp_path: Path, state: Path
+):
+    """1,584 log directories measured on one abandoned clone. A slot whose worktree went
+    takes its logs with it — but not the `logs/` they all live under."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    logs = tmp_path / "logs"
+    (logs / "wave-1").mkdir(parents=True)
+    (logs / "wave-1" / "stdout.log").write_text("x\n", encoding="utf-8")
+    tree = create(git_repo, workspace / "wave-1", "wave", "1")
+    roster = adopt.children_path(git_repo, state)
+    save(roster, [_snap(tree, _dead_pid(), log_dir=str(logs / "wave-1"))])
+
+    swept = adopt.sweep(state)
+
+    assert (swept.removed, swept.logs) == (1, 1), swept.lines
+    assert not (logs / "wave-1").exists(), swept.lines
+    assert logs.is_dir(), "gc removed the parent every slot's logs live under"
+
+
+def test_a_log_directory_a_kept_record_names_is_not_removed(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """One directory named by a removed record AND a live one. Taking it would delete a
+    running child's logs to reclaim a dead one's.
+
+    Sabotage: drop the `protected` check in `_drop_logs`; the live child's log goes.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "stdout.log").write_text("still working\n", encoding="utf-8")
+    sleeper = subprocess.Popen(
+        [str(scripts["python"]), str(scripts["sleeper"])], **spawn_kwargs())
+    try:
+        dead_tree = create(git_repo, workspace / "wave-1", "wave", "1")
+        live_tree = create(git_repo, workspace / "wave-2", "wave", "2")
+        roster = adopt.children_path(git_repo, state)
+        save(roster, [
+            _snap(dead_tree, _dead_pid(), slot="1", log_dir=str(logs)),
+            _snap(live_tree, sleeper.pid, slot="2", log_dir=str(logs)),
+        ])
+
+        swept = adopt.sweep(state)
+
+        assert (swept.removed, swept.live, swept.logs) == (1, 1, 0), swept.lines
+        assert not dead_tree.path.exists(), swept.lines
+        assert live_tree.path.exists(), swept.lines
+        assert (logs / "stdout.log").exists(), swept.lines
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=10)
+
+
+def test_gc_leaves_a_roster_it_cannot_read(tmp_path: Path, state: Path):
+    """An unreadable roster is a FULL roster we cannot read (P30 D7). Rewriting it would
+    turn "we do not know what is out there" into "nothing is", and the trees it names
+    would end up named nowhere at all.
+
+    Sabotage: `save(roster, [])` on the UnadoptableFile branch; this fails.
+    """
+    roster = state / "somewhere-abc123def456.children.json"
+    roster.write_text("{not json", encoding="utf-8")
+
+    swept = adopt.sweep(state)
+
+    assert (swept.unreadable, swept.repos, swept.removed) == (1, 1, 0), swept.lines
+    assert roster.read_text(encoding="utf-8") == "{not json"
+    assert swept.needs_a_human
+
+
+def test_a_record_whose_directory_is_already_gone_is_absent_not_removed(
+    tmp_path: Path, state: Path
+):
+    """The third answer. Reporting a stale record as a reap would say gc reclaimed a
+    directory that reclaimed itself, and hide that the roster had gone unread."""
+    roster = state / "elsewhere-abc123def456.children.json"
+    save(roster, [Snapshot(
+        pid=_dead_pid(), worktree=str(tmp_path / "ws" / "wave-9"),
+        branch="gb/wave-9", adapter="fake", slot="9",
+    )])
+
+    swept = adopt.sweep(state)
+
+    assert (swept.absent, swept.removed) == (1, 0), swept.lines
+    assert not swept.needs_a_human, swept.lines
+    assert not load(roster), "the record still names a directory that is not there"
+
+
+def test_an_empty_state_directory_reports_zero_rosters_not_zero_trees(state: Path):
+    """Zero of everything is also what a pass that never looked produces, so the count
+    that says which one happened is the number of rosters the directory named."""
+    swept = adopt.sweep(state)
+
+    assert (swept.repos, swept.records, swept.removed) == (0, 0, 0)
+    assert not swept.needs_a_human
+
+
+def test_gc_leaves_a_path_git_does_not_list_as_a_worktree(
+    git_repo: Path, state: Path
+):
+    """A record is a path in a JSON file in the temp directory, and `reap` salvages
+    INSIDE that path before it ever asks git to remove it — so "not one of ours" is not a
+    no-op, it is a commit in somebody else's checkout. Two cases; the first is the rule
+    the item states outright, that the clone itself is never deleted.
+
+    Sabotage: drop the `path == main or path not in ours` check in `_sweep_roster`; the
+    clone's own record reaches `reap` and this fails.
+    """
+    (git_repo / "backend").mkdir()
+    # Uncommitted work in the clone, which is what makes the guard provable rather than
+    # merely stated: `reap` salvages BEFORE it asks git to remove anything, and git's own
+    # refusal of `worktree remove` on a main tree comes too late — the commit is already
+    # on the branch. Sabotage the guard and HEAD moves.
+    (git_repo / "uncommitted.py").write_text("x = 1\n", encoding="utf-8")
+    head_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=git_repo, capture_output=True, text=True,
+        check=True).stdout.strip()
+    roster = adopt.children_path(git_repo, state)
+    save(roster, [
+        Snapshot(pid=_dead_pid(), worktree=str(git_repo), branch="gb/wave-1",
+                 adapter="fake", slot="1"),
+        Snapshot(pid=_dead_pid(), worktree=str(git_repo / "backend"), branch="gb/wave-2",
+                 adapter="fake", slot="2"),
+    ])
+
+    swept = adopt.sweep(state)
+
+    # HEAD first: it is the claim the guard exists for, and the counts below are wrong
+    # under the same sabotage, so an assertion that came second would never be reached
+    # and could not fail.
+    head_after = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=git_repo, capture_output=True, text=True,
+        check=True).stdout.strip()
+    assert head_after == head_before, (
+        f"gc salvaged into the clone it was told to leave alone: {head_before[:12]} -> "
+        f"{head_after[:12]}")
+    assert (swept.removed, swept.unreadable) == (0, 2), swept.lines
+    assert swept.needs_a_human, swept.lines
+    assert (git_repo / ".git").exists() and (git_repo / "README.md").exists()
+    assert (git_repo / "backend").is_dir()
+    assert len(load(roster)) == 2, "a path gc will not touch must stay in the record"
+    joined = " ".join(swept.lines)
+    assert "the clone itself" in joined and "does not list it" in joined, swept.lines
+
+
+def test_up_sweeps_the_repositories_it_does_not_own(
+    git_repo: Path, other_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """THE CALL, for `up`. The sweep walks the state directory rather than `--repo`,
+    because the trees that need it belong to the clone this supervisor was never started
+    in — and it runs inside the lock `up` holds, which is what makes `up`'s own
+    repository answer "held" and be skipped by the rule protecting every other one.
+
+    Sabotage: delete the `adopt_mod.sweep(state)` loop from `supervisor.up`; the other
+    clone's tree survives and this fails.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    theirs = tmp_path / "theirs"
+    theirs.mkdir()
+    tree = create(other_repo, theirs / "wave-1", "wave", "1")
+    save(adopt.children_path(other_repo, state), [_snap(tree, _dead_pid())])
+
+    up(git_repo, _seats(1), _factory(scripts, "works_then_exits"), _server(workspace),
+       limits=Limits(max_workers=1), state=state, workspace=workspace, poll=0.05)
+
+    assert not tree.path.exists(), (
+        f"up left {other_repo.name}'s abandoned tree standing — the sweep never reached "
+        "a repository other than its own --repo")
+
+
+def test_until_sweeps_the_repositories_it_does_not_own(
+    git_repo: Path, other_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """THE CALL, for `until`. Note there is no takeover here: the sweep is NOT inside the
+    `acquired.takeover` branch, because the clone whose trees need it is by definition
+    the one with no supervisor left to adopt anything.
+
+    Sabotage: delete the `adopt_mod.sweep(state)` loop from `until.run`; this fails.
+    """
+    from gbfleet.until import run
+    from tests.test_until import KEY, _clients
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    theirs = tmp_path / "theirs"
+    theirs.mkdir()
+    tree = create(other_repo, theirs / "wave-1", "wave", "1")
+    save(adopt.children_path(other_repo, state), [_snap(tree, _dead_pid())])
+
+    def sleep_fn(_dt: float) -> None:
+        raise _StopLoop()
+
+    planner, supervisor = _clients(workspace)
+    try:
+        run(
+            git_repo, _factory(scripts, "works_then_exits"),
+            planner, supervisor, api_key=KEY, server="http://gb.invalid",
+            adapter="fake", state=state, workspace=workspace, poll=0,
+            sleep=sleep_fn, empty_ticks=3, limits=Limits(max_workers=1),
+        )
+    except _StopLoop:
+        pass
+
+    assert not tree.path.exists(), "until left the other clone's abandoned tree standing"
+
+
+def test_mcp_sweeps_the_repositories_it_does_not_own(
+    git_repo: Path, other_repo: Path, tmp_path: Path, monkeypatch
+):
+    """THE CALL, for `mcp`. `mcp` takes no `--state`, so this resolves the state
+    directory the way the command does; the conftest fixture is what keeps that off the
+    developer's real one.
+
+    Sabotage: delete the `adopt_mod.sweep()` loop from `cli._serve_stdio`; this fails.
+    """
+    from gbfleet import cli
+    from tests.test_supervisor import KEY
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    theirs = tmp_path / "theirs"
+    theirs.mkdir()
+    tree = create(other_repo, theirs / "wave-1", "wave", "1")
+    save(adopt.children_path(other_repo), [_snap(tree, _dead_pid())])
+
+    monkeypatch.setattr(cli, "serve", lambda fleet: None)
+    monkeypatch.setenv("GBFLEET_API_KEY", KEY)
+    monkeypatch.chdir(git_repo)
+    code = cli.main([
+        "mcp", "--repo", str(git_repo), "--server", "http://gb.invalid",
+        "--workspace", str(workspace),
+    ])
+
+    assert code == 0
+    assert not tree.path.exists(), "mcp left the other clone's abandoned tree standing"
+
+
+def test_the_gc_command_reports_what_it_reaped(git_repo: Path, tmp_path: Path, capsys):
+    from gbfleet import cli
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tree = create(git_repo, workspace / "wave-1", "wave", "1")
+    save(adopt.children_path(git_repo), [_snap(tree, _dead_pid())])
+
+    assert cli.main(["gc"]) == 0
+
+    out = capsys.readouterr().out
+    assert tree.branch in out and str(tree.path) in out, out
+    assert "1 removed" in out, out
+
+
+def test_the_gc_command_exits_nonzero_when_something_needs_a_person(
+    git_repo: Path, tmp_path: Path, capsys
+):
+    """A scheduled `gc` that always exits 0 is a tidy-up nobody is ever told failed.
+
+    Sabotage: `return 0` unconditionally in `_gc`; this fails.
+    """
+    from gbfleet import cli
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tree = create(git_repo, workspace / "wave-1", "wave", "1")
+    _lock_worktree(git_repo, tree)
+    save(adopt.children_path(git_repo), [_snap(tree, _dead_pid())])
+    try:
+        assert cli.main(["gc"]) == 1
+
+        captured = capsys.readouterr()
+        assert "could not remove" in captured.err, captured
+        assert tree.path.exists(), captured.out
+        assert tree.branch in captured.out, captured.out
+    finally:
+        _unlock_worktree(git_repo, tree)

@@ -50,6 +50,32 @@ def roomy_machine(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_sweeping_your_real_state(tmp_path_factory, monkeypatch):
+    """No test may reap a worktree the developer's own supervisors recorded (GRPH-1011).
+
+    `gbfleet mcp` and `gbfleet up` take no `--state`, so the tests that drive them through
+    `cli.main` resolve the state directory the way the command does. Since GRPH-1011 that
+    directory is not only read: `adopt.sweep` walks it and REMOVES every recorded worktree
+    whose supervisor is gone, which is what `gc` is for. Left unpinned, `pytest` would tidy
+    up the developer's abandoned clones as a side effect — invisible on a CI runner, whose
+    state directory is empty, and 1.4 GB of deleted worktrees on the machine the item was
+    measured on. Same class as `nowhere_near_your_home` below, and the same answer.
+
+    Only `adopt`'s binding moves. `state_root()` itself stays under test in `test_hostos`,
+    and a lock a test takes with `hold(repo)` and no state still lands where it always did.
+    A test that wants the directory asks for this fixture by name.
+
+    A subprocess is out of reach of a monkeypatch: `test_lock.MCP_ATTACH_SCRIPT` sets
+    `TMPDIR` for the same reason.
+    """
+    from gbfleet import adopt
+
+    home = tmp_path_factory.mktemp("gbfleet-state")
+    monkeypatch.setattr(adopt, "state_root", lambda: home)
+    return home
+
+
+@pytest.fixture(autouse=True)
 def nowhere_near_your_home(tmp_path_factory, monkeypatch):
     """No test may write a unit or a credential into the real `$HOME` (GRPH-844).
 

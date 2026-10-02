@@ -380,6 +380,27 @@ def build_parser() -> argparse.ArgumentParser:
     until.add_argument(
         "argv", nargs=argparse.REMAINDER, help="-- followed by the command to run per child"
     )
+
+    sub.add_parser(
+        "gc",
+        help="reap the child worktrees of repositories whose supervisor is gone",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Walks the state directory rather than one --repo, because the trees that need\n"
+            "this belong to the clone nobody starts a supervisor on again: reap runs inside\n"
+            "the supervisor that owns a repository, and a clone that is never re-opened keeps\n"
+            "every worktree it ever cut.\n\n"
+            "Where a repository's lock is NOT held, every recorded worktree whose pid is dead\n"
+            "is reaped — through the same reap a supervisor runs, so removal is never forced.\n"
+            "A tree reap will not remove is printed and left IN THE RECORD, so the next pass\n"
+            "still sees it. A repository whose lock is held is not touched at all, and no\n"
+            "checkout is ever deleted: that checkout is another agent's supervisor, and one\n"
+            "lock per repository is what lets two agents work at once.\n\n"
+            "Exits 1 when something is still on disk this pass could not remove, so a\n"
+            "scheduled gc is an alarm rather than a no-op. `up`, `until` and `mcp` run the\n"
+            "same sweep at startup; this is for reading it on its own."
+        ),
+    )
     return parser
 
 
@@ -779,6 +800,13 @@ def _serve_stdio(args) -> int:
                 print(f"gbfleet mcp: base {fleet.base.describe()}", file=sys.stderr)
             except BaseBranchNotFound as exc:
                 print(f"gbfleet mcp: base unresolved — {exc}", file=sys.stderr)
+            # GRPH-1011. The same sweep `gc` runs, over EVERY repository this state
+            # directory names rather than only this one — the trees that need it belong to
+            # the clone nobody starts a supervisor on again. Inside the lock, so this
+            # repository answers "held" to the sweep's own probe and is skipped by the rule
+            # that protects every other live supervisor.
+            for line in adopt_mod.sweep().lines:
+                print(f"gbfleet mcp: gc: {line}", file=sys.stderr)
             if acquired.takeover:
                 leftover, _occupied, notes = adopt_mod.recover(root, workspace)
                 fleet.children.extend(leftover)
@@ -1027,6 +1055,29 @@ def _surface(args) -> int:
     return 0
 
 
+def _gc() -> int:
+    """Print what a sweep of the state directory did — including what it could not do.
+
+    Exit 1 when a tree is still on disk that the pass could not take away. That is the
+    normal outcome for a dirty tree and exactly the one a person has to look at, so a
+    scheduled `gc` that always exited 0 would be a tidy-up nobody is ever told failed.
+    """
+    swept = adopt_mod.sweep()
+    for line in swept.lines:
+        print(line)
+    print(
+        f"gbfleet gc: {swept.repos} roster(s) naming {swept.records} worktree(s) — "
+        f"{swept.removed} removed ({swept.logs} log dir(s) with them), {swept.live} still "
+        f"running, {swept.left_dirty} left for a human, {swept.absent} already gone, "
+        f"{swept.locked} repo(s) locked, {swept.unreadable} unreadable"
+    )
+    if swept.needs_a_human:
+        print("gbfleet gc: something is still on disk that this pass could not remove",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1061,6 +1112,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "surface":
         return _surface(args)
+
+    if args.command == "gc":
+        return _gc()
 
     if args.command == "service":
         return _service(args)

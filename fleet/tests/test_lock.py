@@ -301,7 +301,13 @@ proc = subprocess.Popen(
     [sys.executable, "-m", "gbfleet.cli", "mcp",
      "--repo", sys.argv[1], "--server", "http://127.0.0.1:1"],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    text=True, env={**os.environ, "GBFLEET_API_KEY": "test-key"},
+    text=True, env={**os.environ, "GBFLEET_API_KEY": "test-key",
+                    # GRPH-1011: `mcp` sweeps the state directory at startup now, and a
+                    # conftest monkeypatch cannot reach a subprocess. An empty TMPDIR is
+                    # what keeps this from reaping the developer's real abandoned
+                    # worktrees — nothing on a CI runner, 1.4 GB on the machine the item
+                    # was measured on. All three names because Windows reads TMP/TEMP.
+                    "TMPDIR": sys.argv[2], "TMP": sys.argv[2], "TEMP": sys.argv[2]},
 )
 init_msg = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"}) + "\\n"
 stdout, stderr = proc.communicate(init_msg, timeout=10)
@@ -318,9 +324,12 @@ def test_mcp_initialize_succeeds_while_another_supervisor_holds_the_repo(
     after stdin closes. If initialize still exits 3 under a held lock, this test fails.
     """
     holder = _spawn_holder(git_repo, state)
+    subprocess_state = state.parent / "subprocess-state"
+    subprocess_state.mkdir()
     try:
         result = subprocess.run(
-            [sys.executable, "-c", MCP_ATTACH_SCRIPT, str(git_repo)],
+            [sys.executable, "-c", MCP_ATTACH_SCRIPT, str(git_repo),
+             str(subprocess_state)],
             capture_output=True, text=True, timeout=15,
             cwd=str(git_repo),
         )
@@ -350,3 +359,71 @@ def test_a_second_drain_on_the_same_repo_still_exits_3(
             with hold(git_repo, state):
                 pass
     assert exc.value.holder is not None
+
+
+# --- GRPH-1011: asking the lock a question it answers without raising ----------------
+
+
+def test_lock_state_answers_free_locked_and_unknown_separately(
+    git_repo: Path, state: Path, tmp_path: Path
+):
+    """`free` and `locked` are the kernel's two answers. `unknown` is the third, and it
+    must not collapse into `free`: a sweep that read "I could not ask" as "nobody is
+    here" would delete a live supervisor's worktrees, while collapsing it into `locked`
+    would leave the report unable to say which of the two happened.
+
+    Sabotage: return `LockState("free")` from `lock_state`'s except branch; the third
+    assertion fails.
+    """
+    from gbfleet.lock import LockState, lock_state
+
+    # No lock file at all is the ordinary free case, and it is free because the kernel
+    # released the flock when the last holder exited — not because the file is missing a
+    # pid we could have misread as live.
+    free = lock_state(git_repo, state)
+    assert free.state == "free" and free.free, free
+    assert "no supervisor" in free.describe()
+
+    with hold(git_repo, state) as acquired:
+        held = lock_state(git_repo, state)
+        assert held.state == "locked" and not held.free, held
+        assert held.holder is not None and held.holder.pid == acquired.holder.pid
+        assert str(acquired.holder.pid) in held.describe()
+
+    unknown = lock_state(tmp_path / "not-a-repository", state)
+    assert unknown.state == "unknown" and not unknown.free, unknown
+    assert unknown.why, "an unanswerable question still has to say it was asked"
+
+    # Held, with a record we cannot name — the partial write a crash leaves behind. Said
+    # without "nobody" in it, because a report reading "nobody holds this" is an
+    # invitation to delete a live lock (the same reason `RepoLocked` refuses to guess).
+    # Constructed rather than provoked: `hold` overwrites the record as it acquires, so
+    # nothing reachable from a test is both held and unreadable for longer than the
+    # write itself.
+    nameless = LockState("locked")
+    assert not nameless.free
+    assert "nobody" not in nameless.describe()
+    assert "not finished writing its record" in nameless.describe(), nameless.describe()
+
+
+def test_a_dead_pid_in_the_lock_file_is_not_a_held_lock(git_repo: Path, state: Path):
+    """The measurement `gc` rests on (GRPH-1011). The pid in the file is for the error
+    message, not for the decision: the flock lives on an open descriptor and the kernel
+    dropped it when that process exited, however it exited. A sweep that read a leftover
+    pid as a live holder would skip exactly the repositories it exists to clean.
+
+    Sabotage: make `lock_state` answer `locked` when the file names a pid; this fails.
+    """
+    from gbfleet.lock import lock_state
+
+    path = lock_path(repo_root(git_repo), state)
+    path.write_text(json.dumps({
+        "pid": 999_999_999, "repo": str(repo_root(git_repo)),
+        "acquired_at": "2026-09-27T00:00:00+00:00", "version": "test",
+    }), encoding="utf-8")
+    try:
+        answer = lock_state(git_repo, state)
+        assert answer.state == "free", answer
+        assert answer.free
+    finally:
+        path.unlink(missing_ok=True)
