@@ -1951,20 +1951,35 @@ def _clause_scope(low: str, clause: str) -> str:
     The one sentence AFTER is kept when it is terse: "Clause X. Not delivered." is a verdict,
     and six words is where a verdict stops and an explanation starts. Measured against the
     receipts that were wrongly denied, the shortest explanatory follow-on was seventeen words.
+    The same rule runs backwards — "Not delivered. Clause X is deferred." — and it runs for
+    every mention of the clause on the line, not the first.
     """
+    # EVERY mention, not the first. The first version used a single `find`, and a receipt
+    # that names the clause twice — "Clause C: implemented … Re-checked on Postgres: C — NOT
+    # DELIVERED" — had its denial on the second mention and sailed through, where the
+    # whole-line scan it replaced had caught it (review bounce on PR #923).
+    scopes: list[str] = []
     i = low.find(clause)
-    if i < 0:
-        return low
-    j = i + len(clause)
-    before = [m.end() for m in _SENTENCE_END.finditer(low, 0, i)]
-    start = before[-1] if before else 0
-    m = _SENTENCE_END.search(low, j)
-    end = m.end() if m else len(low)
-    m2 = _SENTENCE_END.search(low, end)
-    nxt_end = m2.end() if m2 else len(low)
-    if len(low[end:nxt_end].split()) <= 6:
-        end = nxt_end
-    return low[start:end]
+    while i >= 0:
+        j = i + len(clause)
+        before = [m.end() for m in _SENTENCE_END.finditer(low, 0, i)]
+        start = before[-1] if before else 0
+        # A terse sentence BEFORE is a verdict too — "Not delivered. C is left for a
+        # follow-up." — and the rule is the same one, pointed the other way.
+        if before:
+            prev_start = before[-2] if len(before) >= 2 else 0
+            prev = low[prev_start:start].strip()
+            if prev and len(prev.split()) <= 6:
+                start = prev_start
+        m = _SENTENCE_END.search(low, j)
+        end = m.end() if m else len(low)
+        m2 = _SENTENCE_END.search(low, end)
+        nxt_end = m2.end() if m2 else len(low)
+        if len(low[end:nxt_end].split()) <= 6:
+            end = nxt_end
+        scopes.append(low[start:end])
+        i = low.find(clause, j)
+    return " ".join(scopes) if scopes else low
 
 
 def acceptance_contradicted(clauses: list[str], evidence: list[dict]) -> dict[str, str]:
