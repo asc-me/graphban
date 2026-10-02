@@ -248,3 +248,52 @@ def test_the_service_refusal_itself_says_how_to_satisfy_it():
     msg = msg[:msg.index("\n    )") + 1] if "\n    )" in msg else msg[:600]
     assert "waive=" in msg, "the refusal must name the escape hatch, or it is a wall"
     assert "cut from" in msg, "and name what would let the check actually run"
+
+
+# ── GRPH-1008, second pass: a denial is made in the same breath as the clause ──────────
+
+def test_a_denial_word_sentences_after_the_clause_is_explanation_not_denial():
+    """Both shapes that permanently blocked an item on the live server, verbatim in spirit.
+    Evidence is append-only, so a single word of explanation was a life sentence."""
+    panel = "the empty and error states use `PlannerStates`, not a bare panel"
+    receipt = (f'Clause "{panel}" — held by the web tests (PlannerError copy present, the '
+               "empty-state title absent). Deleting the isError branch so a failed read drops "
+               "through to the empty state turns 1 test red.")
+    assert acceptance_contradicted([panel], [{"kind": "test", "detail": receipt}]) == {}
+
+    table = "§1.3 lists all four, each with its basis and where it is enforced"
+    receipt = (f"Clause: '{table}'. Delivered as a four-row table under a new heading. "
+               "Verified by a doc-driven claim checker: 36 checks, all resolve. It is not "
+               "committed; the four design-project literals it cannot resolve from a checkout "
+               "are allowlisted by name with a reason.")
+    assert acceptance_contradicted([table], [{"kind": "test", "detail": receipt}]) == {}
+
+
+def test_a_terse_verdict_in_the_next_sentence_still_denies():
+    """The shape the scope must not lose: the clause named, a full stop, then the verdict."""
+    assert acceptance_contradicted(
+        [CLAUSE], [{"kind": "test", "detail": f"{CLAUSE}. Not delivered."}])
+    assert acceptance_contradicted(
+        [CLAUSE], [{"kind": "test", "detail": f"Checked {CLAUSE}. Cannot be tested here."}])
+
+
+def test_a_denial_in_the_same_sentence_still_denies():
+    """GRPH-945's own case, which the scope must keep: no full stop between clause and verdict."""
+    assert acceptance_contradicted(
+        [CLAUSE], [{"kind": "test", "detail": f"{CLAUSE} — NOT DELIVERED, no clock"}])
+
+
+def test_a_dot_inside_a_filename_is_not_a_sentence_boundary():
+    """Receipts are full of `scripts/gen_prd_index.py` and `v0.1`. A scope that split on bare
+    dots would end the clause's sentence at the first filename and never reach the verdict.
+
+    The first version of this test was vacuous and the sabotage run said so: its denial sat
+    four words after the filename dot, so the terse-next-sentence rule re-included it and the
+    mutant passed anyway. The verdict here is a long explanatory clause away from the dot —
+    the shape that only a correct boundary rule reaches.
+    """
+    clause = "the index is regenerated"
+    receipt = (f"Clause {clause} — ran scripts/gen_prd_index.py against the live instance and "
+               "compared the output of docs/prd-index.json to the committed file and nothing "
+               "about the section list had moved, NOT DELIVERED")
+    assert acceptance_contradicted([clause], [{"kind": "test", "detail": receipt}])

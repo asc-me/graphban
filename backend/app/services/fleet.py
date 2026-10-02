@@ -1930,6 +1930,41 @@ _ZERO_FAILED = re.compile(r"\b0 (?:tests? )?failed\b")
 #: data; "skipped the Postgres run" and "I skipped that test" carry no count and still deny,
 #: which is the abuse GRPH-945 exists for.
 _SKIP_COUNT = re.compile(r"\b\d+ (?:tests? )?skipped\b")
+#: A sentence boundary: terminal punctuation followed by whitespace or the end. NOT a bare
+#: dot, because clause text and receipts are full of `prd-index.json` and `v0.1`.
+_SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
+
+
+def _clause_scope(low: str, clause: str) -> str:
+    """The part of an evidence line that is ABOUT the clause: its own sentence, plus a terse
+    sentence right after it.
+
+    The denial scan used to read the whole line, and an honest receipt is a paragraph. One
+    said "…(PlannerError copy present, the empty-state title absent). Deleting the isError
+    branch so a failed read drops through…" and the clause was denied by the word *failed*,
+    three clauses of explanation away from the clause it named. Another was denied by
+    "…the four literals it cannot resolve from a checkout are allowlisted…", four sentences
+    on. Evidence is append-only, so each of those blocked its item for good. A denial is a
+    claim made in the same breath as the clause — "the pin lapses — NOT DELIVERED, no clock"
+    — and that is the breath this reads.
+
+    The one sentence AFTER is kept when it is terse: "Clause X. Not delivered." is a verdict,
+    and six words is where a verdict stops and an explanation starts. Measured against the
+    receipts that were wrongly denied, the shortest explanatory follow-on was seventeen words.
+    """
+    i = low.find(clause)
+    if i < 0:
+        return low
+    j = i + len(clause)
+    before = [m.end() for m in _SENTENCE_END.finditer(low, 0, i)]
+    start = before[-1] if before else 0
+    m = _SENTENCE_END.search(low, j)
+    end = m.end() if m else len(low)
+    m2 = _SENTENCE_END.search(low, end)
+    nxt_end = m2.end() if m2 else len(low)
+    if len(low[end:nxt_end].split()) <= 6:
+        end = nxt_end
+    return low[start:end]
 
 
 def acceptance_contradicted(clauses: list[str], evidence: list[dict]) -> dict[str, str]:
@@ -1953,7 +1988,8 @@ def acceptance_contradicted(clauses: list[str], evidence: list[dict]) -> dict[st
             for c in clauses:
                 if c in out or c.lower() not in low:
                     continue
-                residue = _SKIP_COUNT.sub(" ", _ZERO_FAILED.sub(" ", low.replace(c.lower(), " ")))
+                scope = _clause_scope(low, c.lower())
+                residue = _SKIP_COUNT.sub(" ", _ZERO_FAILED.sub(" ", scope.replace(c.lower(), " ")))
                 if _NEGATIVE_EVIDENCE.search(residue):
                     out[c] = line.strip()
     return out
