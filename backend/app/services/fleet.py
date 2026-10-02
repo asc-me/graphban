@@ -2031,7 +2031,7 @@ def denial_in(clause: str, line: str) -> str:
 
     THE ONE PLACE the denial scan is applied (GRPH-1008 clause 3). The refusal has to name
     the word it matched — a builder who hits this gate never sees a source comment, and the
-    rule is now two rules (a digit before the word makes it a count; a denial outside the
+    rule is now two rules (a skip count or `0 failed` is a count; a denial outside the
     clause's own sentence is explanation), so "the evidence says this was not done" sends
     them guessing. Measured by a reviewer on this very gate: two refusals and a wrong first
     diagnosis, removing the word "failed" when the trigger was different negation entirely.
@@ -2051,9 +2051,9 @@ def denial_in(clause: str, line: str) -> str:
 #: Why a receipt was read as denying its clause, stated at the point of refusal rather than
 #: in a source comment. One string, so the gate and its explanation cannot disagree.
 DENIAL_RULE = (
-    "A denial counts only inside the clause's OWN sentence: a digit before the word makes "
-    "it a count (`34 skipped`, `0 failed`), and a denial word in a neighbouring sentence is "
-    "explanation. If the clause IS delivered, say so in the sentence that names it and keep "
+    "A denial counts only inside the clause's OWN sentence: a skip count (`34 skipped`) and "
+    "a zero failure count (`0 failed`) are read as counts, though `3 failed` still denies, "
+    "and a denial word in a neighbouring sentence is explanation. If the clause IS delivered, say so in the sentence that names it and keep "
     "the caveat in a sentence of its own"
 )
 
