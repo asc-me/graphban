@@ -218,7 +218,12 @@ export function KpiGridSkeleton({ tiles = 6 }: { tiles?: number }) {
   );
 }
 
-/** Triage: the incoming queue and the cluster column, both placeheld. */
+/**
+ * Triage's incoming queue only — `api.triageQueue` rows placeheld.
+ *
+ * The cluster column beside it is a different read (`api.fleet`) with its own skeleton
+ * below, so this accessible name names the queue and nothing else.
+ */
 export function TriageQueueSkeleton({ rows = 4 }: { rows?: number }) {
   return (
     <div className="flex flex-col gap-2" aria-busy="true" aria-label="Loading the triage queue">
@@ -230,6 +235,36 @@ export function TriageQueueSkeleton({ rows = 4 }: { rows?: number }) {
             <Pulse className="h-5 w-14" />
           </div>
           <Pulse className="mt-2 h-2.5 w-40" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Triage's collision clusters while `api.fleet` is in flight.
+ *
+ * Not `TriageQueueSkeleton` under another label: this column's whole job is to say whether
+ * anything is in flight, so the placeholder holds a cluster card's shape — risk chip, the
+ * overlapping ids, the shared paths — and its accessible name names the read it waits on.
+ * A queue-shaped pulse labelled "collision clusters" would leave the panel asserting a
+ * shape it never measured, which is the same mistake as the green card it replaces.
+ */
+export function CollisionClustersSkeleton({ cards = 2 }: { cards?: number }) {
+  return (
+    <div className="flex flex-col gap-3" aria-busy="true" aria-label="Loading collision clusters">
+      {Array.from({ length: cards }, (_, i) => (
+        <div key={i} className="rounded-[13px] border border-line bg-surface-2 px-4 py-3">
+          <div className="flex items-center gap-2.5">
+            <Pulse className="h-4 w-16 rounded-full" />
+            <Pulse className="h-3 w-24" />
+          </div>
+          <div className="mt-3 flex gap-1.5">
+            <Pulse className="h-4 w-14" />
+            <Pulse className="h-4 w-14" />
+          </div>
+          <Pulse className="mt-3 h-2.5 w-20" />
+          <Pulse className="mt-1.5 h-3 w-2/3" />
         </div>
       ))}
     </div>

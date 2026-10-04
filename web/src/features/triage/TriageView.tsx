@@ -2,6 +2,7 @@ import { ArrowUp, Check, Copy, Inbox, MessageSquare, Radar } from "lucide-react"
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import {
+  CollisionClustersSkeleton,
   FETCH_FAILED,
   PlannerError,
   TriageQueueSkeleton,
@@ -54,6 +55,7 @@ export function TriageView() {
             />
             <Clusters
               clusters={clusters}
+              loading={fleetQ.isLoading}
               failed={fleetQ.isError && !fleetQ.data}
               onRetry={() => void fleetQ.refetch()}
             />
@@ -78,12 +80,17 @@ function IncomingQueue({
   onRetry: () => void;
   projectId: string;
 }) {
+  // The badge counts rows this panel has not read while the queue request is pending or has
+  // failed, and `0` is exactly what a cleared queue looks like — so it renders `—` instead
+  // (Project Home's rule for a count whose read never answered).
+  const unread = loading || failed;
+
   return (
     <section className="overflow-hidden rounded-[13px] border border-line bg-surface-2">
       <div className="flex items-center gap-2.5 border-b border-line px-3.5 py-3">
         <MessageSquare size={15} className="shrink-0 text-accent" />
         <h2 className="flex-1 text-lead font-semibold">Incoming</h2>
-        <span className="font-mono text-meta text-faint-2">{rows.length}</span>
+        <span className="font-mono text-meta text-faint-2">{unread ? "—" : rows.length}</span>
       </div>
 
       {failed ? (
@@ -163,16 +170,25 @@ type Cluster = NonNullable<ReturnType<typeof useFleet>["data"]>["clusters"][numb
 /**
  * In-flight work grouped by the code it touches.
  *
- * A cluster of one is not a collision, so only real overlaps are drawn — but "no
- * overlaps" has two very different causes, and the empty state names which one it is
- * rather than showing a calm green tick over an idle project.
+ * A cluster of one is not a collision, so only real overlaps are drawn — but "no overlaps"
+ * has three very different causes, and the panel has to say which one it is rather than
+ * showing a calm green tick: nothing is claimed, claims exist and none collide, or the check
+ * has not answered yet. `clusters` defaults to `[]`, so the first two are indistinguishable
+ * from the third unless the read's own state is threaded in.
  */
 function Clusters({
   clusters,
+  loading,
   failed,
   onRetry,
 }: {
   clusters: Cluster[];
+  /**
+   * The fleet read has not answered yet. Without it the calm green "Nothing in flight"
+   * panel — which asserts the check ran and found no work — renders over a check that is
+   * still running, and the header chip counts the defaulted empty array as `0 in flight`.
+   */
+  loading: boolean;
   /**
    * The fleet read failed. Without this the calm green "Nothing in flight" panel — which
    * asserts the check ran and found no conflict — would be shown for a check that never
@@ -183,21 +199,26 @@ function Clusters({
 }) {
   const overlapping = clusters.filter((c) => c.items.length > 1);
   const anyInFlight = clusters.length > 0;
+  // Neither state means the counts below were measured, so every branch that states a count
+  // or an all-clear is gated on this being false.
+  const unread = loading || failed;
 
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-2.5">
         <Radar
           size={15}
-          className={failed ? "text-muted" : overlapping.length ? "text-st-review" : "text-st-done"}
+          className={unread ? "text-muted" : overlapping.length ? "text-st-review" : "text-st-done"}
         />
         <h2 className="text-lead font-semibold">Collision clusters</h2>
         <span className="font-mono text-meta uppercase tracking-[0.05em] text-faint-2">
           {failed
             ? "unavailable"
-            : overlapping.length
-              ? `${overlapping.length} overlapping`
-              : `${clusters.length} in flight`}
+            : loading
+              ? "loading"
+              : overlapping.length
+                ? `${overlapping.length} overlapping`
+                : `${clusters.length} in flight`}
         </span>
       </div>
 
@@ -205,6 +226,8 @@ function Clusters({
         <div className="rounded-[13px] border border-line bg-surface-2">
           <PlannerError message={FETCH_FAILED} onRetry={onRetry} />
         </div>
+      ) : loading ? (
+        <CollisionClustersSkeleton />
       ) : overlapping.length === 0 ? (
         <div className="flex gap-3 rounded-[13px] border border-st-done/25 bg-st-done/[0.05] px-4 py-5">
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border border-st-done/30 bg-st-done/[0.12]">

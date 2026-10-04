@@ -73,6 +73,10 @@ describe("Triage", () => {
   beforeEach(async () => {
     const { api } = await import("@/lib/api");
     vi.mocked(api.fleet).mockResolvedValue(fleet([]) as never);
+    // Reset both reads, not just the fleet: the pending case below parks the queue on a
+    // promise that never settles, and a mock left that way would silently empty every
+    // later test's queue instead of failing it.
+    vi.mocked(api.triageQueue).mockResolvedValue(QUEUE);
   });
 
   it("labels itself per-project, because clustering never crosses repos", async () => {
@@ -97,6 +101,40 @@ describe("Triage", () => {
     const buttons = await screen.findAllByRole("button", { name: "Accept" });
     await userEvent.click(buttons[0]);
     expect(acceptSpy).toHaveBeenCalledWith("CORE-R1");
+  });
+
+  /**
+   * The loading half of the same lie. `clusters` defaults to `[]`, and an empty array is
+   * exactly what a *finished* check with nothing in flight looks like, so without a loading
+   * input the green all-clear renders before `api.fleet` has answered — asserting "idle
+   * project" about a project the page never asked about. Both reads are held open here
+   * because they fail independently and each panel has to withhold its own claim.
+   */
+  it("withholds both empty states while the reads are still in flight", async () => {
+    const { api } = await import("@/lib/api");
+    const pending = () => new Promise<never>(() => {});
+    vi.mocked(api.fleet).mockReturnValue(pending());
+    vi.mocked(api.triageQueue).mockReturnValue(pending());
+    renderTriage();
+
+    // Each column placeholds its own read under its own accessible name: the cluster column
+    // waits on `api.fleet`, so it may not borrow the queue's skeleton and its label.
+    expect(await screen.findByLabelText("Loading collision clusters")).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    expect(screen.getByLabelText("Loading the triage queue")).toBeInTheDocument();
+
+    expect(screen.queryByText("Nothing in flight")).not.toBeInTheDocument();
+    expect(screen.queryByText("No overlaps in flight")).not.toBeInTheDocument();
+    expect(screen.queryByText(/idle project, not a cleared one/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/queue is empty/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/everything reported has been triaged/i)).not.toBeInTheDocument();
+    // The two counts a defaulted `[]` fabricates: the cluster chip and the queue badge. An
+    // unread count renders `—`, which is a different fact from `0`.
+    expect(screen.queryByText("0 in flight")).not.toBeInTheDocument();
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(1);
   });
 
   it("distinguishes nothing-in-flight from nothing-colliding", async () => {
