@@ -28,10 +28,11 @@ import { OutpostsView } from "@/features/fleet/OutpostsView";
 import { HarnessView } from "@/features/harness/HarnessView";
 import { ProjectHome } from "@/features/projecthome/ProjectHome";
 import { ProjectProvider } from "@/features/ProjectContext";
+import { RoadmapView } from "@/features/roadmap/RoadmapView";
 import { TriageView } from "@/features/triage/TriageView";
 
 /**
- * Every endpoint these six views reach, all rejecting. Mocking the whole client rather
+ * Every endpoint these seven views reach, all rejecting. Mocking the whole client rather
  * than a hook keeps the test honest about the thing under test: the view's branching, not
  * a stubbed `isError` flag.
  *
@@ -42,7 +43,7 @@ vi.mock("@/lib/api", () => {
   const endpoints = [
     "dashboard", "events", "triageQueue", "fleet", "harness", "harnessProbeCandidates",
     "items", "shards", "codeMap", "prds", "orgs", "galaxy", "platform", "mcpTools",
-    "links", "apiKeys",
+    "links", "apiKeys", "roadmap",
   ];
   return {
     setActiveProjectId: vi.fn(),
@@ -121,6 +122,18 @@ describe("a failed fetch is not an empty project", () => {
     show(<OutpostsView />);
     expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
     expect(screen.queryByText(/no host has registered/i)).not.toBeInTheDocument();
+  });
+
+  it("Roadmap names the failure instead of 'No milestones in this project'", async () => {
+    show(<RoadmapView />);
+    // A named message, like Tracker's "Items unavailable" and PRDs' "PRDs unavailable" —
+    // this surface knows what failed, so it says so rather than showing the generic copy.
+    expect(await screen.findByText(/roadmap unavailable/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    // The copy GRPH-924 gave a genuinely empty board. Both lines, since the title alone
+    // would pass against a view that rendered the error banner above the empty state.
+    expect(screen.queryByText(/no milestones in this project/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/PRDs still live under PRDs/i)).not.toBeInTheDocument();
   });
 
   it("Project Home shows unread counts as — and withholds the no-code-graph claim", async () => {
