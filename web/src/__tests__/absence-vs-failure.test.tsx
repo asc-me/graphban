@@ -23,15 +23,24 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ActivityView } from "@/features/activity/ActivityView";
+import { CodeGraphView } from "@/features/code/CodeGraphView";
 import { DashboardView } from "@/features/dashboard/DashboardView";
 import { OutpostsView } from "@/features/fleet/OutpostsView";
 import { HarnessView } from "@/features/harness/HarnessView";
 import { ProjectHome } from "@/features/projecthome/ProjectHome";
 import { ProjectProvider } from "@/features/ProjectContext";
 import { TriageView } from "@/features/triage/TriageView";
+import type { FleetPresence } from "@/lib/types";
 
 /**
- * Every endpoint these six views reach, all rejecting. Mocking the whole client rather
+ * Set by the last case below to let ONE read succeed while the code-map read fails. `null`
+ * keeps the default reject for every view above, so this widens the harness without changing
+ * what the other six assert.
+ */
+const fleetRead = vi.hoisted(() => ({ current: null as FleetPresence | null }));
+
+/**
+ * Every endpoint these seven views reach, all rejecting. Mocking the whole client rather
  * than a hook keeps the test honest about the thing under test: the view's branching, not
  * a stubbed `isError` flag.
  *
@@ -40,9 +49,9 @@ import { TriageView } from "@/features/triage/TriageView";
 vi.mock("@/lib/api", () => {
   const fail = () => Promise.reject(new Error("boom"));
   const endpoints = [
-    "dashboard", "events", "triageQueue", "fleet", "harness", "harnessProbeCandidates",
-    "items", "shards", "codeMap", "prds", "orgs", "galaxy", "platform", "mcpTools",
-    "links", "apiKeys",
+    "dashboard", "events", "triageQueue", "fleet", "fleetPresence", "harness",
+    "harnessProbeCandidates", "items", "shards", "codeMap", "prds", "orgs", "galaxy",
+    "platform", "mcpTools", "links", "apiKeys",
   ];
   return {
     setActiveProjectId: vi.fn(),
@@ -53,6 +62,12 @@ vi.mock("@/lib/api", () => {
       ]),
       config: vi.fn(async () => ({ hosted_mode: false })),
       ...Object.fromEntries(endpoints.map((k) => [k, fail])),
+      // `fleetPresence` (not `fleet`) is what the code graph's legend reads. Overridden after
+      // the spread so the last case can let THAT one read succeed; `null` keeps the reject.
+      fleetPresence: () =>
+        fleetRead.current
+          ? Promise.resolve(fleetRead.current)
+          : Promise.reject(new Error("boom")),
     },
   };
 });
@@ -73,8 +88,40 @@ function show(ui: React.ReactElement) {
 /** The one-liner every surface shows when a request failed. */
 const FAILED_COPY = /the request failed/i;
 
+/**
+ * One human holding one node. `FleetLegend` returns `null` for a presence with nobody in it,
+ * so a case that wants to see the legend has to give it a holder — which is also why the
+ * all-fail harness above cannot make the legend's gating observable.
+ */
+const ONE_HOLDER: FleetPresence = {
+  served_at: "2026-10-03T00:00:00Z",
+  heartbeat_interval_seconds: 50,
+  held: [{
+    area: "web/src/features/code/",
+    item_id: "GRPH-1",
+    expires_at: null,
+    agent_id: "GRPH-A1",
+    agent_label: "a @ host",
+    active_role: "worker",
+    state: "building",
+    user_id: "u1",
+    user_initials: "AL",
+    user_color: "#c6f24e",
+    node_paths: ["web/src/features/code/CodeGraphView.tsx"],
+  }],
+  off_map: [],
+  truncated: false,
+  total: 1,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
+  fleetRead.current = null;
+  // jsdom has no layout, so the code chat's mount-time autoscroll finds no `scrollTo` on its
+  // node — the same stub `graph-accessible-name.test.tsx` and `tracker.test.tsx` install for
+  // the same reason. Only the code-graph case reaches it; defining it when already present is
+  // a no-op, so the six views above are unaffected.
+  Element.prototype.scrollTo = Element.prototype.scrollTo ?? (() => {});
 });
 
 describe("a failed fetch is not an empty project", () => {
@@ -132,5 +179,55 @@ describe("a failed fetch is not an empty project", () => {
     // The strongest claim on this page is that no deployment has pushed a graph. It is
     // only true once the code-map read answered.
     expect(screen.queryByText(/has pushed a code graph/i)).not.toBeInTheDocument();
+  });
+
+  it("Code graph names the failure instead of 'No code described yet'", async () => {
+    // GRPH-944. This view's empty state is the strongest claim in the file: it does not just
+    // say there is nothing here, it explains WHY — "Empty because nothing has been described,
+    // not because this project has no structure" — and then tells you a coding agent fixes it
+    // by calling `describe_code`. Every word of that is false when `/api/agent/code/map`
+    // returned 500, and it sends the reader off to describe a codebase the server already has.
+    // The guard is `const empty = !isLoading && !failed && nodes.length === 0` plus the
+    // `failed ?` branch rendering `PlannerError`; this is the case that goes red if either
+    // half is deleted. It shipped in the same commit as the other six and was the one view
+    // left uncovered.
+    show(<CodeGraphView />);
+    expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    expect(screen.queryByText(/no code described yet/i)).not.toBeInTheDocument();
+    // The explanation and the invitation, not just the heading: a view could drop the title
+    // and keep asserting that nothing was described.
+    expect(
+      screen.queryByText(/nothing has been described/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/describe_code/i)).not.toBeInTheDocument();
+    // The gesture hint teaches Hover/Click/Drag on a graph that is not there. It is gated by
+    // its OWN `!failed`, not by `empty` — on a failure `empty` is false, so every other term in
+    // that condition passes and `!failed` is the only thing holding the hint back. Without this
+    // assertion, deleting that term is invisible.
+    expect(
+      screen.queryByRole("button", { name: "Dismiss hint" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Code graph keeps the fleet it could read when the map read failed", async () => {
+    // The other half of `empty`'s `!failed`, and the only place it is observable. The empty
+    // state itself is guarded twice — `failed ?` renders `PlannerError` before `empty` is ever
+    // consulted — so deleting `!failed` from `const empty = !isLoading && !failed && …` changes
+    // nothing about the copy and the case above stays green. What it does change is this: the
+    // legend is gated on `!empty` alone, so without `!failed` a map read that returned 500
+    // would also erase a presence read that SUCCEEDED. That is the same defect wearing a
+    // different surface — an absence presented as the answer — so it gets its own case rather
+    // than being left to a guard no test can reach.
+    //
+    // The hint one branch down carries its own `!failed`, which is the tell that this split is
+    // deliberate: a gesture hint is nonsense over a graph that did not load, while "who is
+    // working here" stays true regardless.
+    fleetRead.current = ONE_HOLDER;
+    show(<CodeGraphView />);
+    expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^fleet/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /1a · 1n/ })).toBeInTheDocument();
+    expect(screen.queryByText(/no code described yet/i)).not.toBeInTheDocument();
   });
 });
