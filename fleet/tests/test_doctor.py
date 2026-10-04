@@ -208,6 +208,75 @@ def test_an_unknown_adapter_name_fails(git_repo: Path):
     assert not report.ok
 
 
+# --- can a run on this vendor be costed? (GRPH-980) -----------------------------------
+
+def test_an_adapter_whose_runs_cannot_be_costed_is_unknown_not_pass(git_repo: Path):
+    """`claude`, `grok` and `cursor-agent` have no `result_facts` reader, so nothing can say
+    what a run on them cost.
+
+    PASS here is the defect this check exists to not have. A green line is what would let a
+    Usage page of `$0` rows read as measured rather than as unread, and that page is the
+    whole reason the cost column does not ship. FAIL is wrong too, and for the reason
+    `Report.ok` states: FAIL is the only status that stops a run, and an unpriceable vendor
+    still runs fine — `until` refuses `--budget` for it specifically, which is a narrower
+    rule than grounding the wave.
+
+    Does NOT require the vendor installed. Whether a vendor's record is parsed is a property
+    of this package, not of any binary, and an operator choosing between vendors wants the
+    answer before installing one — the same reason the `--debug` line is answered first.
+    """
+    report = _run(git_repo, adapter="claude")
+    finding = next(
+        f for f in report.findings if f.name == "adapter claude reports token usage"
+    )
+    assert finding.status == UNKNOWN, (
+        f"reported {finding.status}, so an unpriceable vendor reads as a costed one"
+    )
+
+
+def test_the_unpriceable_verdict_names_a_way_forward(git_repo: Path):
+    """An absence that only says "no" is a dead end. `until.check_budget_can_be_enforced`
+    already names the adapters that DO report when it refuses `--budget`; the preflight says
+    the same thing an hour earlier, which is the only time it is cheap to act on."""
+    report = _run(git_repo, adapter="grok")
+    finding = next(
+        f for f in report.findings if f.name == "adapter grok reports token usage"
+    )
+    assert finding.status == UNKNOWN
+    assert "qwen-code" in finding.remedy, (
+        f"the remedy named no adapter that reports, so it offered nothing to switch to: "
+        f"{finding.remedy!r}"
+    )
+
+
+def test_an_adapter_that_reports_its_own_usage_passes(git_repo: Path):
+    """The control, and the vendor this fleet actually runs. Without it a check that reported
+    every vendor unpriceable would look exactly as correct — which is the shape that hid
+    GRPH-982, where 1489 qwen children wrote 436M tokens into logs nothing read."""
+    report = _run(git_repo, adapter="qwen-code")
+    assert _status(report, "adapter qwen-code reports token usage") == PASS
+
+
+def test_the_cost_answer_survives_a_missing_binary(git_repo: Path, monkeypatch):
+    """The ordering, which is the load-bearing half. CI installs no vendor binaries, and the
+    `--debug` check already lost its answer to an early `return` on exactly that machine once
+    (see `_status`). Answered after `resolve` and it reaches only the operators who did not
+    need it yet."""
+    from gbfleet import doctor as doctor_mod
+    from gbfleet.adapters import AdapterUnavailable
+
+    def missing(name, **kw):
+        raise AdapterUnavailable(f"{name}: not installed here")
+
+    monkeypatch.setattr(doctor_mod, "resolve", missing)
+
+    report = _run(git_repo, adapter="cursor-agent")
+    assert _status(report, "adapter cursor-agent") == FAIL, "an absent binary should still fail"
+    assert _status(report, "adapter cursor-agent reports token usage") == UNKNOWN, (
+        "the binary was missing and the doctor forgot what it knows without any binary"
+    )
+
+
 def test_a_missing_seats_file_fails_and_an_empty_one_too(git_repo: Path, tmp_path: Path):
     """An empty seats file spawns nothing and reports nothing, which is the quietest
     possible way for a wave to do nothing at all."""

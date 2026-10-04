@@ -33,7 +33,7 @@ from pathlib import Path
 
 from . import __version__, headroom, hostos
 from . import service as service_mod
-from .adapters import ADAPTERS, AdapterError, resolve
+from .adapters import ADAPTERS, AdapterError, reports_tokens, resolve
 from .client import Graphban, ServerUnreachable
 from .lock import RepoLocked, probe
 from .seat import codes_from_text, parse_seat_line
@@ -352,6 +352,36 @@ def check_adapter(report: Report, name: str) -> None:
             f"adapter {name} supports --debug", UNKNOWN,
             "this vendor has no debug flag",
             "--debug will give this adapter output sampling only, nothing more",
+        )
+
+    # Can a run on this vendor be COSTED? (GRPH-980) Asked before `resolve` for the reason
+    # --debug is: it is a property of the adapter, not of the binary being installed, and an
+    # operator choosing between vendors wants it before installing one.
+    #
+    # The answer already governed three places and was printed in none of them — `until`
+    # refuses `--budget` for an adapter that reports nothing, the matrix drops such a row
+    # under a token cap (PRD-41 D20, reason `tokens not reported`), and the wave summary
+    # counts its children as `unreported`. So an operator learned it by being refused an
+    # hour in, or by reading a spend total that silently excluded half the fleet.
+    #
+    # UNKNOWN, not FAIL: an unpriceable vendor still runs, and FAIL is the only status that
+    # stops a run — grounding every claude wave because its bill is unreadable would be a
+    # stricter rule than any of the three above enforces. Not PASS either, and that is the
+    # half that matters: a green line here is exactly what would let a Usage page of $0 rows
+    # read as measured, which is why the cost column does not ship (GRPH-980).
+    if reports_tokens(name):
+        report.add(f"adapter {name} reports token usage", PASS,
+                   "its result record is parsed at reap, so what a run cost is measurable "
+                   "and --budget can end a wave")
+    else:
+        able = sorted(other for other in ADAPTERS if reports_tokens(other))
+        report.add(
+            f"adapter {name} reports token usage", UNKNOWN,
+            "no result record of this vendor's is parsed, so its runs cannot be costed",
+            "--budget is refused for it and its children are counted `unreported` with NULL "
+            "token fields — which is not zero and not free either, since an unmeasured "
+            "vendor is one whose cost nobody has read"
+            + (f". Adapters that do report: {', '.join(able)}" if able else ""),
         )
 
     try:

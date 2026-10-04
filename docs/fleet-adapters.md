@@ -178,6 +178,60 @@ complaint. So the accepted set is not discoverable from the binary, and declarin
 would be exactly the fabrication `codex.py` refuses to make. It passes through unchecked and
 this table says so.
 
+## What a run cost (GRPH-980)
+
+Whether a vendor's own output can be read for what the run spent. This is the fact that
+decides if `--budget` means anything, if a wave's token total is the whole wave, and if a
+cost figure could ever be honest — so it is printed by `gbfleet doctor --adapter <v>` rather
+than left to be discovered by a refusal an hour into a run.
+
+It is **derived, never declared**: `adapters.reports_tokens` asks whether the adapter has a
+`result_facts` reader, so the answer cannot drift from the code that produces it. A vendor
+joins that registry only after its record has been *measured*, never on the strength of its
+documentation — which is why this table separates "we read it" from "the vendor offers a
+format we could read".
+
+| vendor | tokens read today? | what stands between here and there |
+| --- | --- | --- |
+| `qwen-code` | **yes** | nothing. `-o json` was already passed and GRPH-982 added the reader for `usage` on the last `result` event, plus `init.model` for the model that actually answered |
+| `gbagent` | **yes** | nothing — first-party record (PRD-38 D3). Also `local = true` in the matrix, so its tokens are genuinely free rather than merely uncounted |
+| `cursor-agent` | no | the smallest gap of the three. `--output-format stream-json` is *already* passed (GRPH-215) and that stream is already parsed for write-tool paths, so a usage reader would read a file already on disk |
+| `claude` | no | `--help` offers `--output-format stream-json` under `--print` (measured 2026-10-03); the adapter passes `--print` alone, so no JSON record is captured at all today |
+| `grok` | no | `--help` offers `--output-format json` and `streaming-messages-json` (measured 2026-10-03); the adapter passes neither |
+| `codex` | no | not implemented |
+
+**What that third column is, and is not.** It records that a flag *exists*, measured off each
+binary's own `--help`. It does not record that the resulting JSON carries token counts — that
+needs one run per vendor, and until somebody does, "the flag is there" is a costing input and
+not a promise. The distinction matters because it is the whole answer to *"is that a flag, a
+parse of their output, or absent from the vendor CLI entirely?"*: for all three it is a flag
+plus a parse, and for none of them is it absent.
+
+**Three places already governed on this fact and none of them printed it.** `until` refuses
+`--budget` for an unreporting adapter, because a cap that can never be exceeded never fires;
+the matrix drops such a row under a token cap (PRD-41 D20, reason `tokens not reported`); and
+the wave summary carries `reported` and `unreported` counts beside the tokens, so a total is
+never read as the whole fleet. `doctor` now says it up front, as `UNKNOWN` and not `FAIL` —
+an unpriceable vendor still runs, and only `FAIL` stops a run.
+
+**No currency, and that is a decision.** `price_per_mtoken_in` / `price_per_mtoken_out` exist
+on a matrix row and no row carries them. `spend.py` states why: a price table goes stale
+silently, and a stale price is worse than no price because it is a number an operator will act
+on. Tokens are what vendors actually report and what this package can actually count.
+
+**So the Usage cost column still does not ship.** Its recorded blocker — *"until at least one
+adapter in regular use reports tokens, there is nothing to price"* — is now satisfied: qwen-code
+reports, and qwen-code is what this fleet runs. What replaced it is a coverage question rather
+than an absence: two of five adapters are readable, so a cost table today is partial by
+construction, and a half-populated column of real numbers misleads in a way a table of zeroes
+at least did not. Widening coverage is three measured runs plus three readers, cheapest first
+(`cursor-agent`, whose stream is already on disk).
+
+**Unmeasured is not free.** The distinction the column would have to carry, and the reason
+`doctor` says `UNKNOWN` rather than printing a zero: a local model costs nothing and can say
+so, while an unparsed vendor's cost was never read. Those render identically in a currency
+column and are opposite facts.
+
 ## `gbagent` — the first-party adapter (PRD-24 D8)
 
 It sits in the registry on the same terms as the rest and gets no special handling in
