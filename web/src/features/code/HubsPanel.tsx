@@ -124,7 +124,7 @@ export function HubsPanel({
   const filtered = edgeTypes.length > 0 && edgeTypes.length < allEdgeTypes.length;
 
   return (
-    <div className="w-[352px] overflow-hidden rounded-xl border border-line-2 bg-surface-2">
+    <div className="w-full overflow-hidden rounded-xl border border-line-2 bg-surface-2">
       <div className="border-b border-line px-3 pb-2.5 pt-3">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-[13px] font-semibold tracking-[-0.1px]">Hubs</h2>
