@@ -33,7 +33,13 @@ import { HubsPanel, type HubSort } from "./HubsPanel";
 import { PathTrace } from "./PathTrace";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
 import { useGraphPins } from "@/lib/graph/useGraphPins";
-import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
+import {
+  LABEL_ZOOM,
+  MAX_ZOOM,
+  MIN_ZOOM,
+  useGraphViewport,
+  zoomAbout,
+} from "@/lib/graph/useGraphViewport";
 import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useCodeAnalysis, useCodeMap, useFleetPresence } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors, HeldArea, ProjectStub } from "@/lib/types";
@@ -95,6 +101,11 @@ export function CodeGraphView() {
   // How many rings the selection lights. Shift-click (or Shift+Enter) widens it; a fresh
   // selection resets it, so depth never quietly persists into the next thing you click.
   const [depth, setDepth] = React.useState(1);
+  // Isolate (Build.dc.html): the design's toggle beside the depth chips. The canvas already
+  // DIMS everything outside the reach ring to 0.22; isolate drops those nodes and edges
+  // instead, so a dense graph can be read at all. It needs a reach set to isolate against,
+  // so with nothing selected the control is disabled rather than silently doing nothing.
+  const [isolate, setIsolate] = React.useState(false);
   // Trail breadcrumb: the last N nodes the user selected, most-recent last. Clicking one
   // re-selects it without losing the rest — a back button that does not erase history.
   const [trail, setTrail] = React.useState<string[]>([]);
@@ -327,6 +338,14 @@ export function CodeGraphView() {
 
   /** What the canvas dims against: a live path wins, otherwise the reach ring. */
   const shown = pathHl ?? hl;
+
+  // Isolate stands down when there is nothing to isolate against. Without this the button
+  // stays pressed after the selection clears while hiding nothing — a control whose state
+  // disagrees with the canvas. One effect rather than a call in each of the four clear paths
+  // (keyboard Escape, inspector close, background click, trail clear).
+  React.useEffect(() => {
+    if (!shown) setIsolate(false);
+  }, [shown]);
 
   const kb = useGraphKeyboard({
     order: tabOrder,
@@ -587,12 +606,29 @@ export function CodeGraphView() {
                 <filter id="code-cloud-blur" x="-50%" y="-50%" width="200%" height="200%">
                   <feGaussianBlur stdDeviation="18" />
                 </filter>
+                {/* The canvas grid from Build.dc.html, to the design's numbers: 24px pitch,
+                    r=1 dots at #1a2026 (no token — the hairlines are #1e242a and up, and a
+                    grid that read as a hairline would compete with the panel borders). */}
+                <pattern id="code-dots" width="24" height="24" patternUnits="userSpaceOnUse">
+                  <circle cx="1.5" cy="1.5" r="1" fill="#1a2026" />
+                </pattern>
               </defs>
 
               <g
                 transform={view.transform}
                 style={{ transition: view.panning ? undefined : "transform 220ms ease" }}
               >
+              {/* Inside the transform, so the grid pans and zooms with the scene and gives the
+                  motion something to read against — outside it the canvas looks static. Sized
+                  well past the viewBox so panning never reaches an edge. */}
+              <rect
+                x={-W * 2}
+                y={-H * 2}
+                width={W * 5}
+                height={H * 5}
+                fill="url(#code-dots)"
+                pointerEvents="none"
+              />
               {/* Presence clouds sit BENEATH the edges and never touch a node's own fill or
                   stroke. That is the load-bearing rule of the visual design: a held node must
                   still say what kind of node it is, and tinting the node would overload the one
@@ -710,6 +746,8 @@ export function CodeGraphView() {
                 const b = pos[e.dst];
                 if (!a || !b) return null;
                 const active = !shown || shown.hlEdges.has(String(i));
+                // Isolate drops what dimming would merely fade (Build.dc.html).
+                if (isolate && !active) return null;
                 // Trim the endpoint back so the arrowhead sits at the node edge, not under it.
                 const dx = b.x - a.x;
                 const dy = b.y - a.y;
@@ -736,6 +774,8 @@ export function CodeGraphView() {
                 if (!p) return null;
                 const node = nodeByPath[id];
                 const active = !lit || lit.has(id);
+                // Isolate drops what dimming would merely fade (Build.dc.html).
+                if (isolate && !active) return null;
                 const meta = kindMeta(node?.kind ?? "");
                 const described = !!node;
                 const stale = described && !node.fresh;
@@ -875,10 +915,26 @@ export function CodeGraphView() {
             </svg>
           )}
 
+          {!isLoading && !empty && (
+            <GraphControls
+              depth={depth}
+              onDepth={setDepth}
+              isolate={isolate}
+              onIsolate={() => setIsolate((v) => !v)}
+              canIsolate={!!shown}
+              zoom={view.viewport.k}
+              onZoom={(factor) =>
+                view.setViewport((v) => zoomAbout(v, factor, W / 2, H / 2))
+              }
+              onFit={view.reset}
+            />
+          )}
+
           {(hubsOpen || walk) && (
             // Top-right, ONE column: the inspector owns the left, and hubs and a path must be
-            // readable together — you trace a route from a hub you just picked.
-            <div className="pointer-events-auto absolute right-3 top-3 z-10 flex max-h-[calc(100%-1.5rem)] flex-col gap-2 overflow-y-auto">
+            // readable together — you trace a route from a hub you just picked. It starts
+            // below the control cluster, which owns the design's top row.
+            <div className="pointer-events-auto absolute right-3 top-[3.25rem] z-10 flex max-h-[calc(100%-3.75rem)] flex-col gap-2 overflow-y-auto">
               {hubsOpen && (
               <HubsPanel
                 hubs={analysis?.hubs ?? []}
@@ -998,7 +1054,13 @@ function NodeInspector({
         {!node && (
           <span className="font-mono text-[10px] text-faint">not described</span>
         )}
-        <button onClick={onClose} className="ml-auto text-faint hover:text-fg">
+        {/* "×" alone announces as nothing useful, and this is the only way to dismiss the
+            inspector without focus inside the canvas (Escape is bound to the <svg>). */}
+        <button
+          onClick={onClose}
+          aria-label="Close the inspector"
+          className="ml-auto text-faint hover:text-fg"
+        >
           ×
         </button>
       </div>
@@ -1259,6 +1321,125 @@ function StubEvidence({ stub }: { stub: ProjectStub }) {
   );
 }
 
+// ── Canvas controls ───────────────────────────────────────────────────────────
+// The top-right cluster from `Build.dc.html`: depth chips, Isolate, and a zoom
+// group of − / readout / + / Fit. Three of those five had no control at all —
+// the view could only be zoomed by wheel and only reset by double-clicking the
+// background, which is undiscoverable and unreachable from a keyboard.
+//
+// Sizes and the segmented shape are the design's, not rounded to the type scale:
+// `index.css` says a size carrying no role stays arbitrary rather than being
+// rounded into one, and 10/10.5/11.5/15px are what the design uses here. The
+// zoom readout's #5c656e likewise has no token — --color-faint is #7f8891, two
+// steps lighter — so it stays a literal rather than becoming a palette change,
+// which PRD-47 §1.3 puts outside this PRD.
+
+/** Zoom steps per click. Matches the wheel's feel without overshooting MIN/MAX. */
+const ZOOM_STEP = 1.3;
+
+function GraphControls({
+  depth,
+  onDepth,
+  isolate,
+  onIsolate,
+  canIsolate,
+  zoom,
+  onZoom,
+  onFit,
+}: {
+  depth: number;
+  onDepth: (d: number) => void;
+  isolate: boolean;
+  onIsolate: () => void;
+  canIsolate: boolean;
+  zoom: number;
+  onZoom: (factor: number) => void;
+  onFit: () => void;
+}) {
+  // The design draws these segmented groups and their internal dividers at #1e242a, which is
+  // --color-line-2 — a hairline, ~1.2:1. A control's border is its identity under WCAG 1.4.11,
+  // so `control-borders.test.ts` holds controls on --color-control and the floor wins over the
+  // drawing here (the same way GRPH-938's casing beat the design's). Recorded in PRD-47 §1.3.
+  // The dividers live on the container as `divide-x` rather than as a border on each button,
+  // so the separator is structure and no control carries its own hairline.
+  const group =
+    "flex divide-x divide-control overflow-hidden rounded-[9px] border border-control bg-surface/90 backdrop-blur-sm";
+  const stepper =
+    "flex h-[30px] w-8 items-center justify-center text-[15px] leading-none text-muted transition-colors hover:text-fg disabled:opacity-40 disabled:hover:text-muted";
+  return (
+    <div className="pointer-events-auto absolute right-3 top-3 z-10 flex flex-wrap items-center justify-end gap-1.5">
+      {/* Each chip shows a bare "1"/"2"/"3", which announces as a digit and says nothing, so
+          the accessible name is spelled out while the visible glyph stays as drawn. This repo
+          treats accessible names as load-bearing — see graph-accessible-name.test.tsx. */}
+      <div className={group} role="group" aria-label="Rings lit around the selection">
+        {[1, 2, 3].map((d) => (
+          <button
+            key={d}
+            onClick={() => onDepth(d)}
+            aria-pressed={depth === d}
+            aria-label={`Light ${d} ring${d > 1 ? "s" : ""} around the selection`}
+            title={`Light ${d} ring${d > 1 ? "s" : ""} around the selection`}
+            className={cn(
+              "h-[30px] px-2.5 font-mono text-[10.5px] transition-colors",
+              depth === d ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
+            )}
+          >
+            {d}
+          </button>
+        ))}
+      </div>
+      <button
+        onClick={onIsolate}
+        aria-pressed={isolate}
+        disabled={!canIsolate}
+        title={
+          canIsolate
+            ? "Hide everything outside the lit rings instead of dimming it"
+            : "Select a node first — isolate needs something to isolate against"
+        }
+        className={cn(
+          "h-8 rounded-[9px] border px-[11px] text-[11.5px] transition-colors disabled:opacity-40",
+          isolate
+            ? "border-control-hover bg-surface-3 text-fg"
+            : "border-control bg-surface-2 text-muted enabled:hover:border-control-hover enabled:hover:text-fg",
+        )}
+      >
+        Isolate
+      </button>
+      <div className={group}>
+        <button
+          onClick={() => onZoom(1 / ZOOM_STEP)}
+          aria-label="Zoom out"
+          disabled={zoom <= MIN_ZOOM + 1e-6}
+          className={stepper}
+        >
+          −
+        </button>
+        <span
+          aria-live="polite"
+          className="flex items-center px-1.5 font-mono text-[10px] text-[#5c656e]"
+        >
+          {Math.round(zoom * 100)}%
+        </span>
+        <button
+          onClick={() => onZoom(ZOOM_STEP)}
+          aria-label="Zoom in"
+          disabled={zoom >= MAX_ZOOM - 1e-6}
+          className={stepper}
+        >
+          +
+        </button>
+        <button
+          onClick={onFit}
+          className="h-[30px] px-2.5 text-[11.5px] text-muted transition-colors hover:text-fg"
+        >
+          Fit
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Trail breadcrumb ──────────────────────────────────────────────────────────
 // The last N nodes the user selected, most-recent last. Clicking one re-selects
 // it. A back button that does not erase history — the trail persists until the
@@ -1378,7 +1559,10 @@ function InteractionHint({
                 title={`${sn.size} nodes`}
               >
                 <span className="block truncate">{label(sn.anchor, "")}</span>
-                <span className="text-[8px] text-faint">{sn.size} nodes</span>
+                {/* 8px appeared nowhere in Build.dc.html, whose floor is 9px, and it is below
+                    the scale's own smallest role. `text-micro` is that role (8.5px, "IDs and
+                    keys") and is the nearest thing the design sanctions. */}
+                <span className="text-micro text-faint">{sn.size} nodes</span>
               </button>
             ))}
           </div>
