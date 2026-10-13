@@ -39,6 +39,7 @@ vi.mock("@/lib/api", () => ({
     items: vi.fn(async () => served),
     shards: vi.fn(async () => []),
     updateItem: vi.fn(async (id: string, body: Partial<Item>) => ({ ...items[0], id, ...body })),
+    ownerClose: vi.fn(async (id: string) => ({ ...items[0], id, status: "done" as const })),
     reorderItems: vi.fn(async () => items),
     // Opening the detail panel mounts the assistant, which asks for these on mount.
     assistantProviders: vi.fn(async () => ({ providers: [] })),
@@ -126,6 +127,56 @@ describe("TrackerView", () => {
     await user.click(reviewItem);
 
     await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith("AL-01", { status: "review" }));
+  });
+
+  it("does not PATCH done on an unattested item — opens owner-close (GRPH-1030)", async () => {
+    const user = userEvent.setup();
+    const { api } = await import("@/lib/api");
+    renderTracker();
+    const row = (await screen.findByText("In progress thing")).closest("div")!;
+    const statusBtn = within(row).getByRole("button", { name: /Status:/ });
+    statusBtn.focus();
+    await user.keyboard("{Enter}");
+    await user.click(await screen.findByRole("menuitem", { name: /Done/ }));
+
+    expect(await screen.findByRole("heading", { name: /Close as merged/ })).toBeInTheDocument();
+    expect(api.updateItem).not.toHaveBeenCalledWith("AL-01", { status: "done" });
+  });
+
+  it("still PATCHes done on a typed wait (GRPH-1030)", async () => {
+    served = [{ ...items[0], id: "AL-W1", title: "Wait for merge", tags: ["wait:merge"],
+                status: "blocked" }];
+    try {
+      const user = userEvent.setup();
+      const { api } = await import("@/lib/api");
+      renderTracker();
+      const row = (await screen.findByText("Wait for merge")).closest("div")!;
+      const statusBtn = within(row).getByRole("button", { name: /Status:/ });
+      statusBtn.focus();
+      await user.keyboard("{Enter}");
+      await user.click(await screen.findByRole("menuitem", { name: /Done/ }));
+      await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith("AL-W1", { status: "done" }));
+      expect(api.ownerClose).not.toHaveBeenCalled();
+    } finally {
+      served = items;
+    }
+  });
+
+  it("submits owner-close with the merge commit (GRPH-1030)", async () => {
+    const user = userEvent.setup();
+    const { api } = await import("@/lib/api");
+    renderTracker();
+    const row = (await screen.findByText("In progress thing")).closest("div")!;
+    const statusBtn = within(row).getByRole("button", { name: /Status:/ });
+    statusBtn.focus();
+    await user.keyboard("{Enter}");
+    await user.click(await screen.findByRole("menuitem", { name: /Done/ }));
+    await screen.findByRole("heading", { name: /Close as merged/ });
+    await user.type(screen.getByPlaceholderText(/sha that landed on the base/), "abcdef1");
+    await user.click(screen.getByRole("button", { name: /^Close as merged$/ }));
+    await waitFor(() =>
+      expect(api.ownerClose).toHaveBeenCalledWith("AL-01", { commit: "abcdef1", pr_url: undefined }),
+    );
   });
 });
 

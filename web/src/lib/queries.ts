@@ -619,6 +619,15 @@ export function useUpdateItem() {
   });
 }
 
+export function useOwnerClose() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, commit, pr_url }: { id: string; commit: string; pr_url?: string }) =>
+      api.ownerClose(id, { commit, pr_url }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.items }),
+  });
+}
+
 export function useCreateItem(projectId: string) {
   const qc = useQueryClient();
   return useMutation({

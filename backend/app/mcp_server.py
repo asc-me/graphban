@@ -2210,6 +2210,17 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     # Refused rather than silently demoted to a `note`. A demotion here would leave the
     # caller believing it had attested something and the item quietly unprovable — the
     # failure would surface much later, at a refusal nobody could explain.
+    if writes and any(
+            isinstance(e, dict) and e.get("adapter") == items_svc.OWNER_CLOSE_ADAPTER
+            for e in (args.get("evidence") or [])):
+        # THE CALL (GRPH-1030). A gate-scoped key could otherwise mint `owner.close`
+        # and complete through update_item, impersonating a human owner. The adapter
+        # is a REST-only act.
+        raise authz.Forbidden(
+            "owner.close is a signed-in project owner's action, not an agent adapter",
+            hint="record proof as test or sabotage receipts; a human owner closes "
+                 "merged work from Tracker",
+        )
     if writes and (args.get("head_commit") or any(
             (e or {}).get("kind") == "attestation"
             for e in (args.get("evidence") or []) if isinstance(e, dict))):

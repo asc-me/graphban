@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import User
-from app.schemas import ItemCreate, ItemOut, ItemUpdate, ReorderIn
+from app.schemas import ItemCreate, ItemOut, ItemUpdate, OwnerCloseIn, ReorderIn
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import collision as collision_svc
@@ -109,6 +109,16 @@ def update_item(
     # service call rather than filtered inside it, so the split is visible at the boundary
     # that enforces it.
     declared_reach = changes.pop("reach", None)
+    if any(isinstance(e, dict) and e.get("adapter") == items_svc.OWNER_CLOSE_ADAPTER
+           for e in (changes.get("evidence") or [])):
+        # THE CALL (GRPH-1030). JWT PATCH can otherwise mint any attestation the gate
+        # will read, including one wearing this adapter. Owner-close has its own
+        # route so the closer, the adapter name, and the owner check cannot drift.
+        raise HTTPException(
+            403,
+            "an owner.close receipt cannot be written via PATCH; "
+            "POST /api/items/{id}/owner-close",
+        )
     try:
         if declared_reach is not None:
             items_svc.set_reach(db, existing, declared_reach)
@@ -119,6 +129,36 @@ def update_item(
         # 409, not 422: the request is well formed and the caller is permitted — the ITEM is
         # not in a state that may be completed (GRPH-543). A 422 would read as "you sent
         # something malformed" and send the caller editing their payload.
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    if item is None:
+        raise HTTPException(404, "item not found")
+    return item
+
+
+@router.post("/{item_id}/owner-close", response_model=ItemOut)
+def owner_close(
+    item_id: str,
+    body: OwnerCloseIn,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Close a hand-merged item as the project owner (GRPH-1030). JWT only."""
+    existing = items_svc.get_item(db, item_id)
+    if existing is None:
+        raise HTTPException(404, "item not found")
+    authz.require_project_owner(db, user.id, existing.project_id)
+    closer = {"id": user.id, "handle": user.handle, "name": user.name}
+    try:
+        item = items_svc.owner_close(
+            db, item_id, closer=closer, commit=body.commit, pr_url=body.pr_url,
+            defer=background.add_task,
+        )
+    except items_svc.MissingAttestation as e:
+        raise HTTPException(409, str(e))
+    except items_svc.PRCooldown as e:
         raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(422, str(e))

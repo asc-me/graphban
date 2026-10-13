@@ -629,6 +629,16 @@ def attestation_receipts(evidence) -> list[dict]:
 
 WORKTREE_ADAPTER = "fleet.worktree"
 
+#: The owner-close adapter (GRPH-1030). Distinct from `fleet.sign_off` on purpose: a
+#: signed-in project owner closing hand-merged work is not a reviewer, and a receipt
+#: that reused the sign-off adapter would impersonate one. Metrics that key on
+#: `reviewed_by` / `fleet.sign_off` therefore do not count it.
+OWNER_CLOSE_ADAPTER = "owner.close"
+
+#: A merge commit the owner names. Same floor as `same_commit` — shorter than 7 hex
+#: chars is a collision, not an identity.
+_COMMIT = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
+
 #: How a supervisor says which commit it cut a branch from, in a `note`'s prose (GRPH-970).
 #:
 #: A note, and not the attestation it wants to be, because writing `kind: attestation`
@@ -1016,6 +1026,11 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
     if not cooldown or linked is None:
         return
     merged = append_evidence(item.evidence, incoming_evidence or [])
+    # An owner.close receipt is the owner saying the work is already on the base.
+    # The cooldown waits for CI after a PR is linked; that wait does not apply to a
+    # human closing something they already merged (GRPH-1030).
+    if any(a.get("adapter") == OWNER_CLOSE_ADAPTER for a in valid_attestations(merged)):
+        return
     commits = pr_commits(merged, commit, item.head_commit)
     if any(CI_PREDICATE in attested_predicates(merged, commit=c) for c in commits):
         return
@@ -1080,6 +1095,90 @@ def set_reach(db: Session, item: Item, value: str) -> Item:
     db.commit()
     db.refresh(item)
     return item
+
+
+def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
+                pr_url: str | None = None, defer=None) -> Item | None:
+    """Close an item whose work is on the base, as a signed-in project owner (GRPH-1030).
+
+    Not `fleet.sign_off`. Completes through `update_item` so the completion gate is the
+    one writer of `done` that is not the reviewer path. The receipt's adapter is
+    `owner.close`, `reviewed_by` is not stamped, and harness review verdicts are not
+    recorded — this is not a model sign-off.
+
+    `closer` is `{id, handle, name}` of the JWT user, passed in rather than looked up:
+    services stay principal-free. Authority (project owner, not an agent key) is the
+    REST boundary.
+    """
+    item = get_item(db, item_id)
+    if item is None:
+        return None
+    if item.status == "done":
+        raise ValueError(f"{item.key} is already done")
+    sha = (commit or "").strip().lower()
+    if not _COMMIT.fullmatch(sha):
+        raise ValueError(
+            "owner close needs the merge commit as 7–40 hex characters — the revision "
+            "that landed on the base, not a branch name"
+        )
+    url = (pr_url or "").strip()
+    if url and not is_pr_url(url):
+        raise ValueError(f"{url!r} is not a pull/merge request URL")
+    cut = cut_from_commits(item.evidence)
+    if any(same_commit(sha, base) for base in cut):
+        raise ValueError(
+            f"{item.key}: {sha[:12]} is the commit this branch was cut from, so it "
+            "carries none of the merge — name the commit that landed on the base"
+        )
+    handle = str(closer.get("handle") or closer.get("name") or closer.get("id") or "owner")
+    uid = str(closer.get("id") or "").strip()
+    existing_pr = url or (item.github_url or "").strip() or next(
+        (str(e.get("url") or "") for e in (item.evidence or [])
+         if isinstance(e, dict) and is_pr_url(e.get("url") or "")),
+        "",
+    )
+    pr_detail = existing_pr or "no PR url recorded"
+    receipt = {
+        "kind": "attestation",
+        "adapter": OWNER_CLOSE_ADAPTER,
+        "commit": sha,
+        "predicates": [
+            {"name": "on_base", "passed": True,
+             "detail": f"owner {handle} closed as merged at {sha[:12]}; PR {pr_detail}"},
+            {"name": "owner_close", "passed": True,
+             "detail": (f"closed by {handle}"
+                        + (f" ({uid})" if uid else "")
+                        + ", not a model sign-off")},
+        ],
+    }
+    incoming: list[dict] = [receipt]
+    if url:
+        incoming.append({
+            "kind": "url", "url": url, "commit": sha,
+            "detail": f"merge recorded by owner {handle}",
+        })
+    item.evidence = append_evidence(item.evidence, incoming)
+    if url and not (item.github_url or "").strip():
+        item.github_url = url
+    db.flush()
+    out = update_item(db, item.id, defer=defer, status="done")
+    if out is None:
+        return None
+    from app.services import delegation as delegation_svc
+    from app.services import fleet as fleet_svc
+    fleet_svc.release_reservations(db, item_id=out.id)
+    out.claimed_by = None
+    out.claimed_at = None
+    out.review_claimed_by = None
+    out.review_claimed_at = None
+    out.review_takes = 0
+    # `released`, not `signed_off`: builder/reviewer model metrics key on sign-off.
+    # The attempt ended because a human took the item off the board, not because a
+    # model reviewed it.
+    delegation_svc.on_outcome(db, out, "released")
+    db.commit()
+    db.refresh(out)
+    return out
 
 
 def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None = None,

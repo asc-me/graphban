@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 166 of the 248 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 167 of the 249 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -67,6 +67,7 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | PATCH | `/api/items/reorder` | JWT |
 | GET | `/api/items/{id}` | JWT |
 | PATCH | `/api/items/{id}` | JWT |
+| POST | `/api/items/{id}/owner-close` | JWT (project owner) | Close a hand-merged item. Body: `{commit, pr_url?}`. Writes an `owner.close` attestation, not `fleet.sign_off`. |
 
 ## Requests
 
