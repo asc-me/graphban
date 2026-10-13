@@ -608,6 +608,17 @@ def test_the_scan_does_not_trip_on_honest_evidence():
     assert (ok, uncovered, contradicted) == (True, [], {})
 
 
+def test_quoted_not_and_expected_red_run_are_covered():
+    """GRPH-1029 / REPU-579+588, through acceptance_covered (the helper sign_off calls)."""
+    not_clause = "responses contain api_key=REDACTED and not the key"
+    red_clause = "reverting to backend_url turns the link test red"
+    ok, uncovered, contradicted = fleet.acceptance_covered(
+        [not_clause, red_clause],
+        [{"kind": "test", "detail": f"{not_clause} — captured log"},
+         {"kind": "test", "detail": f"{red_clause} — red (1 failed)"}])
+    assert (ok, uncovered, contradicted) == (True, [], {})
+
+
 def test_builder_only_coverage_is_refused_until_the_reviewer_names_it(client, key):
     """A clause named only by the builder's receipts is not reviewed. The builder posts both
     tests; the reviewer passing none is refused naming the clauses, and passing its own
