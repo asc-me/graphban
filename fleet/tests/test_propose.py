@@ -22,8 +22,11 @@ from gbfleet import propose as propose_mod
 class _Gh:
     """A recorded `gh`. Answers `pr view` and `pr create` the way the real one does."""
 
-    def __init__(self, *, has_pr="", create_ok=True, url="https://github.com/o/r/pull/7"):
+    def __init__(self, *, has_pr="", create_ok=True, url="https://github.com/o/r/pull/7",
+                 listed=None, reopen_ok=True):
         self.has_pr, self.create_ok, self.url = has_pr, create_ok, url
+        self.listed = list(listed or [])
+        self.reopen_ok = reopen_ok
         self.calls: list[list[str]] = []
 
     def __call__(self, argv, cwd=None, capture_output=True, text=True, timeout=None):
@@ -33,6 +36,13 @@ class _Gh:
             if not self.has_pr:
                 return subprocess.CompletedProcess(argv, 1, "", "no pull requests found")
             return subprocess.CompletedProcess(argv, 0, f'{{"url": "{self.has_pr}"}}', "")
+        if verb == "pr list":
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps(self.listed), "")
+        if verb == "pr reopen":
+            if not self.reopen_ok:
+                return subprocess.CompletedProcess(argv, 1, "", "failed to reopen")
+            return subprocess.CompletedProcess(argv, 0, "reopened\n", "")
         if verb == "pr create":
             if not self.create_ok:
                 return subprocess.CompletedProcess(argv, 1, "", "pull request create failed")
@@ -95,6 +105,44 @@ def test_an_existing_pr_is_reused_rather_than_re_created(gh):
 
     assert got.skipped and got.url.endswith("/pull/3")
     assert not any(c[1:3] == ["pr", "create"] for c in fake.calls), "created a second PR"
+
+
+def test_a_closed_pr_is_reopened_rather_than_given_a_sibling(gh):
+    """GRPH-1031. `gh pr view` only finds OPEN PRs, so a bounced then closed PR
+    used to get a second one. Sabotage: skip existing_any — this creates /pull/7."""
+    fake = gh(_Gh(listed=[{
+        "url": "https://github.com/o/r/pull/3", "state": "CLOSED", "number": 3,
+    }]))
+
+    got = propose_mod.propose(REPO, "gb/w-1", "origin/main", title="t", body="b")
+
+    assert got.ok and got.url.endswith("/pull/3")
+    assert "reopened existing PR #3" in got.reason
+    assert any(c[1:3] == ["pr", "reopen"] for c in fake.calls)
+    assert not any(c[1:3] == ["pr", "create"] for c in fake.calls), "opened a sibling"
+
+
+def test_a_closed_pr_that_will_not_reopen_is_named_not_duplicated(gh):
+    fake = gh(_Gh(listed=[{
+        "url": "https://github.com/o/r/pull/3", "state": "CLOSED", "number": 3,
+    }], reopen_ok=False))
+
+    got = propose_mod.propose(REPO, "gb/w-1", "origin/main", title="t", body="b")
+
+    assert got.skipped and got.url.endswith("/pull/3")
+    assert "closed PR #3" in got.reason
+    assert not any(c[1:3] == ["pr", "create"] for c in fake.calls), "opened a sibling"
+
+
+def test_a_merged_pr_is_not_given_a_sibling(gh):
+    fake = gh(_Gh(listed=[{
+        "url": "https://github.com/o/r/pull/3", "state": "MERGED", "number": 3,
+    }]))
+
+    got = propose_mod.propose(REPO, "gb/w-1", "origin/main", title="t", body="b")
+
+    assert got.skipped and "already merged as PR #3" in got.reason
+    assert not any(c[1:3] == ["pr", "create"] for c in fake.calls), "opened a sibling"
 
 
 def test_no_gh_is_reported_not_installed(gh):

@@ -442,6 +442,9 @@ class ItemUpdate(BaseModel):
     #: this patch takes a bearer JWT, so declaring an item `deploy` — or clearing it back to
     #: `repo` — is a signed-in person's act and cannot be done by a credential a child holds.
     reach: str | None = None
+    #: Where this item's work landed (GRPH-1031). Empty is not a write: a PATCH that
+    #: sends `branch=""` must not clear a pointer a reviewer is holding.
+    branch: str | None = None
 
 
 class OwnerCloseIn(BaseModel):

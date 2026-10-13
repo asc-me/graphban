@@ -21,6 +21,7 @@ from gbfleet.worktree import (
     ResumeFailed,
     SEAT_FILES,
     branch_name,
+    bounce_branch_of,
     choose_resume,
     create,
     is_dirty,
@@ -28,6 +29,7 @@ from gbfleet.worktree import (
     porcelain,
     reap,
     resume,
+    resume_bounced,
     salvage,
     salvage_message,
     is_salvage_subject,
@@ -437,6 +439,49 @@ def test_choose_resume_eligible_for_in_progress_with_stale_lease(git_repo: Path,
         lease_seconds=1800,
     )
     assert [o.branch for o in picked] == [wt.branch]
+
+
+def test_bounce_branch_of_needs_both_the_reason_and_the_ref():
+    """Sabotage: treat any recorded branch as a bounce — first spawn resumes a
+    leftover ref and never cuts from the base."""
+    assert bounce_branch_of(None) == ""
+    assert bounce_branch_of({}) == ""
+    assert bounce_branch_of({"branch": "gb/w-1"}) == ""
+    assert bounce_branch_of({"bounce_reason": "tests"}) == ""
+    assert bounce_branch_of({"branch": "gb/w-1", "bounce_reason": "tests"}) == "gb/w-1"
+    assert bounce_branch_of({"branch": "  ", "bounce_reason": "tests"}) == ""
+
+
+def test_resume_bounced_checks_out_the_existing_head_and_merges_the_base(
+    git_repo: Path, tmp_path: Path
+):
+    """GRPH-1031. A bounce of a pushed PR is not a salvage. The next spawn must
+    resume THAT head, merged with main, not cut a sibling from main.
+
+    Sabotage: `worktree add -b` from HEAD — kept.py is missing and this fails.
+    Sabotage: checkout without merging — later.py is missing and this fails.
+    """
+    wt = create(git_repo, tmp_path / "round1", "wave-1", "GRPH-A2")
+    (wt.path / "kept.py").write_text("round-1\n", encoding="utf-8")
+    _git(wt.path, "add", "-A")
+    _git(wt.path, "-c", "user.email=w@e.invalid", "-c", "user.name=W",
+         "commit", "-qm", "round 1")
+    reap(wt)
+    assert not wt.path.exists()
+
+    (git_repo / "later.py").write_text("from-main\n", encoding="utf-8")
+    _git(git_repo, "add", "later.py")
+    _git(git_repo, "commit", "-qm", "main moved")
+
+    again = resume_bounced(git_repo, tmp_path / "round2", wt.branch, base="HEAD")
+    assert again.branch == wt.branch
+    assert (again.path / "kept.py").read_text(encoding="utf-8") == "round-1\n"
+    assert (again.path / "later.py").read_text(encoding="utf-8") == "from-main\n"
+
+
+def test_resume_bounced_refuses_a_missing_branch(git_repo: Path, tmp_path: Path):
+    with pytest.raises(ResumeFailed):
+        resume_bounced(git_repo, tmp_path / "nope", "gb/does-not-exist", base="HEAD")
 
 
 def test_resume_refuses_when_the_branch_is_not_a_descendant(

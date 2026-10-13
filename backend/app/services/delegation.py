@@ -267,6 +267,17 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
         if previous.get("bounce_reason"):
             prev += f" — {previous['bounce_reason']}"
         lines.append(prev)
+    # GRPH-1031. Standing, not a suggestion: the child used to refuse the item's own
+    # earlier branch as foreign and rebuild from the base. Named here because the
+    # instruction file is the other half, and a brief that never said so was how the
+    # planner note was ignored.
+    bounced_on = (item.branch or "").strip()
+    if (item.bounce_reason or "").strip() and bounced_on:
+        lines.append(
+            f"Standing: `{bounced_on}` is this item's own prior work after a bounce. "
+            "Resume from that head (merged with the base). Do not refuse to merge it "
+            "and do not rebuild from the base."
+        )
     if len(attempts) > 1:
         lines.append(f"Attempts so far: {len(attempts)}")
     return "\n".join(lines)

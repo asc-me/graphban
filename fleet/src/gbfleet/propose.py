@@ -70,12 +70,55 @@ def existing(repo: Path, branch: str) -> str:
         return ""
 
 
+def existing_any(repo: Path, branch: str) -> dict:
+    """The newest PR for this branch in any state, or {}.
+
+    `gh pr view <branch>` only finds OPEN PRs. After a bounce the PR is often closed, and
+    creating a sibling for the same head is how GRPH-1031's reported waves grew #639 then
+    #643 for one item. A closed or merged PR is still this branch's PR: update it, or say
+    why not — do not open another.
+    """
+    done = _gh(repo, "pr", "list", "--head", branch, "--state", "all",
+               "--json", "url,state,number", "--limit", "20")
+    if done.returncode != 0:
+        return {}
+    try:
+        rows = json.loads(done.stdout or "[]")
+    except ValueError:
+        return {}
+    if not isinstance(rows, list):
+        return {}
+    found = [r for r in rows if isinstance(r, dict) and r.get("url")]
+    if not found:
+        return {}
+    order = {"OPEN": 0, "CLOSED": 1, "MERGED": 2}
+    found.sort(key=lambda r: order.get(str(r.get("state") or "").upper(), 9))
+    row = found[0]
+    return {
+        "url": str(row.get("url") or ""),
+        "state": str(row.get("state") or "").upper(),
+        "number": row.get("number"),
+    }
+
+
+def _reopen(repo: Path, number) -> bool:
+    """Reopen a closed PR. True when gh accepted it."""
+    if not number:
+        return False
+    done = _gh(repo, "pr", "reopen", str(number))
+    return done.returncode == 0
+
+
 def propose(repo: Path, branch: str, base: str, *, title: str, body: str) -> Proposed:
     """Open a draft PR for `branch` against `base`, or say why not.
 
     Never raises and never fails a wave. The work is committed and pushed by the time this
     runs; a PR that could not be opened is a thing for a person to finish, not a reason to
     call the wave broken.
+
+    A branch whose head already has a PR — open, closed, or merged — is not given a
+    sibling (GRPH-1031). Open: the push already updated it. Closed: reopen, or say why
+    not. Merged: say so; another PR for the same head is the defect.
     """
     if not find():
         return Proposed(branch=branch, skipped=True,
@@ -88,6 +131,29 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str) -> Pro
         if already:
             return Proposed(branch=branch, url=already, skipped=True,
                             reason="already proposed")
+        prior = existing_any(repo, branch)
+        if prior:
+            state = prior.get("state") or ""
+            url = prior.get("url") or ""
+            number = prior.get("number")
+            if state == "MERGED":
+                return Proposed(
+                    branch=branch, url=url, skipped=True,
+                    reason=f"head already merged as PR #{number}; not opening a sibling",
+                )
+            if state == "CLOSED":
+                if _reopen(repo, number):
+                    return Proposed(
+                        branch=branch, url=url, ok=True,
+                        reason=f"reopened existing PR #{number}",
+                    )
+                return Proposed(
+                    branch=branch, url=url, skipped=True,
+                    reason=f"branch already has closed PR #{number}; not opening a sibling",
+                )
+            if url:
+                return Proposed(branch=branch, url=url, skipped=True,
+                                reason="already proposed")
         done = _gh(repo, "pr", "create", "--draft", "--head", branch,
                    "--base", base.split("/", 1)[-1], "--title", title, "--body", body)
     except (OSError, subprocess.SubprocessError) as exc:
