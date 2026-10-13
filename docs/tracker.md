@@ -37,7 +37,10 @@ color used consistently across the app:
 ## Using it
 
 - **Advance status** — click the status dot on a row (or in the detail panel) and pick a new
-  state. Moving an item to **Done** triggers [auto-extraction](memory-and-chat.md#auto-extraction-on-done).
+  state. **Done** on an unattested item opens **Close as merged** (project owner, merge
+  commit) instead of PATCHing `done`, which would 409 (GRPH-1030). Typed `wait:` tags and
+  items that already carry a valid attestation still PATCH. Closing as merged triggers
+  [auto-extraction](memory-and-chat.md#auto-extraction-on-done).
 - **Reorder** — drag a row; the new order persists (`sort_order`).
 - **Filter** — the quick-filter chips (All / per-state) narrow the stream; the top-bar search
   filters by title or id.
@@ -62,7 +65,8 @@ color used consistently across the app:
 | POST | `/api/items` | Create |
 | PATCH | `/api/items/reorder` | Persist a new drag order (`{ordered_ids: [...]}`) |
 | GET | `/api/items/{id}` | Fetch one |
-| PATCH | `/api/items/{id}` | Update fields / advance status |
+| PATCH | `/api/items/{id}` | Update fields / advance status. `done` still needs an attestation (GRPH-543). |
+| POST | `/api/items/{id}/owner-close` | Project owner closes hand-merged work (`{commit, pr_url?}`). Distinct from `fleet.sign_off`. |
 
 Front-end mutations use optimistic updates (TanStack Query) so status changes and drags feel
 instant.

@@ -19,6 +19,25 @@ import type { Item, Status } from "@/lib/types";
 import { ItemDetailPanel } from "./ItemDetailPanel";
 import { ItemRow } from "./ItemRow";
 import { NewItemDialog } from "./NewItemDialog";
+import { OwnerCloseDialog } from "./OwnerCloseDialog";
+
+/** Typed waits can PATCH `done` without an attestation — a human emptied them. */
+const WAIT_TAGS = new Set(["wait:merge", "wait:decision", "wait:secret", "wait:access", "wait:deploy"]);
+
+function isHumanWait(item: Item): boolean {
+  return (item.tags || []).some((t) => WAIT_TAGS.has(String(t).toLowerCase()));
+}
+
+function hasValidAttestation(item: Item): boolean {
+  return (item.evidence || []).some(
+    (e) => e.kind === "attestation" && Boolean(e.adapter) && Boolean(e.commit),
+  );
+}
+
+/** `done` that would 409 must not be PATCHed; route through owner-close (GRPH-1030). */
+function canPatchDone(item: Item): boolean {
+  return isHumanWait(item) || hasValidAttestation(item);
+}
 
 /** Planner-facing statuses: live work, not backlog/next/done. */
 const ACTIVE_STATUSES: Status[] = ["in_progress", "review", "blocked"];
@@ -36,6 +55,7 @@ export function TrackerView() {
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [dragId, setDragId] = React.useState<string | null>(null);
   const [overId, setOverId] = React.useState<string | null>(null);
+  const [closing, setClosing] = React.useState<Item | null>(null);
 
   React.useEffect(() => {
     const id = searchParams.get(PALETTE_ITEM_PARAM);
@@ -73,6 +93,10 @@ export function TrackerView() {
   const isFilteredEmpty = !isLoading && !isError && ordered.length > 0 && visible.length === 0;
 
   function setStatus(item: Item, status: Status) {
+    if (status === "done" && !canPatchDone(item)) {
+      setClosing(item);
+      return;
+    }
     update.mutate({ id: item.id, body: { status } });
   }
 
@@ -200,6 +224,8 @@ export function TrackerView() {
           onStatus={(s) => setStatus(selected, s)}
         />
       )}
+
+      <OwnerCloseDialog item={closing} open={!!closing} onClose={() => setClosing(null)} />
     </div>
   );
 }

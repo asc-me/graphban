@@ -194,3 +194,27 @@ def require_writable(db: Session, user_id: str, project_id: str | None, what: st
     if can_read(db, user_id, project_id):
         raise HTTPException(403, f"read-only access to this {what}'s project")
     raise HTTPException(404, f"{what} not found")
+
+
+def project_role(db: Session, user_id: str, project_id: str | None) -> str | None:
+    """The caller's `Membership.role` on this project, or None if they hold no seat."""
+    if not project_id:
+        return None
+    return db.scalar(
+        select(Membership.role).where(
+            Membership.user_id == user_id, Membership.project_id == project_id
+        )
+    )
+
+
+def require_project_owner(db: Session, user_id: str, project_id: str | None,
+                          what: str = "item") -> None:
+    """Writable is not enough — the caller must be this project's owner (GRPH-1030).
+
+    Owner-close is a human act that must not be available to an admin with write, or to
+    an agent key wearing its minter's memberships. 404 hides existence the same way
+    `require_writable` does; a writer who is not the owner gets an honest 403.
+    """
+    require_writable(db, user_id, project_id, what)
+    if project_role(db, user_id, project_id) != "owner":
+        raise HTTPException(403, "requires the project owner")

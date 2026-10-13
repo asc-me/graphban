@@ -495,12 +495,14 @@ export interface PR {
   ago: string;
 }
 
-export type EvidenceKind = "test" | "url" | "screenshot" | "health" | "note";
+export type EvidenceKind = "test" | "url" | "screenshot" | "health" | "note" | "sabotage" | "attestation";
 
 export interface EvidenceReceipt {
   kind: EvidenceKind;
   detail: string;
   url: string;
+  adapter?: string;
+  commit?: string;
 }
 
 export interface Item {

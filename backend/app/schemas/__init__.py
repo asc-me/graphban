@@ -444,6 +444,12 @@ class ItemUpdate(BaseModel):
     reach: str | None = None
 
 
+class OwnerCloseIn(BaseModel):
+    """Body for POST /api/items/{id}/owner-close (GRPH-1030)."""
+    commit: str
+    pr_url: str | None = None
+
+
 class ReorderIn(BaseModel):
     ordered_ids: list[str]
 
