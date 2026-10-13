@@ -2916,8 +2916,11 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                     "list item under ## Acceptance, then name each in a {kind: test} entry"))
             raise errors.Conflict(str(e), hint=(
                 "pass, in this sign_off's evidence, a {kind: test} entry whose detail names "
-                "each acceptance clause from the item's ## Acceptance / ## Tests section; a "
-                "clause the evidence says was not delivered needs a bounce, not a test"))
+                "each acceptance clause from the item's ## Acceptance / ## Tests section — a "
+                "{kind: note} does not cover; a clause the evidence says was not delivered "
+                "needs a bounce, not a test; quoting the clause (including its own 'not' / "
+                "'cannot') is not a denial, and 'N failed' on a sabotage-style clause is the "
+                "expected red run"))
         out = _item_dict(item)
         if fleet_svc.is_credential(agent):
             # Say it in the response, not only in the column. A caller that never registered

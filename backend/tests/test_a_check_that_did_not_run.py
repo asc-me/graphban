@@ -417,3 +417,84 @@ def test_the_rule_the_refusal_states_is_the_rule_the_gate_applies():
     assert "_NEGATIVE_EVIDENCE" not in src, (
         "the scan belongs in denial_in alone — a second copy here is the drift this "
         "guards against")
+
+
+# ── GRPH-1029: quoted clause text, and expected-failure sabotage receipts ──────────────
+# Republiq dv2: clean reviews quoting the clause (required) were refused because the
+# clause itself said "not" / the sabotage receipt said "1 failed". GRPH-945's denial
+# scan must keep catching "NOT DELIVERED"; it must not catch the quote or the expected red.
+
+
+def test_quoting_a_clause_that_contains_not_is_not_a_denial():
+    """REPU-579. The clause is the claim. Residue after stripping it has no verdict."""
+    clause = "responses contain api_key=REDACTED and not the key"
+    line = f"{clause} — verified in the captured log"
+    assert denial_in(clause, line) == ""
+    assert acceptance_contradicted([clause], [{"kind": "test", "detail": line}]) == {}
+
+
+def test_quoting_a_clause_that_contains_cannot_is_still_not_a_denial():
+    """Already true for GRPH-945's self-review clause; pinned next to the 'not' case."""
+    clause = "a builder cannot sign off its own work"
+    line = f"test_self_review: {clause} — 14 passed, 0 failed"
+    assert denial_in(clause, line) == ""
+
+
+def test_expected_red_run_on_a_sabotage_clause_is_not_a_denial():
+    """REPU-588. The clause's delivery IS a red test; `1 failed` is the receipt."""
+    clause = "reverting to backend_url turns the link test red"
+    line = f"{clause} — red (1 failed)"
+    assert denial_in(clause, line) == ""
+    assert acceptance_contradicted([clause], [{"kind": "test", "detail": line}]) == {}
+
+
+def test_FAILED_on_a_sabotage_clause_is_not_a_denial():
+    clause = "reverting the check turns the suite red"
+    line = f"{clause} — FAILED"
+    assert denial_in(clause, line) == ""
+
+
+def test_not_delivered_on_a_sabotage_clause_still_denies():
+    """The abuse GRPH-945 exists for, on a sabotage-shaped clause."""
+    clause = "reverting to backend_url turns the link test red"
+    line = f"{clause} — NOT DELIVERED"
+    assert denial_in(clause, line) == "not delivered"
+    assert clause in acceptance_contradicted(
+        [clause], [{"kind": "test", "detail": line}])
+
+
+def test_a_real_failure_count_on_a_normal_clause_still_denies():
+    """GRPH-1008's `3 failed` rule is unchanged for clauses that are not about a red test."""
+    assert denial_in(CLAUSE, f"{CLAUSE} — 3 failed, 10 passed") == "failed"
+
+
+def test_a_note_that_names_a_clause_does_not_cover_it():
+    """Coverage is `{kind: test}`. A note that cites the clause is not a named test
+    (GRPH-945 / REPU-572). The denial scan must not be how this is enforced — the note
+    simply does not count."""
+    from app.services.fleet import acceptance_covered
+    clause = "The per-caucus report table is attached as evidence."
+    ok, uncovered, contradicted = acceptance_covered(
+        [clause], [{"kind": "note", "detail": f"{clause} — see evidence[4]"}])
+    assert ok is False
+    assert uncovered == [clause]
+    assert contradicted == {}
+
+
+def test_checkbox_list_items_are_stored_without_the_markup():
+    """A reviewer quoting the clause will not include `[x]`."""
+    from app.services.fleet import parse_acceptance
+    clauses, unreadable = parse_acceptance(
+        "## Acceptance\n- [x] the veto blocks an accept\n- [ ] the pin lapses\n")
+    assert clauses == ["the veto blocks an accept", "the pin lapses"]
+    assert unreadable == []
+
+
+def test_expected_failure_exception_is_applied_in_denial_in():
+    """Sabotage the CALL. A helper nobody consults is the defect this repo keeps shipping."""
+    import inspect
+    from app.services import fleet as fleet_svc
+    src = inspect.getsource(fleet_svc.denial_in)
+    assert "expected_failure_clause" in src, (
+        "denial_in no longer consults expected_failure_clause — sabotage receipts on a "
+        "red-test clause will be refused as denials again (GRPH-1029)")

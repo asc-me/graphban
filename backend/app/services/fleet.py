@@ -1890,6 +1890,9 @@ _HEADING = re.compile(r"^(#{2,3})\s+(.*?)\s*#*$")
 _ACCEPTANCE_LABEL = re.compile(
     r"^[\W_]*acceptance(?:\s+criteria)?[*_]*\s*:[*_]*\s*(.*)$", re.IGNORECASE)
 _LIST_ITEM = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
+#: Task-list prefix on a list item (`- [x] the gate names the clause`). Stripped so the
+#: stored clause is the words a reviewer will quote, not the checkbox markup.
+_CHECKBOX = re.compile(r"^\[(?:[xX]| )\]\s+")
 
 
 def parse_acceptance(description: str) -> tuple[list[str], list[str]]:
@@ -1945,7 +1948,7 @@ def parse_acceptance(description: str) -> tuple[list[str], list[str]]:
             continue
         item = _LIST_ITEM.match(stripped)
         if item and item.group(1).strip():
-            clauses.append(item.group(1).strip())
+            clauses.append(_CHECKBOX.sub("", item.group(1).strip()))
             section_count += 1
     close()
     return clauses, unreadable
@@ -1974,9 +1977,18 @@ _ZERO_FAILED = re.compile(r"\b0 (?:tests? )?failed\b")
 #: data; "skipped the Postgres run" and "I skipped that test" carry no count and still deny,
 #: which is the abuse GRPH-945 exists for.
 _SKIP_COUNT = re.compile(r"\b\d+ (?:tests? )?skipped\b")
+#: A clause whose delivery IS a red test — sabotage, revert-and-watch. `failed` in the
+#: receipt is then the expected outcome, the same shape a `{kind: sabotage}` row already
+#: skips. A normal clause still treats `3 failed` as a denial (GRPH-1008). REPU-588.
+_EXPECTED_FAILURE_CLAUSE = re.compile(r"\b(red|fail(?:ed|s|ure)?|sabotage)\b")
 #: A sentence boundary: terminal punctuation followed by whitespace or the end. NOT a bare
 #: dot, because clause text and receipts are full of `prd-index.json` and `v0.1`.
 _SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
+
+
+def expected_failure_clause(clause: str) -> bool:
+    """True when the clause's own text is about a test going red (GRPH-1029)."""
+    return bool(_EXPECTED_FAILURE_CLAUSE.search((clause or "").lower()))
 
 
 def _clause_scope(low: str, clause: str) -> str:
@@ -2043,18 +2055,30 @@ def denial_in(clause: str, line: str) -> str:
     """
     low = line.lower()
     scope = _clause_scope(low, clause.lower())
+    # Clause text is cut out before the scan so a clause that itself says "cannot" or
+    # "and not the key" is not contradicted by every receipt that quotes it (GRPH-1029 /
+    # REPU-579). Residue is what the reviewer wrote around the quote.
     residue = _SKIP_COUNT.sub(" ", _ZERO_FAILED.sub(" ", scope.replace(clause.lower(), " ")))
     m = _NEGATIVE_EVIDENCE.search(residue)
-    return m.group(1) if m else ""
+    if not m:
+        return ""
+    word = m.group(1)
+    if word == "failed" and expected_failure_clause(clause):
+        return ""
+    return word
 
 
 #: Why a receipt was read as denying its clause, stated at the point of refusal rather than
 #: in a source comment. One string, so the gate and its explanation cannot disagree.
 DENIAL_RULE = (
     "A denial counts only inside the clause's OWN sentence: a skip count (`34 skipped`) and "
-    "a zero failure count (`0 failed`) are read as counts, though `3 failed` still denies, "
-    "and a denial word in a neighbouring sentence is explanation. If the clause IS delivered, say so in the sentence that names it and keep "
-    "the caveat in a sentence of its own"
+    "a zero failure count (`0 failed`) are read as counts, though `3 failed` still denies "
+    "unless the clause itself is about an expected red test (then `1 failed` / `FAIL` are "
+    "the receipt, not a verdict), "
+    "and a denial word in a neighbouring sentence is explanation. Text quoted from the "
+    "clause is the claim, not a denial. Coverage is `{kind: test}` whose detail names the "
+    "clause — a `{kind: note}` that cites it does not. If the clause IS delivered, say so "
+    "in the sentence that names it and keep the caveat in a sentence of its own"
 )
 
 
