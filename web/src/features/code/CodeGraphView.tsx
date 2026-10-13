@@ -26,14 +26,20 @@ import {
   roleHex,
   secondsRemaining,
 } from "@/lib/graph/presence";
-import { useGraphFind } from "@/lib/graph/useGraphFind";
+import { useGraphFind, type GraphFind } from "@/lib/graph/useGraphFind";
 import { pathHighlight } from "@/lib/graph/pathHighlight";
 import { NODE_TAB_INDEX, useGraphKeyboard } from "@/lib/graph/useGraphKeyboard";
 import { HubsPanel, type HubSort } from "./HubsPanel";
 import { PathTrace } from "./PathTrace";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
 import { useGraphPins } from "@/lib/graph/useGraphPins";
-import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
+import {
+  LABEL_ZOOM,
+  MAX_ZOOM,
+  MIN_ZOOM,
+  useGraphViewport,
+  zoomAbout,
+} from "@/lib/graph/useGraphViewport";
 import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useCodeAnalysis, useCodeMap, useFleetPresence } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors, HeldArea, ProjectStub } from "@/lib/types";
@@ -95,11 +101,17 @@ export function CodeGraphView() {
   // How many rings the selection lights. Shift-click (or Shift+Enter) widens it; a fresh
   // selection resets it, so depth never quietly persists into the next thing you click.
   const [depth, setDepth] = React.useState(1);
+  // Isolate (Build.dc.html): the design's toggle beside the depth chips. The canvas already
+  // DIMS everything outside the reach ring to 0.22; isolate drops those nodes and edges
+  // instead, so a dense graph can be read at all. It needs a reach set to isolate against,
+  // so with nothing selected the control is disabled rather than silently doing nothing.
+  const [isolate, setIsolate] = React.useState(false);
   // Trail breadcrumb: the last N nodes the user selected, most-recent last. Clicking one
   // re-selects it without losing the rest — a back button that does not erase history.
   const [trail, setTrail] = React.useState<string[]>([]);
-  // Interaction hint: shown once until dismissed, teaches the discoverable gestures.
-  const [hintDismissed, setHintDismissed] = React.useState(false);
+  // Which pane the 300px aside shows. The design has one aside and no tabs; the app has a
+  // chat the design's own copy points at, so the tab strip is the seam between them.
+  const [sidePane, setSidePane] = React.useState<"inspect" | "ask">("inspect");
 
   const nodes = map?.nodes ?? [];
   // The UNFILTERED set drives layout; the filtered one only decides what is drawn. That split
@@ -224,6 +236,14 @@ export function CodeGraphView() {
   }, [firstMatch, galaxy, allIds.length]);
   const hubs = React.useMemo(() => topByDegree(ids, layoutEdges, LOD_TOP_N), [ids, layoutEdges]);
 
+  // The kinds the legend has to explain: what is DRAWN, in the fixed order of the colour
+  // vocabulary rather than whatever order the nodes arrived in, so the key does not reshuffle
+  // itself when the map changes underneath it.
+  const drawnKinds = React.useMemo(() => {
+    const present = new Set(ids.map((id) => nodeByPath[id]?.kind).filter(Boolean) as string[]);
+    return Object.keys(KIND_META).filter((k) => present.has(k));
+  }, [ids, nodeByPath]);
+
   // Fetch the rich neighborhood for the selected node (edges + touching items).
   React.useEffect(() => {
     if (!selPath) {
@@ -328,6 +348,21 @@ export function CodeGraphView() {
   /** What the canvas dims against: a live path wins, otherwise the reach ring. */
   const shown = pathHl ?? hl;
 
+  // Isolate stands down when there is nothing to isolate against. Without this the button
+  // stays pressed after the selection clears while hiding nothing — a control whose state
+  // disagrees with the canvas. One effect rather than a call in each of the four clear paths
+  // (keyboard Escape, inspector close, background click, trail clear).
+  React.useEffect(() => {
+    if (!shown) setIsolate(false);
+  }, [shown]);
+
+  // A selection made anywhere — canvas, hub, find result, a grounding chip in the chat —
+  // renders in the Inspect pane. Without this, clicking a node while the aside sits on Ask
+  // lights the ring and shows nothing, which is the control-that-does-nothing shape.
+  React.useEffect(() => {
+    if (selPath) setSidePane("inspect");
+  }, [selPath]);
+
   const kb = useGraphKeyboard({
     order: tabOrder,
     onSelect: selectNode,
@@ -426,31 +461,9 @@ export function CodeGraphView() {
           purpose={purpose}
           action={
             <div className="flex flex-wrap items-center gap-1.5">
-              <div className="relative mr-1">
-                <input
-                  ref={find.inputRef}
-                  value={find.query}
-                  onChange={(e) => find.setQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === "Escape" && find.clear()}
-                  placeholder="Find  /"
-                  aria-label="Find a node"
-                  className="w-[168px] rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-fg placeholder:text-faint focus:border-control-hover focus:outline-none"
-                />
-                {find.active && (
-                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[10px] text-faint">
-                    {find.matches.size}
-                  </span>
-                )}
-              </div>
-            {(view.viewport.k !== 1 || view.viewport.x !== 0 || view.viewport.y !== 0) && (
-              <button
-                onClick={view.reset}
-                title="Reset the view (or double-click the background)"
-                className="mr-1 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-control-hover hover:text-fg"
-              >
-                Reset view
-              </button>
-            )}
+            {/* No find box and no "Reset view" here. The design's header carries Hubs and the
+                edge chips and nothing else (`showFind: false`): find is a canvas overlay, and
+                Fit in the control cluster is the same `view.reset` this button called. */}
             {pinsApi.pinCount > 0 && (
               <button
                 onClick={pinsApi.clearPins}
@@ -472,23 +485,11 @@ export function CodeGraphView() {
                 {pending ? "Laying out…" : "Re-layout to visible"}
               </button>
             )}
-            {selPath && (
-              <button
-                onClick={() => setArmed((a) => !a)}
-                aria-pressed={armed}
-                title="Trace the shortest route from the selected node — or Alt-click one"
-                className={cn(
-                  "mr-1 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11.5px] transition-colors",
-                  armed
-                    ? "border-accent/60 bg-surface-3 text-accent"
-                    : "border-control bg-surface-2 text-muted hover:border-control-hover hover:text-fg",
-                )}
-              >
-                {armed ? "Pick the far end…" : "Path from here"}
-              </button>
-            )}
             <button
-              onClick={() => setHubsOpen((o) => !o)}
+              onClick={() => {
+                setHubsOpen((o) => !o);
+                setSidePane("inspect");
+              }}
               aria-pressed={hubsOpen}
               title="Rank nodes by what depends on them"
               className={cn(
@@ -587,12 +588,29 @@ export function CodeGraphView() {
                 <filter id="code-cloud-blur" x="-50%" y="-50%" width="200%" height="200%">
                   <feGaussianBlur stdDeviation="18" />
                 </filter>
+                {/* The canvas grid from Build.dc.html, to the design's numbers: 24px pitch,
+                    r=1 dots at #1a2026 (no token — the hairlines are #1e242a and up, and a
+                    grid that read as a hairline would compete with the panel borders). */}
+                <pattern id="code-dots" width="24" height="24" patternUnits="userSpaceOnUse">
+                  <circle cx="1.5" cy="1.5" r="1" fill="#1a2026" />
+                </pattern>
               </defs>
 
               <g
                 transform={view.transform}
                 style={{ transition: view.panning ? undefined : "transform 220ms ease" }}
               >
+              {/* Inside the transform, so the grid pans and zooms with the scene and gives the
+                  motion something to read against — outside it the canvas looks static. Sized
+                  well past the viewBox so panning never reaches an edge. */}
+              <rect
+                x={-W * 2}
+                y={-H * 2}
+                width={W * 5}
+                height={H * 5}
+                fill="url(#code-dots)"
+                pointerEvents="none"
+              />
               {/* Presence clouds sit BENEATH the edges and never touch a node's own fill or
                   stroke. That is the load-bearing rule of the visual design: a held node must
                   still say what kind of node it is, and tinting the node would overload the one
@@ -710,6 +728,8 @@ export function CodeGraphView() {
                 const b = pos[e.dst];
                 if (!a || !b) return null;
                 const active = !shown || shown.hlEdges.has(String(i));
+                // Isolate drops what dimming would merely fade (Build.dc.html).
+                if (isolate && !active) return null;
                 // Trim the endpoint back so the arrowhead sits at the node edge, not under it.
                 const dx = b.x - a.x;
                 const dy = b.y - a.y;
@@ -736,6 +756,8 @@ export function CodeGraphView() {
                 if (!p) return null;
                 const node = nodeByPath[id];
                 const active = !lit || lit.has(id);
+                // Isolate drops what dimming would merely fade (Build.dc.html).
+                if (isolate && !active) return null;
                 const meta = kindMeta(node?.kind ?? "");
                 const described = !!node;
                 const stale = described && !node.fresh;
@@ -875,11 +897,83 @@ export function CodeGraphView() {
             </svg>
           )}
 
-          {(hubsOpen || walk) && (
-            // Top-right, ONE column: the inspector owns the left, and hubs and a path must be
-            // readable together — you trace a route from a hub you just picked.
-            <div className="pointer-events-auto absolute right-3 top-3 z-10 flex max-h-[calc(100%-1.5rem)] flex-col gap-2 overflow-y-auto">
-              {hubsOpen && (
+          {/* Top-left, 320px, over the canvas — where the design puts find. The header's
+              168px box is gone: a search whose results are nodes belongs on the surface
+              that draws them, and the dropdown below it needs room the header never had. */}
+          {!isLoading && !empty && (
+            <CanvasFind find={find} nodeByPath={nodeByPath} onPick={pickHub} />
+          )}
+
+          {/* The design's bottom bar: legend on the left, controls on the right, one row,
+              `justify-content:space-between`. Four overlays used to stack on top of each
+              other in this corner — legend, trail, inspector and the stub card all claimed
+              bottom-left — and the trail and inspector have moved to the aside, which is
+              what makes a single row possible at all. */}
+          {!isLoading && !empty && (
+            <div
+              data-testid="graph-bottom-bar"
+              className="pointer-events-none absolute inset-x-4 bottom-3.5 z-10 flex flex-wrap-reverse items-end justify-between gap-2"
+            >
+              <div className="flex min-w-0 flex-col items-start gap-2">
+                {stubHover && <StubEvidence stub={stubHover} />}
+                <FleetLegend presence={presence} soloUser={soloUser} onSolo={setSoloUser} />
+                {!galaxyMode && <KindLegend kinds={drawnKinds} />}
+              </div>
+              <GraphControls
+                depth={depth}
+                onDepth={setDepth}
+                isolate={isolate}
+                onIsolate={() => setIsolate((v) => !v)}
+                canIsolate={!!shown}
+                zoom={view.viewport.k}
+                onZoom={(factor) =>
+                  view.setViewport((v) => zoomAbout(v, factor, W / 2, H / 2))
+                }
+                onFit={view.reset}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* The design's 300px right aside. Hubs, the trail and the selection used to float on
+          the canvas, where they covered the graph they describe and fought each other for
+          the same corners. The design gives them a column instead and leaves the canvas to
+          the drawing.
+
+          The tabs are a divergence, recorded with the rest in PRD-47 §1.3. Build.dc.html has
+          one aside and no chat on this page — but its own empty-state copy says "ask a
+          question on the right", so the design took the app's words without the surface they
+          name. Deleting a shipped feature is not matching a design, so the aside holds both
+          and a node selection pulls Inspect forward, which is the case where the two would
+          otherwise disagree. */}
+      <aside
+        data-testid="graph-aside"
+        className="flex w-[300px] flex-none flex-col border-l border-line-2 bg-surface/60"
+      >
+        <div className="flex flex-none gap-1 border-b border-line-2 px-3 py-2">
+          {(["inspect", "ask"] as const).map((pane) => (
+            <button
+              key={pane}
+              onClick={() => setSidePane(pane)}
+              aria-pressed={sidePane === pane}
+              className={cn(
+                "rounded-lg px-2.5 py-1 text-[11.5px] transition-colors",
+                sidePane === pane
+                  ? "bg-surface-3 text-fg"
+                  : "text-muted hover:text-fg-2",
+              )}
+            >
+              {pane === "inspect" ? "Inspect" : "Ask the codebase"}
+            </button>
+          ))}
+        </div>
+
+        {sidePane === "ask" ? (
+          <CodeChat projectId={activeId} onSelectPath={setSelPath} />
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+            {hubsOpen && (
               <HubsPanel
                 hubs={analysis?.hubs ?? []}
                 sort={hubSort}
@@ -892,67 +986,62 @@ export function CodeGraphView() {
                 allEdgeTypes={EDGE_TYPES}
                 kindColour={(k) => kindMeta(k).color}
               />
-              )}
-              {walk && (
-                <PathTrace
-                  path={walk}
-                  onClear={() => setPathTo(null)}
-                  onPick={pickHub}
-                  edgeTypes={activeTypes}
-                  allEdgeTypes={EDGE_TYPES}
+            )}
+
+            {walk && (
+              <PathTrace
+                path={walk}
+                onClear={() => setPathTo(null)}
+                onPick={pickHub}
+                edgeTypes={activeTypes}
+                allEdgeTypes={EDGE_TYPES}
+              />
+            )}
+
+            {trail.length > 1 && (
+              <TrailBreadcrumb
+                trail={trail}
+                nodeByPath={nodeByPath}
+                onPick={(p) => {
+                  setSelPath(p);
+                  setDepth(1);
+                  setPathTo(null);
+                }}
+                onClear={() => setTrail([])}
+              />
+            )}
+
+            {selPath ? (
+              <NodeInspector
+                path={selPath}
+                nb={nb}
+                depth={depth}
+                reach={hl?.hlNodes.size ?? 1}
+                holders={heldByNode.get(selPath) ?? []}
+                servedAt={presence?.served_at ?? null}
+                armed={armed}
+                onArm={() => setArmed((a) => !a)}
+                onExpand={() => setDepth((d) => Math.min(4, d + 1))}
+                onClose={() => setSelPath(null)}
+              />
+            ) : (
+              /* The design's "Explore" state: with nothing selected, the aside teaches the
+                 gestures and offers the areas to jump into. That is what this hint already
+                 said from the canvas's bottom-right corner, so it moves rather than being
+                 written twice — and the corner it vacates is the one the control cluster
+                 needs. */
+              !isLoading &&
+              !empty &&
+              !failed && (
+                <InteractionHint
+                  galaxyMode={galaxyMode}
+                  superNodes={galaxy.superNodes}
+                  onJump={(id) => setEntered(id)}
                 />
-              )}
-            </div>
-          )}
-
-          {stubHover && <StubEvidence stub={stubHover} />}
-
-          {!isLoading && !empty && (
-            <FleetLegend presence={presence} soloUser={soloUser} onSolo={setSoloUser} />
-          )}
-
-          {selPath && (
-            <NodeInspector
-              path={selPath}
-              nb={nb}
-              depth={depth}
-              reach={hl?.hlNodes.size ?? 1}
-              holders={heldByNode.get(selPath) ?? []}
-              servedAt={presence?.served_at ?? null}
-              onExpand={() => setDepth((d) => Math.min(4, d + 1))}
-              onClose={() => setSelPath(null)}
-            />
-          )}
-
-          {trail.length > 1 && (
-            <TrailBreadcrumb
-              trail={trail}
-              nodeByPath={nodeByPath}
-              onPick={(p) => {
-                setSelPath(p);
-                setDepth(1);
-                setPathTo(null);
-              }}
-              onClear={() => setTrail([])}
-            />
-          )}
-
-          {!hintDismissed && !isLoading && !empty && !failed && (
-            <InteractionHint
-              galaxyMode={galaxyMode}
-              superNodes={galaxy.superNodes}
-              onJump={(id) => {
-                setEntered(id);
-                setHintDismissed(true);
-              }}
-              onDismiss={() => setHintDismissed(true)}
-            />
-          )}
-        </div>
-      </div>
-
-      <aside className="flex w-[360px] flex-none flex-col border-l border-line bg-surface/50">
-        <CodeChat projectId={activeId} onSelectPath={setSelPath} />
+              )
+            )}
+          </div>
+        )}
       </aside>
     </div>
   );
@@ -965,6 +1054,8 @@ function NodeInspector({
   reach,
   holders,
   servedAt,
+  armed,
+  onArm,
   onExpand,
   onClose,
 }: {
@@ -974,6 +1065,8 @@ function NodeInspector({
   reach: number;
   holders: HeldArea[];
   servedAt: string | null;
+  armed: boolean;
+  onArm: () => void;
   onExpand: () => void;
   onClose: () => void;
 }) {
@@ -982,7 +1075,7 @@ function NodeInspector({
   const meta = kindMeta(node?.kind ?? "");
   const stale = node ? !node.fresh : false;
   return (
-    <div className="absolute bottom-4 left-4 w-[340px] animate-fade rounded-[13px] border border-line-hover bg-surface-3/95 p-4 shadow-[0_20px_48px_rgba(0,0,0,0.5)]">
+    <div className="animate-fade">
       <div className="mb-1.5 flex items-center gap-2">
         <span
           className="rounded border px-1.5 py-px font-mono text-[9px] uppercase tracking-wide"
@@ -998,7 +1091,13 @@ function NodeInspector({
         {!node && (
           <span className="font-mono text-[10px] text-faint">not described</span>
         )}
-        <button onClick={onClose} className="ml-auto text-faint hover:text-fg">
+        {/* "×" alone announces as nothing useful, and this is the only way to dismiss the
+            inspector without focus inside the canvas (Escape is bound to the <svg>). */}
+        <button
+          onClick={onClose}
+          aria-label="Close the inspector"
+          className="ml-auto text-faint hover:text-fg"
+        >
           ×
         </button>
       </div>
@@ -1074,6 +1173,22 @@ function NodeInspector({
           </button>
         )}
       </div>
+      {/* The design's "Path from here", on the selection rather than in the header. Alt-click
+          is the PRD's gesture and is invisible; on some window managers alt-drag never reaches
+          the page at all, so the button is the discoverable way in. */}
+      <button
+        onClick={onArm}
+        aria-pressed={armed}
+        title="Trace the shortest route from this node — or Alt-click the far end"
+        className={cn(
+          "mb-2 h-[26px] rounded-[7px] border px-2.5 text-small transition-colors",
+          armed
+            ? "border-accent/60 bg-surface-3 text-accent"
+            : "border-control bg-surface-2 text-muted hover:border-control-hover hover:text-fg",
+        )}
+      >
+        {armed ? "Pick the far end…" : "Path from here"}
+      </button>
       {node?.summary && <p className="mb-3 text-body leading-relaxed text-muted">{node.summary}</p>}
 
       {!nb ? (
@@ -1239,7 +1354,7 @@ export function ArrowsOut({
 /** The evidence for one arrow — the file, and the fact found in it. */
 function StubEvidence({ stub }: { stub: ProjectStub }) {
   return (
-    <div className="pointer-events-none absolute bottom-3 left-3 max-w-[420px] rounded-[11px] border border-line-2 bg-surface-2 px-3 py-2.5 shadow-xl">
+    <div className="pointer-events-none max-w-[420px] rounded-[11px] border border-line-2 bg-surface-2 px-3 py-2.5 shadow-xl">
       <div className="font-mono text-[10px] uppercase tracking-[0.06em] text-faint-2">
         depends on {stub.tag}
         {!stub.fresh && <span className="ml-2 text-st-review">stale</span>}
@@ -1255,6 +1370,245 @@ function StubEvidence({ stub }: { stub: ProjectStub }) {
           real and has nowhere to attach. Describing the file gives it an anchor.
         </p>
       )}
+    </div>
+  );
+}
+
+// ── Canvas controls ───────────────────────────────────────────────────────────
+// The top-right cluster from `Build.dc.html`: depth chips, Isolate, and a zoom
+// group of − / readout / + / Fit. Three of those five had no control at all —
+// the view could only be zoomed by wheel and only reset by double-clicking the
+// background, which is undiscoverable and unreachable from a keyboard.
+//
+// Sizes and the segmented shape are the design's, not rounded to the type scale:
+// `index.css` says a size carrying no role stays arbitrary rather than being
+// rounded into one, and 10/10.5/11.5/15px are what the design uses here. The
+// zoom readout's #5c656e likewise has no token — --color-faint is #7f8891, two
+// steps lighter — so it stays a literal rather than becoming a palette change,
+// which PRD-47 §1.3 puts outside this PRD.
+
+/** Zoom steps per click. Matches the wheel's feel without overshooting MIN/MAX. */
+const ZOOM_STEP = 1.3;
+
+// ── Kind legend ───────────────────────────────────────────────────────────────
+// The design's bottom-left slot. Every node on this canvas is the same circle and only its
+// COLOUR says what it is, and until now nothing on the page said what the colours meant —
+// you had to click a node and read the inspector to learn that purple is a symbol. Five
+// kinds, five colours, no key: the one thing a legend is for.
+//
+// Only the kinds actually drawn are listed. A fixed five-row key over a graph of nothing but
+// files is a glossary, and it teaches the reader to ignore it.
+
+function KindLegend({ kinds }: { kinds: string[] }) {
+  if (kinds.length < 2) return null;
+  return (
+    <div className="pointer-events-auto flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-[10px] border border-line-2 bg-surface/90 px-3 py-2 backdrop-blur-sm">
+      {kinds.map((k) => {
+        const meta = kindMeta(k);
+        return (
+          <span key={k} className="inline-flex items-center gap-1.5 font-mono text-[10px] text-muted">
+            <span className="h-2 w-2 rounded-full" style={{ background: meta.color }} />
+            {meta.label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Canvas find ───────────────────────────────────────────────────────────────
+// The design's top-left overlay: a 320px box with a magnifier, and under it the hits as a
+// list. The header box this replaces could only ever show a COUNT — "7" beside the input —
+// which tells you the search worked and not which seven, on a canvas where a hit may be a
+// dot three screens away or inside a collapsed component. The list names them and clicking
+// one takes the same route a hub click does.
+
+/** How many hits the dropdown names before it stops and says how many it did not. */
+const FIND_ROWS = 8;
+
+function CanvasFind({
+  find,
+  nodeByPath,
+  onPick,
+}: {
+  find: GraphFind;
+  nodeByPath: Record<string, { name: string; kind: string }>;
+  onPick: (path: string) => void;
+}) {
+  const hits = React.useMemo(() => [...find.matches].sort(), [find.matches]);
+  return (
+    <div className="pointer-events-auto absolute left-4 top-3.5 z-10 flex w-[min(320px,calc(100%-2rem))] flex-col gap-2">
+      <div className="relative">
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 16 16"
+          fill="none"
+          aria-hidden="true"
+          className="pointer-events-none absolute left-[11px] top-1/2 z-10 -translate-y-1/2 opacity-60"
+        >
+          <circle cx="7" cy="7" r="5" stroke="#8b949e" strokeWidth="1.6" />
+          <path d="M11 11l3 3" stroke="#8b949e" strokeWidth="1.6" strokeLinecap="round" />
+        </svg>
+        <input
+          ref={find.inputRef}
+          value={find.query}
+          onChange={(e) => find.setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === "Escape" && find.clear()}
+          placeholder="Find a file, symbol or module…"
+          aria-label="Find a node"
+          className="h-[34px] w-full rounded-[10px] border border-control bg-surface/[0.92] pl-8 pr-3 text-body text-fg backdrop-blur-sm placeholder:text-faint focus:border-control-hover focus:outline-none"
+        />
+      </div>
+      {find.active && (
+        <div
+          role="listbox"
+          aria-label="Matching nodes"
+          className="divide-y divide-line-2 overflow-hidden rounded-[10px] border border-line-2 bg-surface/[0.97] backdrop-blur-sm"
+        >
+          {/* A query that matched nothing says so. Rendering an empty box, or none at all,
+              is indistinguishable from not having searched — the same absence-reads-as-clean
+              rule `useGraphFind.active` exists to carry. */}
+          {hits.length === 0 ? (
+            <div className="px-3 py-2 text-small text-faint">No node matches that.</div>
+          ) : (
+            <>
+              {hits.slice(0, FIND_ROWS).map((id) => {
+                const node = nodeByPath[id];
+                const meta = kindMeta(node?.kind ?? "");
+                return (
+                  <button
+                    key={id}
+                    role="option"
+                    aria-selected={false}
+                    onClick={() => onPick(id)}
+                    className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-surface-2"
+                  >
+                    <span
+                      className="h-[7px] w-[7px] flex-none rounded-full"
+                      style={{ background: meta.color }}
+                    />
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-fg-2">
+                      {label(id, node?.name ?? "")}
+                    </span>
+                    <span className="flex-none font-mono text-meta text-[#5c656e]">
+                      {node ? meta.label.toLowerCase() : "undescribed"}
+                    </span>
+                  </button>
+                );
+              })}
+              {hits.length > FIND_ROWS && (
+                <div className="px-3 py-1.5 font-mono text-meta text-faint">
+                  +{hits.length - FIND_ROWS} more lit on the canvas
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GraphControls({
+  depth,
+  onDepth,
+  isolate,
+  onIsolate,
+  canIsolate,
+  zoom,
+  onZoom,
+  onFit,
+}: {
+  depth: number;
+  onDepth: (d: number) => void;
+  isolate: boolean;
+  onIsolate: () => void;
+  canIsolate: boolean;
+  zoom: number;
+  onZoom: (factor: number) => void;
+  onFit: () => void;
+}) {
+  // The design draws these segmented groups and their internal dividers at #1e242a, which is
+  // --color-line-2 — a hairline, ~1.2:1. A control's border is its identity under WCAG 1.4.11,
+  // so `control-borders.test.ts` holds controls on --color-control and the floor wins over the
+  // drawing here (the same way GRPH-938's casing beat the design's). Recorded in PRD-47 §1.3.
+  // The dividers live on the container as `divide-x` rather than as a border on each button,
+  // so the separator is structure and no control carries its own hairline.
+  const group =
+    "flex divide-x divide-control overflow-hidden rounded-[9px] border border-control bg-surface/90 backdrop-blur-sm";
+  const stepper =
+    "flex h-[30px] w-8 items-center justify-center text-[15px] leading-none text-muted transition-colors hover:text-fg disabled:opacity-40 disabled:hover:text-muted";
+  return (
+    <div className="pointer-events-auto ml-auto flex flex-wrap items-center justify-end gap-1.5">
+      {/* Each chip shows a bare "1"/"2"/"3", which announces as a digit and says nothing, so
+          the accessible name is spelled out while the visible glyph stays as drawn. This repo
+          treats accessible names as load-bearing — see graph-accessible-name.test.tsx. */}
+      <div className={group} role="group" aria-label="Rings lit around the selection">
+        {[1, 2, 3].map((d) => (
+          <button
+            key={d}
+            onClick={() => onDepth(d)}
+            aria-pressed={depth === d}
+            aria-label={`Light ${d} ring${d > 1 ? "s" : ""} around the selection`}
+            title={`Light ${d} ring${d > 1 ? "s" : ""} around the selection`}
+            className={cn(
+              "h-[30px] px-2.5 font-mono text-[10.5px] transition-colors",
+              depth === d ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
+            )}
+          >
+            {d}
+          </button>
+        ))}
+      </div>
+      <button
+        onClick={onIsolate}
+        aria-pressed={isolate}
+        disabled={!canIsolate}
+        title={
+          canIsolate
+            ? "Hide everything outside the lit rings instead of dimming it"
+            : "Select a node first — isolate needs something to isolate against"
+        }
+        className={cn(
+          "h-8 rounded-[9px] border px-[11px] text-[11.5px] transition-colors disabled:opacity-40",
+          isolate
+            ? "border-control-hover bg-surface-3 text-fg"
+            : "border-control bg-surface-2 text-muted enabled:hover:border-control-hover enabled:hover:text-fg",
+        )}
+      >
+        Isolate
+      </button>
+      <div className={group}>
+        <button
+          onClick={() => onZoom(1 / ZOOM_STEP)}
+          aria-label="Zoom out"
+          disabled={zoom <= MIN_ZOOM + 1e-6}
+          className={stepper}
+        >
+          −
+        </button>
+        <span
+          aria-live="polite"
+          className="flex items-center px-1.5 font-mono text-[10px] text-[#5c656e]"
+        >
+          {Math.round(zoom * 100)}%
+        </span>
+        <button
+          onClick={() => onZoom(ZOOM_STEP)}
+          aria-label="Zoom in"
+          disabled={zoom >= MAX_ZOOM - 1e-6}
+          className={stepper}
+        >
+          +
+        </button>
+        <button
+          onClick={onFit}
+          className="h-[30px] px-2.5 text-[11.5px] text-muted transition-colors hover:text-fg"
+        >
+          Fit
+        </button>
+      </div>
     </div>
   );
 }
@@ -1276,7 +1630,7 @@ function TrailBreadcrumb({
   onClear: () => void;
 }) {
   return (
-    <div className="pointer-events-auto absolute bottom-3 left-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-1 rounded-lg border border-line-2 bg-surface-3/90 px-2 py-1.5 shadow-lg backdrop-blur-sm">
+    <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
       <span className="flex-none font-mono text-[9px] uppercase tracking-wide text-faint">Trail</span>
       {trail.map((p, i) => {
         const node = nodeByPath[p];
@@ -1312,36 +1666,24 @@ function TrailBreadcrumb({
 }
 
 // ── Interaction hint ──────────────────────────────────────────────────────────
-// Teaches the discoverable gestures: hover to preview, click to pin, alt-click
-// for path, shift-click to expand. When the graph is in galaxy mode, shows area
-// jump cards for the largest components. Dismissed once, stays dismissed.
+// The aside's no-selection state (the design calls it "Explore"): teaches the gestures, and
+// in galaxy mode offers the largest components to jump into. It was a dismissible card in the
+// canvas's bottom-right corner — the corner the design gives to the control cluster — and
+// nothing needs dismissing once it is in a column of its own.
 
 function InteractionHint({
   galaxyMode,
   superNodes,
   onJump,
-  onDismiss,
 }: {
   galaxyMode: boolean;
   superNodes: SuperNode[];
   onJump: (id: string) => void;
-  onDismiss: () => void;
 }) {
   const areas = galaxyMode ? superNodes.slice(0, 4) : [];
   return (
-    <div className="pointer-events-auto absolute bottom-3 right-3 z-10 w-[280px] rounded-xl border border-line-2 bg-surface-3/95 p-3 shadow-lg backdrop-blur-sm">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="font-mono text-[10px] uppercase tracking-wide text-faint">
-          Gestures
-        </span>
-        <button
-          onClick={onDismiss}
-          className="text-faint hover:text-fg"
-          aria-label="Dismiss hint"
-        >
-          ×
-        </button>
-      </div>
+    <div>
+      <div className="mb-2 text-[13px] font-semibold text-fg">Explore</div>
       <ul className="space-y-1 text-small text-muted">
         <li>
           <span className="font-mono text-meta text-fg-2">Hover</span>{" "}
@@ -1378,7 +1720,10 @@ function InteractionHint({
                 title={`${sn.size} nodes`}
               >
                 <span className="block truncate">{label(sn.anchor, "")}</span>
-                <span className="text-[8px] text-faint">{sn.size} nodes</span>
+                {/* 8px appeared nowhere in Build.dc.html, whose floor is 9px, and it is below
+                    the scale's own smallest role. `text-micro` is that role (8.5px, "IDs and
+                    keys") and is the nearest thing the design sanctions. */}
+                <span className="text-micro text-faint">{sn.size} nodes</span>
               </button>
             ))}
           </div>

@@ -37,7 +37,7 @@ export function FleetLegend({
   if (holders.length === 0 && offMap.length === 0) return null;
 
   return (
-    <div className="pointer-events-auto absolute inset-x-3 bottom-3 z-10">
+    <div className="pointer-events-auto min-w-0">
       {trayOpen && offMap.length > 0 && (
         <div className="mb-2 max-h-[168px] overflow-y-auto rounded-[11px] border border-line-hover bg-surface-3/95 p-2.5 shadow-[0_16px_40px_rgba(0,0,0,0.5)]">
           <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">
