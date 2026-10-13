@@ -1400,6 +1400,22 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "github_url", "assignee", "prd_id", "prd_section", "fidelity"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
+    # GRPH-1031. `branch` is identity, not branding: a worker rewriting it under a live
+    # reviewer is how GRPH-946's "reviewer has nothing to read" comes back. The CALL
+    # gate (planner/supervisor only) lives in `fleet.check_tool_role`; this half is
+    # what the field DOES. Empty is not a write — the same rule as touchpoints — so a
+    # PATCH that sends `branch=""` cannot clear a pointer a reviewer is holding.
+    if "branch" in fields and fields["branch"] is not None:
+        incoming = str(fields["branch"]).strip()
+        if incoming:
+            held = (item.branch or "").strip()
+            if item.status == "review" and held and incoming != held:
+                raise ValueError(
+                    f"{item.key} is in review on `{held}`; rewriting the branch would "
+                    "leave the reviewer with nothing to read. Bounce it first, or leave "
+                    "the pointer alone"
+                )
+            item.branch = incoming
     # THE AUTHORSHIP STAMP (GRPH-848). `built_by` was written in one place — the claim — so
     # an item built inline and sent to review here carried no author at all, and
     # `independent(reviewer, None)` read that as "human-authored": measured on 2026-09-10,
@@ -1764,6 +1780,13 @@ def item_dict(item: Item) -> dict:
         "built_by": item.built_by,
         "reviewed_by": item.reviewed_by,
     }
+    if (item.branch or "").strip():
+        # PRESENT ONLY WHEN SET (GRPH-1031), the same rule bounce_reason follows: an
+        # empty branch on every row would spend the list payload saying "nobody has
+        # claimed this" a thousand times, and a supervisor resuming after a bounce
+        # needs the value that IS there, not a field that is always present and
+        # usually blank.
+        out["branch"] = item.branch
     if item.reviewed_by_capabilities:
         # The reviewer's tier, vendor and model (GRPH-945), so a cheap-on-cheap sign-off reads
         # differently from a frontier or human one. Present only once somebody signed it off,

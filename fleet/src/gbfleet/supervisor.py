@@ -476,6 +476,10 @@ def item_status(client: Graphban) -> dict[str, dict]:
             # divvy was right, and that input is this snapshot, not whatever the item says
             # after the worker has been editing it.
             "touchpoints": list(row.get("touchpoints") or []),
+            # GRPH-1031: a bounced item's recorded branch is the head the next spawn
+            # resumes. Absent from the lean projection; `fields=full` carries both.
+            "branch": row.get("branch") or "",
+            "bounce_reason": row.get("bounce_reason") or "",
         }
     return out
 
@@ -913,20 +917,49 @@ def _start(
         slot = "1"
         agent_slot = f"{wave_name}-{slot}"
         try:
-            if resumes:
-                orphan = resumes.pop(0)
-                slot = orphan.branch.rsplit("-", 1)[-1] or slot
+            # GRPH-1031. A bounce of a pushed PR is not a salvage: choose_resume skips
+            # anything whose subject is not `WIP: salvaged by gbfleet`, so the next
+            # spawn used to cut a sibling from main and the builder rebuilt reviewed
+            # work. Bound seats know the item; resume THAT branch, merged with the
+            # wave base. Unbound seats still take salvage, then a fresh cut.
+            bounced = wt_mod.bounce_branch_of(
+                (items or {}).get(seat.item) if seat.item else None
+            )
+            if bounced and bounced not in taken:
+                slot = bounced.rsplit("-", 1)[-1] or slot
                 agent_slot = f"{wave_name}-{slot}"
                 try:
-                    tree = wt_mod.resume(
-                        repo, workspace / f"{wave_name}-{slot}-resume", orphan,
+                    tree = wt_mod.resume_bounced(
+                        repo, workspace / f"{wave_name}-{slot}-bounce", bounced,
+                        base=base,
                     )
-                    wave.resumed.append(orphan.branch)
-                    taken.add(orphan.branch)
+                    wave.resumed.append(bounced)
+                    taken.add(bounced)
                 except wt_mod.ResumeFailed as exc:
-                    # Do not abort. Spawn from HEAD; leave the leftover ref listed.
                     wave.resume_misses.append(str(exc))
-                    observe.emit("resume_miss", detail=str(exc), branch=orphan.branch)
+                    observe.emit("resume_miss", detail=str(exc), branch=bounced)
+            if tree is None and resumes:
+                orphan = resumes.pop(0)
+                if orphan.branch in taken:
+                    orphan = None
+                    while resumes:
+                        candidate = resumes.pop(0)
+                        if candidate.branch not in taken:
+                            orphan = candidate
+                            break
+                if orphan is not None:
+                    slot = orphan.branch.rsplit("-", 1)[-1] or slot
+                    agent_slot = f"{wave_name}-{slot}"
+                    try:
+                        tree = wt_mod.resume(
+                            repo, workspace / f"{wave_name}-{slot}-resume", orphan,
+                        )
+                        wave.resumed.append(orphan.branch)
+                        taken.add(orphan.branch)
+                    except wt_mod.ResumeFailed as exc:
+                        # Do not abort. Spawn from HEAD; leave the leftover ref listed.
+                        wave.resume_misses.append(str(exc))
+                        observe.emit("resume_miss", detail=str(exc), branch=orphan.branch)
             while tree is None:
                 slot = str(slot_n)
                 slot_n += 1

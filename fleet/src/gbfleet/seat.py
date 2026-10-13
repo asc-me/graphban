@@ -194,6 +194,17 @@ DEPENDENCY = (
     "missing, and carry on with the rest.\n"
 )
 
+#: GRPH-1031. After a bounce the next child used to land on a fresh cut from main, and
+#: builders refused to merge the item's own earlier branch — even with an explicit planner
+#: note — so they either blocked asking for a manual rebase or rebuilt and regressed
+#: reviewed work. Like BOUNDARY and DEPENDENCY this is a sentence, not a control.
+OWN_WORK = (
+    "If this worktree already carries a prior attempt at the same item — a bounced branch "
+    "or a salvage — that history is YOUR OWN WORK on this item, not someone else's. Merge "
+    "it and continue. Do not refuse it as a foreign branch and do not rebuild from the "
+    "base.\n"
+)
+
 #: GRPH-974. Neither template said "commit", and four of four productive children on the
 #: PRD-47 waves did not — they built, moved the item to review with evidence, and exited on a
 #: dirty tree. What follows is automatic and was invisible to everybody: `reap` salvages the
@@ -255,7 +266,7 @@ INSTRUCTION = (
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY + DEPENDENCY + COMMIT + NOT_YET +
+    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT + NOT_YET +
     "Call claim_review with wait_seconds=0. If there is nothing to review, call "
     "claim_cluster with wait_seconds=0 to take the next ready non-colliding cluster. "
     "EXIT when both are empty — exiting on an empty queue is the normal end of your "
@@ -273,7 +284,7 @@ BOUND_INSTRUCTION = (
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY + DEPENDENCY + COMMIT + NOT_YET +
+    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT + NOT_YET +
     "This seat is BOUND to {item}: registering on it claims that item for you. Read the "
     "reply's `assigned`. If `assigned.state` is `claimed`, you HOLD {item} — read it with "
     "get_item_details, build it, COMMIT it, then move it to review with evidence. Then, "
@@ -302,7 +313,7 @@ REVIEW_ONLY_INSTRUCTION = (
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY + DEPENDENCY + COMMIT +
+    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT +
     "This seat is REVIEW-ONLY: you may hold review work and you may NOT take build work. "
     "Do NOT call claim_cluster or claim_next — the server refuses both on this seat, and "
     "that refusal is the seat working, not an empty board. Call claim_review with "

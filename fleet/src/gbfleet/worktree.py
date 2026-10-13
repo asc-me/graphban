@@ -807,6 +807,80 @@ def resume(repo: Path, path: Path, orphan: Orphan) -> Worktree:
     return Worktree(path=path, branch=orphan.branch, repo=repo, base=sha)
 
 
+def bounce_branch_of(row: dict | None) -> str:
+    """The recorded branch of a bounced item, or "".
+
+    A bounce of a pushed PR is not a salvage: `bounce_reason` is what `was_bounced`
+    reads, and `branch` is the head the next spawn must resume. Either missing is
+    not a bounce-resume — cutting from the base is then the first-spawn path.
+    """
+    if not row:
+        return ""
+    if not str(row.get("bounce_reason") or "").strip():
+        return ""
+    return str(row.get("branch") or "").strip()
+
+
+def _ensure_local_branch(repo: Path, branch: str) -> None:
+    """Make `branch` a local ref, fetching from the remote when that is where it lives."""
+    if branch_exists(repo, branch):
+        return
+    remote = remote_for(repo)
+    if remote:
+        subprocess.run(
+            ["git", "fetch", "--quiet", remote, branch],
+            cwd=str(repo), capture_output=True, text=True,
+        )
+        tracking = f"refs/remotes/{remote}/{branch}"
+        if _git(repo, "rev-parse", "--verify", "--quiet", tracking, check=False).strip():
+            _git(repo, "branch", branch, f"{remote}/{branch}")
+            return
+    raise ResumeFailed(
+        f"{branch} is gone locally and not on the remote; not resuming"
+    )
+
+
+def resume_bounced(repo: Path, path: Path, branch: str, base: str = "") -> Worktree:
+    """Checkout the item's bounced branch and merge `base` into it (GRPH-1031).
+
+    A bounce of a pushed PR is not a salvage: the head is on the remote, the item is
+    `next`, and `create` would cut a sibling from main — which is how reviewed work
+    was rebuilt and regressed. Never force, never auto-suffix, never rebase.
+
+    Merge conflicts stay in the tree. The history is this item's own work; the child
+    is told so and resolves them. Aborting to a fresh cut from `base` is the defect
+    this exists to close.
+    """
+    repo = Path(repo)
+    path = Path(path)
+    branch = (branch or "").strip()
+    if not branch:
+        raise ResumeFailed("no bounced branch to resume")
+    if path.exists():
+        raise ResumeFailed(f"{path} already exists; not resuming {branch}")
+    _ensure_local_branch(repo, branch)
+    try:
+        _git(repo, "worktree", "add", "-q", str(path), branch)
+    except GitError as exc:
+        raise ResumeFailed(f"{branch}: worktree add failed ({exc})") from exc
+    merge_from = (base or "HEAD").strip()
+    try:
+        base_sha = _git(repo, "rev-parse", merge_from).strip()
+    except GitError as exc:
+        raise ResumeFailed(f"{branch}: could not resolve base {merge_from} ({exc})") from exc
+    # Conflicts are left for the child (returncode 1). Anything else is git failing
+    # to answer, and still must not fall through to a sibling cut from the base.
+    proc = subprocess.run(
+        ["git", "merge", "--no-edit", base_sha],
+        cwd=str(path), capture_output=True, text=True,
+    )
+    if proc.returncode not in (0, 1):
+        raise ResumeFailed(
+            f"{branch}: merge of {merge_from} failed ({proc.stderr.strip() or proc.returncode})"
+        )
+    return Worktree(path=path, branch=branch, repo=repo, base=base_sha)
+
+
 def choose_resume(
     found: list[Orphan],
     items: dict[str, dict],

@@ -1084,7 +1084,8 @@ OPEN_TOOLS: dict[str, str] = {
     # ---- work verbs: bounded by ownership rather than by role ----------------------------
     "create_item": "any role may record work that needs doing; creating is not claiming",
     "update_item": "the worker's verb, and its authority is bounded by WORKER_STATUS_CEILING "
-                   "below rather than by this map — a role gate here would not add to it",
+                   "and the branch write (GRPH-1031) below rather than by this map — a role "
+                   "gate here would not add to it",
     "link_items": "a relation between two items is a statement about the work, not a claim "
                   "on it",
     "unlink_items": "the inverse of link_items and gated the same",
@@ -1252,6 +1253,8 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
     required = TOOL_ROLES.get(tool)
     if role == "unidentified" and (required or (tool == "update_item"
                                                 and (args or {}).get("status") in _BEYOND_WORKER)
+                                  or (tool == "update_item"
+                                      and str((args or {}).get("branch") or "").strip())
                                   or (tool == "release_item"
                                       and (args or {}).get("to_status", "next") in _BEYOND_WORKER)):
         raise authz.Forbidden(
@@ -1283,6 +1286,24 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
                 f"update_item(status={status!r}) is beyond the worker ceiling; "
                 f"{who} is registered as 'worker'",
                 hint="move it to 'review'; the self-review ban gates sign-off",
+            )
+
+    # GRPH-1031. `branch` is identity. A worker rewriting it under a live reviewer is
+    # how GRPH-946's "reviewer has nothing to read" comes back. Empty is not a write,
+    # so a worker sending `branch=""` must not be refused for a field it did not set.
+    if tool == "update_item" and str((args or {}).get("branch") or "").strip():
+        if role == "worker":
+            raise authz.Forbidden(
+                f"update_item(branch=…) is planner/supervisor work; "
+                f"{who} is registered as 'worker'",
+                hint="a planner or the supervisor that cut the tree retargets the branch",
+            )
+        if role == "unidentified":
+            raise authz.Forbidden(
+                "update_item(branch=…) needs to know which agent is calling: this "
+                "credential is running a fleet, so an unidentified caller cannot be "
+                "assumed to be a planner",
+                hint="pass agent_id — the value register_agent returned",
             )
 
     # `release_item` is how a worker hands work back — the release verb is shared across

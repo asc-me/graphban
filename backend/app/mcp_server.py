@@ -1784,6 +1784,13 @@ _FLEET_ONLY_ARGS = {
                        "— e.g. {\"commit_is_not_the_base\": \"built by hand, PR #913\"}. "
                        "Recorded on the receipt. Ignored for a predicate that ran and failed.",
     }},
+    # GRPH-1031. Planner/supervisor retarget after a bounce. Fleet-only for the reason
+    # every entry here is: the ceiling is measured on the base manifest, and a worker
+    # must not be told it can rewrite identity. Empty is not a write.
+    "update_item": {"branch": {
+        "type": "string",
+        "description": "Planner/supervisor: retarget. Empty is not a write.",
+    }},
     # GRPH-807. Measured on a live instance: 177 agents, 27,391 tokens, of which ONE was live.
     # A planner polling a wave paid nearly twice the whole manifest, per poll.
     "fleet_status": {"view": {
@@ -2523,6 +2530,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             head_commit=args.get("head_commit"),
             ack_section_drift=args.get("ack_section_drift"),
             evidence=args.get("evidence"),
+            branch=args.get("branch"),
         )
         if item is None:
             raise errors.NotFound(f"item not found: {args['id']}")

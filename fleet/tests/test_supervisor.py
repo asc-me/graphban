@@ -222,6 +222,92 @@ def test_up_resumes_a_salvage_orphan_without_injected_items(
     assert "release_item" in SPAWN_READS
 
 
+def test_a_bounced_item_relaunches_from_its_head_merged_with_the_base(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """GRPH-1031. A bounce of a pushed PR is not a salvage. choose_resume skips
+    non-WIP subjects, so the next spawn used to cut a sibling from main.
+
+    Sabotage: ignore bounce_reason / item.branch in `_start` — this child lands on
+    a new gb/wave-* from HEAD and kept.py is missing.
+    Sabotage: resume without merging the base — later.py is missing.
+    """
+    import subprocess
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    dead = create(git_repo, workspace / "dead", "wave", "1")
+    (dead.path / "kept.py").write_text("round-1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=dead.path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=w@e.invalid", "-c", "user.name=W",
+         "commit", "-qm", "round 1"],
+        cwd=dead.path, check=True,
+    )
+    reap(dead)
+    (git_repo / "later.py").write_text("from-main\n", encoding="utf-8")
+    subprocess.run(["git", "add", "later.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "main moved"], cwd=git_repo, check=True)
+
+    bound = Seat(code=f"{CODE}-0", server_url="http://gb.invalid", api_key=KEY,
+                 item="GRPH-1")
+    wave = up(
+        git_repo, [bound], _factory(scripts, "works_then_exits"),
+        _server(workspace), limits=Limits(max_workers=1),
+        state=state, workspace=workspace,
+        items={"GRPH-1": {
+            "status": "next", "claimed_by": "",
+            "branch": dead.branch, "bounce_reason": "tests failed",
+        }},
+    )
+    assert wave.resumed == [dead.branch], wave.resume_misses
+    assert wave.spawned[0].branch == dead.branch
+    show = subprocess.run(
+        ["git", "show", f"{dead.branch}:kept.py"],
+        cwd=git_repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert show == "round-1\n"
+    later = subprocess.run(
+        ["git", "show", f"{dead.branch}:later.py"],
+        cwd=git_repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert later == "from-main\n"
+
+
+def test_a_first_spawn_still_cuts_from_the_base(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """GRPH-1031. No bounce, no salvage: a leftover gb/ branch is not this item's
+    work. Sabotage: resume any orphan for a bound seat — this child lands on
+    leftover.py's branch instead of a fresh cut.
+    """
+    import subprocess
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    leftover = create(git_repo, workspace / "old", "other", "9")
+    (leftover.path / "leftover.py").write_text("not-this-item\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=leftover.path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=w@e.invalid", "-c", "user.name=W",
+         "commit", "-qm", "someone else's work"],
+        cwd=leftover.path, check=True,
+    )
+    reap(leftover)
+
+    bound = Seat(code=f"{CODE}-0", server_url="http://gb.invalid", api_key=KEY,
+                 item="GRPH-1")
+    wave = up(
+        git_repo, [bound], _factory(scripts, "works_then_exits"),
+        _server(workspace), limits=Limits(max_workers=1),
+        state=state, workspace=workspace,
+        items={"GRPH-1": {"status": "next", "claimed_by": ""}},
+    )
+    assert wave.resumed == [], wave.resumed
+    assert wave.spawned[0].branch != leftover.branch
+    assert wave.spawned[0].branch.startswith("gb/wave-")
+
+
 def test_remember_holdings_keeps_the_last_non_empty():
     """Live roster after release_item is empty; reap must not read that."""
     import subprocess

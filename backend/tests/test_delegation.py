@@ -148,6 +148,23 @@ def test_the_text_carries_no_suggestion(client, key):
         assert banned.lower() not in text.lower(), banned
 
 
+def test_a_bounced_brief_says_the_prior_branch_is_own_work(client, key, db):
+    """GRPH-1031. Sabotage: drop the standing line from `_text` — the child is
+    never told, and the planner note is ignored the same way the reported waves
+    ignored it."""
+    item_key = _item(client, key)
+    stored = _stored(db, item_key)
+    stored.branch = "gb/round-1"
+    stored.bounce_reason = "one test failed"
+    db.commit()
+
+    text = _details(client, key, item_key)["brief"]["text"]
+    assert "gb/round-1" in text
+    assert "own prior work" in text
+    assert "Do not refuse to merge it" in text
+    assert "do not rebuild from the base" in text
+
+
 def test_the_brief_caps_summary_and_lessons(client, key):
     """27 / D17."""
     long_first = "x" * 700 + "\n\nsecond paragraph must not appear"
