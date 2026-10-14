@@ -177,7 +177,7 @@ describe("the graph's depth chips", () => {
     await mount();
 
     const chips = screen.getAllByRole("button", { name: /^Light \d ring/ });
-    expect(chips.map((c) => c.textContent)).toEqual(["1", "2", "3"]);
+    expect(chips.map((c) => c.textContent)).toEqual(["1 hop", "2 hops", "3 hops"]);
     expect(chips[0]).toHaveAttribute("aria-pressed", "true");
     expect(chips[1]).toHaveAttribute("aria-pressed", "false");
   });
