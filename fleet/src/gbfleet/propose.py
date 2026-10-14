@@ -382,18 +382,38 @@ def pr_selector(item: dict) -> str:
     return str(item.get("branch") or "").strip()
 
 
+def _url_for_ref(repo: Path, selector: str) -> str:
+    """Any-state PR URL for a branch ref, or "".
+
+    `gh pr view <branch>` only finds OPEN PRs. After a GitHub merge the PR is MERGED and that
+    lookup used to read as "no PR", so merged-dependency detection fell through to matching
+    a commit subject `{TAG}-{N}:` — which a default "Merge pull request #…" never is
+    (GRPH-1032). URLs and numbers are already selectors; do not re-list those.
+    """
+    s = (selector or "").strip()
+    if not s or s.startswith("http") or "/pull/" in s or s.lstrip("#").isdigit():
+        return ""
+    return str(existing_any(repo, s).get("url") or "")
+
+
 def view(repo: Path, selector: str) -> tuple[dict | None, str]:
     """`(pr, error)`. `pr` is None when there is no PR for `selector` or `gh` could not say.
 
     Two Nones with different `error`s, on purpose: "no PR found for that branch" is a fact about
     the branch and ends the attempt as `skipped`; a `gh` that could not run is a fact about
     this machine and reads the same way, but the reason must say which.
+
+    A branch whose PR is MERGED or CLOSED still resolves: `pr view` is OPEN-only, so a miss
+    is retried against `pr list --state all` (GRPH-1032).
     """
     try:
         done = _gh(repo, "pr", "view", selector, "--json", _PR_FIELDS)
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"gh could not run: {exc}"
     if done.returncode != 0:
+        other = _url_for_ref(repo, selector)
+        if other:
+            return view(repo, other)
         tail = (done.stderr or done.stdout or "").strip().splitlines()
         return None, f"no PR for {selector}: {tail[-1][:200] if tail else done.returncode}"
     try:
@@ -434,12 +454,16 @@ def same_commit(a: str, b: str) -> bool:
 
 
 def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
-          green: set[str]) -> Merged:
+          green: set[str], paths: list[str] | tuple[str, ...] | None = None) -> Merged:
     """Finish one item's merge, or say exactly which precondition stopped it.
 
     `reviewed` is the commit the sign-off attestation names; `green` is every commit CI has
     attested `suite_green` on. Both come from the ledger and neither is derived here, so a
     caller cannot pass a branch name for either — the comparison is commit to commit.
+
+    `paths` are the item's own files. A head that moved only because main was merged in —
+    those paths byte-identical to `reviewed` — is not a new review (GRPH-1032). Empty `paths`
+    cannot prove that, so the head must still match.
 
     Never raises and never fails a wave. Every path returns a `Merged` that says what it did.
     """
@@ -480,13 +504,24 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
     # THE CHECK THIS EXISTS FOR. Commit against commit, never branch against branch: a push
     # after review keeps the branch name and changes the head, and a comparison on names
     # would merge code nobody reviewed under a sign-off that vouches for something else.
+    #
+    # GRPH-1032: merging main into a signed branch moves the head while leaving the item's
+    # own files byte-identical. That is not a new review — the attested tree is still there.
+    # A real edit of those paths still needs review again. Empty `paths` cannot prove the
+    # first case, so it stays the refusal.
+    from .worktree import paths_unchanged
+
     head = str(pr.get("headRefOid") or "")
     if not same_commit(head, reviewed):
-        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
-                      reason=f"PR head {head[:12] or '?'} is not the reviewed commit "
-                             f"{reviewed[:12]} — the branch moved after sign-off; it needs "
-                             "review again, not a merge")
-    checked.append("head=reviewed")
+        if paths_unchanged(repo, reviewed, head, paths):
+            checked.append("paths-unchanged")
+        else:
+            return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                          reason=f"PR head {head[:12] or '?'} is not the reviewed commit "
+                                 f"{reviewed[:12]} — the branch moved after sign-off; it needs "
+                                 "review again, not a merge")
+    else:
+        checked.append("head=reviewed")
     if not any(same_commit(reviewed, g) for g in green):
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                       reason=f"CI has not attested {CI_PREDICATE} on {reviewed[:12]}")

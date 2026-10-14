@@ -816,9 +816,11 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
         raise DelegationRefused(f"lane must be one of {list(LANES)}", code="validation")
     if tier not in TIERS:
         raise DelegationRefused(f"tier must be one of {list(TIERS)}", code="validation")
-    if item.blocker:
-        raise DelegationRefused(f"{item.key} is blocked: {item.blocker}",
-                                hint="clear the blocker before delegating")
+    if item.status == "blocked" or item.blocker:
+        raise DelegationRefused(
+            f"{item.key} is blocked"
+            + (f": {item.blocker}" if item.blocker else " (status blocked)"),
+            hint="clear the blocker before delegating")
     _refuse_by_reach(item, acknowledge_reach)
     if item.claimed_by == agent.id:
         raise DelegationRefused(f"you hold {item.key}; release it or build it yourself",

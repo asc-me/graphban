@@ -1935,6 +1935,7 @@ class Merger:
             self.repo, item_id, selector,
             reviewed=propose_mod.reviewed_commit(item),
             green=propose_mod.green_commits(item),
+            paths=item.get("touchpoints") or [],
         )
         if got.ok and got.commit:
             got = self._record(wave, got)

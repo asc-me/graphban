@@ -1273,9 +1273,14 @@ def _seed_ready(details: dict) -> bool:
     """Startable the way `get_backlog` means ready: next/backlog, no unfinished blocker.
 
     A file-cluster's `items[0]` is not that. Review, done, blocked, and an item whose brief
-    still names an unfinished dependency are not seeds (GRPH-886).
+    still names an unfinished dependency are not seeds (GRPH-886). Status `blocked` is
+    named first so a "Do not launch" row cannot be seeded even when a supervisor asks
+    (GRPH-1032).
     """
-    if str(details.get("status") or "") not in ("next", "backlog"):
+    status = str(details.get("status") or "")
+    if status == "blocked":
+        return False
+    if status not in ("next", "backlog"):
         return False
     brief = details.get("brief") if isinstance(details.get("brief"), dict) else {}
     if brief.get("blocked_by"):
