@@ -60,6 +60,92 @@ const KIND_META: Record<string, { label: string; color: string }> = {
 };
 const kindMeta = (kind: string) => KIND_META[kind] ?? { label: kind || "node", color: "#8b949e" };
 
+/**
+ * Build.dc.html encodes kind as SHAPE, not as another colour. Colour still names the kind
+ * (cluster colour would need an area axis the server does not serve — recorded on GRPH-1033)
+ * but a canvas of identical circles made the legend the only way to tell a file from a symbol,
+ * and the legend was easy to miss. Ring / circle / diamond / square is the design's vocabulary.
+ */
+type KindShape = "ring" | "circle" | "diamond" | "square";
+function kindShape(kind: string): KindShape {
+  if (kind === "module") return "ring";
+  if (kind === "symbol" || kind === "request") return "diamond";
+  if (kind === "doc" || kind === "config") return "square";
+  return "circle";
+}
+
+/** Radii from Build.dc.html, scaled to this viewBox. File size still grows with degree. */
+function kindRadius(kind: string, degree = 0): number {
+  if (kind === "module") return 11;
+  if (kind === "file") return 5.5 + Math.min(degree, 6) * 0.45;
+  if (kind === "symbol") return 5;
+  if (kind === "doc" || kind === "config") return 5.5;
+  return 7;
+}
+
+function KindGlyph({
+  kind,
+  color,
+  r,
+  described = true,
+  stale = false,
+}: {
+  kind: string;
+  color: string;
+  r: number;
+  described?: boolean;
+  stale?: boolean;
+}) {
+  const shape = kindShape(kind);
+  const dash = !described || stale ? "2 2" : undefined;
+  const fill = described ? (shape === "ring" ? "#0a0c0e" : color) : "#0d1114";
+  const stroke = described && shape !== "ring" ? "#0a0c0e" : color;
+  const opacity = described ? 1 : 0.7;
+  if (shape === "diamond") {
+    return (
+      <polygon
+        points={`0,${-r} ${r},0 0,${r} ${-r},0`}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={2}
+        strokeDasharray={dash}
+        opacity={opacity}
+      />
+    );
+  }
+  if (shape === "square") {
+    return (
+      <rect
+        x={-r}
+        y={-r}
+        width={r * 2}
+        height={r * 2}
+        rx={1.5}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={2}
+        strokeDasharray={dash}
+        opacity={opacity}
+      />
+    );
+  }
+  return (
+    <>
+      <circle
+        r={r}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={2}
+        strokeDasharray={dash}
+        opacity={opacity}
+      />
+      {shape === "ring" && described && (
+        <circle r={Math.max(2.2, r * 0.36)} fill={color} />
+      )}
+    </>
+  );
+}
+
 const EDGE_META: Record<CodeEdgeType, { label: string; color: string }> = {
   imports: { label: "imports", color: "#7ca2ff" },
   calls: { label: "calls", color: "#c6f24e" },
@@ -71,7 +157,6 @@ const EDGE_TYPES = Object.keys(EDGE_META) as CodeEdgeType[];
 
 const W = 900;
 const H = 560;
-const R = 7;
 /** How many hubs keep their name when zoomed out (PRD-20 D2, level of detail). */
 const LOD_TOP_N = 12;
 
@@ -79,7 +164,8 @@ const LOD_TOP_N = 12;
 function label(path: string, name: string): string {
   if (name) return name;
   const seg = path.split("::").pop() ?? path;
-  return seg.split("/").pop() ?? seg;
+  const parts = seg.split("/").filter(Boolean);
+  return parts.pop() ?? seg;
 }
 
 export function CodeGraphView() {
@@ -243,6 +329,32 @@ export function CodeGraphView() {
     const present = new Set(ids.map((id) => nodeByPath[id]?.kind).filter(Boolean) as string[]);
     return Object.keys(KIND_META).filter((k) => present.has(k));
   }, [ids, nodeByPath]);
+
+  // Area chips under find (Build.dc.html `gAreas`). Modules are the named areas the graph
+  // actually has; without at least two, a chip row would be a legend of one. Connected
+  // components of three or more are the fallback — they are real, not invented prefixes.
+  const areas = React.useMemo(() => {
+    const modules = ids
+      .map((id) => nodeByPath[id])
+      .filter((n): n is (typeof nodes)[number] => n?.kind === "module");
+    if (modules.length >= 2) {
+      return modules.map((n) => ({
+        id: n.path,
+        label: label(n.path, n.name),
+        color: kindMeta("module").color,
+        meta: "",
+      }));
+    }
+    return galaxy.superNodes
+      .filter((s) => s.size >= 3)
+      .slice(0, 8)
+      .map((s) => ({
+        id: s.anchor,
+        label: label(s.anchor, nodeByPath[s.anchor]?.name ?? ""),
+        color: kindMeta(nodeByPath[s.anchor]?.kind ?? "file").color,
+        meta: `${s.size} nodes`,
+      }));
+  }, [ids, nodeByPath, galaxy.superNodes]);
 
   // Fetch the rich neighborhood for the selected node (edges + touching items).
   React.useEffect(() => {
@@ -521,7 +633,15 @@ export function CodeGraphView() {
           }
         />
 
-        <div className="relative min-h-0 flex-1 overflow-hidden">
+        <div
+          className="relative min-h-0 flex-1 overflow-hidden"
+          style={{
+            // Build.dc.html canvas wash: a faint violet radial over the page ground, so the
+            // dotted grid is not sitting on a flat black.
+            background:
+              "radial-gradient(1000px 640px at 50% 45%, rgba(167,139,250,.05), transparent 70%)",
+          }}
+        >
           {failed ? (
             <PlannerError message={FETCH_FAILED} onRetry={() => void mapQ.refetch()} />
           ) : isLoading ? (
@@ -734,8 +854,9 @@ export function CodeGraphView() {
                 const dx = b.x - a.x;
                 const dy = b.y - a.y;
                 const d = Math.hypot(dx, dy) || 1;
-                const bx = b.x - (dx / d) * (R + 4);
-                const by = b.y - (dy / d) * (R + 4);
+                const rb = kindRadius(nodeByPath[e.dst]?.kind ?? "", degree[e.dst] ?? 0);
+                const bx = b.x - (dx / d) * (rb + 4);
+                const by = b.y - (dy / d) * (rb + 4);
                 return (
                   <line
                     key={i}
@@ -766,6 +887,8 @@ export function CodeGraphView() {
                 const isHover = hoverId === id;
                 const holders = heldByNode.get(id) ?? [];
                 const contention = contentionOf(holders);
+                const r = kindRadius(node?.kind ?? "", degree[id] ?? 0);
+                const drawR = isHover ? r + 1.5 : r;
                 // Level of detail: zoomed out, only the names worth the ink survive — the
                 // selection, the search hits, and the hubs. Zoom past LABEL_ZOOM and the rest
                 // arrive. Past ~40 nodes the labels were previously the densest ink on screen.
@@ -815,24 +938,32 @@ export function CodeGraphView() {
                       else if (ev.shiftKey && selPath === id) setDepth((d) => Math.min(4, d + 1));
                       else selectNode(id);
                     }}
+                    onDoubleClick={(ev) => {
+                      // Build.dc.html: double-click zooms onto the node. pickHub is the
+                      // same path find and the inspector's Zoom to take.
+                      ev.stopPropagation();
+                      pickHub(id);
+                    }}
                   >
-                    <circle
-                      r={isHover ? R + 2 : R}
-                      fill={described ? meta.color : "#0d1114"}
-                      stroke={described ? "#0a0c0e" : meta.color}
-                      strokeWidth={2}
-                      strokeDasharray={!described || stale ? "2 2" : undefined}
-                      opacity={described ? 1 : 0.7}
+                    {/* Hit circle — diamonds and squares are smaller than their clickable
+                        neighbourhood. The design's hit path is max(r+6, 12). */}
+                    <circle r={Math.max(drawR + 6, 12)} fill="transparent" />
+                    <KindGlyph
+                      kind={node?.kind ?? ""}
+                      color={meta.color}
+                      r={drawR}
+                      described={described}
+                      stale={stale}
                     />
                     {pinned && (
-                      <circle r={R + 3} fill="none" stroke="#8b949e" strokeWidth={1} opacity={0.55} />
+                      <circle r={drawR + 3} fill="none" stroke="#8b949e" strokeWidth={1} opacity={0.55} />
                     )}
                     {holders.length > 0 && (
                       <>
                         {/* Pulse ring in the HOLDER's colour — whose, not what kind. */}
                         <circle
                           className="hold-pulse"
-                          r={R + 6}
+                          r={drawR + 6}
                           fill="none"
                           stroke={holders[0].user_color ?? "#8b949e"}
                           strokeWidth={2}
@@ -840,8 +971,8 @@ export function CodeGraphView() {
                         {/* Role dot: what they are DOING to it is a different question from
                             whose they are, so it gets its own mark rather than tinting one. */}
                         <circle
-                          cx={R + 4}
-                          cy={-(R + 4)}
+                          cx={drawR + 4}
+                          cy={-(drawR + 4)}
                           r={2.5}
                           fill={roleHex(holders[0].active_role)}
                           stroke="#0a0c0e"
@@ -856,7 +987,7 @@ export function CodeGraphView() {
                             argues carefully for three. The number lives in the inspector. */}
                         {contention.contended && (
                           <circle
-                            r={R + 10}
+                            r={drawR + 10}
                             fill="none"
                             stroke="var(--color-st-blocked)"
                             strokeWidth={2}
@@ -867,7 +998,7 @@ export function CodeGraphView() {
                     {/* One focus vocabulary: keyboard focus and selection wear the same ring. */}
                     {(selPath === id || focused) && (
                       <circle
-                        r={R + 4}
+                        r={drawR + 4}
                         fill="none"
                         stroke={meta.color}
                         strokeWidth={1.5}
@@ -876,7 +1007,7 @@ export function CodeGraphView() {
                     )}
                     {showLabel && (
                       <text
-                        x={11}
+                        x={drawR + 4}
                         y={4}
                         fontSize={11}
                         fontFamily="IBM Plex Mono, monospace"
@@ -901,7 +1032,13 @@ export function CodeGraphView() {
               168px box is gone: a search whose results are nodes belongs on the surface
               that draws them, and the dropdown below it needs room the header never had. */}
           {!isLoading && !empty && (
-            <CanvasFind find={find} nodeByPath={nodeByPath} onPick={pickHub} />
+            <CanvasFind
+              find={find}
+              nodeByPath={nodeByPath}
+              onPick={pickHub}
+              areas={areas}
+              activeId={selPath}
+            />
           )}
 
           {/* The design's bottom bar: legend on the left, controls on the right, one row,
@@ -1023,6 +1160,10 @@ export function CodeGraphView() {
                 onArm={() => setArmed((a) => !a)}
                 onExpand={() => setDepth((d) => Math.min(4, d + 1))}
                 onClose={() => setSelPath(null)}
+                onZoom={() => pickHub(selPath)}
+                onPick={pickHub}
+                kind={nodeByPath[selPath]?.kind ?? ""}
+                kindColor={kindMeta(nodeByPath[selPath]?.kind ?? "").color}
               />
             ) : (
               /* The design's "Explore" state: with nothing selected, the aside teaches the
@@ -1036,7 +1177,8 @@ export function CodeGraphView() {
                 <InteractionHint
                   galaxyMode={galaxyMode}
                   superNodes={galaxy.superNodes}
-                  onJump={(id) => setEntered(id)}
+                  areas={areas}
+                  onJump={(id) => (galaxyMode ? setEntered(id) : pickHub(id))}
                 />
               )
             )}
@@ -1058,6 +1200,10 @@ function NodeInspector({
   onArm,
   onExpand,
   onClose,
+  onZoom,
+  onPick,
+  kind,
+  kindColor,
 }: {
   path: string;
   nb: CodeNeighbors | null;
@@ -1069,17 +1215,21 @@ function NodeInspector({
   onArm: () => void;
   onExpand: () => void;
   onClose: () => void;
+  onZoom: () => void;
+  onPick: (path: string) => void;
+  kind: string;
+  kindColor: string;
 }) {
   const contention = contentionOf(holders);
   const node = nb?.node ?? null;
-  const meta = kindMeta(node?.kind ?? "");
+  const meta = kindMeta(node?.kind || kind);
   const stale = node ? !node.fresh : false;
   return (
     <div className="animate-fade">
       <div className="mb-1.5 flex items-center gap-2">
         <span
-          className="rounded border px-1.5 py-px font-mono text-[9px] uppercase tracking-wide"
-          style={{ borderColor: meta.color, color: meta.color }}
+          className="rounded border px-1.5 py-px font-mono text-meta tracking-wide"
+          style={{ borderColor: meta.color || kindColor, color: meta.color || kindColor }}
         >
           {meta.label}
         </span>
@@ -1091,17 +1241,10 @@ function NodeInspector({
         {!node && (
           <span className="font-mono text-[10px] text-faint">not described</span>
         )}
-        {/* "×" alone announces as nothing useful, and this is the only way to dismiss the
-            inspector without focus inside the canvas (Escape is bound to the <svg>). */}
-        <button
-          onClick={onClose}
-          aria-label="Close the inspector"
-          className="ml-auto text-faint hover:text-fg"
-        >
-          ×
-        </button>
       </div>
-      <div className="mb-2 break-all font-mono text-[11.5px] text-fg-2">{path}</div>
+      <div className="mb-2 break-all font-mono text-lead text-fg">
+        {label(path, node?.name ?? "") || path}
+      </div>
 
       {holders.length > 0 && servedAt && (
         <div
@@ -1173,30 +1316,53 @@ function NodeInspector({
           </button>
         )}
       </div>
-      {/* The design's "Path from here", on the selection rather than in the header. Alt-click
-          is the PRD's gesture and is invisible; on some window managers alt-drag never reaches
-          the page at all, so the button is the discoverable way in. */}
-      <button
-        onClick={onArm}
-        aria-pressed={armed}
-        title="Trace the shortest route from this node — or Alt-click the far end"
-        className={cn(
-          "mb-2 h-[26px] rounded-[7px] border px-2.5 text-small transition-colors",
-          armed
-            ? "border-accent/60 bg-surface-3 text-accent"
-            : "border-control bg-surface-2 text-muted hover:border-control-hover hover:text-fg",
-        )}
-      >
-        {armed ? "Pick the far end…" : "Path from here"}
-      </button>
+      {/* Build.dc.html: Zoom to / Clear / Path from here as one row. Clear keeps the
+          accessible name the isolate stand-down test reaches ("Close the inspector") —
+          a visible "Clear" that announced as nothing would be the × this replaces. */}
+      <div className="mb-2 flex flex-wrap gap-1.5">
+        <button
+          onClick={onZoom}
+          className="h-[26px] rounded-[7px] border border-control bg-surface-2 px-2.5 text-small text-fg-2 transition-colors hover:border-control-hover"
+        >
+          Zoom to
+        </button>
+        <button
+          onClick={onClose}
+          aria-label="Close the inspector"
+          className="h-[26px] rounded-[7px] border border-control bg-transparent px-2.5 text-small text-muted transition-colors hover:text-fg"
+        >
+          Clear
+        </button>
+        <button
+          onClick={onArm}
+          aria-pressed={armed}
+          title="Trace the shortest route from this node — or Alt-click the far end"
+          className={cn(
+            "h-[26px] rounded-[7px] border px-2.5 text-small transition-colors",
+            armed
+              ? "border-accent/60 bg-surface-3 text-accent"
+              : "border-control bg-transparent text-muted hover:border-control-hover hover:text-fg",
+          )}
+        >
+          {armed ? "Pick the far end…" : "Path from here"}
+        </button>
+      </div>
       {node?.summary && <p className="mb-3 text-body leading-relaxed text-muted">{node.summary}</p>}
 
       {!nb ? (
         <div className="font-mono text-[10px] text-faint">loading…</div>
       ) : (
         <div className="space-y-2.5">
-          <EdgeList title="Depends on" rows={nb.outgoing.map((e) => ({ path: e.dst, type: e.type }))} />
-          <EdgeList title="Used by" rows={nb.incoming.map((e) => ({ path: e.src, type: e.type }))} />
+          <EdgeList
+            title="Depends on"
+            rows={nb.outgoing.map((e) => ({ path: e.dst, type: e.type }))}
+            onPick={onPick}
+          />
+          <EdgeList
+            title="Used by"
+            rows={nb.incoming.map((e) => ({ path: e.src, type: e.type }))}
+            onPick={onPick}
+          />
 
           {(nb.linked_items.length > 0 || nb.linked_requests.length > 0) && (
             <div>
@@ -1245,21 +1411,43 @@ function WorkRow({ id, title, relation, color }: { id: string; title: string; re
   );
 }
 
-function EdgeList({ title, rows }: { title: string; rows: { path: string; type: CodeEdgeType }[] }) {
-  if (rows.length === 0) return null;
+function EdgeList({
+  title,
+  rows,
+  onPick,
+}: {
+  title: string;
+  rows: { path: string; type: CodeEdgeType }[];
+  onPick: (path: string) => void;
+}) {
+  const empty = rows.length === 0;
   return (
     <div>
-      <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-faint">{title}</div>
-      <div className="space-y-1">
-        {rows.map((r, i) => (
-          <div key={i} className="flex items-center gap-2 text-[12px]">
-            <span className="h-1.5 w-1.5 flex-none rounded-full" style={{ background: EDGE_META[r.type].color }} />
-            <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted">{r.path}</span>
-            <span className="flex-none font-mono text-[9px] uppercase tracking-wide text-faint">
-              {EDGE_META[r.type].label}
-            </span>
+      <div className="mb-1.5 flex items-baseline gap-1.5">
+        <span className="font-mono text-meta tracking-wide text-muted">{title}</span>
+        <span className="font-mono text-meta text-faint-2">{rows.length}</span>
+      </div>
+      <div className="flex flex-col gap-0.5">
+        {empty ? (
+          <div className="flex items-center gap-2 px-1.5 py-1 font-mono text-small text-faint">
+            <span className="h-1.5 w-1.5 flex-none rounded-full bg-line-3" />
+            nothing
           </div>
-        ))}
+        ) : (
+          rows.map((r, i) => (
+            <button
+              key={i}
+              onClick={() => onPick(r.path)}
+              className="-mx-1.5 flex items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-surface-3"
+            >
+              <span className="h-1.5 w-1.5 flex-none rounded-full" style={{ background: EDGE_META[r.type].color }} />
+              <span className="min-w-0 flex-1 truncate font-mono text-small text-fg-2">{r.path}</span>
+              <span className="flex-none font-mono text-meta" style={{ color: EDGE_META[r.type].color }}>
+                {EDGE_META[r.type].label}
+              </span>
+            </button>
+          ))
+        )}
       </div>
     </div>
   );
@@ -1391,10 +1579,9 @@ function StubEvidence({ stub }: { stub: ProjectStub }) {
 const ZOOM_STEP = 1.3;
 
 // ── Kind legend ───────────────────────────────────────────────────────────────
-// The design's bottom-left slot. Every node on this canvas is the same circle and only its
-// COLOUR says what it is, and until now nothing on the page said what the colours meant —
-// you had to click a node and read the inspector to learn that purple is a symbol. Five
-// kinds, five colours, no key: the one thing a legend is for.
+// The design's bottom-left slot. Kind is SHAPE (ring / circle / diamond / square); colour
+// still names the kind because the server has no cluster axis to colour by. The legend
+// draws the same KindGlyph the canvas uses — a key of circles would explain nothing.
 //
 // Only the kinds actually drawn are listed. A fixed five-row key over a graph of nothing but
 // files is a glossary, and it teaches the reader to ignore it.
@@ -1406,8 +1593,16 @@ function KindLegend({ kinds }: { kinds: string[] }) {
       {kinds.map((k) => {
         const meta = kindMeta(k);
         return (
-          <span key={k} className="inline-flex items-center gap-1.5 font-mono text-[10px] text-muted">
-            <span className="h-2 w-2 rounded-full" style={{ background: meta.color }} />
+          <span
+            key={k}
+            data-testid={`kind-legend-${k}`}
+            className="inline-flex items-center gap-1.5 font-mono text-[10px] text-muted"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+              <g transform="translate(7,7)">
+                <KindGlyph kind={k} color={meta.color} r={kindShape(k) === "ring" ? 5.5 : 4.5} />
+              </g>
+            </svg>
             {meta.label}
           </span>
         );
@@ -1430,10 +1625,14 @@ function CanvasFind({
   find,
   nodeByPath,
   onPick,
+  areas,
+  activeId,
 }: {
   find: GraphFind;
   nodeByPath: Record<string, { name: string; kind: string }>;
   onPick: (path: string) => void;
+  areas: { id: string; label: string; color: string; meta: string }[];
+  activeId: string | null;
 }) {
   const hits = React.useMemo(() => [...find.matches].sort(), [find.matches]);
   return (
@@ -1506,6 +1705,33 @@ function CanvasFind({
           )}
         </div>
       )}
+      {areas.length >= 2 && (
+        <div
+          className="flex flex-nowrap gap-1.5 overflow-x-auto pb-0.5"
+          style={{ scrollbarWidth: "none" }}
+          aria-label="Areas"
+        >
+          {areas.map((a) => {
+            const on = activeId === a.id;
+            return (
+              <button
+                key={a.id}
+                onClick={() => onPick(a.id)}
+                aria-pressed={on}
+                className={cn(
+                  "inline-flex h-6 flex-none items-center gap-1.5 whitespace-nowrap rounded-xl border px-2.5 font-mono text-[10px] transition-colors",
+                  on
+                    ? "border-control-hover bg-surface-3 text-fg"
+                    : "border-control bg-surface/[0.9] text-muted hover:border-control-hover",
+                )}
+              >
+                <span className="h-1.5 w-1.5 rounded-full" style={{ background: a.color }} />
+                {a.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1557,7 +1783,7 @@ function GraphControls({
               depth === d ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
             )}
           >
-            {d}
+            {d === 1 ? "1 hop" : `${d} hops`}
           </button>
         ))}
       </div>
@@ -1573,7 +1799,7 @@ function GraphControls({
         className={cn(
           "h-8 rounded-[9px] border px-[11px] text-[11.5px] transition-colors disabled:opacity-40",
           isolate
-            ? "border-control-hover bg-surface-3 text-fg"
+            ? "border-accent/45 bg-accent/10 text-accent"
             : "border-control bg-surface-2 text-muted enabled:hover:border-control-hover enabled:hover:text-fg",
         )}
       >
@@ -1674,61 +1900,51 @@ function TrailBreadcrumb({
 function InteractionHint({
   galaxyMode,
   superNodes,
+  areas,
   onJump,
 }: {
   galaxyMode: boolean;
   superNodes: SuperNode[];
+  areas: { id: string; label: string; color: string; meta: string }[];
   onJump: (id: string) => void;
 }) {
-  const areas = galaxyMode ? superNodes.slice(0, 4) : [];
+  const jumps = areas.length
+    ? areas
+    : galaxyMode
+      ? superNodes.slice(0, 4).map((sn) => ({
+          id: sn.id,
+          label: label(sn.anchor, ""),
+          color: "#8b949e",
+          meta: `${sn.size} nodes`,
+        }))
+      : [];
   return (
-    <div>
-      <div className="mb-2 text-[13px] font-semibold text-fg">Explore</div>
-      <ul className="space-y-1 text-small text-muted">
-        <li>
-          <span className="font-mono text-meta text-fg-2">Hover</span>{" "}
-          previews the 1-hop neighbourhood
-        </li>
-        <li>
-          <span className="font-mono text-meta text-fg-2">Click</span>{" "}
-          selects and pins the inspector
-        </li>
-        <li>
-          <span className="font-mono text-meta text-fg-2">Shift+click</span>{" "}
-          widens the highlight by one ring
-        </li>
-        <li>
-          <span className="font-mono text-meta text-fg-2">Alt+click</span>{" "}
-          traces a path from the selection
-        </li>
-        <li>
-          <span className="font-mono text-meta text-fg-2">Drag</span>{" "}
-          pans the view · nodes can be pinned
-        </li>
-      </ul>
-      {areas.length > 0 && (
-        <div className="mt-2.5 border-t border-line pt-2">
-          <div className="mb-1.5 font-mono text-[9px] uppercase tracking-wide text-faint">
-            Jump to area
-          </div>
-          <div className="grid grid-cols-2 gap-1">
-            {areas.map((sn) => (
-              <button
-                key={sn.id}
-                onClick={() => onJump(sn.id)}
-                className="rounded border border-control bg-surface px-2 py-1 text-left font-mono text-[10px] text-muted transition-colors hover:border-control-hover hover:text-fg"
-                title={`${sn.size} nodes`}
-              >
-                <span className="block truncate">{label(sn.anchor, "")}</span>
-                {/* 8px appeared nowhere in Build.dc.html, whose floor is 9px, and it is below
-                    the scale's own smallest role. `text-micro` is that role (8.5px, "IDs and
-                    keys") and is the nearest thing the design sanctions. */}
-                <span className="text-micro text-faint">{sn.size} nodes</span>
-              </button>
-            ))}
-          </div>
+    <div className="flex flex-col gap-2.5">
+      <div className="text-[13px] font-semibold text-fg">Explore</div>
+      <p className="text-[12px] leading-relaxed text-muted">
+        Hover to preview a node&rsquo;s neighbourhood, click to pin it, double-click to zoom in.
+        {jumps.length > 0 ? " Or jump into an area:" : ""}
+      </p>
+      {jumps.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          {jumps.map((a) => (
+            <button
+              key={a.id}
+              onClick={() => onJump(a.id)}
+              className="flex items-center gap-2.5 rounded-[9px] border border-control bg-surface-2 px-2.5 py-2 text-left transition-colors hover:border-control-hover"
+            >
+              <span className="h-2 w-2 flex-none rounded-full" style={{ background: a.color }} />
+              <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-fg-2">
+                {a.label}
+              </span>
+              {a.meta && <span className="font-mono text-[10px] text-muted">{a.meta}</span>}
+            </button>
+          ))}
         </div>
       )}
+      <p className="text-[11.5px] leading-relaxed text-faint">
+        Shift+click widens the highlight · Alt+click traces a path · drag pans, nodes pin.
+      </p>
     </div>
   );
 }

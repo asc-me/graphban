@@ -40,11 +40,18 @@ const node = (path: string, kind = "file"): CodeNode => ({
 const edge = (src: string, dst: string): CodeEdge => ({ src, dst, type: "imports" });
 
 const MAP: CodeMap = {
-  // Two KINDS on purpose: the legend explains a colour vocabulary, and a vocabulary of one
-  // word explains nothing.
-  nodes: [node("a.py"), node("b.py", "symbol"), node("far.py")],
+  // File + symbol so the legend has two SHAPES to explain (Build.dc.html encodes kind as
+  // shape). Two modules so the area chips under find have something to name — a chip row of
+  // one is a legend of one, and the code will not draw it.
+  nodes: [
+    node("a.py"),
+    node("b.py", "symbol"),
+    node("far.py"),
+    node("web", "module"),
+    node("lib", "module"),
+  ],
   edges: [edge("a.py", "b.py")],
-  node_count: 3,
+  node_count: 5,
   edge_count: 1,
   outbound: [],
 };
@@ -158,17 +165,31 @@ describe("the design's bottom row", () => {
     expect(bar).toContainElement(screen.getByRole("button", { name: "Isolate" }));
   });
 
-  it("says what the node colours mean, for the kinds actually drawn", async () => {
-    // Every node is the same circle; only colour separates a file from a symbol, and nothing
-    // on the page said so. The "actually drawn" half is the real claim — a fixed five-row key
-    // over a graph of nothing but files is a glossary, so `config` must be absent here.
+  it("says what the node shapes mean, for the kinds actually drawn", async () => {
+    // Kind is shape, not another colour: a file is a circle, a symbol is a diamond, a module
+    // is a ring. The "actually drawn" half is the real claim — a fixed five-row key over a
+    // graph of nothing but files is a glossary, so `config` must be absent here.
     await mount();
     const bar = within(bottomBar());
 
     expect(bar.getByText("File")).toBeInTheDocument();
     expect(bar.getByText("Symbol")).toBeInTheDocument();
+    expect(bar.getByText("Module")).toBeInTheDocument();
     expect(bar.queryByText("Config")).not.toBeInTheDocument();
-    expect(bar.queryByText("Module")).not.toBeInTheDocument();
+    expect(bar.getByTestId("kind-legend-symbol").querySelector("polygon")).toBeTruthy();
+    expect(bar.getByTestId("kind-legend-file").querySelector("circle")).toBeTruthy();
+    expect(bar.getByTestId("kind-legend-file").querySelector("polygon")).toBeNull();
+  });
+
+  it("draws those shapes on the canvas, not only in the legend", async () => {
+    // THE criterion. A KindGlyph helper the canvas never calls is the GRPH-360 hole: the
+    // legend would explain diamonds while every node was still a circle. The symbol on the
+    // canvas must be a polygon; the file must not.
+    await mount();
+
+    expect(canvasNode("b.py")!.querySelector("polygon")).toBeTruthy();
+    expect(canvasNode("a.py")!.querySelector("polygon")).toBeNull();
+    expect(canvasNode("a.py")!.querySelector("circle")).toBeTruthy();
   });
 
   it("leaves the five moved panels with no positioning of their own", () => {
@@ -248,5 +269,20 @@ describe("the design's 300px aside", () => {
       "true",
     );
     expect(within(aside()).getByRole("button", { name: /Path from here/ })).toBeInTheDocument();
+    expect(within(aside()).getByRole("button", { name: "Zoom to" })).toBeInTheDocument();
+    expect(within(aside()).getByRole("button", { name: "Close the inspector" })).toHaveTextContent(
+      "Clear",
+    );
+  });
+
+  it("names areas under find, and a chip is a way in", async () => {
+    const user = await mount();
+
+    const chip = within(canvas()).getByRole("button", { name: /^web$/ });
+    expect(chip).toBeInTheDocument();
+    expect(screen.getByTestId("place-header")).not.toContainElement(chip);
+
+    await user.click(chip);
+    expect(within(aside()).getByText("web")).toBeInTheDocument();
   });
 });
