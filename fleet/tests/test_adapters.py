@@ -44,6 +44,7 @@ SEAT = Seat(code="WORKER-7F3K", server_url="https://gb.invalid", api_key="gbk_se
         ("2026.04.17-787b533", (2026, 4, 17)),           # cursor-agent, CalVer + hash
         ("grok 1.0.5 (5115b46bc909) [stable]", (1, 0, 5)),  # grok, semver behind a name
         ("grok 1.0.25 (f7e67d6988e2) [stable]", (1, 0, 25)),  # ...and 25 > 5, not "2" > "5"
+        ("0.2.0-rc.2", (0, 2, 0)),                          # dsh, semver with an rc suffix
     ],
 )
 def test_every_real_version_string_parses(reported: str, expected: tuple):
@@ -154,6 +155,7 @@ CONFINEMENT: dict[str, str | None] = {
     "grok": None,           # project-scoped .grok/config.toml inside the worktree
     "gbagent": None,        # first-party: reads one server out of the file, merges no global
     "agy": None,            # workspace .agents/mcp_config.json; no allowlist flag on 1.3.5
+    "dsh": None,            # --patch overlay; profile/home cordis.patch.yml still load
 }
 
 

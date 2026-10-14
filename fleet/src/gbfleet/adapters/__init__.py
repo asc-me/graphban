@@ -177,11 +177,11 @@ class Adapter:
     #: Which `Tuning` fields this vendor actually has. Anything else is refused, never
     #: ignored — see `TuningUnsupported`.
     tuning: ClassVar[frozenset[str]] = frozenset()
-    #: The language this vendor's seat file is written in. JSON for all but grok, which
-    #: reads TOML and nothing else. Declared beside `seat_path` because the two are one
-    #: fact: WHERE the file goes and WHAT it is written in are both vendor trivia, and
-    #: getting either wrong produces the same symptom — a child with no tools and no
-    #: error (GRPH-575).
+    #: The language this vendor's seat file is written in. JSON for most; grok reads
+    #: TOML and nothing else; dsh reads a Cordis YAML overlay. Declared beside `seat_path`
+    #: because the two are one fact: WHERE the file goes and WHAT it is written in are
+    #: both vendor trivia, and getting either wrong produces the same symptom — a child
+    #: with no tools and no error (GRPH-575).
     seat_format: ClassVar[str] = seat_mod.JSON
 
     def model_argv(self, model: str) -> list[str]:
@@ -469,6 +469,7 @@ def resolve(
 from .agy import Agy  # noqa: E402
 from .claude import ClaudeCode  # noqa: E402
 from .cursor import CursorAgent  # noqa: E402
+from .dsh import Dsh  # noqa: E402
 from .gbagent import GbAgent  # noqa: E402
 from .grok import Grok  # noqa: E402
 from .qwen_code import QwenCode  # noqa: E402
@@ -481,7 +482,9 @@ from .qwen_code import QwenCode  # noqa: E402
 #: the rest and gets no special handling anywhere in `resolve` — G4 says deleting it must
 #: change nothing about how the fleet is arbitrated.
 ADAPTERS: dict[str, Adapter] = {
-    a.name: a for a in (Agy(), ClaudeCode(), CursorAgent(), GbAgent(), Grok(), QwenCode())
+    a.name: a for a in (
+        Agy(), ClaudeCode(), CursorAgent(), Dsh(), GbAgent(), Grok(), QwenCode(),
+    )
 }
 
 

@@ -213,3 +213,19 @@ order = 6
 cost_class = "frontier"
 local = false
 evidence = []
+
+[[rows]]
+# Adapter landed 2026-10-14 against dsh 0.2.0-rc.2 on macOS (DeepSeek Harness.app).
+# Headless flags, --patch overlay, stdin, JSON usage, and deepseek-account (the
+# desktop login; deepseek-official failed MISSING_CREDENTIAL) were read off the
+# binary. No item has been built by a dsh child, so the row stays unverified.
+harness = "dsh"
+model = "deepseek-flash"
+vendor = "deepseek"
+lane = "any"
+tier = "cheap"
+status = "unverified"
+order = 7
+cost_class = "cheap"
+local = false
+evidence = []

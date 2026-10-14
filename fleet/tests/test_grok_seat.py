@@ -190,9 +190,11 @@ def test_every_adapter_seat_format_has_a_renderer(name: str):
 
 
 def test_an_unknown_format_refuses_rather_than_writing_something(tmp_path: Path):
+    """`yaml` used to be the unknown token here. It is a real format now (dsh's Cordis
+    overlay), so an invented name has to stay invented."""
     target = tmp_path / "seat"
     with pytest.raises(UnrenderableSeat):
-        seat_mod.write(target, SEAT.mcp_config(), "yaml")
+        seat_mod.write(target, SEAT.mcp_config(), "ini")
     assert not target.exists(), "refused the format but left a file behind anyway"
 
 
