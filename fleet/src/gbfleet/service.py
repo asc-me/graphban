@@ -27,7 +27,7 @@ plist or a task XML.
 
 **The PATH is load-bearing and is the thing most likely to be got wrong.** A launchd job does
 not inherit your shell's environment; it gets a minimal PATH. Every vendor CLI the fleet exists
-to run — `claude`, `cursor-agent`, `qwen`, `grok` — lives somewhere that PATH does not contain
+to run — `claude`, `cursor-agent`, `qwen`, `grok`, `agy` — lives somewhere that PATH does not contain
 (`~/.local/bin`, `/opt/homebrew/bin`). A service installed without capturing it starts
 cleanly, is reported running, and fails every adapter resolution: the exact "installs, appears
 to start, does nothing" shape `graphban_service.py` was written against after a daemon served

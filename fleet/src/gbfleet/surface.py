@@ -37,7 +37,7 @@ MCP_CAP = 80
 
 #: Vendors the fleet can spawn, in the order a report should read. Codex is absent on
 #: purpose — there is no adapter, and a guessed skill layout would be a fabricated one.
-VENDORS = ("grok", "claude", "cursor-agent", "qwen-code", "gbagent")
+VENDORS = ("grok", "claude", "cursor-agent", "qwen-code", "gbagent", "agy")
 
 _BINARIES = {
     "grok": "grok",
@@ -45,6 +45,7 @@ _BINARIES = {
     "cursor-agent": "cursor-agent",
     "qwen-code": "qwen",
     "gbagent": "gbagent",
+    "agy": "agy",
 }
 
 _SEAT_ONLY = (
@@ -195,6 +196,33 @@ def _one(vendor: str, repo: Path, find, inspect) -> dict:
             row,
             "a qwen child is launched with --allowed-mcp-server-names limited to the seat. "
             + _SEAT_ONLY,
+        )
+        return row
+    if vendor == "agy":
+        # Workspace skills are `.agents/skills/`; the global path is
+        # `~/.gemini/antigravity-cli/skills/`, which `_partial_skills(".agents")` would
+        # misread as `~/.agents/skills`. Only the project dir is scanned.
+        items, unreadable, truncated = _dir_skills(
+            [(repo / ".agents" / "skills", "project")]
+        )
+        row["skills_status"] = PARTIAL
+        row["skills"] = items
+        reason = (
+            "read from <worktree>/.agents/skills only. "
+            "~/.gemini/antigravity-cli/skills and plugins were not read, so a name "
+            "missing from this list is not proof the child lacks it"
+        )
+        if truncated:
+            reason += f". Stopped at {SKILL_CAP} skills; names past the cap were not compared"
+        if unreadable:
+            reason += ". Could not read: " + "; ".join(unreadable[:3])
+        row["skills_reason"] = reason
+        row["mcps_status"] = PARTIAL
+        row["mcps"] = [{"name": SEAT_SERVER, "source": "seat"}]
+        row["mcps_reason"] = (
+            "the supervisor writes the seat into the worktree's .agents/mcp_config.json. "
+            "~/.gemini/config/mcp_config.json and plugins also load; 1.3.5 has no "
+            "allowlist flag, so a server missing from this list is not proof the child lacks it"
         )
         return row
     # cursor-agent. The seat replaces <worktree>/.cursor/mcp.json. Whether the binary also

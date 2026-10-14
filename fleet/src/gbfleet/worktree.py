@@ -33,6 +33,7 @@ BRANCH_PREFIX = "gb/"
 #: must know it before any adapter exists.
 SEAT_FILES: tuple[str, ...] = (
     ".cursor/mcp.json", ".grok/config.toml", ".grok/mcp.json", ".gbfleet-instruction",
+    ".agents/mcp_config.json",
 )
 
 #: `.grok/mcp.json` is in that tuple but nothing writes it any more. It is kept because

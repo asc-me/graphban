@@ -1,7 +1,7 @@
 """One module per vendor binary, each declaring exactly four things.
 
 PRD-22 S2: argv construction, config format and where it is written, stdout parsing,
-and exit-code semantics. Four headless CLIs that agree on none of it.
+and exit-code semantics. Headless CLIs that agree on none of it.
 
 **Selection is explicit, never inferred.** The spawn call names the vendor. There is no
 scan of PATH for whichever agent CLI happens to be installed, because that produces a
@@ -466,6 +466,7 @@ def resolve(
     return Resolved(adapter=adapter, binary=found, version=reported)
 
 
+from .agy import Agy  # noqa: E402
 from .claude import ClaudeCode  # noqa: E402
 from .cursor import CursorAgent  # noqa: E402
 from .gbagent import GbAgent  # noqa: E402
@@ -480,7 +481,7 @@ from .qwen_code import QwenCode  # noqa: E402
 #: the rest and gets no special handling anywhere in `resolve` — G4 says deleting it must
 #: change nothing about how the fleet is arbitrated.
 ADAPTERS: dict[str, Adapter] = {
-    a.name: a for a in (ClaudeCode(), CursorAgent(), GbAgent(), Grok(), QwenCode())
+    a.name: a for a in (Agy(), ClaudeCode(), CursorAgent(), GbAgent(), Grok(), QwenCode())
 }
 
 
