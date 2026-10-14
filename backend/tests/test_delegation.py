@@ -202,6 +202,18 @@ def test_delegate_refuses_a_blocked_item_and_names_the_blocker(client, key):
     assert e["code"] == "conflict" and "waiting on the schema" in e["message"]
 
 
+def test_delegate_refuses_status_blocked_even_without_a_blocker(client, key, db):
+    """GRPH-1032. A supervisor asking for a `blocked` item still hears no."""
+    item = _item(client, key)
+    stored = _stored(db, item)
+    stored.status = "blocked"
+    stored.blocker = ""
+    db.commit()
+    me = _agent(client, key, "planner")
+    e = _err(_delegate(client, key, item, me))
+    assert e["code"] == "conflict" and "blocked" in e["message"].lower()
+
+
 def test_delegate_refuses_when_another_delegation_is_open(client, key):
     """5b / 25b: refused with the open one's id and age."""
     item = _item(client, key)

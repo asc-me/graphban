@@ -183,6 +183,44 @@ def test_no_base_checks_nothing(tmp_path):
     assert deps.check(Planner([_dep("SA-417", stranded)]), "SA-420", repo, "") == ([], [])
 
 
+def test_a_github_merge_commit_counts_without_the_item_in_the_subject(tmp_path):
+    """GRPH-1032. A hand-merge with GitHub's default subject is still an ancestor of
+    main via the second parent. Detection must not require `{TAG}-{N}:` in the subject.
+    """
+    repo = _repo(tmp_path)
+    run = lambda *a: subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True)
+    run("checkout", "-q", "-b", "feature")
+    (repo / "feat.txt").write_text("work\n")
+    run("add", "-A")
+    run("commit", "-qm", "feature work")
+    sha = _sha(repo)
+    run("checkout", "-q", "main")
+    run("merge", "--no-ff", "-m", "Merge pull request #42 from asc-me/feature", "feature")
+
+    absent, unknown = deps.check(Planner([_dep("REPU-561", sha)]), "REPU-562", repo, "main")
+
+    assert (absent, unknown) == ([], [])
+
+
+def test_a_body_only_mention_of_the_id_is_not_merged(tmp_path):
+    """GRPH-1017's control, restated for GRPH-1032. `git log --grep` over bodies over-counts:
+    a commit that merely mentions the id is not the work landing.
+    """
+    repo = _repo(tmp_path)
+    stranded = _branch_commit(repo, "still-open")
+    (repo / "note.txt").write_text("see REPU-561\n")
+    subprocess.run(["git", "add", "note.txt"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "unrelated", "-m", "closes REPU-561 in the body"],
+        cwd=repo, check=True,
+    )
+
+    absent, unknown = deps.check(Planner([_dep("REPU-561", stranded)]), "REPU-562", repo, "main")
+
+    assert [d["id"] for d in absent] == ["REPU-561"]
+    assert unknown == []
+
+
 def test_the_explanation_names_the_item_the_commit_and_the_remedy(tmp_path):
     said = deps.explain("SA-420", [{"id": "SA-417", "title": "t", "commits": ["abc123def456"]}],
                         "origin/main")

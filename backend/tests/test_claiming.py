@@ -36,6 +36,23 @@ def test_claim_skips_blocked(client):
     db.close()
 
 
+def test_claim_skips_status_blocked_even_without_a_blocker(client):
+    """GRPH-1032. Status is the launch gate, not only the blocker text. A planner
+    'Do not launch' row with an empty blocker must still be unclaimable.
+
+    Sabotage: drop the `status == blocked` clause from `_is_claimable` — this takes it.
+    """
+    db = SessionLocal()
+    top = items_svc._ready_candidates(db, "core", 600)[0]
+    top.status = "blocked"
+    top.blocker = ""
+    db.commit()
+    assert items_svc.claim_item(db, top.id, "agent-z") is None
+    got = items_svc.claim_next(db, "agent-x", project_id="core")
+    assert got is None or got.id != top.id
+    db.close()
+
+
 def test_stale_claim_is_reclaimed(client):
     db = SessionLocal()
     it = items_svc.claim_next(db, "dead-agent", project_id="core")

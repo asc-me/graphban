@@ -1888,6 +1888,12 @@ def _aware(dt):
 def _is_claimable(it: Item, cutoff) -> bool:
     """An item is claimable if it isn't blocked and is either fresh unclaimed backlog/next,
     or work with a stale (abandoned) lease."""
+    # Status first (GRPH-1032). A planner "Do not launch" blocker is the usual pair, but
+    # `status=blocked` with an empty blocker used to fall through to the status-in-list
+    # check only on the unclaimed path — name the status so claim_next / claim_cluster /
+    # a bound seat cannot launch it even when a supervisor asks.
+    if it.status == "blocked":
+        return False
     if it.blocker:
         return False
     stale = it.claimed_by is not None and it.claimed_at is not None and _aware(it.claimed_at) < cutoff

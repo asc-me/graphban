@@ -1056,3 +1056,20 @@ def reaches(repo: Path | str, base: str, commit: str) -> bool | None:
     # Anything else is git failing to answer — a bad base ref, a corrupt object — and that is
     # not evidence either way.
     return None
+
+
+def paths_unchanged(repo: Path | str, old: str, new: str,
+                    paths: list[str] | tuple[str, ...] | None) -> bool:
+    """True when `paths` are byte-identical at `old` and `new` (GRPH-1032).
+
+    Empty `paths` cannot prove it. Treating "we did not look" as "nothing changed" is how a
+    main-merge that also edited the item would still merge unsigned work.
+    """
+    clean = [p.strip() for p in (paths or []) if isinstance(p, str) and p.strip()]
+    if not clean or not (old or "").strip() or not (new or "").strip():
+        return False
+    proc = subprocess.run(
+        ["git", "diff", "--quiet", old, new, "--", *clean],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    return proc.returncode == 0

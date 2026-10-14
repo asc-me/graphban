@@ -256,12 +256,13 @@ class _Forge:
 
     def __init__(self, *, state="OPEN", draft=True, head=REVIEWED, mergeable="MERGEABLE",
                  status="CLEAN", fork=False, has_pr=True, merge_ok=True, ready_ok=True,
-                 lands=True, url="https://github.com/o/r/pull/9"):
+                 lands=True, url="https://github.com/o/r/pull/9", listed=None):
         self.pr = {"number": 9, "url": url, "state": state, "isDraft": draft,
                    "mergeable": mergeable, "mergeStateStatus": status, "headRefOid": head,
                    "headRefName": "gb/w-1", "isCrossRepository": fork,
                    "mergeCommit": {"oid": MERGE_OID} if state == "MERGED" else None}
         self.has_pr, self.merge_ok, self.ready_ok, self.lands = has_pr, merge_ok, ready_ok, lands
+        self.listed = list(listed or [])
         self.calls: list[list[str]] = []
 
     def verbs(self) -> list[str]:
@@ -271,9 +272,15 @@ class _Forge:
         self.calls.append(argv)
         verb = " ".join(argv[1:3])
         if verb == "pr view":
-            if not self.has_pr:
+            selector = argv[3] if len(argv) > 3 else ""
+            # A URL or number is a selector `pr view` can resolve in any state; a branch
+            # is OPEN-only (GRPH-1032). Tests that set has_pr=False still miss the branch.
+            if (not self.has_pr and not selector.startswith("http")
+                    and "/pull/" not in selector and not selector.lstrip("#").isdigit()):
                 return subprocess.CompletedProcess(argv, 1, "", "no pull requests found for branch")
             return subprocess.CompletedProcess(argv, 0, json.dumps(self.pr), "")
+        if verb == "pr list":
+            return subprocess.CompletedProcess(argv, 0, json.dumps(self.listed), "")
         if verb == "pr ready":
             if not self.ready_ok:
                 return subprocess.CompletedProcess(argv, 1, "", "could not mark ready")
@@ -287,6 +294,16 @@ class _Forge:
                 self.pr["mergeCommit"] = {"oid": MERGE_OID}
             return subprocess.CompletedProcess(argv, 0, "", "")
         raise AssertionError(f"unexpected gh call: {argv}")
+
+
+def _only_gh(fake):
+    """`propose.subprocess` is the subprocess module; a patch there is global, including
+    `worktree.paths_unchanged`. Let git through."""
+    real = subprocess.run
+
+    def run(argv, **kw):
+        return fake(argv, **kw) if argv and argv[0] == "gh" else real(argv, **kw)
+    return run
 
 
 def _merge(forge, gh, *, reviewed=REVIEWED, green=None, selector="gb/w-1", installed=True):
@@ -332,6 +349,74 @@ def test_a_head_that_moved_after_review_is_left_alone(gh):
     assert "reviewed commit" in got.reason and REVIEWED[:12] in got.reason
     assert forge.verbs() == ["pr view"], "touched the PR after the head check failed"
     assert "head=reviewed" not in got.checked
+
+
+def test_a_main_only_head_move_still_merges(gh, git_repo: Path):
+    """GRPH-1032. Merging main into a signed branch moves the head; the item's files do
+    not. That is not a new review.
+
+    Sabotage: skip the paths_unchanged branch — this stays the refusal above.
+    """
+    (git_repo / "item.py").write_text("mine\n", encoding="utf-8")
+    subprocess.run(["git", "add", "item.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "item"], cwd=git_repo, check=True)
+    reviewed = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo,
+                              capture_output=True, text=True, check=True).stdout.strip()
+    (git_repo / "other.py").write_text("from-main\n", encoding="utf-8")
+    subprocess.run(["git", "add", "other.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "main moved"], cwd=git_repo, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo,
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+    forge = _Forge(draft=False, head=head)
+    gh(_only_gh(forge))
+    got = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=reviewed,
+                            green={reviewed}, paths=["item.py"])
+
+    assert got.ok and got.commit == MERGE_OID
+    assert "paths-unchanged" in got.checked
+    assert "pr merge" in forge.verbs()
+
+
+def test_a_real_edit_of_the_item_still_needs_review(gh, git_repo: Path):
+    """The control. A main-merge that also edited the item is a new review."""
+    (git_repo / "item.py").write_text("mine\n", encoding="utf-8")
+    subprocess.run(["git", "add", "item.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "item"], cwd=git_repo, check=True)
+    reviewed = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo,
+                              capture_output=True, text=True, check=True).stdout.strip()
+    (git_repo / "item.py").write_text("changed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "item.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "edited the item"], cwd=git_repo, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo,
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+    forge = _Forge(draft=False, head=head)
+    gh(_only_gh(forge))
+    got = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=reviewed,
+                            green={reviewed}, paths=["item.py"])
+
+    assert not got.ok and "reviewed commit" in got.reason
+    assert "pr merge" not in forge.verbs()
+
+
+def test_a_merged_pr_is_found_when_view_of_the_branch_misses(gh):
+    """GRPH-1032. `gh pr view <branch>` is OPEN-only. After GitHub's default merge the
+    subject is `Merge pull request #…`, not `{TAG}-{N}:`, and view of the branch 404s.
+    `pr list --state all` still finds it.
+
+    Sabotage: skip `_url_for_ref` — this returns 'no PR' and a dependant stays held.
+    """
+    url = "https://github.com/o/r/pull/9"
+    forge = _Forge(state="MERGED", has_pr=False, url=url, listed=[
+        {"url": url, "state": "MERGED", "number": 9},
+    ])
+
+    got = _merge(forge, gh)
+
+    assert got.ok and got.commit == MERGE_OID
+    assert "state=MERGED" in got.checked
+    assert "pr list" in forge.verbs()
 
 
 def test_no_ci_attestation_on_the_reviewed_commit_holds_it(gh):

@@ -26,6 +26,7 @@ from gbfleet.worktree import (
     create,
     is_dirty,
     orphans,
+    paths_unchanged,
     porcelain,
     reap,
     resume,
@@ -482,6 +483,27 @@ def test_resume_bounced_checks_out_the_existing_head_and_merges_the_base(
 def test_resume_bounced_refuses_a_missing_branch(git_repo: Path, tmp_path: Path):
     with pytest.raises(ResumeFailed):
         resume_bounced(git_repo, tmp_path / "nope", "gb/does-not-exist", base="HEAD")
+
+
+def test_paths_unchanged_is_true_only_for_the_named_files(git_repo: Path):
+    """GRPH-1032. Merging main into a signed branch must not look like a new review when
+    the item's own files are byte-identical. Empty paths cannot prove that.
+    """
+    old = _git(git_repo, "rev-parse", "HEAD").strip()
+    (git_repo / "item.py").write_text("mine\n", encoding="utf-8")
+    _git(git_repo, "add", "item.py")
+    _git(git_repo, "commit", "-qm", "item")
+    reviewed = _git(git_repo, "rev-parse", "HEAD").strip()
+    (git_repo / "other.py").write_text("main\n", encoding="utf-8")
+    _git(git_repo, "add", "other.py")
+    _git(git_repo, "commit", "-qm", "main moved")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+
+    assert paths_unchanged(git_repo, reviewed, head, ["item.py"])
+    assert not paths_unchanged(git_repo, reviewed, head, ["other.py"])
+    assert not paths_unchanged(git_repo, reviewed, head, ["item.py", "other.py"])
+    assert not paths_unchanged(git_repo, reviewed, head, [])
+    assert not paths_unchanged(git_repo, old, head, ["item.py"])
 
 
 def test_resume_refuses_when_the_branch_is_not_a_descendant(
