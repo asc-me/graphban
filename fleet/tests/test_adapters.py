@@ -153,6 +153,7 @@ CONFINEMENT: dict[str, str | None] = {
     "cursor-agent": None,   # reads .cursor/mcp.json from inside the worktree
     "grok": None,           # project-scoped .grok/config.toml inside the worktree
     "gbagent": None,        # first-party: reads one server out of the file, merges no global
+    "agy": None,            # workspace .agents/mcp_config.json; no allowlist flag on 1.3.5
 }
 
 
@@ -569,23 +570,26 @@ def test_the_tuning_table_names_the_knob_each_vendor_actually_has():
     )
 
     # The knob names as an operator would type them, mapped to the field an adapter declares.
-    spellings = {"fallback_model": "--fallback-model", "effort": "--reasoning-effort",
-                 "turns": "--turns", "window": "--window"}
+    # `effort` is two spellings: grok's `--reasoning-effort` and agy's `--effort`.
+    spellings = {"fallback_model": ("--fallback-model",),
+                 "effort": ("--reasoning-effort", "--effort"),
+                 "turns": ("--turns",), "window": ("--window",)}
     for name, adapter in ADAPTERS.items():
         row = rows[name]
         for field in adapter.tuning:
-            flag = spellings.get(field)
-            assert flag, f"{field} has no known spelling — add it to this test's map"
-            assert flag in row, (
+            flags = spellings.get(field)
+            assert flags, f"{field} has no known spelling — add it to this test's map"
+            assert any(flag in row for flag in flags), (
                 f"{name} declares tuning={sorted(adapter.tuning)} but its row does not "
-                f"mention {flag}: {row}"
+                f"mention any of {flags}: {row}"
             )
-        for field, flag in spellings.items():
+        for field, flags in spellings.items():
             if field not in adapter.tuning:
-                assert flag not in row, (
-                    f"{name}'s row offers {flag}, which it does not accept — "
-                    f"it declares {sorted(adapter.tuning) or 'no knobs'}: {row}"
-                )
+                for flag in flags:
+                    assert flag not in row, (
+                        f"{name}'s row offers {flag}, which it does not accept — "
+                        f"it declares {sorted(adapter.tuning) or 'no knobs'}: {row}"
+                    )
 
 
 # --- a sandboxed parent is every child's sandbox (GRPH-838) --------------------------

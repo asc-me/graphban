@@ -166,7 +166,9 @@ flag, through the same rules — no patterns, `graphban`/`gbfleet` reserved, and
 from `~/.claude.json` refuses the wave before spawn, naming the file it came from. An absent file
 grants nothing beyond the seat; one that exists and cannot be read refuses. Names only — the
 credentials stay in `~/.claude.json`. qwen-code's `--allowed-mcp-server-names` gets the same
-names. Grok still merges the operator's servers; this adds the build ones to Claude and Qwen.
+names. `agy` writes them into the worktree seat (`.agents/mcp_config.json`) alongside
+graphban; it has no allowlist flag, so the operator's global `mcp_config.json` still loads.
+Grok still merges the operator's servers; this adds the build ones to Claude and Qwen.
 `gbfleet surface` does not read this file — it reports what a child loads with no wave grant.
 
 ### What a child can reach, and what it cannot

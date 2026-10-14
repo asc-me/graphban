@@ -116,5 +116,6 @@ def test_reporting_is_derived_from_the_reader_not_a_second_declaration():
     # is the property the test is for. `--budget` is refused up front for an adapter that
     # reports nothing, so this list is also exactly the set of adapters a budget can cap.
     assert reports_tokens("qwen-code") is True
-    assert [n for n in ADAPTERS if reports_tokens(n)] == ["gbagent", "qwen-code"]
+    assert reports_tokens("agy") is True
+    assert [n for n in ADAPTERS if reports_tokens(n)] == ["agy", "gbagent", "qwen-code"]
     assert reports_tokens("no-such-adapter") is False
