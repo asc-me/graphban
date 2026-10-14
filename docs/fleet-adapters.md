@@ -58,6 +58,7 @@ without stopping the other.
 | `grok` | `grok 1.0.25 (f7e67d6988e2) [stable]` | 1.0 – 2.0 | project-scoped `<worktree>/.grok/config.toml` (**TOML**), needs `--trust` | `--prompt-file <path>` | yes — `.grok/config.toml`, see below |
 | `qwen-code` | `0.23.0` | 0.23 – 1.0 | `--mcp-config <path>` + `--allowed-mcp-server-names graphban`; the entry must be `httpUrl` | stdin | **no** — private temp file |
 | `agy` | `1.3.5` | 1.3 – 2.0 | workspace `.agents/mcp_config.json`; entry must be `serverUrl` (not `url` / `httpUrl`) | stdin — do **not** pass `--print`, it swallows the next argv token as the prompt | **yes** — `.agents/mcp_config.json` |
+| `dsh` | `0.2.0-rc.2` | 0.2 – 0.3 | `--patch <path>` Cordis YAML overlay (`@deepseek-ai/dsh-mcp-client`, `transport: streamable-http`, `url` + `headers`); `DSH_PERMISSION_MODE=danger-full-access` | stdin | **no** — private temp file |
 | `codex` | — | — | — | — | **not implemented** |
 
 Every row above was read off a binary that was actually run on macOS, except `codex`.
@@ -107,6 +108,7 @@ Omit it and the argv is byte-identical to before this existed.
 | `gbagent` | `--model <model>` | **when an endpoint is configured.** `gbagent models` asks it what it serves; with no `GBAGENT_BASE_URL` there is nothing to ask and the model passes through |
 | `qwen-code` | `-m <model>` | **no.** No listing flag, and worse than unchecked: `-m bogus-model-name` ran the configured default (`qwen3.7-plus`) with no warning anywhere (measured 2026-09-05 on 0.23.0). A named model for this vendor is a claim the binary will not enforce |
 | `agy` | `--model <model>` | **yes.** `agy --output-format json models` enumerated `gemini-3.8-flash-high`, `gemini-3.8-flash-medium`, `gemini-3.8-flash-low`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium` on the machine this was written on. A name the listing does not contain is refused at `resolve`, because the binary itself refuses it before a turn |
+| `dsh` | no `--model` flag; the adapter writes `agent-default-model` into the `--patch` overlay (`provider: deepseek-account`, named model or `deepseek-flash`) | **no.** `--model` is `unknown option`; `dsh models` boots a profile named `models`. A named model is passed through UNCHECKED |
 
 **Checked and unchecked must not read the same.** A validated model and one nobody could
 verify are different states, and collapsing them would let `claude` look as guarded as
@@ -168,6 +170,7 @@ for cheap reasoning and pay for expensive: the setting evaporates, the bill does
 | `gbagent` | `--turns <n>` and `--window <tokens>` | n/a — neither is a name to validate, and neither has a default anywhere |
 | `qwen-code` | `--turns <n>` (spelled `--max-session-turns` on the binary) | n/a — a count, not a name |
 | `agy` | `--effort <low\|medium\|high\|xhigh\|max>` | **yes** — `--help` enumerates the set, and `--effort bogus` names it in the error |
+| `dsh` | none | n/a; either knob is refused |
 
 **Both exist because a spawned child is unattended.** An overloaded model on an interactive
 session is a wait; on a child it is a dead registration window — the process starts, cannot
@@ -616,6 +619,7 @@ not assumed, and the answers differ enough that the gaps matter more than the co
 | `claude` | `--debug-file <path>` (its help says this implicitly enables debug mode) | vendor debug log + output sampling |
 | `cursor-agent` | **none** | output sampling only |
 | `gbagent` | **none** | output sampling only |
+| `dsh` | **none** | output sampling only |
 
 `cursor-agent` has `--output-format stream-json` and `--stream-partial-output`, which
 give structured progress rather than a debug log. That is a different feature reached a

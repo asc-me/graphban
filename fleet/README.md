@@ -168,7 +168,9 @@ grants nothing beyond the seat; one that exists and cannot be read refuses. Name
 credentials stay in `~/.claude.json`. qwen-code's `--allowed-mcp-server-names` gets the same
 names. `agy` writes them into the worktree seat (`.agents/mcp_config.json`) alongside
 graphban; it has no allowlist flag, so the operator's global `mcp_config.json` still loads.
-Grok still merges the operator's servers; this adds the build ones to Claude and Qwen.
+`dsh` writes them into a private `--patch` YAML overlay (no allowlist flag either;
+`~/.dsh/profiles/headless/cordis.patch.yml` still loads). Grok still merges the
+operator's servers; this adds the build ones to Claude and Qwen.
 `gbfleet surface` does not read this file — it reports what a child loads with no wave grant.
 
 ### What a child can reach, and what it cannot

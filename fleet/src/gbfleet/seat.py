@@ -371,11 +371,13 @@ class UnrenderableSeat(RuntimeError):
     """The seat config cannot be expressed in the format this vendor reads."""
 
 
-#: The two on-disk languages the vendors read. Not cosmetic: grok reads TOML and
+#: The on-disk languages the vendors read. Not cosmetic: grok reads TOML and
 #: nothing else, so writing it JSON produces a file it ignores in silence — which is
-#: how a child ends up running with no tools and no error (GRPH-575).
+#: how a child ends up running with no tools and no error (GRPH-575). `dsh` reads a
+#: Cordis YAML overlay via `--patch`; JSON in that path is the same silence.
 JSON = "json"
 TOML = "toml"
+YAML = "yaml"
 
 
 def _as_json(config: dict) -> str:
@@ -469,7 +471,116 @@ def _as_toml(config: dict) -> str:
     return "\n\n".join(blocks) + "\n"
 
 
-_RENDERERS = {JSON: _as_json, TOML: _as_toml}
+#: Every key a dsh MCP overlay can express for one server, measured 0.2.0-rc.2:
+#: dump-config echoed `serverName`, `transport: streamable-http`, `url`, `headers`,
+#: `failOnStartupError`. stdio is documented (`command`/`args`/`env`/`cwd`) and is
+#: rendered when the stanza has no URL. `type`/`httpUrl` are checked then rewritten.
+_DSH_RENDERED = frozenset({"type", "url", "httpUrl", "headers", "command", "args", "env", "cwd"})
+_DSH_NAME = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+_DSH_CONFIG_KEYS = frozenset({"mcpServers", "model", "provider"})
+
+
+def _yaml_str(value: str) -> str:
+    """A YAML double-quoted scalar. The api key and url arrive from the server."""
+    out = ['"']
+    for ch in value:
+        if ch == '"':
+            out.append('\\"')
+        elif ch == "\\":
+            out.append("\\\\")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append(f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def _as_yaml(config: dict) -> str:
+    """`mcp_config`'s vendor-neutral dict as a dsh Cordis `--patch` overlay.
+
+    Unknown keys RAISE rather than being dropped, same rule as grok's TOML: silently
+    omitting a new field would hand the child a seat missing exactly what was added.
+    """
+    extra = sorted(set(config) - _DSH_CONFIG_KEYS)
+    if extra:
+        raise UnrenderableSeat(
+            f"dsh's overlay has no place for {extra}. Dropping them would give the child "
+            "a seat missing exactly what was added, so this refuses instead."
+        )
+    servers = config.get("mcpServers") or {}
+    lines: list[str] = []
+    if servers:
+        lines.append("- insert:")
+        for name, spec in servers.items():
+            if not _DSH_NAME.match(name):
+                raise UnrenderableSeat(
+                    f"dsh serverName {name!r} is not [A-Za-z0-9_-]{{1,32}}, which the "
+                    "mcp-client plugin requires. Rendering it anyway would fail at load."
+                )
+            unknown = sorted(set(spec) - _DSH_RENDERED)
+            if unknown:
+                raise UnrenderableSeat(
+                    f"dsh's overlay has no place for {unknown} on server {name!r}."
+                )
+            url = spec.get("url") or spec.get("httpUrl")
+            command = spec.get("command")
+            transport = spec.get("type", "http" if url else "stdio")
+            lines.append(f"  - id: mcp-{name}")
+            lines.append("    name: '@deepseek-ai/dsh-mcp-client'")
+            lines.append("    config:")
+            lines.append(f"      serverName: {name}")
+            if url and transport != "stdio":
+                lines.append("      transport: streamable-http")
+                lines.append(f"      url: {_yaml_str(str(url))}")
+                headers = spec.get("headers") or {}
+                if headers:
+                    lines.append("      headers:")
+                    for header, value in headers.items():
+                        lines.append(f"        {_yaml_str(str(header))}: {_yaml_str(str(value))}")
+            elif command:
+                lines.append("      transport: stdio")
+                lines.append(f"      command: {_yaml_str(str(command))}")
+                args = spec.get("args") or []
+                if args:
+                    lines.append("      args:")
+                    for arg in args:
+                        lines.append(f"        - {_yaml_str(str(arg))}")
+                env = spec.get("env") or {}
+                if env:
+                    lines.append("      env:")
+                    for key, value in env.items():
+                        lines.append(f"        {_yaml_str(str(key))}: {_yaml_str(str(value))}")
+                if spec.get("cwd"):
+                    lines.append(f"      cwd: {_yaml_str(str(spec['cwd']))}")
+            else:
+                raise UnrenderableSeat(
+                    f"server {name!r} has neither url nor command; dsh cannot express it."
+                )
+            lines.append("      failOnStartupError: true")
+    provider, model = config.get("provider"), config.get("model")
+    if provider or model:
+        if not provider or not model:
+            raise UnrenderableSeat(
+                "dsh agent-default-model requires both provider and model (schema "
+                "marks both required; writing one would fail at load)."
+            )
+        lines.append("- id: agent-default-model")
+        lines.append("  config:")
+        lines.append(f"    provider: {_yaml_str(str(provider))}")
+        lines.append(f"    model: {_yaml_str(str(model))}")
+    if not lines:
+        return "[]\n"
+    return "\n".join(lines) + "\n"
+
+
+_RENDERERS = {JSON: _as_json, TOML: _as_toml, YAML: _as_yaml}
 
 
 def write(path: Path, config: dict, fmt: str = JSON) -> Path:

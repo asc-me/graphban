@@ -37,7 +37,7 @@ MCP_CAP = 80
 
 #: Vendors the fleet can spawn, in the order a report should read. Codex is absent on
 #: purpose — there is no adapter, and a guessed skill layout would be a fabricated one.
-VENDORS = ("grok", "claude", "cursor-agent", "qwen-code", "gbagent", "agy")
+VENDORS = ("grok", "claude", "cursor-agent", "qwen-code", "gbagent", "agy", "dsh")
 
 _BINARIES = {
     "grok": "grok",
@@ -46,6 +46,7 @@ _BINARIES = {
     "qwen-code": "qwen",
     "gbagent": "gbagent",
     "agy": "agy",
+    "dsh": "dsh",
 }
 
 _SEAT_ONLY = (
@@ -223,6 +224,39 @@ def _one(vendor: str, repo: Path, find, inspect) -> dict:
             "the supervisor writes the seat into the worktree's .agents/mcp_config.json. "
             "~/.gemini/config/mcp_config.json and plugins also load; 1.3.5 has no "
             "allowlist flag, so a server missing from this list is not proof the child lacks it"
+        )
+        return row
+    if vendor == "dsh":
+        # Default skill-filesystem roots (measured from dump-default-config mounting
+        # @deepseek-ai/dsh-skill-filesystem with no overrides, and the package README):
+        # project .dsh/skills and .agents/skills, user ~/.dsh/skills and ~/.agents/skills.
+        items, unreadable, truncated = _dir_skills(
+            [
+                (repo / ".dsh" / "skills", "project"),
+                (repo / ".agents" / "skills", "project"),
+                (Path.home() / ".dsh" / "skills", "user"),
+                (Path.home() / ".agents" / "skills", "user"),
+            ]
+        )
+        row["skills_status"] = PARTIAL
+        row["skills"] = items
+        reason = (
+            "read from <worktree>/.dsh/skills, <worktree>/.agents/skills, ~/.dsh/skills "
+            "and ~/.agents/skills. Bundled and plugin skills were not read, so a name "
+            "missing from this list is not proof the child lacks it"
+        )
+        if truncated:
+            reason += f". Stopped at {SKILL_CAP} skills; names past the cap were not compared"
+        if unreadable:
+            reason += ". Could not read: " + "; ".join(unreadable[:3])
+        row["skills_reason"] = reason
+        row["mcps_status"] = PARTIAL
+        row["mcps"] = [{"name": SEAT_SERVER, "source": "seat"}]
+        row["mcps_reason"] = (
+            "the supervisor writes the seat as a --patch overlay. "
+            "~/.dsh/profiles/headless/cordis.patch.yml and ~/.dsh/cordis.patch.yml also "
+            "load; 0.2.0-rc.2 has no allowlist flag, so a server missing from this list "
+            "is not proof the child lacks it"
         )
         return row
     # cursor-agent. The seat replaces <worktree>/.cursor/mcp.json. Whether the binary also
