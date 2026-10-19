@@ -484,6 +484,16 @@ export function usePlatform(projectId: string) {
   });
 }
 
+/** Derived architecture map (GRPH-1034). Polls gently — topology changes with fleet presence. */
+export function useStack(projectId: string) {
+  return useQuery({
+    queryKey: ["stack", projectId],
+    queryFn: () => api.stack(projectId),
+    enabled: !!projectId,
+    refetchInterval: 30_000,
+  });
+}
+
 // PRD-43 D1: mint or rotate the ingest token. Invalidates platform so the prefix read updates.
 export function useMintIngestToken() {
   const qc = useQueryClient();

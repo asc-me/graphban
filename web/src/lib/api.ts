@@ -62,6 +62,7 @@ import type {
   ShardCluster,
   Member,
   PlatformConfig,
+  StackTopology,
   Prd,
   PrdCoverage,
   PrdEval,
@@ -940,6 +941,9 @@ export const api = {
   events: (q: EventsQuery = {}) => request<EventPage>(`/events?${eventsQuery(q)}`),
 
   platform: (projectId: string) => request<PlatformConfig>(`/platform${projectQuery(projectId)}`),
+  /** Derived architecture map of the running system (GRPH-1034). */
+  stack: (projectId: string) =>
+    request<StackTopology>(`/platform/stack${projectQuery(projectId)}`),
   updatePlatform: (projectId: string, body: Partial<PlatformConfig>) =>
     request<PlatformConfig>(`/platform${projectQuery(projectId)}`, { method: "PATCH", body: JSON.stringify(body) }),
   // PRD-43 D1: mint or rotate the ingest token. Returns the plaintext ONCE.

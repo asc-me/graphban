@@ -26,6 +26,7 @@ from app.services import reindex
 from app.services import instance_update
 from app.services import platform as platform_svc
 from app.services import harness as harness_svc
+from app.services import stack as stack_svc
 from app.services.embedder import EmbedderRefused
 
 router = APIRouter(prefix="/platform", tags=["platform"])
@@ -362,6 +363,21 @@ def set_project_roles(body: ProjectRolesIn, project_id: str = "core",
         raise HTTPException(422, str(e)) from None
     return {"project_id": project.id, "chat_roles": project.chat_roles or {},
             "known_roles": list(platform_svc.CHAT_ROLES) + list(platform_svc.DECIDER_ROLES)}
+
+
+@router.get("/stack")
+def stack_topology(project_id: str = "core", db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """Derived architecture map of the running system (GRPH-1034 / PRD-P51 §2).
+
+    Read-only aggregator: every node and edge comes from live sources (health,
+    platform config/credentials, fleet roster, Linear status, Alembic head, MCP
+    tool count). Absences are named. Scoped through a project the caller can
+    read so the AI plane stays project-scoped and cannot leak another tenant's
+    wiring.
+    """
+    authz.require_readable(db, user.id, project_id)
+    return stack_svc.topology(db, project_id)
 
 
 @router.get("", response_model=PlatformConfigOut)

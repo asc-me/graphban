@@ -1,4 +1,4 @@
-import { Activity, BarChart3, BookMarked, Building2, Check, ChevronDown, CreditCard, GitBranch, GitFork, Gauge, Inbox, LayoutGrid, ListChecks, Map, Network, Orbit, Palette, Plug, Plus, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
+import { Activity, BarChart3, BookMarked, Boxes, Building2, Check, ChevronDown, CreditCard, GitBranch, GitFork, Gauge, Inbox, LayoutGrid, ListChecks, Map, Network, Orbit, Palette, Plug, Plus, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
 import * as React from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 
@@ -35,6 +35,7 @@ const HOSTED_PLAN = [
 const HOSTED_BUILD = [
   { to: "links", icon: <GitFork size={16} />, label: "Links" },
   { to: "code", icon: <Network size={16} />, label: "Code graph" },
+  { to: "stack", icon: <Boxes size={16} />, label: "Stack" },
   { to: "mcp-tools", icon: <Plug size={16} />, label: "MCP Tools" },
   { to: "fleet.v2", icon: <Users size={16} />, label: "Fleet.v2" },
   { to: "fleet.v1", icon: <Users size={16} />, label: "Fleet.v1" },
@@ -281,6 +282,7 @@ const PLAN = [
 ];
 const BUILD = [
   { to: "/code", icon: <Network size={16} />, label: "Code graph" },
+  { to: "/stack", icon: <Boxes size={16} />, label: "Stack" },
   { to: "/links", icon: <GitFork size={16} />, label: "Links" },
   { to: "/fleet.v2", icon: <Users size={16} />, label: "Fleet.v2" },
   { to: "/fleet.v1", icon: <Users size={16} />, label: "Fleet.v1" },
