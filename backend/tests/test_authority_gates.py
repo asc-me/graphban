@@ -153,6 +153,12 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         "related_work", "next_cluster", "claim_next", "heartbeat",
         "release_item", "describe_code", "get_code_map", "code_neighbors",
         "search_code", "link_code", "unlink_code", "report_graphban_issue",
+        # GRPH-1035. QUALITY, not authority. `record_scan` is the producer write (agent with
+        # the checkout reports findings; the server stores them) — a clean scan at head
+        # paints a Stack cell, so it is role-gated to worker in TOOL_ROLES rather than left
+        # open. `scan_status` / `scans_due` are reads of that store. None of the three
+        # crosses a tenant boundary or grants a permission the key did not already have.
+        "record_scan", "scan_status", "scans_due",
         # PRD-20 D8. QUALITY, not authority: it computes hubs/components/path over edges that
         # already exist and writes nothing. It can tell an agent what depends on the thing it
         # is about to change; it cannot grant that agent permission to change anything.

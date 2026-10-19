@@ -1033,6 +1033,12 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # recorded as agent-supplied" — and that stays true. Agent-callable and planner-only are
     # different axes, which is why `create_prd` has always been both.
     "answer_grill": ("planner",),
+    # GRPH-1035. A WRITE that paints a Stack component cell green (or red). The agent with
+    # the checkout reports findings the way `describe_code` reports structure, but a clean
+    # scan at head is a quality claim about the running system — planners do not run
+    # scanners and must not mint that badge. Reviewer-as-worker (PRD-39 S3) may still
+    # report a scan it ran while reviewing; the self-review ban is authorship, not role.
+    "record_scan": ("worker",),
 }
 
 #: Prefix marking a tool that is open because NOBODY HAS ARGUED IT, as opposed to one that is
@@ -1067,6 +1073,9 @@ OPEN_TOOLS: dict[str, str] = {
         "get_context", "get_item_details", "get_prd", "graph_query", "learning_loop",
         "list_projects", "prd_acceptance", "prd_coverage", "related_work", "search_code",
         "search_items", "search_memory", "get_lessons", "suggest_next",
+        # GRPH-1035: Stack health overlay reads — never mutate, and every role looking at
+        # the board must see whether a component is clean / has findings / never scanned.
+        "scan_status", "scans_due",
     )},
     "setup_project": "a read despite the name — returns a checklist, changes nothing",
     "collision_clusters": "the divvy a planner allocates FROM; seeing the partition is not "
