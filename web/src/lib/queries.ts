@@ -504,6 +504,24 @@ export function useStackHealth(projectId: string, enabled = true) {
   });
 }
 
+// GRPH-1044: file work from the Stack overlay (a finding's Defrag, a stale/never-run CTA).
+// The item carries the offer's `stack-filed:` tag; refetching health is what turns the
+// button into "filed GRPH-n", so a reload never offers the same work twice.
+export function useFileFromStack(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (bodies: Partial<Item>[]) =>
+      bodies.reduce<Promise<Item[]>>(
+        (acc, body) => acc.then(async (done) => [...done, await api.createItem(projectId, body)]),
+        Promise.resolve([]),
+      ),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["stack-health", projectId] });
+      qc.invalidateQueries({ queryKey: keys.items });
+    },
+  });
+}
+
 // PRD-43 D1: mint or rotate the ingest token. Invalidates platform so the prefix read updates.
 export function useMintIngestToken() {
   const qc = useQueryClient();

@@ -273,3 +273,86 @@ def test_touches_component_requires_path_boundary():
     assert scans_svc._touches_component("backendish/x", "backend/") is False
     assert scans_svc._touches_component("w", "web/") is False
     assert scans_svc._touches_component("web/", "web/") is True
+
+
+# --- GRPH-1044: provenance from the caller, and the overlay's write path -----------------
+
+
+def test_mcp_record_scan_key_only_call_stamps_the_credential(client, auth):
+    """A key-only call must not store reported_by="" — that reads as nobody reported it."""
+    key = client.post("/api/api-keys", json={"name": "scan-prov"}, headers=auth).json()["plaintext"]
+    r = _mcp(client, {"X-API-Key": key}, "record_scan", {
+        "scanner_id": "bandit", "path": "backend/", "scanned_sha": "f00d",
+        "findings": [], "project_id": "core",
+    })
+    sc = r.json()["result"]["structuredContent"]
+    assert sc["reported_by"] == "key:scan-prov"
+
+
+def test_mcp_record_scan_with_agent_id_stamps_the_agent(client, auth):
+    key = client.post("/api/api-keys", json={"name": "scan-prov2"}, headers=auth).json()["plaintext"]
+    r = _mcp(client, {"X-API-Key": key}, "record_scan", {
+        "scanner_id": "bandit", "path": "backend/", "scanned_sha": "f00d",
+        "findings": [], "project_id": "core", "agent_id": "GRPH-A9",
+    })
+    assert r.json()["result"]["structuredContent"]["reported_by"] == "GRPH-A9"
+
+
+def _api(db):
+    return next(c for c in scans_svc.component_health(db, "core", head_sha="h1")["components"]
+                if c["id"] == "api")
+
+
+def test_findings_carry_a_filed_key_and_filing_marks_them(db):
+    from app.services import items as items_svc
+
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="pip-audit", path="backend/", scanned_sha="h1",
+        findings=[{"severity": "high", "summary": "multipart DoS", "path": "backend/pyproject.toml"}],
+    )
+    f = _api(db)["categories"]["security"]["findings"][0]
+    assert f["filed_key"].startswith(scans_svc.FILED_TAG_PREFIX)
+    assert f["filed_item"] is None  # not filed is an explicit None, never a missing field
+
+    # Same finding re-reported → same key (a re-scan must not re-offer filed work).
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="pip-audit", path="backend/", scanned_sha="h1",
+        findings=[{"severity": "high", "summary": "multipart DoS", "path": "backend/pyproject.toml"}],
+    )
+    assert _api(db)["categories"]["security"]["findings"][0]["filed_key"] == f["filed_key"]
+
+    it = items_svc.create_item(db, project_id="core", title="Defrag", tags=["defrag", f["filed_key"]])
+    f2 = _api(db)["categories"]["security"]["findings"][0]
+    assert f2["filed_item"] == it.key
+
+
+def test_open_work_findings_offer_no_defrag(db):
+    from app.services import items as items_svc
+
+    items_svc.create_item(db, project_id="core", title="wip", touchpoints=["backend/app/x.py"])
+    work = _api(db)["categories"]["work"]
+    assert work["findings"], "fixture should produce an in-flight finding"
+    assert all("filed_key" not in f for f in work["findings"])
+    assert work["cta"] is None
+
+
+def test_stale_and_never_scanned_cells_offer_a_cta(db):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="radon", path="backend/", scanned_sha="old", findings=[],
+    )
+    cats = _api(db)["categories"]
+    assert cats["refactor"]["state"] == "stale"
+    assert cats["refactor"]["cta"]["kind"] == "rerun"
+    assert cats["stub"]["state"] == "never_scanned"
+    assert cats["stub"]["cta"]["kind"] == "add_scanner"
+    # A rerun offer is per stale revision: going stale again later is a new offer.
+    first = cats["refactor"]["cta"]["filed_key"]
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="radon", path="backend/", scanned_sha="older", findings=[],
+    )
+    assert _api(db)["categories"]["refactor"]["cta"]["filed_key"] != first
+    # Clean at head offers nothing.
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="radon", path="backend/", scanned_sha="h1", findings=[],
+    )
+    assert _api(db)["categories"]["refactor"]["cta"] is None

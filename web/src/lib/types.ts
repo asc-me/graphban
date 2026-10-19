@@ -1171,6 +1171,17 @@ export interface StackScanFinding {
   path: string;
   link_kind?: string | null;
   link_ref?: string | null;
+  /** Tag an item filed from this finding carries; absent on open-work findings. */
+  filed_key?: string | null;
+  /** The item already filed for it, if any. */
+  filed_item?: string | null;
+}
+
+export interface StackScanCta {
+  kind: "rerun" | "add_scanner";
+  path: string;
+  filed_key: string;
+  filed_item: string | null;
 }
 
 export interface StackScanCategory {
@@ -1184,6 +1195,8 @@ export interface StackScanCategory {
   note?: string | null;
   live?: boolean;
   reported_by?: string | null;
+  /** Offered on a stale / never-scanned cell only. */
+  cta?: StackScanCta | null;
 }
 
 export interface StackComponentHealth {

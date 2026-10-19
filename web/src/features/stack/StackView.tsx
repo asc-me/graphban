@@ -11,7 +11,7 @@ import {
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { projectPath, tagFromPath } from "@/lib/routes";
-import { useStack, useStackHealth } from "@/lib/queries";
+import { useFileFromStack, useStack, useStackHealth } from "@/lib/queries";
 import { buildStackLayout, OUTPOST_PREVIEW, type Box, type EdgeRoute } from "@/lib/stack/layout";
 import {
   LABEL_ZOOM,
@@ -19,23 +19,63 @@ import {
   zoomAbout,
 } from "@/lib/graph/useGraphViewport";
 import type {
+  Item,
   ScanHealthState,
   StackComponentHealth,
+  StackScanCategory,
+  StackScanCta,
+  StackScanFinding,
   StackEdge,
   StackHealth,
   StackLiveness,
   StackNode,
-  StackScanCategory,
-  StackScanFinding,
   StackTopology,
 } from "@/lib/types";
 
-const HEALTH_SEV: Record<string, { label: string; className: string }> = {
-  crit: { label: "CRIT", className: "border-rose-400 text-rose-300" },
-  high: { label: "HIGH", className: "border-orange-400 text-orange-300" },
-  med: { label: "MED", className: "border-amber-400 text-amber-200" },
-  low: { label: "LOW", className: "border-line text-muted" },
+const HEALTH_SEV: Record<
+  string,
+  { label: string; className: string; text: string; square: string; border: string }
+> = {
+  crit: {
+    label: "CRIT",
+    className: "border-rose-400 text-rose-300",
+    text: "text-rose-300",
+    square: "bg-rose-400 border-rose-400",
+    border: "border-rose-400/50",
+  },
+  high: {
+    label: "HIGH",
+    className: "border-orange-400 text-orange-300",
+    text: "text-orange-300",
+    square: "bg-orange-400 border-orange-400",
+    border: "border-orange-400/50",
+  },
+  med: {
+    label: "MED",
+    className: "border-amber-400 text-amber-200",
+    text: "text-amber-200",
+    square: "bg-amber-400 border-amber-400",
+    border: "border-amber-400/50",
+  },
+  low: {
+    label: "LOW",
+    className: "border-line text-muted",
+    text: "text-muted",
+    square: "bg-muted border-muted",
+    border: "border-line",
+  },
 };
+
+const SEV_ORDER = ["crit", "high", "med", "low"];
+
+function sevMeta(severity: string | null | undefined) {
+  return HEALTH_SEV[severity || ""] || HEALTH_SEV.low;
+}
+
+/** Worst severity among findings — the colour a FINDINGS cell takes (Stack.dc.html roll()). */
+function worstSeverity(findings: { severity: string }[]): string | null {
+  return SEV_ORDER.find((s) => findings.some((f) => (HEALTH_SEV[f.severity] ? f.severity : "low") === s)) ?? null;
+}
 
 const HEALTH_ROLLUP: Record<
   ScanHealthState,
@@ -109,6 +149,65 @@ const RING_LABEL: Record<number, string> = {
   2: "Infra we run",
   3: "External",
 };
+
+/**
+ * Rollup colours. FINDINGS takes the colour of the WORST severity present, not a fixed
+ * orange: a box with one LOW and a box with a CRIT must not look the same (GRPH-1044).
+ */
+function rollupStyle(roll: StackComponentHealth["rollup"]) {
+  const base = HEALTH_ROLLUP[roll.state];
+  if (roll.state !== "has_findings") return base;
+  const sev = sevMeta(roll.worst_severity);
+  return { ...base, square: sev.square, text: sev.text };
+}
+
+/** Item bodies the overlay files. The `stack-filed:` tag is what marks the offer taken. */
+function defragBody(
+  health: StackComponentHealth,
+  catKey: string,
+  cat: StackScanCategory,
+  f: StackScanFinding,
+): Partial<Item> {
+  const sev = sevMeta(f.severity).label;
+  const where = f.path || health.path;
+  return {
+    title: `Defrag ${where}: ${f.summary}`.slice(0, 160),
+    description:
+      `Filed from the Stack code-health overlay (${health.id} · ${cat.label || catKey}).\n\n` +
+      `${sev} finding from ${cat.scanner || "an unnamed scanner"}` +
+      `${cat.scanned_sha ? ` at ${cat.scanned_sha.slice(0, 12)}` : ""}:\n\n> ${f.summary}\n\n` +
+      `Path: ${where}. The summary is scanner output, not a verified diagnosis — confirm it first.`,
+    tags: ["defrag", "tech-debt", f.filed_key as string],
+    touchpoints: where ? [where] : [],
+  };
+}
+
+function ctaBody(
+  health: StackComponentHealth,
+  catKey: string,
+  cat: StackScanCategory,
+  cta: StackScanCta,
+): Partial<Item> {
+  const label = cat.label || catKey;
+  return cta.kind === "rerun"
+    ? {
+        title: `Re-run ${cat.scanner || label} on ${cta.path} at head`,
+        description:
+          `Filed from the Stack code-health overlay (${health.id} · ${label}). The last result ` +
+          `is against ${cat.scanned_sha ? cat.scanned_sha.slice(0, 12) : "an unknown revision"}, ` +
+          `which does not cover head${health.head_sha ? ` (${health.head_sha.slice(0, 12)})` : ""}. ` +
+          `Re-run it and report with record_scan.`,
+        tags: ["scan", cta.filed_key],
+      }
+    : {
+        title: `Add a ${label} scanner for ${cta.path}`,
+        description:
+          `Filed from the Stack code-health overlay (${health.id} · ${label}). Nothing has ever ` +
+          `scanned ${cta.path} for this, so its state is unknown, not clean. Pick a scanner, run ` +
+          `it, and report with record_scan.`,
+        tags: ["scan", cta.filed_key],
+      };
+}
 
 function liveMeta(l: StackLiveness) {
   return LIVENESS_META[l] ?? LIVENESS_META.unknown;
@@ -587,7 +686,7 @@ function NodeBox({
 }) {
   const live = liveMeta(node.liveness);
   const roll = health?.rollup;
-  const hStyle = roll ? HEALTH_ROLLUP[roll.state] : null;
+  const hStyle = roll ? rollupStyle(roll) : null;
   return (
     <button
       type="button"
@@ -675,6 +774,7 @@ function NodeBox({
         <div
           title="Code health — separate from liveness"
           data-testid={`stack-health-footer-${node.id}`}
+          data-worst={roll.worst_severity || ""}
           className={cn(
             "-mx-2.5 -mb-2.5 mt-auto flex items-center gap-1.5 border-t border-line px-2.5 py-1 font-mono text-meta",
             hStyle.band,
@@ -684,10 +784,11 @@ function NodeBox({
           <span className={cn("h-2 w-2 flex-none rounded-[2px] border-[1.5px]", hStyle.square)} />
           <span className={cn("font-semibold tracking-[0.04em]", hStyle.text)}>{roll.label}</span>
           {roll.severity_badges.map((b) => {
-            const sev = HEALTH_SEV[b.severity] || HEALTH_SEV.low;
+            const sev = sevMeta(b.severity);
             return (
               <span
                 key={b.severity}
+                data-testid={`stack-health-sev-${b.severity}`}
                 className={cn("rounded border px-1 text-[9px]", sev.className)}
               >
                 {b.count} {sev.label}
@@ -1398,6 +1499,23 @@ function useFindingHref(): (
   };
 }
 
+function FiledLink({ id, href }: { id: string; href: string | null }) {
+  const text = `filed ${id} ↗`;
+  return href ? (
+    <Link
+      to={href}
+      className="font-mono text-[10.5px] text-muted hover:text-accent"
+      data-testid="stack-health-filed"
+    >
+      {text}
+    </Link>
+  ) : (
+    <span className="font-mono text-[10.5px] text-muted" data-testid="stack-health-filed">
+      {text}
+    </span>
+  );
+}
+
 function HealthInspector({
   node,
   health,
@@ -1408,6 +1526,8 @@ function HealthInspector({
   loading: boolean;
 }) {
   const findingHref = useFindingHref();
+  const { activeId } = useProjectCtx();
+  const filing = useFileFromStack(activeId);
   // Infra / external / host-only: we don't scan code we don't own.
   if (!health) {
     const na =
@@ -1430,29 +1550,65 @@ function HealthInspector({
   }
 
   const roll = health.rollup;
-  const hStyle = HEALTH_ROLLUP[roll.state];
+  const hStyle = rollupStyle(roll);
   const cats = Object.entries(health.categories);
+  const unfiled = cats.flatMap(([key, cat]) =>
+    cat.findings
+      .filter((f) => f.filed_key && !f.filed_item)
+      .map((f) => defragBody(health, key, cat, f)),
+  );
+  const file = (bodies: Partial<Item>[]) => {
+    if (!filing.isPending) filing.mutate(bodies);
+  };
 
   return (
     <Section title="Code health">
+      <div className="mb-2 flex items-center gap-2">
+        <span className="font-mono text-[10px] text-muted-2">
+          {health.path} {health.head_sha ? `@ ${health.head_sha.slice(0, 7)}` : ""}
+        </span>
+        {unfiled.length > 1 && (
+          <button
+            type="button"
+            onClick={() => file(unfiled)}
+            disabled={filing.isPending}
+            data-testid="stack-health-defrag-all"
+            className="ml-auto h-6 rounded-md border border-accent/40 bg-accent/10 px-2 text-small font-semibold text-accent hover:border-accent disabled:opacity-50"
+          >
+            Defrag all {unfiled.length}
+          </button>
+        )}
+      </div>
       <div
-        className="mb-2 rounded-[9px] border border-line bg-surface-2/80 p-2.5"
+        className={cn("mb-2 rounded-[9px] border border-line p-2.5", hStyle.band)}
         data-testid="stack-health-summary"
+        data-worst={roll.worst_severity || ""}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px]">
           <span className={cn("h-2.5 w-2.5 rounded-[2px] border-[1.5px]", hStyle.square)} />
-          <span className={cn("font-mono text-small font-semibold tracking-[0.05em]", hStyle.text)}>
+          <span className={cn("text-small font-semibold tracking-[0.05em]", hStyle.text)}>
             {roll.label}
           </span>
-          <span className="ml-auto font-mono text-[10px] text-muted-2">
-            {health.path} {health.head_sha ? `@ ${health.head_sha.slice(0, 7)}` : ""}
-          </span>
+          {roll.severity_badges.map((b) => {
+            const sev = sevMeta(b.severity);
+            return (
+              <span key={b.severity} className={cn("rounded border px-1", sev.className)}>
+                {b.count} {sev.label}
+              </span>
+            );
+          })}
+          <span className="ml-auto text-muted-2">{roll.meta}</span>
         </div>
-        <p className="mt-1.5 text-[11.5px] leading-snug text-muted">
-          No score. Each scanner reports on its own, with when it ran and against which
-          revision. A scanner that hasn&apos;t run at head never counts as clean.
-        </p>
       </div>
+      <p className="mb-2 text-[11.5px] leading-snug text-muted">
+        No score. Each scanner reports on its own, with when it ran and against which
+        revision. A scanner that hasn&apos;t run at head never counts as clean.
+      </p>
+      {filing.isError && (
+        <p className="mb-2 text-[11.5px] text-rose-300" data-testid="stack-health-file-error">
+          Could not file it: {(filing.error as Error)?.message || "request failed"}
+        </p>
+      )}
 
       <ul className="space-y-2" data-testid="stack-health-categories">
         {cats.map(([key, cat]) => {
@@ -1465,12 +1621,14 @@ function HealthInspector({
                 : st === "stale"
                   ? "STALE"
                   : "NOT RUN";
+          const worst = st === "has_findings" ? sevMeta(worstSeverity(cat.findings)) : null;
           const stColor =
             st === "clean_at_sha"
               ? "text-sky-300 border-sky-400/50"
-              : st === "has_findings"
-                ? "text-orange-300 border-orange-400/50"
+              : worst
+                ? cn(worst.text, worst.border)
                 : "text-muted border-host";
+          const cta = cat.cta;
           return (
             <li
               key={key}
@@ -1482,8 +1640,9 @@ function HealthInspector({
               <div className="flex items-center gap-2">
                 <span className="text-[12px] font-medium text-fg">{cat.label}</span>
                 <span
+                  data-testid={`stack-health-cat-${key}`}
                   className={cn(
-                    "rounded border px-1.5 py-0.5 font-mono text-meta tracking-[0.04em]",
+                    "ml-auto rounded border px-1.5 py-0.5 font-mono text-meta tracking-[0.04em]",
                     stColor,
                   )}
                 >
@@ -1507,7 +1666,12 @@ function HealthInspector({
                   </span>
                 ) : null}
               </div>
-              <div className="font-mono text-[10px] text-muted-2">
+              <div
+                className={cn(
+                  "font-mono text-[10px]",
+                  st === "stale" ? "text-amber-200" : "text-muted-2",
+                )}
+              >
                 {st === "never_scanned"
                   ? "no result at any revision"
                   : cat.live
@@ -1518,13 +1682,31 @@ function HealthInspector({
                         }`
                       : ""}
               </div>
-              {cat.note && (
-                <p className="mt-1.5 text-[11.5px] leading-snug text-muted">{cat.note}</p>
+              {(cat.note || cta) && (
+                <p className="mt-1.5 flex flex-wrap gap-x-2 gap-y-1 text-[11.5px] leading-snug text-muted">
+                  {cat.note && <span>{cat.note}</span>}
+                  {cta &&
+                    (cta.filed_item ? (
+                      <FiledLink id={cta.filed_item} href={findingHref("item", cta.filed_item)} />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => file([ctaBody(health, key, cat, cta)])}
+                        disabled={filing.isPending}
+                        data-testid={`stack-health-cta-${key}`}
+                        title="File this as work for an agent with the repo — the server never runs scanners"
+                        className="text-accent hover:underline disabled:opacity-50"
+                      >
+                        {cta.kind === "rerun" ? "Re-run at head →" : "Add a scanner →"}
+                      </button>
+                    ))}
+                </p>
               )}
               {cat.findings.length > 0 && (
                 <ul className="mt-2 space-y-1.5">
                   {cat.findings.map((f, i) => {
-                    const sev = HEALTH_SEV[f.severity] || HEALTH_SEV.low;
+                    const sev = sevMeta(f.severity);
+                    const href = f.link_ref ? findingHref(f.link_kind, f.link_ref) : null;
                     return (
                       <li
                         key={`${key}-${i}`}
@@ -1541,28 +1723,40 @@ function HealthInspector({
                         </span>
                         <div className="min-w-0 flex-1">
                           <div className="leading-snug text-fg-2">{f.summary}</div>
-                          <div className="font-mono text-[10px] text-muted-2">
-                            {f.path}
-                            {f.link_ref
-                              ? (() => {
-                                  const href = findingHref(f.link_kind, f.link_ref);
-                                  return href ? (
-                                    <>
-                                      {" · "}
-                                      <Link
-                                        to={href}
-                                        className="text-accent hover:underline"
-                                        data-testid="stack-health-finding-link"
-                                        data-link-kind={f.link_kind || ""}
-                                      >
-                                        {f.link_ref} ↗
-                                      </Link>
-                                    </>
-                                  ) : (
-                                    ` · ${f.link_ref}`
-                                  );
-                                })()
-                              : ""}
+                          <div className="flex flex-wrap items-center gap-x-1 font-mono text-[10px] text-muted-2">
+                            <span>{f.path}</span>
+                            {f.link_ref &&
+                              (href ? (
+                                <>
+                                  {"·"}
+                                  <Link
+                                    to={href}
+                                    className="text-accent hover:underline"
+                                    data-testid="stack-health-finding-link"
+                                    data-link-kind={f.link_kind || ""}
+                                  >
+                                    {f.link_ref} ↗
+                                  </Link>
+                                </>
+                              ) : (
+                                <span>· {f.link_ref}</span>
+                              ))}
+                            <span className="flex-1" />
+                            {f.filed_key &&
+                              (f.filed_item ? (
+                                <FiledLink id={f.filed_item} href={findingHref("item", f.filed_item)} />
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => file([defragBody(health, key, cat, f)])}
+                                  disabled={filing.isPending}
+                                  title="File cleanup work from this finding"
+                                  data-testid="stack-health-defrag"
+                                  className="h-[22px] rounded-md border border-host px-2 font-sans text-small font-medium text-fg hover:border-accent hover:text-accent disabled:opacity-50"
+                                >
+                                  Defrag
+                                </button>
+                              ))}
                           </div>
                         </div>
                       </li>
