@@ -75,18 +75,27 @@ const EXT_GAP = 150; // gap before the external column
 const V_GAP = 40; // vertical gap between boxes in a column
 const TOP = 150; // headroom for ring labels
 
-/** Content-driven box size, so api (surfaces) and db (extension) read larger. */
+/**
+ * Content-driven box size. Boxes stay close in size so the whole map fits and
+ * reads at once — api (surfaces) and db (extension) run a little larger, but no
+ * box is allowed to blow out the canvas. Surfaces render as compact wrapped
+ * chips (not full-size tiles), so even api's four surfaces cost ~two lines, and
+ * the full list lives in the inspector.
+ */
 function sizeOf(n: StackNode): { w: number; h: number } {
   const external = n.ring >= 3;
   const surfaces = n.surfaces.length;
   const extensions = n.extensions.length;
   const outposts = n.outposts?.length ?? 0;
   if (external) return { w: 220, h: 92 };
-  if (surfaces >= 3) return { w: 320, h: 180 }; // api: four surface tiles
   let h = 104;
-  if (surfaces > 0) h += 30;
+  // Surface chips wrap ~2 per line in a 250px box; >2 surfaces takes a 2nd line.
+  if (surfaces > 0) h += surfaces > 2 ? 48 : 30;
   if (extensions > 0) h += 30;
   if (outposts > 0) h += outposts * 20;
+  // Ring-1 deployables carry the code-health footer (GRPH-1035); reserve its
+  // height so content never clips when the overlay is on (its default).
+  if (n.ring === 1) h += 24;
   const w = extensions > 0 || surfaces > 0 ? 250 : 220;
   return { w, h };
 }
