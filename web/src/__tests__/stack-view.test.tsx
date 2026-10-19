@@ -105,11 +105,14 @@ const health: StackHealth = {
           scanner: "pip-audit 2.7.3",
           scanned_sha: "abc1234",
           scanned_at: "2026-10-18T00:00:00Z",
+          reported_by: "GRPH-A3282",
           findings: [
             {
               severity: "high",
               summary: "python-multipart pinned below 0.0.18",
               path: "backend/pyproject.toml",
+              link_kind: "item",
+              link_ref: "GRPH-1041",
             },
           ],
         },
@@ -356,6 +359,30 @@ describe("StackView", () => {
     const finding = within(inspector).getByTestId("stack-health-finding");
     expect(finding).toHaveTextContent("python-multipart");
     expect(finding).toHaveTextContent("backend/pyproject.toml");
+  });
+
+  it("inspector shows each scanner's provenance (reported_by)", async () => {
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await user.click(await screen.findByTestId("stack-node-api"));
+    const inspector = await screen.findByTestId("stack-inspector");
+    // Design: the finding carries "who reported", distinct from a weak scanner's clean.
+    const prov = await within(inspector).findByTestId("stack-health-reported-by");
+    expect(prov).toHaveTextContent("reported by");
+    expect(prov).toHaveTextContent("GRPH-A3282");
+  });
+
+  it("inspector renders a finding's cross-reference as a routed link", async () => {
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await user.click(await screen.findByTestId("stack-node-api"));
+    const inspector = await screen.findByTestId("stack-inspector");
+    // Design (Stack.dc.html): the finding's link_ref is an anchor, not plain text.
+    const link = await within(inspector).findByTestId("stack-health-finding-link");
+    expect(link.tagName).toBe("A");
+    expect(link).toHaveTextContent("GRPH-1041");
+    // link_kind "item" routes to the tracker, deep-linking the item.
+    expect(link).toHaveAttribute("href", "/tracker?select=GRPH-1041");
   });
 
   it("inspector marks infra boxes as code-health N/A", async () => {

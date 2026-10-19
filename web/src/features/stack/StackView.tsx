@@ -1,5 +1,6 @@
 import { Printer } from "lucide-react";
 import * as React from "react";
+import { Link, useLocation } from "react-router-dom";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import {
@@ -9,6 +10,7 @@ import {
 } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
+import { projectPath, tagFromPath } from "@/lib/routes";
 import { useStack, useStackHealth } from "@/lib/queries";
 import { buildStackLayout, type Box, type EdgeRoute } from "@/lib/stack/layout";
 import {
@@ -961,6 +963,32 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
+/**
+ * In-app destination for a finding's cross-reference, honouring the hosted
+ * `/p/:tag/...` scope when the current path has a tag, and the flat route
+ * otherwise. Unknown kinds get no link (the ref stays plain text).
+ */
+function useFindingHref(): (
+  kind: string | null | undefined,
+  ref: string | null | undefined,
+) => string | null {
+  const { pathname } = useLocation();
+  const tag = tagFromPath(pathname);
+  return (kind, ref) => {
+    if (!ref) return null;
+    const sub =
+      kind === "prd"
+        ? `prds/${encodeURIComponent(ref)}`
+        : kind === "code"
+          ? "code"
+          : kind === "item"
+            ? `tracker?select=${encodeURIComponent(ref)}`
+            : null;
+    if (!sub) return null;
+    return tag ? projectPath(tag, sub) : `/${sub}`;
+  };
+}
+
 function HealthInspector({
   node,
   health,
@@ -970,6 +998,7 @@ function HealthInspector({
   health: StackComponentHealth | null;
   loading: boolean;
 }) {
+  const findingHref = useFindingHref();
   // Infra / external / host-only: we don't scan code we don't own.
   if (!health) {
     const na =
@@ -1062,6 +1091,12 @@ function HealthInspector({
                     : cat.scanned_at
                       ? `ran ${cat.scanned_at.slice(0, 16)}`
                       : "ran"}
+                {cat.reported_by ? (
+                  <span data-testid="stack-health-reported-by">
+                    {" · reported by "}
+                    {cat.reported_by}
+                  </span>
+                ) : null}
               </div>
               <div className="font-mono text-[10px] text-muted-2">
                 {st === "never_scanned"
@@ -1099,7 +1134,26 @@ function HealthInspector({
                           <div className="leading-snug text-fg-2">{f.summary}</div>
                           <div className="font-mono text-[10px] text-muted-2">
                             {f.path}
-                            {f.link_ref ? ` · ${f.link_ref}` : ""}
+                            {f.link_ref
+                              ? (() => {
+                                  const href = findingHref(f.link_kind, f.link_ref);
+                                  return href ? (
+                                    <>
+                                      {" · "}
+                                      <Link
+                                        to={href}
+                                        className="text-accent hover:underline"
+                                        data-testid="stack-health-finding-link"
+                                        data-link-kind={f.link_kind || ""}
+                                      >
+                                        {f.link_ref} ↗
+                                      </Link>
+                                    </>
+                                  ) : (
+                                    ` · ${f.link_ref}`
+                                  );
+                                })()
+                              : ""}
                           </div>
                         </div>
                       </li>
