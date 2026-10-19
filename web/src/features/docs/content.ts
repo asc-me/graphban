@@ -150,7 +150,26 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 1, h: "Kinds and edges", b: "Modules, files, symbols, plus muted docs and config. Edges: imports, calls, owns, tested-by, references. Toggle types; collapse components when the graph is too wide." },
       { num: 2, h: "Held areas are the alarm", b: "Overlapping clouds are two agents on the same files. The fleet legend names who holds what. An area this graph cannot place is still reported — not dropped." },
     ],
-    related: [{ label: "Fleet.v1", to: "/fleet.v1" }],
+    related: [
+      { label: "Stack", to: "/stack" },
+      { label: "Fleet.v1", to: "/fleet.v1" },
+    ],
+  },
+
+  "/stack": {
+    badge: "STACK",
+    title: "Stack",
+    tagline: "Derived architecture of what runs, where, and what depends on what.",
+    sections: [
+      { num: 1, h: "Host groups", b: "Compose/Railway (web, api, db), agent hosts (fleet + vendor CLIs), user machines (cli), and wired external services. A box is a deployable with its own lifecycle — MCP is a surface on api, not its own box." },
+      { num: 2, h: "Liveness is three-state", b: "Reachable, unreachable, or unknown — never a healthy default. Decider adds uncalibrated when configured but not adjudicating. Empty states name what is missing (no fleet, no sync)." },
+      { num: 3, h: "Inspector", b: "Click a box for facts with provenance, surfaces/ports, extensions (pgvector lives inside Postgres), and protocol-labelled connections. Print/PDF exports the current theme at 1:1." },
+    ],
+    related: [
+      { label: "Code graph", to: "/code" },
+      { label: "Outposts", to: "/outposts" },
+      { label: "Fleet.v2", to: "/fleet.v2" },
+    ],
   },
 
   "/fleet.v2": {

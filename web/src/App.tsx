@@ -11,6 +11,7 @@ import { OperatorLicensing } from "@/features/admin/OperatorLicensing";
 import { OperatorOrgs } from "@/features/admin/OperatorOrgs";
 import { OperatorUsers } from "@/features/admin/OperatorUsers";
 import { CodeGraphView } from "@/features/code/CodeGraphView";
+import { StackView } from "@/features/stack/StackView";
 import { DashboardView } from "@/features/dashboard/DashboardView";
 import { EmbedFeedbackPage } from "@/features/feedback/EmbedFeedbackPage";
 import { FeedbackKitView } from "@/features/feedback/FeedbackKitView";
@@ -95,6 +96,7 @@ const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["dashboard", <DashboardView />],
   ["links", <LinksGraphView />],
   ["code", <CodeGraphView />],
+  ["stack", <StackView />],
   ["roadmap", <RoadmapView />],
   ["mcp-tools", <McpToolsView />],
   ["fleet.v1", <FleetView />],

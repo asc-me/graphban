@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="_ds/design-system-83ade3bd-4186-4c71-9857-a0fe2bc1a395/_ds_bundle.js"></script>
+<style>
+:root,[data-theme=dark]{--bg:#0a0c0e;--panel:#0f1317;--panel2:#12171b;--hover:#1b2127;--line:#1a1f24;--line2:#2a333a;--host:#46515b;--tx:#e6e9ec;--tx2:#8b949e;--tx3:#5c656e;--acc:#c6f24e;--accbg:rgba(198,242,78,.09);--accln:rgba(198,242,78,.32);--pur:#c9b8ff;--purbg:rgba(157,125,255,.09);--purln:rgba(157,125,255,.38);--red:#ff6b6b;--redbg:rgba(255,107,107,.09);--amb:#e0b34a;--ambbg:rgba(224,179,74,.09);--hatch:rgba(139,148,158,.13);--r1:rgba(198,242,78,.025);--r1b:rgba(198,242,78,.3);--r2:rgba(157,125,255,.035);--r2b:rgba(157,125,255,.32);--r3:#0c0f12;--r3b:#1e242a;--hdr:rgba(12,15,17,.72);--side:rgba(9,11,13,.5);--edge:#56616c;--shadow:rgba(0,0,0,.45);--sc:#ff5c8a;--sh:#ff9b54;--sm:#e8c95a;--sl:#9aa4ad;--cln:#7ca2ff;}
+[data-theme=light]{--bg:#f4f5f1;--panel:#ffffff;--panel2:#eef0ea;--hover:#e6e9e2;--line:#dde1d8;--line2:#c5cbc1;--host:#8f988f;--tx:#14181b;--tx2:#4f5961;--tx3:#6c757d;--acc:#4a7a00;--accbg:rgba(110,160,0,.11);--accln:rgba(90,140,0,.42);--pur:#5b3fd0;--purbg:rgba(91,63,208,.07);--purln:rgba(91,63,208,.38);--red:#c42f2f;--redbg:rgba(196,47,47,.07);--amb:#8f6200;--ambbg:rgba(180,130,0,.1);--hatch:rgba(80,90,100,.11);--r1:rgba(110,160,0,.04);--r1b:rgba(90,140,0,.38);--r2:rgba(91,63,208,.035);--r2b:rgba(91,63,208,.3);--r3:#fafbf8;--r3b:#d4d9cf;--hdr:rgba(255,255,255,.86);--side:#eef0ea;--edge:#8a948c;--shadow:rgba(30,40,30,.16);--sc:#c0175a;--sh:#b45200;--sm:#866000;--sl:#5c656e;--cln:#2f5fd0;}
+*{box-sizing:border-box;}
+html,body{margin:0;height:100%;background:var(--bg);-webkit-font-smoothing:antialiased;}
+a{color:var(--acc);text-decoration:none;} a:hover{color:var(--tx);}
+button{font:inherit;color:inherit;cursor:pointer;}
+::-webkit-scrollbar{width:10px;height:10px;}
+::-webkit-scrollbar-thumb{background:var(--line2);border-radius:8px;border:2px solid var(--bg);}
+@media print{@page{size:1704px 1120px;margin:0;}html,body{height:auto!important;}[data-noprint]{display:none!important;}[data-print-root]{height:auto!important;min-height:0!important;}[data-print-static]{position:static!important;overflow:visible!important;height:auto!important;flex:none!important;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}
+</style>
+</helmet>
+
+<div data-theme="{{ theme }}" data-screen-label="Stack" data-print-root="" style="height:100vh;min-height:720px;display:flex;flex-direction:column;font-family:'IBM Plex Sans',system-ui,sans-serif;color:var(--tx);background:var(--bg);">
+
+  <header data-noprint="" style="height:56px;flex:0 0 auto;display:flex;align-items:center;gap:18px;padding:0 20px;border-bottom:1px solid var(--line);background:var(--hdr);backdrop-filter:blur(8px);">
+    <div style="display:flex;align-items:center;gap:11px;min-width:0;">
+      <div style="width:26px;height:26px;flex:0 0 auto;border-radius:7px;background:linear-gradient(150deg,#c6f24e,#8fd12e);display:flex;align-items:center;justify-content:center;">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M3 2v12M3 4h8M3 8h6M3 12h9" stroke="#0a0c0e" stroke-width="1.8" stroke-linecap="round"></path></svg>
+      </div>
+      <div style="line-height:1;min-width:0;">
+        <div style="font-weight:700;font-size:15px;letter-spacing:-.2px;">Graphban</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:var(--tx3);letter-spacing:.6px;margin-top:2px;white-space:nowrap;">AGENT MEMORY · LINEAR EXECUTION</div>
+      </div>
+    </div>
+    <div style="width:1px;height:24px;flex:0 0 auto;background:var(--line);"></div>
+    <div style="position:relative;flex:1 1 240px;min-width:180px;max-width:340px;">
+      <input readonly="" placeholder="Jump to a page, item, or PRD…" style="width:100%;height:34px;padding:0 44px 0 12px;background:var(--panel);border:1px solid var(--line);border-radius:9px;font:inherit;font-size:13px;outline:none;color:var(--tx);cursor:pointer;">
+      <span style="position:absolute;right:9px;top:50%;transform:translateY(-50%);font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx3);border:1px solid var(--line2);border-radius:5px;padding:1px 5px;">⌘K</span>
+    </div>
+    <div style="flex:1;"></div>
+    <button style="display:flex;align-items:center;gap:8px;height:34px;flex:0 0 auto;padding:0 13px;border-radius:9px;border:1px solid var(--purln);background:var(--purbg);color:var(--pur);font-size:12.5px;font-weight:600;">Agent</button>
+    <span style="width:30px;height:30px;flex:0 0 auto;border-radius:50%;background:#c9b8ff;color:#0a0c0e;font-size:11px;font-weight:700;font-family:'IBM Plex Mono',monospace;display:flex;align-items:center;justify-content:center;">AS</span>
+  </header>
+
+  <div data-print-static="" style="flex:1;min-height:0;display:flex;">
+    <aside data-noprint="" style="width:216px;flex:0 0 auto;border-right:1px solid var(--line);display:flex;flex-direction:column;padding:16px 12px;background:var(--side);overflow-y:auto;">
+      <a href="Project%20Home.dc.html" style="display:flex;align-items:center;gap:10px;height:42px;padding:0 10px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--tx);">
+        <span style="width:20px;height:20px;flex:0 0 auto;border-radius:6px;border:1px solid var(--accln);background:var(--accbg);color:var(--acc);font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center;">A</span>
+        <span style="flex:1;min-width:0;line-height:1.15;"><span style="display:block;font-size:12.5px;font-weight:600;">Ascme Labs</span><span style="display:block;margin-top:2px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.4px;color:var(--tx3);">FREE PLAN</span></span>
+      </a>
+      <nav style="margin-top:16px;display:flex;flex-direction:column;gap:2px;font-size:13px;">
+        <a href="Plan.dc.html" style="display:flex;padding:8px 10px;border-radius:9px;color:var(--tx2);font-weight:500;" style-hover="background:var(--hover);color:var(--tx);">Plan</a>
+        <span style="display:flex;padding:8px 10px;color:var(--tx);font-weight:500;">Build</span>
+        <div style="display:flex;flex-direction:column;gap:2px;padding-left:8px;">
+          <a href="Build.dc.html#links" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;color:var(--tx2);" style-hover="background:var(--hover);color:var(--tx);"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18a3 3 0 1 0 6 0a3 3 0 1 0 -6 0"></path><path d="M3 6a3 3 0 1 0 6 0a3 3 0 1 0 -6 0"></path><path d="M15 6a3 3 0 1 0 6 0a3 3 0 1 0 -6 0"></path><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"></path><path d="M12 12v3"></path></svg>Links</a>
+          <a href="Build.dc.html#code" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;color:var(--tx2);" style-hover="background:var(--hover);color:var(--tx);"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 16h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1z"></path><path d="M3 16h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1z"></path><path d="M10 2h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1z"></path><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"></path><path d="M12 12V8"></path></svg>Code graph</a>
+          <span aria-current="page" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;background:var(--hover);color:var(--tx);"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--acc)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"></path><path d="M7 7h6v5H7z"></path><path d="M16 7v10"></path><path d="M7 16h6"></path></svg>Stack</span>
+          <a href="Build.dc.html#mcp" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;color:var(--tx2);" style-hover="background:var(--hover);color:var(--tx);"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"></path><path d="M9 8V2"></path><path d="M15 8V2"></path><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"></path></svg>MCP Tools</a>
+          <a href="Build.dc.html#fleet" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;color:var(--tx2);" style-hover="background:var(--hover);color:var(--tx);"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><path d="M5 7a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"></path><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Fleet</a>
+          <a href="Build.dc.html#outposts" style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;color:var(--tx2);" style-hover="background:var(--hover);color:var(--tx);"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2h16a2 2 0 0 1 2 2v4a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2v-4a2 2 0 0 1 2 -2z"></path><path d="M4 14h16a2 2 0 0 1 2 2v4a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2v-4a2 2 0 0 1 2 -2z"></path><path d="M6 6h.01"></path><path d="M6 18h.01"></path></svg>Outposts</a>
+        </div>
+        <a href="Observe.dc.html" style="display:flex;padding:8px 10px;border-radius:9px;color:var(--tx2);font-weight:500;" style-hover="background:var(--hover);color:var(--tx);">Observe</a>
+      </nav>
+      <div style="flex:1;min-height:16px;"></div>
+      <div style="display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--line);padding-top:10px;font-size:13px;">
+        <dc-import name="Org Link" hint-size="100%,32px"></dc-import>
+        <a href="Usage.dc.html" style="display:flex;padding:7px 10px;border-radius:9px;color:var(--tx2);" style-hover="background:var(--hover);color:var(--tx);">Usage</a>
+        <a href="Feedback%20Kit.dc.html" style="display:flex;padding:7px 10px;border-radius:9px;color:var(--tx2);" style-hover="background:var(--hover);color:var(--tx);">Feedback Kit</a>
+        <a href="Log%20Export.dc.html" style="display:flex;padding:7px 10px;border-radius:9px;color:var(--tx2);" style-hover="background:var(--hover);color:var(--tx);">Settings</a>
+      </div>
+    </aside>
+
+    <main style="flex:1;min-width:0;display:flex;flex-direction:column;">
+      <div data-noprint="" style="flex:0 0 auto;display:flex;align-items:stretch;gap:12px;border-bottom:1px solid var(--line);background:var(--panel);">
+        <span style="width:4px;background:var(--acc);"></span>
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 0 8px 6px;">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.6px;color:var(--tx3);">ORG</span>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx3);">/</span>
+          <a href="Project%20Home.dc.html" style="display:flex;align-items:center;gap:10px;padding:4px 10px;border-radius:8px;border:1px solid var(--line);color:var(--tx);"><span style="width:7px;height:7px;border-radius:2px;background:var(--acc);"></span><span style="font-size:13.5px;font-weight:600;">Graphban</span><span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:var(--tx2);border:1px solid var(--line);border-radius:4px;padding:0 5px;">GRPH</span></a>
+        </div>
+        <div style="flex:1;"></div>
+        <div style="display:flex;align-items:center;gap:4px;padding-right:16px;flex-wrap:wrap;">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.7px;color:var(--tx3);margin-right:4px;">STATE</span>
+          <sc-for list="{{ stateChips }}" as="c" hint-placeholder-count="3"><button onClick="{{ c.go }}" style="padding:3px 9px;white-space:nowrap;border-radius:6px;border:1px solid {{ c.b }};background:{{ c.bg }};color:{{ c.c }};font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.4px;">{{ c.label }}</button></sc-for>
+        </div>
+      </div>
+
+      <div style="flex:0 0 auto;display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:16px 24px 12px;">
+        <div style="min-width:0;flex:1 1 420px;">
+          <h1 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-.015em;">Stack</h1>
+          <p style="margin:3px 0 0;max-width:96ch;font-size:12.5px;line-height:1.55;color:var(--tx2);text-wrap:pretty;">What runs, where it runs, and what each piece depends on. Derived from the running system. Boxes are deployables; layers inside a process are surfaces on its box. Click any box to see where each fact comes from.</p>
+          <div style="margin-top:6px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx3);">{{ summary }}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <button data-noprint="" onClick="{{ toggleOverlay }}" aria-pressed="{{ ovPressed }}" style="display:flex;align-items:center;gap:7px;height:30px;padding:0 11px;white-space:nowrap;flex:none;border-radius:8px;border:1px solid {{ ovB }};background:{{ ovBg }};color:{{ ovC }};font-size:12px;"><span style="width:9px;height:9px;border-radius:2px;border:1.5px solid currentColor;background:{{ ovSq }};"></span>Code health overlay</button>
+          <div data-noprint="" style="position:relative;flex:none;">
+            <button onClick="{{ toggleExport }}" aria-expanded="{{ exportExp }}" aria-haspopup="menu" style="display:flex;align-items:center;gap:6px;height:30px;padding:0 11px;border-radius:8px;border:1px solid var(--accln);background:var(--accbg);color:var(--acc);font-size:12px;font-weight:600;white-space:nowrap;" style-hover="border-color:var(--acc);">Export<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></button>
+            <sc-if value="{{ exportOpen }}" hint-placeholder-val="{{ false }}">
+              <div role="menu" style="position:absolute;right:0;top:36px;z-index:30;width:300px;padding:6px;border-radius:10px;border:1px solid var(--line2);background:var(--panel);box-shadow:0 18px 50px var(--shadow);display:flex;flex-direction:column;gap:2px;">
+                <button role="menuitem" onClick="{{ exportPdf }}" style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:8px 10px;border:0;border-radius:7px;background:transparent;text-align:left;" style-hover="background:var(--hover);"><span style="font-size:12.5px;font-weight:600;">PDF</span><span style="font-size:11.5px;line-height:1.4;color:var(--tx2);">Opens print — choose Save as PDF. One page sized to the whole map at 1:1, full detail, current theme.</span></button>
+                <button role="menuitem" onClick="{{ exportDrawio }}" style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:8px 10px;border:0;border-radius:7px;background:transparent;text-align:left;" style-hover="background:var(--hover);"><span style="font-size:12.5px;font-weight:600;">Lucidchart · draw.io <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:400;color:var(--tx2);">.drawio</span></span><span style="font-size:11.5px;line-height:1.4;color:var(--tx2);">Editable shapes and connected edges with protocol labels. In Lucidchart: File → Import → draw.io.</span></button>
+              </div>
+            </sc-if>
+          </div>
+          <div data-noprint="" role="group" aria-label="Theme" style="display:flex;padding:2px;border:1px solid var(--line2);border-radius:8px;gap:2px;">
+            <sc-for list="{{ themeBtns }}" as="b" hint-placeholder-count="2"><button onClick="{{ b.go }}" aria-pressed="{{ b.on }}" style="height:24px;padding:0 9px;white-space:nowrap;border:0;border-radius:6px;background:{{ b.bg }};color:{{ b.c }};font-family:'IBM Plex Mono',monospace;font-size:10.5px;">{{ b.label }}</button></sc-for>
+          </div>
+        </div>
+      </div>
+
+      <div style="flex:0 0 auto;display:flex;align-items:center;gap:8px 18px;flex-wrap:wrap;padding:8px 24px 10px;border-bottom:1px solid var(--line);font-size:11.5px;color:var(--tx2);">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <span style="display:flex;align-items:center;gap:6px;white-space:nowrap;"><span style="width:14px;height:10px;border-radius:3px;border:1.5px solid var(--r1b);background:var(--r1);"></span>1 · code we write</span>
+          <span style="display:flex;align-items:center;gap:6px;white-space:nowrap;"><span style="width:14px;height:10px;border-radius:3px;border:1.5px solid var(--r2b);background:var(--r2);"></span>2 · infra we run</span>
+          <span style="display:flex;align-items:center;gap:6px;white-space:nowrap;"><span style="width:14px;height:10px;border-radius:3px;border:1px solid var(--r3b);background:var(--r3);"></span>3 · external, we call</span>
+          <span style="display:flex;align-items:center;gap:6px;white-space:nowrap;"><span style="width:14px;height:10px;border-radius:3px;border:1.5px dashed var(--host);"></span>host</span>
+        </div>
+        <span style="width:1px;height:14px;background:var(--line2);"></span>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.3px;">
+          <span style="color:var(--tx3);white-space:nowrap;">LIVENESS ●</span><span style="display:flex;align-items:center;gap:5px;white-space:nowrap;"><span style="width:9px;height:9px;border-radius:50%;background:var(--acc);"></span>REACHABLE</span>
+          <span style="display:flex;align-items:center;gap:5px;white-space:nowrap;color:var(--red);"><span style="width:9px;height:9px;border-radius:50%;background:var(--red);"></span>UNREACHABLE</span>
+          <span style="display:flex;align-items:center;gap:5px;white-space:nowrap;"><span style="width:9px;height:9px;border-radius:50%;border:1.5px solid var(--tx2);"></span>UNKNOWN</span>
+          <span style="display:flex;align-items:center;gap:5px;white-space:nowrap;color:var(--amb);"><span style="width:9px;height:9px;border-radius:50%;border:1.5px solid var(--amb);background:linear-gradient(90deg,var(--amb) 50%,transparent 50%);"></span>UNCALIBRATED</span>
+          <span style="display:flex;align-items:center;gap:5px;white-space:nowrap;color:var(--tx3);"><span style="width:9px;height:9px;border-radius:50%;border:1.5px dashed var(--line2);"></span>NOT CONFIGURED</span>
+        </div>
+        <sc-if value="{{ overlayOn }}" hint-placeholder-val="{{ true }}">
+          <span style="width:1px;height:14px;background:var(--line2);"></span>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.3px;">
+            <span style="color:var(--tx3);white-space:nowrap;">CODE HEALTH ■ · our code only</span>
+            <span style="display:flex;align-items:center;gap:5px;white-space:nowrap;color:var(--cln);"><span style="width:9px;height:9px;border-radius:2px;background:var(--cln);"></span>CLEAN AT HEAD</span>
+            <span style="display:flex;align-items:center;gap:5px;white-space:nowrap;color:var(--sh);"><span style="width:9px;height:9px;border-radius:2px;background:var(--sh);"></span>FINDINGS</span>
+            <span style="display:flex;align-items:center;gap:5px;white-space:nowrap;color:var(--tx2);"><span style="width:9px;height:9px;border-radius:2px;border:1.5px solid var(--tx3);background:repeating-linear-gradient(45deg,var(--tx3) 0 1.5px,transparent 1.5px 3.5px);"></span>NOT SCANNED · STALE</span>
+          </div>
+        </sc-if>
+        <span style="width:1px;height:14px;background:var(--line2);"></span>
+        <div style="display:flex;align-items:center;gap:6px 8px;flex-wrap:wrap;white-space:nowrap;font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.5px;">
+          <span style="padding:1px 6px;border-radius:4px;border:1px solid var(--line2);color:var(--tx2);">INSTANCE</span><span style="font-family:'IBM Plex Sans',sans-serif;font-size:11.5px;letter-spacing:0;">same for every project</span>
+          <span style="padding:1px 6px;border-radius:4px;border:1px solid var(--purln);color:var(--pur);">PROJECT</span><span style="font-family:'IBM Plex Sans',sans-serif;font-size:11.5px;letter-spacing:0;">resolved for GRPH</span>
+        </div>
+      </div>
+
+      <div data-print-static="" style="flex:1;min-height:0;position:relative;">
+        <div ref="{{ scRef }}" data-print-static="" style="position:absolute;inset:0;overflow:auto;padding:12px;user-select:none;cursor:grab;">
+          <div ref="{{ szRef }}" style="position:relative;margin:0 auto;width:{{ sizerW }};height:{{ sizerH }};">
+            <div style="position:absolute;left:0;top:0;width:1680px;height:940px;transform:{{ innerTf }};transform-origin:0 0;line-height:1.25;">
+
+              <div style="position:absolute;left:0;top:0;width:1680px;height:940px;border-radius:20px;border:1px solid var(--r3b);background:var(--r3);"></div>
+              <div style="position:absolute;left:16px;top:40px;width:1108px;height:884px;border-radius:18px;border:1.5px solid var(--r2b);background:var(--r2);"></div>
+              <div style="position:absolute;left:32px;top:76px;width:1076px;height:500px;border-radius:16px;border:1.5px solid var(--r1b);background:var(--r1);"></div>
+
+              <div style="position:absolute;left:32px;top:10px;display:flex;align-items:center;gap:8px;"><span style="width:20px;height:20px;border-radius:50%;border:1.5px solid var(--r3b);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;color:var(--tx2);">3</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;letter-spacing:.6px;color:var(--tx2);">EXTERNAL SERVICES</span><span style="font-size:12.5px;color:var(--tx3);">we only call them, over the network →</span></div>
+              <div style="position:absolute;left:34px;top:48px;display:flex;align-items:center;gap:8px;"><span style="width:20px;height:20px;border-radius:50%;border:1.5px solid var(--r2b);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;color:var(--pur);">2</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;letter-spacing:.6px;color:var(--pur);">INFRASTRUCTURE WE RUN</span><span style="font-size:12.5px;color:var(--tx2);">we operate it, didn't write it</span></div>
+              <div style="position:absolute;left:50px;top:84px;display:flex;align-items:center;gap:8px;"><span style="width:20px;height:20px;border-radius:50%;border:1.5px solid var(--r1b);display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;color:var(--acc);">1</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;letter-spacing:.6px;color:var(--acc);">CODE WE WRITE</span><span style="font-size:12.5px;color:var(--tx2);">our deployables</span></div>
+
+              <div style="position:absolute;left:1260px;top:96px;width:400px;height:510px;border-radius:14px;border:1px solid var(--line2);">
+                <div style="position:absolute;left:14px;top:12px;right:14px;display:flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;"><span style="font-size:11.5px;font-weight:600;letter-spacing:.6px;">AI PROVIDER PLANE</span><span style="font-size:9.5px;letter-spacing:.5px;padding:1px 6px;border-radius:4px;border:1px solid var(--purln);color:var(--pur);background:var(--purbg);">PROJECT-SCOPED · GRPH</span><span style="flex:1;"></span><span style="font-size:10px;color:var(--tx3);">wired only</span></div>
+                <div style="position:absolute;left:16px;top:52px;font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.6px;color:var(--tx3);">SELF-HOSTED · LAN</div>
+                <div style="position:absolute;left:16px;top:256px;font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.6px;color:var(--tx3);">CLOUD</div>
+                <sc-if value="{{ noCloud }}" hint-placeholder-val="{{ false }}"><div style="position:absolute;left:16px;right:16px;top:278px;height:80px;border-radius:10px;border:1.5px dashed var(--line2);display:flex;flex-direction:column;justify-content:center;gap:3px;padding:0 14px;"><span style="font-size:13px;font-weight:600;">No cloud provider wired</span><span style="font-size:11.5px;color:var(--tx2);">Every AI call resolves to the LAN. Add a key in project settings to wire a fallback.</span></div></sc-if>
+                <div style="position:absolute;left:16px;right:16px;bottom:12px;font-size:11px;color:var(--tx3);">22 more supported providers aren't wired, so they aren't drawn.</div>
+              </div>
+              <div style="position:absolute;left:1260px;top:620px;width:400px;height:96px;border-radius:14px;border:1px solid var(--line2);">
+                <div style="position:absolute;left:14px;top:10px;display:flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;"><span style="font-size:11.5px;font-weight:600;letter-spacing:.6px;">EMAIL</span><span style="font-size:9.5px;letter-spacing:.5px;padding:1px 6px;border-radius:4px;border:1px solid var(--line2);color:var(--tx2);">INSTANCE</span></div>
+              </div>
+              <div style="position:absolute;left:1260px;top:728px;width:400px;height:160px;border-radius:14px;border:1px solid var(--line2);">
+                <div style="position:absolute;left:14px;top:10px;display:flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;"><span style="font-size:11.5px;font-weight:600;letter-spacing:.6px;">SYNC INTEGRATIONS</span><span style="font-size:9.5px;letter-spacing:.5px;padding:1px 6px;border-radius:4px;border:1px solid var(--purln);color:var(--pur);background:var(--purbg);">PROJECT · GRPH</span></div>
+              </div>
+
+              <sc-for list="{{ hosts }}" as="h" hint-placeholder-count="3">
+                <div style="position:absolute;left:{{ h.l }};top:{{ h.t }};width:{{ h.wp }};height:{{ h.hp }};border:1.5px dashed {{ h.bc }};border-radius:14px;box-shadow:{{ h.sh }};">
+                  <button onClick="{{ h.pick }}" disabled="{{ h.dis }}" style="position:absolute;left:12px;top:-12px;display:flex;align-items:center;gap:8px;height:23px;padding:0 9px;border-radius:7px;border:1px solid {{ h.bc }};background:var(--panel2);font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.6px;color:var(--tx);white-space:nowrap;cursor:{{ h.cur }};">{{ h.label }}<span style="letter-spacing:0;color:var(--tx3);">{{ h.meta }}</span><sc-if value="{{ h.hasScope }}" hint-placeholder-val="{{ false }}"><span style="font-size:9px;letter-spacing:.5px;padding:0 5px;border-radius:4px;border:1px solid var(--line2);color:var(--tx2);">INSTANCE</span></sc-if></button>
+                </div>
+              </sc-for>
+
+              <svg width="1680" height="940" viewBox="0 0 1680 940" style="position:absolute;left:0;top:0;overflow:visible;pointer-events:none;">
+                <defs>
+                  <marker id="ah-ok" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--edge);"></path></marker>
+                  <marker id="ah-down" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--red);"></path></marker>
+                  <marker id="ah-unk" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--tx3);"></path></marker>
+                  <marker id="ah-amb" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--amb);"></path></marker>
+                  <marker id="ah-sel" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--acc);"></path></marker>
+                </defs>
+                <sc-for list="{{ edges }}" as="e" hint-placeholder-count="0"><path d="{{ e.d }}" markerEnd="{{ e.mk }}" style="fill:none;stroke:{{ e.sc }};stroke-width:{{ e.sw }};stroke-dasharray:{{ e.da }};opacity:{{ e.op }};stroke-linejoin:round;"></path></sc-for>
+              </svg>
+
+              <sc-for list="{{ edgeLabels }}" as="e" hint-placeholder-count="0">
+                <div title="{{ e.title }}" style="position:absolute;left:{{ e.lx }};top:{{ e.ly }};transform:{{ e.tf }};display:flex;flex-direction:column;align-items:{{ e.al }};padding:2px 6px;border-radius:6px;border:1px solid {{ e.lb }};background:var(--panel);font-family:'IBM Plex Mono',monospace;font-size:10.5px;line-height:1.35;color:{{ e.lc }};white-space:nowrap;opacity:{{ e.op }};z-index:2;">
+                  <sc-for list="{{ e.lines }}" as="ln" hint-placeholder-count="1"><span>{{ ln.t }}</span></sc-for>
+                </div>
+              </sc-for>
+
+              <sc-for list="{{ nodes }}" as="n" hint-placeholder-count="0">
+                <div onClick="{{ n.pick }}" role="button" tabindex="0" aria-label="{{ n.aria }}" aria-pressed="{{ n.pressed }}" style="position:absolute;left:{{ n.l }};top:{{ n.t }};width:{{ n.wp }};height:{{ n.hp }};z-index:3;display:flex;flex-direction:column;gap:{{ n.gap }};padding:{{ n.pad }};border-radius:10px;border:1.5px {{ n.bs }} {{ n.bc }};background:{{ n.bg }};box-shadow:{{ n.sh }};opacity:{{ n.op }};overflow:hidden;cursor:pointer;transition:opacity .15s ease, box-shadow .15s ease;" style-hover="box-shadow:0 0 0 2px var(--accln);">
+                  <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;min-width:0;">
+                    <span style="width:9px;height:9px;flex:none;border-radius:50%;background:{{ n.dbg }};border:1.5px solid {{ n.dbc }};"></span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:{{ n.nameFs }};font-weight:600;color:var(--tx);white-space:nowrap;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;">{{ n.name }}</span>
+                    <sc-for list="{{ n.servesL }}" as="s" hint-placeholder-count="0"><span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.3px;padding:0 5px;border-radius:4px;border:1px solid var(--purln);color:var(--pur);">{{ s.s }}</span></sc-for>
+                    <span style="flex:1;"></span>
+                    <sc-if value="{{ n.compact }}" hint-placeholder-val="{{ false }}"><span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.5px;color:{{ n.tc }};">{{ n.short }}</span></sc-if>
+                    <sc-if value="{{ n.hasScope }}" hint-placeholder-val="{{ false }}"><span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.5px;padding:0 5px;border-radius:4px;border:1px solid {{ n.scB }};color:{{ n.scC }};">{{ n.scL }}</span></sc-if>
+                  </div>
+                  <sc-if value="{{ n.hasKind }}" hint-placeholder-val="{{ false }}"><div style="font-size:11.5px;color:var(--tx2);">{{ n.kind }}</div></sc-if>
+                  <sc-if value="{{ n.hasSub }}" hint-placeholder-val="{{ false }}"><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ n.sub }}</div></sc-if>
+                  <sc-if value="{{ n.hasSub2 }}" hint-placeholder-val="{{ false }}"><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ n.sub2 }}</div></sc-if>
+                  <sc-if value="{{ n.hasVer }}" hint-placeholder-val="{{ false }}"><div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx3);">{{ n.ver }}</div></sc-if>
+                  <sc-if value="{{ n.hasTiles }}" hint-placeholder-val="{{ false }}">
+                    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:8px;">
+                      <sc-for list="{{ n.tiles }}" as="p" hint-placeholder-count="4"><div style="display:flex;flex-direction:column;gap:4px;min-height:104px;padding:10px 11px;border-radius:8px;border:1px solid var(--line2);background:var(--panel2);"><span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.6px;color:var(--tx3);">SURFACE</span><span style="font-size:13px;font-weight:600;">{{ p.t }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx2);">{{ p.s }}</span></div></sc-for>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ n.hasInner }}" hint-placeholder-val="{{ false }}"><div style="margin-top:6px;display:flex;flex-direction:column;gap:3px;padding:10px 11px;border-radius:8px;border:1px solid var(--purln);background:var(--purbg);"><span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.6px;color:var(--pur);">EXTENSION · NOT A SERVICE</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;">{{ n.inT }}</span><span style="font-size:11px;color:var(--tx2);">{{ n.inS }}</span></div></sc-if>
+                  <sc-if value="{{ n.hasRows }}" hint-placeholder-val="{{ false }}">
+                    <div style="display:flex;flex-direction:column;gap:4px;margin-top:2px;">
+                      <sc-for list="{{ n.rowsV }}" as="r" hint-placeholder-count="2"><div style="display:flex;align-items:center;gap:7px;padding:5px 7px;border-radius:6px;background:var(--panel2);"><span style="width:7px;height:7px;flex:none;border-radius:50%;background:{{ r.dbg }};border:1.5px solid {{ r.dbc }};"></span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;">{{ r.nm }}</span><span style="flex:1;"></span><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:{{ r.mc }};">{{ r.meta }}</span></div></sc-for>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ n.isEmpty }}" hint-placeholder-val="{{ false }}">
+                    <div style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:5px;padding:10px 12px;border-radius:8px;border:1.5px dashed var(--line2);">
+                      <span style="font-size:13px;font-weight:600;">{{ n.emT }}</span>
+                      <span style="font-size:11.5px;line-height:1.45;color:var(--tx2);text-wrap:pretty;">{{ n.emP }}</span>
+                      <sc-if value="{{ n.emHasLink }}" hint-placeholder-val="{{ false }}"><a href="{{ n.emHref }}" onClick="{{ n.stop }}" style="font-size:12px;font-weight:500;">{{ n.emLink }}</a></sc-if>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ n.showBottom }}" hint-placeholder-val="{{ false }}"><div style="margin-top:auto;display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:10px;white-space:nowrap;overflow:hidden;"><span style="letter-spacing:.5px;color:{{ n.tc }};">{{ n.short }}</span><span style="color:var(--tx3);overflow:hidden;text-overflow:ellipsis;">{{ n.sd }}</span></div></sc-if>
+                  <sc-if value="{{ n.hasHealth }}" hint-placeholder-val="{{ false }}">
+                    <div title="Code health — separate from liveness" style="flex:none;margin:3px -12px -10px;padding:5px 12px 6px;border-top:1px solid var(--line2);background:{{ n.hb }};display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:9.5px;white-space:nowrap;overflow:hidden;">
+                      <span style="letter-spacing:.6px;color:var(--tx3);">CODE</span>
+                      <span style="width:9px;height:9px;flex:none;border-radius:2px;background:{{ n.hsq }};border:1.5px solid {{ n.hsqb }};"></span>
+                      <span style="letter-spacing:.5px;font-weight:600;color:{{ n.htc }};">{{ n.hl }}</span>
+                      <sc-for list="{{ n.hsev }}" as="v" hint-placeholder-count="0"><span style="padding:0 4px;border-radius:3px;border:1px solid {{ v.c }};color:{{ v.c }};">{{ v.t }}</span></sc-for>
+                      <span style="flex:1;"></span>
+                      <span style="color:var(--tx3);overflow:hidden;text-overflow:ellipsis;">{{ n.hmeta }}</span>
+                    </div>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+
+        <div data-noprint="" style="position:absolute;left:16px;bottom:16px;z-index:6;display:flex;align-items:center;gap:2px;padding:3px;border-radius:10px;border:1px solid var(--line2);background:var(--panel);box-shadow:0 8px 24px var(--shadow);">
+          <button onClick="{{ zoomOut }}" aria-label="Zoom out" title="Zoom out" style="width:28px;height:28px;border:0;border-radius:7px;background:transparent;font-size:16px;line-height:1;color:var(--tx);" style-hover="background:var(--hover);">−</button>
+          <span style="min-width:46px;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx);">{{ zoomPct }}</span>
+          <button onClick="{{ zoomIn }}" aria-label="Zoom in" title="Zoom in" style="width:28px;height:28px;border:0;border-radius:7px;background:transparent;font-size:16px;line-height:1;color:var(--tx);" style-hover="background:var(--hover);">+</button>
+          <span style="width:1px;height:18px;margin:0 3px;background:var(--line2);"></span>
+          <button onClick="{{ zoomFit }}" aria-pressed="{{ fitOn }}" style="height:28px;padding:0 9px;border:0;border-radius:7px;background:{{ fitBg }};font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx);white-space:nowrap;" style-hover="background:var(--hover);">Fit</button>
+          <button onClick="{{ zoom100 }}" style="height:28px;padding:0 9px;border:0;border-radius:7px;background:transparent;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx);white-space:nowrap;" style-hover="background:var(--hover);">1:1</button>
+          <span style="width:1px;height:18px;margin:0 3px;background:var(--line2);"></span>
+          <span title="Detail drops as you zoom out so large stacks stay readable" style="padding:0 8px 0 4px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx3);white-space:nowrap;">{{ lodLabel }}</span>
+        </div>
+        <sc-if value="{{ hasSel }}" hint-placeholder-val="{{ false }}">
+          <aside data-noprint="" aria-label="Inspector" style="position:absolute;top:12px;right:12px;bottom:12px;width:368px;max-width:calc(100% - 24px);display:flex;flex-direction:column;border:1px solid var(--line2);border-radius:12px;background:var(--panel);box-shadow:0 18px 50px var(--shadow);overflow:hidden;z-index:10;">
+            <div style="display:flex;align-items:flex-start;gap:10px;padding:14px 14px 12px;border-bottom:1px solid var(--line);">
+              <span style="width:10px;height:10px;flex:none;margin-top:5px;border-radius:50%;background:{{ ins.dbg }};border:1.5px solid {{ ins.dbc }};"></span>
+              <div style="flex:1;min-width:0;">
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:600;">{{ ins.name }}</div>
+                <div style="margin-top:2px;font-size:12px;color:var(--tx2);">{{ ins.kind }}</div>
+              </div>
+              <button onClick="{{ closeSel }}" aria-label="Close inspector" style="width:28px;height:28px;flex:none;border-radius:7px;border:1px solid var(--line2);background:transparent;color:var(--tx2);font-size:15px;line-height:1;" style-hover="color:var(--tx);border-color:var(--host);">×</button>
+            </div>
+            <div style="flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:16px;">
+              <p style="margin:0;font-size:12.5px;line-height:1.55;color:var(--tx2);text-wrap:pretty;">{{ ins.role }}</p>
+              <div style="display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:9px;border:1px solid {{ ins.sb }};background:{{ ins.sbg }};">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.5px;font-weight:600;color:{{ ins.tc }};">{{ ins.sl }}</span>
+                <span style="font-size:12.5px;line-height:1.45;color:var(--tx);">{{ ins.sdx }}</span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx3);">{{ ins.src }}</span>
+              </div>
+              <sc-if value="{{ ins.hasModel }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;flex-direction:column;gap:5px;padding:10px 12px;border-radius:9px;border:1px solid var(--purln);background:var(--purbg);">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.6px;color:var(--pur);">RESOLVED FOR GRPH · PROJECT-SCOPED</span>
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.5;color:var(--tx);">{{ ins.mT }}</span>
+                  <sc-if value="{{ ins.hasNote }}" hint-placeholder-val="{{ false }}"><span style="font-size:12px;line-height:1.45;color:var(--tx2);">{{ ins.mNote }}</span></sc-if>
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx3);">{{ ins.mSrc }}</span>
+                </div>
+              </sc-if>
+              <sc-if value="{{ ins.hasHealth }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;flex-direction:column;gap:10px;">
+                  <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.7px;color:var(--tx3);">CODE HEALTH</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx2);">{{ ins.hRev }}</span>
+                    <span style="flex:1;"></span>
+                    <sc-if value="{{ ins.hCanBulk }}" hint-placeholder-val="{{ false }}"><button onClick="{{ ins.hBulk }}" style="height:24px;padding:0 9px;border-radius:6px;border:1px solid var(--accln);background:var(--accbg);color:var(--acc);font-size:11px;font-weight:600;" style-hover="border-color:var(--acc);">{{ ins.hBulkL }}</button></sc-if>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:9px 12px;border-radius:9px;border:1px solid var(--line2);background:{{ ins.hBg }};font-family:'IBM Plex Mono',monospace;font-size:10px;">
+                    <span style="width:10px;height:10px;flex:none;border-radius:2px;background:{{ ins.hSq }};border:1.5px solid {{ ins.hSqb }};"></span>
+                    <span style="font-size:10.5px;font-weight:600;letter-spacing:.5px;color:{{ ins.hTc }};">{{ ins.hL }}</span>
+                    <sc-for list="{{ ins.hSev }}" as="v" hint-placeholder-count="0"><span style="padding:0 5px;border-radius:4px;border:1px solid {{ v.c }};color:{{ v.c }};">{{ v.t }}</span></sc-for>
+                    <span style="flex:1;"></span>
+                    <span style="color:var(--tx3);">{{ ins.hMeta }}</span>
+                  </div>
+                  <span style="font-size:11.5px;line-height:1.45;color:var(--tx3);text-wrap:pretty;">No score. Each scanner reports on its own, with when it ran and against which revision. A scanner that hasn't run at head never counts as clean.</span>
+                  <sc-for list="{{ ins.cats }}" as="c" hint-placeholder-count="5">
+                    <div style="border:1px solid var(--line);border-radius:9px;overflow:hidden;">
+                      <div style="display:flex;flex-direction:column;gap:3px;padding:9px 11px;background:{{ c.hbg }};">
+                        <div style="display:flex;align-items:center;gap:8px;"><span style="font-size:12.5px;font-weight:600;">{{ c.name }}</span><span style="flex:1;"></span><span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.5px;padding:0 6px;border-radius:4px;border:1px solid {{ c.stB }};color:{{ c.stC }};background:var(--panel);">{{ c.stL }}</span></div>
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx2);">{{ c.scanLine }}</span>
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:{{ c.revC }};">{{ c.revLine }}</span>
+                      </div>
+                      <sc-for list="{{ c.f }}" as="f" hint-placeholder-count="0">
+                        <div style="display:grid;grid-template-columns:42px minmax(0,1fr);gap:8px;padding:8px 11px;border-top:1px solid var(--line);">
+                          <span style="height:17px;display:flex;align-items:center;justify-content:center;border-radius:4px;border:1px solid {{ f.sevC }};color:{{ f.sevC }};font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.4px;">{{ f.sevT }}</span>
+                          <div style="display:flex;flex-direction:column;gap:5px;min-width:0;">
+                            <span style="font-size:12px;line-height:1.4;text-wrap:pretty;">{{ f.sum }}</span>
+                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                              <a href="{{ f.href }}" style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;">{{ f.lk }} ↗</a>
+                              <span style="flex:1;"></span>
+                              <sc-if value="{{ f.notFiled }}" hint-placeholder-val="{{ true }}"><button onClick="{{ f.defrag }}" title="File cleanup work from this finding" style="height:22px;padding:0 8px;border-radius:6px;border:1px solid var(--line2);background:transparent;color:var(--tx);font-size:11px;font-weight:500;" style-hover="border-color:var(--acc);color:var(--acc);">Defrag</button></sc-if>
+                              <sc-if value="{{ f.isFiled }}" hint-placeholder-val="{{ false }}"><a href="Plan.dc.html" style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx2);">filed {{ f.filedId }} ↗</a></sc-if>
+                            </div>
+                          </div>
+                        </div>
+                      </sc-for>
+                      <sc-if value="{{ c.hasNote }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-wrap:wrap;gap:4px 8px;padding:8px 11px;border-top:1px solid var(--line);font-size:11.5px;line-height:1.45;color:var(--tx2);"><span>{{ c.note }}</span><sc-if value="{{ c.hasCta }}" hint-placeholder-val="{{ false }}"><a href="{{ c.ctaHref }}">{{ c.cta }}</a></sc-if></div></sc-if>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+              <sc-if value="{{ ins.healthNA }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-direction:column;gap:3px;padding:9px 12px;border-radius:9px;border:1px solid var(--line);"><span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.7px;color:var(--tx3);">CODE HEALTH · N/A</span><span style="font-size:12px;line-height:1.45;color:var(--tx2);">{{ ins.naText }}</span></div></sc-if>
+              <sc-if value="{{ ins.isEmpty }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:9px;border:1.5px dashed var(--line2);"><span style="font-size:13px;font-weight:600;">{{ ins.emT }}</span><span style="font-size:12px;color:var(--tx2);">{{ ins.emP }}</span><sc-if value="{{ ins.emHasLink }}" hint-placeholder-val="{{ false }}"><a href="{{ ins.emHref }}" style="font-size:12px;">{{ ins.emLink }}</a></sc-if></div></sc-if>
+              <div style="display:flex;flex-direction:column;gap:6px;">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.7px;color:var(--tx3);">PLACEMENT</span>
+                <sc-for list="{{ ins.place }}" as="r" hint-placeholder-count="3"><div style="display:grid;grid-template-columns:72px minmax(0,1fr);gap:10px;font-size:12px;"><span style="color:var(--tx3);">{{ r.k }}</span><span>{{ r.v }}</span></div></sc-for>
+              </div>
+              <sc-if value="{{ ins.hasFacts }}" hint-placeholder-val="{{ true }}">
+                <div style="display:flex;flex-direction:column;gap:8px;">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.7px;color:var(--tx3);">FACTS · AND WHERE EACH COMES FROM</span>
+                  <sc-for list="{{ ins.facts }}" as="f" hint-placeholder-count="3"><div style="display:grid;grid-template-columns:72px minmax(0,1fr);gap:10px;padding-top:8px;border-top:1px solid var(--line);"><span style="font-size:12px;color:var(--tx3);">{{ f.k }}</span><div style="display:flex;flex-direction:column;gap:2px;min-width:0;"><span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;line-height:1.45;overflow-wrap:anywhere;">{{ f.v }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx3);">{{ f.s }}</span></div></div></sc-for>
+                </div>
+              </sc-if>
+              <div style="display:flex;flex-direction:column;gap:6px;">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.7px;color:var(--tx3);">CONNECTIONS</span>
+                <sc-if value="{{ ins.noConns }}" hint-placeholder-val="{{ false }}"><span style="font-size:12px;color:var(--tx3);">None drawn — nothing is wired to or from this yet.</span></sc-if>
+                <sc-for list="{{ ins.conns }}" as="c" hint-placeholder-count="3"><button onClick="{{ c.go }}" style="display:grid;grid-template-columns:16px minmax(0,1fr) auto;align-items:center;gap:8px;padding:7px 9px;border-radius:7px;border:1px solid var(--line);background:transparent;text-align:left;" style-hover="border-color:var(--host);"><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:{{ c.dc }};">{{ c.dir }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ c.peer }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx2);">{{ c.proto }}</span></button></sc-for>
+              </div>
+            </div>
+          </aside>
+        </sc-if>
+      </div>
+    </main>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;scenario&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;current&quot;,&quot;healthy&quot;,&quot;fresh&quot;],&quot;default&quot;:&quot;current&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;initialSelected&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;api&quot;,&quot;pg&quot;,&quot;ollama&quot;,&quot;decider&quot;,&quot;fleet&quot;,&quot;cli&quot;,&quot;web&quot;,&quot;stack&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;healthOverlay&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  state = { sel: undefined, scen: undefined, theme: undefined, zoom: "fit", vw: 1100, overlay: undefined, filed: {}, nextId: 952 };
+  fileDefrag(keys) { this.setState((s) => { const f = { ...s.filed }; let id = s.nextId; keys.forEach((k) => { if (!f[k]) f[k] = "GRPH-" + id++; }); return { filed: f, nextId: id }; }); }
+  scRef = React.createRef();
+  szRef = React.createRef();
+  curScale = 1;
+  componentDidMount() {
+    const el = this.scRef.current; if (!el) return;
+    const m = () => this.setState({ vw: el.clientWidth, vh: el.clientHeight });
+    m(); if (window.ResizeObserver) { this.ro = new ResizeObserver(m); this.ro.observe(el); }
+    this.onWheel = (e) => { e.preventDefault(); const r = el.getBoundingClientRect(); this.zoomTo(this.curScale * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)), e.clientX - r.left, e.clientY - r.top); };
+    el.addEventListener("wheel", this.onWheel, { passive: false });
+    this.onDown = (e) => { if (e.button !== 0 || (e.target.closest && e.target.closest("a,button"))) return; this.drag = { x: e.clientX, y: e.clientY, sl: el.scrollLeft, st: el.scrollTop, moved: false }; };
+    this.onMove = (e) => { const d = this.drag; if (!d) return; const dx = e.clientX - d.x, dy = e.clientY - d.y; if (!d.moved && Math.abs(dx) + Math.abs(dy) < 4) return; d.moved = true; el.scrollLeft = d.sl - dx; el.scrollTop = d.st - dy; el.style.cursor = "grabbing"; };
+    this.onUp = () => { if (this.drag && this.drag.moved) { this.justDragged = true; setTimeout(() => (this.justDragged = false), 0); } this.drag = null; el.style.cursor = ""; };
+    el.addEventListener("pointerdown", this.onDown); window.addEventListener("pointermove", this.onMove); window.addEventListener("pointerup", this.onUp);
+    this.bp = () => this.setState({ printing: true }); this.ap = () => this.setState({ printing: false });
+    window.addEventListener("beforeprint", this.bp); window.addEventListener("afterprint", this.ap);
+  }
+  componentWillUnmount() {
+    if (this.ro) this.ro.disconnect();
+    const el = this.scRef.current; if (el) { el.removeEventListener("wheel", this.onWheel); el.removeEventListener("pointerdown", this.onDown); }
+    window.removeEventListener("pointermove", this.onMove); window.removeEventListener("pointerup", this.onUp);
+    window.removeEventListener("beforeprint", this.bp); window.removeEventListener("afterprint", this.ap);
+  }
+  zoomTo(s1, mx, my) {
+    const el = this.scRef.current, sz = this.szRef.current; if (!el || !sz) return;
+    s1 = Math.min(2.5, Math.max(0.15, s1)); const s0 = this.curScale;
+    if (mx == null) { mx = el.clientWidth / 2; my = el.clientHeight / 2; }
+    this.anchor = { cx: (el.scrollLeft + mx - sz.offsetLeft) / s0, cy: (el.scrollTop + my - sz.offsetTop) / s0, mx, my };
+    this.setState({ zoom: s1 });
+  }
+  componentDidUpdate() {
+    const a = this.anchor, el = this.scRef.current, sz = this.szRef.current; if (!a || !el || !sz) return; this.anchor = null;
+    el.scrollLeft = a.cx * this.curScale + sz.offsetLeft - a.mx; el.scrollTop = a.cy * this.curScale + sz.offsetTop - a.my;
+  }
+  exportDrawio() {
+    const X = this.exp; if (!X) return;
+    const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/\n/g, "&#xa;");
+    const h = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const C = { up: ["#4a7a00", 0], live: ["#4a7a00", 0], down: ["#c42f2f", 0], unk: ["#6c757d", 1], uncal: ["#8f6200", 1], off: ["#9aa39a", 1] };
+    const cells = [];
+    const v = (id, val, style, x, y, w, hh) => cells.push('<mxCell id="' + id + '" value="' + esc(val) + '" style="' + style + '" vertex="1" parent="1"><mxGeometry x="' + x + '" y="' + y + '" width="' + w + '" height="' + hh + '" as="geometry"/></mxCell>');
+    const frame = (fill, stroke, dashed, fc) => "rounded=1;arcSize=2;whiteSpace=wrap;html=1;fillColor=" + fill + ";strokeColor=" + stroke + ";dashed=" + dashed + ";verticalAlign=top;align=left;spacingLeft=12;spacingTop=4;fontColor=" + fc + ";fontStyle=1;fontFamily=IBM Plex Mono;fontSize=12;";
+    v("ring3", "3 · EXTERNAL SERVICES — we only call them", frame("#fafbf8", "#d4d9cf", 0, "#4f5961"), 0, 0, 1680, 940);
+    v("ring2", "2 · INFRASTRUCTURE WE RUN — we operate it, didn't write it", frame("#f6f4fd", "#9b8ce0", 0, "#5b3fd0"), 16, 40, 1108, 884);
+    v("ring1", "1 · CODE WE WRITE — our deployables", frame("#f6f9ee", "#8db04a", 0, "#4a7a00"), 32, 76, 1076, 500);
+    v("g_ai", "AI PROVIDER PLANE · PROJECT-SCOPED · GRPH", frame("none", "#c5cbc1", 0, "#14181b"), 1260, 96, 400, 510);
+    v("g_mail", "EMAIL · INSTANCE", frame("none", "#c5cbc1", 0, "#14181b"), 1260, 620, 400, 96);
+    v("g_sync", "SYNC INTEGRATIONS · PROJECT", frame("none", "#c5cbc1", 0, "#14181b"), 1260, 728, 400, 160);
+    X.HOSTS.forEach(([id, x, y, w, hh, label, meta]) => v("h_" + id, label + "  " + meta, frame("none", "#8f988f", 1, "#14181b") + "spacingTop=-2;", x, y, w, hh));
+    X.nodes0.forEach((n) => {
+      const c = C[n.st], st = X.S[n.st];
+      let html = "<b>" + h(n.name) + "</b>" + (n.scope ? ' <font color="#6c757d" style="font-size:9px">' + n.scope.toUpperCase() + "</font>" : "");
+      [n.kind, n.sub, n.sub2, n.ver].filter(Boolean).forEach((s) => (html += "<br>" + h(s)));
+      if (n.tiles) html += "<br>surfaces: " + h(n.tiles.map((p) => p[0]).join(" · "));
+      if (n.inner) html += "<br>extension: " + h(n.inner[0]);
+      if (n.rows) html += "<br>" + h(n.rows.map((r) => r[0] + " " + r[2]).join(" · "));
+      if (n.empty) html += "<br><i>" + h(n.empty.t) + "</i>";
+      html += '<br><font color="' + c[0] + '">' + st.l + (n.sd ? " · " + h(n.sd) : "") + "</font>";
+      const hh = X.H[n.id]; if (hh && n.st !== "off") { const r = X.roll(hh); html += '<br><font color="#5c656e">CODE: ' + r.l + " " + r.sev.map((s) => s.t).join(" ") + " " + h(r.meta) + "</font>"; }
+      v("n_" + n.id, html, "rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=" + c[0] + ";dashed=" + c[1] + ";strokeWidth=1.5;align=left;verticalAlign=top;spacingLeft=10;spacingTop=4;fontFamily=IBM Plex Sans;fontSize=11;fontColor=#14181b;", n.x, n.y, n.w, n.h);
+    });
+    X.E.forEach(([f, tt, pts, lines], i) => {
+      const a = X.by[f], b = X.by[tt], worst = X.S[a.st].r >= X.S[b.st].r ? a.st : b.st, c = C[worst];
+      const p0 = pts[0], pl = pts[pts.length - 1], r2 = (x) => Math.round(x * 1000) / 1000;
+      const style = "edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeWidth=1.5;strokeColor=" + c[0] + ";dashed=" + c[1] + ";exitX=" + r2((p0[0] - a.x) / a.w) + ";exitY=" + r2((p0[1] - a.y) / a.h) + ";exitDx=0;exitDy=0;entryX=" + r2((pl[0] - b.x) / b.w) + ";entryY=" + r2((pl[1] - b.y) / b.h) + ";entryDx=0;entryDy=0;fontFamily=IBM Plex Mono;fontSize=10;labelBackgroundColor=#ffffff;";
+      const mid = pts.slice(1, -1).map((p) => '<mxPoint x="' + p[0] + '" y="' + p[1] + '"/>').join("");
+      cells.push('<mxCell id="e' + i + '" value="' + esc(lines.join("\n")) + '" style="' + style + '" edge="1" parent="1" source="n_' + f + '" target="n_' + tt + '"><mxGeometry relative="1" as="geometry"><Array as="points">' + mid + "</Array></mxGeometry></mxCell>");
+    });
+    const xml = '<?xml version="1.0" encoding="UTF-8"?><mxfile host="Graphban" type="device"><diagram id="stack" name="Stack · GRPH"><mxGraphModel dx="1680" dy="940" grid="0" gridSize="10" guides="1" page="0" pageScale="1" math="0" shadow="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/>' + cells.join("") + "</root></mxGraphModel></diagram></mxfile>";
+    const url = URL.createObjectURL(new Blob([xml], { type: "application/xml" }));
+    const el = document.createElement("a"); el.href = url; el.download = "graphban-stack.drawio"; document.body.appendChild(el); el.click(); el.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  renderVals() {
+    const CW = 1680, CH = 940;
+    const vh = this.state.vh || 700;
+    const fitS = Math.max(0.15, Math.min(1, (this.state.vw - 24) / CW, (vh - 24) / CH));
+    const sc = this.state.printing ? 1 : this.state.zoom === "fit" ? fitS : this.state.zoom;
+    this.curScale = sc;
+    const lod = this.state.printing || sc >= 0.6 ? "full" : sc >= 0.32 ? "simple" : "outline";
+    const det = lod === "full";
+    const nameFs = Math.round(Math.min(22, Math.max(14, 14 * 0.6 / sc))) + "px";
+    const scen = this.state.scen ?? this.props.scenario ?? "current";
+    const theme = this.state.theme ?? this.props.theme ?? "dark";
+    const ip = this.props.initialSelected;
+    const sel = this.state.sel !== undefined ? this.state.sel : ip && ip !== "none" ? ip : null;
+    const up = { l: "REACHABLE", sh: "REACHABLE", tc: "var(--acc)", dbg: "var(--acc)", dbc: "var(--acc)", bc: "var(--line2)", bs: "solid", bg: "var(--panel)", sbg: "var(--accbg)", sb: "var(--accln)", r: 0 };
+    const S = {
+      up, live: { ...up, l: "LIVE · CALIBRATED", sh: "LIVE" },
+      down: { l: "UNREACHABLE", sh: "UNREACHABLE", tc: "var(--red)", dbg: "var(--red)", dbc: "var(--red)", bc: "var(--red)", bs: "solid", bg: "linear-gradient(var(--redbg),var(--redbg)),var(--panel)", sbg: "var(--redbg)", sb: "var(--red)", r: 3 },
+      unk: { l: "UNKNOWN", sh: "UNKNOWN", tc: "var(--tx2)", dbg: "transparent", dbc: "var(--tx2)", bc: "var(--host)", bs: "dashed", bg: "repeating-linear-gradient(135deg,transparent 0 8px,var(--hatch) 8px 9px),var(--panel)", sbg: "var(--panel2)", sb: "var(--host)", r: 2 },
+      uncal: { l: "CONFIGURED · UNCALIBRATED", sh: "UNCALIBRATED", tc: "var(--amb)", dbg: "linear-gradient(90deg,var(--amb) 50%,transparent 50%)", dbc: "var(--amb)", bc: "var(--amb)", bs: "dashed", bg: "var(--panel)", sbg: "var(--ambbg)", sb: "var(--amb)", r: 1 },
+      off: { l: "NOT CONFIGURED", sh: "NOT CONFIGURED", tc: "var(--tx3)", dbg: "transparent", dbc: "var(--line2)", bc: "var(--line2)", bs: "dashed", bg: "var(--panel)", sbg: "var(--panel2)", sb: "var(--line2)", r: 9 },
+    };
+    const ext = (id, y, name, o) => ({ id, x: 1276, y, w: 368, h: 52, compact: true, ring: 3, host: "ext", name, ...o });
+    const N = [
+      { id: "cli", x: 72, y: 142, w: 216, h: 128, ring: 1, host: "user", scope: "", name: "cli", kind: "gban · command-line client", ver: "gban 0.14.2", st: "unk", sd: "not probed", sdx: "Clients are never probed. The last authenticated call was 2h ago from mbp-asha. That's a sighting, not a health check.", src: "api access log · last JWT seen", role: "Command-line client on user machines. Calls api over HTTP with the user's JWT; nothing listens on the client side.", facts: [["Version", "gban 0.14.2 on 2 machines · 0.13.9 on 1", "User-Agent on recent calls"], ["Machines", "3 seen in the last 30 days", "api access log"], ["Auth", "personal JWT · expires in 12 days", "token table"]] },
+      { id: "web", x: 820, y: 146, w: 248, h: 130, ring: 1, host: "stack", scope: "instance", name: "web", kind: "React single-page app", ver: "sha 3f9c2a1 · v2026.10.3", st: "up", sd: "200 · 38 ms", sdx: "Serving the app shell.", src: "GET / · probed 12s ago", role: "Static React single-page app. Every call it makes goes to api over HTTP with the signed-in user's JWT.", facts: [["Build", "3f9c2a1 · built 2026-10-17 21:04", "/version.json"], ["Release", "v2026.10.3", "image tag"], ["Served at", "app.graphban.local · :3000", "compose service web"]] },
+      { id: "api", x: 372, y: 300, w: 696, h: 250, ring: 1, host: "stack", scope: "instance", name: "api", kind: "FastAPI backend · one process, four surfaces", ver: "sha 3f9c2a1 · uvicorn :8000 · 4 workers", tiles: [["REST API", "/api/v1 · HTTP + JWT"], ["MCP server", "/mcp · JSON-RPC"], ["Sync engine", "pushes to Drive · Linear"], ["Provider resolution", "chat · embed · decide"]], st: "up", sd: "200 · 21 ms", sdx: "Healthy. Build matches web.", src: "GET /healthz · probed 12s ago", role: "The FastAPI backend. REST API, MCP server, sync engine and provider resolution share this one process, so they're surfaces on this box, not separate services.", facts: [["Build", "3f9c2a1 · matches web", "GET /healthz → build"], ["Process", "uvicorn · 4 workers · :8000", "GET /healthz → runtime"], ["Surfaces", "REST · MCP · sync engine · provider resolution", "app router manifest"], ["Database", "postgresql://db:5432/graphban", "DATABASE_URL (host only)"]] },
+      { id: "pg", x: 640, y: 640, w: 300, h: 230, ring: 2, host: "stack", scope: "instance", name: "database", kind: "PostgreSQL 16.4", ver: "schema 0047_lesson_dedupe", inner: ["pgvector 0.7.4", "Embeddings live in this database. Same process, same backups."], st: "up", sd: "psycopg · 3 ms", sdx: "Accepting connections. Schema is at head.", src: "SELECT 1 via api pool · 12s ago", role: "Primary datastore. pgvector is an extension inside Postgres, not a separate vector service.", facts: [["Engine", "PostgreSQL 16.4", "SELECT version()"], ["Schema", "0047_lesson_dedupe · head", "alembic_version"], ["Extension", "vector 0.7.4", "pg_extension"], ["Pool", "12 of 20 connections", "psycopg pool stats"]] },
+      { id: "fleet", x: 72, y: 330, w: 216, h: 220, ring: 1, host: "agent", scope: "project", name: "fleet supervisor", kind: "gbfleet · runs beside agents", ver: "gbfleet 0.9.2", rows: [["mbp-asha", "up", "2 agents"], ["ci-runner-02", "unk", "silent 9m"]], st: "up", sd: "heartbeat 6s ago", sdx: "mbp-asha heartbeating. ci-runner-02 hasn't reported in 9 minutes, so its state is unknown, not down.", src: "fleet heartbeats · every 5s", role: "Separate distribution installed where agents run. Spawns vendor coding-agent CLIs as local processes and reports back to api.", facts: [["Version", "gbfleet 0.9.2 on both outposts", "heartbeat payload"], ["Outposts", "2 registered · 1 heartbeating", "fleet registry"], ["Calls api", "HTTP + MCP JSON-RPC", "supervisor config"]] },
+      { id: "vendor", x: 72, y: 640, w: 216, h: 240, ring: 2, host: "agent", scope: "project", name: "vendor agents", kind: "spawned CLI processes", rows: [["claude", "up", "2 running"], ["cursor-agent", "up", "1 running"], ["grok", "down", "exited 1"]], st: "up", sd: "3 running · 1 failed", sdx: "3 processes running. grok exited 1 on its last spawn.", src: "fleet heartbeat → children", role: "Third-party coding-agent CLIs. We run them but didn't write them. The supervisor spawns each one; it connects back to api's MCP server.", facts: [["Running", "claude ×2 · cursor-agent ×1", "fleet heartbeat → children"], ["Last failure", "grok exited 1: xAI key rejected", "supervisor event log · 13:40"], ["Connects", "MCP to api /mcp with a spawn-scoped token", "spawn environment"]] },
+      ext("ollama", 168, "ollama", { h: 76, scope: "project", serves: ["chat", "embed"], sub: "lan-gpu-01:11434 · self-hosted", sub2: "qwen3-coder:30b · nomic-embed-text", st: "down", sd: "refused · 14m", sdx: "Connection refused since 13:52. Last good probe 14 minutes ago.", src: "GET /api/tags · refused 6s ago", role: "Self-hosted Ollama on the LAN, serving chat and embeddings.", facts: [["Endpoint", "http://lan-gpu-01:11434", "provider registry"], ["Serves", "chat · embed", "model list on last good probe"], ["Last good", "13:52 · 14 minutes ago", "health probe history"]], model: { t: "chat → qwen3-coder:30b\nembed → nomic-embed-text", note: "Unreachable, so GRPH is falling back: chat to xAI grok-4-fast, embed to OpenAI.", src: "project settings → providers.chat, providers.embed" } }),
+      ext("decider", 256, "decider", { h: 76, scope: "project", serves: ["decide"], sub: "System One · lan-sys1:8088", sub2: "systemone-7b · shadow mode", st: "uncal", sd: "logging only", sdx: "Configured and answering, but not calibrated. Decisions are logged, never enforced.", src: "GET /v1/systemone/health · 9s ago", role: "System One decider on the LAN. Approves or rejects agent actions once calibrated.", facts: [["Endpoint", "http://lan-sys1:8088/v1/systemone", "provider registry"], ["Calibration", "0 of 50 labelled decisions", "calibration job"], ["Mode", "shadow · decisions logged", "project settings → decider.mode"]], model: { t: "decide → systemone-7b (shadow)", note: "Label 50 decisions in Harness to calibrate it and switch to enforce.", src: "project settings → providers.decide" } }),
+      ext("xai", 372, "xAI", { scope: "project", serves: ["chat"], sub: "grok-4-fast · chat fallback 1 · serving now", st: "up", sd: "180 ms", sdx: "Answering. Carrying GRPH's chat while ollama is unreachable.", src: "HEAD /v1/models · 30s ago", role: "Cloud chat provider. Wired as the first fallback for chat.", facts: [["Endpoint", "https://api.x.ai/v1", "provider registry"], ["Key", "xai-…7Qd · project key", "project secrets"]], model: { t: "chat fallback 1 → grok-4-fast", note: "Active now because ollama is down.", src: "project settings → providers.chat.fallbacks[0]" } }),
+      ext("openai", 434, "OpenAI", { scope: "project", serves: ["embed"], sub: "text-embedding-3-small · embed fallback", st: "up", sd: "140 ms", sdx: "Answering. Carrying GRPH's embeddings while ollama is unreachable.", src: "HEAD /v1/models · 30s ago", role: "Cloud embeddings provider. Wired as the fallback for embed.", facts: [["Endpoint", "https://api.openai.com/v1", "provider registry"], ["Key", "sk-…f21 · instance key", "instance secrets"]], model: { t: "embed fallback → text-embedding-3-small", note: "Vectors from this model are re-embedded locally once ollama recovers.", src: "project settings → providers.embed.fallbacks[0]" } }),
+      ext("anthropic", 496, "Anthropic", { scope: "project", serves: ["chat"], sub: "claude-sonnet-4.5 · chat fallback 2", st: "unk", sd: "never called", sdx: "Key is set but nothing has called it yet, so there's nothing to report.", src: "no probe · fallbacks are probed on first use", role: "Cloud chat provider. Second fallback for chat.", facts: [["Endpoint", "https://api.anthropic.com", "provider registry"], ["Key", "sk-ant-…9b0 · project key", "project secrets"]], model: { t: "chat fallback 2 → claude-sonnet-4.5", note: "", src: "project settings → providers.chat.fallbacks[1]" } }),
+      ext("resend", 652, "Resend", { scope: "instance", sub: "invites · digests · no-reply@graphban.dev", st: "up", sd: "sent 3h ago", sdx: "Last send accepted 3h ago.", src: "Resend API · last 202", role: "Transactional email for invites and digests. Configured once for the whole instance.", facts: [["Sender", "no-reply@graphban.dev · domain verified", "Resend domains API"], ["Key", "re_…a1c · instance key", "instance secrets"]] }),
+      ext("drive", 760, "Google Drive", { scope: "project", sub: "PRDs ↔ /Graphban/PRDs · 4m ago", st: "up", sd: "160 ms", sdx: "Last push 4 minutes ago.", src: "sync engine · run log", role: "Sync target for PRDs. The sync engine on api pushes and pulls.", facts: [["Folder", "/Graphban/PRDs", "Sync Link settings"], ["Account", "asha@ascme.dev · OAuth", "integration grant"]] }),
+      ext("linear", 822, "Linear", { scope: "project", sub: "GRPH ↔ team ENG", st: "unk", sd: "webhook silent 2d", sdx: "No webhook event in 2 days. Could be a quiet team or a broken hook; we can't tell yet.", src: "sync engine · webhook log", role: "Sync target for items. The sync engine on api mirrors GRPH to a Linear team.", facts: [["Team", "ENG", "Sync Link settings"], ["Last event", "2026-10-16 09:12", "webhook log"]] }),
+      ext("syncEmpty", 760, "sync", { h: 114, compact: false, scope: "", hide: true, st: "off", sd: "", sdx: "No sync target for GRPH.", src: "Sync Link settings · empty", role: "Where synced integrations appear once configured.", facts: [], empty: { t: "No sync configured", p: "Connect Google Drive or Linear and the sync engine starts mirroring to it.", l: "Configure sync →", h: "Sync%20Link%20Settings.dc.html" } }),
+    ];
+    const SC = {
+      current: {},
+      healthy: {
+        cli: { st: "up", sd: "last call 40s ago", sdx: "Clients aren't probed. Shown as reachable because an authenticated call landed in the last 5 minutes." },
+        fleet: { rows: [["mbp-asha", "up", "2 agents"], ["ci-runner-02", "up", "1 agent"]], sdx: "Both outposts heartbeating." },
+        vendor: { rows: [["claude", "up", "2 running"], ["cursor-agent", "up", "1 running"], ["grok", "up", "1 running"]], sd: "4 running", sdx: "4 processes running." },
+        ollama: { st: "up", sd: "41 ms", sdx: "Answering. Chat and embed resolve here for GRPH.", src: "GET /api/tags · probed 9s ago", model: { t: "chat → qwen3-coder:30b\nembed → nomic-embed-text", note: "", src: "project settings → providers.chat, providers.embed" } },
+        decider: { st: "live", sd: "enforcing", sub2: "systemone-7b · enforcing · 92% agreement", sdx: "Calibrated on 50 labelled decisions and enforcing.", facts: [["Endpoint", "http://lan-sys1:8088/v1/systemone", "provider registry"], ["Calibration", "50 of 50 labelled · 92% agreement", "calibration job · 2026-10-16"], ["Mode", "enforce", "project settings → decider.mode"]], model: { t: "decide → systemone-7b (enforcing)", note: "", src: "project settings → providers.decide" } },
+        xai: { sub: "grok-4-fast · chat fallback 1 · idle", sdx: "Answering. Idle; ollama is serving chat." },
+        openai: { sub: "text-embedding-3-small · embed fallback · idle", sdx: "Answering. Idle; ollama is serving embed." },
+        anthropic: { st: "up", sd: "220 ms", sdx: "Answering. Only used if ollama and xAI both fail.", src: "HEAD /v1/models · 1m ago" },
+        linear: { st: "up", sub: "GRPH ↔ team ENG · event 3m ago", sdx: "Webhook delivering; last event 3 minutes ago." },
+      },
+      fresh: {
+        cli: { sd: "never called", sdx: "No client has authenticated against this instance yet.", facts: [["Machines", "0 seen", "api access log"]] },
+        fleet: { st: "off", rows: null, ver: null, kind: null, empty: { t: "No fleet registered", p: "Install gbfleet on an agent host and it registers itself here.", l: "Set up an outpost →", h: "Build.dc.html#outposts" }, sdx: "No supervisor has registered for GRPH.", src: "fleet registry · empty", facts: [] },
+        vendor: { st: "off", rows: null, kind: null, empty: { t: "Nothing spawned", p: "Agents appear once a fleet supervisor registers." }, sdx: "Nothing to spawn without a supervisor.", src: "fleet registry · empty", facts: [] },
+        ollama: { st: "up", sd: "44 ms", sdx: "Answering. The only wired provider: chat and embed both resolve here.", src: "GET /api/tags · probed 9s ago", model: { t: "chat → qwen3-coder:30b\nembed → nomic-embed-text", note: "No fallback is wired. If this host goes down, chat and embed stop.", src: "project settings → providers" } },
+        decider: { st: "off", sub: "System One · no host set", sub2: "decisions fall back to the chat model", sdx: "No decider host configured for GRPH.", src: "project settings → providers.decide · unset", facts: [], model: null },
+        xai: { hide: true }, openai: { hide: true }, anthropic: { hide: true }, drive: { hide: true }, linear: { hide: true }, syncEmpty: { hide: false },
+        pg: { ver: "schema 0047_lesson_dedupe · empty" },
+      },
+    };
+    const nodes0 = N.map((b) => ({ ...b, ...((SC[scen] || {})[b.id] || {}) })).filter((n) => !n.hide);
+    const by = Object.fromEntries(nodes0.map((n) => [n.id, n]));
+    const E = [
+      ["cli", "api", [[288, 196], [430, 196], [430, 300]], ["HTTP · JWT"], 359, 196, "c"],
+      ["web", "api", [[944, 276], [944, 300]], ["HTTP · JWT"], 952, 288, "l"],
+      ["fleet", "api", [[288, 420], [372, 420]], ["HTTP + MCP", "JSON-RPC"], 330, 420, "c"],
+      ["vendor", "api", [[288, 700], [440, 700], [440, 550]], ["MCP · /mcp"], 364, 700, "c"],
+      ["fleet", "vendor", [[180, 550], [180, 640]], ["spawns", "local procs"], 188, 595, "l"],
+      ["api", "pg", [[790, 550], [790, 640]], ["psycopg · :5432"], 798, 595, "l"],
+      ["api", "ollama", [[1068, 330], [1146, 330], [1146, 206], [1276, 206]], ["HTTP /api/chat", "/api/embed"], 1206, 206, "c"],
+      ["api", "decider", [[1068, 360], [1160, 360], [1160, 294], [1276, 294]], ["HTTP", "/v1/systemone"], 1218, 294, "c"],
+      ["api", "xai", [[1068, 398], [1276, 398]], ["HTTPS · chat"], 1200, 398, "c"],
+      ["api", "openai", [[1068, 430], [1180, 430], [1180, 460], [1276, 460]], ["HTTPS · embed"], 1228, 460, "c"],
+      ["api", "anthropic", [[1068, 470], [1164, 470], [1164, 522], [1276, 522]], ["HTTPS · chat"], 1220, 522, "c"],
+      ["api", "resend", [[1040, 550], [1040, 678], [1276, 678]], ["HTTPS · REST"], 1158, 678, "c"],
+      ["api", "drive", [[1016, 550], [1016, 786], [1276, 786]], ["HTTPS · Drive API"], 1146, 786, "c"],
+      ["api", "linear", [[992, 550], [992, 848], [1276, 848]], ["HTTPS · GraphQL"], 1134, 848, "c"],
+    ].filter(([f, t]) => by[f] && by[t] && by[f].st !== "off" && by[t].st !== "off");
+    const ES = { 0: ["var(--edge)", "none", "url(#ah-ok)", "var(--line2)", "var(--tx2)"], 1: ["var(--amb)", "3 4", "url(#ah-amb)", "var(--amb)", "var(--amb)"], 2: ["var(--tx3)", "2 4", "url(#ah-unk)", "var(--host)", "var(--tx2)"], 3: ["var(--red)", "6 4", "url(#ah-down)", "var(--red)", "var(--red)"] };
+    const selSet = sel === "stack" ? new Set(nodes0.filter((n) => n.host === "stack").map((n) => n.id)) : sel && by[sel] ? new Set([sel]) : null;
+    const touches = (f, t) => selSet && (sel === "stack" ? selSet.has(f) !== selSet.has(t) : selSet.has(f) || selSet.has(t));
+    const adj = new Set(selSet ? [...selSet] : []);
+    E.forEach(([f, t]) => { if (touches(f, t)) { adj.add(f); adj.add(t); } });
+    const pick = (id) => () => { if (this.justDragged) return; this.setState({ sel: id === sel ? null : id }); };
+    const edges = E.map(([f, t, pts, lines, lx, ly, a]) => {
+      const rk = Math.max(S[by[f].st].r, S[by[t].st].r);
+      const st = ES[rk] || ES[0];
+      const on = touches(f, t), dim = selSet && !on;
+      return { d: pts.map((p, i) => (i ? "L" : "M") + p[0] + " " + p[1]).join(" "), sc: on ? "var(--acc)" : st[0], sw: on ? 2 : 1.5, da: st[1], mk: on ? "url(#ah-sel)" : st[2], op: dim ? 0.18 : 1, lx: lx + "px", ly: ly + "px", tf: a === "c" ? "translate(-50%,-50%)" : "translate(0,-50%)", al: a === "c" ? "center" : "flex-start", lb: on ? "var(--accln)" : st[3], lc: on ? "var(--tx)" : st[4], lines: lines.map((t) => ({ t })), title: by[f].name + " → " + by[t].name + " · " + lines.join(" ") };
+    });
+    const ov = this.state.overlay ?? this.props.healthOverlay ?? true;
+    const filed = this.state.filed;
+    const SEV = { crit: ["CRIT", "var(--sc)", 0], high: ["HIGH", "var(--sh)", 1], med: ["MED", "var(--sm)", 2], low: ["LOW", "var(--sl)", 3] };
+    const CAT = [["sec", "Security"], ["ref", "Refactoring · complexity"], ["stub", "Partial implementation"], ["cov", "Coverage · graph staleness"], ["work", "Open work"]];
+    const HATCH = "repeating-linear-gradient(45deg,var(--tx3) 0 1.5px,transparent 1.5px 3.5px)";
+    const BANDH = "repeating-linear-gradient(45deg,transparent 0 6px,var(--hatch) 6px 7px),var(--panel2)";
+    const cg = (st, sc, ran, rev, f, note) => ({ st, sc, ran, rev, f: f || [], note: note || "" });
+    const NR = (sc) => cg("notrun", sc, "never", "", [], "Nothing has scanned cli/ for this. Until something does, its state is unknown.");
+    const H = {
+      web: { head: "3f9c2a1", path: "web/", c: { sec: cg("clean", "osv-scanner 1.9.1", "3h ago", "3f9c2a1"), ref: cg("clean", "eslint complexity 9.12", "3h ago", "3f9c2a1"), stub: cg("clean", "gb stubscan 0.4.2", "3h ago", "3f9c2a1"), cov: cg("clean", "gb graphcheck 0.7.0", "3h ago", "3f9c2a1"), work: cg("clean", "tracker", "live", "", [], "No open defects or in-flight items mapped to web/.") } },
+      api: { head: "3f9c2a1", path: "api/", c: {
+        sec: cg("findings", "osv-scanner 1.9.1 · semgrep 1.92", "3h ago", "3f9c2a1", [["high", "python-multipart pinned below 0.0.18 — multipart parsing DoS advisory", "pyproject.toml", "Build.dc.html#code"], ["med", "settings.py falls back to a default JWT secret when the env var is unset", "settings.Settings", "Build.dc.html#code"]]),
+        ref: cg("findings", "radon 6.0.1", "3h ago", "3f9c2a1", [["med", "providers/resolve.py · resolve_chat() complexity 31, limit 15", "resolve_chat", "Build.dc.html#code"], ["low", "sync/engine.py · the same retry loop is copied 3 times", "sync/engine.py", "Build.dc.html#code"]]),
+        stub: cg("findings", "gb stubscan 0.4.2", "3h ago", "3f9c2a1", [["med", "mcp/tools/export_trace raises NotImplementedError; the MCP catalog still lists it", "PRD · Log export", "Plan.dc.html"]]),
+        cov: cg("findings", "gb graphcheck 0.7.0", "3h ago", "3f9c2a1", [["med", "4 files under sync/ aren't described in the Code graph", "sync/ in Code graph", "Build.dc.html#code"], ["low", "GRPH-905 still claims sync/linear.py, renamed 6 days ago", "GRPH-905", "Plan.dc.html"]]),
+        work: cg("findings", "tracker", "live", "", [["high", "Defect: MCP error bodies echo the bearer token", "GRPH-941", "Plan.dc.html"], ["low", "In flight: change the provider fallback order", "GRPH-930", "Plan.dc.html"]]) } },
+      fleet: { head: "9e1d07b", path: "fleet/", stale: "4c2b8aa", behind: "14 commits behind", c: {
+        sec: cg("stale", "osv-scanner 1.8.3", "9d ago", "4c2b8aa", [], "0 findings at 4c2b8aa. The code has moved 14 commits since, so that result doesn't cover what's running."),
+        ref: cg("stale", "radon 6.0.1", "9d ago", "4c2b8aa", [], "Last result is 14 commits old. Re-run before trusting it."),
+        stub: cg("stale", "gb stubscan 0.4.0", "9d ago", "4c2b8aa", [], "Last result is 14 commits old."),
+        cov: cg("stale", "gb graphcheck 0.6.4", "9d ago", "4c2b8aa", [], "Graph descriptions for fleet/ predate 0.9.2."),
+        work: cg("clean", "tracker", "live", "", [], "No open defects or in-flight items mapped to fleet/.") } },
+      cli: { head: "b77e310", path: "cli/", c: { sec: NR("no scanner configured"), ref: NR("no scanner configured"), stub: NR("no scanner configured"), cov: NR("gb graphcheck · cli/ not in scope"), work: cg("clean", "tracker", "live", "", [], "No open defects mapped to cli/. One clean category doesn't make the component clean.") } },
+    };
+    const roll = (h) => {
+      const cs = CAT.map(([k]) => h.c[k]);
+      const fs = cs.flatMap((c) => (c.st === "findings" ? c.f : []));
+      const stale = cs.filter((c) => c.st === "stale").length, nr = cs.filter((c) => c.st === "notrun").length;
+      const cnt = {}; fs.forEach((f) => (cnt[f[0]] = (cnt[f[0]] || 0) + 1));
+      const order = ["crit", "high", "med", "low"];
+      const sev = order.filter((s) => cnt[s]).map((s) => ({ t: cnt[s] + " " + SEV[s][0], c: SEV[s][1] }));
+      const gaps = [stale ? stale + " stale" : "", nr ? nr + " not run" : ""].filter(Boolean).join(" · ");
+      if (fs.length) { const w = order.find((s) => cnt[s]); return { l: "FINDINGS", tc: SEV[w][1], sq: SEV[w][1], sqb: SEV[w][1], bg: "var(--panel2)", sev, meta: gaps || "@" + h.head }; }
+      if (stale) return { l: "STALE", tc: "var(--tx2)", sq: HATCH, sqb: "var(--tx3)", bg: BANDH, sev: [], meta: "@" + h.stale + " · " + h.behind };
+      if (nr) return { l: "NOT SCANNED", tc: "var(--tx2)", sq: HATCH, sqb: "var(--tx3)", bg: BANDH, sev: [], meta: nr + " of 5 never run" };
+      return { l: "CLEAN", tc: "var(--cln)", sq: "var(--cln)", sqb: "var(--cln)", bg: "var(--panel2)", sev: [], meta: "@" + h.head + " = head" };
+    };
+    const hv = (n) => { const h = H[n.id]; if (!ov || !h || n.st === "off") return { hasHealth: false, hsev: [] }; const r = roll(h); return { hasHealth: true, hl: r.l, htc: r.tc, hsq: r.sq, hsqb: r.sqb, hb: r.bg, hsev: r.sev, hmeta: lod === "outline" ? "" : r.meta }; };
+    const nodes = nodes0.map((n) => {
+      const s = S[n.st], isSel = selSet && selSet.has(n.id) && sel !== "stack";
+      const em = n.empty;
+      return {
+        ...n, ...s, short: s.sh, l: n.x + "px", t: n.y + "px", wp: n.w + "px", hp: n.h + "px",
+        pad: n.compact ? "8px 11px" : "10px 12px", gap: n.compact ? "3px" : "5px",
+        sh: isSel ? "0 0 0 2px var(--acc), 0 10px 28px var(--shadow)" : "none",
+        op: selSet && !adj.has(n.id) ? 0.4 : 1, pick: pick(n.id), pressed: isSel ? "true" : "false", aria: n.name + ", " + s.l,
+        compact: !!n.compact, hasScope: !n.compact && !!n.scope, scL: n.scope === "project" ? "PROJECT" : "INSTANCE", scB: n.scope === "project" ? "var(--purln)" : "var(--line2)", scC: n.scope === "project" ? "var(--pur)" : "var(--tx2)",
+        nameFs, servesL: det ? (n.serves || []).map((x) => ({ s: x })) : [], hasKind: det && !!n.kind, hasSub: det && !!n.sub, hasSub2: det && !!n.sub2, hasVer: det && !!n.ver,
+        hasTiles: det && !!n.tiles, tiles: (n.tiles || []).map(([t, x]) => ({ t, s: x })), hasInner: det && !!n.inner, inT: n.inner ? n.inner[0] : "", inS: n.inner ? n.inner[1] : "",
+        hasRows: det && !!n.rows, rowsV: (n.rows || []).map(([nm, rs, meta]) => ({ nm, meta, dbg: S[rs].dbg, dbc: S[rs].dbc, mc: rs === "down" ? "var(--red)" : "var(--tx3)" })),
+        isEmpty: !!em && lod !== "outline", emT: em ? em.t : "", emP: em && det ? em.p : "", emHasLink: det && !!(em && em.l), emLink: em ? em.l : "", emHref: em ? em.h : "", stop: (e) => e.stopPropagation(),
+        showBottom: !n.compact && n.st !== "off" && lod !== "outline", sd: n.sd ? "· " + n.sd : "", ...hv(n),
+      };
+    });
+    const HM = { current: ["3 seen · 30d", "2 registered"], healthy: ["3 seen · 30d", "2 registered"], fresh: ["none seen", "none registered"] }[scen] || ["", ""];
+    const HOSTS = [["user", 52, 122, 256, 154, "USER MACHINES", HM[0]], ["agent", 52, 296, 256, 612, "AGENT HOSTS · OUTPOSTS", HM[1]], ["stack", 340, 122, 748, 786, "COMPOSE · RAILWAY STACK", "v2026.10.3"]];
+    const hosts = HOSTS.map(([id, x, y, w, h, label, meta]) => {
+      const on = sel === "stack" && id === "stack";
+      return { l: x + "px", t: y + "px", wp: w + "px", hp: h + "px", label, meta, bc: on ? "var(--acc)" : "var(--host)", sh: on ? "0 0 0 1px var(--acc)" : "none", hasScope: id === "stack", pick: id === "stack" ? pick("stack") : null, dis: id !== "stack", cur: id === "stack" ? "pointer" : "default" };
+    });
+    const RING = { 1: "1 · code we write", 2: "2 · infrastructure we run", 3: "3 · external, we only call it" };
+    const HOST = { user: "User machines", agent: "Agent hosts · outposts", stack: "Compose · Railway stack", ext: "Off-instance, over the network" };
+    const SCOPE = { instance: "Instance-wide · same for every project", project: "Project-scoped · resolved for GRPH", "": "Per machine" };
+    let ins = null;
+    if (sel) {
+      const STK = { id: "stack", name: "compose stack", kind: "web + api + database on one host", st: "up", sdx: "3 of 3 services up.", src: "Railway deploy status · 1m ago", role: "The deployment unit for instance-wide services. web, api and the database ship and restart together; agents and clients live on other machines.", ringL: "Spans 1 (code) and 2 (infrastructure)", host: "stack", scope: "instance", facts: [["Target", "Railway · us-west2", "RAILWAY_ENVIRONMENT"], ["Release", "v2026.10.3 · web and api on one build", "image tags"], ["Services", "web · api · database", "compose project graphban"], ["Deployed", "2026-10-17 21:12 · 21h ago", "Railway deployments API"]] };
+      const n = sel === "stack" ? STK : by[sel];
+      if (n) {
+        const s = S[n.st], em = n.empty, m = n.model;
+        const conns = E.filter(([f, t]) => touches(f, t)).map(([f, t, , lines]) => {
+          const out = sel === "stack" ? selSet.has(f) : f === sel, pid = out ? t : f;
+          const rk = Math.max(S[by[f].st].r, S[by[t].st].r);
+          return { dir: out ? "→" : "←", peer: by[pid].name, proto: lines.join(" "), dc: (ES[rk] || ES[0])[0], go: () => this.setState({ sel: pid }) };
+        });
+        ins = {
+          name: n.name, kind: n.kind || n.sub || "", role: n.role, sl: s.l, tc: s.tc, sb: s.sb, sbg: s.sbg, dbg: s.dbg, dbc: s.dbc, sdx: n.sdx, src: "from " + n.src,
+          hasModel: !!m, mT: m ? m.t : "", hasNote: !!(m && m.note), mNote: m ? m.note : "", mSrc: m ? "from " + m.src : "",
+          isEmpty: !!em, emT: em ? em.t : "", emP: em ? em.p : "", emHasLink: !!(em && em.l), emLink: em ? em.l : "", emHref: em ? em.h : "",
+          place: [{ k: "Ring", v: n.ringL || RING[n.ring] }, { k: "Host", v: HOST[n.host] }, { k: "Scope", v: SCOPE[n.scope || ""] }],
+          hasFacts: (n.facts || []).length > 0, facts: (n.facts || []).map(([k, v, x]) => ({ k, v, s: "from " + x })),
+          conns, noConns: conns.length === 0,
+        };
+        const h = H[n.id];
+        if (h) {
+          const r = roll(h), keys = [];
+          const cats = CAT.map(([k, name]) => {
+            const c = h.c[k];
+            const w = c.f.map((f) => f[0]).sort((a, b) => SEV[a][2] - SEV[b][2])[0];
+            const stC = c.st === "clean" ? "var(--cln)" : c.st === "findings" ? SEV[w][1] : "var(--tx2)";
+            const f = c.f.map(([sv, sum, lk, href], i) => { const key = n.id + "." + k + "." + i; const fid = filed[key]; if (!fid) keys.push(key); return { sevT: SEV[sv][0], sevC: SEV[sv][1], sum, lk, href, notFiled: !fid, isFiled: !!fid, filedId: fid || "", defrag: () => this.fileDefrag([key]) }; });
+            return {
+              name, f, stC, stB: c.st === "clean" || c.st === "findings" ? stC : "var(--host)",
+              stL: c.st === "clean" ? "CLEAN" : c.st === "findings" ? c.f.length + (c.f.length === 1 ? " FINDING" : " FINDINGS") : c.st === "stale" ? "STALE" : "NOT RUN",
+              hbg: c.st === "stale" || c.st === "notrun" ? BANDH : "var(--panel2)",
+              scanLine: c.sc + " · " + (c.st === "notrun" ? "never run" : c.ran === "live" ? "live, reads the tracker" : "ran " + c.ran),
+              revLine: c.st === "notrun" ? "no result at any revision" : c.st === "stale" ? "against " + c.rev + " · " + h.behind + " (head " + h.head + ")" : c.ran === "live" ? "not tied to a revision" : "against " + c.rev + " = head",
+              revC: c.st === "stale" ? "var(--sm)" : "var(--tx3)",
+              hasNote: !!c.note, note: c.note, hasCta: c.st === "notrun" || c.st === "stale", cta: c.st === "notrun" ? "Add a scanner →" : "Re-run at head →", ctaHref: "Log%20Export.dc.html",
+            };
+          });
+          Object.assign(ins, { hasHealth: true, healthNA: false, hRev: h.path + " @ " + h.head, hL: r.l, hTc: r.tc, hSq: r.sq, hSqb: r.sqb, hBg: r.bg, hSev: r.sev, hMeta: r.meta, cats, hCanBulk: keys.length > 1, hBulkL: "Defrag all " + keys.length, hBulk: () => this.fileDefrag(keys) });
+        } else {
+          Object.assign(ins, { hasHealth: false, healthNA: true, cats: [], hSev: [], naText: sel === "stack" ? "Health is per deployable, never rolled up across the stack. Open web or api." : n.ring === 2 ? "Infrastructure we run but didn't write, so we don't scan it. Liveness only." : "An external service. We don't scan code we don't own. Liveness only." });
+        }
+      }
+    }
+    const live = nodes0.filter((n) => n.st !== "off");
+    const cnt = (k) => live.filter((n) => n.st === k).length;
+    const offN = nodes0.filter((n) => n.st === "off").length;
+    const summary = ["derived 12s ago", live.length + " live nodes", cnt("down") + " unreachable", cnt("unk") + " unknown", cnt("uncal") ? cnt("uncal") + " uncalibrated" : "", offN ? offN + " not configured" : ""].filter(Boolean).join(" · ");
+    const seg = (label, on, go) => ({ label, on: on ? "true" : "false", go, bg: on ? "var(--hover)" : "transparent", c: on ? "var(--tx)" : "var(--tx2)" });
+    this.exp = { nodes0, E, by, H, roll, S, HOSTS };
+    return {
+      theme, summary, nodes, edges, hosts, scRef: this.scRef,
+      noCloud: !nodes0.some((n) => ["xai", "openai", "anthropic"].includes(n.id)),
+      sizerW: CW * sc + "px", sizerH: CH * sc + "px", innerTf: "scale(" + sc + ")",
+      szRef: this.szRef, edgeLabels: det ? edges : [],
+      zoomPct: Math.round(sc * 100) + "%", fitOn: this.state.zoom === "fit" ? "true" : "false", fitBg: this.state.zoom === "fit" ? "var(--hover)" : "transparent",
+      zoomIn: () => this.zoomTo(sc * 1.25), zoomOut: () => this.zoomTo(sc / 1.25), zoomFit: () => this.setState({ zoom: "fit" }), zoom100: () => this.zoomTo(1),
+      lodLabel: (lod === "full" ? "full detail" : lod === "simple" ? "simplified" : "outline") + " · scroll to zoom, drag to pan",
+      exportOpen: !!this.state.exportOpen, exportExp: this.state.exportOpen ? "true" : "false", toggleExport: () => this.setState((s) => ({ exportOpen: !s.exportOpen })),
+      exportPdf: () => this.setState({ exportOpen: false, printing: true }, () => setTimeout(() => window.print(), 150)),
+      exportDrawio: () => { this.setState({ exportOpen: false }); this.exportDrawio(); },
+      themeBtns: [seg("Dark", theme === "dark", () => this.setState({ theme: "dark" })), seg("Light", theme === "light", () => this.setState({ theme: "light" }))],
+      stateChips: [["current", "CURRENT"], ["healthy", "ALL HEALTHY"], ["fresh", "FRESH INSTALL"]].map(([id, label]) => { const on = id === scen; return { label, go: () => this.setState({ scen: id, sel: null }), b: on ? "var(--accln)" : "var(--line2)", bg: on ? "var(--accbg)" : "transparent", c: on ? "var(--acc)" : "var(--tx2)" }; }),
+      overlayOn: ov, ovPressed: ov ? "true" : "false", toggleOverlay: () => this.setState({ overlay: !ov }), ovB: ov ? "var(--line2)" : "var(--line2)", ovBg: ov ? "var(--hover)" : "transparent", ovC: ov ? "var(--tx)" : "var(--tx2)", ovSq: ov ? "var(--sh)" : "transparent",
+      hasSel: !!ins, ins: ins || { place: [], facts: [], conns: [], cats: [], hSev: [] }, closeSel: () => this.setState({ sel: null }),
+    };
+  }
+}
+</script>
+</body>
+</html>

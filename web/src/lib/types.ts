@@ -1099,6 +1099,65 @@ export interface ModelLoads {
   models: string[];
 }
 
+/** GET /api/platform/stack — derived architecture map (GRPH-1034 / PRD-P51 §2). */
+export type StackLiveness =
+  | "reachable"
+  | "unreachable"
+  | "unknown"
+  | "not_configured"
+  | "uncalibrated";
+
+export interface StackFact {
+  key: string;
+  value: string;
+  provenance: string;
+}
+
+export interface StackNode {
+  id: string;
+  label: string;
+  title: string;
+  kind: "deployable" | "infra" | "external" | "agent" | string;
+  ring: 1 | 2 | 3 | number;
+  scope: "instance" | "project" | string;
+  host: string;
+  liveness: StackLiveness;
+  surfaces: string[];
+  extensions: string[];
+  facts: StackFact[];
+  outposts?: { host: string; online: number; agents: number }[];
+  provider_kind?: string;
+}
+
+export interface StackEdge {
+  from: string;
+  to: string;
+  protocol: string;
+  label: string;
+}
+
+export interface StackTopology {
+  project_id: string;
+  generated_at: string;
+  hosts: { id: string; label: string; nodes: string[] }[];
+  nodes: StackNode[];
+  edges: StackEdge[];
+  empties: { id: string; message: string }[];
+  catalog: {
+    providers_total: number;
+    providers_wired: number;
+    unwired_count: number;
+  };
+  identity: {
+    api_version: string;
+    api_git_sha: string;
+    web_bundle_sha: string | null;
+    schema_revision: string | null;
+    db_engine: string | null;
+    mcp_tools: number;
+  };
+}
+
 export interface GrillState {
   prd_id: string;
   turns: { seq: number; role: string; text: string; via: string; actor: string }[];

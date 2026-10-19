@@ -2,11 +2,6 @@
   "_comment": "Known documentation gaps (GRPH-475). This list may only SHRINK \u2014 test_docs_completeness.py fails on a new entry, and fails again if an entry here has since been documented and not removed.",
   "gaps": {
     "routes": [
-      "/{}/feedback",
-      "/{}/issues",
-      "/{}/requests",
-      "/{}/roadmap",
-      "/{}/t/{}",
       "/api/assistant/actions/{}/apply",
       "/api/assistant/actions/{}/reject",
       "/api/assistant/providers",
@@ -83,7 +78,12 @@
       "/api/sync/link",
       "/api/sync/purge",
       "/api/sync/push",
-      "/api/sync/status"
+      "/api/sync/status",
+      "/{}/feedback",
+      "/{}/issues",
+      "/{}/requests",
+      "/{}/roadmap",
+      "/{}/t/{}"
     ],
     "settings": [],
     "tables": [
