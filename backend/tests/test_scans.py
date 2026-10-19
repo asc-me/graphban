@@ -151,3 +151,51 @@ def test_sabotage_caller_dropping_scanned_sha_is_refused(db):
             db, project_id="core", scanner_id="pip-audit",
             path="backend/", scanned_sha="   ", findings=[],
         )
+
+
+def test_nested_clean_scan_does_not_hide_parent_findings(db):
+    """Same scanner, parent HIGH then nested clean → component still has_findings.
+
+    Collapse-to-latest-per-scanner made the nested clean erase the parent finding.
+    """
+    sha = "abc1234"
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="bandit", path="backend/",
+        scanned_sha=sha,
+        findings=[{"severity": "high", "summary": "assert used", "path": "backend/app/x.py"}],
+    )
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="bandit",
+        path="backend/app/routers/platform.py",
+        scanned_sha=sha, findings=[],
+    )
+    health = scans_svc.component_health(db, "core", head_sha=sha)
+    api = next(c for c in health["components"] if c["id"] == "api")
+    assert api["categories"]["security"]["state"] == "has_findings"
+    assert any(
+        f.get("severity") == "high" for f in api["categories"]["security"]["findings"]
+    )
+    assert api["rollup"]["state"] == "has_findings"
+
+
+def test_mixed_coverage_revisions_are_stale_not_clean(db):
+    """Partly-stale graph under a prefix must read stale, not clean_at_sha."""
+    from app.services import code_graph as code_svc
+
+    code_svc.describe_code(
+        db, project_id="core", revision="oldsha01",
+        nodes=[{"path": "backend/app/a.py", "kind": "module", "summary": "a"}],
+    )
+    code_svc.describe_code(
+        db, project_id="core", revision="newsha02",
+        nodes=[{"path": "backend/app/b.py", "kind": "module", "summary": "b"}],
+    )
+    cat = scans_svc._coverage_category(db, "core", "backend/", head_sha="newsha02")
+    assert cat["state"] == "stale", cat
+
+
+def test_norm_path_keeps_dotfile_directory_prefix():
+    """lstrip('./') ate the leading '.' of '.github/...'; removeprefix must not."""
+    assert scans_svc._norm_path(".github/workflows/ci.yml") == ".github/workflows/ci.yml"
+    assert scans_svc._norm_path("./backend/app") == "backend/app"
+    assert scans_svc._norm_path("backend/") == "backend/"

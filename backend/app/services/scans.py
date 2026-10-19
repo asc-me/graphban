@@ -64,7 +64,9 @@ def _utcnow() -> datetime:
 
 
 def _norm_path(path: str) -> str:
-    p = (path or "").strip().lstrip("./")
+    # removeprefix, not lstrip: lstrip("./") eats any leading '.' or '/' chars, so
+    # '.github/workflows/ci.yml' becomes 'github/workflows/ci.yml'.
+    p = (path or "").strip().removeprefix("./")
     if not p:
         raise ValueError("path is required")
     return p
@@ -97,7 +99,7 @@ def _infer_category(scanner_id: str, category: str | None) -> str:
 def _under(prefix: str, path: str) -> bool:
     """Is `path` inside component prefix `prefix`?"""
     pref = prefix.rstrip("/")
-    p = path.lstrip("./")
+    p = path.removeprefix("./")
     return p == pref or p.startswith(pref + "/") or _match(pref + "/**", p) or _match(prefix, p)
 
 
@@ -258,14 +260,18 @@ def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) 
     return {**base, "state": "clean_at_sha"}
 
 
-def _latest_scans_for_prefix(db: Session, project_id: str, prefix: str) -> list[CodeScan]:
-    """Latest scan per (scanner_id) whose path is under or equal to the component prefix."""
+def _scans_for_prefix(db: Session, project_id: str, prefix: str) -> list[CodeScan]:
+    """Every live scan row whose path is under or equal to the component prefix.
+
+    Upsert already keeps one row per (scanner_id, path). Do not collapse to the latest
+    per scanner: a clean nested-path scan must not hide findings recorded on a parent.
+    """
     all_scans = list(db.scalars(
         select(CodeScan).where(CodeScan.project_id == project_id)
         .order_by(CodeScan.scanned_at.desc())
     ).all())
     pref = prefix.rstrip("/")
-    best: dict[str, CodeScan] = {}
+    out: list[CodeScan] = []
     for s in all_scans:
         if not (s.path == pref or s.path == prefix or s.path.startswith(pref + "/")
                 or pref.startswith(s.path.rstrip("/") + "/") or s.path.rstrip("/") == pref):
@@ -273,10 +279,8 @@ def _latest_scans_for_prefix(db: Session, project_id: str, prefix: str) -> list[
             sp = s.path.rstrip("/")
             if sp != pref and not _under(prefix, s.path) and not _under(s.path, pref):
                 continue
-        key = f"{s.category}:{s.scanner_id}"
-        if key not in best:
-            best[key] = s
-    return list(best.values())
+        out.append(s)
+    return out
 
 
 def _coverage_category(db: Session, project_id: str, prefix: str, head_sha: str) -> dict:
@@ -331,8 +335,16 @@ def _coverage_category(db: Session, project_id: str, prefix: str, head_sha: str)
             "findings": [],
             "note": f"No code-graph nodes under {prefix}.",
         }
-    # Synthetic scan sha = dominant revision among fresh nodes, else "".
+    # Synthetic scan sha = the shared revision when every described node agrees.
+    # Mixed revisions are partly stale — must not substitute head_sha (that reads
+    # as clean_at_sha while a uniformly-old graph correctly reads stale).
     revs = [n.revision for n in nodes if n.revision]
+    if revs and all(r == revs[0] for r in revs):
+        synth_sha = revs[0]
+    elif revs:
+        synth_sha = next((r for r in revs if r != (head_sha or "")), revs[0])
+    else:
+        synth_sha = ""
     synth = CodeScan(
         id="derived",
         project_id=project_id,
@@ -340,7 +352,7 @@ def _coverage_category(db: Session, project_id: str, prefix: str, head_sha: str)
         scanner_id="code-graph",
         scanner_version="",
         path=prefix,
-        scanned_sha=revs[0] if revs and all(r == revs[0] for r in revs) else (head_sha or ""),
+        scanned_sha=synth_sha,
         scanned_at=_utcnow(),
         reported_by="derived",
         note="",
@@ -350,7 +362,7 @@ def _coverage_category(db: Session, project_id: str, prefix: str, head_sha: str)
 
 def _touches_component(touchpoint: str, prefix: str) -> bool:
     """Does a free-text touchpoint area intersect this component prefix?"""
-    tp = (touchpoint or "").strip().lstrip("./")
+    tp = (touchpoint or "").strip().removeprefix("./")
     if not tp:
         return False
     if _under(prefix, tp):
@@ -527,7 +539,7 @@ def _merge_category_scans(
     mine = [s for s in scans if s.category == category]
     if not mine:
         return _state_for_scan(None, [], head_sha)
-    # Prefer the worst state: findings > stale > clean. Take newest per scanner, then merge.
+    # Prefer the worst state: findings > stale > clean. Merge every live row under the prefix.
     findings: list[dict] = []
     labels: list[str] = []
     shas: set[str] = set()
@@ -625,7 +637,7 @@ def component_health(db: Session, project_id: str, *, head_sha: str = "") -> dic
     head = (head_sha or "").strip()
     components = []
     for cid, prefix in COMPONENT_PATHS.items():
-        scans = _latest_scans_for_prefix(db, project_id, prefix)
+        scans = _scans_for_prefix(db, project_id, prefix)
         cats: dict[str, dict] = {}
         for cat in CATEGORIES:
             if cat == "coverage":
