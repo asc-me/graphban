@@ -199,3 +199,34 @@ def test_norm_path_keeps_dotfile_directory_prefix():
     assert scans_svc._norm_path(".github/workflows/ci.yml") == ".github/workflows/ci.yml"
     assert scans_svc._norm_path("./backend/app") == "backend/app"
     assert scans_svc._norm_path("backend/") == "backend/"
+
+
+def test_nested_only_clean_is_not_component_clean(db):
+    """A clean scan on one nested file must not mark the whole component clean_at_sha.
+
+    Bounce: bandit clean on backend/app/routers/platform.py at head made api security
+    read clean_at_sha. Scanning one file says nothing about the rest of backend/.
+    """
+    sha = "headsha1"
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="bandit",
+        path="backend/app/routers/platform.py",
+        scanned_sha=sha, findings=[],
+    )
+    health = scans_svc.component_health(db, "core", head_sha=sha)
+    api = next(c for c in health["components"] if c["id"] == "api")
+    assert api["categories"]["security"]["state"] != "clean_at_sha", api["categories"]["security"]
+    assert api["categories"]["security"]["state"] == "stale"
+    assert api["rollup"]["state"] != "clean_at_sha"
+
+
+def test_root_clean_at_head_is_clean_at_sha(db):
+    """A clean scan that covers the component root at head may read clean_at_sha."""
+    sha = "headsha2"
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="bandit",
+        path="backend/", scanned_sha=sha, findings=[],
+    )
+    health = scans_svc.component_health(db, "core", head_sha=sha)
+    api = next(c for c in health["components"] if c["id"] == "api")
+    assert api["categories"]["security"]["state"] == "clean_at_sha"

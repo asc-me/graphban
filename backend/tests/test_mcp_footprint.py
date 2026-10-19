@@ -24,7 +24,7 @@ from app.services import tool_tiers
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 14280
+CEILING = 15060
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -127,7 +127,13 @@ CEILING = 14280
 # the opt-in `fleet` tier, so the tier paid and core did not move. This one lands in core and
 # cannot be tiered, because every reviewer holds `release_item` on a core key — the shape
 # `heartbeat`'s `status`/`files` set. Headroom 7.
-MEASURED_TOKENS = 14273
+# 14273 -> 15050, and CEILING 14280 -> 15060 with it (GRPH-1035). Three scan tools
+# (record_scan, scan_status, scans_due). Bounce: scan_status/scans_due were unclassified and
+# leaked into every default manifest; both now sit in the opt-in `codegraph` tier next to
+# record_scan. Descriptions and outputSchemas trimmed first. The remaining over is NOT funded
+# out of core prose — CORE_TOKENS stays 8923; TIER_TOKENS["codegraph"] 1009 -> 1786 is the
+# whole bill. Same argument as GRPH-988: opt-in tier pays. Headroom 10.
+MEASURED_TOKENS = 15050
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

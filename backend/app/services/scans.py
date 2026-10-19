@@ -103,6 +103,24 @@ def _under(prefix: str, path: str) -> bool:
     return p == pref or p.startswith(pref + "/") or _match(pref + "/**", p) or _match(prefix, p)
 
 
+def _covers_component_root(scan_path: str, prefix: str) -> bool:
+    """True when a scan covers the whole component, not only a nested file.
+
+    `clean_at_sha` for a component requires a clean result at the component root
+    (path == prefix) or a parent of it. A clean nested path (one file under backend/)
+    says nothing about the rest of the tree — that must not roll up as CLEAN.
+    """
+    pref = prefix.rstrip("/")
+    sp = (scan_path or "").strip().removeprefix("./").rstrip("/")
+    if not sp:
+        # Repo-root scan covers every component.
+        return True
+    if sp == pref:
+        return True
+    # Parent of the component root (e.g. scan path "" already handled; "backend" vs "backend/app").
+    return pref.startswith(sp + "/")
+
+
 def record_scan(
     db: Session,
     *,
@@ -534,8 +552,13 @@ def scans_due(db: Session, project_id: str, *, head_sha: str = "") -> dict:
 
 def _merge_category_scans(
     db: Session, scans: list[CodeScan], category: str, head_sha: str,
+    *, prefix: str,
 ) -> dict:
-    """Roll several scanner rows in one category into one overlay cell."""
+    """Roll several scanner rows in one category into one overlay cell.
+
+    `clean_at_sha` only when at least one clean scan at head covers the component
+    root (or a parent of it). Nested-only cleans are partial coverage → stale.
+    """
     mine = [s for s in scans if s.category == category]
     if not mine:
         return _state_for_scan(None, [], head_sha)
@@ -545,6 +568,7 @@ def _merge_category_scans(
     shas: set[str] = set()
     latest = max(mine, key=lambda s: s.scanned_at or datetime.min.replace(tzinfo=timezone.utc))
     any_stale = False
+    root_clean_at_head = False
     for s in mine:
         labels.append(s.scanner_id + (f" {s.scanner_version}" if s.scanner_version else ""))
         shas.add(s.scanned_sha)
@@ -553,8 +577,15 @@ def _merge_category_scans(
         st = _state_for_scan(s, fs, head_sha)
         if st["state"] == "stale":
             any_stale = True
+        if (
+            not fs
+            and head_sha
+            and s.scanned_sha == head_sha
+            and _covers_component_root(s.path, prefix)
+        ):
+            root_clean_at_head = True
+    label = " · ".join(dict.fromkeys(labels))
     if findings:
-        label = " · ".join(dict.fromkeys(labels))
         return {
             "state": "has_findings",
             "scanner": label,
@@ -566,12 +597,24 @@ def _merge_category_scans(
             "note": latest.note or None,
         }
     if any_stale or (head_sha and any(s.scanned_sha != head_sha for s in mine)):
-        return _state_for_scan(latest, [], head_sha) | {
-            "scanner": " · ".join(dict.fromkeys(labels)),
+        return _state_for_scan(latest, [], head_sha) | {"scanner": label}
+    if not root_clean_at_head:
+        # Nested cleans at head without a root-covering scan: partial coverage ≠ CLEAN.
+        note = (
+            f"Scans under {prefix.rstrip('/')}/ do not cover the component root — "
+            "partial coverage is not clean_at_sha."
+        )
+        return {
+            "state": "stale",
+            "scanner": label,
+            "scanner_version": None,
+            "scanned_sha": latest.scanned_sha,
+            "scanned_at": latest.scanned_at.isoformat() if latest.scanned_at else None,
+            "reported_by": latest.reported_by or None,
+            "findings": [],
+            "note": note,
         }
-    return _state_for_scan(latest, [], head_sha) | {
-        "scanner": " · ".join(dict.fromkeys(labels)),
-    }
+    return _state_for_scan(latest, [], head_sha) | {"scanner": label}
 
 
 def _roll_component(categories: dict[str, dict], path: str, head_sha: str) -> dict:
@@ -645,7 +688,7 @@ def component_health(db: Session, project_id: str, *, head_sha: str = "") -> dic
             elif cat == "work":
                 cats[cat] = _work_category(db, project_id, prefix)
             else:
-                cats[cat] = _merge_category_scans(db, scans, cat, head)
+                cats[cat] = _merge_category_scans(db, scans, cat, head, prefix=prefix)
         roll = _roll_component(cats, prefix, head)
         components.append({
             "id": cid,

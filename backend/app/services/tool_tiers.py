@@ -71,12 +71,15 @@ TOOL_TIERS: dict[str, str] = {
         "close_prd", "request_rebaseline", "submit_verdict",
     )},
 
-    # ---- codegraph: WRITING the graph ------------------------------------------------------
+    # ---- codegraph: WRITING the graph (+ scan produce/read) --------------------------------
     # Reads (`search_code`, `get_code_map`, `code_neighbors`, `graph_query`) are core and
     # deliberately so. Describing and linking symbols is an indexing job, run by the sync
     # path and by a human curating the graph, not by an agent in the middle of a change.
+    # Scan tools (GRPH-1035) sit with the producer: record_scan writes findings; scan_status
+    # / scans_due read them. Untiered they leaked into every default manifest (bounce fix).
     **{name: "codegraph" for name in (
-        "describe_code", "link_code", "unlink_code", "record_scan",
+        "describe_code", "link_code", "unlink_code",
+        "record_scan", "scan_status", "scans_due",
     )},
 
     # ---- fleet: running a fleet, not being in one -------------------------------------------
@@ -198,7 +201,7 @@ TIERS: tuple[str, ...] = ("prd", "codegraph", "fleet", "misc")
 #: the affordance: a tier nobody is told about is a tier nobody asks for.
 TIER_PURPOSE: dict[str, str] = {
     "prd": "authoring and grilling PRDs — write specs, run a grill, decompose, close",
-    "codegraph": "writing the code graph — describe symbols and link them",
+    "codegraph": "writing the code graph and code-health scans — describe, link, record_scan",
     "fleet": "running a fleet — allocation, roles, enrolment codes, waves",
     "misc": "occasional tools — projects, digests, lessons, memory review",
 }

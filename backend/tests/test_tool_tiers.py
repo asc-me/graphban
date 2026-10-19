@@ -383,7 +383,10 @@ CORE_TOKENS = 8923
 # fleet 1051 → 1100: `mint_enrolment` gains `review_only` (GRPH-988), a seat that may review
 # and may never take build work. The whole bill is in this tier and CORE_TOKENS does not move,
 # which is the argument for not funding it out of prose every key pays for.
-TIER_TOKENS = {"prd": 1998, "codegraph": 1009, "fleet": 1100, "misc": 1238}
+TIER_TOKENS = {"prd": 1998, "codegraph": 1786, "fleet": 1100, "misc": 1238}
+# codegraph 1009 -> 1786 (GRPH-1035): record_scan + scan_status + scans_due. Descriptions
+# trimmed; the two reads were unclassified and leaked into core manifests — tiering them
+# here is the bounce fix. CORE_TOKENS unchanged.
 # PRD-36: fleet +`seat`/`wave` on delegate and its `enrolment_code`; misc trims (learning_loop,
 # publish_memory, reject_memory); codegraph and prd moved by the shared-description trims.
 # PRD-35: fleet 799 -> 1008 (`delegate`, ~209 after its own trim). prd 2002 -> 1998,

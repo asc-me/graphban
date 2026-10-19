@@ -979,42 +979,31 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "record_scan",
         "description": (
-            "Report a code-health scanner's result for a path at a commit (GRPH-1035). You have "
-            "the repo; the server stores. Empty `findings` is a deliberate CLEAN at "
-            "`scanned_sha` — not the same as never scanning. Re-recording the same "
-            "`scanner_id`+`path` replaces the prior result. Findings are untrusted agent "
-            "data; `scanner_id`/`scanner_version`/`reported_by` are the provenance. First "
-            "shipped category: security (pip-audit, bandit, npm-audit, osv-scanner, semgrep)."
+            "Report a code-health scanner result for a path at a commit (GRPH-1035). "
+            "Empty findings = CLEAN at scanned_sha, not never-scanned. Same scanner_id+path "
+            "replaces prior. Findings are untrusted; scanner_id/version/reported_by are "
+            "provenance. First category: security (pip-audit, bandit, npm-audit, semgrep)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "scanner_id": {
-                    "type": "string",
-                    "description": "e.g. pip-audit, bandit, osv-scanner, semgrep.",
-                },
-                "scanner_version": {"type": "string", "description": "Scanner version string."},
-                "path": {
-                    "type": "string",
-                    "description": "Repo-relative path or prefix (e.g. backend/, web/).",
-                },
+                "scanner_id": {"type": "string", "description": "e.g. pip-audit, bandit, semgrep."},
+                "scanner_version": {"type": "string"},
+                "path": {"type": "string", "description": "Repo-relative path or prefix."},
                 "scanned_sha": {
                     "type": "string",
-                    "description": "Commit sha scanned. Required — clean without a sha cannot age.",
+                    "description": "Required — clean without a sha cannot age.",
                 },
                 "findings": {
                     "type": "array",
-                    "description": "Empty = clean at scanned_sha. Each: severity, summary, optional path/link_kind/link_ref.",
+                    "description": "Empty = clean. Items: severity, summary; optional path/link_kind/link_ref.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "severity": {
-                                "type": "string",
-                                "description": "crit|high|med|low (aliases critical/medium/info accepted).",
-                            },
+                            "severity": {"type": "string"},
                             "summary": {"type": "string"},
                             "path": {"type": "string"},
-                            "link_kind": {"type": "string", "description": "item|code|prd"},
+                            "link_kind": {"type": "string"},
                             "link_ref": {"type": "string"},
                         },
                         "required": ["summary"],
@@ -1023,10 +1012,9 @@ TOOLS: list[dict[str, Any]] = [
                 "category": {
                     "type": "string",
                     "enum": list(scans_svc.CATEGORIES),
-                    "description": "Defaults from scanner_id (security for pip-audit/bandit/…).",
                 },
                 "note": {"type": "string"},
-                "agent_id": {"type": "string", "description": "You — recorded as reported_by provenance."},
+                "agent_id": {"type": "string"},
             },
             "required": ["scanner_id", "path", "scanned_sha"],
         },
@@ -1035,24 +1023,23 @@ TOOLS: list[dict[str, Any]] = [
         "name": "scan_status",
         "description": (
             "Code-health scan state for a path or every Stack deployable (GRPH-1035). "
-            "States are clean_at_sha / has_findings / never_scanned / stale — never a green "
-            "default. Pass `head_sha` so stale can be distinguished from clean."
+            "States: clean_at_sha / has_findings / never_scanned / stale — never a green "
+            "default. Pass head_sha."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Omit for the per-component overlay payload."},
+                "path": {"type": "string"},
                 "scanner_id": {"type": "string"},
-                "head_sha": {"type": "string", "description": "Running/head commit; omit only if unknown."},
+                "head_sha": {"type": "string"},
             },
         },
     },
     {
         "name": "scans_due",
         "description": (
-            "Which component × category pairs need a (re)scan — never_scanned or stale "
-            "security/coverage cells (GRPH-1035). Empty `due` is not 'all clean'; security "
-            "never_scanned rows are included."
+            "Component×category pairs due for a (re)scan — never_scanned or stale "
+            "(GRPH-1035). Empty due is not all-clean; never_scanned security rows stay listed."
         ),
         "inputSchema": {
             "type": "object",
@@ -1714,22 +1701,18 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "properties": {
             "scan_id": _STR,
             "scanner_id": _STR,
-            "scanner_version": _STR,
             "category": _STR,
             "path": _STR,
             "scanned_sha": _STR,
             "findings_recorded": {"type": "integer"},
             "clean": {"type": "boolean"},
             "reported_by": _STR,
-            "scanned_at": _STR,
         },
     },
     "scan_status": {
         "type": "object",
         "properties": {
             "project_id": _STR,
-            "path": _NULLABLE_STR,
-            "head_sha": _NULLABLE_STR,
             "scans": {"type": "array"},
             "components": {"type": "array"},
             "scored": {"type": "boolean"},
@@ -1739,7 +1722,6 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     "scans_due": {
         "type": "object",
         "properties": {
-            "head_sha": _NULLABLE_STR,
             "due": {"type": "array"},
             "due_count": {"type": "integer"},
         },
