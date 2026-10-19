@@ -230,3 +230,46 @@ def test_root_clean_at_head_is_clean_at_sha(db):
     health = scans_svc.component_health(db, "core", head_sha=sha)
     api = next(c for c in health["components"] if c["id"] == "api")
     assert api["categories"]["security"]["state"] == "clean_at_sha"
+
+
+def test_summary_less_finding_is_refused_and_writes_nothing(db):
+    """A finding without summary must raise — never drop it and count the scan clean.
+
+    Bounce: record_scan silently skipped non-dict / empty-summary entries, then
+    stored clean=true. A bandit adapter that keys on issue_text painted api green.
+    """
+    from app.models import CodeScan
+
+    with pytest.raises(ValueError, match=r"findings\[0\].*summary"):
+        scans_svc.record_scan(
+            db, project_id="core", scanner_id="bandit", path="backend/",
+            scanned_sha="head1234",
+            findings=[{"severity": "high", "issue_text": "B602 subprocess shell=True"}],
+        )
+    assert db.query(CodeScan).filter(CodeScan.project_id == "core").count() == 0
+
+    with pytest.raises(ValueError, match=r"findings\[1\].*object"):
+        scans_svc.record_scan(
+            db, project_id="core", scanner_id="bandit", path="backend/",
+            scanned_sha="head1234",
+            findings=[
+                {"severity": "high", "summary": "real finding"},
+                "B105 hardcoded password",
+            ],
+        )
+    assert db.query(CodeScan).filter(CodeScan.project_id == "core").count() == 0
+
+    # After a refused write the path is still never_scanned — not clean.
+    health = scans_svc.component_health(db, "core", head_sha="head1234")
+    api = next(c for c in health["components"] if c["id"] == "api")
+    assert api["categories"]["security"]["state"] == "never_scanned"
+    assert api["rollup"]["state"] != "clean_at_sha"
+
+
+def test_touches_component_requires_path_boundary():
+    """Bare startswith matched 'backendish' to backend/ and 'w' to web/."""
+    assert scans_svc._touches_component("backend/app/x.py", "backend/") is True
+    assert scans_svc._touches_component("backend", "backend/") is True
+    assert scans_svc._touches_component("backendish/x", "backend/") is False
+    assert scans_svc._touches_component("w", "web/") is False
+    assert scans_svc._touches_component("web/", "web/") is True

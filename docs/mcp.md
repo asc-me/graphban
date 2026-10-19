@@ -96,7 +96,7 @@ agent carries ~5,100 fewer tokens on every turn.
 | --- | --- |
 | *(core)* | Everything on the path of doing one piece of work: finding, claiming, updating and releasing items, reviewing, memory, all code-graph **reads**, and reading a PRD |
 | `prd` | **Authoring** a spec — `create_prd`, `update_prd`, `grill_prd`, `answer_grill`, `decompose_prd`, `close_prd`, `request_rebaseline`, `submit_verdict` |
-| `codegraph` | **Writing** the code graph — `describe_code`, `link_code`, `unlink_code`, `record_scan` |
+| `codegraph` | **Writing** the code graph — `describe_code`, `link_code`, `unlink_code`, `record_scan`, `scan_status`, `scans_due` |
 | `fleet` | **Running** a fleet — `propose_allocation`, `assign_role`, `mint_enrolment`, `retire_wave`, `delegate`. Being *in* a fleet needs none of it |
 | `misc` | `extract_lessons`, `generate_digest`, `report_graphban_issue`, `learning_loop`, `create_project`, `publish_memory`, `reject_memory` |
 

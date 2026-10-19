@@ -152,6 +152,22 @@ def record_scan(
     cat = _infer_category(sid, category)
     rows = list(findings or [])
 
+    # Validate every finding before any write. Silently skipping a summary-less
+    # (or non-dict) entry and then counting the scan clean turns a mis-keyed
+    # adapter payload into a green cell — absence must never read as clean.
+    for i, raw in enumerate(rows):
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"findings[{i}] must be an object with a non-empty summary; "
+                f"got {type(raw).__name__}"
+            )
+        summary = str(raw.get("summary") or "").strip()
+        if not summary:
+            raise ValueError(
+                f"findings[{i}] requires a non-empty summary "
+                f"(got keys {sorted(raw.keys())})"
+            )
+
     # Replace prior result for this scanner+path (one live answer).
     prior = list(db.scalars(
         select(CodeScan).where(
@@ -179,11 +195,7 @@ def record_scan(
     db.add(scan)
     stored = 0
     for raw in rows:
-        if not isinstance(raw, dict):
-            continue
         summary = str(raw.get("summary") or "").strip()
-        if not summary:
-            continue
         db.add(ScanFinding(
             scan_id=scan.id,
             project_id=project_id,
@@ -379,7 +391,11 @@ def _coverage_category(db: Session, project_id: str, prefix: str, head_sha: str)
 
 
 def _touches_component(touchpoint: str, prefix: str) -> bool:
-    """Does a free-text touchpoint area intersect this component prefix?"""
+    """Does a free-text touchpoint area intersect this component prefix?
+
+    Path-boundary aware: 'backendish/x' does not touch 'backend/', and a bare
+    'w' does not touch 'web/' — bare startswith would over-report both.
+    """
     tp = (touchpoint or "").strip().removeprefix("./")
     if not tp:
         return False
@@ -389,7 +405,9 @@ def _touches_component(touchpoint: str, prefix: str) -> bool:
     pref = prefix.rstrip("/")
     if _match(tp, pref) or _match(tp, prefix):
         return True
-    if tp.rstrip("/").startswith(pref) or pref.startswith(tp.rstrip("/")):
+    tp_n = tp.rstrip("/")
+    # Touchpoint is the component, or a parent directory that covers it.
+    if tp_n == pref or pref.startswith(tp_n + "/"):
         return True
     return False
 
