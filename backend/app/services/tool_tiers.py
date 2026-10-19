@@ -75,7 +75,9 @@ TOOL_TIERS: dict[str, str] = {
     # Reads (`search_code`, `get_code_map`, `code_neighbors`, `graph_query`) are core and
     # deliberately so. Describing and linking symbols is an indexing job, run by the sync
     # path and by a human curating the graph, not by an agent in the middle of a change.
-    **{name: "codegraph" for name in ("describe_code", "link_code", "unlink_code")},
+    **{name: "codegraph" for name in (
+        "describe_code", "link_code", "unlink_code", "record_scan",
+    )},
 
     # ---- fleet: running a fleet, not being in one -------------------------------------------
     # The distinction that decides this list: an agent that IS in a fleet needs `register_agent`

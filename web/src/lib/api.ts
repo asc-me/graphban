@@ -62,6 +62,7 @@ import type {
   ShardCluster,
   Member,
   PlatformConfig,
+  StackHealth,
   StackTopology,
   Prd,
   PrdCoverage,
@@ -944,6 +945,9 @@ export const api = {
   /** Derived architecture map of the running system (GRPH-1034). */
   stack: (projectId: string) =>
     request<StackTopology>(`/platform/stack${projectQuery(projectId)}`),
+  /** Per-deployable code-health overlay (GRPH-1035). */
+  stackHealth: (projectId: string) =>
+    request<StackHealth>(`/platform/stack/health${projectQuery(projectId)}`),
   updatePlatform: (projectId: string, body: Partial<PlatformConfig>) =>
     request<PlatformConfig>(`/platform${projectQuery(projectId)}`, { method: "PATCH", body: JSON.stringify(body) }),
   // PRD-43 D1: mint or rotate the ingest token. Returns the plaintext ONCE.

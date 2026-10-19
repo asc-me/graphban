@@ -1158,6 +1158,57 @@ export interface StackTopology {
   };
 }
 
+/** GET /api/platform/stack/health — code-health overlay (GRPH-1035 / PRD-P51 §3). */
+export type ScanHealthState =
+  | "clean_at_sha"
+  | "has_findings"
+  | "never_scanned"
+  | "stale";
+
+export interface StackScanFinding {
+  severity: string;
+  summary: string;
+  path: string;
+  link_kind?: string | null;
+  link_ref?: string | null;
+}
+
+export interface StackScanCategory {
+  label: string;
+  state: ScanHealthState;
+  scanner: string | null;
+  scanner_version?: string | null;
+  scanned_sha: string | null;
+  scanned_at: string | null;
+  findings: StackScanFinding[];
+  note?: string | null;
+  live?: boolean;
+  reported_by?: string | null;
+}
+
+export interface StackComponentHealth {
+  id: string;
+  path: string;
+  head_sha: string | null;
+  rollup: {
+    label: string;
+    state: ScanHealthState;
+    worst_severity: string | null;
+    severity_badges: { severity: string; count: number }[];
+    meta: string;
+    finding_count: number;
+  };
+  categories: Record<string, StackScanCategory>;
+}
+
+export interface StackHealth {
+  project_id: string;
+  head_sha: string | null;
+  generated_at: string;
+  components: StackComponentHealth[];
+  scored: false;
+}
+
 export interface GrillState {
   prd_id: string;
   turns: { seq: number; role: string; text: string; via: string; actor: string }[];

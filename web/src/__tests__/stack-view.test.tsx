@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { StackView } from "@/features/stack/StackView";
 import { api } from "@/lib/api";
-import type { StackTopology } from "@/lib/types";
+import type { StackHealth, StackTopology } from "@/lib/types";
 
 const topology: StackTopology = {
   project_id: "core",
@@ -80,9 +80,140 @@ const topology: StackTopology = {
   },
 };
 
+const health: StackHealth = {
+  project_id: "core",
+  head_sha: "abc1234",
+  generated_at: "2026-10-18T00:00:00Z",
+  scored: false,
+  components: [
+    {
+      id: "api",
+      path: "backend/",
+      head_sha: "abc1234",
+      rollup: {
+        label: "FINDINGS",
+        state: "has_findings",
+        worst_severity: "high",
+        severity_badges: [{ severity: "high", count: 1 }],
+        meta: "@abc1234",
+        finding_count: 1,
+      },
+      categories: {
+        security: {
+          label: "Security",
+          state: "has_findings",
+          scanner: "pip-audit 2.7.3",
+          scanned_sha: "abc1234",
+          scanned_at: "2026-10-18T00:00:00Z",
+          findings: [
+            {
+              severity: "high",
+              summary: "python-multipart pinned below 0.0.18",
+              path: "backend/pyproject.toml",
+            },
+          ],
+        },
+        refactor: {
+          label: "Refactoring · complexity",
+          state: "never_scanned",
+          scanner: null,
+          scanned_sha: null,
+          scanned_at: null,
+          findings: [],
+          note: "Nothing has scanned this path.",
+        },
+        stub: {
+          label: "Partial implementation",
+          state: "never_scanned",
+          scanner: null,
+          scanned_sha: null,
+          scanned_at: null,
+          findings: [],
+        },
+        coverage: {
+          label: "Coverage · graph staleness",
+          state: "never_scanned",
+          scanner: "code-graph health",
+          scanned_sha: null,
+          scanned_at: null,
+          findings: [],
+          note: "No describe_code pass has run.",
+        },
+        work: {
+          label: "Open work",
+          state: "clean_at_sha",
+          scanner: "tracker",
+          scanned_sha: null,
+          scanned_at: null,
+          findings: [],
+          note: "No open defects.",
+          live: true,
+        },
+      },
+    },
+    {
+      id: "web",
+      path: "web/",
+      head_sha: "abc1234",
+      rollup: {
+        label: "NOT SCANNED",
+        state: "never_scanned",
+        worst_severity: null,
+        severity_badges: [],
+        meta: "3 of 5 never run",
+        finding_count: 0,
+      },
+      categories: {
+        security: {
+          label: "Security",
+          state: "never_scanned",
+          scanner: null,
+          scanned_sha: null,
+          scanned_at: null,
+          findings: [],
+        },
+        refactor: {
+          label: "Refactoring · complexity",
+          state: "never_scanned",
+          scanner: null,
+          scanned_sha: null,
+          scanned_at: null,
+          findings: [],
+        },
+        stub: {
+          label: "Partial implementation",
+          state: "never_scanned",
+          scanner: null,
+          scanned_sha: null,
+          scanned_at: null,
+          findings: [],
+        },
+        coverage: {
+          label: "Coverage · graph staleness",
+          state: "never_scanned",
+          scanner: null,
+          scanned_sha: null,
+          scanned_at: null,
+          findings: [],
+        },
+        work: {
+          label: "Open work",
+          state: "clean_at_sha",
+          scanner: "tracker",
+          scanned_sha: null,
+          scanned_at: null,
+          findings: [],
+          live: true,
+        },
+      },
+    },
+  ],
+};
+
 vi.mock("@/lib/api", () => ({
   api: {
     stack: vi.fn(async () => topology),
+    stackHealth: vi.fn(async () => health),
   },
 }));
 
@@ -108,6 +239,8 @@ describe("StackView", () => {
   beforeEach(() => {
     vi.mocked(api.stack).mockClear();
     vi.mocked(api.stack).mockResolvedValue(topology);
+    vi.mocked(api.stackHealth).mockClear();
+    vi.mocked(api.stackHealth).mockResolvedValue(health);
   });
 
   it("renders host groups, empty states, and opens the inspector with provenance", async () => {
@@ -180,6 +313,59 @@ describe("StackView", () => {
     // compose owns web/api/db — they light up; cli (user machines) dims.
     expect(screen.getByTestId("stack-node-api")).toHaveAttribute("data-host-lit");
     expect(screen.getByTestId("stack-node-cli")).toHaveClass("opacity-40");
+  });
+
+  it("code-health overlay defaults on and paints FINDINGS / NOT SCANNED footers", async () => {
+    wrap(<StackView />);
+    const toggle = await screen.findByTestId("stack-health-overlay");
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+
+    const apiFooter = await screen.findByTestId("stack-health-footer-api");
+    expect(apiFooter).toHaveTextContent("FINDINGS");
+    expect(screen.getByTestId("stack-node-api")).toHaveAttribute("data-health", "has_findings");
+
+    const webFooter = await screen.findByTestId("stack-health-footer-web");
+    expect(webFooter).toHaveTextContent("NOT SCANNED");
+    expect(screen.getByTestId("stack-node-web")).toHaveAttribute("data-health", "never_scanned");
+
+    // Overlay never invents a green default for unscanned deployables.
+    expect(webFooter).not.toHaveTextContent("CLEAN");
+  });
+
+  it("toggling the overlay hides health footers", async () => {
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await screen.findByTestId("stack-health-footer-api");
+    await user.click(screen.getByTestId("stack-health-overlay"));
+    expect(screen.getByTestId("stack-health-overlay")).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByTestId("stack-health-footer-api")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("stack-health-footer-web")).not.toBeInTheDocument();
+  });
+
+  it("inspector lists findings with severity and path when overlay is on", async () => {
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await user.click(await screen.findByTestId("stack-node-api"));
+    const inspector = await screen.findByTestId("stack-inspector");
+    expect(await within(inspector).findByTestId("stack-health-summary")).toHaveTextContent(
+      "FINDINGS",
+    );
+    expect(within(inspector).getByTestId("stack-health-categories")).toHaveTextContent(
+      "Security",
+    );
+    const finding = within(inspector).getByTestId("stack-health-finding");
+    expect(finding).toHaveTextContent("python-multipart");
+    expect(finding).toHaveTextContent("backend/pyproject.toml");
+  });
+
+  it("inspector marks infra boxes as code-health N/A", async () => {
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await user.click(await screen.findByTestId("stack-node-db"));
+    const inspector = await screen.findByTestId("stack-inspector");
+    expect(await within(inspector).findByTestId("stack-health-na")).toHaveTextContent(
+      "Infrastructure",
+    );
   });
 });
 

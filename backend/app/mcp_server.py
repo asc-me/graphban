@@ -47,6 +47,7 @@ from app.security import authz
 from app.security.deps import get_agent_key
 from app.services import clustering as cluster_svc
 from app.services import code_graph as code_svc
+from app.services import scans as scans_svc
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
 from app.services import gitops
@@ -975,6 +976,91 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["ref_id", "path"],
         },
     },
+    {
+        "name": "record_scan",
+        "description": (
+            "Report a code-health scanner's result for a path at a commit (GRPH-1035). You have "
+            "the repo; the server stores. Empty `findings` is a deliberate CLEAN at "
+            "`scanned_sha` — not the same as never scanning. Re-recording the same "
+            "`scanner_id`+`path` replaces the prior result. Findings are untrusted agent "
+            "data; `scanner_id`/`scanner_version`/`reported_by` are the provenance. First "
+            "shipped category: security (pip-audit, bandit, npm-audit, osv-scanner, semgrep)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scanner_id": {
+                    "type": "string",
+                    "description": "e.g. pip-audit, bandit, osv-scanner, semgrep.",
+                },
+                "scanner_version": {"type": "string", "description": "Scanner version string."},
+                "path": {
+                    "type": "string",
+                    "description": "Repo-relative path or prefix (e.g. backend/, web/).",
+                },
+                "scanned_sha": {
+                    "type": "string",
+                    "description": "Commit sha scanned. Required — clean without a sha cannot age.",
+                },
+                "findings": {
+                    "type": "array",
+                    "description": "Empty = clean at scanned_sha. Each: severity, summary, optional path/link_kind/link_ref.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "severity": {
+                                "type": "string",
+                                "description": "crit|high|med|low (aliases critical/medium/info accepted).",
+                            },
+                            "summary": {"type": "string"},
+                            "path": {"type": "string"},
+                            "link_kind": {"type": "string", "description": "item|code|prd"},
+                            "link_ref": {"type": "string"},
+                        },
+                        "required": ["summary"],
+                    },
+                },
+                "category": {
+                    "type": "string",
+                    "enum": list(scans_svc.CATEGORIES),
+                    "description": "Defaults from scanner_id (security for pip-audit/bandit/…).",
+                },
+                "note": {"type": "string"},
+                "agent_id": {"type": "string", "description": "You — recorded as reported_by provenance."},
+            },
+            "required": ["scanner_id", "path", "scanned_sha"],
+        },
+    },
+    {
+        "name": "scan_status",
+        "description": (
+            "Code-health scan state for a path or every Stack deployable (GRPH-1035). "
+            "States are clean_at_sha / has_findings / never_scanned / stale — never a green "
+            "default. Pass `head_sha` so stale can be distinguished from clean."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Omit for the per-component overlay payload."},
+                "scanner_id": {"type": "string"},
+                "head_sha": {"type": "string", "description": "Running/head commit; omit only if unknown."},
+            },
+        },
+    },
+    {
+        "name": "scans_due",
+        "description": (
+            "Which component × category pairs need a (re)scan — never_scanned or stale "
+            "security/coverage cells (GRPH-1035). Empty `due` is not 'all clean'; security "
+            "never_scanned rows are included."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "head_sha": {"type": "string"},
+            },
+        },
+    },
     # Delivery acceptance (PRD-12 / GRPH-254). Four tools, not eight: the item flags the
     # `tools/list` footprint (AL-146/AL-48), and every READ here is the same question asked
     # of a different surface, so they take a `view` instead of each claiming a name. There
@@ -1174,7 +1260,7 @@ _PROJECT_SCOPED = {
     "create_item", "search_items", "add_memory", "search_memory", "get_lessons",
     "get_backlog", "suggest_next", "generate_digest", "link_items", "unlink_items", "claim_next", "next_cluster",
     "describe_code", "get_code_map", "code_neighbors", "search_code", "graph_query",
-    "link_code", "unlink_code", "create_prd",
+    "link_code", "unlink_code", "record_scan", "scan_status", "scans_due", "create_prd",
 }
 # Tools that ACCEPT `project_id`, which is a different question from the one above.
 #
@@ -1199,7 +1285,7 @@ _TAKES_PROJECT = _PROJECT_SCOPED | {
 # Creates accept an idempotency key so a retried call returns the original resource.
 _IDEMPOTENT_CREATES = {"create_item", "add_memory", "link_items"}
 # Writes that are idempotent by their own natural key (no idempotency token needed).
-_IDEMPOTENT_WRITES = {"describe_code", "link_code", "review_recommendation"}
+_IDEMPOTENT_WRITES = {"describe_code", "link_code", "review_recommendation", "record_scan"}
 # Paged reads accept limit + offset and return {results, total, limit, offset, has_more}.
 _PAGED = {"search_items", "get_backlog"}
 # Item-list reads return a lean row by default (id/title/status) and the full item
@@ -1213,7 +1299,7 @@ _READ_ONLY = {
     "get_lessons",
     "get_backlog", "get_item_details", "suggest_next", "generate_digest", "related_work",
     "prd_coverage", "grill_prd", "get_code_map", "code_neighbors", "search_code",
-    "graph_query",
+    "graph_query", "scan_status", "scans_due",
     "prd_acceptance", "learning_loop", "fleet_status",
     # Added with the tool itself missing from this set (GRPH-519 -> GRPH-48). It looks a PRD
     # up and returns fields; it writes nothing, and its own literal declared
@@ -1622,6 +1708,41 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     "unlink_code": {
         "type": "object",
         "properties": {"removed": {"type": "integer"}},
+    },
+    "record_scan": {
+        "type": "object",
+        "properties": {
+            "scan_id": _STR,
+            "scanner_id": _STR,
+            "scanner_version": _STR,
+            "category": _STR,
+            "path": _STR,
+            "scanned_sha": _STR,
+            "findings_recorded": {"type": "integer"},
+            "clean": {"type": "boolean"},
+            "reported_by": _STR,
+            "scanned_at": _STR,
+        },
+    },
+    "scan_status": {
+        "type": "object",
+        "properties": {
+            "project_id": _STR,
+            "path": _NULLABLE_STR,
+            "head_sha": _NULLABLE_STR,
+            "scans": {"type": "array"},
+            "components": {"type": "array"},
+            "scored": {"type": "boolean"},
+            "generated_at": _STR,
+        },
+    },
+    "scans_due": {
+        "type": "object",
+        "properties": {
+            "head_sha": _NULLABLE_STR,
+            "due": {"type": "array"},
+            "due_count": {"type": "integer"},
+        },
     },
     "report_graphban_issue": {
         "type": "object",
@@ -3466,6 +3587,30 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             db, project_id=pid, ref_id=args["ref_id"], path=args["path"], relation=args.get("relation"),
         )
         return {"removed": removed}
+    if name == "record_scan":
+        reported = str(args.get("agent_id") or "").strip()
+        return scans_svc.record_scan(
+            db, project_id=pid,
+            scanner_id=str(args["scanner_id"]),
+            scanner_version=str(args.get("scanner_version") or ""),
+            path=str(args["path"]),
+            scanned_sha=str(args["scanned_sha"]),
+            findings=list(args.get("findings") or []),
+            category=args.get("category"),
+            note=str(args.get("note") or ""),
+            reported_by=reported,
+        )
+    if name == "scan_status":
+        return scans_svc.scan_status(
+            db, pid,
+            path=args.get("path"),
+            scanner_id=args.get("scanner_id"),
+            head_sha=str(args.get("head_sha") or ""),
+        )
+    if name == "scans_due":
+        return scans_svc.scans_due(
+            db, pid, head_sha=str(args.get("head_sha") or ""),
+        )
     if name == "report_graphban_issue":
         try:
             result = up_svc.submit_upstream(

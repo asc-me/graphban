@@ -9,14 +9,54 @@ import {
 } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
-import { useStack } from "@/lib/queries";
+import { useStack, useStackHealth } from "@/lib/queries";
 import { buildStackLayout, type Box, type EdgeRoute } from "@/lib/stack/layout";
 import {
   LABEL_ZOOM,
   useGraphViewport,
   zoomAbout,
 } from "@/lib/graph/useGraphViewport";
-import type { StackEdge, StackLiveness, StackNode, StackTopology } from "@/lib/types";
+import type {
+  ScanHealthState,
+  StackComponentHealth,
+  StackEdge,
+  StackLiveness,
+  StackNode,
+  StackTopology,
+} from "@/lib/types";
+
+const HEALTH_SEV: Record<string, { label: string; className: string }> = {
+  crit: { label: "CRIT", className: "border-rose-400 text-rose-300" },
+  high: { label: "HIGH", className: "border-orange-400 text-orange-300" },
+  med: { label: "MED", className: "border-amber-400 text-amber-200" },
+  low: { label: "LOW", className: "border-line text-muted" },
+};
+
+const HEALTH_ROLLUP: Record<
+  ScanHealthState,
+  { square: string; text: string; band: string }
+> = {
+  clean_at_sha: {
+    square: "bg-sky-400 border-sky-400",
+    text: "text-sky-300",
+    band: "bg-surface-2",
+  },
+  has_findings: {
+    square: "bg-orange-400 border-orange-400",
+    text: "text-orange-300",
+    band: "bg-surface-2",
+  },
+  never_scanned: {
+    square: "border-muted-2 bg-[repeating-linear-gradient(45deg,var(--muted-2,#5c656e)_0_1.5px,transparent_1.5px_3.5px)]",
+    text: "text-muted",
+    band: "bg-[repeating-linear-gradient(45deg,transparent_0_6px,rgba(139,148,158,0.13)_6px_7px)] bg-surface-2",
+  },
+  stale: {
+    square: "border-muted-2 bg-[repeating-linear-gradient(45deg,var(--muted-2,#5c656e)_0_1.5px,transparent_1.5px_3.5px)]",
+    text: "text-muted",
+    band: "bg-[repeating-linear-gradient(45deg,transparent_0_6px,rgba(139,148,158,0.13)_6px_7px)] bg-surface-2",
+  },
+};
 
 const LIVENESS_META: Record<
   StackLiveness,
@@ -71,19 +111,30 @@ function liveMeta(l: StackLiveness) {
 
 /**
  * Build → Stack: derived, read-only architecture map of the running system
- * (GRPH-1034 / PRD-P51 §2). A pan/zoom canvas of three nested ownership rings,
- * host groups, deployable boxes and drawn protocol-labelled edges — matching
- * `docs/design/Stack.dc.html`, distinct from the force-directed Code graph. Every
- * box/edge is derived from `GET /api/platform/stack` (see `lib/stack/layout.ts`).
+ * (GRPH-1034 / PRD-P51 §2) with the code-health overlay (GRPH-1035 / §3). A
+ * pan/zoom canvas of three nested ownership rings, host groups, deployable
+ * boxes and drawn protocol-labelled edges — matching `docs/design/Stack.dc.html`.
+ * Health badges never default to green: clean-at-sha / has-findings /
+ * never-scanned-or-stale.
  */
 export function StackView() {
   const { activeId, active } = useProjectCtx();
   const scope = active?.tag || active?.name || activeId;
   const q = useStack(activeId);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  // Design default: overlay on. Absence of scans still reads as NOT SCANNED, not clean.
+  const [overlayOn, setOverlayOn] = React.useState(true);
+  const healthQ = useStackHealth(activeId, overlayOn);
 
   const data = q.data;
+  const health = healthQ.data ?? null;
+  const healthById = React.useMemo(() => {
+    const m: Record<string, StackComponentHealth> = {};
+    for (const c of health?.components || []) m[c.id] = c;
+    return m;
+  }, [health]);
   const selected = data?.nodes.find((n) => n.id === selectedId) ?? null;
+  const selectedHealth = selected ? healthById[selected.id] ?? null : null;
 
   React.useEffect(() => {
     if (!data) return;
@@ -98,14 +149,36 @@ export function StackView() {
         viewName={`Stack ${scope}`}
         purpose="Derived architecture of what runs, where, and what each piece depends on — deployables and externals, not modules."
         action={
-          <button
-            type="button"
-            onClick={() => window.print()}
-            className="inline-flex items-center gap-1.5 rounded-[8px] border border-control bg-surface-2 px-2.5 py-1.5 text-[12px] text-fg-2 transition-colors hover:border-control-hover print:hidden"
-          >
-            <Printer size={14} />
-            Print / PDF
-          </button>
+          <div className="flex items-center gap-2 print:hidden">
+            <button
+              type="button"
+              data-testid="stack-health-overlay"
+              aria-pressed={overlayOn}
+              onClick={() => setOverlayOn((v) => !v)}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-[8px] border px-2.5 py-1.5 text-[12px] transition-colors",
+                overlayOn
+                  ? "border-control bg-hover text-fg"
+                  : "border-control bg-transparent text-muted hover:border-control-hover",
+              )}
+            >
+              <span
+                className={cn(
+                  "h-2.5 w-2.5 rounded-[2px] border-[1.5px] border-current",
+                  overlayOn ? "bg-orange-400/80" : "bg-transparent",
+                )}
+              />
+              Code health overlay
+            </button>
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="inline-flex items-center gap-1.5 rounded-[8px] border border-control bg-surface-2 px-2.5 py-1.5 text-[12px] text-fg-2 transition-colors hover:border-control-hover"
+            >
+              <Printer size={14} />
+              Print / PDF
+            </button>
+          </div>
         }
       />
 
@@ -129,6 +202,8 @@ export function StackView() {
                 data={data}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
+                overlayOn={overlayOn}
+                healthById={healthById}
               />
             </div>
             {selected && (
@@ -137,6 +212,9 @@ export function StackView() {
                 edges={data.edges}
                 onSelect={setSelectedId}
                 onClose={() => setSelectedId(null)}
+                overlayOn={overlayOn}
+                health={selectedHealth}
+                healthLoading={overlayOn && healthQ.isLoading}
               />
             )}
           </div>
@@ -201,10 +279,14 @@ function StackCanvas({
   data,
   selectedId,
   onSelect,
+  overlayOn,
+  healthById,
 }: {
   data: StackTopology;
   selectedId: string | null;
   onSelect: (id: string) => void;
+  overlayOn: boolean;
+  healthById: Record<string, StackComponentHealth>;
 }) {
   const layout = React.useMemo(() => buildStackLayout(data), [data]);
   const { width: W, height: H } = layout;
@@ -370,6 +452,7 @@ function StackCanvas({
                     data.edges.filter((ed) => ed.from === n.id || ed.to === n.id).length
                   }
                   onSelect={() => onSelect(n.id)}
+                  health={overlayOn ? healthById[n.id] ?? null : null}
                 />
               </foreignObject>
             );
@@ -385,7 +468,7 @@ function StackCanvas({
         onFit={() => view.fitTo(layout.fitPoints)}
         onOneToOne={oneToOne}
       />
-      <CanvasLegend nodes={data.nodes} />
+      <CanvasLegend nodes={data.nodes} overlayOn={overlayOn} />
     </div>
   );
 }
@@ -444,6 +527,7 @@ function NodeBox({
   hostLit,
   edgeCount,
   onSelect,
+  health,
 }: {
   node: StackNode;
   box: Box;
@@ -453,9 +537,12 @@ function NodeBox({
   hostLit: boolean;
   edgeCount: number;
   onSelect: () => void;
+  health: StackComponentHealth | null;
 }) {
   const live = liveMeta(node.liveness);
   const surfacesAsTiles = node.surfaces.length >= 3;
+  const roll = health?.rollup;
+  const hStyle = roll ? HEALTH_ROLLUP[roll.state] : null;
   return (
     <button
       type="button"
@@ -463,6 +550,7 @@ function NodeBox({
       data-testid={`stack-node-${node.id}`}
       aria-pressed={selected}
       data-host-lit={hostLit ? "" : undefined}
+      data-health={roll?.state}
       style={{ width: box.w, height: box.h }}
       className={cn(
         "flex flex-col overflow-hidden rounded-[10px] border p-2.5 text-left transition-[opacity,border-color]",
@@ -557,6 +645,33 @@ function NodeBox({
           </div>
         </>
       )}
+
+      {roll && hStyle && (
+        <div
+          title="Code health — separate from liveness"
+          data-testid={`stack-health-footer-${node.id}`}
+          className={cn(
+            "-mx-2.5 -mb-2.5 mt-auto flex items-center gap-1.5 border-t border-line px-2.5 py-1 font-mono text-meta",
+            hStyle.band,
+          )}
+        >
+          <span className="tracking-[0.06em] text-muted-2">CODE</span>
+          <span className={cn("h-2 w-2 flex-none rounded-[2px] border-[1.5px]", hStyle.square)} />
+          <span className={cn("font-semibold tracking-[0.04em]", hStyle.text)}>{roll.label}</span>
+          {roll.severity_badges.map((b) => {
+            const sev = HEALTH_SEV[b.severity] || HEALTH_SEV.low;
+            return (
+              <span
+                key={b.severity}
+                className={cn("rounded border px-1 text-[9px]", sev.className)}
+              >
+                {b.count} {sev.label}
+              </span>
+            );
+          })}
+          <span className="ml-auto truncate text-muted-2">{roll.meta}</span>
+        </div>
+      )}
     </button>
   );
 }
@@ -639,7 +754,13 @@ function ZoomControls({
   );
 }
 
-function CanvasLegend({ nodes }: { nodes: StackNode[] }) {
+function CanvasLegend({
+  nodes,
+  overlayOn,
+}: {
+  nodes: StackNode[];
+  overlayOn: boolean;
+}) {
   const seen = Array.from(new Set(nodes.map((n) => n.liveness)));
   return (
     <div
@@ -656,6 +777,25 @@ function CanvasLegend({ nodes }: { nodes: StackNode[] }) {
           </span>
         );
       })}
+      {overlayOn && (
+        <>
+          <span className="font-mono uppercase tracking-[0.06em] text-muted-2">
+            Code health ■ · our code only
+          </span>
+          <span className="inline-flex items-center gap-1.5 text-sky-300">
+            <span className="h-2 w-2 rounded-[2px] bg-sky-400" />
+            clean at head
+          </span>
+          <span className="inline-flex items-center gap-1.5 text-orange-300">
+            <span className="h-2 w-2 rounded-[2px] bg-orange-400" />
+            findings
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-[2px] border border-muted-2 bg-[repeating-linear-gradient(45deg,#5c656e_0_1.5px,transparent_1.5px_3.5px)]" />
+            not scanned · stale
+          </span>
+        </>
+      )}
       <span className="ml-1 font-mono uppercase tracking-[0.06em] text-muted-2">Scope</span>
       <span>instance · project</span>
     </div>
@@ -667,11 +807,17 @@ function Inspector({
   edges,
   onSelect,
   onClose,
+  overlayOn,
+  health,
+  healthLoading,
 }: {
   node: StackNode;
   edges: StackEdge[];
   onSelect: (id: string) => void;
   onClose: () => void;
+  overlayOn: boolean;
+  health: StackComponentHealth | null;
+  healthLoading: boolean;
 }) {
   const live = liveMeta(node.liveness);
   const connections = edges.filter((e) => e.from === node.id || e.to === node.id);
@@ -746,6 +892,14 @@ function Inspector({
           </Section>
         )}
 
+        {overlayOn && (
+          <HealthInspector
+            node={node}
+            health={health}
+            loading={healthLoading}
+          />
+        )}
+
         <Section title="Facts">
           {node.facts.length === 0 ? (
             <p className="text-[12px] text-muted">No facts reported.</p>
@@ -804,5 +958,159 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </h3>
       {children}
     </div>
+  );
+}
+
+function HealthInspector({
+  node,
+  health,
+  loading,
+}: {
+  node: StackNode;
+  health: StackComponentHealth | null;
+  loading: boolean;
+}) {
+  // Infra / external / host-only: we don't scan code we don't own.
+  if (!health) {
+    const na =
+      node.ring === 2
+        ? "Infrastructure we run but didn't write, so we don't scan it. Liveness only."
+        : node.ring === 3 || node.kind === "external"
+          ? "An external service. We don't scan code we don't own. Liveness only."
+          : node.kind === "agent"
+            ? "Spawned agents are processes, not a deployable we scan."
+            : loading
+              ? "Loading code health…"
+              : "No code-health data for this box.";
+    return (
+      <Section title="Code health · N/A">
+        <p className="text-[12px] leading-snug text-muted" data-testid="stack-health-na">
+          {na}
+        </p>
+      </Section>
+    );
+  }
+
+  const roll = health.rollup;
+  const hStyle = HEALTH_ROLLUP[roll.state];
+  const cats = Object.entries(health.categories);
+
+  return (
+    <Section title="Code health">
+      <div
+        className="mb-2 rounded-[9px] border border-line bg-surface-2/80 p-2.5"
+        data-testid="stack-health-summary"
+      >
+        <div className="flex items-center gap-2">
+          <span className={cn("h-2.5 w-2.5 rounded-[2px] border-[1.5px]", hStyle.square)} />
+          <span className={cn("font-mono text-small font-semibold tracking-[0.05em]", hStyle.text)}>
+            {roll.label}
+          </span>
+          <span className="ml-auto font-mono text-[10px] text-muted-2">
+            {health.path} {health.head_sha ? `@ ${health.head_sha.slice(0, 7)}` : ""}
+          </span>
+        </div>
+        <p className="mt-1.5 text-[11.5px] leading-snug text-muted">
+          No score. Each scanner reports on its own, with when it ran and against which
+          revision. A scanner that hasn&apos;t run at head never counts as clean.
+        </p>
+      </div>
+
+      <ul className="space-y-2" data-testid="stack-health-categories">
+        {cats.map(([key, cat]) => {
+          const st = cat.state;
+          const stLabel =
+            st === "clean_at_sha"
+              ? "CLEAN"
+              : st === "has_findings"
+                ? `${cat.findings.length} FINDING${cat.findings.length === 1 ? "" : "S"}`
+                : st === "stale"
+                  ? "STALE"
+                  : "NOT RUN";
+          const stColor =
+            st === "clean_at_sha"
+              ? "text-sky-300 border-sky-400/50"
+              : st === "has_findings"
+                ? "text-orange-300 border-orange-400/50"
+                : "text-muted border-host";
+          return (
+            <li
+              key={key}
+              className={cn(
+                "rounded-[9px] border border-line p-2.5",
+                st === "stale" || st === "never_scanned" ? HEALTH_ROLLUP.stale.band : "bg-surface-2",
+              )}
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] font-medium text-fg">{cat.label}</span>
+                <span
+                  className={cn(
+                    "rounded border px-1.5 py-0.5 font-mono text-meta tracking-[0.04em]",
+                    stColor,
+                  )}
+                >
+                  {stLabel}
+                </span>
+              </div>
+              <div className="mt-1 font-mono text-[10px] text-muted-2">
+                {cat.scanner || "no scanner"}
+                {" · "}
+                {st === "never_scanned"
+                  ? "never run"
+                  : cat.live
+                    ? "live, reads the tracker"
+                    : cat.scanned_at
+                      ? `ran ${cat.scanned_at.slice(0, 16)}`
+                      : "ran"}
+              </div>
+              <div className="font-mono text-[10px] text-muted-2">
+                {st === "never_scanned"
+                  ? "no result at any revision"
+                  : cat.live
+                    ? "not tied to a revision"
+                    : cat.scanned_sha
+                      ? `against ${cat.scanned_sha.slice(0, 12)}${
+                          st === "stale" ? " · behind head" : health.head_sha ? " = head" : ""
+                        }`
+                      : ""}
+              </div>
+              {cat.note && (
+                <p className="mt-1.5 text-[11.5px] leading-snug text-muted">{cat.note}</p>
+              )}
+              {cat.findings.length > 0 && (
+                <ul className="mt-2 space-y-1.5">
+                  {cat.findings.map((f, i) => {
+                    const sev = HEALTH_SEV[f.severity] || HEALTH_SEV.low;
+                    return (
+                      <li
+                        key={`${key}-${i}`}
+                        className="flex items-start gap-2 text-[12px]"
+                        data-testid="stack-health-finding"
+                      >
+                        <span
+                          className={cn(
+                            "mt-0.5 rounded border px-1 font-mono text-meta",
+                            sev.className,
+                          )}
+                        >
+                          {sev.label}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="leading-snug text-fg-2">{f.summary}</div>
+                          <div className="font-mono text-[10px] text-muted-2">
+                            {f.path}
+                            {f.link_ref ? ` · ${f.link_ref}` : ""}
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </Section>
   );
 }
