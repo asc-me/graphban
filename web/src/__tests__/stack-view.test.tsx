@@ -140,6 +140,47 @@ describe("StackView", () => {
     expect(web).toHaveTextContent("unknown");
     expect(web).not.toHaveTextContent("reachable");
   });
+
+  it("draws every edge as a directional, liveness-coloured path (not a text list)", async () => {
+    const { container } = wrap(<StackView />);
+    await screen.findByTestId("stack-canvas");
+    const paths = container.querySelectorAll("path[data-edge]");
+    // One drawn path per edge in the topology.
+    expect(paths.length).toBe(topology.edges.length);
+    // Each is directional — carries the arrowhead marker.
+    paths.forEach((p) => expect(p).toHaveAttribute("marker-end", "url(#stack-arrow)"));
+    // Colour follows the unhealthiest endpoint: web(unknown)->api(reachable) = unknown.
+    expect(container.querySelector('path[data-edge="web->api"]')).toHaveAttribute(
+      "data-liveness",
+      "unknown",
+    );
+    // api(reachable)->db(reachable) = reachable.
+    expect(container.querySelector('path[data-edge="api->db"]')).toHaveAttribute(
+      "data-liveness",
+      "reachable",
+    );
+  });
+
+  it("inspector connections are clickable and select the peer", async () => {
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await user.click(await screen.findByTestId("stack-node-api"));
+    const inspector = await screen.findByTestId("stack-inspector");
+    // api's edge to db renders as a selectable connection row.
+    await user.click(within(inspector).getByTestId("stack-conn-db"));
+    // The inspector now shows the db node.
+    expect(await screen.findByTestId("stack-inspector")).toHaveTextContent("SQLite");
+  });
+
+  it("selecting a host highlights its nodes and dims the rest", async () => {
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    const host = await screen.findByTestId("stack-host-compose");
+    await user.click(within(host).getByRole("button"));
+    // compose owns web/api/db — they light up; cli (user machines) dims.
+    expect(screen.getByTestId("stack-node-api")).toHaveAttribute("data-host-lit");
+    expect(screen.getByTestId("stack-node-cli")).toHaveClass("opacity-40");
+  });
 });
 
 describe("LeftNav Build lists Stack", () => {

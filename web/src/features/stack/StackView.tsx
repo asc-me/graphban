@@ -135,6 +135,7 @@ export function StackView() {
               <Inspector
                 node={selected}
                 edges={data.edges}
+                onSelect={setSelectedId}
                 onClose={() => setSelectedId(null)}
               />
             )}
@@ -209,6 +210,13 @@ function StackCanvas({
   const { width: W, height: H } = layout;
   const view = useGraphViewport(W, H);
   const lod = view.viewport.k < LABEL_ZOOM;
+  // Selecting a host highlights every node on it (design body line 50).
+  const [hostSel, setHostSel] = React.useState<string | null>(null);
+  const hostMembers = React.useMemo(() => {
+    const m: Record<string, Set<string>> = {};
+    for (const h of data.hosts) m[h.id] = new Set(h.nodes);
+    return m;
+  }, [data.hosts]);
 
   // Fit the whole map when the topology (and therefore the layout) changes.
   const fitRef = React.useRef(view.fitTo);
@@ -295,31 +303,49 @@ function StackCanvas({
             </g>
           ))}
 
-          {/* Host groups. */}
-          {layout.hostFrames.map((h) => (
-            <g key={h.id} data-testid={`stack-host-${h.id}`}>
-              <rect
-                x={h.x}
-                y={h.y}
-                width={h.w}
-                height={h.h}
-                rx={12}
-                fill="none"
-                stroke="currentColor"
-                className="text-host/60"
-                strokeWidth={1}
-                strokeDasharray="5 5"
-              />
-              <text
-                x={h.x + 12}
-                y={h.y - 6}
-                className="fill-muted font-mono uppercase"
-                style={{ fontSize: 10, letterSpacing: "0.14em" }}
-              >
-                {h.label}
-              </text>
-            </g>
-          ))}
+          {/* Host groups. Clicking the host label highlights its nodes. */}
+          {layout.hostFrames.map((h) => {
+            const on = hostSel === h.id;
+            return (
+              <g key={h.id} data-testid={`stack-host-${h.id}`}>
+                <rect
+                  x={h.x}
+                  y={h.y}
+                  width={h.w}
+                  height={h.h}
+                  rx={12}
+                  fill="none"
+                  stroke="currentColor"
+                  className={on ? "text-accent/70" : "text-host/60"}
+                  strokeWidth={on ? 1.5 : 1}
+                  strokeDasharray="5 5"
+                />
+                <g
+                  role="button"
+                  aria-pressed={on}
+                  className="cursor-pointer"
+                  onClick={() => setHostSel(on ? null : h.id)}
+                >
+                  <rect
+                    x={h.x + 6}
+                    y={h.y - 17}
+                    width={h.label.length * 6.4 + 14}
+                    height={16}
+                    rx={4}
+                    fill="transparent"
+                  />
+                  <text
+                    x={h.x + 12}
+                    y={h.y - 6}
+                    className={cn("font-mono uppercase", on ? "fill-accent" : "fill-muted")}
+                    style={{ fontSize: 10, letterSpacing: "0.14em" }}
+                  >
+                    {h.label}
+                  </text>
+                </g>
+              </g>
+            );
+          })}
 
           {/* Edges. */}
           {layout.edges.map((e, i) => (
@@ -330,6 +356,7 @@ function StackCanvas({
           {data.nodes.map((n) => {
             const b = layout.boxes[n.id];
             if (!b) return null;
+            const member = hostSel ? !!hostMembers[hostSel]?.has(n.id) : false;
             return (
               <foreignObject key={n.id} x={b.x} y={b.y} width={b.w} height={b.h}>
                 <NodeBox
@@ -337,6 +364,8 @@ function StackCanvas({
                   box={b}
                   lod={lod}
                   selected={selectedId === n.id}
+                  dim={!!hostSel && !member}
+                  hostLit={member}
                   edgeCount={
                     data.edges.filter((ed) => ed.from === n.id || ed.to === n.id).length
                   }
@@ -378,6 +407,8 @@ function EdgeLine({ edge, lod }: { edge: EdgeRoute; lod: boolean }) {
         strokeLinecap="round"
         strokeLinejoin="round"
         markerEnd="url(#stack-arrow)"
+        data-edge={`${edge.from}->${edge.to}`}
+        data-liveness={edge.liveness}
       />
       {!lod && label && (
         <g transform={`translate(${edge.mid.x}, ${edge.mid.y})`}>
@@ -409,6 +440,8 @@ function NodeBox({
   box,
   lod,
   selected,
+  dim,
+  hostLit,
   edgeCount,
   onSelect,
 }: {
@@ -416,6 +449,8 @@ function NodeBox({
   box: Box;
   lod: boolean;
   selected: boolean;
+  dim: boolean;
+  hostLit: boolean;
   edgeCount: number;
   onSelect: () => void;
 }) {
@@ -427,11 +462,13 @@ function NodeBox({
       onClick={onSelect}
       data-testid={`stack-node-${node.id}`}
       aria-pressed={selected}
+      data-host-lit={hostLit ? "" : undefined}
       style={{ width: box.w, height: box.h }}
       className={cn(
-        "flex flex-col overflow-hidden rounded-[10px] border p-2.5 text-left transition-colors",
+        "flex flex-col overflow-hidden rounded-[10px] border p-2.5 text-left transition-[opacity,border-color]",
         "bg-surface-2 hover:border-control-hover",
-        selected ? "border-accent ring-1 ring-accent/40" : "border-control",
+        selected || hostLit ? "border-accent ring-1 ring-accent/40" : "border-control",
+        dim && "opacity-40",
       )}
     >
       <div className="flex items-start justify-between gap-2">
@@ -628,10 +665,12 @@ function CanvasLegend({ nodes }: { nodes: StackNode[] }) {
 function Inspector({
   node,
   edges,
+  onSelect,
   onClose,
 }: {
   node: StackNode;
   edges: StackEdge[];
+  onSelect: (id: string) => void;
   onClose: () => void;
 }) {
   const live = liveMeta(node.liveness);
@@ -730,14 +769,25 @@ function Inspector({
             <p className="text-[12px] text-muted">No edges.</p>
           ) : (
             <ul className="space-y-1.5">
-              {connections.map((e, i) => (
-                <li key={`${e.from}-${e.to}-${i}`} className="font-mono text-small text-fg-2">
-                  <span className="text-muted">{e.from}</span>
-                  <span className="mx-1 text-accent">→</span>
-                  <span className="text-muted">{e.to}</span>
-                  <span className="ml-2 text-muted-2">{e.protocol || e.label}</span>
-                </li>
-              ))}
+              {connections.map((e, i) => {
+                const peer = e.from === node.id ? e.to : e.from;
+                const outbound = e.from === node.id;
+                return (
+                  <li key={`${e.from}-${e.to}-${i}`}>
+                    <button
+                      type="button"
+                      onClick={() => onSelect(peer)}
+                      data-testid={`stack-conn-${peer}`}
+                      className="flex w-full items-baseline gap-2 rounded border border-control bg-surface-2 px-2 py-1 text-left font-mono text-small text-fg-2 transition-colors hover:border-control-hover"
+                      title={`Select ${peer}`}
+                    >
+                      <span className="text-accent">{outbound ? "→" : "←"}</span>
+                      <span className="flex-1 truncate text-fg-2">{peer}</span>
+                      <span className="text-muted-2">{e.protocol || e.label}</span>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </Section>
