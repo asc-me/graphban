@@ -1653,6 +1653,62 @@ class CodeRef(Base):
     )
 
 
+class CodeScan(Base):
+    """One scanner's report for a path at a commit (GRPH-1035 / PRD-P51 §3).
+
+    The agent (or fleet skill) has the checkout and REPORTS findings — the server has no
+    working tree, exactly like `describe_code`. Path-keyed and dangle-safe: a scan may name
+    a path nobody has described yet.
+
+    **Absence is not clean.** No row for (project, scanner, path) means never scanned.
+    A row with zero findings at `scanned_sha` is clean-at-that-sha only; when head moves,
+    that row becomes stale rather than quietly green.
+    """
+
+    __tablename__ = "code_scans"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # cs_...
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
+    # Category the overlay rolls up (security | refactor | stub | coverage | work).
+    category: Mapped[str] = mapped_column(String, default="security", server_default="security")
+    scanner_id: Mapped[str] = mapped_column(String)  # pip-audit | bandit | osv-scanner | ...
+    scanner_version: Mapped[str] = mapped_column(String, default="", server_default="")
+    path: Mapped[str] = mapped_column(String)  # repo-relative prefix, e.g. backend/
+    scanned_sha: Mapped[str] = mapped_column(String, default="", server_default="")
+    scanned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Who reported — untrusted agent input carries provenance so a weak scanner's "clean"
+    # is distinguishable from a thorough one's.
+    reported_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    note: Mapped[str] = mapped_column(Text, default="", server_default="")
+
+    __table_args__ = (
+        # One live result per scanner+path: re-recording replaces (service deletes prior).
+        Index("ix_code_scans_project_scanner_path", "project_id", "scanner_id", "path"),
+        Index("ix_code_scans_project_category_path", "project_id", "category", "path"),
+    )
+
+
+class ScanFinding(Base):
+    """One finding inside a CodeScan. Summaries are untrusted agent data."""
+
+    __tablename__ = "scan_findings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("code_scans.id", ondelete="CASCADE"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
+    path: Mapped[str] = mapped_column(String, default="", server_default="")  # more specific path
+    severity: Mapped[str] = mapped_column(String, default="medium", server_default="medium")
+    summary: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # Optional link into tracker / code graph / PRD — empty means none.
+    link_kind: Mapped[str] = mapped_column(String, default="", server_default="")  # item|code|prd|""
+    link_ref: Mapped[str] = mapped_column(String, default="", server_default="")
+
+    __table_args__ = (
+        Index("ix_scan_findings_scan_id", "scan_id"),
+        Index("ix_scan_findings_project_id", "project_id"),
+    )
+
+
 class Milestone(Base):
     __tablename__ = "milestones"
 

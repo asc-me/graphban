@@ -494,6 +494,16 @@ export function useStack(projectId: string) {
   });
 }
 
+/** Code-health overlay per deployable (GRPH-1035). Fetched when the overlay is on. */
+export function useStackHealth(projectId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["stack-health", projectId],
+    queryFn: () => api.stackHealth(projectId),
+    enabled: !!projectId && enabled,
+    refetchInterval: 30_000,
+  });
+}
+
 // PRD-43 D1: mint or rotate the ingest token. Invalidates platform so the prefix read updates.
 export function useMintIngestToken() {
   const qc = useQueryClient();

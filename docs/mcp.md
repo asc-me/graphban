@@ -96,7 +96,7 @@ agent carries ~5,100 fewer tokens on every turn.
 | --- | --- |
 | *(core)* | Everything on the path of doing one piece of work: finding, claiming, updating and releasing items, reviewing, memory, all code-graph **reads**, and reading a PRD |
 | `prd` | **Authoring** a spec — `create_prd`, `update_prd`, `grill_prd`, `answer_grill`, `decompose_prd`, `close_prd`, `request_rebaseline`, `submit_verdict` |
-| `codegraph` | **Writing** the code graph — `describe_code`, `link_code`, `unlink_code` |
+| `codegraph` | **Writing** the code graph — `describe_code`, `link_code`, `unlink_code`, `record_scan`, `scan_status`, `scans_due` |
 | `fleet` | **Running** a fleet — `propose_allocation`, `assign_role`, `mint_enrolment`, `retire_wave`, `delegate`. Being *in* a fleet needs none of it |
 | `misc` | `extract_lessons`, `generate_digest`, `report_graphban_issue`, `learning_loop`, `create_project`, `publish_memory`, `reject_memory` |
 
@@ -115,7 +115,7 @@ Settings → API keys. `fleet.mint` gives a planner credential the `fleet` tier 
 operator can restore the pre-tiering manifest for a whole deployment with
 `MCP_DEFAULT_TOOL_TIERS=prd,codegraph,fleet,misc` — see [configuration.md](configuration.md).
 
-## The 57 tools
+## The 60 tools
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
 shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
@@ -140,7 +140,7 @@ So the payload now carries `records_answers: false`, `turns_recorded` and
 `answer_grill` — the manifest is trimmed by scope — so an agent may have no other way to find
 out that its answers are not counting.
 
-**Every tool argues its role gate** (GRPH-516). 15 of the 57 tools are role-gated; the other
+**Every tool argues its role gate** (GRPH-516). 15 of the 60 tools are role-gated; the other
 40 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
 completeness guard forcing each new tool to be classified as a quality gate or an authority
 one, and `TOOL_ROLES` had no equivalent, so forty tools arrived at "open to everyone" without
@@ -349,6 +349,9 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `search_code` | `query`, `top_k`, `project_id` | Semantic search over code-node summaries (read-only) |
 | `link_code` | `ref_id`, `path`, `relation`, `ref_type`, `project_id` | **Bridge a tracker item/request to a code path** (affects/implements/fixes/tests/references). Idempotent; surfaces both ways |
 | `unlink_code` | `ref_id`, `path`, `relation`, `project_id` | Remove an item/request ↔ code link |
+| `record_scan` | `scanner_id`, `path`, `scanned_sha`, `findings`, `scanner_version`, `category`, `note`, `agent_id`, `project_id` | **Report a code-health scanner result** (GRPH-1035) — you have the repo; the server stores. Empty `findings` is clean at `scanned_sha`, never the same as never-scanned. Replaces the prior result for the same scanner+path. First shipped category: security |
+| `scan_status` | `path`, `scanner_id`, `head_sha`, `project_id` | Code-health state for a path or every Stack deployable — `clean_at_sha` / `has_findings` / `never_scanned` / `stale`. Never a green default (read-only) |
+| `scans_due` | `head_sha`, `project_id` | Which component × category pairs need a (re)scan (read-only) |
 | `prd_acceptance` | `prd_id`, `view` | **Delivery acceptance, read-only** — one surface per `view`: `completeness` (baselined sections with nothing delivered — the only pass that surfaces ABSENT work), `drift` (mechanical, total preserved across a rebaseline), `evidence` (receipts split by whether anyone but their author could check them, + code-graph corroboration), `close_report` (delivered vs **original** intent), `readiness`, `lineage`, `verdicts`, `baseline`, `classifications` (the platform judge's serves/enables/unrelated per completed item), `audit_brief` (everything a repo-holding agent needs to audit this PRD in one read — intent text, linked work with its classifications, receipts, and what is outstanding), `audit_coverage` (which sections actually carry a verdict). None of them say "complete" |
 | `request_rebaseline` | `prd_id`, `reason_type`, `reason` | **Ask for new frozen intent** in your own words. Does NOT approve — it re-opens the grill, and the existing baseline keeps governing until a new one is earned. Cannot add sections (that is a sub-PRD); refused on a closed PRD |
 | `submit_verdict` | `prd_id`, `section`, `outcome`, `citations`, `reasoning` | **Record a sign-off claim with provenance.** Citing nothing, or citing something that does not resolve, is rejected as malformed. Citations are `{kind, ref}` — `code`, `intent` (what an ABSENCE finding cites), or `evidence`. Signing your own claimed work is flagged, not refused |
