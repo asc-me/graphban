@@ -1124,7 +1124,8 @@ describe("Fleet.v1 stays the roster", () => {
     renderView();
     expect(screen.getByTestId("fleet-v1")).toBeInTheDocument();
     expect(screen.queryByTestId("fleet-matrix")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Fleet.v2" })).toHaveAttribute("href", "/fleet.v2");
+    expect(screen.getByRole("tab", { name: /Harness config/ })).toHaveAttribute("href", "/fleet.v2");
+    expect(screen.getByRole("link", { name: "Outposts" })).toHaveAttribute("href", "/outposts");
   });
 });
 

@@ -14,6 +14,8 @@ import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { useConfig, useFleet } from "@/lib/queries";
 import { projectPath, settingsPath } from "@/lib/routes";
+import { FleetPageTabs } from "./FleetPageTabs";
+import { FLEET_ADAPTERS, INSTALL_CLI, INSTALL_SUPERVISOR } from "./install";
 import { WAVE_ROLES } from "./wave";
 import type { FleetAgent } from "@/lib/types";
 
@@ -126,18 +128,9 @@ function primeSnippet(role: string, seat?: string, project?: string) {
   return `You are a ${role} in a Graphban fleet.\nCall ${call} first, then heartbeat on the interval it returns.\nIt returns tools_off_limits — the tools your role will be refused. Your tool list was fetched before you had a role, so it still shows them; do not call them.\n${duty}${scope}`;
 }
 
-/** Adapters the supervisor can actually resolve — `gbfleet.adapters.ADAPTERS`.
- *
- * Listed rather than free-typed so the UI cannot advertise a vendor `gbfleet up` would refuse
- * at startup. `codex` is deliberately absent there and so is absent here.
- */
-const ADAPTERS = ["claude", "cursor-agent", "gbagent", "grok"] as const;
-
-/** Installing the two local tools. One package each: `gban` installs on laptops that never
- *  run a wave and pulls nothing, while `gbfleet` brings httpx and its transitives — and
- *  `gbagent` rides along with the supervisor rather than being a package of its own. */
-const INSTALL_SUPERVISOR = "uv tool install graphban-fleet";
-const INSTALL_CLI = "uv tool install graphban-cli";
+/** Adapters the supervisor can actually resolve — listed in `install.ts` so Outposts
+ *  cannot advertise a vendor `gbfleet up` would refuse. `codex` is absent there. */
+const ADAPTERS = FLEET_ADAPTERS;
 
 /**
  * Handing the seats to a supervisor (GRPH-556, PRD-22).
@@ -653,10 +646,16 @@ export function FleetView() {
         action={
           <div className="flex items-center gap-3">
             <Link
-              to={viewHref("fleet.v2")}
+              to={viewHref("outposts")}
               className="text-[12px] text-muted transition-colors hover:text-fg-2"
             >
-              Fleet.v2
+              Outposts
+            </Link>
+            <Link
+              to={viewHref("harness")}
+              className="text-[12px] text-muted transition-colors hover:text-fg-2"
+            >
+              Harness performance
             </Link>
             <Link
               to={settingsPath("project/api-keys")}
@@ -670,6 +669,7 @@ export function FleetView() {
           </div>
         }
       />
+      <FleetPageTabs active="manage" />
       {data && data.online > 0 && (
         <div className="flex-none border-b border-line px-5 py-2">
           <div className="flex items-center gap-2">
