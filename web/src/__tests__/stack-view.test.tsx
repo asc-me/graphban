@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -113,6 +113,8 @@ const health: StackHealth = {
               path: "backend/pyproject.toml",
               link_kind: "item",
               link_ref: "GRPH-1041",
+              filed_key: "stack-filed:aaaaaaaaaaaa",
+              filed_item: null,
             },
           ],
         },
@@ -124,6 +126,12 @@ const health: StackHealth = {
           scanned_at: null,
           findings: [],
           note: "Nothing has scanned this path.",
+          cta: {
+            kind: "add_scanner",
+            path: "backend/",
+            filed_key: "stack-filed:bbbbbbbbbbbb",
+            filed_item: null,
+          },
         },
         stub: {
           label: "Partial implementation",
@@ -217,6 +225,10 @@ vi.mock("@/lib/api", () => ({
   api: {
     stack: vi.fn(async () => topology),
     stackHealth: vi.fn(async () => health),
+    createItem: vi.fn(async (_pid: string, body: { title?: string }) => ({
+      id: "GRPH-77",
+      title: body.title,
+    })),
   },
 }));
 
@@ -244,6 +256,7 @@ describe("StackView", () => {
     vi.mocked(api.stack).mockResolvedValue(topology);
     vi.mocked(api.stackHealth).mockClear();
     vi.mocked(api.stackHealth).mockResolvedValue(health);
+    vi.mocked(api.createItem).mockClear();
   });
 
   it("renders host groups, empty states, and opens the inspector with provenance", async () => {
@@ -383,6 +396,102 @@ describe("StackView", () => {
     expect(link).toHaveTextContent("GRPH-1041");
     // link_kind "item" routes to the tracker, deep-linking the item.
     expect(link).toHaveAttribute("href", "/tracker?select=GRPH-1041");
+  });
+
+  it("FINDINGS takes the colour of the worst severity present, not a fixed orange", async () => {
+    const withWorst = (worst: string) => ({
+      ...health,
+      components: health.components.map((c) =>
+        c.id === "api"
+          ? {
+              ...c,
+              rollup: {
+                ...c.rollup,
+                worst_severity: worst,
+                severity_badges: [{ severity: worst, count: 1 }],
+              },
+            }
+          : c,
+      ),
+    });
+    vi.mocked(api.stackHealth).mockResolvedValue(withWorst("crit"));
+    const { unmount } = wrap(<StackView />);
+    let footer = await screen.findByTestId("stack-health-footer-api");
+    expect(footer).toHaveAttribute("data-worst", "crit");
+    expect(within(footer).getByText("FINDINGS").className).toContain("text-rose-300");
+    unmount();
+
+    vi.mocked(api.stackHealth).mockResolvedValue(withWorst("low"));
+    wrap(<StackView />);
+    footer = await screen.findByTestId("stack-health-footer-api");
+    const label = within(footer).getByText("FINDINGS");
+    expect(label.className).toContain("text-muted");
+    expect(label.className).not.toContain("orange");
+  });
+
+  it("Defrag files a cleanup item tagged with the finding's key", async () => {
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await user.click(await screen.findByTestId("stack-node-api"));
+    const inspector = await screen.findByTestId("stack-inspector");
+    await user.click(await within(inspector).findByTestId("stack-health-defrag"));
+    expect(api.createItem).toHaveBeenCalledTimes(1);
+    const [pid, body] = vi.mocked(api.createItem).mock.calls[0];
+    expect(pid).toBe("core");
+    expect(body.title).toContain("python-multipart");
+    expect(body.tags).toContain("stack-filed:aaaaaaaaaaaa");
+    expect(body.touchpoints).toEqual(["backend/pyproject.toml"]);
+    // Filing refetches health so the server can say it is filed.
+    await waitFor(() => expect(api.stackHealth).toHaveBeenCalledTimes(2));
+  });
+
+  it("an already-filed finding shows its item instead of offering Defrag again", async () => {
+    const filed = structuredClone(health);
+    filed.components[0].categories.security.findings[0].filed_item = "GRPH-55";
+    vi.mocked(api.stackHealth).mockResolvedValue(filed);
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await user.click(await screen.findByTestId("stack-node-api"));
+    const inspector = await screen.findByTestId("stack-inspector");
+    const finding = await within(inspector).findByTestId("stack-health-finding");
+    expect(within(finding).queryByTestId("stack-health-defrag")).not.toBeInTheDocument();
+    expect(within(finding).getByTestId("stack-health-filed")).toHaveTextContent("filed GRPH-55");
+  });
+
+  it("a never-scanned cell offers 'Add a scanner →' and files it", async () => {
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await user.click(await screen.findByTestId("stack-node-api"));
+    const inspector = await screen.findByTestId("stack-inspector");
+    const cta = await within(inspector).findByTestId("stack-health-cta-refactor");
+    expect(cta).toHaveTextContent("Add a scanner →");
+    // A cell the server offered nothing for draws no button.
+    expect(within(inspector).queryByTestId("stack-health-cta-work")).not.toBeInTheDocument();
+    await user.click(cta);
+    const [, body] = vi.mocked(api.createItem).mock.calls[0];
+    expect(body.title).toBe("Add a Refactoring · complexity scanner for backend/");
+    expect(body.tags).toContain("stack-filed:bbbbbbbbbbbb");
+  });
+
+  it("a stale cell offers 'Re-run at head →'", async () => {
+    const stale = structuredClone(health);
+    stale.components[0].categories.refactor = {
+      ...stale.components[0].categories.refactor,
+      state: "stale",
+      scanner: "radon 6.0.1",
+      scanned_sha: "0ld5ha0",
+      cta: { kind: "rerun", path: "backend/", filed_key: "stack-filed:cccccccccccc", filed_item: null },
+    };
+    vi.mocked(api.stackHealth).mockResolvedValue(stale);
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await user.click(await screen.findByTestId("stack-node-api"));
+    const inspector = await screen.findByTestId("stack-inspector");
+    const cta = await within(inspector).findByTestId("stack-health-cta-refactor");
+    expect(cta).toHaveTextContent("Re-run at head →");
+    await user.click(cta);
+    const [, body] = vi.mocked(api.createItem).mock.calls[0];
+    expect(body.title).toBe("Re-run radon 6.0.1 on backend/ at head");
   });
 
   it("inspector marks infra boxes as code-health N/A", async () => {

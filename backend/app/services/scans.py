@@ -14,6 +14,7 @@ their own scanners report.
 """
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import datetime, timezone
 
@@ -57,6 +58,18 @@ _SECURITY_SCANNERS = frozenset({
     "security", "pip-audit", "bandit", "npm-audit", "osv-scanner", "osv", "semgrep",
     "safety", "trivy",
 })
+
+
+# Tag prefix on an item filed from the overlay (a finding's Defrag, a stale/never-run CTA).
+# The tag is how the overlay knows the work was already filed — without it a reload offers
+# the same button again and the second click files a duplicate (GRPH-1044).
+FILED_TAG_PREFIX = "stack-filed:"
+
+
+def filed_key(*parts: str) -> str:
+    """Stable tag for one overlay offer: same finding (or same gap) → same key."""
+    raw = "|".join((p or "").strip() for p in parts)
+    return FILED_TAG_PREFIX + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
 def _utcnow() -> datetime:
@@ -693,9 +706,46 @@ def _roll_component(categories: dict[str, dict], path: str, head_sha: str) -> di
     }
 
 
+def _filed_items(db: Session, project_id: str) -> dict[str, str]:
+    """filed-key tag → item key, for every item the overlay has already filed."""
+    out: dict[str, str] = {}
+    for it in items_list(db, project_id):
+        for t in it.tags or []:
+            if isinstance(t, str) and t.startswith(FILED_TAG_PREFIX):
+                out.setdefault(t, it.key)
+    return out
+
+
+def _attach_offers(
+    categories: dict[str, dict], component: str, prefix: str, filed: dict[str, str],
+) -> None:
+    """Give each finding and each stale/never-run cell the key its offer files under.
+
+    A finding gets `filed_key` (+ `filed_item` once filed) so the UI can offer Defrag. A
+    stale cell offers "re-run at head", a never-scanned one "add a scanner"; the stale
+    key carries the scanned sha, so the next time the cell goes stale it is offered again.
+    Open-work findings ARE tracker items already — filing an item about an item is noise,
+    so they get no key.
+    """
+    for cat, cell in categories.items():
+        if cat != "work":
+            for f in cell.get("findings") or []:
+                k = filed_key(component, cat, f.get("path") or "", f.get("summary") or "")
+                f["filed_key"] = k
+                f["filed_item"] = filed.get(k)
+        st = cell.get("state")
+        if cell.get("live") or st not in ("stale", "never_scanned"):
+            cell["cta"] = None
+            continue
+        kind = "rerun" if st == "stale" else "add_scanner"
+        k = filed_key(component, cat, kind, cell.get("scanned_sha") or "")
+        cell["cta"] = {"kind": kind, "path": prefix, "filed_key": k, "filed_item": filed.get(k)}
+
+
 def component_health(db: Session, project_id: str, *, head_sha: str = "") -> dict:
     """Stack overlay payload: one entry per deployable with scannable code."""
     head = (head_sha or "").strip()
+    filed = _filed_items(db, project_id)
     components = []
     for cid, prefix in COMPONENT_PATHS.items():
         scans = _scans_for_prefix(db, project_id, prefix)
@@ -707,6 +757,7 @@ def component_health(db: Session, project_id: str, *, head_sha: str = "") -> dic
                 cats[cat] = _work_category(db, project_id, prefix)
             else:
                 cats[cat] = _merge_category_scans(db, scans, cat, head, prefix=prefix)
+        _attach_offers(cats, cid, prefix, filed)
         roll = _roll_component(cats, prefix, head)
         components.append({
             "id": cid,

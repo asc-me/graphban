@@ -3570,7 +3570,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         )
         return {"removed": removed}
     if name == "record_scan":
-        reported = str(args.get("agent_id") or "").strip()
+        # Provenance comes from the caller, not a free-text field: a key-only call stamps
+        # `key:<name>` rather than an empty reported_by that reads as nobody (GRPH-1044).
+        reported = fleet_svc.caller_identity(str(args.get("agent_id") or "").strip(), key)
         return scans_svc.record_scan(
             db, project_id=pid,
             scanner_id=str(args["scanner_id"]),
