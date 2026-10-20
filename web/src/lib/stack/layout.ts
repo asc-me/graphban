@@ -285,31 +285,25 @@ export function buildStackLayout(topo: StackTopology): StackLayout {
     .filter(Boolean);
   const allBoxes = Object.values(boxes);
 
+  // Ownership rings — three frames that nest by construction. Each pad is larger
+  // than the host-frame pad (22) and grows outward, so ring1 ⊃ host boxes, ring2 ⊃
+  // ring1, ring3 ⊃ everything, and no ring edge ever crosses a node box or the
+  // host frames the way the tight ring1 (pad 20 < host 22) used to. The corner
+  // labels sit ABOVE each frame's top edge (RING_LABEL_DY), so they stack in the
+  // clear band over the canvas instead of piling onto the host labels and boxes.
   const rings: RingFrame[] = [];
-  const canvasInner = allBoxes.length ? pad(bbox(allBoxes), 44) : { x: 0, y: 0, w: 800, h: 400 };
-  // ring 3 spans the whole canvas (externals + everything).
-  const ring3Frame: Box = {
-    x: PAD,
-    y: TOP - 70,
-    w: canvasInner.x + canvasInner.w - PAD + 24,
-    h: canvasInner.y + canvasInner.h - (TOP - 70) + 24,
-  };
-  // Stagger the nested tops so each ring's corner label has its own line and the
-  // nesting reads from the top-left, the way the design frames it.
-  const r3Top = ring3Frame.y;
-  if (topo.nodes.some((n) => n.ring === 3)) {
-    rings.push({ ring: 3, label: RING_LABEL[3], ...ring3Frame });
+  const mkRing = (ring: number, box: Box) =>
+    rings.push({ ring, label: RING_LABEL[ring], ...box });
+  if (ring1.length) mkRing(1, pad(bbox(ring1), 40));
+  if (ring12.length) mkRing(2, pad(bbox(ring12), 70));
+  if (allBoxes.length) {
+    // Ring 3 wraps the whole canvas (externals included) with the widest pad, and
+    // is drawn first; a project with no external nodes still gets the outer frame.
+    mkRing(3, pad(bbox(allBoxes), 100));
   }
-  if (ring12.length) {
-    const r2 = pad(bbox(ring12), 34);
-    const top = r3Top + 30;
-    rings.push({ ring: 2, label: RING_LABEL[2], x: r2.x, y: top, w: r2.w, h: r2.y + r2.h - top });
-  }
-  if (ring1.length) {
-    const r1 = pad(bbox(ring1), 20);
-    const top = r3Top + 58;
-    rings.push({ ring: 1, label: RING_LABEL[1], x: r1.x, y: top, w: r1.w, h: r1.y + r1.h - top });
-  }
+  // Draw outermost first so inner frames and their labels sit on top.
+  rings.sort((a, b) => b.ring - a.ring);
+  const ring3Frame = rings.find((r) => r.ring === 3) ?? { x: PAD, y: TOP - 70, w: 800, h: 400 };
 
   // Edge routes — two passes so parallel edges don't pile on one port.
   //

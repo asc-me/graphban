@@ -384,37 +384,52 @@ function StackCanvas({
           transform={view.transform}
           style={{ transition: view.panning ? undefined : "transform 220ms ease" }}
         >
-          {/* Ownership rings — nested frames, outermost first. */}
-          {layout.rings.map((r) => (
-            <g key={r.ring}>
-              <rect
-                x={r.x}
-                y={r.y}
-                width={r.w}
-                height={r.h}
-                rx={18}
-                fill="none"
-                stroke="currentColor"
-                className={
-                  r.ring === 1
-                    ? "text-accent/30"
-                    : r.ring === 2
-                      ? "text-violet-400/30"
-                      : "text-muted-2/40"
-                }
-                strokeWidth={1}
-                strokeDasharray="2 7"
-              />
-              <text
-                x={r.x + 14}
-                y={r.y + 18}
-                className="fill-muted font-mono"
-                style={{ fontSize: 11, letterSpacing: "0.12em" }}
-              >
-                {r.label}
-              </text>
-            </g>
-          ))}
+          {/* Ownership rings — nested frames, outermost first. The label sits
+              ABOVE the frame edge on a filled chip so it stays readable and never
+              piles onto the host labels or a box (the top-left used to be a pile-up). */}
+          {layout.rings.map((r) => {
+            const ink =
+              r.ring === 1 ? "text-accent" : r.ring === 2 ? "text-violet-300" : "text-muted";
+            return (
+              <g key={r.ring}>
+                <rect
+                  x={r.x}
+                  y={r.y}
+                  width={r.w}
+                  height={r.h}
+                  rx={18}
+                  fill="none"
+                  stroke="currentColor"
+                  className={
+                    r.ring === 1
+                      ? "text-accent/50"
+                      : r.ring === 2
+                        ? "text-violet-400/50"
+                        : "text-muted-2/55"
+                  }
+                  strokeWidth={1.5}
+                  strokeDasharray="7 6"
+                />
+                <rect
+                  x={r.x + 8}
+                  y={r.y - 20}
+                  width={r.label.length * 6.3 + 12}
+                  height={16}
+                  rx={4}
+                  className="fill-surface stroke-line"
+                  strokeWidth={0.75}
+                />
+                <text
+                  x={r.x + 14}
+                  y={r.y - 8}
+                  className={cn("font-mono font-medium", ink)}
+                  style={{ fontSize: 11, letterSpacing: "0.1em" }}
+                >
+                  {r.label}
+                </text>
+              </g>
+            );
+          })}
 
           {/* Host groups. Clicking the host label highlights its nodes. */}
           {layout.hostFrames.map((h) => {

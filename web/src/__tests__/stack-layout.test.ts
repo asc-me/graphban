@@ -103,6 +103,35 @@ describe("buildStackLayout — the outpost list never blows the box out vertical
   });
 });
 
+describe("buildStackLayout — ownership rings nest and clear the boxes", () => {
+  const { rings, boxes, hostFrames } = buildStackLayout(topo);
+  const contains = (o: { x: number; y: number; w: number; h: number }, i: typeof o) =>
+    o.x <= i.x && o.y <= i.y && o.x + o.w >= i.x + i.w && o.y + o.h >= i.y + i.h;
+  const ring = (n: number) => rings.find((r) => r.ring === n)!;
+
+  it("draws all three rings, outermost first", () => {
+    expect(rings.map((r) => r.ring)).toEqual([3, 2, 1]);
+  });
+
+  it("nests ring1 ⊂ ring2 ⊂ ring3, each strictly inside the next", () => {
+    expect(contains(ring(3), ring(2))).toBe(true);
+    expect(contains(ring(2), ring(1))).toBe(true);
+    // The top edges stagger upward so each label has its own clear line.
+    expect(ring(3).y).toBeLessThan(ring(2).y);
+    expect(ring(2).y).toBeLessThan(ring(1).y);
+  });
+
+  it("ring1 (code we write) sits OUTSIDE the host frames, never crossing a box", () => {
+    // The old bug: ring1 pad (20) < host pad (22), so the code ring cut between the
+    // host frame and the boxes. Ring1 must now contain every host frame whose nodes
+    // are all ring-1, and every ring-1 box with margin.
+    const codeBox = boxes.cli; // cli is a lone ring-1 box on its own host
+    expect(contains(ring(1), codeBox)).toBe(true);
+    const userHost = hostFrames.find((h) => h.id === "user_machines")!;
+    expect(contains(ring(1), userHost)).toBe(true);
+  });
+});
+
 describe("buildStackLayout — edge routing does not pile parallel edges on one port", () => {
   // web calls three externals. Center-to-center routing left all three on web's
   // right-face centre, overlapping the lines and stacking their labels into one
