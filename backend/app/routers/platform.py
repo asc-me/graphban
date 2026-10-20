@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.models import User
+from app.models import ApiKey, User
 from app.schemas import (
     GdriveConnectIn,
     GithubConnectIn,
@@ -27,6 +27,8 @@ from app.services import instance_update
 from app.services import platform as platform_svc
 from app.services import harness as harness_svc
 from app.services import stack as stack_svc
+from app.services import scans as scans_svc
+from app.services import fleet as fleet_svc
 from app.services.embedder import EmbedderRefused
 
 router = APIRouter(prefix="/platform", tags=["platform"])
@@ -395,6 +397,51 @@ def stack_health(project_id: str = "core", db: Session = Depends(get_db),
     topo = stack_svc.topology(db, project_id)
     head = (topo.get("identity") or {}).get("api_git_sha") or ""
     return scans_svc.component_health(db, project_id, head_sha=str(head or ""))
+
+
+class StackScanIn(BaseModel):
+    """A code-health scan posted by a producer (GRPH-1047 / PRD-P51 §3)."""
+
+    project_id: str = "core"
+    scanner_id: str
+    path: str
+    scanned_sha: str
+    findings: list[dict] | None = None
+    scanner_version: str = ""
+    category: str | None = None
+    note: str = ""
+
+
+@router.post("/stack/scans")
+def record_stack_scan(body: StackScanIn, db: Session = Depends(get_db),
+                      key: ApiKey = Depends(get_agent_key)):
+    """Record a code-health scan for the Stack overlay — the producer ingest path.
+
+    GRPH-P51 §3 named a producer "like describe_code" that runs scanners where the code
+    lives and reports findings. `record_scan` shipped as an MCP tool (GRPH-1035), but it
+    is reachable only on a fleet-worker connection, so an operator or CI could not populate
+    the overlay. This is the same write over REST, authed by any key with WRITE on the
+    project — a read-only key is refused, exactly as the MCP tool's role gate would.
+
+    `reported_by` is the POSTING CREDENTIAL (`caller_identity`), never a caller-supplied
+    field: provenance an agent can assert about itself is not provenance (GRPH-1044). The
+    heavy lifting — the never-default-clean validation, the summary-less-finding refusal,
+    the one-row-per-(scanner,path) upsert — stays in `scans_svc.record_scan`; this is only
+    the auth + the HTTP shape. `record_scan` raises `ValueError` for a missing field or a
+    summary-less finding, which is a 422 here (and nothing is stored).
+    """
+    if not authz.can_write(db, key.user_id, body.project_id):
+        raise HTTPException(403, "write access on the project is required to record a scan")
+    try:
+        return scans_svc.record_scan(
+            db, project_id=body.project_id, scanner_id=body.scanner_id,
+            path=body.path, scanned_sha=body.scanned_sha,
+            findings=list(body.findings or []), scanner_version=body.scanner_version,
+            category=body.category, note=body.note,
+            reported_by=fleet_svc.caller_identity(None, key),
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e))
 
 
 @router.get("", response_model=PlatformConfigOut)
