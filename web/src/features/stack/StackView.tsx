@@ -1095,7 +1095,6 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 // count is over what a scanner actually reported, never a score.
 
 const CAT_ORDER = ["security", "refactor", "stub", "coverage", "work"];
-const SEV_ORDER = ["crit", "high", "med", "low"];
 const SEV_RANK: Record<string, number> = { crit: 0, high: 1, med: 2, low: 3 };
 
 function normSev(s: string): string {
