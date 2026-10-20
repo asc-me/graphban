@@ -22,7 +22,12 @@ export interface Box {
 
 export interface RingFrame extends Box {
   ring: number;
-  label: string;
+  /** The ring number shown in the circled badge (same as `ring`, named for the label). */
+  num: number;
+  /** Uppercase ownership title, e.g. "CODE WE WRITE". */
+  title: string;
+  /** Plain-language gloss under the title, e.g. "our deployables". */
+  subtitle: string;
 }
 
 export interface HostFrame extends Box {
@@ -53,10 +58,13 @@ export interface StackLayout {
   fitPoints: { x: number; y: number }[];
 }
 
-const RING_LABEL: Record<number, string> = {
-  1: "1 · CODE WE WRITE — our deployables",
-  2: "2 · INFRASTRUCTURE WE RUN — we operate it, didn't write it",
-  3: "3 · EXTERNAL SERVICES — we only call them",
+// Ring labels as structured parts: a circled number, an uppercase ownership
+// title, and a plain-language subtitle — matching docs/design/Stack.dc.html,
+// where each ring header is a badge + title + gloss rather than one flat string.
+const RING_LABEL: Record<number, { title: string; subtitle: string }> = {
+  1: { title: "CODE WE WRITE", subtitle: "our deployables" },
+  2: { title: "INFRASTRUCTURE WE RUN", subtitle: "we operate it, didn't write it" },
+  3: { title: "EXTERNAL SERVICES", subtitle: "we only call them, over the network" },
 };
 
 // Host column order: user machines, then agent hosts, then the compose/Railway
@@ -355,7 +363,7 @@ export function buildStackLayout(topo: StackTopology): StackLayout {
   // clear band over the canvas instead of piling onto the host labels and boxes.
   const rings: RingFrame[] = [];
   const mkRing = (ring: number, box: Box) =>
-    rings.push({ ring, label: RING_LABEL[ring], ...box });
+    rings.push({ ring, num: ring, ...RING_LABEL[ring], ...box });
   if (ring1.length) mkRing(1, pad(bbox(ring1), 40));
   if (ring12.length) mkRing(2, pad(bbox(ring12), 70));
   if (allBoxes.length) {
