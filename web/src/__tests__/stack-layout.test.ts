@@ -66,3 +66,39 @@ describe("buildStackLayout — box sizing stays condensed", () => {
     expect(boxes.api.h).toBeLessThanOrEqual(180);
   });
 });
+
+describe("buildStackLayout — the outpost list never blows the box out vertically", () => {
+  function outposts(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      host: `agent-host-${i}`,
+      online: 0,
+      agents: 1,
+    }));
+  }
+  function fleetTopo(n: number): StackTopology {
+    return {
+      ...topo,
+      nodes: [node({ id: "fleet", ring: 1, host: "user_machines", outposts: outposts(n) })],
+      edges: [],
+    };
+  }
+
+  it("a fleet node with hundreds of hosts sizes the same as one at the preview cap", () => {
+    // The fleet node lists one row per agent host; a busy instance has dozens
+    // (retired waves included). Rendering them all grew the box 20px a row until
+    // it was thousands of px tall and the map shrank to a speck (seen on Super-Arc).
+    const few = buildStackLayout(fleetTopo(4)).boxes.fleet.h;
+    const many = buildStackLayout(fleetTopo(400)).boxes.fleet.h;
+    // 400 hosts collapse to the preview rows + one "+N more" line, so the box is
+    // only modestly taller than the 4-host box — never 400 rows tall (that was
+    // ~8000px). One "+N more" line (~18px) is the whole difference.
+    expect(many).toBeLessThanOrEqual(few + 20);
+    expect(many).toBeLessThanOrEqual(240);
+  });
+
+  it("is monotonic but bounded: 1000 hosts is no taller than 5", () => {
+    expect(buildStackLayout(fleetTopo(1000)).boxes.fleet.h).toBe(
+      buildStackLayout(fleetTopo(5)).boxes.fleet.h,
+    );
+  });
+});

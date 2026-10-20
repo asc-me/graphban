@@ -12,7 +12,7 @@ import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { projectPath, tagFromPath } from "@/lib/routes";
 import { useStack, useStackHealth } from "@/lib/queries";
-import { buildStackLayout, type Box, type EdgeRoute } from "@/lib/stack/layout";
+import { buildStackLayout, OUTPOST_PREVIEW, type Box, type EdgeRoute } from "@/lib/stack/layout";
 import {
   LABEL_ZOOM,
   useGraphViewport,
@@ -606,12 +606,18 @@ function NodeBox({
           )}
 
           {node.outposts && node.outposts.length > 0 && (
-            <div className="mt-1.5 space-y-0.5">
-              {node.outposts.map((o) => (
+            <div className="mt-1.5 space-y-0.5" data-testid={`stack-outposts-${node.id}`}>
+              {node.outposts.slice(0, OUTPOST_PREVIEW).map((o) => (
                 <div key={o.host} className="font-mono text-[10px] text-muted-2">
                   {o.host} · {o.online}/{o.agents}
                 </div>
               ))}
+              {node.outposts.length > OUTPOST_PREVIEW && (
+                <div className="font-mono text-[10px] text-muted-2">
+                  +{node.outposts.length - OUTPOST_PREVIEW} more host
+                  {node.outposts.length - OUTPOST_PREVIEW === 1 ? "" : "s"} — see inspector
+                </div>
+              )}
             </div>
           )}
 
@@ -853,8 +859,8 @@ function Inspector({
         )}
 
         {node.outposts && node.outposts.length > 0 && (
-          <Section title="Outposts">
-            <ul className="space-y-1">
+          <Section title={`Outposts (${node.outposts.length})`}>
+            <ul className="max-h-64 space-y-1 overflow-y-auto">
               {node.outposts.map((o) => (
                 <li key={o.host} className="font-mono text-small text-fg-2">
                   {o.host}

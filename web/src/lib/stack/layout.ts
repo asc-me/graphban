@@ -82,6 +82,16 @@ const TOP = 150; // headroom for ring labels
  * chips (not full-size tiles), so even api's four surfaces cost ~two lines, and
  * the full list lives in the inspector.
  */
+/**
+ * How many outpost (agent-host) rows a box shows before it collapses the rest
+ * into a "+N more" line. The fleet node lists one row per agent host, and a busy
+ * instance has dozens of them (retired waves included) — rendering them all made
+ * the box grow 20px a row until it was thousands of px tall and the whole map
+ * shrank to an unreadable speck. The full list still lives in the inspector.
+ * Shared with StackView so the drawn rows and the reserved height agree.
+ */
+export const OUTPOST_PREVIEW = 4;
+
 function sizeOf(n: StackNode): { w: number; h: number } {
   const external = n.ring >= 3;
   const surfaces = n.surfaces.length;
@@ -92,7 +102,12 @@ function sizeOf(n: StackNode): { w: number; h: number } {
   // Surface chips wrap ~2 per line in a 250px box; >2 surfaces takes a 2nd line.
   if (surfaces > 0) h += surfaces > 2 ? 48 : 30;
   if (extensions > 0) h += 30;
-  if (outposts > 0) h += outposts * 20;
+  // Only the previewed outpost rows cost height; everything past the cap is one
+  // "+N more" line, so a node with 4 hosts and one with 400 size the same.
+  if (outposts > 0) {
+    h += Math.min(outposts, OUTPOST_PREVIEW) * 20;
+    if (outposts > OUTPOST_PREVIEW) h += 18;
+  }
   // Ring-1 deployables carry the code-health footer (GRPH-1035); reserve its
   // height so content never clips when the overlay is on (its default).
   if (n.ring === 1) h += 24;
