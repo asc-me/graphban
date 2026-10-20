@@ -504,8 +504,18 @@ function StackCanvas({
                   : "text-muted-2/55";
             const tint =
               r.ring === 1 ? "fill-accent" : r.ring === 2 ? "fill-violet-400" : "fill-muted-2";
-            const ink =
+            // The ring's ink: the fill for the badge number + title, and the
+            // matching text-* (→ currentColor) for the badge circle's stroke.
+            const inkFill =
               r.ring === 1 ? "fill-accent" : r.ring === 2 ? "fill-violet-300" : "fill-muted";
+            const inkStroke =
+              r.ring === 1 ? "text-accent" : r.ring === 2 ? "text-violet-300" : "text-muted";
+            // The label reads as a circled number, an uppercase ownership title,
+            // then a plain-language subtitle (Stack.dc.html). The subtitle sits
+            // after the title; a mono glyph is ~0.6em wide, so title width is
+            // ~0.66px per char at 11px incl. letter-spacing.
+            const titleX = r.x + 24;
+            const subX = titleX + r.title.length * 7.1 + 10;
             return (
               <g key={r.ring}>
                 <rect
@@ -519,13 +529,40 @@ function StackCanvas({
                   fillOpacity={0.05}
                   strokeWidth={r.ring === 3 ? 1 : 1.5}
                 />
+                <circle
+                  cx={r.x + 11}
+                  cy={r.y - 12}
+                  r={8.5}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                  className={inkStroke}
+                />
                 <text
-                  x={r.x + 14}
-                  y={r.y - 7}
-                  className={cn("font-mono font-medium", ink)}
-                  style={{ fontSize: 11, letterSpacing: "0.1em" }}
+                  x={r.x + 11}
+                  y={r.y - 12}
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  className={cn("font-mono font-semibold", inkFill)}
+                  style={{ fontSize: 10 }}
                 >
-                  {r.label}
+                  {r.num}
+                </text>
+                <text
+                  x={titleX}
+                  y={r.y - 7}
+                  className={cn("font-mono font-semibold", inkFill)}
+                  style={{ fontSize: 11, letterSpacing: "0.06em" }}
+                >
+                  {r.title}
+                </text>
+                <text
+                  x={subX}
+                  y={r.y - 7}
+                  className="fill-muted-2"
+                  style={{ fontSize: 10.5 }}
+                >
+                  {r.subtitle}
                 </text>
               </g>
             );
@@ -706,7 +743,7 @@ function NodeBox({
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="truncate text-[13px] font-medium text-fg">{node.label}</div>
+          <div className="truncate font-mono text-[13px] font-semibold text-fg">{node.label}</div>
           <div className="truncate text-[10px] text-muted">
             {RING_LABEL[node.ring] || node.kind}
           </div>
@@ -956,7 +993,7 @@ function Inspector({
     >
       <div className="flex items-start justify-between gap-2 border-b border-line px-4 py-3">
         <div>
-          <div className="text-lead font-medium text-fg">{node.title || node.label}</div>
+          <div className="font-mono text-lead font-semibold text-fg">{node.title || node.label}</div>
           <div className="mt-1 flex flex-wrap gap-1.5">
             <span className={cn("rounded-full border px-2 py-0.5 text-[10px]", live.className)}>
               {live.label}

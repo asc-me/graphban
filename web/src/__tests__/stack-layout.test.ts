@@ -113,6 +113,21 @@ describe("buildStackLayout — ownership rings nest and clear the boxes", () => 
     expect(rings.map((r) => r.ring)).toEqual([3, 2, 1]);
   });
 
+  it("carries each ring label as a badge number, title and subtitle (not one flat string)", () => {
+    // D: the header renders a circled number + uppercase title + plain-language
+    // subtitle, so the layout must expose the parts rather than a joined label.
+    expect(ring(1).num).toBe(1);
+    expect(ring(1).title).toBe("CODE WE WRITE");
+    expect(ring(1).subtitle).toMatch(/deployables/);
+    expect(ring(2).title).toBe("INFRASTRUCTURE WE RUN");
+    expect(ring(3).title).toBe("EXTERNAL SERVICES");
+    // The title is an uppercase phrase with no leading "N · " ordinal baked in.
+    for (const r of rings) {
+      expect(r.title).toBe(r.title.toUpperCase());
+      expect(r.title).not.toMatch(/·/);
+    }
+  });
+
   it("nests ring1 ⊂ ring2 ⊂ ring3, each strictly inside the next", () => {
     expect(contains(ring(3), ring(2))).toBe(true);
     expect(contains(ring(2), ring(1))).toBe(true);
