@@ -272,3 +272,56 @@ def test_a_post_that_does_not_claim_a_publish_leaves_it_unset(client, key, db, p
     db.expire_all()
     assert db.scalar(select(AttemptTelemetry)
                      .where(AttemptTelemetry.item_id == item)).branch_published_at is None
+
+
+# ---- a supervisor that died before its publish post (GRPH-1046) -------------------------------
+
+def _ci(branch: str, *, passed: bool = True, commit: str = "c" * 40) -> dict:
+    return {"kind": "attestation", "adapter": "github-actions", "commit": commit, "branch": branch,
+            "predicates": [{"name": "suite_green", "passed": passed, "detail": "ci"}]}
+
+
+def _with_ci(db, item: str, receipt: dict) -> Item:
+    stored = db.get(Item, item)
+    stored.evidence = list(stored.evidence or []) + [receipt]
+    db.commit()
+    return stored
+
+
+def test_a_dead_supervisor_with_no_ci_receipt_still_withholds(client, key, db, proj):
+    """Absence is not a release: nothing proves the branch is reachable."""
+    item = _in_review(client, key, db, supervised=True)
+    assert hsvc.publish_pending(db, db.get(Item, item)) is True
+
+
+def test_suite_green_on_the_item_s_branch_releases_a_dead_supervisor_s_item(client, key, db, proj):
+    """CI cannot run on an unpushed branch, so a green suite on item.branch proves it is
+    readable. Sabotage: drop the `_suite_green_on_branch` escape in `publish_pending` and the
+    item stays wedged in review for ever."""
+    item = _in_review(client, key, db, supervised=True)
+    stored = db.get(Item, item)
+    assert stored.branch
+    _with_ci(db, item, _ci(stored.branch))
+    assert hsvc.publish_pending(db, stored) is False
+    got = fleet_svc.claim_review(db, agent_id=_reviewer(client, key), project_id=proj)
+    assert got is not None and got.id == item
+
+
+def test_suite_green_on_another_branch_does_not_release(client, key, db, proj):
+    """A sibling PR's green run says nothing about this branch. Sabotage: skip the branch
+    comparison and this is released."""
+    item = _in_review(client, key, db, supervised=True)
+    stored = _with_ci(db, item, _ci("gb/some-other-wave"))
+    assert hsvc.publish_pending(db, stored) is True
+    assert fleet_svc.claim_review(db, agent_id=_reviewer(client, key), project_id=proj) is None
+
+
+def test_a_failed_or_commitless_suite_green_does_not_release(client, key, db, proj):
+    """Sabotage: match the predicate name without `passed is True`, or accept a receipt that
+    names no commit, and the item is released on nothing."""
+    item = _in_review(client, key, db, supervised=True)
+    stored = db.get(Item, item)
+    _with_ci(db, item, _ci(stored.branch, passed=False))
+    assert hsvc.publish_pending(db, stored) is True
+    _with_ci(db, item, _ci(stored.branch, commit=""))
+    assert hsvc.publish_pending(db, stored) is True

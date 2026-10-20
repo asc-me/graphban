@@ -773,6 +773,13 @@ def publish_pending(db: Session, item: Item) -> bool:
     with no branch is the LEAST readable case, not one to wave through. The release is the
     publish report, or the item leaving `review` — a bounce or a reclaim puts it back in
     `in_progress`, which is what un-sticks a supervisor that died.
+
+    **One more release: CI already read the branch** (GRPH-1046). A supervisor that dies
+    before its exit post leaves `branch_published_at` null for ever, and nothing bounces an
+    item nobody can claim — it sat in `review` with its branch pushed and green. CI cannot run
+    on a branch that was never pushed, so a PASSED `suite_green` attestation naming this
+    item's branch proves the branch is reachable. Only that: no attestation, one on another
+    branch, a failed predicate or a commit-less receipt still withhold.
     """
     if item.status != "review":
         return False
@@ -780,7 +787,25 @@ def publish_pending(db: Session, item: Item) -> bool:
                     .where(AttemptTelemetry.item_id == item.id,
                            AttemptTelemetry.chosen_source.is_not(None))
                     .order_by(AttemptTelemetry.id.desc()))
-    return row is not None and row.branch_published_at is None
+    if row is None or row.branch_published_at is not None:
+        return False
+    return not _suite_green_on_branch(item)
+
+
+def _suite_green_on_branch(item) -> bool:
+    """CI passed `suite_green` on the item's own branch, at a named commit (GRPH-1046)."""
+    from app.services import items as items_svc
+
+    branch = (item.branch or "").strip()
+    if not branch:
+        return False
+    for att in items_svc.attestation_receipts(getattr(item, "evidence", None)):
+        if (att.get("branch") or "").strip() != branch or not (att.get("commit") or "").strip():
+            continue
+        for pred in att.get("predicates") or []:
+            if isinstance(pred, dict) and pred.get("name") == "suite_green" and pred.get("passed") is True:
+                return True
+    return False
 
 
 def row_dict(row: AttemptTelemetry) -> dict:
