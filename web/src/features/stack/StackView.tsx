@@ -485,7 +485,10 @@ function StackCanvas({
         >
           {/* Ownership rings — nested frames, outermost first, each with a faint
               tinted interior fill (the layered "cell shading" from the design) so
-              the three bands read as nested zones, not bare outlines. The label
+              the three bands read as nested zones, not bare outlines. Rings use a
+              SOLID border; the dashed style is reserved for the physical host
+              frames, so ownership (ring) reads differently from where-it-runs
+              (host). The label
               sits just ABOVE each frame's top-left corner; because the frames
               cascade down-and-right as they nest, the three labels stagger into
               their own clear lines (and clear the host-frame labels below) instead
@@ -514,8 +517,7 @@ function StackCanvas({
                   stroke="currentColor"
                   className={cn(tint, stroke)}
                   fillOpacity={0.05}
-                  strokeWidth={1.5}
-                  strokeDasharray="7 6"
+                  strokeWidth={r.ring === 3 ? 1 : 1.5}
                 />
                 <text
                   x={r.x + 14}
@@ -738,7 +740,7 @@ function NodeBox({
               {node.surfaces.map((s) => (
                 <span
                   key={s}
-                  className="rounded border border-line bg-surface px-1.5 py-0.5 text-[10px] text-muted"
+                  className="rounded border border-violet-400/40 px-1.5 py-0.5 font-mono text-[10px] text-violet-300"
                   title="Surface on this box — shares the process"
                 >
                   {s}
