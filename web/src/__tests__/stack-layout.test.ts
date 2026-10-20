@@ -132,6 +132,115 @@ describe("buildStackLayout — ownership rings nest and clear the boxes", () => 
   });
 });
 
+describe("buildStackLayout — a ring-2 (infra) box never straddles the ring-1 line", () => {
+  // db is infra we run (ring 2); it must sit in the ring-2 band, OUTSIDE the lime
+  // "code we write" ring — never half in, half out. The bug: db stacked directly
+  // under web in the compose column, but a taller sibling column (agent hosts,
+  // with the fleet node's outpost rows) dragged ring-1's bounding box down past
+  // db's top, so the ring-1 frame edge cut straight through db.
+  const tall: StackTopology = {
+    ...topo,
+    hosts: [
+      { id: "agent_hosts", label: "Agent hosts", nodes: ["fleet", "worker"] },
+      { id: "compose", label: "Compose", nodes: ["api", "db"] },
+    ],
+    nodes: [
+      // fleet is tall (many outpost rows) so the agent column runs well below db.
+      node({
+        id: "fleet",
+        ring: 1,
+        host: "agent_hosts",
+        outposts: Array.from({ length: 40 }, (_, i) => ({ host: `h${i}`, online: 0, agents: 1 })),
+      }),
+      node({ id: "worker", ring: 1, host: "agent_hosts" }),
+      node({ id: "api", ring: 1, host: "compose" }),
+      node({ id: "db", ring: 2, host: "compose", kind: "infra", extensions: ["pgvector"] }),
+    ],
+    edges: [{ from: "api", to: "db", protocol: "sql", label: "sql" }],
+  };
+  const { boxes, rings } = buildStackLayout(tall);
+  const ring1 = rings.find((r) => r.ring === 1)!;
+
+  it("places db entirely below the ring-1 frame's bottom edge", () => {
+    expect(boxes.db.y).toBeGreaterThanOrEqual(ring1.y + ring1.h);
+  });
+
+  it("keeps every ring-1 box inside the ring-1 frame (db is the only one outside)", () => {
+    for (const id of ["fleet", "worker", "api"]) {
+      expect(boxes[id].y).toBeGreaterThanOrEqual(ring1.y);
+      expect(boxes[id].y + boxes[id].h).toBeLessThanOrEqual(ring1.y + ring1.h);
+    }
+  });
+});
+
+describe("buildStackLayout — no edge segment runs under a box it does not touch", () => {
+  // api sits at the TOP of its column; laya is the LAST external, at the bottom of
+  // the right-hand column. Centre-distance routing flipped such an edge to the
+  // top/bottom faces once the vertical drop beat the horizontal gap, sending the
+  // mid-segment slicing across web and dropping the entry through the box directly
+  // above laya. Routing from box extents keeps it right→left, in the gap.
+  const deep: StackTopology = {
+    ...topo,
+    hosts: [
+      { id: "compose", label: "Compose", nodes: ["api", "web", "db"] },
+      { id: "external", label: "External", nodes: ["xai", "ollama", "qwen", "laya"] },
+    ],
+    nodes: [
+      node({ id: "api", ring: 1, host: "compose", surfaces: ["REST", "MCP"] }),
+      node({ id: "web", ring: 1, host: "compose" }),
+      node({ id: "db", ring: 2, host: "compose", kind: "infra" }),
+      node({ id: "xai", ring: 3, host: "external", kind: "external" }),
+      node({ id: "ollama", ring: 3, host: "external", kind: "external" }),
+      node({ id: "qwen", ring: 3, host: "external", kind: "external" }),
+      node({ id: "laya", ring: 3, host: "external", kind: "external" }),
+    ],
+    edges: [
+      { from: "api", to: "xai", protocol: "chat", label: "chat" },
+      { from: "api", to: "ollama", protocol: "chat", label: "chat" },
+      { from: "api", to: "qwen", protocol: "chat", label: "chat" },
+      { from: "api", to: "laya", protocol: "decide", label: "/v1/systemone" },
+      { from: "web", to: "db", protocol: "sql", label: "sql" },
+    ],
+  };
+  const { edges, boxes } = buildStackLayout(deep);
+
+  // Does an axis-aligned segment pass through a box's interior (2px tolerance)?
+  const hits = (a: { x: number; y: number }, b: { x: number; y: number }, bx: typeof boxes.api) => {
+    const x0 = bx.x + 2,
+      x1 = bx.x + bx.w - 2,
+      y0 = bx.y + 2,
+      y1 = bx.y + bx.h - 2;
+    if (Math.abs(a.y - b.y) < 0.5) {
+      return a.y > y0 && a.y < y1 && Math.max(a.x, b.x) > x0 && Math.min(a.x, b.x) < x1;
+    }
+    if (Math.abs(a.x - b.x) < 0.5) {
+      return a.x > x0 && a.x < x1 && Math.max(a.y, b.y) > y0 && Math.min(a.y, b.y) < y1;
+    }
+    return false;
+  };
+
+  it("routes the deep api→laya edge without crossing any other box", () => {
+    for (const e of edges) {
+      for (let i = 0; i < e.points.length - 1; i++) {
+        for (const [id, bx] of Object.entries(boxes)) {
+          if (id === e.from || id === e.to) continue;
+          expect(
+            hits(e.points[i], e.points[i + 1], bx),
+            `edge ${e.from}->${e.to} segment ${i} crosses ${id}`,
+          ).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("enters every external provider from its left face", () => {
+    for (const e of edges.filter((x) => ["xai", "ollama", "qwen", "laya"].includes(x.to))) {
+      const last = e.points[e.points.length - 1];
+      expect(last.x).toBeCloseTo(boxes[e.to].x, 3);
+    }
+  });
+});
+
 describe("buildStackLayout — edge routing does not pile parallel edges on one port", () => {
   // web calls three externals. Center-to-center routing left all three on web's
   // right-face centre, overlapping the lines and stacking their labels into one

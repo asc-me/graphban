@@ -483,12 +483,26 @@ function StackCanvas({
           transform={view.transform}
           style={{ transition: view.panning ? undefined : "transform 220ms ease" }}
         >
-          {/* Ownership rings — nested frames, outermost first. The label sits
-              ABOVE the frame edge on a filled chip so it stays readable and never
-              piles onto the host labels or a box (the top-left used to be a pile-up). */}
+          {/* Ownership rings — nested frames, outermost first, each with a faint
+              tinted interior fill (the layered "cell shading" from the design) so
+              the three bands read as nested zones, not bare outlines. The label
+              sits just ABOVE each frame's top-left corner; because the frames
+              cascade down-and-right as they nest, the three labels stagger into
+              their own clear lines (and clear the host-frame labels below) instead
+              of piling up over the canvas. SVG <text> takes its colour from `fill`,
+              not `color`, so the label uses fill-* utilities — text-* rendered it as
+              the default black on the dark canvas. */}
           {layout.rings.map((r) => {
+            const stroke =
+              r.ring === 1
+                ? "text-accent/50"
+                : r.ring === 2
+                  ? "text-violet-400/50"
+                  : "text-muted-2/55";
+            const tint =
+              r.ring === 1 ? "fill-accent" : r.ring === 2 ? "fill-violet-400" : "fill-muted-2";
             const ink =
-              r.ring === 1 ? "text-accent" : r.ring === 2 ? "text-violet-300" : "text-muted";
+              r.ring === 1 ? "fill-accent" : r.ring === 2 ? "fill-violet-300" : "fill-muted";
             return (
               <g key={r.ring}>
                 <rect
@@ -497,30 +511,15 @@ function StackCanvas({
                   width={r.w}
                   height={r.h}
                   rx={18}
-                  fill="none"
                   stroke="currentColor"
-                  className={
-                    r.ring === 1
-                      ? "text-accent/50"
-                      : r.ring === 2
-                        ? "text-violet-400/50"
-                        : "text-muted-2/55"
-                  }
+                  className={cn(tint, stroke)}
+                  fillOpacity={0.05}
                   strokeWidth={1.5}
                   strokeDasharray="7 6"
                 />
-                <rect
-                  x={r.x + 8}
-                  y={r.y - 20}
-                  width={r.label.length * 6.3 + 12}
-                  height={16}
-                  rx={4}
-                  className="fill-surface stroke-line"
-                  strokeWidth={0.75}
-                />
                 <text
                   x={r.x + 14}
-                  y={r.y - 8}
+                  y={r.y - 7}
                   className={cn("font-mono font-medium", ink)}
                   style={{ fontSize: 11, letterSpacing: "0.1em" }}
                 >
