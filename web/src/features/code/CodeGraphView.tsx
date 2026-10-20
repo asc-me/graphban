@@ -14,6 +14,13 @@ import {
   worthCollapsing,
   type SuperNode,
 } from "@/lib/graph/galaxy";
+import {
+  areaColor,
+  areaOf,
+  areasForChips,
+  groupAreas,
+  parentMap,
+} from "@/lib/graph/areas";
 import { degrees, topByDegree, withinHops } from "@/lib/graph/metrics";
 import {
   cloudsFor,
@@ -61,11 +68,15 @@ const KIND_META: Record<string, { label: string; color: string }> = {
 const kindMeta = (kind: string) => KIND_META[kind] ?? { label: kind || "node", color: "#8b949e" };
 
 /**
- * Build.dc.html encodes kind as SHAPE, not as another colour. Colour still names the kind
- * (cluster colour would need an area axis the server does not serve — recorded on GRPH-1033)
- * but a canvas of identical circles made the legend the only way to tell a file from a symbol,
- * and the legend was easy to miss. Ring / circle / diamond / square is the design's vocabulary.
+ * Build.dc.html encodes kind as SHAPE and area as COLOUR. Shape landed in GRPH-1033; fill
+ * now follows `areaOf` (the owning module, else the path prefix) hashed onto the existing
+ * token set. Presence stays on clouds/rings (PRD-20 D5) — a held node must still say what
+ * kind it is, and that is now the glyph, not the fill.
+ *
+ * The legend is grey shapes: once fill names area, a coloured key would re-teach kind as
+ * colour, which is the channel we just freed.
  */
+const KIND_LEGEND_COLOR = "#9aa3ab"; // --color-muted-2
 type KindShape = "ring" | "circle" | "diamond" | "square";
 function kindShape(kind: string): KindShape {
   if (kind === "module") return "ring";
@@ -166,6 +177,64 @@ function label(path: string, name: string): string {
   const seg = path.split("::").pop() ?? path;
   const parts = seg.split("/").filter(Boolean);
   return parts.pop() ?? seg;
+}
+
+function truncate(s: string, n: number): string {
+  if (s.length <= n) return s;
+  return s.slice(0, n - 1) + "…";
+}
+
+function HoverTip({
+  x,
+  y,
+  title,
+  sub,
+}: {
+  x: number;
+  y: number;
+  title: string;
+  sub: string;
+}) {
+  const w = Math.min(220, Math.max(96, title.length * 7 + 20));
+  const h = sub ? 36 : 22;
+  return (
+    <g
+      transform={`translate(${x},${y})`}
+      pointerEvents="none"
+      role="tooltip"
+      aria-label={sub ? `${title}: ${sub}` : title}
+    >
+      <rect
+        x={-w / 2}
+        y={-h}
+        width={w}
+        height={h}
+        rx={7}
+        fill="#12171b"
+        stroke="#2a333a"
+      />
+      <text
+        y={sub ? -h + 14 : -h / 2 + 4}
+        textAnchor="middle"
+        fontSize={11.5}
+        fontFamily="IBM Plex Mono, monospace"
+        fill="#e6e9ec"
+      >
+        {title}
+      </text>
+      {sub ? (
+        <text
+          y={-8}
+          textAnchor="middle"
+          fontSize={10.5}
+          fontFamily="IBM Plex Mono, monospace"
+          fill="#8b949e"
+        >
+          {sub}
+        </text>
+      ) : null}
+    </g>
+  );
 }
 
 export function CodeGraphView() {
@@ -288,10 +357,29 @@ export function CodeGraphView() {
 
   const view = useGraphViewport(W, H);
   const pinsApi = useGraphPins(view.toWorld);
+  const kindOf = React.useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const id of allIds) m[id] = nodeByPath[id]?.kind ?? "";
+    return m;
+  }, [allIds, nodeByPath]);
+  const ownsParents = React.useMemo(
+    () =>
+      parentMap(
+        allEdges.filter((e) => e.type === "owns").map((e) => ({ src: e.src, dst: e.dst })),
+      ),
+    [allEdges],
+  );
+  const membership = React.useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const id of allIds) m[id] = areaOf(id, kindOf[id] ?? "", ownsParents, kindOf);
+    return m;
+  }, [allIds, kindOf, ownsParents]);
+
   const { pos: laidOut, pending, relayout } = useGraphLayout(layoutIds, layoutEdges, {
     width: W,
     height: H,
     pinned: pinsApi.pins,
+    ...(galaxyMode ? {} : { membership, kinds: kindOf }),
   });
   // A dragged node sits where the user put it; everything else where the layout put it.
   const pos = React.useMemo(
@@ -330,31 +418,22 @@ export function CodeGraphView() {
     return Object.keys(KIND_META).filter((k) => present.has(k));
   }, [ids, nodeByPath]);
 
-  // Area chips under find (Build.dc.html `gAreas`). Modules are the named areas the graph
-  // actually has; without at least two, a chip row would be a legend of one. Connected
-  // components of three or more are the fallback — they are real, not invented prefixes.
+  // Area chips under find (Build.dc.html `gAreas`). Colour and membership come from
+  // `areaOf` — the owning module, else the path prefix — not from galaxy components
+  // (those are a scale valve, and this project is ~95% one component).
   const areas = React.useMemo(() => {
-    const modules = ids
-      .map((id) => nodeByPath[id])
-      .filter((n): n is (typeof nodes)[number] => n?.kind === "module");
-    if (modules.length >= 2) {
-      return modules.map((n) => ({
-        id: n.path,
-        label: label(n.path, n.name),
-        color: kindMeta("module").color,
-        meta: "",
-      }));
-    }
-    return galaxy.superNodes
-      .filter((s) => s.size >= 3)
-      .slice(0, 8)
-      .map((s) => ({
-        id: s.anchor,
-        label: label(s.anchor, nodeByPath[s.anchor]?.name ?? ""),
-        color: kindMeta(nodeByPath[s.anchor]?.kind ?? "file").color,
-        meta: `${s.size} nodes`,
-      }));
-  }, [ids, nodeByPath, galaxy.superNodes]);
+    const groups = areasForChips(groupAreas(ids, membership), kindOf);
+    return groups.map((g) => ({
+      id: g.id,
+      label: label(g.id, nodeByPath[g.id]?.name ?? ""),
+      color: areaColor(g.id),
+      meta: `${g.members.length} nodes`,
+    }));
+  }, [ids, membership, kindOf, nodeByPath]);
+  const hullGroups = React.useMemo(
+    () => groupAreas(ids, membership).filter((g) => g.members.length >= 2),
+    [ids, membership],
+  );
 
   // Fetch the rich neighborhood for the selected node (edges + touching items).
   React.useEffect(() => {
@@ -788,6 +867,57 @@ export function CodeGraphView() {
                 />
                 ))}
 
+              {/* Directory hulls (Build.dc.html). Distinct from presence clouds (user colour,
+                  blurred) and from PRD-20's component hulls (galaxy mode). Drawn only when
+                  clustered layout has actually grouped the members — a hull on a force
+                  hairball is a costume. */}
+              {!galaxyMode &&
+                hullGroups.map((g) => {
+                  const pts = g.members.map((id) => pos[id]).filter(Boolean);
+                  if (pts.length < 2) return null;
+                  const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+                  const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+                  const r =
+                    Math.max(...pts.map((p) => Math.hypot(p.x - cx, p.y - cy))) + 28;
+                  const col = areaColor(g.id);
+                  const go = () => pickHub(ids.includes(g.id) ? g.id : g.members[0]);
+                  return (
+                    <g
+                      key={`area-hull-${g.id}`}
+                      data-testid={`area-hull-${g.id}`}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        go();
+                      }}
+                      className="cursor-pointer"
+                      opacity={0.95}
+                    >
+                      <circle
+                        cx={cx}
+                        cy={cy}
+                        r={r}
+                        fill={col}
+                        fillOpacity={0.035}
+                        stroke={col}
+                        strokeOpacity={0.28}
+                        strokeWidth={1}
+                        strokeDasharray="2 6"
+                      />
+                      <text
+                        x={cx}
+                        y={cy - r - 6}
+                        textAnchor="middle"
+                        fontSize={10}
+                        fontFamily="IBM Plex Sans, system-ui, sans-serif"
+                        fill={col}
+                        style={{ pointerEvents: "none" }}
+                      >
+                        {label(g.id, nodeByPath[g.id]?.name ?? "")}
+                      </text>
+                    </g>
+                  );
+                })}
+
               {/* Collapsed components. Radius grows with AREA, so one 400-node component does
                   not become forty times the width of a 10-node one and swallow the canvas. */}
               {galaxyMode &&
@@ -880,6 +1010,8 @@ export function CodeGraphView() {
                 // Isolate drops what dimming would merely fade (Build.dc.html).
                 if (isolate && !active) return null;
                 const meta = kindMeta(node?.kind ?? "");
+                const areaId = membership[id] ?? id;
+                const areaCol = areaColor(areaId);
                 const described = !!node;
                 const stale = described && !node.fresh;
                 const pinned = pinsApi.isPinned(id);
@@ -950,7 +1082,7 @@ export function CodeGraphView() {
                     <circle r={Math.max(drawR + 6, 12)} fill="transparent" />
                     <KindGlyph
                       kind={node?.kind ?? ""}
-                      color={meta.color}
+                      color={areaCol}
                       r={drawR}
                       described={described}
                       stale={stale}
@@ -1000,7 +1132,7 @@ export function CodeGraphView() {
                       <circle
                         r={drawR + 4}
                         fill="none"
-                        stroke={meta.color}
+                        stroke={areaCol}
                         strokeWidth={1.5}
                         opacity={focused ? 0.9 : 0.5}
                       />
@@ -1022,6 +1154,15 @@ export function CodeGraphView() {
                   </g>
                 );
               })}
+
+              {!galaxyMode && hoverId && hoverId !== selPath && pos[hoverId] && (
+                <HoverTip
+                  x={pos[hoverId].x}
+                  y={pos[hoverId].y - kindRadius(nodeByPath[hoverId]?.kind ?? "", degree[hoverId] ?? 0) - 10}
+                  title={label(hoverId, nodeByPath[hoverId]?.name ?? "")}
+                  sub={truncate(nodeByPath[hoverId]?.summary || kindMeta(nodeByPath[hoverId]?.kind ?? "").label, 72)}
+                />
+              )}
 
               {!galaxyMode && <ArrowsOut stubs={outbound} pos={pos} onHover={setStubHover} />}
               </g>
@@ -1164,6 +1305,12 @@ export function CodeGraphView() {
                 onPick={pickHub}
                 kind={nodeByPath[selPath]?.kind ?? ""}
                 kindColor={kindMeta(nodeByPath[selPath]?.kind ?? "").color}
+                areaId={membership[selPath] ?? selPath}
+                areaLabel={label(
+                  membership[selPath] ?? selPath,
+                  nodeByPath[membership[selPath] ?? selPath]?.name ?? "",
+                )}
+                summary={nodeByPath[selPath]?.summary ?? ""}
               />
             ) : (
               /* The design's "Explore" state: with nothing selected, the aside teaches the
@@ -1203,7 +1350,10 @@ function NodeInspector({
   onZoom,
   onPick,
   kind,
-  kindColor,
+  kindColor: _kindColor,
+  areaId,
+  areaLabel,
+  summary,
 }: {
   path: string;
   nb: CodeNeighbors | null;
@@ -1219,19 +1369,26 @@ function NodeInspector({
   onPick: (path: string) => void;
   kind: string;
   kindColor: string;
+  areaId: string;
+  areaLabel: string;
+  summary: string;
 }) {
   const contention = contentionOf(holders);
   const node = nb?.node ?? null;
   const meta = kindMeta(node?.kind || kind);
   const stale = node ? !node.fresh : false;
+  const areaCol = areaColor(areaId);
   return (
     <div className="animate-fade">
       <div className="mb-1.5 flex items-center gap-2">
         <span
-          className="rounded border px-1.5 py-px font-mono text-meta tracking-wide"
-          style={{ borderColor: meta.color || kindColor, color: meta.color || kindColor }}
+          className="rounded border border-line px-1.5 py-px font-mono text-meta tracking-wide text-muted"
         >
           {meta.label}
+        </span>
+        <span className="inline-flex items-center gap-1.5 font-mono text-[10px]" style={{ color: areaCol }}>
+          <span className="h-1.5 w-1.5 rounded-full" style={{ background: areaCol }} />
+          {areaLabel}
         </span>
         {stale && (
           <span className="rounded border border-st-review/50 px-1.5 py-px font-mono text-[9px] uppercase tracking-wide text-st-review">
@@ -1245,6 +1402,11 @@ function NodeInspector({
       <div className="mb-2 break-all font-mono text-lead text-fg">
         {label(path, node?.name ?? "") || path}
       </div>
+      {(node?.summary || summary || "").trim() ? (
+        <p className="mb-2 text-small leading-relaxed text-muted">
+          {(node?.summary || summary).trim()}
+        </p>
+      ) : null}
 
       {holders.length > 0 && servedAt && (
         <div
@@ -1598,9 +1760,10 @@ function KindLegend({ kinds }: { kinds: string[] }) {
             data-testid={`kind-legend-${k}`}
             className="inline-flex items-center gap-1.5 font-mono text-[10px] text-muted"
           >
+            {/* colour is grey on purpose: fill on the canvas now names area */}
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
               <g transform="translate(7,7)">
-                <KindGlyph kind={k} color={meta.color} r={kindShape(k) === "ring" ? 5.5 : 4.5} />
+                <KindGlyph kind={k} color={KIND_LEGEND_COLOR} r={kindShape(k) === "ring" ? 5.5 : 4.5} />
               </g>
             </svg>
             {meta.label}

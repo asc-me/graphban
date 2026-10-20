@@ -2,6 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { areaColor } from "@/lib/graph/areas";
 import type { CodeEdge, CodeMap, CodeNode, FleetPresence, HeldArea } from "@/lib/types";
 
 /**
@@ -37,22 +38,29 @@ const node = (path: string, kind = "file"): CodeNode => ({
   id: path, path, kind, name: path, lang: "py", summary: "", fresh: true,
 });
 
-const edge = (src: string, dst: string): CodeEdge => ({ src, dst, type: "imports" });
+const edge = (src: string, dst: string, type: CodeEdge["type"] = "imports"): CodeEdge => ({
+  src, dst, type,
+});
 
 const MAP: CodeMap = {
-  // File + symbol so the legend has two SHAPES to explain (Build.dc.html encodes kind as
-  // shape). Two modules so the area chips under find have something to name — a chip row of
-  // one is a legend of one, and the code will not draw it.
+  // File + symbol so the legend has two SHAPES to explain. Two modules with owns edges so
+  // area identity, hulls and fill-as-area have something real to name — a chip row of one
+  // is a legend of one, and colour-as-kind would paint a.py blue instead of web's colour.
   nodes: [
-    node("a.py"),
+    { ...node("a.py"), summary: "the left nav" },
     node("b.py", "symbol"),
-    node("far.py"),
+    { ...node("far.py"), summary: "the other side of the graph" },
     node("web", "module"),
     node("lib", "module"),
   ],
-  edges: [edge("a.py", "b.py")],
+  edges: [
+    edge("a.py", "b.py"),
+    edge("web", "a.py", "owns"),
+    edge("a.py", "b.py", "owns"),
+    edge("lib", "far.py", "owns"),
+  ],
   node_count: 5,
-  edge_count: 1,
+  edge_count: 4,
   outbound: [],
 };
 
@@ -283,6 +291,59 @@ describe("the design's 300px aside", () => {
     expect(screen.getByTestId("place-header")).not.toContainElement(chip);
 
     await user.click(chip);
+    expect(within(aside()).getByText("Module")).toBeInTheDocument();
+    expect(within(aside()).getAllByText("web").length).toBeGreaterThan(0);
+  });
+
+  it("shows the hover card for a node that is not the selection", async () => {
+    const user = await mount();
+
+    await user.hover(canvasNode("far.py")!);
+    const tip = screen.getByRole("tooltip");
+    expect(tip).toHaveTextContent("far.py");
+    expect(tip).toHaveTextContent("the other side of the graph");
+
+    await user.click(canvasNode("far.py")!);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  });
+
+  it("names the area on the inspector, not only the kind", async () => {
+    const user = await mount();
+    await user.click(canvasNode("a.py")!);
+    expect(within(aside()).getByText("File")).toBeInTheDocument();
     expect(within(aside()).getByText("web")).toBeInTheDocument();
+    expect(within(aside()).getByText("the left nav")).toBeInTheDocument();
+  });
+});
+
+describe("area as a visual channel", () => {
+  it("draws a dashed hull around each area", async () => {
+    await mount();
+    expect(screen.getByTestId("area-hull-web")).toBeInTheDocument();
+    expect(screen.getByTestId("area-hull-lib")).toBeInTheDocument();
+  });
+
+  it("fills a file with its area colour, not the kind colour", async () => {
+    // THE criterion. KindGlyph taking a colour is not enough — the canvas must pass the
+    // AREA colour. A helper the canvas still feeds kind-blue is the GRPH-360 hole.
+    // The fixture's `web` hashes off #7ca2ff (file kind); if it ever lands on that token
+    // this assertion is the thing to retune, not to delete.
+    await mount();
+    expect(areaColor("web")).not.toBe("#7ca2ff");
+    expect(areaColor("web")).not.toBe(areaColor("lib"));
+
+    const fileFill = canvasNode("a.py")!
+      .querySelector("circle:not([fill='transparent'])")
+      ?.getAttribute("fill");
+    const farFill = canvasNode("far.py")!
+      .querySelector("circle:not([fill='transparent'])")
+      ?.getAttribute("fill");
+    expect(fileFill).toBe(areaColor("web"));
+    expect(farFill).toBe(areaColor("lib"));
+    expect(canvasNode("web")!.querySelector(`circle[fill="${areaColor("web")}"]`)).toBeTruthy();
+
+    // Legend stays grey shapes — fill on the canvas is area, the key is kind.
+    const legendFile = screen.getByTestId("kind-legend-file").querySelector("circle");
+    expect(legendFile).toHaveAttribute("fill", "#9aa3ab");
   });
 });

@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { computeLayout, type LayoutEdge, type LayoutOpts, type Pos } from "./layout";
+import { runLayout, type LayoutEdge, type LayoutOpts, type Pos } from "./layout";
 
 export interface LayoutRequest {
   /** Monotonic per hook instance; echoed back so a stale reply can be dropped. */
@@ -16,6 +16,6 @@ export interface LayoutResponse {
 
 self.onmessage = (ev: MessageEvent<LayoutRequest>) => {
   const { id, ids, edges, opts } = ev.data;
-  const pos = computeLayout(ids, edges, opts);
+  const pos = runLayout(ids, edges, opts);
   (self as unknown as Worker).postMessage({ id, pos } satisfies LayoutResponse);
 };

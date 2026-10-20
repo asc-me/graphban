@@ -1,6 +1,6 @@
 import * as React from "react";
 
-import { computeLayout, layoutKey, type LayoutEdge, type LayoutOpts, type Pos } from "./layout";
+import { layoutKey, runLayout, type LayoutEdge, type LayoutOpts, type Pos } from "./layout";
 import type { LayoutResponse } from "./layout.worker";
 
 export interface GraphLayout {
@@ -79,7 +79,7 @@ export function useGraphLayout(
     const id = ++reqRef.current;
     const worker = workerRef.current;
     if (!worker) {
-      setPos(computeLayout(runIds, runEdges, optsRef.current));
+      setPos(runLayout(runIds, runEdges, optsRef.current));
       setPending(false);
       return;
     }
@@ -87,8 +87,16 @@ export function useGraphLayout(
     worker.postMessage({ id, ids: runIds, edges: runEdges, opts: optsRef.current });
   }, []);
 
-  // The memo: re-run only when the node set or the UNFILTERED edge set actually changes.
-  const key = React.useMemo(() => layoutKey(ids, edges), [ids, edges]);
+  // Membership is part of the key for the clustered path: owns-derived areas can change
+  // without the untyped {a,b} edge list changing shape (a kind correction, a new module).
+  // Pins stay out of the key, as before.
+  const clusterKey = opts.membership
+    ? Object.keys(opts.membership)
+        .sort()
+        .map((k) => `${k}:${opts.membership![k]}`)
+        .join(",")
+    : "";
+  const key = React.useMemo(() => layoutKey(ids, edges, clusterKey), [ids, edges, clusterKey]);
   const idsRef = React.useRef(ids);
   idsRef.current = ids;
   const edgesRef = React.useRef(edges);
