@@ -164,12 +164,25 @@ function facePoint(b: Box, side: Side, t: number): { x: number; y: number } {
 }
 
 /**
- * Which faces an edge leaves and enters, from the dominant axis between the two
- * box centres. Faces are always an opposing pair on one axis (right↔left or
- * bottom↔top), so the orthogonal route is a clean channel elbow, never an L
- * across a corner.
+ * Which faces an edge leaves and enters. Decided from the box EXTENTS, not the
+ * centre distance: when two boxes are separated along an axis (one wholly left of
+ * the other, or wholly above), the edge uses that pair of opposing faces, so the
+ * orthogonal route is a clean channel elbow in the box-free gap between them.
+ *
+ * Horizontal separation wins over vertical, because this layout is columns: the
+ * external providers are a right-hand column, and an edge to one far down that
+ * column must still leave the source's RIGHT and enter the target's LEFT. The old
+ * centre-distance rule flipped to top/bottom once the vertical drop exceeded the
+ * horizontal gap (e.g. api at the top of its column → laya at the bottom of the
+ * external column), which sent the horizontal mid-segment slicing straight across
+ * the boxes in between and dropped the entry through the box directly above the
+ * target. Only when the boxes overlap on both axes do we fall back to the centre.
  */
 function facesFor(s: Box, t: Box): { sSide: Side; tSide: Side } {
+  if (t.x >= s.x + s.w) return { sSide: "right", tSide: "left" };
+  if (s.x >= t.x + t.w) return { sSide: "left", tSide: "right" };
+  if (t.y >= s.y + s.h) return { sSide: "bottom", tSide: "top" };
+  if (s.y >= t.y + t.h) return { sSide: "top", tSide: "bottom" };
   const dx = center(t).x - center(s).x;
   const dy = center(t).y - center(s).y;
   if (Math.abs(dx) >= Math.abs(dy)) {
@@ -241,27 +254,36 @@ export function buildStackLayout(topo: StackTopology): StackLayout {
   // deeper-ring box never lands between two boxes an edge runs between.
   const apiOrder = new Map(topo.nodes.map((n, i) => [n.id, i]));
 
+  // Column x-positions for the inner hosts, left→right by rank (width spans all
+  // of a host's nodes so a ring-2 box in the band below still lines up).
+  const colGeom: Record<string, { x: number; w: number }> = {};
   let cursorX = PAD + 40;
-  const columnHostFrames: HostFrame[] = [];
   for (const host of innerHosts) {
-    const nodes = innerNodes
-      .filter((n) => n.host === host)
-      .sort(
-        (a, b) => a.ring - b.ring || (apiOrder.get(a.id) ?? 0) - (apiOrder.get(b.id) ?? 0),
-      );
-    const sizes = nodes.map(sizeOf);
-    const colW = Math.max(...sizes.map((s) => s.w));
-    let y = TOP + 20;
-    nodes.forEach((n, i) => {
-      const s = sizes[i];
-      boxes[n.id] = { x: cursorX + (colW - s.w) / 2, y, w: s.w, h: s.h };
-      y += s.h + V_GAP;
-    });
-    const hostBoxes = nodes.map((n) => boxes[n.id]);
-    const hl = pad(bbox(hostBoxes), 22);
-    const label = topo.hosts.find((h) => h.id === host)?.label ?? host;
-    columnHostFrames.push({ id: host, label, ...hl });
+    const colW = Math.max(
+      ...innerNodes.filter((n) => n.host === host).map((n) => sizeOf(n).w),
+    );
+    colGeom[host] = { x: cursorX, w: colW };
     cursorX += colW + COL_GAP;
+  }
+
+  // Pass 1 — ring-1 ("code we write") nodes, stacked top-down in their column in
+  // the order the API returned. Ring-2 nodes are deferred to a band BELOW the
+  // ring-1 frame (pass 3) so an infra box (db) never straddles the code/infra ring
+  // boundary — which it did when a sibling column (agent hosts) ran taller than it
+  // and dragged the ring-1 bounding box down past db's top edge.
+  const colCursorY: Record<string, number> = {};
+  for (const host of innerHosts) {
+    const { x, w } = colGeom[host];
+    let y = TOP + 20;
+    innerNodes
+      .filter((n) => n.host === host && n.ring === 1)
+      .sort((a, b) => (apiOrder.get(a.id) ?? 0) - (apiOrder.get(b.id) ?? 0))
+      .forEach((n) => {
+        const s = sizeOf(n);
+        boxes[n.id] = { x: x + (w - s.w) / 2, y, w: s.w, h: s.h };
+        y += s.h + V_GAP;
+      });
+    colCursorY[host] = y;
   }
 
   // External column on the right.
@@ -275,6 +297,46 @@ export function buildStackLayout(topo: StackTopology): StackLayout {
     extW = Math.max(extW, s.w);
     boxes[n.id] = { x: extX, y: ey, w: s.w, h: s.h };
     ey += s.h + 22;
+  }
+
+  // Pass 2 — the ring-1 frame's bottom edge (its boxes padded by the ring-1 pad),
+  // so ring-2 nodes can be dropped clearly below it.
+  const ring1BoxesNow = topo.nodes
+    .filter((n) => n.ring === 1)
+    .map((n) => boxes[n.id])
+    .filter(Boolean);
+  const ring1Bottom = ring1BoxesNow.length
+    ? Math.max(...ring1BoxesNow.map((b) => b.y + b.h)) + 40
+    : TOP + 20;
+
+  // Pass 3 — ring-2 ("infrastructure we run") nodes in a band below the ring-1
+  // frame, each in its own host column. db is infra we run (Postgres: we operate
+  // it, didn't write it), so it belongs in the ring-2 band, not inside the lime
+  // code ring. The host frame will still wrap it (a host legitimately spans the
+  // code/infra line); the ownership ring must not.
+  const INFRA_GAP = 28;
+  const r2CursorY: Record<string, number> = {};
+  for (const n of innerNodes.filter((x) => x.ring === 2)) {
+    const { x, w } = colGeom[n.host] ?? { x: PAD + 40, w: sizeOf(n).w };
+    const s = sizeOf(n);
+    const start = r2CursorY[n.host] ?? Math.max(ring1Bottom + INFRA_GAP, colCursorY[n.host] ?? 0);
+    boxes[n.id] = { x: x + (w - s.w) / 2, y: start, w: s.w, h: s.h };
+    r2CursorY[n.host] = start + s.h + V_GAP;
+  }
+
+  // Host frames — each host's dashed group spans ALL its nodes. A host like the
+  // compose stack holds both code (api, web) and the infra it runs (db), so its
+  // frame legitimately crosses the code/infra ring line.
+  const columnHostFrames: HostFrame[] = [];
+  for (const host of innerHosts) {
+    const hostBoxes = innerNodes
+      .filter((n) => n.host === host)
+      .map((n) => boxes[n.id])
+      .filter(Boolean);
+    if (!hostBoxes.length) continue;
+    const hl = pad(bbox(hostBoxes), 22);
+    const label = topo.hosts.find((h) => h.id === host)?.label ?? host;
+    columnHostFrames.push({ id: host, label, ...hl });
   }
 
   // Ring frames — nested bounding boxes (ring1 ⊂ ring2 ⊂ ring3-canvas).
