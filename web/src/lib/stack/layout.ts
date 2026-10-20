@@ -146,30 +146,80 @@ function center(b: Box) {
   return { x: b.x + b.w / 2, y: b.y + b.h / 2 };
 }
 
-/** Orthogonal elbow between two boxes, leaving/entering on the facing sides. */
-function route(s: Box, t: Box): { points: { x: number; y: number }[]; mid: { x: number; y: number } } {
-  const sc = center(s);
-  const tc = center(t);
-  const dx = tc.x - sc.x;
-  const dy = tc.y - sc.y;
-  let p0: { x: number; y: number };
-  let p3: { x: number; y: number };
-  let pts: { x: number; y: number }[];
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    // horizontal dominant: leave the right/left face, enter the opposite face
-    p0 = { x: dx >= 0 ? s.x + s.w : s.x, y: sc.y };
-    p3 = { x: dx >= 0 ? t.x : t.x + t.w, y: tc.y };
-    const midX = (p0.x + p3.x) / 2;
-    pts = [p0, { x: midX, y: p0.y }, { x: midX, y: p3.y }, p3];
-  } else {
-    // vertical dominant: leave the bottom/top face
-    p0 = { x: sc.x, y: dy >= 0 ? s.y + s.h : s.y };
-    p3 = { x: tc.x, y: dy >= 0 ? t.y : t.y + t.h };
-    const midY = (p0.y + p3.y) / 2;
-    pts = [p0, { x: p0.x, y: midY }, { x: p3.x, y: midY }, p3];
+type Side = "left" | "right" | "top" | "bottom";
+const isHoriz = (s: Side) => s === "left" || s === "right";
+
+/** A point a fraction `t` (0..1) along one face of a box. */
+function facePoint(b: Box, side: Side, t: number): { x: number; y: number } {
+  switch (side) {
+    case "left":
+      return { x: b.x, y: b.y + b.h * t };
+    case "right":
+      return { x: b.x + b.w, y: b.y + b.h * t };
+    case "top":
+      return { x: b.x + b.w * t, y: b.y };
+    default:
+      return { x: b.x + b.w * t, y: b.y + b.h };
   }
-  const mid = pts[1]; // the first bend reads clearly for the protocol label
-  return { points: pts, mid };
+}
+
+/**
+ * Which faces an edge leaves and enters, from the dominant axis between the two
+ * box centres. Faces are always an opposing pair on one axis (right↔left or
+ * bottom↔top), so the orthogonal route is a clean channel elbow, never an L
+ * across a corner.
+ */
+function facesFor(s: Box, t: Box): { sSide: Side; tSide: Side } {
+  const dx = center(t).x - center(s).x;
+  const dy = center(t).y - center(s).y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return { sSide: dx >= 0 ? "right" : "left", tSide: dx >= 0 ? "left" : "right" };
+  }
+  return { sSide: dy >= 0 ? "bottom" : "top", tSide: dy >= 0 ? "top" : "bottom" };
+}
+
+/**
+ * Spread `n` ports across the middle band of a face so several edges sharing one
+ * side of a box leave/enter at distinct points instead of stacking on the centre
+ * (which overlapped the lines and piled their labels into one unreadable run,
+ * e.g. "HTTP HTTP chat"). Index `i` (already ordered by the other endpoint's
+ * cross-axis position, so lines don't cross at the face) maps to a fraction in
+ * [0.26, 0.74] — off the corners, where a route would clip the box.
+ */
+function portFrac(i: number, n: number): number {
+  if (n <= 1) return 0.5;
+  return 0.26 + (0.74 - 0.26) * (i / (n - 1));
+}
+
+/**
+ * Orthogonal channel route between an exit port and an entry port on opposing
+ * faces. The bend sits in the gap BETWEEN the two columns, which is box-free —
+ * so the protocol label (placed on that mid segment) is never drawn under a box,
+ * and distributed ports give each edge its own channel offset.
+ */
+function routePorts(
+  p0: { x: number; y: number },
+  p3: { x: number; y: number },
+  horizontal: boolean,
+  shift: number,
+): { points: { x: number; y: number }[]; mid: { x: number; y: number } } {
+  if (horizontal) {
+    // Stagger the channel so a fan of edges leaving one box (e.g. web → four
+    // model providers) doesn't stack every vertical run on one x. Clamp the
+    // shift inside the gap so the bend never re-enters either box.
+    const span = Math.abs(p3.x - p0.x);
+    const midX = (p0.x + p3.x) / 2 + Math.max(-span / 2 + 8, Math.min(span / 2 - 8, shift));
+    return {
+      points: [p0, { x: midX, y: p0.y }, { x: midX, y: p3.y }, p3],
+      mid: { x: midX, y: (p0.y + p3.y) / 2 },
+    };
+  }
+  const span = Math.abs(p3.y - p0.y);
+  const midY = (p0.y + p3.y) / 2 + Math.max(-span / 2 + 8, Math.min(span / 2 - 8, shift));
+  return {
+    points: [p0, { x: p0.x, y: midY }, { x: p3.x, y: midY }, p3],
+    mid: { x: (p0.x + p3.x) / 2, y: midY },
+  };
 }
 
 export function buildStackLayout(topo: StackTopology): StackLayout {
@@ -235,50 +285,106 @@ export function buildStackLayout(topo: StackTopology): StackLayout {
     .filter(Boolean);
   const allBoxes = Object.values(boxes);
 
+  // Ownership rings — three frames that nest by construction. Each pad is larger
+  // than the host-frame pad (22) and grows outward, so ring1 ⊃ host boxes, ring2 ⊃
+  // ring1, ring3 ⊃ everything, and no ring edge ever crosses a node box or the
+  // host frames the way the tight ring1 (pad 20 < host 22) used to. The corner
+  // labels sit ABOVE each frame's top edge (RING_LABEL_DY), so they stack in the
+  // clear band over the canvas instead of piling onto the host labels and boxes.
   const rings: RingFrame[] = [];
-  const canvasInner = allBoxes.length ? pad(bbox(allBoxes), 44) : { x: 0, y: 0, w: 800, h: 400 };
-  // ring 3 spans the whole canvas (externals + everything).
-  const ring3Frame: Box = {
-    x: PAD,
-    y: TOP - 70,
-    w: canvasInner.x + canvasInner.w - PAD + 24,
-    h: canvasInner.y + canvasInner.h - (TOP - 70) + 24,
-  };
-  // Stagger the nested tops so each ring's corner label has its own line and the
-  // nesting reads from the top-left, the way the design frames it.
-  const r3Top = ring3Frame.y;
-  if (topo.nodes.some((n) => n.ring === 3)) {
-    rings.push({ ring: 3, label: RING_LABEL[3], ...ring3Frame });
+  const mkRing = (ring: number, box: Box) =>
+    rings.push({ ring, label: RING_LABEL[ring], ...box });
+  if (ring1.length) mkRing(1, pad(bbox(ring1), 40));
+  if (ring12.length) mkRing(2, pad(bbox(ring12), 70));
+  if (allBoxes.length) {
+    // Ring 3 wraps the whole canvas (externals included) with the widest pad, and
+    // is drawn first; a project with no external nodes still gets the outer frame.
+    mkRing(3, pad(bbox(allBoxes), 100));
   }
-  if (ring12.length) {
-    const r2 = pad(bbox(ring12), 34);
-    const top = r3Top + 30;
-    rings.push({ ring: 2, label: RING_LABEL[2], x: r2.x, y: top, w: r2.w, h: r2.y + r2.h - top });
+  // Draw outermost first so inner frames and their labels sit on top.
+  rings.sort((a, b) => b.ring - a.ring);
+  const ring3Frame = rings.find((r) => r.ring === 3) ?? { x: PAD, y: TOP - 70, w: 800, h: 400 };
+
+  // Edge routes — two passes so parallel edges don't pile on one port.
+  //
+  // Pass 1 plans each edge's exit/entry faces. Pass 2 groups edges by the face
+  // they share on a box and spreads their ports across that face (ordered by the
+  // other endpoint, so the fan doesn't self-cross). Center-to-center routing used
+  // to overlap every edge leaving a box and stack their labels; distributing the
+  // ports and putting the label in the box-free channel fixes both.
+  interface EdgePlan {
+    e: StackEdge;
+    s: Box;
+    t: Box;
+    sSide: Side;
+    tSide: Side;
   }
-  if (ring1.length) {
-    const r1 = pad(bbox(ring1), 20);
-    const top = r3Top + 58;
-    rings.push({ ring: 1, label: RING_LABEL[1], x: r1.x, y: top, w: r1.w, h: r1.y + r1.h - top });
+  const plans: EdgePlan[] = [];
+  for (const e of topo.edges) {
+    const s = boxes[e.from];
+    const t = boxes[e.to];
+    if (!s || !t) continue;
+    plans.push({ e, s, t, ...facesFor(s, t) });
   }
 
-  // Edge routes.
-  const edges: EdgeRoute[] = topo.edges
-    .map((e: StackEdge): EdgeRoute | null => {
-      const s = boxes[e.from];
-      const t = boxes[e.to];
-      if (!s || !t) return null;
-      const { points, mid } = route(s, t);
-      return {
-        from: e.from,
-        to: e.to,
-        protocol: e.protocol,
-        label: e.label || e.protocol,
-        points,
-        mid,
-        liveness: edgeLiveness(byId[e.from], byId[e.to]),
-      };
-    })
-    .filter((e): e is EdgeRoute => !!e);
+  // Group endpoints by `${nodeId}:${side}`; each entry carries the cross-axis
+  // coordinate of the OTHER box so ports can be ordered to avoid crossings.
+  interface Endpoint {
+    plan: EdgePlan;
+    end: "s" | "t";
+    cross: number;
+  }
+  const groups = new Map<string, Endpoint[]>();
+  const add = (key: string, ep: Endpoint) => {
+    const arr = groups.get(key);
+    if (arr) arr.push(ep);
+    else groups.set(key, [ep]);
+  };
+  for (const p of plans) {
+    const sc = center(p.s);
+    const tc = center(p.t);
+    add(`${p.e.from}:${p.sSide}`, {
+      plan: p,
+      end: "s",
+      cross: isHoriz(p.sSide) ? tc.y : tc.x,
+    });
+    add(`${p.e.to}:${p.tSide}`, {
+      plan: p,
+      end: "t",
+      cross: isHoriz(p.tSide) ? sc.y : sc.x,
+    });
+  }
+
+  // Resolve each endpoint to a fraction along its face.
+  const portOf = new Map<Endpoint, number>();
+  for (const arr of groups.values()) {
+    arr.sort((a, b) => a.cross - b.cross || (a.end < b.end ? -1 : 1));
+    arr.forEach((ep, i) => portOf.set(ep, portFrac(i, arr.length)));
+    // Keep the resolved slot reachable from the plan for the build step below.
+    arr.forEach((ep) => {
+      if (ep.end === "s") (ep.plan as EdgePlan & { sT?: number }).sT = portOf.get(ep);
+      else (ep.plan as EdgePlan & { tT?: number }).tT = portOf.get(ep);
+    });
+  }
+
+  const edges: EdgeRoute[] = plans.map((p): EdgeRoute => {
+    const sT = (p as EdgePlan & { sT?: number }).sT ?? 0.5;
+    const tT = (p as EdgePlan & { tT?: number }).tT ?? 0.5;
+    const p0 = facePoint(p.s, p.sSide, sT);
+    const p3 = facePoint(p.t, p.tSide, tT);
+    // Spread each edge's channel a little by its exit-port fraction, so a fan
+    // from one box doesn't collapse its vertical runs onto a single line.
+    const { points, mid } = routePorts(p0, p3, isHoriz(p.sSide), (sT - 0.5) * 44);
+    return {
+      from: p.e.from,
+      to: p.e.to,
+      protocol: p.e.protocol,
+      label: p.e.label || p.e.protocol,
+      points,
+      mid,
+      liveness: edgeLiveness(byId[p.e.from], byId[p.e.to]),
+    };
+  });
 
   const width = ring3Frame.x + ring3Frame.w + PAD;
   const height = ring3Frame.y + ring3Frame.h + PAD;

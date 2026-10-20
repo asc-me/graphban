@@ -394,6 +394,38 @@ describe("StackView", () => {
       "Infrastructure",
     );
   });
+
+  it("scan report lists every component's findings and the never-scanned matrix (GRPH-1049)", async () => {
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await screen.findByTestId("stack-canvas");
+    await user.click(screen.getByTestId("stack-report-toggle"));
+
+    const report = await screen.findByTestId("stack-report");
+    // The one reported finding shows, across all components (not per-node click).
+    expect(within(report).getByTestId("stack-report-finding")).toHaveTextContent(
+      "python-multipart",
+    );
+    // Coverage matrix is honest: web's never-scanned cells read "not run", not clean.
+    expect(within(report).getByTestId("stack-report-matrix")).toHaveTextContent("not run");
+    expect(within(report).getByTestId("stack-report-count")).toHaveTextContent("1 finding");
+  });
+
+  it("scan report filters by severity, and absence never reads as clean", async () => {
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await screen.findByTestId("stack-canvas");
+    await user.click(screen.getByTestId("stack-report-toggle"));
+    const report = await screen.findByTestId("stack-report");
+    // The only finding is HIGH; filtering to CRIT hides it but keeps the matrix honest.
+    await user.click(within(report).getByTestId("stack-report-filter-sev-crit"));
+    expect(within(report).getByTestId("stack-report-none")).toBeInTheDocument();
+    expect(within(report).getByTestId("stack-report-matrix")).toHaveTextContent("1 finding");
+    // Back to HIGH surfaces it again.
+    await user.click(within(report).getByTestId("stack-report-filter-sev-crit"));
+    await user.click(within(report).getByTestId("stack-report-filter-sev-high"));
+    expect(within(report).getByTestId("stack-report-finding")).toHaveTextContent("python-multipart");
+  });
 });
 
 describe("LeftNav Build lists Stack", () => {

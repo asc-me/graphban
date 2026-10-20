@@ -102,3 +102,84 @@ describe("buildStackLayout — the outpost list never blows the box out vertical
     );
   });
 });
+
+describe("buildStackLayout — ownership rings nest and clear the boxes", () => {
+  const { rings, boxes, hostFrames } = buildStackLayout(topo);
+  const contains = (o: { x: number; y: number; w: number; h: number }, i: typeof o) =>
+    o.x <= i.x && o.y <= i.y && o.x + o.w >= i.x + i.w && o.y + o.h >= i.y + i.h;
+  const ring = (n: number) => rings.find((r) => r.ring === n)!;
+
+  it("draws all three rings, outermost first", () => {
+    expect(rings.map((r) => r.ring)).toEqual([3, 2, 1]);
+  });
+
+  it("nests ring1 ⊂ ring2 ⊂ ring3, each strictly inside the next", () => {
+    expect(contains(ring(3), ring(2))).toBe(true);
+    expect(contains(ring(2), ring(1))).toBe(true);
+    // The top edges stagger upward so each label has its own clear line.
+    expect(ring(3).y).toBeLessThan(ring(2).y);
+    expect(ring(2).y).toBeLessThan(ring(1).y);
+  });
+
+  it("ring1 (code we write) sits OUTSIDE the host frames, never crossing a box", () => {
+    // The old bug: ring1 pad (20) < host pad (22), so the code ring cut between the
+    // host frame and the boxes. Ring1 must now contain every host frame whose nodes
+    // are all ring-1, and every ring-1 box with margin.
+    const codeBox = boxes.cli; // cli is a lone ring-1 box on its own host
+    expect(contains(ring(1), codeBox)).toBe(true);
+    const userHost = hostFrames.find((h) => h.id === "user_machines")!;
+    expect(contains(ring(1), userHost)).toBe(true);
+  });
+});
+
+describe("buildStackLayout — edge routing does not pile parallel edges on one port", () => {
+  // web calls three externals. Center-to-center routing left all three on web's
+  // right-face centre, overlapping the lines and stacking their labels into one
+  // run ("HTTP HTTP chat"). Ports must now be distributed along the face.
+  const fan: StackTopology = {
+    ...topo,
+    hosts: [
+      { id: "compose", label: "Compose", nodes: ["web"] },
+      { id: "external", label: "External", nodes: ["xai", "ollama", "qwen"] },
+    ],
+    nodes: [
+      node({ id: "web", ring: 1, host: "compose" }),
+      node({ id: "xai", ring: 3, host: "external", kind: "external" }),
+      node({ id: "ollama", ring: 3, host: "external", kind: "external" }),
+      node({ id: "qwen", ring: 3, host: "external", kind: "external" }),
+    ],
+    edges: [
+      { from: "web", to: "xai", protocol: "chat", label: "chat" },
+      { from: "web", to: "ollama", protocol: "chat", label: "chat" },
+      { from: "web", to: "qwen", protocol: "chat", label: "chat" },
+    ],
+  };
+  const { edges, boxes } = buildStackLayout(fan);
+
+  it("gives each edge leaving web a distinct exit point", () => {
+    const exitYs = edges.map((e) => e.points[0].y);
+    expect(new Set(exitYs).size).toBe(edges.length);
+    // All exit on web's right face (within its height), never the bare centre.
+    for (const e of edges) {
+      expect(e.points[0].x).toBeCloseTo(boxes.web.x + boxes.web.w, 3);
+      expect(e.points[0].y).toBeGreaterThan(boxes.web.y);
+      expect(e.points[0].y).toBeLessThan(boxes.web.y + boxes.web.h);
+    }
+  });
+
+  it("separates the protocol-label anchors so they no longer overlap", () => {
+    const mids = edges.map((e) => `${Math.round(e.mid.x)},${Math.round(e.mid.y)}`);
+    expect(new Set(mids).size).toBe(edges.length);
+    // The label sits in the box-free channel to the right of web, not inside it.
+    for (const e of edges) expect(e.mid.x).toBeGreaterThan(boxes.web.x + boxes.web.w);
+  });
+
+  it("still emits exactly one route per topology edge, arrow head last", () => {
+    expect(edges.length).toBe(fan.edges.length);
+    for (const e of edges) {
+      const last = e.points[e.points.length - 1];
+      // Arrow head lands on the target's left face.
+      expect(last.x).toBeCloseTo(boxes[e.to].x, 3);
+    }
+  });
+});

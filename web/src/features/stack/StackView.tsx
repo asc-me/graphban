@@ -1,4 +1,4 @@
-import { Printer } from "lucide-react";
+import { ListChecks, Printer } from "lucide-react";
 import * as React from "react";
 import { Link, useLocation } from "react-router-dom";
 
@@ -22,8 +22,11 @@ import type {
   ScanHealthState,
   StackComponentHealth,
   StackEdge,
+  StackHealth,
   StackLiveness,
   StackNode,
+  StackScanCategory,
+  StackScanFinding,
   StackTopology,
 } from "@/lib/types";
 
@@ -126,7 +129,10 @@ export function StackView() {
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   // Design default: overlay on. Absence of scans still reads as NOT SCANNED, not clean.
   const [overlayOn, setOverlayOn] = React.useState(true);
-  const healthQ = useStackHealth(activeId, overlayOn);
+  // GRPH-1049: the full scan report reads the same health, so fetch it whenever
+  // the overlay OR the report wants it.
+  const [reportOpen, setReportOpen] = React.useState(false);
+  const healthQ = useStackHealth(activeId, overlayOn || reportOpen);
 
   const data = q.data;
   const health = healthQ.data ?? null;
@@ -152,6 +158,21 @@ export function StackView() {
         purpose="Derived architecture of what runs, where, and what each piece depends on — deployables and externals, not modules."
         action={
           <div className="flex items-center gap-2 print:hidden">
+            <button
+              type="button"
+              data-testid="stack-report-toggle"
+              aria-pressed={reportOpen}
+              onClick={() => setReportOpen((v) => !v)}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-[8px] border px-2.5 py-1.5 text-[12px] transition-colors",
+                reportOpen
+                  ? "border-accent bg-accent/10 text-fg"
+                  : "border-control bg-transparent text-muted hover:border-control-hover",
+              )}
+            >
+              <ListChecks size={14} />
+              {reportOpen ? "Close report" : "Scan report"}
+            </button>
             <button
               type="button"
               data-testid="stack-health-overlay"
@@ -193,6 +214,14 @@ export function StackView() {
           <div className="p-5">
             <CardGridSkeleton />
           </div>
+        ) : reportOpen ? (
+          <StackReport
+            health={health}
+            loading={healthQ.isLoading}
+            isError={healthQ.isError}
+            onRetry={() => void healthQ.refetch()}
+            onClose={() => setReportOpen(false)}
+          />
         ) : (
           <div className="flex h-full min-h-0">
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -355,37 +384,52 @@ function StackCanvas({
           transform={view.transform}
           style={{ transition: view.panning ? undefined : "transform 220ms ease" }}
         >
-          {/* Ownership rings — nested frames, outermost first. */}
-          {layout.rings.map((r) => (
-            <g key={r.ring}>
-              <rect
-                x={r.x}
-                y={r.y}
-                width={r.w}
-                height={r.h}
-                rx={18}
-                fill="none"
-                stroke="currentColor"
-                className={
-                  r.ring === 1
-                    ? "text-accent/30"
-                    : r.ring === 2
-                      ? "text-violet-400/30"
-                      : "text-muted-2/40"
-                }
-                strokeWidth={1}
-                strokeDasharray="2 7"
-              />
-              <text
-                x={r.x + 14}
-                y={r.y + 18}
-                className="fill-muted font-mono"
-                style={{ fontSize: 11, letterSpacing: "0.12em" }}
-              >
-                {r.label}
-              </text>
-            </g>
-          ))}
+          {/* Ownership rings — nested frames, outermost first. The label sits
+              ABOVE the frame edge on a filled chip so it stays readable and never
+              piles onto the host labels or a box (the top-left used to be a pile-up). */}
+          {layout.rings.map((r) => {
+            const ink =
+              r.ring === 1 ? "text-accent" : r.ring === 2 ? "text-violet-300" : "text-muted";
+            return (
+              <g key={r.ring}>
+                <rect
+                  x={r.x}
+                  y={r.y}
+                  width={r.w}
+                  height={r.h}
+                  rx={18}
+                  fill="none"
+                  stroke="currentColor"
+                  className={
+                    r.ring === 1
+                      ? "text-accent/50"
+                      : r.ring === 2
+                        ? "text-violet-400/50"
+                        : "text-muted-2/55"
+                  }
+                  strokeWidth={1.5}
+                  strokeDasharray="7 6"
+                />
+                <rect
+                  x={r.x + 8}
+                  y={r.y - 20}
+                  width={r.label.length * 6.3 + 12}
+                  height={16}
+                  rx={4}
+                  className="fill-surface stroke-line"
+                  strokeWidth={0.75}
+                />
+                <text
+                  x={r.x + 14}
+                  y={r.y - 8}
+                  className={cn("font-mono font-medium", ink)}
+                  style={{ fontSize: 11, letterSpacing: "0.1em" }}
+                >
+                  {r.label}
+                </text>
+              </g>
+            );
+          })}
 
           {/* Host groups. Clicking the host label highlights its nodes. */}
           {layout.hostFrames.map((h) => {
@@ -939,6 +983,392 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </h3>
       {children}
     </div>
+  );
+}
+
+// ── GRPH-1049 · full scan report ────────────────────────────────────────────
+// The inspector shows one box's health; this reads every component's scans at
+// once so you can see the whole surface — filterable by component, category and
+// severity. Honest by construction: the coverage matrix shows never-scanned and
+// stale cells explicitly (absence must never read as clean), and the finding
+// count is over what a scanner actually reported, never a score.
+
+const CAT_ORDER = ["security", "refactor", "stub", "coverage", "work"];
+const SEV_ORDER = ["crit", "high", "med", "low"];
+const SEV_RANK: Record<string, number> = { crit: 0, high: 1, med: 2, low: 3 };
+
+function normSev(s: string): string {
+  const k = (s || "").toLowerCase();
+  if (k === "critical") return "crit";
+  if (k === "medium") return "med";
+  if (k === "info") return "low";
+  return k in HEALTH_SEV ? k : "low";
+}
+
+interface FlatFinding {
+  component: string;
+  componentPath: string;
+  category: string;
+  categoryLabel: string;
+  sev: string;
+  finding: StackScanFinding;
+}
+
+function StackReport({
+  health,
+  loading,
+  isError,
+  onRetry,
+  onClose,
+}: {
+  health: StackHealth | null;
+  loading: boolean;
+  isError: boolean;
+  onRetry: () => void;
+  onClose: () => void;
+}) {
+  const findingHref = useFindingHref();
+  const [fComp, setFComp] = React.useState<Set<string>>(new Set());
+  const [fCat, setFCat] = React.useState<Set<string>>(new Set());
+  const [fSev, setFSev] = React.useState<Set<string>>(new Set());
+  const [query, setQuery] = React.useState("");
+
+  const components = health?.components ?? [];
+
+  // Every category key present, in the canonical order, then any extras.
+  const catKeys = React.useMemo(() => {
+    const present = new Set<string>();
+    for (const c of components) for (const k of Object.keys(c.categories)) present.add(k);
+    const ordered = CAT_ORDER.filter((k) => present.has(k));
+    for (const k of present) if (!ordered.includes(k)) ordered.push(k);
+    return ordered;
+  }, [components]);
+  const catLabel = React.useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const c of components)
+      for (const [k, cat] of Object.entries(c.categories)) m[k] = cat.label;
+    return m;
+  }, [components]);
+
+  // Flatten every reported finding.
+  const all = React.useMemo<FlatFinding[]>(() => {
+    const rows: FlatFinding[] = [];
+    for (const c of components) {
+      for (const [key, cat] of Object.entries(c.categories)) {
+        for (const f of cat.findings) {
+          rows.push({
+            component: c.id,
+            componentPath: c.path,
+            category: key,
+            categoryLabel: cat.label,
+            sev: normSev(f.severity),
+            finding: f,
+          });
+        }
+      }
+    }
+    return rows;
+  }, [components]);
+
+  const sevCounts = React.useMemo(() => {
+    const m: Record<string, number> = { crit: 0, high: 0, med: 0, low: 0 };
+    for (const r of all) m[r.sev] = (m[r.sev] ?? 0) + 1;
+    return m;
+  }, [all]);
+
+  const shown = React.useMemo(() => {
+    const ql = query.trim().toLowerCase();
+    return all
+      .filter((r) => (fComp.size ? fComp.has(r.component) : true))
+      .filter((r) => (fCat.size ? fCat.has(r.category) : true))
+      .filter((r) => (fSev.size ? fSev.has(r.sev) : true))
+      .filter((r) =>
+        ql
+          ? r.finding.summary.toLowerCase().includes(ql) ||
+            (r.finding.path || "").toLowerCase().includes(ql)
+          : true,
+      )
+      .sort(
+        (a, b) =>
+          (SEV_RANK[a.sev] ?? 9) - (SEV_RANK[b.sev] ?? 9) ||
+          a.component.localeCompare(b.component) ||
+          a.category.localeCompare(b.category),
+      );
+  }, [all, fComp, fCat, fSev, query]);
+
+  const filtered = fComp.size + fCat.size + fSev.size > 0 || query.trim().length > 0;
+  const clearAll = () => {
+    setFComp(new Set());
+    setFCat(new Set());
+    setFSev(new Set());
+    setQuery("");
+  };
+
+  if (isError && !health) {
+    return (
+      <div className="p-5" data-testid="stack-report">
+        <PlannerError message={FETCH_FAILED} onRetry={onRetry} />
+      </div>
+    );
+  }
+  if (!health && loading) {
+    return (
+      <div className="p-5" data-testid="stack-report">
+        <CardGridSkeleton />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col" data-testid="stack-report">
+      <div className="flex flex-none flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-5 py-3">
+        <h2 className="text-lead font-medium text-fg">Scan report</h2>
+        <span className="font-mono text-small text-muted-2">
+          {health?.head_sha ? `head ${health.head_sha.slice(0, 7)}` : "head unknown"}
+          {health?.generated_at ? ` · ${health.generated_at.slice(0, 16).replace("T", " ")}` : ""}
+        </span>
+        <span className="ml-auto font-mono text-small text-muted" data-testid="stack-report-count">
+          {all.length} finding{all.length === 1 ? "" : "s"}
+          {filtered ? ` · ${shown.length} shown` : ""}
+        </span>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-[8px] border border-control bg-surface-2 px-2.5 py-1 text-[12px] text-fg-2 hover:border-control-hover"
+        >
+          Close
+        </button>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <p className="mb-3 max-w-prose text-[12px] leading-snug text-muted">
+          Every scanner result at head, across all our code. No score: a scanner that
+          hasn&apos;t run at head never counts as clean, and never-scanned or stale cells
+          are shown as such, not hidden.
+        </p>
+
+        {/* Coverage matrix — honest per component × category. */}
+        <div
+          className="mb-4 overflow-x-auto rounded-[10px] border border-line"
+          data-testid="stack-report-matrix"
+        >
+          <table className="w-full border-collapse text-left text-small">
+            <thead>
+              <tr className="bg-surface-2 text-muted-2">
+                <th className="px-2.5 py-1.5 font-medium">component</th>
+                {catKeys.map((k) => (
+                  <th key={k} className="px-2.5 py-1.5 font-medium capitalize">
+                    {catLabel[k]?.split("·")[0]?.trim() || k}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {components.map((c) => (
+                <tr key={c.id} className="border-t border-line">
+                  <td className="px-2.5 py-1.5 font-mono text-fg-2">
+                    {c.id}
+                    <span className="ml-1 text-muted-2">{c.path}</span>
+                  </td>
+                  {catKeys.map((k) => (
+                    <td key={k} className="px-2.5 py-1.5">
+                      <MatrixCell cat={c.categories[k]} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              {components.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={catKeys.length + 1}
+                    className="px-2.5 py-3 text-center text-muted"
+                    data-testid="stack-report-empty"
+                  >
+                    Nothing has been scanned for this project yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Filters. */}
+        <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+          <FilterRow label="Severity">
+            {SEV_ORDER.map((s) => (
+              <FilterChip
+                key={s}
+                testid={`stack-report-filter-sev-${s}`}
+                on={fSev.has(s)}
+                onClick={() => setFSev((prev) => toggle(prev, s))}
+                className={HEALTH_SEV[s]?.className}
+              >
+                {HEALTH_SEV[s]?.label || s} · {sevCounts[s] ?? 0}
+              </FilterChip>
+            ))}
+          </FilterRow>
+          <FilterRow label="Component">
+            {components.map((c) => (
+              <FilterChip
+                key={c.id}
+                testid={`stack-report-filter-comp-${c.id}`}
+                on={fComp.has(c.id)}
+                onClick={() => setFComp((prev) => toggle(prev, c.id))}
+              >
+                {c.id}
+              </FilterChip>
+            ))}
+          </FilterRow>
+          <FilterRow label="Category">
+            {catKeys.map((k) => (
+              <FilterChip
+                key={k}
+                testid={`stack-report-filter-cat-${k}`}
+                on={fCat.has(k)}
+                onClick={() => setFCat((prev) => toggle(prev, k))}
+              >
+                {k}
+              </FilterChip>
+            ))}
+          </FilterRow>
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="filter text…"
+            data-testid="stack-report-search"
+            className="h-7 w-40 rounded-[7px] border border-control bg-surface-2 px-2 text-[12px] text-fg-2 placeholder:text-muted-2 focus:border-control-hover focus:outline-none"
+          />
+          {filtered && (
+            <button
+              type="button"
+              onClick={clearAll}
+              className="text-small text-muted hover:text-fg-2"
+            >
+              clear
+            </button>
+          )}
+        </div>
+
+        {/* Findings. */}
+        {shown.length === 0 ? (
+          <p className="py-6 text-center text-[12px] text-muted" data-testid="stack-report-none">
+            {all.length === 0
+              ? "No findings reported — but check the matrix above for never-scanned cells."
+              : "No findings match these filters."}
+          </p>
+        ) : (
+          <ul className="space-y-1.5">
+            {shown.map((r, i) => {
+              const sev = HEALTH_SEV[r.sev] || HEALTH_SEV.low;
+              const href = findingHref(r.finding.link_kind, r.finding.link_ref);
+              return (
+                <li
+                  key={`${r.component}-${r.category}-${i}`}
+                  className="flex items-start gap-2 rounded-[8px] border border-line bg-surface-2/60 px-2.5 py-1.5 text-[12px]"
+                  data-testid="stack-report-finding"
+                >
+                  <span className={cn("mt-0.5 flex-none rounded border px-1 font-mono text-meta", sev.className)}>
+                    {sev.label}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="leading-snug text-fg-2">{r.finding.summary}</div>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 font-mono text-[10px] text-muted-2">
+                      <span className="rounded border border-control px-1 text-muted">{r.component}</span>
+                      <span className="rounded border border-control px-1 text-muted">{r.category}</span>
+                      <span className="truncate">{r.finding.path}</span>
+                      {href && r.finding.link_ref ? (
+                        <Link
+                          to={href}
+                          className="text-accent hover:underline"
+                          data-testid="stack-report-finding-link"
+                        >
+                          {r.finding.link_ref} ↗
+                        </Link>
+                      ) : null}
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function toggle(prev: Set<string>, v: string): Set<string> {
+  const next = new Set(prev);
+  if (next.has(v)) next.delete(v);
+  else next.add(v);
+  return next;
+}
+
+function MatrixCell({ cat }: { cat: StackScanCategory | undefined }) {
+  if (!cat) return <span className="text-muted-2">·</span>;
+  const n = cat.findings.length;
+  if (cat.state === "has_findings") {
+    return (
+      <span className="font-mono text-orange-300" title={cat.note || undefined}>
+        {n} finding{n === 1 ? "" : "s"}
+      </span>
+    );
+  }
+  if (cat.state === "clean_at_sha") {
+    return <span className="font-mono text-sky-300">clean</span>;
+  }
+  if (cat.state === "stale") {
+    return (
+      <span className="font-mono text-muted" title={cat.note || undefined}>
+        stale
+      </span>
+    );
+  }
+  return (
+    <span className="font-mono text-muted-2" title={cat.note || undefined}>
+      not run
+    </span>
+  );
+}
+
+function FilterRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted-2">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function FilterChip({
+  on,
+  onClick,
+  testid,
+  className,
+  children,
+}: {
+  on: boolean;
+  onClick: () => void;
+  testid: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={testid}
+      aria-pressed={on}
+      onClick={onClick}
+      className={cn(
+        "rounded-full border px-2 py-0.5 font-mono text-[10px] transition-colors",
+        on
+          ? "border-accent bg-accent/10 text-fg"
+          : cn("bg-transparent text-muted hover:border-control-hover", className || "border-control"),
+      )}
+    >
+      {children}
+    </button>
   );
 }
 
