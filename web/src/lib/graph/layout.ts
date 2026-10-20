@@ -37,6 +37,15 @@ export interface LayoutOpts {
    * drifted back would make the gesture a lie.
    */
   pinned?: Record<string, Pos>;
+  /**
+   * Area membership for the clustered layout (GRPH-1051 / Build.dc.html). When set, the
+   * code graph places a module at each area's centre and its children on rings rather than
+   * running the force layout. The links graph and the galaxy view omit this, so they keep
+   * the extraction-identical force path.
+   */
+  membership?: Record<string, string>;
+  /** Kind per node, used only with `membership` to pick a ring. */
+  kinds?: Record<string, string>;
 }
 
 // Physics, carried over unchanged from the two originals so the extraction moves no node.
@@ -75,6 +84,121 @@ export function iterationsFor(n: number): number {
   if (n <= KNEE) return BASE_ITERATIONS;
   const budget = BASE_ITERATIONS * KNEE * KNEE;
   return Math.max(MIN_ITERATIONS, Math.round(budget / (n * n)));
+}
+
+/**
+ * Dispatch used by the worker and the jsdom fallback. Force layout stays the default so the
+ * extraction test (and the links graph) keep their positions; clustered is opt-in.
+ */
+export function runLayout(
+  ids: string[],
+  edges: LayoutEdge[],
+  opts: LayoutOpts,
+): Record<string, Pos> {
+  if (opts.membership && Object.keys(opts.membership).length > 0) {
+    return computeClusteredLayout(ids, opts);
+  }
+  return computeLayout(ids, edges, opts);
+}
+
+/**
+ * Build.dc.html's ring layout: one hub per area, files / symbols / docs on concentric rings.
+ *
+ * Geometric, not force-directed — that is the point. Force layout does not group directories,
+ * so dashed hulls on top of it are overlapping blobs. Rings are deterministic (sorted ids,
+ * sorted areas, no `Math.random`) and honour pins the same way the force path does: a pinned
+ * node is placed at the held coordinate after everyone else is laid out.
+ *
+ * Radii are scaled from the design's 1200×760 viewBox down to this 900×560 one (~0.5, because
+ * a full-size ring of 168 would collide two clusters on the smaller canvas).
+ */
+const RING_FOR: Record<string, number> = {
+  file: 54,
+  symbol: 84,
+  doc: 35,
+  config: 35,
+};
+const RING_DEFAULT = 50;
+const HUB_PAD = 22;
+
+export function computeClusteredLayout(
+  ids: string[],
+  opts: LayoutOpts,
+): Record<string, Pos> {
+  const { width, height, pinned, membership = {}, kinds = {} } = opts;
+  const cx = width / 2;
+  const cy = height / 2;
+  const pos: Record<string, Pos> = {};
+  if (ids.length === 0) return pos;
+
+  const buckets = new Map<string, string[]>();
+  for (const id of ids) {
+    const area = membership[id] ?? id;
+    const list = buckets.get(area) ?? [];
+    list.push(id);
+    buckets.set(area, list);
+  }
+  const areas = [...buckets.keys()].sort();
+
+  const radii = areas.map((area) => {
+    const members = buckets.get(area)!;
+    let maxR = HUB_PAD;
+    for (const id of members) {
+      const kind = kinds[id] ?? "";
+      if (kind === "module") continue;
+      maxR = Math.max(maxR, RING_FOR[kind] ?? RING_DEFAULT);
+    }
+    return maxR + HUB_PAD;
+  });
+
+  const centres: Pos[] = [];
+  if (areas.length === 1) {
+    centres.push({ x: cx, y: cy });
+  } else {
+    let R = Math.min(width, height) / 2.8;
+    const gap = 24;
+    let need = 0;
+    for (let i = 0; i < areas.length; i++) {
+      const pair = radii[i] + radii[(i + 1) % areas.length] + gap;
+      need = Math.max(need, pair / (2 * Math.sin(Math.PI / areas.length)));
+    }
+    R = Math.max(R, need);
+    areas.forEach((_, i) => {
+      const angle = (2 * Math.PI * i) / areas.length - Math.PI / 2;
+      centres.push({ x: cx + R * Math.cos(angle), y: cy + R * Math.sin(angle) });
+    });
+  }
+
+  areas.forEach((area, ai) => {
+    const origin = centres[ai];
+    const members = [...(buckets.get(area) ?? [])].sort();
+    const hub = members.find((id) => kinds[id] === "module");
+    if (hub) pos[hub] = { x: origin.x, y: origin.y };
+    const rings = new Map<string, string[]>();
+    for (const id of members) {
+      if (id === hub) continue;
+      const kind = kinds[id] ?? "file";
+      const list = rings.get(kind) ?? [];
+      list.push(id);
+      rings.set(kind, list);
+    }
+    for (const [kind, ringIds] of [...rings.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
+      const rr = RING_FOR[kind] ?? RING_DEFAULT;
+      const n = ringIds.length;
+      ringIds.forEach((id, i) => {
+        const angle = (2 * Math.PI * i) / Math.max(1, n) - Math.PI / 2;
+        pos[id] = { x: origin.x + rr * Math.cos(angle), y: origin.y + rr * Math.sin(angle) };
+      });
+    }
+  });
+
+  if (pinned) {
+    for (const id of ids) {
+      const held = pinned[id];
+      if (held) pos[id] = { x: held.x, y: held.y };
+    }
+  }
+  return pos;
 }
 
 export function computeLayout(
@@ -161,9 +285,10 @@ export function computeLayout(
  * adding an edge between two known nodes) still re-lays out, which keying on `ids` alone would
  * have missed.
  */
-export function layoutKey(ids: string[], edges: LayoutEdge[]): string {
-  return `${ids.length}:${edges.length}|${ids.join(",")}|${edges
+export function layoutKey(ids: string[], edges: LayoutEdge[], cluster = ""): string {
+  const base = `${ids.length}:${edges.length}|${ids.join(",")}|${edges
     .map((e) => `${e.a}>${e.b}`)
     .sort()
     .join(",")}`;
+  return cluster ? `${base}|${cluster}` : base;
 }

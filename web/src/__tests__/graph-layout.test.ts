@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   BASE_ITERATIONS,
+  computeClusteredLayout,
   computeLayout,
   iterationsFor,
   layoutKey,
+  runLayout,
   type LayoutEdge,
 } from "@/lib/graph/layout";
 
@@ -196,5 +198,63 @@ describe("layoutKey", () => {
 
   it("is stable under edge reordering", () => {
     expect(layoutKey(IDS, [...EDGES].reverse())).toBe(layoutKey(IDS, EDGES));
+  });
+
+  it("changes when the cluster assignment changes", () => {
+    expect(layoutKey(IDS, EDGES, "a:web")).not.toBe(layoutKey(IDS, EDGES));
+  });
+});
+
+describe("computeClusteredLayout", () => {
+  const ids = ["web", "web/a.py", "web/a.py::foo", "lib", "lib/b.py"];
+  const kinds = {
+    web: "module",
+    "web/a.py": "file",
+    "web/a.py::foo": "symbol",
+    lib: "module",
+    "lib/b.py": "file",
+  };
+  const membership = {
+    web: "web",
+    "web/a.py": "web",
+    "web/a.py::foo": "web",
+    lib: "lib",
+    "lib/b.py": "lib",
+  };
+  const opts = { width: W, height: H, membership, kinds };
+
+  it("is deterministic", () => {
+    expect(computeClusteredLayout(ids, opts)).toEqual(computeClusteredLayout(ids, opts));
+  });
+
+  it("puts a child closer to its module than to the other module", () => {
+    // THE criterion. Force layout does not group directories; this is what makes hulls
+    // mean anything. If a.py is closer to lib than to web, the rings are a costume.
+    const pos = computeClusteredLayout(ids, opts);
+    const d = (a: string, b: string) => Math.hypot(pos[a].x - pos[b].x, pos[a].y - pos[b].y);
+    expect(d("web/a.py", "web")).toBeLessThan(d("web/a.py", "lib"));
+    expect(d("lib/b.py", "lib")).toBeLessThan(d("lib/b.py", "web"));
+  });
+
+  it("keeps the two modules apart rather than stacking them", () => {
+    const pos = computeClusteredLayout(ids, opts);
+    expect(Math.hypot(pos.web.x - pos.lib.x, pos.web.y - pos.lib.y)).toBeGreaterThan(80);
+  });
+
+  it("honours a pin and leaves everyone else on the rings", () => {
+    const pos = computeClusteredLayout(ids, {
+      ...opts,
+      pinned: { "web/a.py": { x: 10, y: 20 } },
+    });
+    expect(pos["web/a.py"]).toEqual({ x: 10, y: 20 });
+    expect(pos.web.x).not.toBe(10);
+  });
+
+  it("does not change the force path when membership is omitted", () => {
+    // The CALL: runLayout without membership must be computeLayout, or the extraction
+    // test is only true of a function nobody dispatches to.
+    const force = computeLayout(IDS, EDGES, { width: W, height: H });
+    const via = runLayout(IDS, EDGES, { width: W, height: H });
+    expect(via).toEqual(force);
   });
 });
