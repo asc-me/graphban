@@ -327,17 +327,20 @@ def _try_reclaim_idle(holder: Holder, path: Path, *, idle_after: float) -> tuple
         # already exited. Stopping that pid is a no-op; stopping whoever holds
         # the flock would kill the sweep.
         return False, ""
-    command = process_command(holder.pid)
-    if not command or "gbfleet" not in command:
-        return False, (
-            "It has been idle past the takeover threshold, but its command line "
-            "could not be confirmed as gbfleet, so it was left running."
-        )
+    # "We looked and it does not hold the file" is checked first: it is the
+    # stronger answer, and it must not depend on the command-line lookup also
+    # working on this platform (GRPH-1056, Windows).
     opened = pid_has_path_open(holder.pid, path)
     if opened is False:
         return False, (
             "It has been idle past the takeover threshold, but that pid does not "
             "have the lock file open, so it was left running."
+        )
+    command = process_command(holder.pid)
+    if not command or "gbfleet" not in command:
+        return False, (
+            "It has been idle past the takeover threshold, but its command line "
+            "could not be confirmed as gbfleet, so it was left running."
         )
     # `opened is None` is "could not ask" (Windows). The command line already
     # matched. Stopping there is the only reclaim that platform can do; the

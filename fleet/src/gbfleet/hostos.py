@@ -566,17 +566,9 @@ def process_command(pid: int) -> str | None:
     """
     if pid <= 0:
         return None
+    if WINDOWS:
+        return _windows_process_command(pid)
     try:
-        if WINDOWS:
-            listed = subprocess.run(
-                ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine",
-                 "/value"],
-                capture_output=True, text=True, check=False,
-            )
-            for line in listed.stdout.splitlines():
-                if line.startswith("CommandLine=") and line.strip() != "CommandLine=":
-                    return line.split("=", 1)[1].strip() or None
-            return None
         listed = subprocess.run(
             ["ps", "-ww", "-o", "command=", "-p", str(pid)],
             capture_output=True, text=True, check=False,
@@ -587,6 +579,43 @@ def process_command(pid: int) -> str | None:
         return None
     text = listed.stdout.strip()
     return text or None
+
+
+def _windows_process_command(pid: int) -> str | None:
+    """`process_command` on Windows: CIM through PowerShell, then `wmic`.
+
+    `wmic` alone was the first version, and it is gone from current Windows
+    (removed from Windows 11 24H2 and the GitHub `windows-latest` image), so the
+    lookup raised FileNotFoundError, answered None, and an idle holder was never
+    reclaimed there (GRPH-1056). `Win32_Process.CommandLine` through
+    `Get-CimInstance` is the same data from a cmdlet every supported Windows
+    ships. `wmic` stays as the fallback for a host where PowerShell is blocked.
+    """
+    attempts = (
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
+        ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine",
+         "/value"],
+    )
+    for argv in attempts:
+        try:
+            listed = subprocess.run(
+                argv, capture_output=True, text=True, check=False, timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if listed.returncode != 0:
+            continue
+        text = listed.stdout.strip()
+        if argv[0] == "wmic":
+            text = next(
+                (line.split("=", 1)[1].strip()
+                 for line in text.splitlines() if line.startswith("CommandLine=")),
+                "",
+            )
+        if text:
+            return text
+    return None
 
 
 def pid_has_path_open(pid: int, path: Path) -> bool | None:

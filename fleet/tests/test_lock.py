@@ -720,3 +720,60 @@ def test_a_tool_call_marks_the_holder_active_and_a_listing_does_not(
             "params": {"name": "ps", "arguments": {}},
         })
         assert json.loads(acquired.path.read_text(encoding="utf-8"))["touched_at"] != _OLD
+
+
+def test_windows_reads_the_command_line_without_wmic(monkeypatch):
+    """GRPH-1056 on Windows: `wmic` is gone from current images, and the lookup
+    answering None left every idle holder running there. The CIM query through
+    PowerShell has to be what answers, and `wmic` only a fallback.
+    """
+    from gbfleet import hostos
+
+    seen: list[str] = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv[0])
+        if argv[0] == "wmic":
+            raise FileNotFoundError("wmic")
+        return subprocess.CompletedProcess(argv, 0, stdout="python -c gbfleet\r\n", stderr="")
+
+    monkeypatch.setattr(hostos, "WINDOWS", True)
+    monkeypatch.setattr(hostos.subprocess, "run", fake_run)
+    assert hostos.process_command(4242) == "python -c gbfleet"
+    assert seen == ["powershell"]
+
+
+def test_windows_falls_back_to_wmic_when_powershell_cannot_answer(monkeypatch):
+    from gbfleet import hostos
+
+    def fake_run(argv, **kwargs):
+        if argv[0] == "powershell":
+            raise FileNotFoundError("powershell")
+        return subprocess.CompletedProcess(
+            argv, 0, stdout="\r\n\r\nCommandLine=gbfleet mcp\r\n\r\n", stderr=""
+        )
+
+    monkeypatch.setattr(hostos, "WINDOWS", True)
+    monkeypatch.setattr(hostos.subprocess, "run", fake_run)
+    assert hostos.process_command(4242) == "gbfleet mcp"
+
+
+def test_a_closed_lock_file_is_said_even_when_the_command_cannot_be_read(
+    git_repo: Path, state: Path, monkeypatch
+):
+    """The Windows failure from the other side: the command lookup answering
+    None must not hide 'we looked, and it does not hold the file'.
+    """
+    monkeypatch.setattr("gbfleet.lock.process_command", lambda pid: None)
+    monkeypatch.setattr("gbfleet.lock.pid_has_path_open", lambda pid, path: False)
+    proc = _spawn_holder(git_repo, state)
+    try:
+        _age_lock(lock_path(repo_root(git_repo), state))
+        with pytest.raises(RepoLocked) as exc:
+            with hold(git_repo, state, idle_after=0):
+                pass
+        assert "does not have the lock file open" in str(exc.value)
+        assert proc.poll() is None
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
