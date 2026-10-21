@@ -274,14 +274,18 @@ def test_run_refuses_a_repository_it_cannot_verify(tmp_path):
     assert ".gbagent.toml" in result.stderr
 
 
-@pytest.mark.parametrize("omitted", ["--turns", "--window", "--model", "--worktree"])
+@pytest.mark.parametrize("omitted", ["--model", "--worktree"])
 def test_the_things_the_loop_refuses_to_guess_have_no_defaults_here_either(tmp_path, omitted):
-    """`loop.run` refuses to guess the budget or the window. A CLI default puts the guess back.
+    """`--model` and `--worktree` stay argparse-required. A CLI default puts a guess back.
 
     Each flag is omitted ON ITS OWN and the error must name THAT flag as required. Omitting
     both and asserting the names appear in stderr is what this did first, and it passed with
     a default in place — argparse prints the usage line on any error, and the usage line
     contains every flag whether it is required or not.
+
+    `--turns` and `--window` are not in this list (GRPH-1058): argparse `required=True`
+    exited 2 before `register_agent`. They are still not guessed — see
+    `test_a_missing_budget_or_window_is_refused_after_register`.
     """
     argv = {"--worktree": str(tmp_path), "--mcp-config": "/nope.json", "--model": "m",
             "--turns": "5", "--window": "1000"}
@@ -295,6 +299,108 @@ def test_the_things_the_loop_refuses_to_guess_have_no_defaults_here_either(tmp_p
     required = [l for l in result.stderr.splitlines() if "required" in l]
     assert required, f"argparse did not report a missing argument for {omitted}"
     assert omitted in required[0], f"{omitted} is not required: {required[0]}"
+
+
+def test_tuning_refusal_names_only_what_is_missing_and_does_not_guess():
+    """A default would pass this by never being asked. Zero is missing, not a budget."""
+    assert cli.tuning_refusal(40, 262144) == ""
+    one = cli.tuning_refusal(None, 262144)
+    assert "needs --turns" in one and "--window" not in one
+    assert "too large" in one and "too small" in one
+    both = cli.tuning_refusal(0, -1)
+    assert "needs --turns and --window" in both
+
+
+def _seat_file(tmp_path: Path) -> Path:
+    path = tmp_path / "seat.json"
+    path.write_text(json.dumps({"mcpServers": {"graphban": {
+        "url": "https://graphban.invalid/api/mcp", "headers": {"X-API-Key": "k"}}}}))
+    return path
+
+
+@pytest.mark.parametrize("omit", ["--turns", "--window"])
+def test_a_missing_budget_or_window_is_refused_after_register(tmp_path, omit):
+    """The flag is named, and the process got past argparse (GRPH-1058).
+
+    `--agent-id` skips the network register, which is the path a walk uses, and still
+    has to refuse before `prepare` — a 900s setup must not run in order to say the
+    flag was missing. Exit 78, the same code as every other refusal to start, not
+    argparse's 2.
+    """
+    argv = ["--worktree", str(tmp_path), "--mcp-config", str(_seat_file(tmp_path)),
+            "--agent-id", "GRPH-A1", "--model", "m", "--base-url", "http://model.invalid/v1",
+            "--turns", "5", "--window", "1000"]
+    argv.remove(omit)
+    argv.remove("5" if omit == "--turns" else "1000")
+
+    result = subprocess.run([str(BINARY), "run", *argv], capture_output=True, text=True,
+                            timeout=60)
+
+    assert result.returncode == 78, result.stderr
+    assert f"needs {omit}" in result.stderr
+    assert "refuses to guess" in result.stderr
+    assert "required" not in result.stderr
+    # Did not reach setup. A `.gbagent.toml` refusal means the check ran too late.
+    assert ".gbagent.toml" not in result.stderr
+
+
+def test_a_missing_flag_registers_before_it_refuses_and_releases_the_claim(tmp_path, monkeypatch, capsys):
+    """THE ORDER. A check that runs before `register` leaves the wave reading a child
+    that never registered — the bug — and this stays green if that check is moved back
+    up in front of it.
+
+    Sabotage: move the `tuning_refusal` call above the `register` call. This fails
+    because `register` is no longer in `order` ahead of the refusal. The subprocess
+    test above still passes, because `--agent-id` never registers.
+    """
+    order: list = []
+
+    def fake_register(client, *, code, model, worktree, branch):
+        order.append("register")
+        return ("GRPH-A1", "worker",
+                {"item": "GRPH-9", "state": "claimed", "reason": None, "held_by": None},
+                "")
+
+    def fake_release(base_url, api_key, item_id, agent_id):
+        order.append(("release", item_id, agent_id))
+
+    monkeypatch.setattr(cli, "register", fake_register)
+    monkeypatch.setattr(cli, "_release_unstarted", fake_release)
+    instruction = tmp_path / "instr.txt"
+    instruction.write_text("enrolment_code='WORKER-1'\nDo the work.\n")
+    args = cli.build_parser().parse_args([
+        "run", "--worktree", str(tmp_path), "--mcp-config", str(_seat_file(tmp_path)),
+        "--instruction-file", str(instruction), "--model", "m", "--turns", "5",
+        "--base-url", "http://model.invalid/v1",
+    ])
+
+    assert cli._run(args) == 78
+    assert order == ["register", ("release", "GRPH-9", "GRPH-A1")]
+    err = capsys.readouterr().err
+    assert "needs --window" in err
+    assert "registered GRPH-A1" in err
+
+
+def test_an_unbound_seat_missing_a_flag_does_not_release(tmp_path, monkeypatch):
+    """Nothing was claimed. Releasing would hand back an item this child does not hold."""
+    def fake_register(client, *, code, model, worktree, branch):
+        return ("GRPH-A1", "worker",
+                {"item": None, "state": "none", "reason": None, "held_by": None}, "")
+
+    def fake_release(*_a, **_k):
+        raise AssertionError("released an item this registration did not claim")
+
+    monkeypatch.setattr(cli, "register", fake_register)
+    monkeypatch.setattr(cli, "_release_unstarted", fake_release)
+    instruction = tmp_path / "instr.txt"
+    instruction.write_text("enrolment_code='WORKER-1'\n")
+    args = cli.build_parser().parse_args([
+        "run", "--worktree", str(tmp_path), "--mcp-config", str(_seat_file(tmp_path)),
+        "--instruction-file", str(instruction), "--model", "m",
+        "--base-url", "http://model.invalid/v1",
+    ])
+
+    assert cli._run(args) == 78
 
 
 # ---- reading the seat the supervisor wrote ------------------------------------------------
