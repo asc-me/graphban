@@ -2397,6 +2397,86 @@ def _record_handback(db: Session, item: Item, agent_id: str, reason: str | None,
     }])
 
 
+def release_refusal(db: Session, item_id: str) -> tuple[str, str]:
+    """(message, hint) when `release_item` returned None because the caller holds nothing.
+
+    The message keeps the words ``not the lease holder``. gbfleet classifies a moved lease
+    by that phrase, and a reword that drops it turns a non-event into a wave failure.
+
+    What the old hint did not do is name anyone. ``another agent holds it`` reads as a live
+    holder whether `claimed_by` is empty, points at a row that is gone, or points at an
+    agent the roster already calls offline. Those are different next steps, and the
+    reassuring one — someone is on it — is the one a planner takes when the child has exited
+    (GRPH-1057).
+
+    The offline word is `fleet.sweep_offline`, the predicate `requeue_offline_items` uses,
+    so the hint cannot describe a holder the sweep will release as still working, or the
+    reverse. A missing Agent row is not that predicate: the sweep never sees it.
+    """
+    from app.services import fleet as fleet_svc
+
+    item = db.get(Item, keys.resolve_item(db, item_id) or item_id)
+    if item is None:
+        return (
+            f"not the lease holder for {item_id!r}",
+            "no such item; search_items for a valid id",
+        )
+    label = item.key
+    holder = item.claimed_by or ""
+    if not holder:
+        review = item.review_claimed_by or ""
+        if review:
+            return (
+                f"not the lease holder for {label!r}: no build lease; review held by {review}",
+                "release_item hands a review hold back only for the agent that holds it",
+            )
+        return (
+            f"not the lease holder for {label!r}: nobody holds it",
+            "claimed_by is empty, so there is no lease to hand back. fleet_status's offline "
+            "sweep and retire_wave only release a lease an agent still holds",
+        )
+    agent = db.get(Agent, holder)
+    if agent is None:
+        return (
+            f"not the lease holder for {label!r}: claimed_by {holder} has no agent row",
+            "the offline sweep only releases holders it can find on the roster, so "
+            "fleet_status will not clear this. It needs a person to clear claimed_by",
+        )
+    bound = agent.enrolment_id is not None
+    if fleet_svc.sweep_offline(db, agent):
+        hint = (
+            f"{holder} is offline. fleet_status runs the offline sweep "
+            f"(requeue_offline_items), which releases items that agent holds"
+        )
+        if bound:
+            hint += ". A planner force-releases that bound seat with retire_wave"
+        return (
+            f"not the lease holder for {label!r}: held by {holder}, who is offline",
+            hint,
+        )
+    state = fleet_svc.presence_state(agent)
+    if state == "quarantined":
+        hint = (
+            f"{holder} is quarantined. The offline sweep does not release a quarantined holder"
+        )
+        if bound:
+            hint += ". A planner force-releases the bound seat with retire_wave"
+        return (
+            f"not the lease holder for {label!r}: held by {holder}, who is quarantined",
+            hint,
+        )
+    hint = f"{holder} is {state} and holds the lease; only that agent can release_item"
+    if bound:
+        hint += (
+            ". A planner force-releases the bound seat with retire_wave, which does not "
+            "wait for the holder to go offline"
+        )
+    return (
+        f"not the lease holder for {label!r}: held by {holder} ({state})",
+        hint,
+    )
+
+
 def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "next",
                  reason: str | None = None) -> Item | None:
     """Give a claimed item back to the queue. Returns the item, or None if not the holder.
