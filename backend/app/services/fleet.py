@@ -2910,6 +2910,37 @@ def extend_reservations(db: Session, *, agent_id: str, item_id: str,
             row.expires_at = floor
 
 
+def sweep_offline(db: Session, agent: Agent, *, dead_keys: set[str] | None = None,
+                 lease_seconds: int = DEFAULT_LEASE_SECONDS,
+                 now: datetime | None = None) -> bool:
+    """Whether `requeue_offline_items` will release what this agent holds.
+
+    The same two facts the roster uses to say `offline`: a revoked credential, or presence
+    lapsed. Bound seats are not a third fact (GRPH-1057). A child that registered on an
+    enrolment is an Agent row, and `enrolment_id` is not read here. Filtering it out would
+    leave the item `in_progress` under a process that has exited — the stuck lease this
+    sweep exists to clear.
+
+    A revoked key counts even when `last_seen_at` is fresh. End-wave does not backdate the
+    stamp; the credential is what changed, and the roster already says offline for that.
+
+    This function is only asked about a row the caller has. An id with no Agent row is not
+    offline — "I could not find the holder" is not "the holder is gone", and releasing on
+    that ignorance is how two agents end up on one item. Callers that cannot find the row
+    must say so, not pass a stand-in.
+    """
+    if dead_keys is None:
+        from app.models import ApiKey
+
+        key = db.get(ApiKey, agent.api_key_id) if agent.api_key_id else None
+        revoked = key is not None and bool(key.revoked)
+    else:
+        revoked = bool(agent.api_key_id and agent.api_key_id in dead_keys)
+    if revoked:
+        return True
+    return presence_state(agent, lease_seconds=lease_seconds, now=now) == "offline"
+
+
 def _offline_holders(db: Session, agent_ids: set[str], *, now: datetime) -> set[str]:
     """Which of these agents the roster calls `offline` (GRPH-808).
 
@@ -2937,6 +2968,12 @@ def requeue_offline_items(db: Session, *, project_id: str | None = None,
     Called from `fleet_status` — the supervisor's heartbeat poll — so the release happens
     on the same cadence that already detects the offline agent. Idempotent: a second call
     finds nothing to release.
+
+    Bound-seat deaths are this set, not a neighbour of it (GRPH-1057). `sweep_offline` does
+    not read `enrolment_id`, so a child that exited on a seat it was bound to is released
+    on the same tick as an unbound agent that went quiet. A correct predicate that this
+    function stopped calling would still leave the row stuck: the supervisor does not call
+    `sweep_offline` itself.
     """
     from app.models import ApiKey
 
@@ -2954,7 +2991,7 @@ def requeue_offline_items(db: Session, *, project_id: str | None = None,
 
     offline_ids = {
         a.id for a in agents
-        if a.api_key_id in dead_keys or presence_state(a, lease_seconds=lease_seconds, now=now) == "offline"
+        if sweep_offline(db, a, dead_keys=dead_keys, lease_seconds=lease_seconds, now=now)
     }
     if not offline_ids:
         return []

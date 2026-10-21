@@ -3226,10 +3226,12 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                                       to_status=args.get("to_status", "next"),
                                       reason=args.get("reason"))
         if item is None:
-            raise errors.Conflict(
-                f"not the lease holder for {args['id']!r}",
-                hint="the lease expired or another agent holds it",
-            )
+            # None is "not your hold": an empty lease, a missing agent row, or a holder the
+            # roster already calls offline. The sentence has to say which (GRPH-1057).
+            # "another agent holds it" was claiming a holder that was not there. The phrase
+            # `not the lease holder` stays — gbfleet classifies a moved lease by it.
+            message, hint = items_svc.release_refusal(db, args["id"])
+            raise errors.Conflict(message, hint=hint)
         return _item_dict(item)
     if name == "extract_lessons":
         _scoped_item(db, args["id"], allowed)
