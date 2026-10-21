@@ -572,7 +572,9 @@ def append_evidence(existing, incoming) -> list[dict]:
     (the GRPH-437 attribution notes, GRPH-340 keeping superseded counts in view) and which
     leaves both the error and the correction readable. The acceptance gate honours that
     correction: the latest block per clause is the verdict, so a later `{kind: test}`
-    supersedes an earlier denial without anyone deleting the line (GRPH-1054). Deleting
+    that names the clause and does not deny it supersedes an earlier denial without
+    anyone deleting the line. A denial on the next line of that same receipt, naming
+    no other clause, is still a denial (GRPH-1054). Deleting
     a receipt is still not this path. If a genuine need to delete ever turns up, it wants
     an explicit destructive operation that says so — not the default behaviour of the verb
     every agent calls to add a note.

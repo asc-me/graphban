@@ -2112,9 +2112,11 @@ DENIAL_RULE = (
     "deny it supersedes an earlier denial, and the old line stays on the record because "
     "evidence only appends (GRPH-1054). A note, screenshot, or other kind that merely "
     "mentions the clause does not clear a denial, and a denial and a pass in the same "
-    "receipt are still a denial. If the clause IS delivered, say so in a new "
-    "`{kind: test}` receipt, in the sentence that names it, and keep the caveat in a "
-    "sentence of its own"
+    "receipt are still a denial — including a denial on the next line that does not "
+    "repeat the clause and names no other one (`the pin lapses after timeout` / "
+    "`NOT DELIVERED, no clock`, or `clause — 12 passed` / `NOT DELIVERED`). If the "
+    "clause IS delivered, say so in a new `{kind: test}` receipt, in the sentence that "
+    "names it, and keep the caveat in a sentence of its own"
 )
 
 
@@ -2137,6 +2139,13 @@ def acceptance_contradicted(clauses: list[str], evidence: list[dict]) -> dict[st
     contradiction disappeared. A denial and a pass inside ONE receipt stay a denial: the
     correction is a new receipt, and a block that contradicts itself does not get the
     reassuring sentence picked out of it. A denial that arrives after a pass still convicts.
+
+    A newline is not a new claim (GRPH-1054 bounce). `the pin lapses after timeout` and
+    `NOT DELIVERED, no clock` on the next line are one verdict, and so are `clause — 12
+    passed` and `NOT DELIVERED`. Skipping a line that did not repeat the clause let that
+    block read as a pass and clear a stored denial. A line that names a different clause
+    is that clause's verdict. A long explanatory follow-on is still explanation: the
+    sentence scope in `denial_in` is what decides, applied to the lines folded together.
     """
     verdict: dict[str, str] = {}
     for e in evidence or []:
@@ -2144,21 +2153,67 @@ def acceptance_contradicted(clauses: list[str], evidence: list[dict]) -> dict[st
             continue
         lines = [ln for ln in str(e.get("detail") or "").splitlines() if ln.strip()]
         for c in clauses:
-            denying = ""
-            mentioned = False
-            for line in lines:
-                if c.lower() not in line.lower():
-                    continue
-                mentioned = True
-                # The first denying line is the one the refusal quotes. A later clean line
-                # in the SAME block does not unsay it — see the docstring.
-                if not denying and denial_in(c, line):
-                    denying = line.strip()
-            if denying:
-                verdict[c] = denying
-            elif mentioned and e.get("kind") == "test":
+            about = _lines_about(c, lines, clauses)
+            if not about:
+                continue
+            # Folded, so a denial sentence that did not repeat the clause is still inside
+            # the clause's own sentence — the same scope `denial_in` already applies to
+            # one line. The first line that carries the verdict is the one the refusal
+            # quotes; a later clean line in the SAME block does not unsay it.
+            word = denial_in(c, " ".join(about))
+            if word:
+                verdict[c] = _quoting_line(c, about, word)
+            elif e.get("kind") == "test":
                 verdict.pop(c, None)
     return verdict
+
+
+def _lines_about(clause: str, lines: list[str], clauses: list[str]) -> list[str]:
+    """The lines of one receipt that speak about `clause`.
+
+    A line that names no clause belongs to the clause named on the line before it, and
+    a run of such lines before any clause belongs to the first clause this receipt names.
+    A line that names a different clause is not about this one. Empty when the receipt
+    never names `clause`.
+    """
+    cl = clause.lower()
+    out: list[str] = []
+    owners: list[str] = []
+    lead: list[str] = []
+    seen = False
+    for line in lines:
+        low = line.lower()
+        named = [c.lower() for c in clauses if c.lower() in low]
+        if named:
+            if cl in named:
+                if not seen:
+                    out.extend(lead)
+                seen = True
+                out.append(line)
+            lead = []
+            owners = named
+        elif not owners:
+            lead.append(line)
+        elif cl in owners:
+            out.append(line)
+    return out if seen else []
+
+
+def _quoting_line(clause: str, lines: list[str], word: str) -> str:
+    """The line the refusal should quote: the first one that actually carries `word`.
+
+    A line that names the clause and denies it wins, which is the single-line receipt.
+    Otherwise it is the continuation that did not repeat the clause — `NOT DELIVERED,
+    no clock` under `the pin lapses after timeout`.
+    """
+    cl = clause.lower()
+    for line in lines:
+        if cl in line.lower() and denial_in(clause, line):
+            return line.strip()
+    for line in lines:
+        if re.search(rf"\b{re.escape(word)}\b", line.lower().replace(cl, " ")):
+            return line.strip()
+    return lines[0].strip()
 
 
 def acceptance_covered(clauses: list[str], evidence: list[dict]

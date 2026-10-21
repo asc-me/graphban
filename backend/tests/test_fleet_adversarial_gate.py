@@ -623,6 +623,32 @@ def test_a_later_test_receipt_clears_a_stored_denial_and_a_note_does_not(client,
         "the correction must not delete the denial — the record only grows")
 
 
+def test_a_denial_on_the_next_line_of_a_test_receipt_still_refuses(client, key):
+    """GRPH-1054 bounce, through `sign_off`. The correction names the clause on one
+    line and says NOT DELIVERED on the next. That is still a denial, and the refusal
+    quotes the line that denies it."""
+    clause = "the pin lapses after timeout"
+    item, reviewer = _ready_with_description(
+        client, key, effort=5, description=DESC_TWO_CLAUSES)
+    _ok(client, key, "update_item", {"id": item, "evidence": [
+        {"kind": "test", "detail": "the veto blocks an accept"},
+        {"kind": "test", "detail": f"{clause} — NOT DELIVERED, no clock"},
+        SABOTAGE,
+    ]})
+
+    res = _rpc(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"],
+        "evidence": [
+            {"kind": "test", "detail": "reran: the veto blocks an accept"},
+            {"kind": "test", "detail": f"{clause}\nNOT DELIVERED, no clock"},
+        ]})
+    err = res["structuredContent"]["error"]
+    assert err["code"] == "conflict", err
+    assert "NOT DELIVERED, no clock" in err["message"], (
+        f"the next-line denial cleared the stored one: {err['message']}")
+    assert _ok(client, key, "get_item_details", {"id": item})["status"] == "review"
+
+
 @pytest.mark.parametrize("word", ["skipped", "Cannot be tested here", "FAILED", "not delivered"])
 def test_each_negative_phrase_denies_the_clause(word):
     ok, _, contradicted = fleet.acceptance_covered(

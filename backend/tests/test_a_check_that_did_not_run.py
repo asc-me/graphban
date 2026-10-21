@@ -603,3 +603,88 @@ def test_coverage_accepts_a_clause_once_a_later_test_supersedes_the_denial():
     assert "acceptance_contradicted(" in src, (
         "acceptance_covered no longer consults acceptance_contradicted — the supersession "
         "lives in a helper the gate does not call")
+
+
+def test_a_denial_on_the_next_line_does_not_clear_a_stored_denial():
+    """GRPH-1054 bounce. The clause and the denial are different lines of one receipt.
+    Skipping a line that does not repeat the clause made this block a pass, and a pass
+    pops the stored denial. The one-line form of the same words still denies."""
+    clause = "the pin lapses after timeout"
+    one_line = f"{clause} — NOT DELIVERED, no clock"
+    split = f"{clause}\nNOT DELIVERED, no clock"
+    assert acceptance_contradicted([clause], [{"kind": "test", "detail": one_line}]) == {
+        clause: one_line}
+    found = acceptance_contradicted(
+        [clause],
+        [{"kind": "test", "detail": one_line},
+         {"kind": "test", "detail": split}])
+    assert found == {clause: "NOT DELIVERED, no clock"}, found
+
+
+def test_a_pass_and_a_bare_denial_on_the_next_line_stay_a_denial():
+    """The same-receipt rule held only when every line repeated the clause.
+    `clause — 12 passed` / `NOT DELIVERED` is still one denying block."""
+    detail = f"{CLAUSE} — 12 passed\nNOT DELIVERED"
+    assert acceptance_contradicted([CLAUSE], [{"kind": "test", "detail": detail}]) == {
+        CLAUSE: "NOT DELIVERED"}
+    stored = f"{CLAUSE} — NOT DELIVERED"
+    assert acceptance_contradicted(
+        [CLAUSE],
+        [{"kind": "test", "detail": stored},
+         {"kind": "test", "detail": detail}]) == {CLAUSE: "NOT DELIVERED"}
+
+
+def test_a_denial_of_another_clause_on_the_next_line_does_not_deny_this_one():
+    """A line that names a different clause is that clause's verdict. Folding every
+    following line into this one would deny it for someone else's NOT DELIVERED."""
+    other = "the veto blocks an accept"
+    stored = f"{CLAUSE} — NOT DELIVERED"
+    detail = f"{CLAUSE} — 12 passed\n{other} — NOT DELIVERED"
+    found = acceptance_contradicted(
+        [CLAUSE, other],
+        [{"kind": "test", "detail": stored},
+         {"kind": "test", "detail": detail}])
+    assert CLAUSE not in found, found
+    assert other in found and "NOT DELIVERED" in found[other]
+
+
+def test_a_long_explanation_on_the_next_line_is_not_a_denial():
+    """The six-word sentence rule still applies once the newline is folded back in.
+    Scanning the follow-on line on its own would read `failed` as a verdict."""
+    detail = (
+        f"{CLAUSE} — 12 passed.\n"
+        "Deleting the isError branch so a failed read drops through to the empty "
+        "state and the user sees a blank panel instead of the error."
+    )
+    assert acceptance_contradicted([CLAUSE], [{"kind": "test", "detail": detail}]) == {}
+
+
+def test_a_clean_next_line_still_supersedes():
+    """The control. A second line that does not deny is not a denial, and the block
+    is the correction the gate was built to accept."""
+    assert acceptance_contradicted(
+        [CLAUSE],
+        [{"kind": "test", "detail": f"{CLAUSE} — NOT DELIVERED"},
+         {"kind": "test", "detail": f"{CLAUSE}\n12 passed"}]) == {}
+
+
+def test_coverage_keeps_a_denial_whose_verdict_is_on_the_next_line():
+    """Through `acceptance_covered`, the helper `sign_off` calls. A correct fold that
+    the gate does not consult would still clear the clause."""
+    import inspect
+
+    from app.services import fleet as fleet_svc
+    from app.services.fleet import acceptance_covered
+
+    clause = "the pin lapses after timeout"
+    ok, uncovered, contradicted = acceptance_covered(
+        [clause],
+        [{"kind": "test", "detail": f"{clause} — NOT DELIVERED, no clock"},
+         {"kind": "test", "detail": f"{clause}\nNOT DELIVERED, no clock"}])
+    assert ok is False
+    assert uncovered == []
+    assert contradicted == {clause: "NOT DELIVERED, no clock"}
+    src = inspect.getsource(fleet_svc.acceptance_contradicted)
+    assert "_lines_about(" in src, (
+        "acceptance_contradicted no longer folds a denial that did not repeat the "
+        "clause — the next line is skipped again")
