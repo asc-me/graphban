@@ -249,6 +249,20 @@ describe("Fleet view", () => {
     expect(screen.getByText("offline")).toBeInTheDocument();
   });
 
+  it("marks a review no child can check as needing a human", async () => {
+    // GRPH-1055. The row used to look like ordinary review, so five children took a clause
+    // that needs `gh` and left it. The mark is what an operator reads instead of an empty hold.
+    fleet.data = { ...BASE, review_queue: [{
+      id: "i1", key: "GB-12", title: "Check the draft", branch: "feat/x",
+      built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: null,
+      held_for_seconds: null, holder_state: null, review_takes: 0,
+      clause_needs: ["gh"], needs_human: true,
+    }] };
+    renderView();
+    await openWork(userEvent.setup());
+    expect(screen.getByTestId("needs-human")).toHaveTextContent("needs a human · gh");
+  });
+
   it("renders the review ban as a negative on the item", async () => {
     // "AGT-4 built it" — the refusal belongs to the ITEM. A list of who is eligible would make
     // the reader reconstruct the invariant instead of reading it.

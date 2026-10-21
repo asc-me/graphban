@@ -1864,6 +1864,12 @@ export interface FleetOverview {
      *  `reviewed_by` null for both "free, nobody has opened it" and "free, its reviewer died"
      *  — and those are not the same claim. Mutually exclusive with `reviewed_by`. */
     lapsed_holder: string | null;
+    /** Capabilities an acceptance clause declared (`gh`, `human-only`). Empty when none did
+     *  (GRPH-1055). Always present from the server; absent on an older payload. */
+    clause_needs?: string[];
+    /** No live reviewer declared every capability in `clause_needs`. The item is waiting
+     *  on a person (or on an agent who declares the tool), not on the next child. */
+    needs_human?: boolean;
   }[];
   clusters: {
     items: string[]; areas: string[]; predicted: boolean;
