@@ -25,7 +25,7 @@ from .observe import emit
 from .progress import Output
 from .spawn import Child
 from .state import NotARepository, lock_path, repo_key, repo_root, state_root
-from .worktree import Disposition, Worktree, reap as reap_tree, registered_worktrees
+from .worktree import Disposition, Worktree, reap as reap_tree, reap_held, registered_worktrees
 
 GENERATION = 1
 
@@ -356,14 +356,29 @@ def _salvage_snapshot(repo: Path, snap: Snapshot, notes: list[str],
     tree_path = Path(snap.worktree)
     if not tree_path.exists():
         return
+    items = [i for i in (snap.held_items or []) if i]
     try:
-        reaped = reap_tree(Worktree(
-            path=tree_path, branch=snap.branch, repo=Path(repo), base=snap.base,
-        ))
+        tree = Worktree(path=tree_path, branch=snap.branch, repo=Path(repo), base=snap.base)
+        # One commit per held item, so the receipt names that item's branch and no
+        # other item's. An empty list stays one nameless salvage: inventing an item
+        # the record never carried is the other way to attach work to the wrong row.
+        reaped = reap_held(tree, snap.adapter or "gbfleet", items) if items else reap_tree(tree)
         notes.append(f"{snap.branch}: salvaged ({reaped.disposition.value})")
-        if salvaged is not None and reaped.disposition is Disposition.SALVAGED:
-            salvaged.append(Salvaged(branch=snap.branch, base=snap.base,
-                                     items=list(snap.held_items or [])))
+        if salvaged is None or reaped.disposition is not Disposition.SALVAGED:
+            return
+        if not items:
+            salvaged.append(Salvaged(branch=snap.branch, base=snap.base, items=[]))
+            return
+        salvaged.append(Salvaged(branch=snap.branch, base=snap.base, items=[items[0]]))
+        sibling = {item: name for item, name in reaped.siblings}
+        for item in items[1:]:
+            name = sibling.get(item, "")
+            if not name:
+                notes.append(
+                    f"{item}: not recorded on {snap.branch}; that branch is {items[0]}'s salvage"
+                )
+                continue
+            salvaged.append(Salvaged(branch=name, base=snap.base, items=[item]))
     except Exception as exc:  # noqa: BLE001 — salvage is best-effort on a crash path
         notes.append(f"{snap.branch}: salvage failed ({exc})")
 

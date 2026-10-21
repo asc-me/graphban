@@ -513,6 +513,129 @@ def remote_for(repo: Path | str) -> str:
     return remotes[0] if len(remotes) == 1 else ""
 
 
+def divert_branch(repo: Path | str, branch: str, item: str = "") -> str:
+    """A new branch at `branch`'s tip. `branch` itself is not moved.
+
+    The salvage that must not be published under `branch` still has to exist somewhere
+    a person can find it (GRPH-830). Forcing `branch` to stay put and forcing this name
+    onto an existing commit are different acts: an existing side branch at another
+    commit is somebody's work, so the name grows the tip sha rather than being reset.
+    """
+    sha = _git(repo, "rev-parse", "--verify", f"{branch}^{{commit}}").strip()
+    label = re.sub(r"[^A-Za-z0-9]+", "-", item or "late").strip("-") or "late"
+    name = f"{branch}{ITEM_BRANCH_SEP}{label}--late"
+    if branch_exists(repo, name):
+        have = _git(repo, "rev-parse", "--verify", f"{name}^{{commit}}").strip()
+        if have == sha:
+            return name
+        name = f"{name}-{sha[:8]}"
+        if branch_exists(repo, name):
+            have = _git(repo, "rev-parse", "--verify", f"{name}^{{commit}}").strip()
+            if have != sha:
+                raise GitError(
+                    f"{name} exists at {have[:12]}, not {sha[:12]}; not moving it"
+                )
+            return name
+    _git(repo, "branch", name, sha)
+    return name
+
+
+def _commit_sha(repo: Path | str, ref: str) -> str:
+    if not (ref or "").strip():
+        return ""
+    return _git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}",
+                check=False).strip()
+
+
+def _remote_tip_in_trunk(repo: Path | str, branch: str, tip: str) -> bool:
+    """True when the remote ref already points at a trunk commit, and `tip` is not it.
+
+    Pushing `branch` would move that ref. Asked only when the ledger could not be read:
+    an unfetched evidence sha is omitted from a list that was actually read, and this
+    is not that question. A remote ref this clone has never fetched is not "in the
+    trunk" — nothing is diverted for a ref that is not here.
+    """
+    remote = remote_for(repo)
+    if not remote or not tip:
+        return False
+    remote_tip = _commit_sha(repo, f"{remote}/{branch}")
+    if not remote_tip or remote_tip == tip:
+        return False
+    trunk = default_ref(repo, remote)
+    if not trunk:
+        return False
+    return reaches(repo, trunk, remote_tip) is True
+
+
+def salvage_push_target(repo: Path | str, branch: str, base: str,
+                        landed: list[str] | None, *, item: str = "") -> tuple[str, str]:
+    """Where a salvage — or a later rework — may be pushed (GRPH-1053).
+
+    Returns `(branch_to_push, reason)`. An empty reason means `branch` itself is safe.
+
+    `landed` is commits of this item that are already in the trunk. `None` is not an
+    empty list: the evidence was not read (`NotPermitted`, the tool missing from the
+    client's allowlist, the server dark). An empty list is a read that named nothing
+    this clone can see, including a sha it has never fetched. Those two must not take
+    the same path — the empty list still publishes `branch`, and `None` must not move
+    a ref whose tip is already in the trunk.
+
+    Two pushes lose one:
+
+    * The cut `base` does not contain a landed commit, and neither does `branch`.
+      Pushing `branch` publishes a line written before the fix, under the name the fix
+      uses.
+    * `branch` contains the landed commit and the tip has moved past it — a salvage
+      commit, or a child that kept editing after the fix landed. Pushing fast-forwards
+      the fix's branch onto that tip.
+
+    A salvage tip that sits on earlier non-salvage commits diverts even when nothing
+    has reached the trunk yet: the WIP becomes the tip a reviewer would merge, which
+    is how salvage commits landed on top of real fixes. The ordinary salvage — the
+    only commit beyond `base` — still pushes as `branch`. That is the commit the next
+    child resumes, and diverting it would hide the only copy of the work.
+
+    A landed commit this clone has never fetched is not in `landed`. Unknown is not
+    "missing", and treating it as missing would divert every salvage on a fresh clone.
+    """
+    tip = _commit_sha(repo, branch)
+    if not tip:
+        return branch, ""
+    subject = _git(repo, "log", "-1", "--format=%s", branch, check=False).strip()
+    salvage_tip = is_salvage_subject(subject)
+    beyond = commits_beyond_base(repo, branch, base) if base else 0
+    on_real_work = salvage_tip and beyond > 1
+    reason = ""
+    if landed is None:
+        # Not "nothing landed". The read did not happen. A ref already in the trunk
+        # is not moved; an unfetched sha never arrives here, because that read
+        # returned a list with the sha left out.
+        if _remote_tip_in_trunk(repo, branch, tip):
+            reason = ("tip would move a branch already in the trunk; "
+                      "the landed-commit check did not run")
+    else:
+        known = [sha for raw in landed if (sha := _commit_sha(repo, raw))]
+        # Landed *after* this cut: the base does not contain them. A commit the base
+        # already has is history the child started from, not a fix this push would cover.
+        landed_after_cut = [
+            sha for sha in known
+            if base and reaches(repo, base, sha) is False
+        ]
+        for sha in landed_after_cut:
+            contained = reaches(repo, branch, sha)
+            if contained is False:
+                reason = f"base does not contain landed {sha[:12]}"
+                break
+            if contained is True and sha != tip:
+                reason = f"tip moves past landed {sha[:12]}"
+                break
+    if not reason and on_real_work:
+        reason = "salvage commit sits on top of earlier work"
+    if not reason:
+        return branch, ""
+    return divert_branch(repo, branch, item), reason
+
+
 def push_branch(repo: Path | str, branch: str, base: str) -> Pushed:
     """Put a reaped branch where the reviewer can read it (GRPH-750).
 
@@ -941,6 +1064,31 @@ def choose_resume(
         seen.add(newest.branch)
         picked.append(newest)
     return picked
+
+
+def take_resume(resumes: list[Orphan], item_id: str | None) -> Orphan | None:
+    """The salvage this spawn may start on, removed from `resumes`.
+
+    A seat bound to an item takes the salvage whose subject names that item and nothing
+    else. The next orphan in the list is a nearest match, and that is how one child's
+    work was resumed under a different item (GRPH-1053). A subject that names several
+    items is not taken for any of them: one commit attributed to each of its keys is
+    the same defect.
+
+    An unbound seat still takes the next eligible salvage. `up` does not know the item
+    until the child claims it (P30 D9); refusing every resume there would cut from HEAD
+    and rebuild the work the salvage exists to keep.
+    """
+    wanted = (item_id or "").strip()
+    if wanted:
+        for orphan in resumes:
+            if orphan.item_keys == (wanted,):
+                resumes.remove(orphan)
+                return orphan
+        return None
+    if not resumes:
+        return None
+    return resumes.pop(0)
 
 
 def default_ref(repo: Path | str, remote: str) -> str:

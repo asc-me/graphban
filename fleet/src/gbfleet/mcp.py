@@ -595,9 +595,13 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
         wave = args.get("wave") or "wave"
         tree = None
         slot = str(fleet.started + 1)
+        item = str(args.get("item") or "").strip()
         resumes = list(wt_mod.choose_resume(wt_mod.orphans(fleet.repo), item_status(fleet.client)))
-        if resumes:
-            orphan = resumes[0]
+        # Bound spawn resumes only the salvage that names its item. An unbound spawn
+        # still takes the next eligible one (P30 D9). The nearest other salvage is how
+        # one child's work was started under a different item (GRPH-1053).
+        orphan = wt_mod.take_resume(resumes, item or None)
+        if orphan is not None:
             slot = orphan.branch.rsplit("-", 1)[-1] or slot
             try:
                 tree = wt_mod.resume(

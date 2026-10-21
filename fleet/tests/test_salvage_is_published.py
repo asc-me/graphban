@@ -141,8 +141,9 @@ def test_publishing_pushes_and_does_not_propose_a_pr(monkeypatch, tmp_path: Path
 
     assert calls == [("push", "gb/w-1")], calls
     assert "propose_branch" not in inspect.getsource(sup.publish_salvaged)
-    assert client.calls, "the item was not named"
-    tool, kwargs = client.calls[0]
+    updates = [c for c in client.calls if c[0] == "update_item"]
+    assert updates, "the item was not named"
+    tool, kwargs = updates[0]
     assert tool == "update_item" and kwargs["id"] == "SA-412"
     ev = kwargs["evidence"][0]
     assert ev["kind"] == "note"

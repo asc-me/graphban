@@ -68,7 +68,11 @@ def test_reap_skips_a_lease_another_agent_holds():
 
 
 def test_server_refusal_without_a_read_is_info_and_logged_once():
-    """SPAWN_READS has no `get_item_details`: the server's refusal is classified instead."""
+    """A client that cannot read the item: the server's refusal is classified instead.
+
+    `SPAWN_READS` does carry `get_item_details` (GRPH-1053). This client omits it, which
+    is the fallback `_lease_holder` still has when the read is not on the allowlist.
+    """
     wave = Wave()
     refusal = ToolFailed("release_item", "conflict", "not the lease holder for 'GRPH-1'")
     client = _client({"release_item"}, release_error=refusal)

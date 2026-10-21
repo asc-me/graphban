@@ -1168,6 +1168,11 @@ def test_the_supervisors_own_table_stays_two_reads_and_get_context_goes_on_the_w
     )
     assert "get_context" in SPAWN_READS
     assert "get_context" in PLANNER_TOOLS
+    # GRPH-1053. `until` already reads the item; `up` watches with this set. Dropping
+    # `get_item_details` here is the quiet failure: the landed-commit check never runs
+    # and a rework is pushed onto the branch the fix uses.
+    assert "get_item_details" in SPAWN_READS
+    assert "get_item_details" in PLANNER_TOOLS
     assert ALLOWED_TOOLS < SPAWN_READS
 
 

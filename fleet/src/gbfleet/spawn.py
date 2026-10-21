@@ -73,6 +73,12 @@ class Reason(str, Enum):
     #: thing operationally — the claim is gone and the process is spending money without
     #: one. Naming it for the cause would be asserting something unmeasured.
     SEAT_GONE = "seat_gone"
+    #: The item this child was building is already `done`. A process left alive keeps
+    #: committing on the same branch, and the next push moves that branch past the fix
+    #: (GRPH-1053). `review` is not this reason: the child stays up to publish the
+    #: revision (GRPH-987) and to review other work (PRD-39). The push guard refuses a
+    #: review push that would clobber a commit already in the trunk.
+    ITEM_LANDED = "item_landed"
 
 
 class AttachedProcess:
