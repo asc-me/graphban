@@ -18,6 +18,7 @@ from pathlib import Path
 
 from gbfleet import adopt
 from gbfleet.adopt import Snapshot, save
+from gbfleet.client import NotPermitted
 from gbfleet.mcp import Fleet
 from gbfleet.seat import Seat
 from gbfleet.spawn import Child, Reason
@@ -310,3 +311,160 @@ def test_spawn_with_an_item_does_not_resume_a_different_salvage(
         assert not (Path(value["worktree"]) / "wip.py").exists()
     finally:
         _call(fleet, "stop", agent_id=value["agent_id"])
+
+
+def _landed_then_rework(git_repo: Path, tmp_path: Path, *, message: str) -> tuple[Path, object, str, str]:
+    """Fix merged to the trunk and pushed on its branch, then one more commit on the branch."""
+    bare = _bare(git_repo, tmp_path)
+    tree = create(git_repo, tmp_path / "kid", "wave", "1")
+    landed = _commit(tree.path, "fix.py", "the fix\n", "GRPH-1: the fix")
+    _git(git_repo, "merge", "--ff-only", tree.branch)
+    _git(git_repo, "push", "-q", "origin", "main")
+    _git(git_repo, "push", "-q", "origin", f"{tree.branch}:{tree.branch}")
+    tip = _commit(tree.path, "again.py", "rework\n", message)
+    return bare, tree, landed, tip
+
+
+class _Refused(_Ledger):
+    """`get_item_details` is on the allowlist and the call is still refused."""
+
+    def call(self, tool, **kwargs):
+        if tool == "get_item_details":
+            raise NotPermitted("this credential may not call 'get_item_details'")
+        return super().call(tool, **kwargs)
+
+
+class _Unfetched(_Ledger):
+    """The item was read. Its evidence names a sha this clone has never fetched."""
+
+    def call(self, tool, **kwargs):
+        if tool == "get_item_details":
+            return {"id": kwargs.get("id"), "evidence": [
+                {"kind": "attestation", "commit": "a" * 40},
+            ]}
+        return super().call(tool, **kwargs)
+
+
+def test_up_reads_the_item_before_the_reap_pushes(git_repo: Path, tmp_path: Path):
+    """THE UP CALL. `gbfleet up` watches with `SPAWN_READS`. That set has to include
+    `get_item_details`, and this tick has to call it — a ledger that happens to allow
+    the tool is not the client `up` builds.
+
+    Sabotage: drop `get_item_details` from `SPAWN_READS`. The call is absent and this
+    fails, even if a client built by hand still diverts.
+    """
+    from gbfleet.cli import SPAWN_READS
+
+    assert "get_item_details" in SPAWN_READS
+    bare, tree, landed, _tip = _landed_then_rework(
+        git_repo, tmp_path, message="GRPH-1: still editing")
+    client = _Ledger(done="GRPH-1", landed=landed)
+    client.allowed = SPAWN_READS
+    child, proc = _sleeping_child(tree, tmp_path, "GRPH-1")
+    try:
+        wave = Wave()
+        watch_tick(wave, [child], Limits(), client)
+    finally:
+        _stop_proc(proc)
+
+    assert any(name == "get_item_details" for name, _ in client.calls), client.calls
+    assert _git(bare, "rev-parse", tree.branch) == landed
+    assert wave.landed_unmeasured == "", wave.landed_unmeasured
+
+
+def test_a_client_that_may_not_read_items_does_not_push_the_rework(
+    git_repo: Path, tmp_path: Path
+):
+    """`search_items` is enough to stop the child. It is not enough to see the landed
+    commit. The reap that follows must not push the new tip onto that branch.
+
+    Sabotage: in `_push_target`, pass `landed=[]` when the read did not run. The
+    remote tip becomes the rework.
+    """
+    bare, tree, landed, _tip = _landed_then_rework(
+        git_repo, tmp_path, message="GRPH-1: still editing")
+    client = _Ledger(done="GRPH-1", landed=landed)
+    client.allowed = frozenset({"search_items", "fleet_status", "update_item", "release_item"})
+    child, proc = _sleeping_child(tree, tmp_path, "GRPH-1")
+    try:
+        wave = Wave()
+        watch_tick(wave, [child], Limits(), client)
+    finally:
+        _stop_proc(proc)
+
+    assert child.stopped_because is Reason.ITEM_LANDED
+    assert _git(bare, "rev-parse", tree.branch) == landed
+    assert wave.landed_unmeasured
+    assert any(wave.landed_unmeasured in line for line in wave.failures), wave.failures
+    assert any("diverted" in line for line in wave.failures), wave.failures
+    assert not any(name == "get_item_details" for name, _ in client.calls)
+
+
+def test_not_permitted_does_not_take_the_unfetched_sha_path(git_repo: Path, tmp_path: Path):
+    """Same tree, two reads. A sha this clone has never fetched is left out and the
+    rework is published on the branch. `NotPermitted` is not that read: the branch
+    the fix uses stays where it was, and the wave says the check did not run.
+
+    Sabotage: catch `NotPermitted` and return `[], ""`. This pushes the rework and
+    `landed_unmeasured` stays empty.
+    """
+    import io
+
+    from gbfleet.cli import report
+
+    bare, tree, landed, tip = _landed_then_rework(
+        git_repo, tmp_path, message="GRPH-1: still editing")
+
+    unread = _Refused(done="GRPH-1", landed=landed)
+    child, proc = _sleeping_child(tree, tmp_path, "GRPH-1")
+    try:
+        refused = Wave()
+        watch_tick(refused, [child], Limits(), unread)
+    finally:
+        _stop_proc(proc)
+
+    assert _git(bare, "rev-parse", tree.branch) == landed
+    assert refused.landed_unmeasured
+    assert "not permitted" in refused.landed_unmeasured
+    assert any(refused.landed_unmeasured in line for line in refused.failures), refused.failures
+    printed = io.StringIO()
+    report(refused, out=printed)
+    assert "LANDED unmeasured:" in printed.getvalue()
+    assert "not permitted" in printed.getvalue()
+
+    # The other path, on the same repo: the remote is still the landed fix and the
+    # local tip is the rework. The sha cannot be resolved, the read itself succeeded,
+    # and the branch moves. Diverting here would be the fresh-clone behaviour the
+    # omission exists to avoid.
+    client = _Unfetched()
+    wave = Wave()
+    sup.publish_salvaged(
+        wave, git_repo, [adopt.Salvaged(tree.branch, tree.base, ["GRPH-1"])], client=client,
+    )
+    assert _git(bare, "rev-parse", tree.branch) == tip
+    assert wave.landed_unmeasured == ""
+    assert not any("did not run" in line for line in wave.failures), wave.failures
+
+
+def test_a_skipped_landed_check_is_in_the_wave_report():
+    """Stored and never shown is the same as not stored. Both surfaces an operator
+    or a machine reads have to carry it, including when nothing happened.
+
+    Sabotage: drop the key from `Report.as_json`, or the print from `cli.report`.
+    """
+    import io
+
+    from gbfleet.cli import report
+    from gbfleet.until import Report
+
+    text = "GRPH-1: landed-commit check did not run (not permitted to read the item)"
+    wave = Wave()
+    wave.landed_unmeasured = text
+    buf = io.StringIO()
+    report(wave, out=buf)
+    assert f"LANDED unmeasured: {text}" in buf.getvalue()
+
+    payload = Report(ok=False, reason="failed", exit=1, wave=wave).as_json()
+    assert payload["landed_unmeasured"] == text
+    assert Report(ok=True, reason="idle", exit=0, wave=Wave()).as_json()["landed_unmeasured"] == ""
+    assert Report(ok=True, reason="idle", exit=0).as_json()["landed_unmeasured"] == ""

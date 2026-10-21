@@ -547,13 +547,40 @@ def _commit_sha(repo: Path | str, ref: str) -> str:
                 check=False).strip()
 
 
+def _remote_tip_in_trunk(repo: Path | str, branch: str, tip: str) -> bool:
+    """True when the remote ref already points at a trunk commit, and `tip` is not it.
+
+    Pushing `branch` would move that ref. Asked only when the ledger could not be read:
+    an unfetched evidence sha is omitted from a list that was actually read, and this
+    is not that question. A remote ref this clone has never fetched is not "in the
+    trunk" — nothing is diverted for a ref that is not here.
+    """
+    remote = remote_for(repo)
+    if not remote or not tip:
+        return False
+    remote_tip = _commit_sha(repo, f"{remote}/{branch}")
+    if not remote_tip or remote_tip == tip:
+        return False
+    trunk = default_ref(repo, remote)
+    if not trunk:
+        return False
+    return reaches(repo, trunk, remote_tip) is True
+
+
 def salvage_push_target(repo: Path | str, branch: str, base: str,
-                        landed: list[str], *, item: str = "") -> tuple[str, str]:
+                        landed: list[str] | None, *, item: str = "") -> tuple[str, str]:
     """Where a salvage — or a later rework — may be pushed (GRPH-1053).
 
     Returns `(branch_to_push, reason)`. An empty reason means `branch` itself is safe.
 
-    `landed` is commits of this item that are already in the trunk. Two pushes lose one:
+    `landed` is commits of this item that are already in the trunk. `None` is not an
+    empty list: the evidence was not read (`NotPermitted`, the tool missing from the
+    client's allowlist, the server dark). An empty list is a read that named nothing
+    this clone can see, including a sha it has never fetched. Those two must not take
+    the same path — the empty list still publishes `branch`, and `None` must not move
+    a ref whose tip is already in the trunk.
+
+    Two pushes lose one:
 
     * The cut `base` does not contain a landed commit, and neither does `branch`.
       Pushing `branch` publishes a line written before the fix, under the name the fix
@@ -578,22 +605,30 @@ def salvage_push_target(repo: Path | str, branch: str, base: str,
     salvage_tip = is_salvage_subject(subject)
     beyond = commits_beyond_base(repo, branch, base) if base else 0
     on_real_work = salvage_tip and beyond > 1
-    known = [sha for raw in landed if (sha := _commit_sha(repo, raw))]
-    # Landed *after* this cut: the base does not contain them. A commit the base
-    # already has is history the child started from, not a fix this push would cover.
-    landed_after_cut = [
-        sha for sha in known
-        if base and reaches(repo, base, sha) is False
-    ]
     reason = ""
-    for sha in landed_after_cut:
-        contained = reaches(repo, branch, sha)
-        if contained is False:
-            reason = f"base does not contain landed {sha[:12]}"
-            break
-        if contained is True and sha != tip:
-            reason = f"tip moves past landed {sha[:12]}"
-            break
+    if landed is None:
+        # Not "nothing landed". The read did not happen. A ref already in the trunk
+        # is not moved; an unfetched sha never arrives here, because that read
+        # returned a list with the sha left out.
+        if _remote_tip_in_trunk(repo, branch, tip):
+            reason = ("tip would move a branch already in the trunk; "
+                      "the landed-commit check did not run")
+    else:
+        known = [sha for raw in landed if (sha := _commit_sha(repo, raw))]
+        # Landed *after* this cut: the base does not contain them. A commit the base
+        # already has is history the child started from, not a fix this push would cover.
+        landed_after_cut = [
+            sha for sha in known
+            if base and reaches(repo, base, sha) is False
+        ]
+        for sha in landed_after_cut:
+            contained = reaches(repo, branch, sha)
+            if contained is False:
+                reason = f"base does not contain landed {sha[:12]}"
+                break
+            if contained is True and sha != tip:
+                reason = f"tip moves past landed {sha[:12]}"
+                break
     if not reason and on_real_work:
         reason = "salvage commit sits on top of earlier work"
     if not reason:

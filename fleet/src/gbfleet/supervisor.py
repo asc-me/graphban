@@ -1404,8 +1404,11 @@ def _landed_commits(repo: Path, client: Graphban | None,
     """Commits of `item_id` that are already in the trunk, and why that could not be read.
 
     `([], "")` is a real answer: the item was read, or there is no trunk to be in, and
-    nothing of it has landed. A non-empty reason means the list is not that answer —
-    the caller still pushes, and says the check did not run.
+    nothing of it has landed. A non-empty reason means the list is not that answer.
+    The caller must not hand it to `salvage_push_target` as an empty list. An empty
+    list is what an unfetched sha becomes after a read that did happen (`reaches`
+    returns None and the sha is left out). A refused read is not that, and treating
+    it as one pushes a rework onto the branch a fix already uses.
 
     Only an evidence entry that carries a `commit` counts. A cut-from note names a sha
     in prose and is not a landed fix. An entry that names a different branch is someone
@@ -1454,13 +1457,26 @@ def _landed_commits(repo: Path, client: Graphban | None,
 
 def _push_target(wave: Wave, repo: Path, branch: str, base: str, item: str,
                  client: Graphban | None) -> tuple[str, str]:
-    """Where `branch` may be pushed. An empty reason means `branch` itself is safe."""
+    """Where `branch` may be pushed. An empty reason means `branch` itself is safe.
+
+    A refused or unreachable `get_item_details` is not "nothing has landed". Passing
+    `landed=[]` in that case is the path an unfetched sha takes, and it is how `up`
+    pushed a non-salvage rework onto the branch the fix already uses (GRPH-1053).
+    `None` is the other argument: the read did not happen.
+    """
     if not item:
         return branch, ""
     landed, unread = _landed_commits(repo, client, item)
     if unread:
         _remember_landed_unread(wave, item, unread)
-        landed = []
+        target, reason = wt_mod.salvage_push_target(repo, branch, base, None, item=item)
+        # In `failures` only when the push was turned aside. An ordinary publish that
+        # could not be checked is `LANDED unmeasured` in the report, not a failed wave.
+        # The dangerous one — a tip that would move a ref already in the trunk — is
+        # both, because that is the push that overwrites a landed fix.
+        if reason and wave.landed_unmeasured and wave.landed_unmeasured not in wave.failures:
+            wave.failures.append(wave.landed_unmeasured)
+        return target, reason
     return wt_mod.salvage_push_target(repo, branch, base, landed, item=item)
 
 

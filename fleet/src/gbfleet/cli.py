@@ -63,8 +63,13 @@ API_KEY_ENV = "GBFLEET_API_KEY"
 #: child is cut from is the project's MEASURED `gitops.base_branch`, and `get_context` is
 #: the only way to ask for it. A read, like the other two named here — and `ALLOWED_TOOLS`
 #: above stays the supervisor's own two, which `test_supervisor.py` pins.
+#:
+#: `get_item_details` is the GRPH-1053 landed-commit read. `up` and `mcp` watch with this
+#: set; `until`'s planner client already had the read and `up` did not, so a reap on `up`
+#: could not see a fix already in the trunk and pushed the rework onto the branch that fix
+#: uses. A read, same as `search_items`. `ALLOWED_TOOLS` stays the supervisor's own two.
 SPAWN_READS: frozenset[str] = ALLOWED_TOOLS | frozenset(
-    {"search_items", "release_item", "get_context"})
+    {"search_items", "release_item", "get_context", "get_item_details"})
 
 #: What `up --merge` needs beyond `SPAWN_READS` (GRPH-846): the item and its attestations,
 #: the dependency rows, and ONE write — the receipt naming the merge commit. Only under the
@@ -564,6 +569,11 @@ def report(wave: Wave, out=None) -> None:
         print(f"BEHIND {branch}: cut from a base {behind} commit(s) behind {ref}", file=out)
     if wave.stale_unmeasured:
         print(f"BEHIND unmeasured: {wave.stale_unmeasured}", file=out)
+    # GRPH-1053. A push that could not check whether a commit of the item is already in
+    # the trunk is not "nothing had landed". The field was stored and the report never
+    # mentioned it, so the wave read as a clean publish.
+    if wave.landed_unmeasured:
+        print(f"LANDED unmeasured: {wave.landed_unmeasured}", file=out)
     # THE REVIEWER'S OTHER PRECONDITION (GRPH-987). `BEHIND` says the diff is against a stale
     # world; this says there was no diff to read at all — an item in `review` whose branch never
     # reached the remote. A bounce for that is not a verdict on the work, but it is recorded as

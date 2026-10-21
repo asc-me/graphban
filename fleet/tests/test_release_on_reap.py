@@ -51,7 +51,16 @@ def spawn_reads_client() -> Graphban:
     from gbfleet.cli import SPAWN_READS
     client = MagicMock(spec=Graphban)
     client.allowed = SPAWN_READS
-    client.call = MagicMock(return_value={})
+
+    def call(tool, **kwargs):
+        # GRPH-1053 put `get_item_details` on this set, and `_lease_holder` reads it
+        # before releasing. An empty record is "nobody holds it", which skips the
+        # release this fixture exists to prove. The dead child still holds the row.
+        if tool == "get_item_details":
+            return {"id": kwargs.get("id"), "claimed_by": "GRPH-A123", "evidence": []}
+        return {}
+
+    client.call = MagicMock(side_effect=call)
     return client
 
 
