@@ -1162,6 +1162,24 @@ export function FleetView() {
                       taken {r.review_takes}×, no verdict
                     </span>
                   )}
+                  {/* GRPH-1055. A clause no child can check used to sit here looking like
+                      ordinary review, and five reviewers took it and left. The mark says a
+                      person has to take it, and names the capability, so an empty hold is
+                      not read as "nobody has looked". */}
+                  {r.needs_human && (
+                    <span data-testid="needs-human"
+                          className="font-mono text-small text-[color:var(--color-st-blocked)]">
+                      needs a human
+                      {(r.clause_needs ?? []).filter((n) => n !== "human-only").length > 0
+                        && ` · ${(r.clause_needs ?? []).filter((n) => n !== "human-only").join(", ")}`}
+                    </span>
+                  )}
+                  {!r.needs_human && (r.clause_needs ?? []).length > 0 && (
+                    <span data-testid="clause-needs"
+                          className="font-mono text-small text-faint">
+                      needs {r.clause_needs!.join(", ")}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>

@@ -1687,6 +1687,21 @@ def self_review_allowed(db: Session, *, item: Item, agent_id: str) -> bool:
     return could_review(db, item=item, exclude_agent_id=agent_id) is None
 
 
+def _capability_block_reason(unmet: list[tuple[str, frozenset[str]]]) -> str:
+    """Why claim_review offered nothing when the queue is full of work this agent cannot check."""
+    parts = []
+    for key, needs in unmet:
+        named = ", ".join(f"`{n}`" for n in sorted(needs))
+        parts.append(f"{key} needs {named}")
+    return (
+        "review is waiting, but this agent did not declare a capability an acceptance clause "
+        "requires: " + "; ".join(parts)
+        + ". Declare it on capabilities.tools (or capabilities.allows); a `human-only` clause "
+        "needs capabilities.human. Do not bounce the item — a fleet child is refused `gh` by "
+        "the worktree shim, and a bounce would record that as a judgement on the build."
+    )
+
+
 def review_block_reason(db: Session, *, agent_id: str, project_id: str | None = None) -> str:
     """Why `claim_review` found nothing, when the answer is more useful than "nothing".
 
@@ -1699,6 +1714,7 @@ def review_block_reason(db: Session, *, agent_id: str, project_id: str | None = 
     if project_id:
         stmt = stmt.where(Item.project_id == project_id)
     taken = []
+    unmet: list[tuple[str, frozenset[str]]] = []
     for it in db.scalars(stmt).all():
         if it.built_by == agent_id:
             continue
@@ -1713,6 +1729,16 @@ def review_block_reason(db: Session, *, agent_id: str, project_id: str | None = 
         # where the true answer sends them to mint a seat.
         if me is not None and not independent_of_built_by(db, me, it.built_by):
             return NOT_INDEPENDENT
+        # THE SAME RULE, again (GRPH-1055). A clause this agent cannot check is not "nothing
+        # waiting". Five reviewers in a row were handed SA-667, could not run `gh`, and left
+        # it; the reason they were told was that the queue was empty for them, which is how
+        # an uncheckable clause accumulates idle reviews instead of reaching a person.
+        missing = missing_clause_capabilities(
+            me.capabilities if me is not None else None, it.description or "")
+        if missing:
+            unmet.append((it.key, missing))
+    if unmet and not taken:
+        return _capability_block_reason(unmet)
     if taken:
         # Now that a review claim is a real lease (GRPH-395) it can be the reason for an empty
         # answer, and "nothing waiting" would be a lie with a queue full of work: the fleet is
@@ -1785,6 +1811,13 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
         # work is the same escape wearing the reviewer's hat, and the reviewer is the half
         # that can also SIGN OFF. Unscoped seats are unaffected.
         and items_svc.in_scope(it, scope)
+        # GRPH-1055: and this reviewer declared every capability a clause asked for. A fleet
+        # child is refused `gh` (`shim.py` DEFAULT_DENY) and used to be handed the clause
+        # anyway; five of them left SA-667 without resolving it. Skipping it here is what
+        # stops the idle-review loop. The queue marks an item no live reviewer can check as
+        # needing a human, which is the other half — an absence of claimants must not read
+        # as an empty queue.
+        and reviewer_can_check(me, it)
     ]
     if not candidates:
         return None
@@ -1900,6 +1933,16 @@ class AttestedTheBase(Exception):
     """The reviewer attested the commit its branch was cut FROM (GRPH-970)."""
 
 
+class ClauseCapability(Exception):
+    """The reviewer did not declare a capability an acceptance clause requires (GRPH-1055).
+
+    Raised rather than recorded, because quoting the clause in a `{kind: test}` line is not
+    running `gh`. A child the shim refuses can still type the clause's words; the gate has to
+    refuse that, or the routing skip in `claim_review` is a suggestion a direct `sign_off`
+    walks past.
+    """
+
+
 class MissingAcceptanceCoverage(Exception):
     """Work signed off while an acceptance clause has no named test (GRPH-884)."""
 
@@ -1923,30 +1966,51 @@ _LIST_ITEM = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
 #: Task-list prefix on a list item (`- [x] the gate names the clause`). Stripped so the
 #: stored clause is the words a reviewer will quote, not the checkbox markup.
 _CHECKBOX = re.compile(r"^\[(?:[xX]| )\]\s+")
+#: A capability a clause declares it needs, so review can be routed to someone who has it
+#: (GRPH-1055). `gh` and `human-only` are the two that showed up in the field. The token is
+#: deliberately narrow: a clause that merely MENTIONS `gh` ("children are refused `gh`") is
+#: not declaring a need, and inferring one from the word would route that clause away from
+#: every child — the same stranding, pointed the other way.
+_NEEDS_TOKEN = r"[a-z0-9][a-z0-9_-]*"
+_NEEDS_LIST = rf"{_NEEDS_TOKEN}(?:\s*,\s*{_NEEDS_TOKEN})*"
+_NEEDS_PREFIX = re.compile(rf"^\[needs:\s*({_NEEDS_LIST})\]\s*", re.IGNORECASE)
+_NEEDS_SUFFIX = re.compile(rf"\s*\{{needs:\s*({_NEEDS_LIST})\}}\s*$", re.IGNORECASE)
 
 
-def parse_acceptance(description: str) -> tuple[list[str], list[str]]:
-    """Read the acceptance clauses in an item description, and what could not be read.
+def _need_tokens(raw: str) -> set[str]:
+    return {part.strip().lower() for part in raw.split(",") if part.strip()}
 
-    Returns `(clauses, unreadable)`. A clause is a markdown list item under a `## Tests`,
-    `## Acceptance` or `## Acceptance criteria` heading (`###` too), or under a bare
-    `Acceptance:` label line. `unreadable` names acceptance text that is there but is not in
-    that shape: an `Acceptance:` label with prose after it, or an acceptance heading with no
-    list under it.
 
-    `unreadable` is the half GRPH-893 added, and it is why this returns two things rather than
-    one. The first parser read only `## Tests`, so SA-476 (`Acceptance: …` inline) and SA-498
-    (`## Acceptance` + five numbered clauses) both parsed to NOTHING, and the gate recorded
-    that as a pass. "No clauses found" and "no clauses written" were the same answer; this is
-    what tells them apart.
+def split_clause_needs(text: str) -> tuple[str, frozenset[str]]:
+    """Split a declared `{needs: …}` / `[needs: …]` marker off a clause.
+
+    The marker is routing metadata, not part of the words a reviewer quotes. Coverage matches
+    the words; leaving the marker in the clause would make every honest receipt miss, and
+    stripping it at the refusal would make the two disagree.
     """
-    clauses: list[str] = []
+    needs: set[str] = set()
+    rest = (text or "").strip()
+    prefix = _NEEDS_PREFIX.match(rest)
+    if prefix:
+        needs.update(_need_tokens(prefix.group(1)))
+        rest = rest[prefix.end():].strip()
+    suffix = _NEEDS_SUFFIX.search(rest)
+    if suffix:
+        needs.update(_need_tokens(suffix.group(1)))
+        rest = rest[:suffix.start()].strip()
+    return rest, frozenset(needs)
+
+
+def _walk_acceptance(description: str) -> tuple[list[tuple[str, frozenset[str]]], list[str]]:
+    """The clauses under an acceptance heading, each with the capabilities it declared."""
+    rows: list[tuple[str, frozenset[str]]] = []
     unreadable: list[str] = []
     in_section = False
     section_label = ""
     section_count = 0
 
     def close() -> None:
+        nonlocal section_count
         if in_section and section_count == 0:
             unreadable.append(f"{section_label} has no list items under it")
 
@@ -1978,15 +2042,54 @@ def parse_acceptance(description: str) -> tuple[list[str], list[str]]:
             continue
         item = _LIST_ITEM.match(stripped)
         if item and item.group(1).strip():
-            clauses.append(_CHECKBOX.sub("", item.group(1).strip()))
-            section_count += 1
+            text, needs = split_clause_needs(_CHECKBOX.sub("", item.group(1).strip()))
+            if text:
+                rows.append((text, needs))
+                section_count += 1
     close()
-    return clauses, unreadable
+    return rows, unreadable
+
+
+def parse_acceptance(description: str) -> tuple[list[str], list[str]]:
+    """Read the acceptance clauses in an item description, and what could not be read.
+
+    Returns `(clauses, unreadable)`. A clause is a markdown list item under a `## Tests`,
+    `## Acceptance` or `## Acceptance criteria` heading (`###` too), or under a bare
+    `Acceptance:` label line. `unreadable` names acceptance text that is there but is not in
+    that shape: an `Acceptance:` label with prose after it, or an acceptance heading with no
+    list under it.
+
+    `unreadable` is the half GRPH-893 added, and it is why this returns two things rather than
+    one. The first parser read only `## Tests`, so SA-476 (`Acceptance: …` inline) and SA-498
+    (`## Acceptance` + five numbered clauses) both parsed to NOTHING, and the gate recorded
+    that as a pass. "No clauses found" and "no clauses written" were the same answer; this is
+    what tells them apart.
+
+    A `{needs: gh}` suffix or a `[needs: gh]` prefix is stripped before the clause is stored.
+    It is how a clause declares a capability (GRPH-1055); coverage matches the words that
+    remain. See `acceptance_needs`.
+    """
+    rows, unreadable = _walk_acceptance(description)
+    return [text for text, _needs in rows], unreadable
 
 
 def extract_acceptance_clauses(description: str) -> list[str]:
     """The clauses half of `parse_acceptance` — see there for the shapes it reads."""
     return parse_acceptance(description)[0]
+
+
+def acceptance_needs(description: str) -> frozenset[str]:
+    """Every capability an acceptance clause in `description` declared (GRPH-1055).
+
+    The union, not a per-clause map: a reviewer who cannot do one of them cannot finish the
+    item, so routing and the sign-off refusal both ask the same question. Empty means no
+    clause declared anything — mentioning `gh` in the prose is not a declaration.
+    """
+    rows, _unreadable = _walk_acceptance(description)
+    out: set[str] = set()
+    for _text, needs in rows:
+        out.update(needs)
+    return frozenset(out)
 
 
 #: What an evidence line says when the clause it names was NOT done (GRPH-945). SA-556's
@@ -2172,6 +2275,55 @@ def acceptance_covered(clauses: list[str], evidence: list[dict]
 def needs_reviewer_visual(clause: str) -> bool:
     """A clause about a screenshot is about something a reviewer has to LOOK at (GRPH-945)."""
     return "screenshot" in clause.lower()
+
+
+def declared_tools(caps: dict | None) -> frozenset[str]:
+    """The tools and postures an agent declared, beyond tier/vendor/model (GRPH-1055).
+
+    `declared_capabilities` answers who reviewed whom. This answers whether they can RUN the
+    thing a clause named. A fleet child does not have `gh`: the supervisor's PATH shim
+    (`fleet/src/gbfleet/shim.py`, `DEFAULT_DENY`) refuses it, because `gh` is the operator's
+    forge login. The ledger never saw that refusal — capabilities carried only tier, vendor
+    and model — so review kept handing the clause to children who could not complete it.
+
+    Declared, never inferred. A child the operator started with `--allow gh` says so by
+    listing `gh` in `capabilities.tools` or `capabilities.allows` (a list, or one string), or
+    by setting `capabilities.gh` true. `capabilities.human: true` is a person, and it is the
+    only thing that satisfies a `human-only` clause. Having `gh` does not make someone a
+    human, and being a human does not grant `gh`.
+    """
+    caps = caps or {}
+    tools: set[str] = set()
+    for key in ("tools", "allows"):
+        value = caps.get(key)
+        if isinstance(value, str) and value.strip():
+            tools.add(value.strip().lower())
+        elif isinstance(value, (list, tuple)):
+            for entry in value:
+                if isinstance(entry, str) and entry.strip():
+                    tools.add(entry.strip().lower())
+    for key, value in caps.items():
+        if value is True and isinstance(key, str) and key not in ("readonly", "human"):
+            tools.add(key.strip().lower())
+    if caps.get("human") is True:
+        tools.add("human-only")
+        tools.add("human")
+    return frozenset(tools)
+
+
+def missing_clause_capabilities(caps: dict | None, description: str) -> frozenset[str]:
+    """Capabilities an acceptance clause declared that `caps` does not."""
+    return frozenset(acceptance_needs(description) - declared_tools(caps))
+
+
+def reviewer_can_check(agent: Agent | None, item: Item) -> bool:
+    """Whether this reviewer declared every capability the item's clauses require.
+
+    No declaration means yes: an ordinary item stays reviewable by any independent agent.
+    An unregistered caller has declared nothing, so a clause that needs a tool is not theirs.
+    """
+    caps = agent.capabilities if agent is not None else None
+    return not missing_clause_capabilities(caps, item.description or "")
 
 
 def declared_capabilities(db: Session, agent_id: str | None) -> dict:
@@ -2405,6 +2557,22 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             f"{item.key} states acceptance the gate cannot read: " + "; ".join(unreadable)
             + " — restate each clause as a list item under `## Acceptance` (or `## Tests`) "
               "so each one can be matched to a named test"
+        )
+    # BEFORE coverage (GRPH-1055). A child who cannot run `gh` can still quote the clause,
+    # and coverage would then pass. The refusal has to land on the capability, which is the
+    # thing they do not have, rather than inviting a receipt that pretends they checked it.
+    reviewer_agent = db.get(Agent, agent_id)
+    missing = missing_clause_capabilities(
+        reviewer_agent.capabilities if reviewer_agent is not None else None,
+        item.description or "")
+    if missing:
+        named = ", ".join(f"`{n}`" for n in sorted(missing))
+        raise ClauseCapability(
+            f"{item.key} needs a reviewer with {named}: an acceptance clause declared it, "
+            "and this agent did not. Declare it as capabilities.tools or capabilities.allows; "
+            "a `human-only` clause needs capabilities.human. A fleet child is refused `gh` by "
+            "the worktree shim, so quoting the clause is not checking it — leave the item for "
+            "a reviewer who has the tool, and do not bounce it."
         )
     covered, uncovered, contradicted = acceptance_covered(clauses, merged)
     # THE REVIEWER'S OWN RECEIPTS (GRPH-945). Counted over the merged set alone, the builder's
@@ -3973,6 +4141,28 @@ def end_wave_preview(db: Session, *, project_id: str | None, wave: str | None = 
             "agents": len(agent_ids), "leases": leases, "reservations": reservations}
 
 
+def _live_reviewer_tools(db: Session, agents: list[Agent],
+                         project_id: str | None) -> list[frozenset[str]]:
+    """Tools declared by reviewers who could actually take an item in this project right now.
+
+    Offline, quarantined, expired-seat and non-worker agents do not count. Counting them
+    would let a dead declaration clear `needs_human`, which is the mark reading clean because
+    somebody once registered with `gh` and then left.
+    """
+    out: list[frozenset[str]] = []
+    for agent in agents:
+        if project_id and agent.project_id != project_id:
+            continue
+        if presence_state(agent) in ("offline", "quarantined"):
+            continue
+        if session_expired(db, agent):
+            continue
+        if agent.active_role not in ("worker", ALL_IN_ONE):
+            continue
+        out.append(declared_tools(agent.capabilities))
+    return out
+
+
 def review_queue(db: Session, project_id: str | None = None) -> list[dict]:
     """Items awaiting review, each carrying WHO BUILT IT.
 
@@ -3987,6 +4177,7 @@ def review_queue(db: Session, project_id: str | None = None) -> list[dict]:
     agents = list(db.scalars(select(Agent)).all())
     labels = {a.id: (a.label or a.id) for a in agents}
     holders = {a.id: a for a in agents}
+    live_tools: dict[str | None, list[frozenset[str]]] = {}
     out = []
     for it in rows:
         # ONE read of liveness, and every field below derives from it. Each field used to call
@@ -3995,6 +4186,14 @@ def review_queue(db: Session, project_id: str | None = None) -> list[dict]:
         # that got it wrong would say "nobody is on this" about work somebody died holding.
         lapse = review_claim_lapse(it)
         holder = it.review_claimed_by if (lapse is None and it.review_claimed_by) else None
+        # GRPH-1055. `clause_needs` is what the description declared. `needs_human` is true
+        # when no live reviewer declared all of it — including a `human-only` clause, and a
+        # `gh` clause while every child is shimmed off `gh`. Both are always present: an
+        # absent key would read as "nobody looked", and an empty list is the true answer for
+        # an ordinary item.
+        needs = acceptance_needs(it.description or "")
+        if it.project_id not in live_tools:
+            live_tools[it.project_id] = _live_reviewer_tools(db, agents, it.project_id)
         out.append({
             "id": it.id, "key": it.key, "title": it.title, "branch": it.branch,
             "built_by": it.built_by,
@@ -4026,6 +4225,8 @@ def review_queue(db: Session, project_id: str | None = None) -> list[dict]:
             # exclusive with `reviewed_by` by construction, which is what lets a reader tell
             # "free, nobody has opened it" from "free, its reviewer is gone" at a glance.
             "lapsed_holder": it.review_claimed_by if (lapse is not None and it.review_claimed_by) else None,
+            "clause_needs": sorted(needs),
+            "needs_human": bool(needs) and not any(needs <= have for have in live_tools[it.project_id]),
         })
     return out
 

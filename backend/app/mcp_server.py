@@ -653,9 +653,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "claim_review",
         "description": (
-            "Lease an item in review that you did NOT build. `claimed` is false when nothing "
-            "qualifies — including when the only work in review is your own. `branch` is where "
-            "the diff is."
+            "Lease an item in review you did NOT build. `claimed` is false if it is yours or "
+            "needs `gh` or `human-only` you did not declare; do not bounce. `branch` is the diff."
         ),
         "inputSchema": {
             "type": "object",
@@ -3027,6 +3026,17 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise errors.Conflict(str(e), hint=(
                 "a predicate that could not run is not a pass — give it something to compare "
                 "against, or waive it on the record with waive={\"<predicate>\": \"<why>\"}"))
+        except fleet_svc.ClauseCapability as e:
+            # Same audit as the coverage refusal (GRPH-970): a gate whose refusals leave no
+            # trace cannot be examined for whether it is being routed around.
+            events_svc.record_key(
+                db, key, action="sign_off_refused", target_type="item",
+                target_id=args.get("id", ""), project_id=pid,
+                meta={"reason": str(e), "agent_id": args.get("agent_id")})
+            raise errors.Conflict(str(e), hint=(
+                "this clause needs a reviewer who declared the capability — capabilities.tools "
+                "or capabilities.allows, and capabilities.human for a human-only clause. "
+                "Leave the item in review; do not bounce it"))
         except fleet_svc.MissingAcceptanceCoverage as e:
             events_svc.record_key(
                 db, key, action="sign_off_refused", target_type="item",

@@ -133,7 +133,11 @@ CEILING = 15060
 # record_scan. Descriptions and outputSchemas trimmed first. The remaining over is NOT funded
 # out of core prose — CORE_TOKENS stays 8923; TIER_TOKENS["codegraph"] 1009 -> 1786 is the
 # whole bill. Same argument as GRPH-988: opt-in tier pays. Headroom 10.
-MEASURED_TOKENS = 15050
+# 15050 -> 15046 (GRPH-1055). `claim_review` says a clause that needs `gh` or
+# `human-only` is not offered, and not to bounce it. Paid by trimming that
+# tool's own description (the sentence is shorter than the one it replaced);
+# core 8923 -> 8919. Ceiling unchanged. Headroom 14.
+MEASURED_TOKENS = 15046
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.
