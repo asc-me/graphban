@@ -371,6 +371,13 @@ class Wave:
     #: the loop everything else waits on. One attempt per REVISION: the reap pushes again at the
     #: end of the wave, so a transient refusal costs the early publish and not the work.
     review_publish_tried: dict[str, str] = field(default_factory=dict)
+    #: Set when this wave could not read an item's evidence, so it could not tell whether a
+    #: commit of that item is already in the trunk (GRPH-1053). Empty means the check ran,
+    #: or no push needed it. A push that went ahead anyway is not "nothing had landed".
+    landed_unmeasured: str = ""
+    #: Original branch -> (side branch, why). A salvage or rework that must not move the
+    #: ref a landed fix already uses (GRPH-1053).
+    diverted: dict[str, tuple[str, str]] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -938,15 +945,20 @@ def _start(
                 except wt_mod.ResumeFailed as exc:
                     wave.resume_misses.append(str(exc))
                     observe.emit("resume_miss", detail=str(exc), branch=bounced)
-            if tree is None and resumes:
-                orphan = resumes.pop(0)
-                if orphan.branch in taken:
-                    orphan = None
-                    while resumes:
-                        candidate = resumes.pop(0)
-                        if candidate.branch not in taken:
-                            orphan = candidate
+            if tree is None:
+                # Bound seats resume only the salvage that names their item. An unbound
+                # seat still walks the list, skipping branches this wave already took.
+                orphan = None
+                while True:
+                    candidate = wt_mod.take_resume(resumes, seat.item)
+                    if candidate is None:
+                        break
+                    if candidate.branch in taken:
+                        if seat.item:
                             break
+                        continue
+                    orphan = candidate
+                    break
                 if orphan is not None:
                     slot = orphan.branch.rsplit("-", 1)[-1] or slot
                     agent_slot = f"{wave_name}-{slot}"
@@ -1098,6 +1110,10 @@ def watch_tick(
     _enforce_the_lease(wave, children)
     if roster is not None:
         _catch_the_disowned(wave, children, roster, limits)
+    # Before the reap, so a child whose item is already done does not get another tick
+    # in which to push. The reap that follows still salvages what it left; the push of
+    # that salvage is the guarded one (GRPH-1053).
+    _stop_landed_children(wave, children, client)
     # Reap first so the exit post can carry the diff shape computed against the base
     # after salvage. Reporting first would store a null shape that a later post can
     # fill, but the ordinary path should not need two posts to say what the child did.
@@ -1219,7 +1235,8 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
             # the supervisor must report that rather than die inside its own watch loop.
             tree = Worktree(path=child.worktree, branch=child.branch, repo=_repo_of(child),
                             base=child.base)
-            reaped = wt_mod.reap_held(tree, child.adapter, list(child.held_items))
+            held = _salvage_items(child)
+            reaped = wt_mod.reap_held(tree, child.adapter, held)
         except Exception as exc:  # noqa: BLE001 — a failed reap is reported, never fatal
             wave.failures.append(f"{child.branch}: reap failed ({exc})")
             continue
@@ -1247,8 +1264,9 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
                  propose_prs=not salvaged, base_branch=base_branch)
         if salvaged:
             commit = reaped.salvage.commit if reaped.salvage else ""
-            _record_salvage_receipt(
-                wave, client, list(child.held_items or []), tree.branch, commit or "")
+            target, why = wave.diverted.get(tree.branch, (tree.branch, ""))
+            _note_salvage(wave, client, tree.repo, target, held, reaped.siblings,
+                          commit or "", base=tree.base, reason=why)
 
 
 def _declared_into(wave: Wave, items: dict) -> dict:
@@ -1353,6 +1371,160 @@ def _ids_in_review(client: Graphban | None) -> set[str] | None:
     return {str(r["id"]) for r in rows if isinstance(r, dict) and r.get("id")}
 
 
+def _salvage_items(child: Child) -> list[str]:
+    """The items this child's salvage belongs to, originating item first (GRPH-1053).
+
+    A bound seat's `assigned.item` is the item the seat was minted for. `held_items` is
+    what the roster last said, which can be a cluster, empty, or a neighbour's id that
+    the seat happened to be holding. The worker branch is that originating item's. The
+    others keep the sibling branches `reap_held` already cuts, and they are not renamed
+    onto the first one.
+    """
+    held = [str(i) for i in (child.held_items or []) if i]
+    origin = ""
+    assigned = child.assigned if isinstance(child.assigned, dict) else None
+    if assigned is not None:
+        origin = str(assigned.get("item") or "").strip()
+    if not origin:
+        return held
+    return [origin, *[i for i in held if i != origin]]
+
+
+def _remember_landed_unread(wave: Wave, item: str, reason: str) -> None:
+    """One line per wave. A push that could not be checked is not "nothing had landed"."""
+    if wave.landed_unmeasured or not reason:
+        return
+    wave.landed_unmeasured = (
+        f"{item}: landed-commit check did not run ({reason})" if item else reason
+    )
+
+
+def _landed_commits(repo: Path, client: Graphban | None,
+                    item_id: str) -> tuple[list[str], str]:
+    """Commits of `item_id` that are already in the trunk, and why that could not be read.
+
+    `([], "")` is a real answer: the item was read, or there is no trunk to be in, and
+    nothing of it has landed. A non-empty reason means the list is not that answer —
+    the caller still pushes, and says the check did not run.
+
+    Only an evidence entry that carries a `commit` counts. A cut-from note names a sha
+    in prose and is not a landed fix. An entry that names a different branch is someone
+    else's attestation. A commit this clone has never fetched is not "missing": `reaches`
+    returns None and it is left out, so a fresh clone does not divert every salvage.
+    """
+    if client is None or not item_id:
+        return [], ""
+    allowed = getattr(client, "allowed", None)
+    if allowed is not None and "get_item_details" not in allowed:
+        return [], "this client may not read items"
+    try:
+        got = client.call("get_item_details", id=item_id)
+    except NotPermitted:
+        return [], "not permitted to read the item"
+    except (ToolFailed, ServerUnreachable, ProtocolError) as exc:
+        return [], str(exc)
+    except Exception as exc:  # noqa: BLE001 — a stand-in client, or a failure this list does not name
+        return [], str(exc)
+    if not isinstance(got, dict):
+        return [], "item details were not a record"
+    remote = wt_mod.remote_for(repo)
+    trunk = wt_mod.default_ref(repo, remote) if remote else ""
+    if not trunk:
+        return [], ""
+    branch = str(got.get("branch") or "").strip()
+    evidence = got.get("evidence") or []
+    if not isinstance(evidence, list):
+        return [], ""
+    seen: list[str] = []
+    landed: list[str] = []
+    for entry in evidence:
+        if not isinstance(entry, dict):
+            continue
+        commit = str(entry.get("commit") or "").strip()
+        if not commit or commit in seen:
+            continue
+        named = str(entry.get("branch") or "").strip()
+        if named and branch and named != branch:
+            continue
+        seen.append(commit)
+        if wt_mod.reaches(repo, trunk, commit) is True:
+            landed.append(commit)
+    return landed, ""
+
+
+def _push_target(wave: Wave, repo: Path, branch: str, base: str, item: str,
+                 client: Graphban | None) -> tuple[str, str]:
+    """Where `branch` may be pushed. An empty reason means `branch` itself is safe."""
+    if not item:
+        return branch, ""
+    landed, unread = _landed_commits(repo, client, item)
+    if unread:
+        _remember_landed_unread(wave, item, unread)
+        landed = []
+    return wt_mod.salvage_push_target(repo, branch, base, landed, item=item)
+
+
+def _ids_with_status(client: Graphban | None, status: str) -> set[str] | None:
+    """Item ids the ledger reads as `status`, or None when it could not be asked.
+
+    None is not the empty set. The fake that ignores the status argument and always
+    returns `review` is filtered here, so a child in review is not treated as done.
+    """
+    if client is None or "search_items" not in getattr(client, "allowed", ()):
+        return None
+    try:
+        payload = client.call("search_items", status=status, fields="lean", limit=10_000)
+    except (NotPermitted, ToolFailed, ServerUnreachable, ProtocolError):
+        return None
+    except Exception:  # noqa: BLE001 — one unread tick, not a dead wave
+        return None
+    if not isinstance(payload, dict):
+        return None
+    rows = payload.get("results") or []
+    if not isinstance(rows, list):
+        return None
+    return {
+        str(row["id"]) for row in rows
+        if isinstance(row, dict) and row.get("id") and row.get("status") == status
+    }
+
+
+def _stop_landed_children(wave: Wave, children: list[Child],
+                          client: Graphban | None) -> None:
+    """Stop a running child whose originating item is already `done` (GRPH-1053).
+
+    `review` is not this. The child stays up to publish the revision (GRPH-987) and to
+    review other work (PRD-39). A push that would move a branch past a commit already
+    in the trunk is refused by the push guard, not by killing the process.
+
+    Unreadable is not "nothing is done". The child is left running and the wave says
+    the check did not run.
+    """
+    running = [child for child in children if child.running]
+    if not running:
+        return
+    done = _ids_with_status(client, "done")
+    if done is None:
+        _remember_landed_unread(
+            wave, "",
+            "could not read which items are done, so a child whose fix has landed "
+            "was not stopped",
+        )
+        return
+    if not done:
+        return
+    for child in running:
+        ids = _salvage_items(child)
+        hit = [i for i in ids if i in done]
+        if not hit:
+            continue
+        stop(child, Reason.ITEM_LANDED)
+        wave.failures.append(
+            f"{child.branch}: stopped; {hit[0]} is done and a later push would "
+            "move its branch"
+        )
+
+
 def _publish_in_review(wave: Wave, children: Sequence[Child],
                        client: Graphban | None) -> None:
     """Push a RUNNING child's branch the moment one of its items reaches `review` (GRPH-987).
@@ -1414,6 +1586,38 @@ def _publish_in_review(wave: Wave, children: Sequence[Child],
         if not items:
             continue
         wave.review_publish_tried[child.branch] = head
+        origin = _salvage_items(child)
+        item = next((i for i in origin if i in items), items[0])
+        try:
+            target, divert_reason = _push_target(
+                wave, repo, child.branch, child.base, item, client)
+        except wt_mod.GitError as exc:
+            _note_once(wave, f"{child.branch}: not pushed ({exc})")
+            wave.review_unreadable[child.branch] = list(items)
+            continue
+        if divert_reason:
+            # The original ref is the one a landed fix already uses. Pushing this tip
+            # onto it moves that ref. The rework goes to a side branch, which is not a
+            # proposal and does not release the item: a reviewer fetching the original
+            # must still see the landed commit.
+            try:
+                pushed = wt_mod.push_branch(repo, target, child.base)
+            except Exception as exc:  # noqa: BLE001 — a failed publish is reported, never fatal
+                _note_once(wave, f"{child.branch}: publish on review failed ({exc})")
+                wave.review_unreadable[child.branch] = list(items)
+                continue
+            wave.published[target] = pushed
+            wave.diverted[child.branch] = (target, divert_reason)
+            if pushed.ok:
+                _record_salvage_receipt(
+                    wave, client, [item], target, _branch_head(repo, target),
+                    reason=divert_reason)
+                _note_once(wave, f"{child.branch}: diverted to {target} ({divert_reason})")
+            else:
+                wave.review_unreadable[child.branch] = list(items)
+                if not pushed.skipped:
+                    _note_once(wave, f"{child.branch}: {pushed.reason}")
+            continue
         try:
             pushed = wt_mod.push_branch(repo, child.branch, child.base)
         except Exception as exc:  # noqa: BLE001 — a failed publish is reported, never fatal
@@ -1456,8 +1660,13 @@ def _note_once(wave: Wave, line: str) -> None:
 
 def _publish(wave: Wave, tree: Worktree, *, client: Graphban | None = None,
              child: Child | None = None, propose_prs: bool = True,
-             base_branch: str = "") -> None:
+             base_branch: str = "") -> str:
     """Put the child's branch where the reviewer can read it (GRPH-750).
+
+    Returns the ref that was pushed — `tree.branch`, or a side branch when pushing the
+    original would move a commit that is already in the trunk (GRPH-1053). "" when the
+    push did not happen. The caller receipts a salvage onto that ref, not onto every
+    item the child held.
 
     A step AFTER the reap rather than part of salvage. Salvage commits, which the supervisor
     owes the work; this reaches outside the machine, which is a different kind of act and is
@@ -1472,14 +1681,38 @@ def _publish(wave: Wave, tree: Worktree, *, client: Graphban | None = None,
     # Takes the `Worktree`, not the Child, because the reap has already REMOVED the
     # directory by the time this runs — resolving the repo from a path that no longer
     # exists is how the first version of this failed every wave.
+    target = tree.branch
+    divert_reason = ""
+    item = ""
+    if child is not None:
+        ids = _salvage_items(child)
+        item = ids[0] if ids else ""
+    if item:
+        try:
+            target, divert_reason = _push_target(
+                wave, tree.repo, tree.branch, tree.base, item, client)
+        except wt_mod.GitError as exc:
+            wave.failures.append(f"{tree.branch}: not pushed ({exc})")
+            return ""
     try:
-        pushed = wt_mod.push_branch(tree.repo, tree.branch, tree.base)
+        pushed = wt_mod.push_branch(tree.repo, target, tree.base)
     except Exception as exc:  # noqa: BLE001 — a failed publish is reported, never fatal
-        wave.failures.append(f"{tree.branch}: publish failed ({exc})")
-        return
-    wave.published[tree.branch] = pushed
+        wave.failures.append(f"{target}: publish failed ({exc})")
+        return ""
+    wave.published[target] = pushed
     if not pushed.ok and not pushed.skipped:
-        wave.failures.append(f"{tree.branch}: {pushed.reason}")
+        wave.failures.append(f"{target}: {pushed.reason}")
+    # A diverted push is not the branch the seat advertised, and it is not a PR. Saying
+    # "published" about the original ref would hand a reviewer a tip that moved past the
+    # fix, which is the push this guard exists to refuse.
+    if divert_reason:
+        wave.diverted[tree.branch] = (target, divert_reason)
+        wave.failures.append(f"{tree.branch}: diverted to {target} ({divert_reason})")
+        if propose_prs and item:
+            _record_salvage_receipt(
+                wave, client, [item], target, _branch_head(tree.repo, target),
+                reason=divert_reason)
+        return target
     # GRPH-754: tell the server the work is now readable. Until this lands the server withholds
     # the item from `claim_review`, so a reviewer can no longer be handed an item whose branch
     # it will fetch a 404 for — measured on the deployed instance, twice. Only on a real push:
@@ -1488,6 +1721,7 @@ def _publish(wave: Wave, tree: Worktree, *, client: Graphban | None = None,
         client.post_attempt(enrolment_id=child.seat_id, branch_published=True)
     if pushed.ok and propose_prs:
         _propose(wave, tree, client=client, child=child, base_override=base_branch)
+    return target if pushed.ok else ""
 
 
 def _propose(wave: Wave, tree: Worktree, *, client: Graphban | None,
@@ -1515,16 +1749,20 @@ def _branch_head(repo: Path, branch: str) -> str:
 
 
 def _record_salvage_receipt(wave: Wave, client: Graphban | None, items: list[str],
-                            branch: str, commit: str) -> None:
+                            branch: str, commit: str, *, reason: str = "") -> None:
     """Name the salvage on the item without opening a PR (GRPH-926).
 
     GRPH-830 still holds: the work must be findable from the item. A `/pull/` URL was
     the wrong receipt — those drafts were mergeable and titled `WIP: salvaged by gbfleet`.
+    `reason` is set when the push went to a side branch so the original ref was not moved.
     """
     if client is None or not items:
         return
     short = (commit or "")[:12]
-    detail = f"salvaged onto `{branch}`" + (f" `{short}`" if short else "") + "; not proposed as a PR"
+    detail = f"salvaged onto `{branch}`" + (f" `{short}`" if short else "")
+    if reason:
+        detail += f" ({reason})"
+    detail += "; not proposed as a PR"
     for item_id in items:
         try:
             client.call("update_item", id=item_id, evidence=[{
@@ -1725,6 +1963,41 @@ def _propose_per_item(wave: Wave, repo: Path, branch: str, items: list[str], bas
         prev = f"{remote}/{name}"
 
 
+def _note_salvage(wave: Wave, client: Graphban | None, repo: Path, branch: str,
+                  items: list[str], siblings, commit: str, *, base: str = "",
+                  reason: str = "") -> None:
+    """One receipt per item, on that item's own branch.
+
+    Later items never inherit the first item's branch. A sibling that was not cut is a
+    failure, not a fallback onto the primary — that fallback is how one salvage was
+    attached to every id the child held (GRPH-1053).
+    """
+    if not items:
+        return
+    sibling = {item: name for item, name in (siblings or ())}
+    for index, item in enumerate(items):
+        if index == 0:
+            name, sha, why = branch, commit, reason
+        else:
+            name = sibling.get(item, "")
+            if not name:
+                wave.failures.append(
+                    f"{item}: not recorded on {branch}; that branch is {items[0]}'s salvage"
+                )
+                continue
+            sha = _branch_head(repo, name)
+            why = ""
+            try:
+                pushed = wt_mod.push_branch(repo, name, base)
+            except Exception as exc:  # noqa: BLE001 — the commit is local; the push is the report
+                wave.failures.append(f"{name}: publish failed ({exc})")
+            else:
+                wave.published[name] = pushed
+                if not pushed.ok and not pushed.skipped:
+                    wave.failures.append(f"{name}: {pushed.reason}")
+        _record_salvage_receipt(wave, client, [item], name, sha or "", reason=why)
+
+
 def publish_salvaged(wave: Wave, repo: Path, salvaged: list, *,
                      client: Graphban | None, base_branch: str = "") -> None:
     """Push what a takeover recovered, and say on the item that it exists (GRPH-830).
@@ -1747,22 +2020,44 @@ def publish_salvaged(wave: Wave, repo: Path, salvaged: list, *,
     """
     del base_branch  # kept on the signature; salvage is not a PR
     for row in salvaged:
+        items = [str(i) for i in (row.items or []) if i]
+        branch = row.branch
+        target = branch
+        divert_reason = ""
+        item = items[0] if items else ""
+        if len(items) > 1:
+            wave.failures.append(
+                f"{branch}: salvage names {', '.join(items)}; not stamped onto one branch"
+            )
+        if item:
+            try:
+                target, divert_reason = _push_target(
+                    wave, Path(repo), branch, row.base, item, client)
+            except wt_mod.GitError as exc:
+                wave.failures.append(f"{branch}: not pushed ({exc})")
+                continue
         try:
-            pushed = wt_mod.push_branch(repo, row.branch, row.base)
+            pushed = wt_mod.push_branch(repo, target, row.base)
         except Exception as exc:  # noqa: BLE001
-            wave.failures.append(f"{row.branch}: salvaged but not published ({exc})")
+            wave.failures.append(f"{branch}: salvaged but not published ({exc})")
             continue
-        wave.published[row.branch] = pushed
+        wave.published[target] = pushed
         if not pushed.ok:
             if not pushed.skipped:
-                wave.failures.append(f"{row.branch}: salvaged but not published "
+                wave.failures.append(f"{target}: salvaged but not published "
                                      f"({pushed.reason})")
             continue
-        observe.emit("adopt", detail=f"{row.branch}: published salvaged work"
-                                     + (f" for {', '.join(row.items)}" if row.items else ""))
+        if divert_reason:
+            wave.diverted[branch] = (target, divert_reason)
+            wave.failures.append(f"{branch}: diverted to {target} ({divert_reason})")
+        named = target if divert_reason else branch
+        observe.emit("adopt", detail=f"{named}: published salvaged work"
+                                     + (f" for {item}" if item else ""))
+        # One item on this ref. The rest were not built onto it, and a receipt that
+        # names them here is the wrong-item attachment this exists to stop.
         _record_salvage_receipt(
-            wave, client, list(row.items or []), row.branch,
-            _branch_head(repo, row.branch))
+            wave, client, items[:1], named, _branch_head(repo, named),
+            reason=divert_reason)
 
 
 #: How long a watched item waits before its merge is re-asked. Each ask is a ledger read and
@@ -2340,9 +2635,13 @@ def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = No
         tree = Worktree(
             path=child.worktree, branch=child.branch, repo=_repo_of(child), base=child.base
         )
-        held = list(child.held_items) or [
-            i for i in (wave.partition.held.get(child.agent_id) or []) if i
-        ]
+        held = _salvage_items(child)
+        if not held:
+            # `child.held_items` is the last non-empty roster reading. The live partition
+            # is empty after release, and reading only that would salvage with no item.
+            held = list(child.held_items) or [
+                i for i in (wave.partition.held.get(child.agent_id) or []) if i
+            ]
         reaped = wt_mod.reap_held(tree, child.adapter, held)
         wave.reaped.append(reaped)
         child.diff_shape = reaped.diff_shape
@@ -2371,7 +2670,9 @@ def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = No
                  propose_prs=not salvaged, base_branch=base_branch)
         if salvaged:
             commit = reaped.salvage.commit if reaped.salvage else ""
-            _record_salvage_receipt(wave, client, held, tree.branch, commit or "")
+            target, why = wave.diverted.get(tree.branch, (tree.branch, ""))
+            _note_salvage(wave, client, tree.repo, target, held, reaped.siblings,
+                          commit or "", base=tree.base, reason=why)
         if not _inside(child.seat_path, child.worktree):
             seat_mod.remove(child.seat_path)
 
