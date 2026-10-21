@@ -394,6 +394,9 @@ def _run(args: argparse.Namespace) -> int:
     agent_id = args.agent_id
     project = ""
     role = ""
+    # Set only when THIS process's register_agent claimed the seat's item. A `--agent-id`
+    # walk did not, and must not release somebody else's hold on the way out.
+    claimed_here = ""
     if not agent_id:
         code = enrolment_code(written)
         if not code:
@@ -419,6 +422,7 @@ def _run(args: argparse.Namespace) -> int:
         # run with nothing to do, and say who.
         if assigned["state"] == "claimed" and assigned["item"]:
             args.item = str(assigned["item"])
+            claimed_here = args.item
             print(f"gbagent: this seat handed me {args.item}", file=sys.stderr)
         elif assigned["state"] == "taken":
             # GRPH-931: "ghost" means the holder row exists but the agent is offline (no
@@ -440,6 +444,19 @@ def _run(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
             return 0
+    # AFTER register (GRPH-1058). `--turns`/`--window` used to be argparse
+    # `required=True`, which exits 2 with a usage dump before this function runs —
+    # before `register_agent`. The wave then sees a child that never registered and
+    # reads a dead model. There is still no numeric default: `loop.run` refuses to
+    # guess either value, and a default here would put that guess back. A missing
+    # flag is said here, after the roster can see the child, and a claim this
+    # registration just took is handed back because the run never starts.
+    refused = tuning_refusal(getattr(args, "turns", None), getattr(args, "window", None))
+    if refused:
+        print(f"gbagent: {refused}", file=sys.stderr)
+        if claimed_here:
+            _release_unstarted(base_url, api_key, claimed_here, agent_id)
+        return 78
     assignment = assignment_for(args.item, role=role)
     # S6 (PRD-39 D-h): merged worker gets both build and review tools.
     tools = MERGED_TOOLS
@@ -522,6 +539,48 @@ def _run(args: argparse.Namespace) -> int:
             build_servers.close()
 
 
+def tuning_refusal(turns: int | None, window: int | None) -> str:
+    """Name the flags this run will not guess, or "" when both are usable.
+
+    No number is filled in. `loop.run` refuses a non-positive budget or window, and
+    the two ways of guessing the window are not symmetric: too large dies of an
+    overflow compaction could have prevented, too small compacts away the context
+    that made a local model worth using (PRD-24 D6/D7). The caller states both.
+
+    Called from `_run` only after registration, so a launcher that omits a flag
+    produces a roster row and this sentence rather than an argparse exit the wave
+    cannot tell from a dead child (GRPH-1058).
+    """
+    missing = [name for name, value in (("turns", turns), ("window", window))
+               if value is None or value < 1]
+    if not missing:
+        return ""
+    return (
+        f"needs {' and '.join('--' + name for name in missing)} and refuses to guess: "
+        "too large a window dies of an overflow compaction could have prevented, "
+        "too small throws away the context that made a local model worth using. "
+        "Pass them on spawn."
+    )
+
+
+def _release_unstarted(base_url: str, api_key: str, item_id: str, agent_id: str) -> None:
+    """Hand back an item registration claimed and this run will not work.
+
+    `Coordinator.release` is otherwise only called after a handoff note. There is no
+    note here, and there must not be one: nothing was written, so clearing authorship
+    is the right reading. A failure to release is printed and does not change the
+    exit — the refusal already happened, and the lease is what gives the item back
+    if this call does not.
+    """
+    try:
+        Coordinator.connect(base_url, api_key, item_id, agent_id=agent_id).release()
+    except Exception as exc:  # noqa: BLE001 — the refusal stands either way
+        print(
+            f"gbagent: registered, then could not release {item_id}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def _result_record(outcome) -> dict:
     """What a run cost, in the terms `attempt_telemetry` records.
 
@@ -584,9 +643,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--agent-id", default="")
     run.add_argument("--branch", default="")
     run.add_argument("--model", required=True)
-    # No defaults. `loop.run` refuses to guess either of these and so does this.
-    run.add_argument("--turns", type=int, required=True)
-    run.add_argument("--window", type=int, required=True)
+    # Not argparse-required (GRPH-1058). `required=True` exited 2 before
+    # `register_agent`, and the wave read that as a child that never showed up.
+    # Still no numeric default — see `tuning_refusal`.
+    run.add_argument("--turns", type=int, default=None)
+    run.add_argument("--window", type=int, default=None)
     run.add_argument("--base-url", default="")
 
     sub.add_parser("models", help=f"list what {BASE_URL_ENV} serves ({API_KEY_ENV} is sent as a bearer when set)")
