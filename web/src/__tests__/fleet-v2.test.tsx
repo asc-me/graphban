@@ -79,6 +79,7 @@ describe("Fleet.v2 catalog and allocation", () => {
     expect(screen.queryByRole("button", { name: /^Work/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Wave/ })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Fleet.v1" })).toHaveAttribute("href", "/fleet.v1");
+    expect(screen.getByRole("tab", { name: /Fleet management/ })).toHaveAttribute("href", "/fleet.v1");
   });
 
   it("draws unique matrix rows and links to Observe Harness", () => {

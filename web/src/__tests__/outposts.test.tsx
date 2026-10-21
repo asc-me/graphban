@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
 import { OutpostsView } from "@/features/fleet/OutpostsView";
-import { groupOutposts, outpostHost } from "@/features/fleet/outposts";
+import { groupOutposts, hostHint, outpostAgent, outpostHost } from "@/features/fleet/outposts";
 import type { FleetAgent } from "@/lib/types";
 
 const fleet = vi.hoisted(() => ({ data: null as unknown, isLoading: false }));
@@ -64,7 +65,8 @@ describe("OutpostsView", () => {
         </MemoryRouter>
       </QueryClientProvider>,
     );
-    expect(screen.getByTestId("outposts-empty")).toHaveTextContent(/No host has registered/);
+    expect(screen.getByTestId("outposts-empty")).toHaveTextContent(/No host has checked in/);
+    expect(screen.getByTestId("outposts-empty")).toHaveTextContent(/not a list of zero machines/i);
     expect(screen.getByRole("link", { name: "Fleet catalog" })).toHaveAttribute("href", "/fleet.v2");
   });
 
@@ -96,21 +98,30 @@ describe("OutpostsView", () => {
     expect(document.body).toHaveTextContent(/what the host last declared/i);
   });
 
-  it("names the three tools and which machines need which", () => {
+  it("names the three tools and which machines need which", async () => {
     fleet.data = { agents: [] };
     show();
+    await userEvent.setup().click(screen.getByRole("button", { name: /Set up a host/i }));
 
     expect(document.body).toHaveTextContent(/Three tools, one machine/i);
     // gbagent ships with gbfleet — the sentence exists so nobody installs a third thing.
     expect(document.body).toHaveTextContent(/gbfleet/);
     expect(document.body).toHaveTextContent(/gbagent/);
+    expect(document.body).toHaveTextContent(/ships with gbfleet/);
   });
 
-  it("offers the set-up steps a machine with no outpost actually needs", () => {
+  it("offers the set-up steps a machine with no outpost actually needs", async () => {
     fleet.data = { agents: [] };
     show();
+    await userEvent.setup().click(screen.getByRole("tab", { name: /Set up a host/ }));
 
     expect(document.body).toHaveTextContent(/Set up this machine/i);
+    expect(document.body).toHaveTextContent("uv tool install graphban-cli");
+    expect(document.body).toHaveTextContent("gban login --server");
+    expect(document.body).toHaveTextContent("uv tool install graphban-fleet");
+    expect(document.body).not.toHaveTextContent("npm install");
+    expect(document.body).not.toHaveTextContent("gban adapter install");
+    expect(document.body).not.toHaveTextContent("gban host set");
   });
 
   it("renders declared build info for a host", () => {
@@ -134,5 +145,37 @@ describe("OutpostsView", () => {
     expect(card).toHaveTextContent("opus");
     expect(card).toHaveTextContent("darwin");
     expect(card).toHaveTextContent("feat/x");
+    expect(card).toHaveTextContent("gbfleet");
+  });
+
+  it("derives via from enrolment: a seat is gbfleet, a key is gban", () => {
+    expect(outpostAgent(agent({ enrolled: true })).via).toBe("gbfleet");
+    expect(outpostAgent(agent({ enrolled: false })).via).toBe("gban");
+  });
+
+  it("hostHint is null when every agent on a specified host is up", () => {
+    const [post] = groupOutposts([
+      agent({ id: "1", key: "A1", state: "working", capabilities: { host: "box-a" } }),
+    ]);
+    expect(hostHint(post)).toBeNull();
+  });
+
+  it("shows a fix hint for an offline host and hides it when everyone is up", () => {
+    fleet.data = {
+      agents: [agent({
+        id: "1", key: "A1", state: "offline",
+        capabilities: { host: "box-a" }, branch: "wave-6/grph-862",
+      })],
+    };
+    const { unmount } = show();
+    expect(screen.getByTestId("fix-hint")).toHaveTextContent(/Offline while holding/);
+    expect(screen.getByRole("link", { name: /Open on Fleet/ })).toHaveAttribute("href", "/fleet.v1");
+    unmount();
+
+    fleet.data = {
+      agents: [agent({ id: "1", key: "A1", state: "working", capabilities: { host: "box-a" } })],
+    };
+    show();
+    expect(screen.queryByTestId("fix-hint")).not.toBeInTheDocument();
   });
 });

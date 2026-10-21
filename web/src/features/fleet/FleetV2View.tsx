@@ -4,6 +4,7 @@ import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useConfig, useFleet } from "@/lib/queries";
 import { projectPath } from "@/lib/routes";
+import { FleetPageTabs } from "./FleetPageTabs";
 import { MatrixTable, TierMapPanel } from "./matrixTable";
 import { MixAllocation } from "./MixAllocation";
 
@@ -45,6 +46,7 @@ export function FleetV2View() {
           </div>
         }
       />
+      <FleetPageTabs active="harness" />
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         <TierMapPanel
           projectId={activeId}

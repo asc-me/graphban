@@ -1,161 +1,73 @@
+import { Search } from "lucide-react";
 import * as React from "react";
-
-import { PlaceHeader } from "@/components/shell/PlaceHeader";
-import { PlannerError } from "@/components/planner/PlannerStates";
-import { cn } from "@/lib/cn";
-import { useMcpTools } from "@/lib/queries";
-import { settingsPath } from "@/lib/routes";
-import type { McpParamDetail, McpToolInfo } from "@/lib/types";
 import { Link } from "react-router-dom";
 
-// ── Tool grouping ─────────────────────────────────────────────────────────────
-// Groups mirror the agent's decision sequence: orient → claim → work → hand off.
-// A tool in the wrong group would make the loop-by-role section incoherent, so
-// the groups are the same vocabulary both sections share.
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
+import {
+  PlannerEmpty,
+  PlannerError,
+  TableSkeleton,
+} from "@/components/planner/PlannerStates";
+import { useProjectCtx } from "@/features/ProjectContext";
+import { CLIENTS } from "@/features/settings/McpInstall";
+import { copyText } from "@/lib/clipboard";
+import { cn } from "@/lib/cn";
+import { useConfig, useMcpTools } from "@/lib/queries";
+import { projectPath, settingsPath } from "@/lib/routes";
+import type { McpParamDetail, McpToolInfo } from "@/lib/types";
 
-const GROUPS: { label: string; hint: string; prefix: string[] }[] = [
-  { label: "Start here", hint: "Orient before anything else", prefix: ["get_context", "list_projects", "setup_project"] },
-  { label: "Claim work", hint: "Take an item — never pick one by hand", prefix: ["claim_next", "claim_cluster", "claim_review", "next_cluster"] },
-  { label: "Work items", hint: "Read, write, advance", prefix: ["get_item_details", "update_item", "create_item", "search_items", "get_backlog", "suggest_next", "release_item"] },
-  { label: "Code graph", hint: "Describe and query the structure", prefix: ["get_code_map", "describe_code", "search_code", "code_neighbors", "graph_query", "link_code", "unlink_code"] },
-  { label: "PRDs", hint: "Author, decompose, accept", prefix: ["create_prd", "get_prd", "update_prd", "decompose_prd", "grill_prd", "answer_grill", "prd_coverage", "prd_acceptance", "close_prd", "submit_verdict", "request_rebaseline"] },
-  { label: "Fleet", hint: "Multi-agent coordination", prefix: ["register_agent", "heartbeat", "fleet_status", "delegate", "mint_enrolment", "assign_role", "retire_wave", "propose_allocation", "collision_clusters"] },
-  { label: "Memory & lessons", hint: "Record and recall knowledge", prefix: ["add_memory", "search_memory", "get_lessons", "extract_lessons", "publish_memory", "reject_memory", "learning_loop", "review_recommendation"] },
-  { label: "Relationships", hint: "Link items, trace neighbourhoods", prefix: ["link_items", "unlink_items", "related_work"] },
-  { label: "Governance", hint: "Sign off or send back", prefix: ["sign_off", "bounce"] },
-  { label: "Meta", hint: "Digests, bug reports", prefix: ["generate_digest", "report_graphban_issue"] },
-];
+import {
+  GROUPS,
+  ROLE_LOOPS,
+  ROLE_TONE,
+  TIER_TONE,
+  enrich,
+  fmtCalls,
+  type EnrichedTool,
+  type RoleId,
+} from "./catalog";
 
-function groupFor(name: string): string {
-  for (const g of GROUPS) {
-    if (g.prefix.includes(name)) return g.label;
-  }
-  return "Meta";
-}
-
-// ── Role loops ────────────────────────────────────────────────────────────────
-// The ordered call sequence per role, the why per step, and what to avoid.
-// Derived from the tool descriptions and the AGENTS.md operating loop.
-
-interface LoopStep { tool: string; why: string; avoid: string }
-
-const ROLE_LOOPS: { role: string; color: string; steps: LoopStep[] }[] = [
-  {
-    role: "worker",
-    color: "#c6f24e",
-    steps: [
-      { tool: "register_agent", why: "Announce yourself before claiming anything — the ledger needs to know who you are.", avoid: "Calling claim_next first: without registration you have no agent_id and claims are refused." },
-      { tool: "heartbeat", why: "Extend your lease and say what you are doing. Without it, your item looks abandoned and is reclaimed.", avoid: "Silent heartbeats — pass status and files so the Live page can show your work." },
-      { tool: "claim_next", why: "Take one ready item. Two agents never get the same one, but it reserves NO files — prefer claim_cluster in a fleet.", avoid: "Picking an item by hand from the backlog. claim_next enforces the partition." },
-      { tool: "get_item_details", why: "Read the full record before writing code — the description usually names the trap.", avoid: "Starting from the title alone. The bounce_reason field has caught three attempts that skipped this." },
-      { tool: "update_item", why: "Record evidence as you get it. A status change with no receipt is indistinguishable from a placeholder move.", avoid: "Saving one summary at the end. APPENDS is the design — add receipts as you go." },
-    ],
-  },
-  {
-    role: "planner",
-    color: "#7ca2ff",
-    steps: [
-      { tool: "get_context", why: "Orient: the project, your scopes, the gitops bar. Call this first.", avoid: "Assuming you know the project. The gitops fields measure things; unset means unmeasured, not absent." },
-      { tool: "create_prd", why: "Author the spec. Use ## headings — decompose_prd turns each into tracked work.", avoid: "Writing without sections. A PRD without headings produces no tasks." },
-      { tool: "grill_prd", why: "Surface unstated assumptions before approval. Approval is earned, not picked.", avoid: "Skipping the grill to ship faster. An ungrilled PRD ships assumptions as requirements." },
-      { tool: "decompose_prd", why: "One task per uncovered section. create=true files them when approved.", avoid: "Decomposing a draft. Wait for approval or the tasks encode decisions that haven't been made." },
-      { tool: "propose_allocation", why: "What the fleet should look like given who is online and what is ready.", avoid: "Assigning directly. A proposal lets you see the shape before committing." },
-    ],
-  },
-  {
-    role: "reviewer",
-    color: "#a78bfa",
-    steps: [
-      { tool: "register_agent", why: "Same as worker — the ledger needs your identity.", avoid: "Reviewing without registering: your sign_off would have no agent_id to record." },
-      { tool: "claim_review", why: "Lease an item in review that you did NOT build. Refused for your own work.", avoid: "Picking your own item. The server refuses it; the rule is the point." },
-      { tool: "get_item_details", why: "Read what was built and what the bounce_reason says, if any.", avoid: "Reviewing from the title. The evidence field carries the receipts." },
-      { tool: "sign_off", why: "Take a reviewed item to done. Refused if you built it.", avoid: "Signing off without reading the evidence. A sign_off with no sabotage receipt above the effort threshold is refused." },
-      { tool: "bounce", why: "Send it back with a reason. Reserved for its author for one lease period.", avoid: "Bouncing without a reason. The reason is the load-bearing part — it is what the author reads." },
-    ],
-  },
-];
-
-// ── Connect-an-agent snippets ─────────────────────────────────────────────────
-
-const CLIENT_SNIPPETS: { label: string; lang: string; code: string }[] = [
-  {
-    label: "Qwen Code",
-    lang: "toml",
-    code: `# .qwen/settings.json — add the MCP server
-{
-  "mcpServers": {
-    "graphban": {
-      "url": "http://localhost:8000/api/mcp",
-      "headers": { "X-API-Key": "gb-..." }
-    }
-  }
-}`,
-  },
-  {
-    label: "Claude Code",
-    lang: "toml",
-    code: `# .claude/settings.json
-{
-  "mcpServers": {
-    "graphban": {
-      "url": "http://localhost:8000/api/mcp",
-      "headers": { "X-API-Key": "gb-..." }
-    }
-  }
-}`,
-  },
-  {
-    label: "Cursor",
-    lang: "json",
-    code: `// .cursor/mcp.json
-{
-  "mcpServers": {
-    "graphban": {
-      "url": "http://localhost:8000/api/mcp",
-      "headers": { "X-API-Key": "gb-..." }
-    }
-  }
-}`,
-  },
-  {
-    label: "Codex",
-    lang: "toml",
-    code: `# .codex/mcp.json
-{
-  "mcpServers": {
-    "graphban": {
-      "type": "url",
-      "url": "http://localhost:8000/api/mcp",
-      "headers": { "X-API-Key": "gb-..." }
-    }
-  }
-}`,
-  },
-];
-
-// ── Main view ─────────────────────────────────────────────────────────────────
-
+/**
+ * MCP Tools — connect, the loop by role, and the searchable reference (PRD-47 S5).
+ *
+ * Connect snippets come from `McpInstall` CLIENTS (verified against vendor docs), not
+ * from a second JSON catalog at localhost:8000. Overlay fields the catalog endpoint
+ * does not serve live in `catalog.ts` and are omitted when unknown.
+ */
 export function McpToolsView() {
   const { data, isLoading, isError, refetch } = useMcpTools();
+  const [openName, setOpenName] = React.useState("claim_cluster");
+  const select = React.useCallback((name: string) => setOpenName(name), []);
 
-  if (isLoading && !data) {
-    return <div className="flex h-full items-center justify-center text-[13px] text-muted">Loading…</div>;
-  }
   if (isError && !data) {
     return (
-      <PlannerError
-        message="MCP catalog unavailable — the tool list could not be fetched."
-        onRetry={() => void refetch()}
-      />
+      <div className="flex h-full min-h-0 flex-col">
+        <Header />
+        <PlannerError
+          message="MCP catalog unavailable — the tool list could not be fetched."
+          onRetry={() => void refetch()}
+        />
+      </div>
     );
   }
-  if (!data) {
-    return <div className="flex h-full items-center justify-center text-[13px] text-muted">Loading…</div>;
-  }
-  if (data.tools.length === 0) {
+  if (isLoading && !data) {
     return (
-      <div className="p-6 text-[13px] text-muted">
-        No tools are registered. That is a looked-at empty catalog, not a failed fetch.
+      <div className="flex h-full min-h-0 flex-col">
+        <Header />
+        <div className="p-5">
+          <TableSkeleton rows={8} columns={3} />
+        </div>
+      </div>
+    );
+  }
+  if (!data || data.tools.length === 0) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <Header />
+        <PlannerEmpty
+          title="No tools are registered"
+          description="That is a looked-at empty catalog, not a failed fetch."
+        />
       </div>
     );
   }
@@ -163,352 +75,483 @@ export function McpToolsView() {
   const totalCalls = data.tools.reduce((s, t) => s + t.calls, 0);
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <PlaceHeader
-        viewName="MCP Tools"
-        purpose="The Model Context Protocol surface agents call. Same code path as the web app."
-        action={
-          <div className="flex items-center gap-3">
-            <Link
-              to={settingsPath("project/api-keys")}
-              className="text-[12px] text-muted transition-colors hover:text-fg-2"
-            >
-              Looking for API keys?
-            </Link>
-            <div className="flex items-center gap-2 rounded-lg border border-[#1c2620] bg-[rgba(95,208,122,0.05)] px-2.5 py-1.5 font-mono text-[10.5px] text-st-done">
-              <span className="blink h-1.5 w-1.5 rounded-full bg-st-done shadow-[0_0_8px_#5fd07a]" />
-              {data.live} TOOLS LIVE · {fmt(totalCalls)} CALLS
-            </div>
+    <div className="flex h-full min-h-0 flex-col" data-testid="mcp-tools">
+      <Header
+        live={
+          <div className="flex items-center gap-2 rounded-lg border border-[#1c2620] bg-[rgba(95,208,122,0.05)] px-2.5 py-1.5 font-mono text-meta text-st-done">
+            <span className="blink h-1.5 w-1.5 rounded-full bg-st-done shadow-[0_0_8px_#5fd07a]" />
+            {data.live} tools live · {fmtCalls(totalCalls)} calls
           </div>
         }
       />
-
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[1200px] space-y-8 p-5">
+        <div className="mx-auto flex max-w-[1080px] flex-col gap-6 p-5">
           <ConnectAgent />
-          <LoopByRole tools={data.tools} />
-          <ToolReference tools={data.tools} />
+          <LoopByRole tools={data.tools} openName={openName} onSelect={select} />
+          <ToolReference
+            tools={data.tools}
+            live={data.live}
+            openName={openName}
+            onSelect={select}
+          />
         </div>
       </div>
     </div>
   );
 }
 
-function fmt(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+function Header({ live }: { live?: React.ReactNode }) {
+  const { active } = useProjectCtx();
+  const { data: config } = useConfig();
+  const fleetHref = config?.hosted_mode && active?.tag
+    ? projectPath(active.tag, "fleet.v1")
+    : "/fleet.v1";
+  return (
+    <PlaceHeader
+      viewName="MCP Tools"
+      purpose="How agents use the tools built into Graphban: connect, follow the loop for their role, and look up any call."
+      action={
+        <div className="flex items-center gap-3">
+          <Link
+            to={settingsPath("project/api-keys")}
+            className="text-[12px] text-muted transition-colors hover:text-fg-2"
+          >
+            Looking for API keys?
+          </Link>
+          <Link
+            to={fleetHref}
+            className="text-[12px] text-muted transition-colors hover:text-fg-2"
+          >
+            Seats on Fleet
+          </Link>
+          {live}
+        </div>
+      }
+    />
+  );
 }
 
-// ── Connect-an-agent ──────────────────────────────────────────────────────────
+// ── Connect an agent ──────────────────────────────────────────────────────────
+
+const CONNECT_IDS = ["claude", "grok", "cursor", "any"] as const;
+
+function anySnippet(url: string): { code: string; note: string } {
+  return {
+    code:
+      `curl -s ${url} \\\n` +
+      `  -H "X-API-Key: $GRAPHBAN_KEY" \\\n` +
+      `  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`,
+    note: "Any client that speaks MCP over HTTP works. tools/list shows what this key's tiers can see.",
+  };
+}
+
+function connectSnippet(id: string, url: string): { code: string; note: string; file?: string } {
+  if (id === "any") return anySnippet(url);
+  const client = CLIENTS.find((c) => c.id === id);
+  if (!client) return anySnippet(url);
+  const form = client.command ?? client.config;
+  if (!form) return anySnippet(url);
+  const noteRaw = typeof form.note === "function" ? form.note("project") : form.note;
+  return {
+    code: form.build(url, "$GRAPHBAN_KEY", "project"),
+    note: noteRaw || client.noCommand || "",
+    file: form.file,
+  };
+}
 
 function ConnectAgent() {
-  const [activeClient, setActiveClient] = React.useState(0);
+  const [active, setActive] = React.useState<(typeof CONNECT_IDS)[number]>("claude");
   const [copied, setCopied] = React.useState(false);
-  const snippet = CLIENT_SNIPPETS[activeClient];
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const url = `${origin}/api/mcp`;
+  const snippet = connectSnippet(active, url);
 
   const copy = React.useCallback(() => {
-    void navigator.clipboard.writeText(snippet.code).then(() => {
+    void copyText(snippet.code).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
   }, [snippet.code]);
 
   return (
-    <section className="rounded-[13px] border border-line-2 bg-surface-2">
-      <div className="border-b border-line px-4 py-3">
+    <section className="overflow-hidden rounded-[12px] border border-line-2 bg-surface-2" data-testid="mcp-connect">
+      <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2 border-b border-line px-4 py-3">
         <h2 className="text-lead font-semibold text-fg">Connect an agent</h2>
-        <p className="mt-0.5 text-[12px] leading-relaxed text-muted">
-          Add the MCP server to your agent&apos;s config. The API key lives in{" "}
+        <span className="font-mono text-small text-muted">POST /api/mcp · JSON-RPC</span>
+        <span className="flex-1" />
+        <div className="flex overflow-hidden rounded-lg border border-control" role="group" aria-label="Client">
+          {CONNECT_IDS.map((id) => {
+            const label = id === "any" ? "Any client" : CLIENTS.find((c) => c.id === id)?.label ?? id;
+            const on = id === active;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => { setActive(id); setCopied(false); }}
+                aria-pressed={on}
+                className={cn(
+                  "h-7 border-0 px-2.5 text-small",
+                  on ? "bg-surface-3 text-fg" : "bg-transparent text-faint hover:text-fg",
+                )}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3">
+        <ConnectStep n="1" title="Mint a key">
+          Settings → API keys. Project scope for one project; tiers decide which specialist tools the agent can see.{" "}
           <Link to={settingsPath("project/api-keys")} className="text-accent hover:underline">
-            Settings → API keys
-          </Link>.
+            Open API keys →
+          </Link>
+        </ConnectStep>
+        <ConnectStep n="2" title="Add the server">
+          Run the snippet below on the agent&apos;s machine. The key lives in an env var, never in the prompt.
+        </ConnectStep>
+        <ConnectStep n="3" title="First call">
+          Tell the agent to call get_context, then register_agent. A seat from Fleet goes in the prompt.
+        </ConnectStep>
+      </div>
+      <div className="relative border-t border-line bg-[#0a0d10]">
+        {snippet.file && (
+          <div className="px-4 pt-2 font-mono text-meta text-faint">{snippet.file}</div>
+        )}
+        <pre className="overflow-x-auto p-3.5 pr-20 font-mono text-[12px] leading-relaxed text-fg-2">
+          {snippet.code}
+        </pre>
+        <button
+          type="button"
+          onClick={copy}
+          className="absolute right-3 top-2.5 h-[26px] rounded-md border border-control bg-surface-2 px-2.5 text-small text-muted hover:border-control-hover hover:text-fg"
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      {snippet.note && (
+        <p className="border-t border-line px-4 py-2.5 text-small leading-relaxed text-faint">
+          {snippet.note}
         </p>
-      </div>
-      <div className="p-4">
-        <div className="mb-3 flex flex-wrap gap-1.5">
-          {CLIENT_SNIPPETS.map((c, i) => (
-            <button
-              key={c.label}
-              onClick={() => setActiveClient(i)}
-              className={cn(
-                "rounded-lg border px-2.5 py-1 text-[11.5px] transition-colors",
-                i === activeClient
-                  ? "border-accent/50 bg-accent/10 text-accent"
-                  : "border-control bg-surface text-muted hover:border-control-hover hover:text-fg",
-              )}
-            >
-              {c.label}
-            </button>
-          ))}
-        </div>
-        <div className="relative rounded-lg border border-line bg-[#0d1117]">
-          <pre className="overflow-x-auto p-3.5 font-mono text-[11.5px] leading-relaxed text-fg-2">
-            {snippet.code}
-          </pre>
-          <button
-            onClick={copy}
-            className="absolute right-2 top-2 rounded border border-control bg-surface-2 px-2 py-0.5 font-mono text-[10px] text-muted transition-colors hover:border-control-hover hover:text-fg"
-          >
-            {copied ? "Copied" : "Copy"}
-          </button>
-        </div>
-      </div>
+      )}
     </section>
+  );
+}
+
+function ConnectStep({ n, title, children }: { n: string; title: string; children: React.ReactNode }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5 border-line p-3.5 sm:border-r sm:last:border-r-0">
+      <div className="flex items-center gap-2">
+        <span className="flex h-5 w-5 items-center justify-center rounded-md border border-accent/40 bg-accent/10 font-mono text-meta text-accent">
+          {n}
+        </span>
+        <span className="text-body font-semibold text-fg">{title}</span>
+      </div>
+      <p className="text-[12px] leading-relaxed text-muted">{children}</p>
+    </div>
   );
 }
 
 // ── Loop by role ──────────────────────────────────────────────────────────────
 
-function LoopByRole({ tools }: { tools: McpToolInfo[] }) {
-  const [activeRole, setActiveRole] = React.useState(0);
-  const toolMap = React.useMemo(() => {
-    const m: Record<string, McpToolInfo> = {};
-    tools.forEach((t) => (m[t.name] = t));
-    return m;
-  }, [tools]);
-  const loop = ROLE_LOOPS[activeRole];
+function LoopByRole({
+  tools, openName, onSelect,
+}: {
+  tools: McpToolInfo[];
+  openName: string | null;
+  onSelect: (name: string) => void;
+}) {
+  const [role, setRole] = React.useState<RoleId>("all-in-one");
+  const loop = ROLE_LOOPS.find((r) => r.role === role) ?? ROLE_LOOPS[0];
+  const present = new Set(tools.map((t) => t.name));
 
   return (
-    <section className="rounded-[13px] border border-line-2 bg-surface-2">
-      <div className="border-b border-line px-4 py-3">
-        <h2 className="text-lead font-semibold text-fg">The loop, by role</h2>
-        <p className="mt-0.5 text-[12px] leading-relaxed text-muted">
-          The ordered call sequence — why each step, and what goes wrong if you skip it.
-        </p>
-      </div>
-      <div className="p-4">
-        <div className="mb-4 flex gap-1.5">
-          {ROLE_LOOPS.map((r, i) => (
-            <button
-              key={r.role}
-              onClick={() => setActiveRole(i)}
-              className={cn(
-                "rounded-lg border px-2.5 py-1 text-[11.5px] transition-colors",
-                i === activeRole
-                  ? "border-control-hover bg-surface-3 text-fg"
-                  : "border-control bg-surface text-muted hover:border-control-hover hover:text-fg",
-              )}
-            >
-              <span className="mr-1.5 inline-block h-2 w-2 rounded-full" style={{ background: r.color }} />
-              {r.role}
-            </button>
-          ))}
+    <section data-testid="mcp-loop">
+      <div className="mb-3 flex flex-wrap items-end gap-x-3.5 gap-y-2">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-lead font-semibold text-fg">The loop, by role</h2>
+          <p className="mt-0.5 text-[12px] text-muted">
+            The order of calls a well-behaved agent makes. This is what the seat prompt on Fleet teaches.
+          </p>
         </div>
-        <ol className="space-y-2">
-          {loop.steps.map((step, i) => {
-            const tool = toolMap[step.tool];
+        <div className="flex flex-wrap gap-1">
+          {ROLE_LOOPS.map((r) => {
+            const on = r.role === role;
             return (
-              <li key={step.tool} className="rounded-lg border border-line bg-surface p-3">
-                <div className="mb-1 flex items-center gap-2">
-                  <span className="flex h-5 w-5 flex-none items-center justify-center rounded-full border border-line-2 font-mono text-[10px] text-faint">
-                    {i + 1}
-                  </span>
-                  <span className="font-mono text-[12px]" style={{ color: loop.color }}>
-                    {step.tool}
-                  </span>
-                  {tool && (
-                    <span className="ml-auto font-mono text-[10px] text-faint">{fmt(tool.calls)} calls</span>
-                  )}
-                </div>
-                <p className="mb-1.5 text-[12px] leading-relaxed text-muted">{step.why}</p>
-                <p className="text-small leading-relaxed text-st-review/80">
-                  <span className="font-mono text-[9px] uppercase tracking-wide text-st-review/60">Avoid: </span>
-                  {step.avoid}
-                </p>
-              </li>
+              <button
+                key={r.role}
+                type="button"
+                onClick={() => setRole(r.role)}
+                aria-pressed={on}
+                className={cn(
+                  "rounded-lg border px-2.5 py-1 text-[12px] transition-colors",
+                  on
+                    ? "border-accent/50 bg-surface-3 text-fg"
+                    : "border-control bg-transparent text-muted hover:text-fg",
+                )}
+              >
+                {r.role}
+              </button>
             );
           })}
-        </ol>
+        </div>
       </div>
+      <p className="mb-2.5 max-w-[92ch] text-[12px] leading-relaxed text-fg-2">{loop.intro}</p>
+      <ol className="grid list-none grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2 p-0">
+        {loop.steps.map((step, i) => {
+          const on = step.tool === openName;
+          const missing = !present.has(step.tool);
+          return (
+            <li key={step.tool}>
+              <button
+                type="button"
+                onClick={() => onSelect(step.tool)}
+                disabled={missing}
+                className={cn(
+                  "flex h-full w-full flex-col gap-1.5 rounded-[11px] border bg-surface-2 px-3 py-2.5 text-left",
+                  on ? "border-accent/50" : "border-control hover:border-control-hover",
+                  missing && "opacity-50",
+                )}
+              >
+                <span className="flex items-center gap-2">
+                  <span className="font-mono text-meta text-faint">{String(i + 1).padStart(2, "0")}</span>
+                  <span className={cn("font-mono text-[12px]", on ? "text-accent" : "text-fg-2")}>
+                    {step.tool}
+                  </span>
+                </span>
+                <span className="text-small leading-relaxed text-muted">{step.why}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+      {loop.avoid && (
+        <p className="mt-2.5 text-small leading-relaxed text-[color:var(--color-st-review)]" data-testid="mcp-avoid">
+          {loop.avoid}
+        </p>
+      )}
     </section>
   );
 }
 
 // ── Tool reference ────────────────────────────────────────────────────────────
 
-function ToolReference({ tools }: { tools: McpToolInfo[] }) {
+function ToolReference({
+  tools, live, openName, onSelect,
+}: {
+  tools: McpToolInfo[];
+  live: number;
+  openName: string | null;
+  onSelect: (name: string) => void;
+}) {
   const [query, setQuery] = React.useState("");
-  const [selected, setSelected] = React.useState<McpToolInfo | null>(null);
+  const enriched = React.useMemo(() => tools.map(enrich), [tools]);
 
   const grouped = React.useMemo(() => {
     const q = query.toLowerCase().trim();
     const filtered = q
-      ? tools.filter(
-          (t) =>
-            t.name.toLowerCase().includes(q) ||
-            t.description.toLowerCase().includes(q) ||
-            t.params.some((p) => p.toLowerCase().includes(q)),
+      ? enriched.filter((t) =>
+          (t.info.name + t.short + t.when + t.info.description + t.info.params.join(" "))
+            .toLowerCase()
+            .includes(q),
         )
-      : tools;
+      : enriched;
+    return GROUPS
+      .map((g) => ({ ...g, tools: filtered.filter((t) => t.group === g.id) }))
+      .filter((g) => g.tools.length > 0);
+  }, [enriched, query]);
 
-    const map = new Map<string, McpToolInfo[]>();
-    for (const g of GROUPS) map.set(g.label, []);
-    map.set("Meta", []);
-    for (const t of filtered) {
-      const key = groupFor(t.name);
-      map.get(key)?.push(t);
-    }
-    return [...map.entries()].filter(([, v]) => v.length > 0);
-  }, [tools, query]);
+  const visible = grouped.flatMap((g) => g.tools);
+  const selected =
+    visible.find((t) => t.info.name === openName)
+    ?? visible[0]
+    ?? null;
 
-  const hasResults = grouped.length > 0;
+  const coreCount = enriched.filter((t) => t.tier === "core").length;
 
   return (
-    <section className="rounded-[13px] border border-line-2 bg-surface-2">
-      <div className="border-b border-line px-4 py-3">
-        <div className="flex items-center gap-3">
-          <h2 className="text-lead font-semibold text-fg">Tool reference</h2>
-          <span className="font-mono text-[10px] text-faint">{tools.length} tools</span>
+    <section className="flex flex-wrap items-start gap-3.5" data-testid="mcp-reference">
+      <div className="min-w-0 flex-1 basis-[460px] overflow-hidden rounded-[12px] border border-line-2 bg-surface-2">
+        <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2.5">
+          <h2 className="text-lead font-semibold text-fg">Reference</h2>
+          <div className="relative min-w-[160px] flex-1">
+            <Search
+              size={13}
+              className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted opacity-55"
+              aria-hidden
+            />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Find a tool or what it does…"
+              aria-label="Search tools"
+              className="h-[30px] w-full rounded-lg border border-control bg-surface py-0 pl-8 pr-8 text-[12px] text-fg placeholder:text-faint focus:border-control-hover focus:outline-none"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-faint hover:text-fg"
+                aria-label="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
         </div>
-        <div className="relative mt-2.5">
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search tools, params, descriptions…"
-            aria-label="Search tools"
-            className="w-full rounded-lg border border-control bg-surface px-3 py-1.5 pr-8 text-[12px] text-fg placeholder:text-faint focus:border-control-hover focus:outline-none"
-          />
-          {query && (
-            <button
-              onClick={() => setQuery("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-faint hover:text-fg"
-              aria-label="Clear search"
-            >
-              ×
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="flex min-h-[400px]">
-        <div className="min-h-0 flex-1 overflow-y-auto border-r border-line p-3">
-          {!hasResults ? (
-            <div className="flex h-full flex-col items-center justify-center px-4 py-12 text-center">
-              <p className="text-[13px] text-muted">No tool matches.</p>
-              <p className="mt-1 text-[12px] text-faint">
-                Try what you want to do, e.g. &quot;review&quot; or &quot;files&quot;.
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {grouped.map(([groupLabel, groupTools]) => {
-                const meta = GROUPS.find((g) => g.label === groupLabel);
+        {grouped.length === 0 ? (
+          <div className="px-4 py-8 text-center text-body text-muted" data-testid="mcp-none">
+            No tool matches. Try what you want to do, e.g. &quot;review&quot; or &quot;files&quot;.
+          </div>
+        ) : (
+          grouped.map((g) => (
+            <div key={g.id}>
+              <div className="flex items-baseline gap-2 border-b border-line bg-surface px-3 py-2">
+                <span className="font-mono text-meta uppercase tracking-wide text-muted">{g.label}</span>
+                <span className="text-small text-faint">{g.hint}</span>
+              </div>
+              <div className="divide-y divide-line">
+              {g.tools.map((t) => {
+                const on = selected?.info.name === t.info.name;
+                const tone = TIER_TONE[t.tier];
                 return (
-                  <div key={groupLabel}>
-                    <div className="mb-1.5 flex items-baseline gap-2">
-                      <h3 className="font-mono text-small uppercase tracking-wide text-faint">
-                        {groupLabel}
-                      </h3>
-                      {meta && (
-                        <span className="text-[10.5px] text-faint-2">{meta.hint}</span>
-                      )}
-                    </div>
-                    <div className="space-y-0.5">
-                      {groupTools.map((t) => (
-                        <ToolRow
-                          key={t.name}
-                          tool={t}
-                          active={selected?.name === t.name}
-                          onClick={() => setSelected(t)}
-                        />
-                      ))}
-                    </div>
-                  </div>
+                  <button
+                    key={t.info.name}
+                    type="button"
+                    onClick={() => onSelect(t.info.name)}
+                    aria-pressed={on}
+                    className={cn(
+                      "grid w-full grid-cols-[minmax(0,150px)_minmax(0,1fr)_auto] items-baseline gap-2.5 px-3 py-2 text-left",
+                      on ? "bg-surface-3 shadow-[inset_2px_0_0_var(--color-accent)]" : "hover:bg-surface-3",
+                    )}
+                  >
+                    <span className={cn("truncate font-mono text-[12px]", on ? "text-accent" : "text-fg-2")}>
+                      {t.info.name}
+                    </span>
+                    <span className="truncate text-[12px] text-muted">{t.short}</span>
+                    <span className={cn("rounded border px-1.5 py-px font-mono text-micro uppercase tracking-wide", tone.border, tone.color)}>
+                      {t.tier}
+                    </span>
+                  </button>
                 );
               })}
+              </div>
             </div>
-          )}
-        </div>
-
-        {selected && (
-          <div className="w-[380px] flex-none overflow-y-auto">
-            <ToolDetail tool={selected} onClose={() => setSelected(null)} />
-          </div>
+          ))
         )}
+        <div className="px-3 py-2.5 text-small text-faint">
+          {tools.length} of {live} live tools shown · {coreCount} core ship to every key; the rest appear by tier
+        </div>
       </div>
+      {selected && <ToolDetail tool={selected} all={enriched} onSelect={onSelect} />}
     </section>
   );
 }
 
-function ToolRow({ tool, active, onClick }: { tool: McpToolInfo; active: boolean; onClick: () => void }) {
+function ToolDetail({
+  tool, all, onSelect,
+}: {
+  tool: EnrichedTool;
+  all: EnrichedTool[];
+  onSelect: (name: string) => void;
+}) {
+  const tone = TIER_TONE[tool.tier];
+  const params = tool.info.param_details ?? [];
+  const knownNext = tool.next.filter((n) => all.some((t) => t.info.name === n));
   return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors",
-        active ? "bg-surface-4" : "hover:bg-surface-3",
-      )}
+    <aside
+      className="sticky top-3 min-w-[300px] max-w-[460px] flex-1 basis-[360px] rounded-[12px] border border-line-2 bg-surface-2"
+      data-testid="mcp-detail"
     >
-      <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-accent">{tool.name}</span>
-      <span className="flex-none font-mono text-[10px] text-faint">{fmt(tool.calls)}</span>
-      <span className="flex-none rounded border border-[#1c2620] bg-[rgba(95,208,122,0.06)] px-1 py-px font-mono text-[8px] uppercase tracking-wide text-st-done">
-        live
-      </span>
-    </button>
-  );
-}
-
-// ── Tool detail panel ─────────────────────────────────────────────────────────
-
-function ToolDetail({ tool, onClose }: { tool: McpToolInfo; onClose: () => void }) {
-  const group = groupFor(tool.name);
-  return (
-    <div className="p-4">
-      <div className="mb-2 flex items-center gap-2">
-        <span className="font-mono text-[13px] text-accent">{tool.name}</span>
-        <button onClick={onClose} className="ml-auto text-faint hover:text-fg" aria-label="Close detail">
-          ×
-        </button>
+      <div className="flex flex-col gap-2 border-b border-line px-4 py-3.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-lead text-accent">{tool.info.name}</span>
+          <span className={cn("rounded border px-1.5 py-px font-mono text-micro uppercase tracking-wide", tone.border, tone.color)}>
+            {tool.tier}
+          </span>
+          <span className="ml-auto font-mono text-meta text-faint">
+            {fmtCalls(tool.info.calls)} calls
+          </span>
+        </div>
+        <p className="text-body leading-relaxed text-fg-2">{tool.when}</p>
       </div>
-      <div className="mb-3 flex items-center gap-2">
-        <span className="rounded border border-line-2 bg-surface px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-faint">
-          {group}
-        </span>
-        <span className="font-mono text-[10px] text-faint">{fmt(tool.calls)} calls</span>
+      <div className="flex flex-col gap-1.5 border-b border-line px-4 py-3">
+        <span className="font-mono text-meta uppercase tracking-wide text-faint">Example</span>
+        <pre className="overflow-x-auto rounded-[9px] border border-line bg-surface px-3 py-2.5 font-mono text-small leading-relaxed text-fg-2">
+          {tool.example}
+        </pre>
       </div>
-      <p className="mb-4 text-[12px] leading-relaxed text-muted">{tool.description}</p>
-
-      {tool.param_details.length > 0 ? (
-        <div>
-          <h4 className="mb-2 font-mono text-[10px] uppercase tracking-wide text-faint">Parameters</h4>
-          <div className="space-y-2">
-            {tool.param_details.map((p) => (
-              <ParamRow key={p.name} param={p} />
+      <div className="flex flex-col gap-1.5 border-b border-line px-4 py-3">
+        <span className="font-mono text-meta uppercase tracking-wide text-faint">Params</span>
+        {params.length === 0 ? (
+          <span className="font-mono text-small text-faint">No parameters — this tool takes no input.</span>
+        ) : (
+          params.map((p) => <ParamRow key={p.name} param={p} />)
+        )}
+        {tool.returns && (
+          <>
+            <span className="mt-1 font-mono text-meta uppercase tracking-wide text-faint">Returns</span>
+            <span className="text-small leading-relaxed text-muted">{tool.returns}</span>
+          </>
+        )}
+      </div>
+      <div className="flex flex-col gap-2 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 font-mono text-meta uppercase tracking-wide text-faint">Roles</span>
+          {tool.roles.map((r) => {
+            const t = ROLE_TONE[r];
+            return (
+              <span key={r} className={cn("rounded-md border px-1.5 py-px font-mono text-meta", t.border, t.color)}>
+                {r}
+              </span>
+            );
+          })}
+        </div>
+        {tool.refused && (
+          <p className="text-small leading-relaxed text-[color:var(--color-st-blocked)]">
+            Refused when {tool.refused}
+          </p>
+        )}
+        {knownNext.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-small text-faint">
+            Usually followed by
+            {knownNext.map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => onSelect(n)}
+                className="border-0 bg-transparent px-0.5 font-mono text-small text-accent hover:underline"
+              >
+                {n}
+              </button>
             ))}
           </div>
-        </div>
-      ) : (
-        <div className="rounded-lg border border-line bg-surface p-2.5">
-          <span className="font-mono text-small text-faint">No parameters — this tool takes no input.</span>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </aside>
   );
 }
 
 function ParamRow({ param }: { param: McpParamDetail }) {
   return (
-    <div className="rounded-lg border border-line bg-surface p-2.5">
-      <div className="mb-0.5 flex items-center gap-2">
-        <span className="font-mono text-[11.5px] text-fg-2">{param.name}</span>
-        <span className="font-mono text-[10px] text-faint">{param.type}</span>
-        {param.required && (
-          <span className="rounded border border-st-blocked/40 bg-st-blocked/10 px-1 py-px font-mono text-[8px] uppercase tracking-wide text-st-blocked">
-            required
+    <div className="grid grid-cols-[minmax(0,120px)_minmax(0,1fr)] gap-2.5 text-small">
+      <span className="font-mono text-fg-2">
+        {param.name}
+        {param.required && <span className="text-[color:var(--color-st-blocked)]"> *</span>}
+      </span>
+      <span className="text-muted">
+        {param.description || param.type || "—"}
+        {param.enum && param.enum.length > 0 && (
+          <span className="mt-0.5 flex flex-wrap gap-1">
+            {param.enum.map((v) => (
+              <span key={v} className="rounded border border-line-2 bg-surface px-1 font-mono text-micro text-muted-2">
+                {v}
+              </span>
+            ))}
           </span>
         )}
-      </div>
-      {param.description && (
-        <p className="text-small leading-relaxed text-muted">{param.description}</p>
-      )}
-      {param.enum && param.enum.length > 0 && (
-        <div className="mt-1 flex flex-wrap gap-1">
-          {param.enum.map((v) => (
-            <span key={v} className="rounded border border-line-2 bg-surface-2 px-1 py-px font-mono text-[9px] text-muted-2">
-              {v}
-            </span>
-          ))}
-        </div>
-      )}
+      </span>
     </div>
   );
 }
