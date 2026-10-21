@@ -498,3 +498,193 @@ def test_expected_failure_exception_is_applied_in_denial_in():
     assert "expected_failure_clause" in src, (
         "denial_in no longer consults expected_failure_clause — sabotage receipts on a "
         "red-test clause will be refused as denials again (GRPH-1029)")
+
+
+# ── GRPH-1054: a later positive test supersedes an earlier denial ─────────────────────
+# Evidence only appends, so the first "NOT DELIVERED" used to convict forever. The latest
+# block that speaks to the clause is the verdict. A note that merely mentions the clause
+# is not a verdict — the denied test line would still satisfy coverage the moment the
+# contradiction disappeared, and absence would read as delivered.
+
+
+def test_a_later_test_receipt_supersedes_an_earlier_denial():
+    """THE criterion. The old line stays in the list; it stops outranking the correction."""
+    denial = f"{CLAUSE} — NOT DELIVERED, no clock"
+    evidence = [
+        {"kind": "test", "detail": denial},
+        {"kind": "test", "detail": f"{CLAUSE} — 12 passed"},
+    ]
+    assert acceptance_contradicted([CLAUSE], evidence) == {}
+
+
+def test_a_pass_that_arrives_before_the_denial_does_not_clear_it():
+    """Order is the verdict. A pass that is already on the record, then a denial, is a denial.
+    Resending the old pass is a retry (`append_evidence` drops the identical dict), so the
+    correction has to be a new receipt that lands AFTER the denial."""
+    denial = f"{CLAUSE} — NOT DELIVERED"
+    evidence = [
+        {"kind": "test", "detail": f"{CLAUSE} — 12 passed"},
+        {"kind": "note", "detail": denial},
+    ]
+    assert acceptance_contradicted([CLAUSE], evidence) == {CLAUSE: denial}
+
+
+def test_a_later_note_that_mentions_the_clause_does_not_clear_a_denial():
+    """The absence hole. Clearing on any later mention would let this note unsay the denial,
+    and the denied test line still contains the clause text, so coverage would then pass."""
+    from app.services.fleet import acceptance_covered
+
+    denial = f"{CLAUSE} — NOT DELIVERED, no clock"
+    evidence = [
+        {"kind": "test", "detail": denial},
+        {"kind": "note", "detail": f"re-read {CLAUSE}; nothing further to add"},
+    ]
+    assert acceptance_contradicted([CLAUSE], evidence) == {CLAUSE: denial}
+    ok, uncovered, contradicted = acceptance_covered([CLAUSE], evidence)
+    assert ok is False
+    assert contradicted == {CLAUSE: denial}
+    assert uncovered == []
+
+
+def test_a_later_screenshot_does_not_clear_a_denial():
+    denial = f"{CLAUSE} — NOT DELIVERED"
+    evidence = [
+        {"kind": "test", "detail": denial},
+        {"kind": "screenshot", "detail": CLAUSE, "url": "https://example.test/a.png"},
+    ]
+    assert acceptance_contradicted([CLAUSE], evidence) == {CLAUSE: denial}
+
+
+def test_a_denial_and_a_pass_in_one_receipt_still_denies():
+    """The correction is a new receipt. One block that says both does not get the reassuring
+    line picked out of it — the same rule the single-receipt scan already had, kept."""
+    denial = f"{CLAUSE} — NOT DELIVERED, no clock"
+    detail = f"{denial}\n{CLAUSE} — 12 passed"
+    assert acceptance_contradicted([CLAUSE], [{"kind": "test", "detail": detail}]) == {
+        CLAUSE: denial}
+
+
+def test_a_later_test_of_another_clause_does_not_clear_this_one():
+    denial = f"{CLAUSE} — NOT DELIVERED"
+    other = "the pin lapses"
+    found = acceptance_contradicted(
+        [CLAUSE, other],
+        [{"kind": "test", "detail": denial},
+         {"kind": "test", "detail": f"{other} — 4 passed"}])
+    assert found == {CLAUSE: denial}
+
+
+def test_a_sabotage_receipt_between_them_neither_denies_nor_blocks_the_correction():
+    """Sabotage is still skipped. "2 failed" in it is the mutation working, and it is not a
+    block that speaks to the clause, so the test after it is still the latest word."""
+    evidence = [
+        {"kind": "test", "detail": f"{CLAUSE} — NOT DELIVERED"},
+        {"kind": "sabotage", "claim": CLAUSE, "mutation": "drop the check",
+         "tests_failed": 2, "detail": f"{CLAUSE} — 2 test(s) failed"},
+        {"kind": "test", "detail": f"{CLAUSE} — 12 passed"},
+    ]
+    assert acceptance_contradicted([CLAUSE], evidence) == {}
+
+
+def test_coverage_accepts_a_clause_once_a_later_test_supersedes_the_denial():
+    """Through `acceptance_covered`, the helper `sign_off` calls. A correct
+    `acceptance_contradicted` that nothing consults is the bug this repo keeps shipping."""
+    import inspect
+
+    from app.services import fleet as fleet_svc
+    from app.services.fleet import acceptance_covered
+
+    ok, uncovered, contradicted = acceptance_covered(
+        [CLAUSE],
+        [{"kind": "test", "detail": f"{CLAUSE} — NOT DELIVERED"},
+         {"kind": "test", "detail": f"{CLAUSE} — 12 passed"}])
+    assert (ok, uncovered, contradicted) == (True, [], {})
+    src = inspect.getsource(fleet_svc.acceptance_covered)
+    assert "acceptance_contradicted(" in src, (
+        "acceptance_covered no longer consults acceptance_contradicted — the supersession "
+        "lives in a helper the gate does not call")
+
+
+def test_a_denial_on_the_next_line_does_not_clear_a_stored_denial():
+    """GRPH-1054 bounce. The clause and the denial are different lines of one receipt.
+    Skipping a line that does not repeat the clause made this block a pass, and a pass
+    pops the stored denial. The one-line form of the same words still denies."""
+    clause = "the pin lapses after timeout"
+    one_line = f"{clause} — NOT DELIVERED, no clock"
+    split = f"{clause}\nNOT DELIVERED, no clock"
+    assert acceptance_contradicted([clause], [{"kind": "test", "detail": one_line}]) == {
+        clause: one_line}
+    found = acceptance_contradicted(
+        [clause],
+        [{"kind": "test", "detail": one_line},
+         {"kind": "test", "detail": split}])
+    assert found == {clause: "NOT DELIVERED, no clock"}, found
+
+
+def test_a_pass_and_a_bare_denial_on_the_next_line_stay_a_denial():
+    """The same-receipt rule held only when every line repeated the clause.
+    `clause — 12 passed` / `NOT DELIVERED` is still one denying block."""
+    detail = f"{CLAUSE} — 12 passed\nNOT DELIVERED"
+    assert acceptance_contradicted([CLAUSE], [{"kind": "test", "detail": detail}]) == {
+        CLAUSE: "NOT DELIVERED"}
+    stored = f"{CLAUSE} — NOT DELIVERED"
+    assert acceptance_contradicted(
+        [CLAUSE],
+        [{"kind": "test", "detail": stored},
+         {"kind": "test", "detail": detail}]) == {CLAUSE: "NOT DELIVERED"}
+
+
+def test_a_denial_of_another_clause_on_the_next_line_does_not_deny_this_one():
+    """A line that names a different clause is that clause's verdict. Folding every
+    following line into this one would deny it for someone else's NOT DELIVERED."""
+    other = "the veto blocks an accept"
+    stored = f"{CLAUSE} — NOT DELIVERED"
+    detail = f"{CLAUSE} — 12 passed\n{other} — NOT DELIVERED"
+    found = acceptance_contradicted(
+        [CLAUSE, other],
+        [{"kind": "test", "detail": stored},
+         {"kind": "test", "detail": detail}])
+    assert CLAUSE not in found, found
+    assert other in found and "NOT DELIVERED" in found[other]
+
+
+def test_a_long_explanation_on_the_next_line_is_not_a_denial():
+    """The six-word sentence rule still applies once the newline is folded back in.
+    Scanning the follow-on line on its own would read `failed` as a verdict."""
+    detail = (
+        f"{CLAUSE} — 12 passed.\n"
+        "Deleting the isError branch so a failed read drops through to the empty "
+        "state and the user sees a blank panel instead of the error."
+    )
+    assert acceptance_contradicted([CLAUSE], [{"kind": "test", "detail": detail}]) == {}
+
+
+def test_a_clean_next_line_still_supersedes():
+    """The control. A second line that does not deny is not a denial, and the block
+    is the correction the gate was built to accept."""
+    assert acceptance_contradicted(
+        [CLAUSE],
+        [{"kind": "test", "detail": f"{CLAUSE} — NOT DELIVERED"},
+         {"kind": "test", "detail": f"{CLAUSE}\n12 passed"}]) == {}
+
+
+def test_coverage_keeps_a_denial_whose_verdict_is_on_the_next_line():
+    """Through `acceptance_covered`, the helper `sign_off` calls. A correct fold that
+    the gate does not consult would still clear the clause."""
+    import inspect
+
+    from app.services import fleet as fleet_svc
+    from app.services.fleet import acceptance_covered
+
+    clause = "the pin lapses after timeout"
+    ok, uncovered, contradicted = acceptance_covered(
+        [clause],
+        [{"kind": "test", "detail": f"{clause} — NOT DELIVERED, no clock"},
+         {"kind": "test", "detail": f"{clause}\nNOT DELIVERED, no clock"}])
+    assert ok is False
+    assert uncovered == []
+    assert contradicted == {clause: "NOT DELIVERED, no clock"}
+    src = inspect.getsource(fleet_svc.acceptance_contradicted)
+    assert "_lines_about(" in src, (
+        "acceptance_contradicted no longer folds a denial that did not repeat the "
+        "clause — the next line is skipped again")

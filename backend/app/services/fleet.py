@@ -2210,35 +2210,113 @@ DENIAL_RULE = (
     "the receipt, not a verdict), "
     "and a denial word in a neighbouring sentence is explanation. Text quoted from the "
     "clause is the claim, not a denial. Coverage is `{kind: test}` whose detail names the "
-    "clause — a `{kind: note}` that cites it does not. If the clause IS delivered, say so "
-    "in the sentence that names it and keep the caveat in a sentence of its own"
+    "clause — a `{kind: note}` that cites it does not. The verdict is the latest evidence "
+    "block that speaks to the clause: a later `{kind: test}` that names it and does not "
+    "deny it supersedes an earlier denial, and the old line stays on the record because "
+    "evidence only appends (GRPH-1054). A note, screenshot, or other kind that merely "
+    "mentions the clause does not clear a denial, and a denial and a pass in the same "
+    "receipt are still a denial — including a denial on the next line that does not "
+    "repeat the clause and names no other one (`the pin lapses after timeout` / "
+    "`NOT DELIVERED, no clock`, or `clause — 12 passed` / `NOT DELIVERED`). If the "
+    "clause IS delivered, say so in a new `{kind: test}` receipt, in the sentence that "
+    "names it, and keep the caveat in a sentence of its own"
 )
 
 
 def acceptance_contradicted(clauses: list[str], evidence: list[dict]) -> dict[str, str]:
-    """Each clause some evidence line names AND says was not done, mapped to that line.
+    """Each clause whose latest evidence block denies it, mapped to that denying line.
 
-    Read line by line, and with the clause's own text cut out of the line before scanning, so
-    a clause that itself says "cannot" ("a builder cannot sign off its own work") is not
-    contradicted by every receipt that quotes it. Sabotage receipts are skipped: "2 test(s)
+    Read block by block, in list order (append order — evidence only grows). Within a block,
+    the clause's own text is cut out before scanning, so a clause that itself says "cannot"
+    is not contradicted by a receipt that quotes it. Sabotage receipts are skipped: "2 test(s)
     failed" is what a sabotage that WORKED says.
 
-    Any line, not the latest one. Evidence only grows, so a later "passed" beside an earlier
-    "NOT DELIVERED" is two claims that disagree, and the gate does not get to pick the
-    reassuring one.
+    The latest block that speaks to the clause is the verdict (GRPH-1054). An earlier
+    "NOT DELIVERED" used to convict forever, because this function locked the first denial
+    and nothing appended afterwards could unsay it — SA-601 and SA-629 sat in review until
+    an admin deleted the line. A later `{kind: test}` that names the clause and does not
+    deny it supersedes that denial. The old line stays; it stops outranking the correction.
+
+    A later note that merely mentions the clause does not. Absence of a denial word is not
+    delivery, and the denied test line would still satisfy coverage the moment the
+    contradiction disappeared. A denial and a pass inside ONE receipt stay a denial: the
+    correction is a new receipt, and a block that contradicts itself does not get the
+    reassuring sentence picked out of it. A denial that arrives after a pass still convicts.
+
+    A newline is not a new claim (GRPH-1054 bounce). `the pin lapses after timeout` and
+    `NOT DELIVERED, no clock` on the next line are one verdict, and so are `clause — 12
+    passed` and `NOT DELIVERED`. Skipping a line that did not repeat the clause let that
+    block read as a pass and clear a stored denial. A line that names a different clause
+    is that clause's verdict. A long explanatory follow-on is still explanation: the
+    sentence scope in `denial_in` is what decides, applied to the lines folded together.
     """
-    out: dict[str, str] = {}
+    verdict: dict[str, str] = {}
     for e in evidence or []:
         if not isinstance(e, dict) or e.get("kind") == "sabotage":
             continue
-        for line in str(e.get("detail") or "").splitlines():
-            low = line.lower()
-            for c in clauses:
-                if c in out or c.lower() not in low:
-                    continue
-                if denial_in(c, line):
-                    out[c] = line.strip()
-    return out
+        lines = [ln for ln in str(e.get("detail") or "").splitlines() if ln.strip()]
+        for c in clauses:
+            about = _lines_about(c, lines, clauses)
+            if not about:
+                continue
+            # Folded, so a denial sentence that did not repeat the clause is still inside
+            # the clause's own sentence — the same scope `denial_in` already applies to
+            # one line. The first line that carries the verdict is the one the refusal
+            # quotes; a later clean line in the SAME block does not unsay it.
+            word = denial_in(c, " ".join(about))
+            if word:
+                verdict[c] = _quoting_line(c, about, word)
+            elif e.get("kind") == "test":
+                verdict.pop(c, None)
+    return verdict
+
+
+def _lines_about(clause: str, lines: list[str], clauses: list[str]) -> list[str]:
+    """The lines of one receipt that speak about `clause`.
+
+    A line that names no clause belongs to the clause named on the line before it, and
+    a run of such lines before any clause belongs to the first clause this receipt names.
+    A line that names a different clause is not about this one. Empty when the receipt
+    never names `clause`.
+    """
+    cl = clause.lower()
+    out: list[str] = []
+    owners: list[str] = []
+    lead: list[str] = []
+    seen = False
+    for line in lines:
+        low = line.lower()
+        named = [c.lower() for c in clauses if c.lower() in low]
+        if named:
+            if cl in named:
+                if not seen:
+                    out.extend(lead)
+                seen = True
+                out.append(line)
+            lead = []
+            owners = named
+        elif not owners:
+            lead.append(line)
+        elif cl in owners:
+            out.append(line)
+    return out if seen else []
+
+
+def _quoting_line(clause: str, lines: list[str], word: str) -> str:
+    """The line the refusal should quote: the first one that actually carries `word`.
+
+    A line that names the clause and denies it wins, which is the single-line receipt.
+    Otherwise it is the continuation that did not repeat the clause — `NOT DELIVERED,
+    no clock` under `the pin lapses after timeout`.
+    """
+    cl = clause.lower()
+    for line in lines:
+        if cl in line.lower() and denial_in(clause, line):
+            return line.strip()
+    for line in lines:
+        if re.search(rf"\b{re.escape(word)}\b", line.lower().replace(cl, " ")):
+            return line.strip()
+    return lines[0].strip()
 
 
 def acceptance_covered(clauses: list[str], evidence: list[dict]
@@ -2250,8 +2328,9 @@ def acceptance_covered(clauses: list[str], evidence: list[dict]
     defect this gate closes: a sabotage pass can only mutate code some test already reaches,
     so a function with no test is invisible to it.
 
-    A clause some evidence line says was NOT done is uncovered whatever else names it
-    (GRPH-945) — see `acceptance_contradicted`.
+    A clause whose latest evidence block says it was NOT done fails the gate whatever
+    earlier line names it (GRPH-945). A later `{kind: test}` that names the clause and
+    does not deny it supersedes that denial (GRPH-1054) — see `acceptance_contradicted`.
 
     Returns `(passed, uncovered, contradicted)`: `uncovered` names the clauses with no test,
     `contradicted` maps each denied clause to the line that denies it, so the refusal can
@@ -2715,7 +2794,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                 {"name": "acceptance_coverage",
                  "passed": True,
                  "detail": (f"all {len(clauses)} acceptance clause(s) have a named test "
-                            "from the reviewer and no evidence line denying them"
+                            "from the reviewer and none whose latest evidence block denies them"
                             if clauses
                             # Only reachable when the description states NO acceptance —
                             # acceptance it cannot read refused above (GRPH-893).
