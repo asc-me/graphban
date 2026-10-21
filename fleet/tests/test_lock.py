@@ -472,3 +472,251 @@ def test_sweep_hold_writes_no_holder_record_of_its_own(git_repo: Path, state: Pa
         assert acquired.takeover is not None, "the crash was erased by a tidy-up pass"
         assert acquired.takeover.holder is not None
         assert acquired.takeover.holder.pid == crashed.pid
+
+
+# --- GRPH-1056: name the holder's age, and reclaim a live idle one ------------------
+
+
+_OLD = "2020-01-01T00:00:00+00:00"
+
+
+def _age_lock(path: Path, when: str = _OLD) -> None:
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["acquired_at"] = when
+    record["touched_at"] = when
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+
+def test_the_refusal_names_the_holders_pid_and_age(git_repo: Path, state: Path):
+    """The field report was a lock held for 22h with no age in the refusal.
+
+    Pid was already there. Age is the half a person needs in order to decide
+    whether the holder is a wave or a session they forgot. Sabotage: drop
+    `held for` from `describe_holder`; this fails.
+    """
+    with hold(git_repo, state) as first:
+        with pytest.raises(RepoLocked) as exc:
+            with hold(git_repo, state):
+                pass
+    said = str(exc.value)
+    assert str(first.holder.pid) in said
+    assert "held for" in said
+    assert "Idle takeover waits" in said
+    assert "4h 0m" in said, said
+
+
+def test_an_idle_live_holder_is_stopped_and_the_lock_is_taken(
+    git_repo: Path, state: Path
+):
+    """THE load-bearing test (GRPH-1056). A live process past the idle threshold
+    is not a dead one, so flock alone never releases it. The next supervisor
+    stops that process and reports an idle takeover, not a crash.
+
+    Sabotage: make `_try_reclaim_idle` return `(False, "")`; this raises
+    `RepoLocked` and the assertion on `takeover` fails.
+    """
+    proc = _spawn_holder(git_repo, state)
+    try:
+        path = lock_path(repo_root(git_repo), state)
+        _age_lock(path)
+        with hold(git_repo, state, idle_after=60) as taken:
+            assert taken.takeover is not None, "an idle holder was treated as a fresh lock"
+            assert taken.takeover.because == "idle"
+            assert taken.takeover.holder is not None
+            assert taken.takeover.holder.pid == proc._reported_pid  # type: ignore[attr-defined]
+            assert "idle" in taken.takeover.describe()
+            assert str(proc._reported_pid) in taken.takeover.describe()  # type: ignore[attr-defined]
+        proc.wait(timeout=5)
+        assert proc.returncode is not None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_a_live_holder_inside_the_idle_window_is_kept(git_repo: Path, state: Path):
+    proc = _spawn_holder(git_repo, state)
+    try:
+        with pytest.raises(RepoLocked) as exc:
+            with hold(git_repo, state, idle_after=3600):
+                pass
+        assert exc.value.holder is not None
+        assert exc.value.holder.pid == proc._reported_pid  # type: ignore[attr-defined]
+        assert "held for" in str(exc.value)
+        assert proc.poll() is None, "a holder inside the window was stopped"
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_idle_takeover_does_not_stop_the_process_that_is_asking(
+    git_repo: Path, state: Path
+):
+    """The record's pid is this process. Reclaiming it would kill the caller
+    before it could raise, and the repository would have no supervisor at all.
+    """
+    with hold(git_repo, state) as first:
+        record = json.loads(first.path.read_text(encoding="utf-8"))
+        record["acquired_at"] = _OLD
+        record["touched_at"] = _OLD
+        record["pid"] = os.getpid()
+        first.path.write_text(json.dumps(record), encoding="utf-8")
+        with pytest.raises(RepoLocked) as exc:
+            with hold(git_repo, state, idle_after=0):
+                pass
+        assert exc.value.holder is not None
+        assert exc.value.holder.pid == os.getpid()
+        assert "left running" not in str(exc.value)
+
+
+def test_an_unconfirmed_command_is_not_stopped(
+    git_repo: Path, state: Path, monkeypatch
+):
+    """A recycled pid that happens to be alive is not a licence to kill it.
+    'Could not confirm gbfleet' has to be said: silence there reads as a
+    holder the operator must go and stop by hand, which is the bug.
+    """
+    monkeypatch.setattr(
+        "gbfleet.lock.process_command", lambda pid: "python -c unrelated"
+    )
+    proc = _spawn_holder(git_repo, state)
+    try:
+        _age_lock(lock_path(repo_root(git_repo), state))
+        with pytest.raises(RepoLocked) as exc:
+            with hold(git_repo, state, idle_after=0):
+                pass
+        assert "left running" in str(exc.value)
+        assert proc.poll() is None
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_a_pid_that_does_not_have_the_lock_open_is_not_stopped(
+    git_repo: Path, state: Path, monkeypatch
+):
+    """The sweep case from the other side: the flock is held, the record names
+    a pid, and that pid is not who holds the file. Stopping it would kill a
+    bystander. `False` (we looked, it does not) is not `None` (we could not look).
+    """
+    monkeypatch.setattr("gbfleet.lock.pid_has_path_open", lambda pid, path: False)
+    proc = _spawn_holder(git_repo, state)
+    try:
+        _age_lock(lock_path(repo_root(git_repo), state))
+        with pytest.raises(RepoLocked) as exc:
+            with hold(git_repo, state, idle_after=0):
+                pass
+        assert "does not have the lock file open" in str(exc.value)
+        assert proc.poll() is None
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_probe_does_not_stop_an_idle_holder(git_repo: Path, state: Path):
+    """`doctor` calls `probe`. A check that reclaimed the lock would be a
+    check that changed the thing it was asked to look at.
+    """
+    from gbfleet.lock import probe
+
+    proc = _spawn_holder(git_repo, state)
+    try:
+        _age_lock(lock_path(repo_root(git_repo), state))
+        with pytest.raises(RepoLocked) as exc:
+            probe(git_repo, state)
+        assert "held for" in str(exc.value)
+        assert proc.poll() is None
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_an_old_dead_record_under_a_sweep_is_not_taken_over(
+    git_repo: Path, state: Path
+):
+    """Sabotage: treat any record older than the threshold as reclaimable even
+    when its pid is dead. `hold` would then steal the sweep's flock and this
+    stops raising.
+    """
+    from gbfleet.lock import sweep_hold
+
+    path = lock_path(repo_root(git_repo), state)
+    path.write_text(json.dumps({
+        "pid": 999_999_999, "repo": str(repo_root(git_repo)),
+        "acquired_at": _OLD, "touched_at": _OLD, "version": "test",
+    }), encoding="utf-8")
+    try:
+        with sweep_hold(path):
+            with pytest.raises(RepoLocked) as exc:
+                with hold(git_repo, state, idle_after=0):
+                    pass
+            assert exc.value.holder is not None
+            assert exc.value.holder.pid == 999_999_999
+        assert "999999999" in path.read_text(encoding="utf-8")
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_touch_is_what_a_later_refusal_reads(git_repo: Path, state: Path):
+    with hold(git_repo, state) as acquired:
+        time.sleep(1.1)
+        acquired.touch()
+        record = json.loads(acquired.path.read_text(encoding="utf-8"))
+        assert record["touched_at"] != record["acquired_at"]
+        with pytest.raises(RepoLocked) as exc:
+            with hold(git_repo, state):
+                pass
+        assert "idle for" in str(exc.value)
+        assert str(acquired.holder.pid) in str(exc.value)
+
+
+def test_an_mcp_tick_touches_only_while_a_child_is_running(
+    git_repo: Path, state: Path, monkeypatch
+):
+    """THE CALL. `touch` on every tick would make a forgotten `mcp` look busy
+    for as long as the process lived, which is the defect. Sabotage: touch
+    unconditionally in `Fleet.tick`; the first assertion fails.
+    """
+    from types import SimpleNamespace
+
+    from gbfleet.mcp import Fleet
+
+    monkeypatch.setattr("gbfleet.mcp.watch_tick", lambda *a, **k: None)
+    monkeypatch.setattr("gbfleet.mcp.adopt_mod.persist", lambda *a, **k: None)
+
+    with hold(git_repo, state) as acquired:
+        _age_lock(acquired.path)
+        fleet = Fleet(
+            repo=repo_root(git_repo), workspace=git_repo, client=None,
+            launch_for=lambda *a, **k: None, lock=acquired, children=[],
+        )
+        fleet.tick()
+        assert json.loads(acquired.path.read_text(encoding="utf-8"))["touched_at"] == _OLD
+
+        fleet.children.append(SimpleNamespace(running=True))
+        fleet.tick()
+        assert json.loads(acquired.path.read_text(encoding="utf-8"))["touched_at"] != _OLD
+
+
+def test_a_tool_call_marks_the_holder_active_and_a_listing_does_not(
+    git_repo: Path, state: Path
+):
+    """A client polls `tools/list` on a session nobody is driving. Counting
+    that as work would keep a forgotten supervisor's lock forever.
+    """
+    from gbfleet.mcp import Fleet, handle
+
+    with hold(git_repo, state) as acquired:
+        _age_lock(acquired.path)
+        fleet = Fleet(
+            repo=repo_root(git_repo), workspace=git_repo, client=None,
+            launch_for=lambda *a, **k: None, lock=acquired,
+        )
+        handle(fleet, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        assert json.loads(acquired.path.read_text(encoding="utf-8"))["touched_at"] == _OLD
+
+        handle(fleet, {
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "ps", "arguments": {}},
+        })
+        assert json.loads(acquired.path.read_text(encoding="utf-8"))["touched_at"] != _OLD

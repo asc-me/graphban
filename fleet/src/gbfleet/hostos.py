@@ -534,6 +534,127 @@ def pid_is_alive(pid: int) -> bool:
     return True
 
 
+def pid_is_zombie(pid: int) -> bool:
+    """True when `pid` has exited and its parent has not reaped it.
+
+    `pid_is_alive` is still true here: `kill(pid, 0)` succeeds on a zombie.
+    The process has already closed its file descriptors, so a flock it held is
+    gone. A caller waiting for the pid to disappear is waiting for a parent it
+    does not have.
+    """
+    if WINDOWS or pid <= 0:
+        return False
+    try:
+        listed = subprocess.run(
+            ["ps", "-o", "state=", "-p", str(pid)],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return False
+    if listed.returncode != 0:
+        return False
+    return listed.stdout.strip().startswith("Z")
+
+
+def process_command(pid: int) -> str | None:
+    """The command line of `pid`, or None when it cannot be read.
+
+    None is not "this is not gbfleet". A caller that would stop the process
+    has to treat "I could not look" as a reason not to, because a recycled pid
+    is alive too and killing it on a hunch is how a lock reclaim destroys an
+    unrelated process.
+    """
+    if pid <= 0:
+        return None
+    try:
+        if WINDOWS:
+            listed = subprocess.run(
+                ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine",
+                 "/value"],
+                capture_output=True, text=True, check=False,
+            )
+            for line in listed.stdout.splitlines():
+                if line.startswith("CommandLine=") and line.strip() != "CommandLine=":
+                    return line.split("=", 1)[1].strip() or None
+            return None
+        listed = subprocess.run(
+            ["ps", "-ww", "-o", "command=", "-p", str(pid)],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    if listed.returncode != 0:
+        return None
+    text = listed.stdout.strip()
+    return text or None
+
+
+def pid_has_path_open(pid: int, path: Path) -> bool | None:
+    """Whether `pid` has `path` open. None means the question could not be asked.
+
+    Idle takeover stops the process named in the lock file. That pid can have
+    been reused by then, and the flock can be held by somebody else (a sweep
+    guarding a crash record). "Alive and named gbfleet" is not "this is the
+    holder". An open file descriptor on this lock file is. None is the third
+    answer — Windows has no cheap way to ask — and the caller must not treat
+    it as yes.
+    """
+    if pid <= 0:
+        return False
+    target = str(Path(path).resolve())
+    if WINDOWS:
+        return None
+    proc_fd = Path(f"/proc/{pid}/fd")
+    if proc_fd.is_dir():
+        try:
+            entries = list(proc_fd.iterdir())
+        except OSError:
+            return None
+        for entry in entries:
+            try:
+                pointed = os.readlink(entry)
+            except OSError:
+                continue
+            if pointed == target or pointed == str(path):
+                return True
+        return False
+    try:
+        listed = subprocess.run(
+            ["lsof", "-n", "-P", "-p", str(pid), "-F", "n"],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    if listed.returncode not in (0, 1):
+        return None
+    names = [line[1:] for line in listed.stdout.splitlines() if line.startswith("n")]
+    if not names and listed.returncode != 0:
+        return None
+    return target in names or str(path) in names
+
+
+def end_pid(pid: int) -> None:
+    """Stop this one process. Not the children it spawned.
+
+    A supervisor's children are supposed to outlive it: the next supervisor
+    adopts them. `killpg` and `taskkill /T` would destroy that work, so this
+    signal goes to the pid alone. Refuses to signal this process — a lock
+    reclaim that kills its caller cannot report what it did.
+    """
+    if pid <= 0 or pid == os.getpid():
+        return
+    if WINDOWS:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/F"],
+            capture_output=True, check=False,
+        )
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        return
+
+
 def process_start_token(pid: int) -> str | None:
     """Opaque token that changes if this pid is reused. None if we cannot tell.
 
