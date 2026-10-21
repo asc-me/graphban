@@ -583,6 +583,46 @@ def test_evidence_saying_not_delivered_refuses_and_quotes_the_line(client, key):
     assert _ok(client, key, "get_item_details", {"id": item})["status"] == "review"
 
 
+def test_a_later_test_receipt_clears_a_stored_denial_and_a_note_does_not(client, key):
+    """GRPH-1054, through `sign_off`. The denial is already on the item — evidence only
+    appends, which is why an admin used to have to delete the line. The reviewer's note
+    that mentions the clause must still be refused, quoting the denial. Their later
+    `{kind: test}` that names the clause and does not deny it is the correction, and the
+    old line stays on the item."""
+    clause = "the pin lapses after timeout"
+    denial = f"{clause} — NOT DELIVERED, no clock"
+    item, reviewer = _ready_with_description(
+        client, key, effort=5, description=DESC_TWO_CLAUSES)
+    _ok(client, key, "update_item", {"id": item, "evidence": [
+        {"kind": "test", "detail": "the veto blocks an accept"},
+        {"kind": "test", "detail": denial},
+        SABOTAGE,
+    ]})
+
+    res = _rpc(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"],
+        "evidence": [
+            {"kind": "test", "detail": "reran: the veto blocks an accept"},
+            {"kind": "note", "detail": f"re-read {clause}; nothing further to add"},
+        ]})
+    err = res["structuredContent"]["error"]
+    assert err["code"] == "conflict", err
+    assert denial in err["message"], (
+        f"a note that mentions the clause cleared the stored denial: {err['message']}")
+    assert _ok(client, key, "get_item_details", {"id": item})["status"] == "review"
+
+    out = _ok(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"],
+        "evidence": [
+            {"kind": "test", "detail": "reran: the veto blocks an accept"},
+            {"kind": "test", "detail": f"{clause} — 12 passed"},
+        ]})
+    assert out["status"] == "done"
+    stored = _ok(client, key, "get_item_details", {"id": item})["evidence"]
+    assert any(e.get("detail") == denial for e in stored), (
+        "the correction must not delete the denial — the record only grows")
+
+
 @pytest.mark.parametrize("word", ["skipped", "Cannot be tested here", "FAILED", "not delivered"])
 def test_each_negative_phrase_denies_the_clause(word):
     ok, _, contradicted = fleet.acceptance_covered(
