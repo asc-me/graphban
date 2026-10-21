@@ -46,7 +46,7 @@ from .adapters import AdapterError, Tuning
 from .tiers import TierTable
 from . import matrix as matrix_mod
 from .client import Graphban
-from .lock import Acquired, Holder
+from .lock import Acquired, Holder, describe_holder
 from .seat import Seat
 from .spawn import Child, LaunchFailed, Reason, stop
 from .progress import NEVER_WROTE
@@ -353,6 +353,10 @@ class Fleet:
         """
         if self.attached:
             return
+        # GRPH-1056. A tick with nobody to watch is not supervisor work — that is
+        # the forgotten `mcp` that held the lock for a day. A running child is.
+        if self.lock is not None and any(child.running for child in self.children):
+            self.lock.touch()
         watch_tick(self.wave, self.children, self.limits, self.client, debug=debug)
         adopt_mod.persist(adopt_mod.children_path(self.repo), self.children)
 
@@ -540,7 +544,7 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
             # it to delete a live lock — the two readings `RepoLocked` refuses for the same
             # reason.
             who = (
-                f"pid {h.pid} (since {h.acquired_at}, gbfleet {h.version})"
+                describe_holder(h)
                 if h is not None
                 else "a process that has not written its record (possibly a gc sweep)"
             )
@@ -812,6 +816,12 @@ def handle(fleet: Fleet, message: dict) -> dict | None:
         return _result(id_, {"tools": TOOLS})
     if method != "tools/call":
         return _rpc_error(id_, METHOD_NOT_FOUND, f"unknown method {method!r}")
+
+    # GRPH-1056. A tool call is the planner using this supervisor. `tools/list`
+    # and `initialize` are not: a client polls those on a session nobody is
+    # driving, and counting them would make a forgotten `mcp` look busy forever.
+    if fleet.lock is not None:
+        fleet.lock.touch()
 
     params = message.get("params") or {}
     name = params.get("name")

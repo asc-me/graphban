@@ -2128,6 +2128,10 @@ def _wait_out(
     the item to somebody else and a second agent is already working it.
     """
     while any(child.running for child in children):
+        # GRPH-1056. Waiting on children is the work. Without this, a wave longer
+        # than the idle threshold is reclaimed out from under its own children.
+        if wave.lock is not None:
+            wave.lock.touch()
         watch_tick(wave, children, limits, client, debug=debug, persist=persist,
                    base_branch=base_branch)
         if merger is not None:

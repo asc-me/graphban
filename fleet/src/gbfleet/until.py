@@ -512,6 +512,11 @@ def _loop(
     rechecked = 0.0
 
     while True:
+        # GRPH-1056. This loop IS the supervisor working. An `mcp` that merely stays
+        # up does not touch, and past the idle threshold the next `hold` stops it.
+        # Touching here is what keeps a long drain from being read as that.
+        if wave.lock is not None:
+            wave.lock.touch()
         # GRPH-869: planner, not supervisor. `watch_tick` → `_reap_exited` → `_publish`
         # → `propose_branch` → `update_item`. The supervisor allowlist is two reads;
         # `update_item` is on the planner. Passing supervisor here opened the PR and

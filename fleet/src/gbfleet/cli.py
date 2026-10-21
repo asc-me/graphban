@@ -20,7 +20,7 @@ from .client import ALLOWED_TOOLS, Graphban
 from . import doctor
 from . import service as service_mod
 from . import surface as surface_mod
-from .lock import RepoLocked
+from .lock import RepoLocked, describe_holder
 from .seat import Seat, codes_from_text, parse_seat_line
 from dataclasses import replace
 
@@ -836,7 +836,7 @@ def _serve_attached(root: Path, workspace: Path, client: Graphban,
     children.json, attach to live pids, and serve ps/stop/orphans while spawn refuses.
     """
     holder = exc.holder
-    who = f"pid {holder.pid}" if holder else "unknown holder"
+    who = describe_holder(holder) if holder else "unknown holder"
     print(f"gbfleet mcp: attached read-only to {root} held by {who}", file=sys.stderr)
 
     try:
