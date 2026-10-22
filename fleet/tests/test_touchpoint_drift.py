@@ -161,6 +161,68 @@ def test_an_item_read_as_declaring_nothing_is_an_answer_not_a_fallback():
     assert wave.undeclared == {}, "an item that declares nothing is not drift"
 
 
+def _bound_child_that_handed_off():
+    """A real `Child` driven through `_remember_holdings`: bound to GRPH-1025, held it, moved it
+    to review (the roster stops reading it), then claimed GRPH-2 and is reaped holding only that.
+    """
+    from pathlib import Path
+
+    from gbfleet.spawn import Child
+    from gbfleet.supervisor import Partition, _remember_holdings
+
+    child = Child(adapter="fake", worktree=Path("/nowhere"), branch="gb/declared-1", base="",
+                  seat_path=Path("/nowhere/seat.json"), process=None, started_at=0.0,
+                  log_dir=Path("/nowhere/logs"))
+    child.agent_id = "GRPH-A1"
+    child.assigned = {"item": "GRPH-1025", "state": "claimed"}
+    partition = Partition()
+    for reading in (["GRPH-1025"], [], ["GRPH-2"]):
+        partition.held = {"GRPH-A1": reading}
+        _remember_holdings([child], partition)
+    assert child.held_items == ["GRPH-2"], "the shape under test: X is gone from the last reading"
+    return child
+
+
+def test_a_bound_child_that_handed_off_is_judged_by_the_item_it_built_too():
+    """THE `declared` SHAPE (GRPH-1079). The bound child handed GRPH-1025 to review, claimed
+    GRPH-2, and was reaped holding only GRPH-2. The branch carries GRPH-1025's work, so
+    GRPH-1025's declaration is part of the operand and its own file is not undeclared.
+
+    Sabotage: iterate `child.held_items` alone in `_note_touchpoints` and this goes red —
+    supervisor.py is then compared against GRPH-2's declaration only and the branch is held."""
+    wave = Wave()
+    wave.touched["gb/declared-1"] = ["fleet/src/gbfleet/supervisor.py", "backend/app/x.py"]
+    ledger = _Ledger({"GRPH-1025": ["fleet/src/gbfleet/supervisor.py"],
+                      "GRPH-2": ["backend/app/x.py"]})
+
+    _note_touchpoints(wave, _bound_child_that_handed_off(), ledger)
+    assert wave.undeclared == {}
+    assert [kw["id"] for _, kw in ledger.calls] == ["GRPH-1025", "GRPH-2"], \
+        "bound item first, then what it went on to hold"
+
+
+def test_a_file_none_of_the_branch_items_declare_is_still_refused():
+    """THE CONTROL for GRPH-1079: widening the operand to every item on the branch is not a
+    pass. A file neither the handed-off item nor the later one declares still holds the PR."""
+    wave = Wave()
+    wave.touched["gb/declared-1"] = ["fleet/src/gbfleet/supervisor.py", "web/src/App.tsx"]
+    ledger = _Ledger({"GRPH-1025": ["fleet/src/gbfleet/supervisor.py"],
+                      "GRPH-2": ["backend/app/x.py"]})
+
+    _note_touchpoints(wave, _bound_child_that_handed_off(), ledger)
+    assert wave.undeclared == {"gb/declared-1": ["web/src/App.tsx"]}
+
+
+def test_an_item_held_and_handed_off_without_a_binding_still_counts():
+    """Unbound seats too: the history is the roster's, not the seat's. A child that held
+    GRPH-1, handed it off and then held GRPH-2 is judged against both."""
+    from gbfleet.supervisor import _branch_items
+
+    child = _bound_child_that_handed_off()
+    child.assigned = None
+    assert _branch_items(child) == ["GRPH-1025", "GRPH-2"]
+
+
 def test_the_collision_check_covers_the_whole_wave_not_just_the_last_pair():
     """Recomputed over every branch measured so far. A pairwise check at each reap would miss
     the pair reaped either side of it — which is most of them.

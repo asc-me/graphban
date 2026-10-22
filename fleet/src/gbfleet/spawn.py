@@ -253,6 +253,11 @@ class Child:
     #: `_roster` is overwritten after `release_item`, so reap must not read live
     #: holdings — those are empty and the salvage subject would have no item keys.
     held_items: list = field(default_factory=list)
+    #: Every item the roster has EVER read this child holding, in first-seen order (GRPH-1079).
+    #: `held_items` is only the latest reading, so a bound child that hands its item to
+    #: review and claims another has dropped the first one from it — and the first one is
+    #: the work on the branch. Reap compares the branch against this, not the latest reading.
+    ever_held: list = field(default_factory=list)
     #: worker | reviewer (P30 D2). Until must not start both as a simultaneous cohort.
     role: str = "worker"
     #: The turn budget this child was launched with, when the adapter takes one. Posted with
@@ -445,6 +450,7 @@ def await_registration(
                 held = [h.get("id") for h in build_holdings(agent) if h.get("id")]
                 if held:
                     child.held_items = held
+                    child.ever_held += [i for i in held if i not in child.ever_held]
                 return agent
         return None
 
