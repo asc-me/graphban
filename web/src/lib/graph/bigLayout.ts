@@ -342,7 +342,10 @@ export function clustersLayout(input: ClusterInput): ClusterLayout {
       areaIds.push(p.id);
       xs.push(ox + m.lx * s);
       ys.push(oy + m.ly * s);
-      rs.push(m.r);
+      // Positions are multiplied by the frame scale. Radii live in that same
+      // space: leaving them at the pre-fit size collapses every ring once the
+      // scale drops below 1 (sparse: most nodes then overlap a neighbour).
+      rs.push(m.r * s);
     }
   });
 
@@ -421,25 +424,40 @@ export function hitVisits(): number {
   return lastHitVisits;
 }
 
+/** Added to a node's radius when deciding a hit. Matches the disc the search covers. */
+const HIT_SLACK = 1.5;
+
 /**
- * Spatial hit-test. Looks at one 4×4 block of 10-unit cells and nothing else.
- * Returns the nearest node whose disc contains the point, or null.
+ * How far a stored radius can reach and still be found inside one 4×4 block.
+ * `nodeRadius` tops out at 12.6 for a module; plus slack that is 14.1, and a
+ * disc of that radius touches at most four 10-unit cells on a side.
+ */
+function hitReach(): number {
+  return nodeRadius("module", Number.POSITIVE_INFINITY) + HIT_SLACK;
+}
+
+/**
+ * Spatial hit-test. Looks at one 4×4 block of 10-unit cells — the block the
+ * query disc actually covers, not a window pinned to the left of the point —
+ * and nothing else. Returns the nearest node whose disc contains the point,
+ * or null.
  */
 export function hitTest(layout: ClusterLayout, wx: number, wy: number): string | null {
-  const ix = Math.floor(wx / GRID_CELL);
-  const iy = Math.floor(wy / GRID_CELL);
-  const x0 = ix - 1;
-  const y0 = iy - 1;
+  const reach = hitReach();
+  const x0 = Math.floor((wx - reach) / GRID_CELL);
+  const y0 = Math.floor((wy - reach) / GRID_CELL);
+  const x1 = Math.floor((wx + reach) / GRID_CELL);
+  const y1 = Math.floor((wy + reach) / GRID_CELL);
   let best: { id: string; d: number } | null = null;
   let visits = 0;
-  for (let dx = 0; dx < HIT_WINDOW; dx++) {
-    for (let dy = 0; dy < HIT_WINDOW; dy++) {
+  for (let dx = 0; dx < HIT_WINDOW && x0 + dx <= x1; dx++) {
+    for (let dy = 0; dy < HIT_WINDOW && y0 + dy <= y1; dy++) {
       const bucket = layout.grid[`${x0 + dx},${y0 + dy}`];
       if (!bucket) continue;
       for (const i of bucket) {
         visits += 1;
         const d = Math.hypot(wx - layout.x[i], wy - layout.y[i]);
-        if (d <= layout.r[i] + 1.5 && (best === null || d < best.d)) {
+        if (d <= layout.r[i] + HIT_SLACK && (best === null || d < best.d)) {
           best = { id: layout.ids[i], d };
         }
       }

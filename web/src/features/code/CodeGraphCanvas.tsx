@@ -75,6 +75,11 @@ function hitBundle(strokes: Stroke[], wx: number, wy: number, cam: Cam): Stroke 
   return best?.stroke ?? null;
 }
 
+export interface CanvasControlApi {
+  zoomBy: (factor: number) => void;
+  fit: () => void;
+}
+
 export function CodeGraphCanvas({
   nodes,
   edges,
@@ -85,6 +90,8 @@ export function CodeGraphCanvas({
   truncated,
   totalNodes,
   frameId,
+  controlRef,
+  onZoom,
 }: {
   nodes: CanvasGraphNode[];
   edges: CanvasGraphEdge[];
@@ -97,6 +104,10 @@ export function CodeGraphCanvas({
   totalNodes: number;
   /** An external request (find, hubs) to tween this node to 7×. */
   frameId: string | null;
+  /** The view's GraphControls cluster drives zoom and fit through this. */
+  controlRef?: { current: CanvasControlApi | null };
+  /** Fired when the camera scale changes, so the shared readout can follow. */
+  onZoom?: (k: number) => void;
 }) {
   const hostRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -108,6 +119,8 @@ export function CodeGraphCanvas({
   const [tip, setTip] = React.useState<{ x: number; y: number; text: string } | null>(null);
   const camRef = React.useRef(cam);
   camRef.current = cam;
+  const sizeRef = React.useRef(size);
+  sizeRef.current = size;
   const panRef = React.useRef<{ px: number; py: number; cx: number; cy: number } | null>(null);
   const fitted = React.useRef("");
 
@@ -117,6 +130,35 @@ export function CodeGraphCanvas({
   );
   const area = useAreaLayout(input);
   const layout = area.layout;
+  const layoutRef = React.useRef(layout);
+  layoutRef.current = layout;
+
+  React.useEffect(() => {
+    onZoom?.(cam.k);
+  }, [cam.k, onZoom]);
+
+  React.useEffect(() => {
+    if (!controlRef) return;
+    controlRef.current = {
+      zoomBy(factor) {
+        const { w, h } = sizeRef.current;
+        setTween(null);
+        setCam((c) =>
+          zoomAbout(c, factor, w / 2, h / 2, { min: CANVAS_MIN_K, max: CANVAS_MAX_K }),
+        );
+      },
+      fit() {
+        const lay = layoutRef.current;
+        const { w, h } = sizeRef.current;
+        if (!lay) return;
+        setTween(null);
+        setCam(fitCamera(lay.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r })), w, h));
+      },
+    };
+    return () => {
+      controlRef.current = null;
+    };
+  }, [controlRef]);
 
   React.useEffect(() => {
     const el = hostRef.current;
@@ -299,7 +341,6 @@ export function CodeGraphCanvas({
   }, [layout, scene, hover, selectedId, cam.k, cam.x, cam.y, degree, nameOf, types]);
 
   const shown = nodes.length;
-  const zoomPct = Math.round(cam.k * 100);
 
   return (
     <div
@@ -432,45 +473,6 @@ export function CodeGraphCanvas({
         )}
       </div>
 
-      <div className="absolute bottom-3 right-3 z-10 flex items-center gap-1">
-        <button
-          type="button"
-          aria-label="Zoom out"
-          className="rounded border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-muted"
-          onClick={() => {
-            setTween(null);
-            setCam((c) => zoomAbout(c, 1 / 1.2, size.w / 2, size.h / 2, { min: CANVAS_MIN_K, max: CANVAS_MAX_K }));
-          }}
-        >
-          −
-        </button>
-        <span data-testid="canvas-zoom" className="min-w-10 text-center font-mono text-small text-muted">
-          {zoomPct}%
-        </span>
-        <button
-          type="button"
-          aria-label="Zoom in"
-          className="rounded border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-muted"
-          onClick={() => {
-            setTween(null);
-            setCam((c) => zoomAbout(c, 1.2, size.w / 2, size.h / 2, { min: CANVAS_MIN_K, max: CANVAS_MAX_K }));
-          }}
-        >
-          +
-        </button>
-        <button
-          type="button"
-          aria-label="Fit"
-          className="rounded border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-muted"
-          onClick={() => {
-            if (!layout) return;
-            setTween(null);
-            setCam(fitCamera(layout.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r })), size.w, size.h));
-          }}
-        >
-          Fit
-        </button>
-      </div>
     </div>
   );
 }

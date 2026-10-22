@@ -51,8 +51,9 @@ import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useCodeAnalysis, useCodeMap, useFleetPresence } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors, HeldArea, ProjectStub } from "@/lib/types";
 
+import { CANVAS_MAX_K, CANVAS_MIN_K } from "./canvas/camera";
 import { CodeChat } from "./CodeChat";
-import { CodeGraphCanvas } from "./CodeGraphCanvas";
+import { CodeGraphCanvas, type CanvasControlApi } from "./CodeGraphCanvas";
 import { FleetLegend } from "./FleetLegend";
 
 const KIND_META: Record<string, { label: string; color: string }> = {
@@ -264,6 +265,12 @@ export function CodeGraphView() {
   // instead, so a dense graph can be read at all. It needs a reach set to isolate against,
   // so with nothing selected the control is disabled rather than silently doing nothing.
   const [isolate, setIsolate] = React.useState(false);
+  // Canvas mode draws with its own camera (0.7×–16×). The shared control
+  // cluster reads this scale and drives that camera; the SVG viewport is a
+  // different range and must not move the canvas.
+  const canvasControlRef = React.useRef<CanvasControlApi | null>(null);
+  const [canvasK, setCanvasK] = React.useState(1);
+  const onCanvasZoom = React.useCallback((k: number) => setCanvasK(k), []);
   // Trail breadcrumb: the last N nodes the user selected, most-recent last. Clicking one
   // re-selects it without losing the rest — a back button that does not erase history.
   const [trail, setTrail] = React.useState<string[]>([]);
@@ -789,6 +796,8 @@ export function CodeGraphView() {
               truncated={truncated}
               totalNodes={map?.node_count ?? nodes.length}
               frameId={frameId}
+              controlRef={canvasControlRef}
+              onZoom={onCanvasZoom}
             />
           ) : (
             <svg
@@ -1245,20 +1254,24 @@ export function CodeGraphView() {
                 <FleetLegend presence={presence} soloUser={soloUser} onSolo={setSoloUser} />
                 {!galaxyMode && <KindLegend kinds={drawnKinds} />}
               </div>
-              {!canvasMode && (
-                <GraphControls
-                  depth={depth}
-                  onDepth={setDepth}
-                  isolate={isolate}
-                  onIsolate={() => setIsolate((v) => !v)}
-                  canIsolate={!!shown}
-                  zoom={view.viewport.k}
-                  onZoom={(factor) =>
-                    view.setViewport((v) => zoomAbout(v, factor, W / 2, H / 2))
-                  }
-                  onFit={view.reset}
-                />
-              )}
+              <GraphControls
+                depth={depth}
+                onDepth={setDepth}
+                isolate={isolate}
+                onIsolate={() => setIsolate((v) => !v)}
+                canIsolate={!!shown}
+                zoom={canvasMode ? canvasK : view.viewport.k}
+                minZoom={canvasMode ? CANVAS_MIN_K : MIN_ZOOM}
+                maxZoom={canvasMode ? CANVAS_MAX_K : MAX_ZOOM}
+                onZoom={(factor) => {
+                  if (canvasMode) canvasControlRef.current?.zoomBy(factor);
+                  else view.setViewport((v) => zoomAbout(v, factor, W / 2, H / 2));
+                }}
+                onFit={() => {
+                  if (canvasMode) canvasControlRef.current?.fit();
+                  else view.reset();
+                }}
+              />
             </div>
           )}
         </div>
@@ -1958,6 +1971,8 @@ function GraphControls({
   zoom,
   onZoom,
   onFit,
+  minZoom = MIN_ZOOM,
+  maxZoom = MAX_ZOOM,
 }: {
   depth: number;
   onDepth: (d: number) => void;
@@ -1967,6 +1982,8 @@ function GraphControls({
   zoom: number;
   onZoom: (factor: number) => void;
   onFit: () => void;
+  minZoom?: number;
+  maxZoom?: number;
 }) {
   // The design draws these segmented groups and their internal dividers at #1e242a, which is
   // --color-line-2 — a hairline, ~1.2:1. A control's border is its identity under WCAG 1.4.11,
@@ -2022,7 +2039,7 @@ function GraphControls({
         <button
           onClick={() => onZoom(1 / ZOOM_STEP)}
           aria-label="Zoom out"
-          disabled={zoom <= MIN_ZOOM + 1e-6}
+          disabled={zoom <= minZoom + 1e-6}
           className={stepper}
         >
           −
@@ -2036,7 +2053,7 @@ function GraphControls({
         <button
           onClick={() => onZoom(ZOOM_STEP)}
           aria-label="Zoom in"
-          disabled={zoom >= MAX_ZOOM - 1e-6}
+          disabled={zoom >= maxZoom - 1e-6}
           className={stepper}
         >
           +

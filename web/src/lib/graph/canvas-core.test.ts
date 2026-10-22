@@ -9,11 +9,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import viewSrc from "../../features/code/CodeGraphView.tsx?raw";
 
+import { dense, sparse } from "./__fixtures__/bigMap";
 import {
   clustersLayout,
+  GRID_CELL,
+  HIT_WINDOW,
   hitTest,
   hitVisits,
   layoutRunCount,
+  nodeRadius,
   resetLayoutRuns,
   bundleLabel,
   type ClusterLayout,
@@ -127,7 +131,107 @@ describe("clusters layout", () => {
     expect(hitTest(layout, 500, 500)).toBe("far");
     expect(hitVisits()).toBe(1);
   });
+
+  it("scales member radii with the fit so rings do not collapse", () => {
+    // The frame scale multiplies positions. Radii that stay at the pre-fit
+    // size overlap: on sparse, most nodes then intersect a neighbour by more
+    // than 2 units, and dense overlaps every node. Zoom cannot separate that
+    // — the overlap is in world space.
+    const cap = nodeRadius("module", Number.POSITIVE_INFINITY);
+    for (const map of [sparse, dense]) {
+      const layout = clustersLayout({ nodes: map.nodes, edges: map.edges });
+      expect(layout.nodeCount).toBe(map.nodes.length);
+      let maxR = 0;
+      for (let i = 0; i < layout.ids.length; i++) maxR = Math.max(maxR, layout.r[i]);
+      expect(maxR).toBeLessThanOrEqual(cap + 1e-3);
+      expect(pairsCloserThan(layout, 2)).toBe(0);
+    }
+  });
+
+  it("hits a large module from both sides of its disc, inside a 4×4 window", () => {
+    // r=12.6 at x=9.9. A window pinned at (ix-1)..(ix+2) misses the point
+    // 14 units to the right (cell 0 is outside that block) and hits from the
+    // left. The disc of radius 12.6+slack touches cell 0 from either side.
+    const x = 9.9;
+    const r = 12.6;
+    const cell = `${Math.floor(x / GRID_CELL)},${Math.floor(0 / GRID_CELL)}`;
+    const layout = oneNode("mod", x, 0, r, { [cell]: [0] });
+    expect(hitTest(layout, x + 14, 0)).toBe("mod");
+    expect(hitTest(layout, x - 14, 0)).toBe("mod");
+    expect(hitTest(layout, x + 16, 0)).toBeNull();
+
+    const grid: Record<string, number[]> = {};
+    const ids: string[] = [];
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const rs: number[] = [];
+    let n = 0;
+    for (let cx = -3; cx <= 6; cx++) {
+      for (let cy = -3; cy <= 6; cy++) {
+        grid[`${cx},${cy}`] = [n];
+        ids.push(`${cx},${cy}`);
+        xs.push(cx * GRID_CELL + 1);
+        ys.push(cy * GRID_CELL + 1);
+        rs.push(1);
+        n += 1;
+      }
+    }
+    hitTest(
+      {
+        ...oneNode("mod", x, 0, r, grid),
+        ids,
+        x: Float32Array.from(xs),
+        y: Float32Array.from(ys),
+        r: Float32Array.from(rs),
+        nodeCount: n,
+      },
+      x,
+      0,
+    );
+    expect(hitVisits()).toBeLessThanOrEqual(HIT_WINDOW * HIT_WINDOW);
+  });
 });
+
+function pairsCloserThan(layout: ClusterLayout, penetration: number): number {
+  let n = 0;
+  const { x, y, r } = layout;
+  for (let i = 0; i < layout.ids.length; i++) {
+    for (let j = i + 1; j < layout.ids.length; j++) {
+      const reach = r[i] + r[j] - penetration;
+      if (reach <= 0) continue;
+      const dx = x[i] - x[j];
+      if (Math.abs(dx) >= reach) continue;
+      const dy = y[i] - y[j];
+      if (Math.abs(dy) >= reach) continue;
+      if (dx * dx + dy * dy < reach * reach) n += 1;
+    }
+  }
+  return n;
+}
+
+function oneNode(
+  id: string,
+  x: number,
+  y: number,
+  r: number,
+  grid: Record<string, number[]>,
+): ClusterLayout {
+  return {
+    ids: [id],
+    x: Float32Array.from([x]),
+    y: Float32Array.from([y]),
+    r: Float32Array.from([r]),
+    kinds: ["module"],
+    colors: ["#fff"],
+    areaOf: ["a"],
+    areas: [],
+    bundles: [],
+    edges: [],
+    grid,
+    depth: null,
+    nodeCount: 1,
+  };
+}
 
 describe("edge level of detail", () => {
   it("switches at 2.6× and caps at 6,000 with the canonical caption", () => {

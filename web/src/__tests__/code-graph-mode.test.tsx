@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { DETAIL_BUDGET } from "@/lib/graph/galaxy";
@@ -70,5 +71,27 @@ describe("code graph mode", () => {
   it("shows the truncated caption when the payload says so", async () => {
     await mount(801, true);
     expect(screen.getByTestId("truncated-caption")).toHaveTextContent(/truncated/);
+  });
+
+  it("keeps Isolate on the control cluster in canvas mode", async () => {
+    // The edge cap tells the reader to Isolate. Hiding GraphControls above the
+    // detail budget leaves that instruction with no control. The button lives
+    // in the bottom bar, and a selection is what arms it.
+    const user = userEvent.setup();
+    await mount(801);
+    const bar = screen.getByTestId("graph-bottom-bar");
+    const isolate = within(bar).getByRole("button", { name: "Isolate" });
+    expect(isolate).toBeDisabled();
+
+    await user.type(screen.getByRole("textbox", { name: "Find a node" }), "n800.py");
+    await user.click(
+      within(screen.getByRole("listbox", { name: "Matching nodes" })).getByRole("option", {
+        name: /n800\.py/,
+      }),
+    );
+
+    expect(isolate).toBeEnabled();
+    await user.click(isolate);
+    expect(isolate).toHaveAttribute("aria-pressed", "true");
   });
 });
