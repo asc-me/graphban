@@ -26,6 +26,21 @@ import type { DashboardData, RequestType } from "@/lib/types";
 
 const { dashboardSpy } = vi.hoisted(() => ({ dashboardSpy: vi.fn() }));
 
+const countsPopulated = {
+  items: 11, items_in_progress: 4, requests: 5, review: 2, triage_new: 1, lessons_published: 3,
+};
+const countsZero = {
+  items: 0, items_in_progress: 0, requests: 0, review: 0, triage_new: 0, lessons_published: 0,
+};
+const mapOf = (node_count: number) => ({
+  nodes: [], edges: [], node_count, edge_count: 0, outbound: [],
+});
+const fleetOf = (online: number) => ({
+  agents: [], online, total: online, by_role: {}, posture: "single-agent", roles: [],
+  presence_ttl_seconds: 150, heartbeat_interval_seconds: 50, review_queue: [],
+  clusters: [], seats: [], waves: [],
+});
+
 vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
   api: {
@@ -34,6 +49,9 @@ vi.mock("@/lib/api", () => ({
     ]),
     config: vi.fn(async () => ({ hosted_mode: false })),
     dashboard: dashboardSpy,
+    counts: vi.fn(),
+    codeMap: vi.fn(),
+    fleet: vi.fn(),
   },
 }));
 
@@ -99,10 +117,21 @@ beforeEach(async () => {
   localStorage.clear();
   const { api } = await import("@/lib/api");
   vi.mocked(api.dashboard).mockResolvedValue(populated as never);
+  vi.mocked(api.counts).mockResolvedValue(countsPopulated as never);
+  vi.mocked(api.codeMap).mockResolvedValue(mapOf(40) as never);
+  vi.mocked(api.fleet).mockResolvedValue(fleetOf(2) as never);
 });
 
+/** The empty-project answer requires every source to be a measured zero, not only the dashboard. */
+async function zeroTheRest() {
+  const { api } = await import("@/lib/api");
+  vi.mocked(api.counts).mockResolvedValue(countsZero as never);
+  vi.mocked(api.codeMap).mockResolvedValue(mapOf(0) as never);
+  vi.mocked(api.fleet).mockResolvedValue(fleetOf(0) as never);
+}
+
 describe("Dashboard (PRD-47 S3)", () => {
-  it("draws the six KPIs, each with an icon and its own value", async () => {
+  it("draws the six stats in one grid, toned when they are above zero", async () => {
     renderDashboard();
     await screen.findByText("Items");
 
@@ -111,15 +140,21 @@ describe("Dashboard (PRD-47 S3)", () => {
 
     const tile = (label: string) => within(grid).getByText(label).parentElement!;
     expect(tile("Items")).toHaveTextContent("11");
-    expect(tile("In progress")).toHaveTextContent("4");
+    expect(tile("In flight")).toHaveTextContent("4");
+    expect(tile("In flight").querySelector(".text-accent")).toHaveTextContent("4");
     expect(tile("Blocked")).toHaveTextContent("1");
+    expect(tile("Blocked").querySelector(".text-st-blocked")).toHaveTextContent("1");
     expect(tile("Memory shards")).toHaveTextContent("7");
-    expect(tile("PRDs")).toHaveTextContent("2");
-    // Thousands are abbreviated rather than printed in full in a 22px tile.
-    expect(tile("MCP calls")).toHaveTextContent("4.2k");
+    expect(tile("Graph nodes")).toHaveTextContent("40");
+    expect(tile("Agents live")).toHaveTextContent("2");
+    expect(tile("Agents live").querySelector(".text-st-done")).toHaveTextContent("2");
+    // PRDs and MCP calls left the grid. PRDs remains a jump tile.
+    expect(within(grid).queryByText("PRDs")).not.toBeInTheDocument();
+    expect(within(grid).queryByText("MCP calls")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /PRDs/ })).toHaveTextContent("2 docs");
 
     for (const t of Array.from(grid.children)) {
-      expect(t.querySelector("svg")).toBeInTheDocument();
+      expect(t.querySelector("svg")).not.toBeInTheDocument();
     }
   });
 
@@ -166,6 +201,9 @@ describe("Dashboard (PRD-47 S3)", () => {
     expect(within(panel).getByText("Plan the surfaces")).toBeInTheDocument();
     expect(within(panel).getByText("Sep 28")).toBeInTheDocument();
     expect(within(panel).getByText("GRPH-952")).toBeInTheDocument();
+    // Rows open the tracker. Self-host paths are flat.
+    expect(within(panel).getByText("GRPH-954").closest("a")).toHaveAttribute("href", "/tracker");
+    expect(within(panel).getByText("GRPH-952").closest("a")).toHaveAttribute("href", "/tracker");
   });
 
   it("lets the agent-loop card be dismissed, and keeps it dismissed", async () => {
@@ -188,6 +226,7 @@ describe("an empty project is not a measured one", () => {
   it("says nothing has been recorded instead of drawing six zero tiles", async () => {
     const { api } = await import("@/lib/api");
     vi.mocked(api.dashboard).mockResolvedValue(bare as never);
+    await zeroTheRest();
     renderDashboard();
 
     expect(await screen.findByText("Nothing to summarise yet")).toBeInTheDocument();
@@ -206,6 +245,8 @@ describe("an empty project is not a measured one", () => {
    */
   it.each([
     { field: "items_total" as const, value: 3 },
+    { field: "in_progress_count" as const, value: 3 },
+    { field: "blocked_count" as const, value: 1 },
     { field: "requests_total" as const, value: 5 },
     { field: "shard_count" as const, value: 2 },
     { field: "prd_count" as const, value: 1 },
@@ -216,12 +257,83 @@ describe("an empty project is not a measured one", () => {
       ...bare,
       [field]: value,
     } as never);
+    // Counts, the map, and the fleet have to be zero too. A non-zero beforeEach
+    // count would keep the page populated even if this dashboard clause were deleted.
+    await zeroTheRest();
     renderDashboard();
 
     await screen.findByText("Items");
     expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
     expect(screen.getByText("Memory shards")).toBeInTheDocument();
     expect(screen.getByText("PRDs")).toBeInTheDocument();
+  });
+
+  it.each([
+    { field: "lessons_published" as const, value: 4, meta: "4 published" },
+    { field: "triage_new" as const, value: 2, meta: "2 new" },
+    { field: "review" as const, value: 6, meta: "6 to review" },
+  ])("still draws the home when only counts.$field is non-zero", async ({ field, value, meta }) => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.dashboard).mockResolvedValue(bare as never);
+    await zeroTheRest();
+    vi.mocked(api.counts).mockResolvedValue({ ...countsZero, [field]: value } as never);
+    renderDashboard();
+
+    await screen.findByText("Items");
+    expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Jump to" })).toHaveTextContent(meta);
+  });
+
+  it("is not empty when the shell item count is non-zero and the dashboard said 0", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.dashboard).mockResolvedValue(bare as never);
+    await zeroTheRest();
+    vi.mocked(api.counts).mockResolvedValue({ ...countsZero, items: 8 } as never);
+    renderDashboard();
+
+    await screen.findByText("Items");
+    expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
+    // The figure prefers the dashboard's measured 0. The shell's 8 still blocks the
+    // empty project, which is what deleting that clause would bring back.
+    expect(screen.getByText("Items").parentElement).toHaveTextContent("0");
+  });
+
+  it("is not empty when the shell says work is in flight and the dashboard said 0", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.dashboard).mockResolvedValue(bare as never);
+    await zeroTheRest();
+    vi.mocked(api.counts).mockResolvedValue({ ...countsZero, items_in_progress: 3 } as never);
+    renderDashboard();
+
+    await screen.findByText("Items");
+    expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
+    // The figure prefers the dashboard's measured 0. The shell's 3 still blocks the
+    // empty project, which is what deleting that clause would bring back.
+    expect(screen.getByText("In flight").parentElement).toHaveTextContent("0");
+  });
+
+  it("still draws the home when only the code graph answered with nodes", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.dashboard).mockResolvedValue(bare as never);
+    await zeroTheRest();
+    vi.mocked(api.codeMap).mockResolvedValue(mapOf(9) as never);
+    renderDashboard();
+
+    await screen.findByText("Items");
+    expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
+    expect(screen.getByText("Graph nodes").parentElement).toHaveTextContent("9");
+  });
+
+  it("still draws the home when only an agent is online", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.dashboard).mockResolvedValue(bare as never);
+    await zeroTheRest();
+    vi.mocked(api.fleet).mockResolvedValue(fleetOf(1) as never);
+    renderDashboard();
+
+    await screen.findByText("Items");
+    expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
+    expect(screen.getByText("Agents live").parentElement).toHaveTextContent("1");
   });
 
   it("names a failed fetch instead of reporting an empty project", async () => {
@@ -231,8 +343,14 @@ describe("an empty project is not a measured one", () => {
 
     expect(await screen.findByText(/the request failed/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
-    // The new empty state must not become a second wrong answer to a failed request.
+    // The empty title is the wrong answer. Labels stay, with — where the dashboard
+    // was the only source, and never a fabricated 0. The sibling reads succeeded
+    // with non-zero values, so a real zero must not sneak in either.
     expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
-    expect(screen.queryByText("Memory shards")).not.toBeInTheDocument();
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(6);
+    expect(screen.getByText("Memory shards")).toBeInTheDocument();
+    expect(screen.queryByText("not pushed")).not.toBeInTheDocument();
+    expect(screen.queryByText(/No deployment has pushed a code graph/)).not.toBeInTheDocument();
   });
 });

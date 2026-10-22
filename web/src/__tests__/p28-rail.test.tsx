@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -31,7 +31,9 @@ vi.mock("@/lib/api", () => ({
       id: "u1", name: "Ada", handle: "ada", email: "ada@example.com", avatar: "#c6f24e", initials: "A",
     })),
     projects: vi.fn(async () => [project]),
-    counts: vi.fn(async () => ({ items: 41, items_in_progress: 3, requests: 7, review: 5 })),
+    counts: vi.fn(async () => ({
+      items: 41, items_in_progress: 3, requests: 7, review: 5, triage_new: 4, lessons_published: 6,
+    })),
     // Collections the shell chrome asks for. Empty on purpose: the redirect tests assert on
     // where the URL landed, and a populated palette/sidebar only adds noise around it.
     items: vi.fn(async () => []),
@@ -43,6 +45,7 @@ vi.mock("@/lib/api", () => ({
       requests_total: 7, requests_by_type: {}, requests_by_status: {},
       shard_count: 9, prd_count: 4, mcp_calls: 12, recent_items: [],
     })),
+    codeMap: vi.fn(async () => ({ nodes: [], edges: [], node_count: 12, edge_count: 0, outbound: [] })),
     fleet: vi.fn(async () => ({
       agents: [], online: 1, total: 1, by_role: {}, posture: "single-agent", roles: [],
       presence_ttl_seconds: 150, heartbeat_interval_seconds: 50, review_queue: [],
@@ -275,30 +278,38 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
 });
 
 describe("P28 Home", () => {
-  it("renders KPIs from counts/dashboard, not as a quiet zero while loading", async () => {
+  // Self-host home is the shared project home (GRPH-1067). "Needs attention" was
+  // removed on purpose; that reversal of GRPH-925 is the layout.
+  it("renders the shared home from counts and dashboard", async () => {
     wrap(<HomeView />, "/home");
-    expect(await screen.findByText("Home")).toBeInTheDocument();
-    // Wait for counts/dashboard before asserting hierarchy (GRPH-925).
+    expect(await screen.findByRole("heading", { name: "Core" })).toBeInTheDocument();
     expect(await screen.findByText("41")).toBeInTheDocument();
-    expect(screen.getByText("Needs attention")).toBeInTheDocument();
-    // 3 in progress + 5 in review + 2 blocked + 5 memory queue = 15
-    expect(screen.getByText("15")).toBeInTheDocument();
-    expect(screen.getByText("Inventory")).toBeInTheDocument();
-    expect(screen.getByText("Triage")).toBeInTheDocument();
-    expect(screen.getByText("Memory waiting for review")).toBeInTheDocument();
+    expect(screen.getByText("In flight")).toBeInTheDocument();
+    expect(screen.queryByText("Needs attention")).not.toBeInTheDocument();
+    expect(screen.queryByText("Inventory")).not.toBeInTheDocument();
+    expect(screen.queryByText("Memory waiting for review")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Cross-project dependencies" })).not.toBeInTheDocument();
+
+    const jump = screen.getByRole("region", { name: "Jump to" });
+    expect(jump).toHaveTextContent("3 in flight");
+    expect(jump).toHaveTextContent("4 new");
+    expect(jump).toHaveTextContent("4 docs");
+    expect(jump).toHaveTextContent("12 nodes");
+    expect(jump).toHaveTextContent("5 to review");
+    expect(jump).toHaveTextContent("6 published");
+    expect(jump).toHaveTextContent("1 online");
+    expect(jump).toHaveTextContent("1 on now");
   });
 
-  it("wires each attention count to the view that acts on it (GRPH-939)", async () => {
+  it("wires jump tiles to flat self-host paths", async () => {
     wrap(<HomeView />, "/home");
-    expect(await screen.findByText("Needs attention")).toBeInTheDocument();
-    // In progress, In review, Blocked link to the tracker; Memory links to memory-review.
-    const trackerLinks = screen.getAllByRole("link", { name: /In progress|In review|Blocked/ });
-    expect(trackerLinks.length).toBe(3);
-    for (const link of trackerLinks) {
-      expect(link).toHaveAttribute("href", "/tracker");
-    }
-    const memLink = screen.getByRole("link", { name: /Memory waiting for review/ });
-    expect(memLink).toHaveAttribute("href", "/memory-review");
+    const jump = await screen.findByRole("region", { name: "Jump to" });
+    expect(within(jump).getByRole("link", { name: /Tracker/ })).toHaveAttribute("href", "/tracker");
+    expect(within(jump).getByRole("link", { name: /Triage/ })).toHaveAttribute("href", "/triage");
+    expect(within(jump).getByRole("link", { name: /^Memory/ })).toHaveAttribute("href", "/memory-review");
+    expect(within(jump).getByRole("link", { name: /Fleet/ })).toHaveAttribute("href", "/fleet.v1");
+    expect(within(jump).getByRole("link", { name: /Lessons/ })).toHaveAttribute("href", "/lessons");
+    expect(within(jump).getByRole("link", { name: /^Live/ })).toHaveAttribute("href", "/live");
   });
 });
 

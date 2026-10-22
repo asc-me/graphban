@@ -82,9 +82,13 @@ describe("a failed fetch is not an empty project", () => {
     show(<DashboardView />);
     expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
-    // The KPI labels are the tell: a zeroed strip is a claim about the project.
-    expect(screen.queryByText("Memory shards")).not.toBeInTheDocument();
-    expect(screen.queryByText("In progress")).not.toBeInTheDocument();
+    // Labels stay. A zero, or the empty-project title, would be the claim that the
+    // read happened. — is the third answer.
+    expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(6);
+    expect(screen.queryByText("not pushed")).not.toBeInTheDocument();
+    expect(screen.queryByText(/has pushed a code graph/i)).not.toBeInTheDocument();
   });
 
   it("Activity names the failure instead of 'No activity yet'", async () => {
@@ -129,6 +133,8 @@ describe("a failed fetch is not an empty project", () => {
     // Six counts, none of them readable, so none of them may render as 0.
     expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(6);
     expect(screen.queryByText("0")).not.toBeInTheDocument();
+    expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
+    expect(screen.queryByText("not pushed")).not.toBeInTheDocument();
     // The strongest claim on this page is that no deployment has pushed a graph. It is
     // only true once the code-map read answered.
     expect(screen.queryByText(/has pushed a code graph/i)).not.toBeInTheDocument();

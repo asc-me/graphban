@@ -1,95 +1,128 @@
-import {
-  Activity,
-  BarChart3,
-  BookMarked,
-  Inbox,
-  ListChecks,
-  Network,
-  Radar,
-  Users,
-} from "lucide-react";
+import { Bot, X } from "lucide-react";
 import type { ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 
 import {
   FETCH_FAILED,
   KpiGridSkeleton,
+  PlannerEmpty,
   PlannerError,
 } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
+import { STATUS_META, STATUS_ORDER, TYPE_META } from "@/lib/meta";
 import {
   useCodeMap,
+  useCounts,
+  useDashboard,
   useFleet,
   useGalaxy,
-  useItems,
   useOrgs,
-  usePrds,
-  useShards,
 } from "@/lib/queries";
-import { ORG_BASE, projectPath } from "@/lib/routes";
-import type { GalaxyEdge } from "@/lib/types";
+import { ORG_BASE, projectPath, tagFromPath } from "@/lib/routes";
+import type { DashboardData, GalaxyEdge, RequestType, ShellCounts } from "@/lib/types";
 
 /**
- * Screen 6 — Project home (PRD-21 D7).
+ * Project home for both deployments (GRPH-1067).
  *
- * D7's whole content is that the project plane is the existing app, reused unchanged: a PM
- * driving the grill-to-decompose loop needs no new capability, only a place in the
- * hierarchy and a URL. So this adds no backend — it is a landing pad that says what is
- * here and routes into surfaces that already exist.
+ * Hosted `/p/:tag` and self-host `/home` render this one view. The route decides the
+ * two things that actually differ: link shape (`projectPath` vs a flat path) and the
+ * galaxy, which a self-host build has no org to draw. Self-host drops the "Needs
+ * attention" focal number on purpose — that reversal of GRPH-925 was decided
+ * 2026-10-22, and it is the layout, not a regression.
  *
- * The one piece of genuine information is the dependency strip, which reads the galaxy
- * from this project's point of view: what it depends on, and what depends on it. Both
- * directions matter, and only one of them is visible from inside the repo.
+ * Counts come from `useDashboard` and `useCounts`, plus the code-map `node_count` and
+ * the fleet `online` integer. None of them is a list `.length` (GRPH-431). A read that
+ * has not answered is `—`, never `0`.
  */
+
+const AGENT_INFO_DISMISSED_KEY = "al.dashboard.agentLoopInfoDismissed";
+
+type Read<T> = {
+  isPending: boolean;
+  isError: boolean;
+  data: T | undefined;
+  refetch: () => unknown;
+};
+
+function waiting(q: { isPending: boolean; data: unknown }): boolean {
+  return q.isPending && q.data === undefined;
+}
+
+function missed(q: { isError: boolean; data: unknown }): boolean {
+  return q.isError && q.data === undefined;
+}
+
+/** A successful numeric field. Missing, failed, or non-numeric is unknown — not zero. */
+function num(ok: boolean, value: unknown): number | null {
+  if (!ok || typeof value !== "number" || !Number.isFinite(value)) return null;
+  return value;
+}
+
+function firstNum(...values: Array<number | null>): number | null {
+  for (const value of values) if (value !== null) return value;
+  return null;
+}
+
 export function ProjectHome() {
+  const { pathname } = useLocation();
   const { active } = useProjectCtx();
-  const { data: orgs = [] } = useOrgs();
   const projectId = active?.id ?? "";
-  const itemsQ = useItems(projectId);
-  const shardsQ = useShards(projectId);
-  const mapQ = useCodeMap(projectId);
-  const prdsQ = usePrds(projectId);
-  const fleetQ = useFleet(projectId);
-  const galaxyQ = useGalaxy(orgs[0]?.id);
-  const galaxy = galaxyQ.data;
+  const hosted = tagFromPath(pathname) !== null && !!active?.tag;
+  const to = (sub: string) =>
+    hosted && active?.tag ? projectPath(active.tag, sub) : `/${sub.replace(/^\/+/, "")}`;
+
+  const dashQ = useDashboard(projectId) as Read<DashboardData>;
+  const countsQ = useCounts(projectId) as Read<ShellCounts>;
+  const mapQ = useCodeMap(projectId) as Read<{ node_count?: number }>;
+  const fleetQ = useFleet(projectId) as Read<{ online?: number }>;
+  const orgsQ = useOrgs(hosted);
+  const galaxyQ = useGalaxy(hosted ? orgsQ.data?.[0]?.id : undefined);
 
   if (!active) return null;
 
-  const items = itemsQ.data ?? [];
-  const shards = shardsQ.data ?? [];
-  const prds = prdsQ.data ?? [];
-  const fleet = fleetQ.data;
-  const map = mapQ.data;
+  const reads = [dashQ, countsQ, mapQ, fleetQ];
+  const settling = reads.some(waiting);
+  const failed = reads.filter(missed);
+  const dash = dashQ.data;
+  const counts = countsQ.data;
+  const dashOk = dash !== undefined;
+  const countsOk = counts !== undefined;
+  const mapOk = mapQ.data !== undefined;
+  const fleetOk = fleetQ.data !== undefined;
 
-  // PRD-47 S1. Every count here used to default to an empty array, so a failed request
-  // rendered a confident `0`. A count whose read failed shows `—`; the strip below says
-  // that at least one number is missing, and the no-code-graph panel — which asserts
-  // nothing has been *pushed* — is gated on the map read having actually answered.
-  const nodeCount = map?.node_count ?? 0;
-  const inFlight = items.filter((i) => i.status === "in_progress").length;
-  const liveAgents = (fleet?.agents ?? []).filter((a) => a.state !== "offline").length;
-  const failed = (q: { isError: boolean; data: unknown }) => q.isError && q.data === undefined;
-  // PRD-47 S17. The same `0` was rendered while a read was still in flight, which is a
-  // third fact wearing the costume of the first two: not read *yet* is neither a zero nor
-  // a failure. Pending replaces the strip with the shared KPI skeleton.
-  const pending = (q: { isPending: boolean; data: unknown }) =>
-    q.isPending && q.data === undefined;
-  const counts = [itemsQ, shardsQ, mapQ, prdsQ, fleetQ];
-  const anyFailed = counts.some(failed);
-  const anyPending = counts.some(pending);
+  // Dashboard wins the figure. The shell count is the fallback when that field was
+  // not in a successful payload, and it is also its own measurement: a dashboard 0
+  // must not hide a non-zero shell count inside the empty-project check.
+  const dashItems = num(dashOk, dash?.items_total);
+  const countItems = num(countsOk, counts?.items);
+  const items = firstNum(dashItems, countItems);
+  const dashInFlight = num(dashOk, dash?.in_progress_count);
+  const countInFlight = num(countsOk, counts?.items_in_progress);
+  const inFlight = firstNum(dashInFlight, countInFlight);
+  const blocked = num(dashOk, dash?.blocked_count);
+  const shards = num(dashOk, dash?.shard_count);
+  const nodes = num(mapOk, mapQ.data?.node_count);
+  const online = num(fleetOk, fleetQ.data?.online);
+  const requests = num(dashOk, dash?.requests_total);
+  const prds = num(dashOk, dash?.prd_count);
+  const mcp = num(dashOk, dash?.mcp_calls);
+  const triageNew = num(countsOk, counts?.triage_new);
+  const lessons = num(countsOk, counts?.lessons_published);
+  const review = num(countsOk, counts?.review);
+
+  // Page-wide empty only when every read answered and every one of them is zero.
+  // A hole in that set is "not measured", which must not wear the empty project's clothes.
+  const measured = [
+    dashItems, countItems, dashInFlight, countInFlight,
+    blocked, shards, nodes, online, requests, prds, mcp, triageNew, lessons, review,
+  ];
+  const fresh =
+    measured.every((n) => n === 0);
+
   const retryFailed = () => {
-    counts.filter(failed).forEach((q) => void q.refetch());
+    failed.forEach((q) => void q.refetch());
   };
-  const mapAnswered = mapQ.data !== undefined;
-
-  const edges = galaxy?.edges ?? [];
-  const nameOf = (id: string) =>
-    galaxy?.nodes.find((n) => n.id === id)?.tag ?? id;
-  const dependsOn = edges.filter((e) => e.src === projectId);
-  const dependedBy = edges.filter((e) => e.dst === projectId);
-  // Only the galaxy's own error. When the org read fails the query never runs, so there is
-  // no answer to name — and the counts' failure is already on the page saying so.
-  const galaxyFailed = galaxyQ.isError && galaxy === undefined;
 
   return (
     <div className="max-w-[1180px] px-6 pb-16 pt-6">
@@ -101,130 +134,333 @@ export function ProjectHome() {
         </span>
       </div>
       {active.description && (
-        <p className="mt-1.5 max-w-[76ch] text-body leading-relaxed text-muted">
-          {active.description}
-        </p>
+        <p className="mt-1.5 max-w-[76ch] text-body leading-relaxed text-muted">{active.description}</p>
       )}
 
-      {/* Only the counts are placeheld. The cards below are static links, so hiding them
-          behind a skeleton would take navigation away while a number is on its way. */}
-      {anyPending ? (
+      {settling ? (
         <div className="mt-4">
           <KpiGridSkeleton />
+          <JumpTo to={to} pending />
         </div>
+      ) : fresh ? (
+        <>
+          <AgentLoopInfo to={to} />
+          <PlannerEmpty
+            title="Nothing to summarise yet"
+            description="Every count that was read came back zero. That is an empty project, not a measured one — file the first item and the counts start."
+          />
+        </>
       ) : (
-        <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 font-mono text-[10px] uppercase tracking-[0.05em]">
-          <Count label="items" value={items.length} unknown={failed(itemsQ)} />
-          <Count
-            label="in flight"
-            value={inFlight}
-            unknown={failed(itemsQ)}
-            tone={inFlight ? "text-accent" : undefined}
+        <>
+          <StatGrid
+            items={items}
+            inFlight={inFlight}
+            blocked={blocked}
+            shards={shards}
+            nodes={nodes}
+            online={online}
           />
-          <Count label="prds" value={prds.length} unknown={failed(prdsQ)} />
-          <Count label="memory shards" value={shards.length} unknown={failed(shardsQ)} />
-          <Count label="graph nodes" value={nodeCount} unknown={failed(mapQ)} />
-          <Count
-            label="agents live"
-            value={liveAgents}
-            unknown={failed(fleetQ)}
-            tone={liveAgents ? "text-st-done" : undefined}
+
+          {failed.length > 0 && (
+            <PlannerError
+              message={`${FETCH_FAILED} A count showing — was not read, and is not a zero.`}
+              onRetry={retryFailed}
+            />
+          )}
+
+          {mapOk && nodes === 0 && <NoGraphYet tag={active.tag} />}
+
+          <AgentLoopInfo to={to} />
+
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_1fr]">
+            <div className="space-y-6">
+              <Panel title="Item status distribution">
+                <CountOr
+                  value={num(dashOk, dash?.items_total)}
+                  zero={
+                    <EmptyLine
+                      text="No items yet."
+                      action="Create the first one in Tracker →"
+                      to={to("tracker")}
+                    />
+                  }
+                  ready={<StatusBar data={dash!} />}
+                />
+              </Panel>
+              <Panel title="Requests by type">
+                <CountOr
+                  value={requests}
+                  zero={
+                    <EmptyLine
+                      text="No requests yet."
+                      action="Add the feedback widget →"
+                      to={to("feedback-kit")}
+                    />
+                  }
+                  ready={<TypeBars data={dash!} />}
+                />
+              </Panel>
+            </div>
+            <Panel title="Recent activity">
+              <CountOr
+                value={dash ? dash.recent_items.length : null}
+                zero={<p className="text-body leading-relaxed text-muted">Nothing has happened here yet.</p>}
+                ready={dash ? <ActivityList items={dash.recent_items} href={to("tracker")} /> : null}
+              />
+            </Panel>
+          </div>
+
+          <JumpTo
+            to={to}
+            inFlight={inFlight}
+            triageNew={triageNew}
+            prds={prds}
+            nodes={nodes}
+            review={review}
+            lessons={lessons}
+            online={online}
           />
-        </div>
+
+          {hosted && (
+            <Dependencies
+              dependsOn={(galaxyQ.data?.edges ?? []).filter((e) => e.src === projectId)}
+              dependedBy={(galaxyQ.data?.edges ?? []).filter((e) => e.dst === projectId)}
+              nameOf={(id) => galaxyQ.data?.nodes.find((n) => n.id === id)?.tag ?? id}
+              knowsGalaxy={galaxyQ.data !== undefined}
+              failed={galaxyQ.isError && galaxyQ.data === undefined}
+              onRetry={() => void galaxyQ.refetch()}
+            />
+          )}
+        </>
       )}
-
-      {anyFailed && (
-        <PlannerError
-          message={`${FETCH_FAILED} A count showing — was not read, and is not a zero.`}
-          onRetry={retryFailed}
-        />
-      )}
-
-      {mapAnswered && nodeCount === 0 && <NoGraphYet tag={active.tag} />}
-
-      <SurfaceGroup
-        heading="Work"
-        hint="The stream, the specs, what came in, and the structure it touches."
-        surfaces={WORK_SURFACES}
-        tag={active.tag}
-      />
-      <SurfaceGroup
-        heading="Agents and memory"
-        hint="What agents write back — candidates, lessons, and who is running now."
-        surfaces={AGENTS_SURFACES}
-        tag={active.tag}
-      />
-
-      <Dependencies
-        dependsOn={dependsOn}
-        dependedBy={dependedBy}
-        nameOf={nameOf}
-        knowsGalaxy={galaxy !== undefined}
-        failed={galaxyFailed}
-        onRetry={() => void galaxyQ.refetch()}
-      />
     </div>
   );
 }
 
-type Surface = { to: string; label: string; icon: ReactNode; desc: string };
+function toneFor(kind: "flight" | "blocked" | "live", value: number | null): string | undefined {
+  if (value === null || value <= 0) return undefined;
+  if (kind === "flight") return "text-accent";
+  if (kind === "blocked") return "text-st-blocked";
+  return "text-st-done";
+}
 
-const WORK_SURFACES: Surface[] = [
-  { to: "tracker", label: "Tracker", icon: <ListChecks size={15} />,
-    desc: "One linear stream of work, in priority order." },
-  { to: "prds", label: "PRDs", icon: <BarChart3 size={15} />,
-    desc: "Draft, grill until approval is earned, then decompose into tracked items." },
-  { to: "triage", label: "Triage", icon: <Radar size={15} />,
-    desc: "What came in, beside the in-flight work it would collide with." },
-  { to: "code", label: "Code graph", icon: <Network size={15} />,
-    desc: "The structure agents describe as they work, and the arrows that leave the repo." },
-];
+function Figure({ value, tone }: { value: number | null; tone?: string }) {
+  const unknown = value === null;
+  return (
+    <div
+      className={`text-[22px] font-semibold leading-none tracking-tight ${unknown ? "text-faint" : (tone ?? "text-fg")}`}
+      title={unknown ? "Not read — the request failed" : undefined}
+    >
+      {unknown ? "—" : value.toLocaleString()}
+    </div>
+  );
+}
 
-const AGENTS_SURFACES: Surface[] = [
-  { to: "memory-review", label: "Memory", icon: <Inbox size={15} />,
-    desc: "Candidates until you publish them." },
-  { to: "lessons", label: "Lessons", icon: <BookMarked size={15} />,
-    desc: "Published memory, scored against whether it is still catching anything." },
-  { to: "fleet.v1", label: "Fleet.v1", icon: <Users size={15} />,
-    desc: "Who is working here right now, what they hold, and for how long." },
-  { to: "live", label: "Live", icon: <Activity size={15} />,
-    desc: "Who is on this project right now, what they hold, and whether a PR was recorded." },
-];
-
-/**
- * One labelled group of surface cards (PRD-47 S17).
- *
- * The eight surfaces used to be one flat grid, which reads as "everything this project
- * has, equally". They are not equal: four are where work is written down and four are what
- * agents leave behind, and a reader who wants the second group had to scan all eight.
- */
-function SurfaceGroup({
-  heading,
-  hint,
-  surfaces,
-  tag,
+function StatGrid({
+  items, inFlight, blocked, shards, nodes, online,
 }: {
-  heading: string;
-  hint: string;
-  surfaces: Surface[];
-  tag: string;
+  items: number | null;
+  inFlight: number | null;
+  blocked: number | null;
+  shards: number | null;
+  nodes: number | null;
+  online: number | null;
+}) {
+  const cells: { label: string; value: number | null; tone?: string }[] = [
+    { label: "Items", value: items },
+    { label: "In flight", value: inFlight, tone: toneFor("flight", inFlight) },
+    { label: "Blocked", value: blocked, tone: toneFor("blocked", blocked) },
+    { label: "Memory shards", value: shards },
+    { label: "Graph nodes", value: nodes },
+    { label: "Agents live", value: online, tone: toneFor("live", online) },
+  ];
+  return (
+    <div className="mt-4 grid grid-cols-2 gap-px overflow-hidden rounded-[13px] border border-line bg-line sm:grid-cols-3 lg:grid-cols-6">
+      {cells.map((cell) => (
+        <div key={cell.label} className="bg-surface px-3.5 py-3">
+          <Figure value={cell.value} tone={cell.tone} />
+          <div className="mt-1.5 text-[11.5px] text-muted">{cell.label}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CountOr({ value, zero, ready }: { value: number | null; zero: ReactNode; ready: ReactNode }) {
+  if (value === null) {
+    return (
+      <p className="text-body text-faint" title="Not read — the request failed">
+        —
+      </p>
+    );
+  }
+  if (value === 0) return zero;
+  return ready;
+}
+
+function EmptyLine({ text, action, to }: { text: string; action: string; to: string }) {
+  return (
+    <p className="text-body leading-relaxed text-muted">
+      {text}{" "}
+      <Link to={to} className="text-st-next transition-colors hover:text-fg">
+        {action}
+      </Link>
+    </p>
+  );
+}
+
+function ActivityList({
+  items,
+  href,
+}: {
+  items: DashboardData["recent_items"];
+  href: string;
 }) {
   return (
-    <section className="mt-6">
-      <h2 className="text-[13.5px] font-semibold tracking-[-0.2px]">{heading}</h2>
-      <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted">{hint}</p>
-      <div className="mt-2.5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {surfaces.map((s) => (
-          <Link
-            key={s.to}
-            to={projectPath(tag, s.to)}
-            className="rounded-[13px] border border-line bg-surface-2 p-4 transition-colors hover:border-line-hover"
-          >
-            <div className="flex items-center gap-2.5">
-              <span className="text-accent">{s.icon}</span>
-              <span className="text-[13.5px] font-semibold">{s.label}</span>
+    <div className="space-y-1.5">
+      {items.map((it) => (
+        <Link
+          key={it.id}
+          to={href}
+          className="flex items-center gap-2.5 rounded-lg border border-line-2 bg-surface-2 px-3 py-2 transition-colors hover:border-line-hover"
+        >
+          <span
+            className="h-1.5 w-1.5 flex-none rounded-full"
+            style={{ background: STATUS_META[it.status].color }}
+          />
+          <span className="w-[46px] flex-none font-mono text-[10px] text-faint">{it.id}</span>
+          <span className="min-w-0 flex-1 truncate text-body text-fg-2">{it.title}</span>
+          <span className="flex-none font-mono text-[10px] text-faint-2">{it.date}</span>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+function Panel({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="rounded-[14px] border border-line-2 bg-surface/40 p-4">
+      <div className="mb-3 text-[13px] font-semibold text-fg">{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function StatusBar({ data }: { data: DashboardData }) {
+  const total = Math.max(1, data.items_total);
+  const present = STATUS_ORDER.filter((s) => (data.items_by_status[s] ?? 0) > 0);
+  return (
+    <div>
+      <div className="flex h-5 gap-[2px]">
+        {present.map((s) => {
+          const count = data.items_by_status[s] ?? 0;
+          return (
+            <div
+              key={s}
+              className="h-full rounded-[3px]"
+              style={{ background: STATUS_META[s].color, width: `${(count / total) * 100}%`, minWidth: 8 }}
+              title={`${STATUS_META[s].label}: ${count}`}
+            />
+          );
+        })}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5">
+        {STATUS_ORDER.map((s) => (
+          <div key={s} className="flex items-center gap-1.5 text-[12px]">
+            <span className="h-2 w-2 rounded-[2px]" style={{ background: STATUS_META[s].color }} />
+            <span className="text-muted">{STATUS_META[s].label}</span>
+            <span className="font-mono text-small text-fg-2">{data.items_by_status[s] ?? 0}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TypeBars({ data }: { data: DashboardData }) {
+  const max = Math.max(1, ...Object.values(data.requests_by_type));
+  const types = Object.keys(TYPE_META) as RequestType[];
+  return (
+    <div className="space-y-2">
+      {types.map((t) => {
+        const count = data.requests_by_type[t] ?? 0;
+        return (
+          <div key={t} className="flex items-center gap-3">
+            <span
+              className="w-[92px] flex-none font-mono text-[10px] uppercase tracking-wide"
+              style={{ color: TYPE_META[t].color }}
+            >
+              {TYPE_META[t].label}
+            </span>
+            <div className="h-2.5 flex-1">
+              <div
+                className="h-full rounded-[3px]"
+                style={{
+                  background: TYPE_META[t].color,
+                  width: `${(count / max) * 100}%`,
+                  minWidth: count ? 6 : 0,
+                }}
+              />
             </div>
-            <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted">{s.desc}</p>
+            <span className="w-6 flex-none text-right font-mono text-small text-fg-2">{count}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+type JumpProps = {
+  to: (sub: string) => string;
+  pending?: boolean;
+  inFlight?: number | null;
+  triageNew?: number | null;
+  prds?: number | null;
+  nodes?: number | null;
+  review?: number | null;
+  lessons?: number | null;
+  online?: number | null;
+};
+
+function metaText(value: number | null | undefined, phrase: (n: number) => string): ReactNode {
+  if (value === null || value === undefined) return "—";
+  return phrase(value);
+}
+
+function JumpTo({
+  to, pending, inFlight, triageNew, prds, nodes, review, lessons, online,
+}: JumpProps) {
+  const tiles: { sub: string; label: string; meta: ReactNode }[] = [
+    { sub: "tracker", label: "Tracker", meta: metaText(inFlight ?? null, (n) => `${n} in flight`) },
+    { sub: "triage", label: "Triage", meta: metaText(triageNew ?? null, (n) => `${n} new`) },
+    { sub: "prds", label: "PRDs", meta: metaText(prds ?? null, (n) => `${n} docs`) },
+    {
+      sub: "code",
+      label: "Code graph",
+      meta: nodes === 0
+        ? <span className="text-st-review">not pushed</span>
+        : metaText(nodes ?? null, (n) => `${n} nodes`),
+    },
+    { sub: "memory-review", label: "Memory", meta: metaText(review ?? null, (n) => `${n} to review`) },
+    { sub: "lessons", label: "Lessons", meta: metaText(lessons ?? null, (n) => `${n} published`) },
+    // One server integer. Filtering `agents` here would be a list length (GRPH-431).
+    { sub: "fleet.v1", label: "Fleet", meta: metaText(online ?? null, (n) => `${n} online`) },
+    { sub: "live", label: "Live", meta: metaText(online ?? null, (n) => `${n} on now`) },
+  ];
+  return (
+    <section className="mt-6" aria-label="Jump to">
+      <h2 className="text-[13.5px] font-semibold tracking-[-0.2px]">Jump to</h2>
+      <div className="mt-2.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {tiles.map((tile) => (
+          <Link
+            key={tile.sub}
+            to={to(tile.sub)}
+            className="rounded-[11px] border border-line bg-surface-2 px-3 py-2.5 transition-colors hover:border-line-hover"
+          >
+            <div className="text-[13px] font-semibold">{tile.label}</div>
+            {!pending && (
+              <div className="mt-0.5 text-[11.5px] text-muted">{tile.meta}</div>
+            )}
           </Link>
         ))}
       </div>
@@ -232,37 +468,50 @@ function SurfaceGroup({
   );
 }
 
-function Count({
-  label,
-  value,
-  tone,
-  unknown,
-}: {
-  label: string;
-  value: number;
-  tone?: string;
-  /** The read failed. `—` rather than `0`, because those are different facts. */
-  unknown?: boolean;
-}) {
+function AgentLoopInfo({ to }: { to: (sub: string) => string }) {
+  const [dismissed, setDismissed] = useState(() => localStorage.getItem(AGENT_INFO_DISMISSED_KEY) === "1");
+  if (dismissed) return null;
+  const tools = to("mcp-tools");
   return (
-    <span className="inline-flex items-baseline gap-1.5">
-      <span className="text-faint-2">{label}</span>
-      <span
-        className={`text-body ${unknown ? "text-faint" : (tone ?? "text-fg-2")}`}
-        title={unknown ? "Not read — the request failed" : undefined}
+    <div className="relative mb-6 mt-4 rounded-[14px] border border-purple/30 bg-purple/10 p-4">
+      <button
+        type="button"
+        aria-label="Dismiss"
+        className="absolute right-3 top-3 text-faint transition-colors hover:text-fg-2"
+        onClick={() => {
+          localStorage.setItem(AGENT_INFO_DISMISSED_KEY, "1");
+          setDismissed(true);
+        }}
       >
-        {unknown ? "—" : value.toLocaleString()}
-      </span>
-    </span>
+        <X size={14} />
+      </button>
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex-none text-purple">
+          <Bot size={16} />
+        </span>
+        <div className="min-w-0">
+          <div className="text-[13px] font-semibold text-fg">Put agents on the backlog</div>
+          <p className="mt-1 text-body leading-relaxed text-muted">
+            Any MCP-connected agent can work the tracker as a queue:{" "}
+            <code className="font-mono text-small text-fg-2">claim_cluster → work → update_item → review</code>. Claims
+            are atomic and a cluster reserves the files it touches, so parallel agents never collide. Finished work goes
+            to <code className="font-mono text-small text-fg-2">review</code>, and any other agent picks it up with{" "}
+            <code className="font-mono text-small text-fg-2">claim_review</code> — no agent can sign off its own.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px]">
+            <Link to="/settings" className="text-purple-2 transition-colors hover:text-fg">
+              Connect an agent →
+            </Link>
+            <Link to={tools} className="text-purple-2 transition-colors hover:text-fg">
+              Browse MCP tools →
+            </Link>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
-/**
- * An empty code graph over a real repository, named as such.
- *
- * The same failure the graph view guards: nothing described looks identical to nothing to
- * describe, and the reassuring reading is the wrong one.
- */
 function NoGraphYet({ tag }: { tag: string }) {
   return (
     <div className="mt-4 rounded-[13px] border border-st-review/30 bg-st-review/[0.06] px-3.5 py-3">
@@ -281,14 +530,8 @@ function NoGraphYet({ tag }: { tag: string }) {
 }
 
 /**
- * This project's place in the galaxy, both ways round.
- *
- * "What depends on me" is the half you cannot see from inside the repo, and it is the half
- * that decides whether a change here is safe. An org that has never pushed a manifest has
- * no answer to either question — which is different from the answer being "nothing", so
- * the two are not rendered alike. A read that FAILED is a third thing again, and the one
- * that used to be missing: `galaxy === undefined` covered both, so a failed fetch hid the
- * whole panel and left the reader with the reassuring reading — nothing depends on this.
+ * Hosted only. Three answers, and they are not interchangeable: the read failed, the
+ * read has not happened, and the read happened and found nothing.
  */
 function Dependencies({
   dependsOn,
@@ -302,7 +545,6 @@ function Dependencies({
   dependedBy: GalaxyEdge[];
   nameOf: (id: string) => string;
   knowsGalaxy: boolean;
-  /** The galaxy read was attempted and failed — not the same as never having run. */
   failed: boolean;
   onRetry: () => void;
 }) {
@@ -324,10 +566,7 @@ function Dependencies({
     <section className="mt-5 rounded-[13px] border border-line bg-surface-2 p-4">
       <div className="flex items-center gap-2.5">
         <h2 className="flex-1 text-lead font-semibold">Cross-project dependencies</h2>
-        <Link
-          to={`${ORG_BASE}/galaxy`}
-          className="font-mono text-[9px] uppercase tracking-[0.06em] text-st-next"
-        >
+        <Link to={`${ORG_BASE}/galaxy`} className="text-[12px] text-st-next transition-colors hover:text-fg">
           Open in galaxy →
         </Link>
       </div>
@@ -363,9 +602,7 @@ function Direction({
 }) {
   return (
     <div>
-      <div className="font-mono text-[9px] uppercase tracking-[0.07em] text-faint-2">
-        {title}
-      </div>
+      <div className="font-mono text-[9px] uppercase tracking-[0.07em] text-faint-2">{title}</div>
       {edges.length === 0 ? (
         <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted">{empty}</p>
       ) : (
@@ -378,15 +615,11 @@ function Direction({
               }`}
             >
               <span className="font-mono text-small text-fg-2">{other(e)}</span>
-              {/* The evidence count, because an edge with more files behind it is a
-                  stronger claim than one resting on a single line. */}
               <span className="font-mono text-meta text-faint">
                 {e.evidence.length} file{e.evidence.length === 1 ? "" : "s"}
               </span>
               {!e.fresh && (
-                <span className="font-mono text-[9px] uppercase tracking-[0.05em] text-st-review">
-                  stale
-                </span>
+                <span className="font-mono text-[9px] uppercase tracking-[0.05em] text-st-review">stale</span>
               )}
             </div>
           ))}
