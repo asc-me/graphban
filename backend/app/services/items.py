@@ -1481,7 +1481,11 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
     if pending_lesson_applies:
         _record_applied_lessons(db, item, pending_lesson_applies)
 
-    if "touchpoints" in fields and fields["touchpoints"] is not None and item.touchpoints:
+    # Reopening counts as a touchpoint change: a done item holds no `code` links (GRPH-1068),
+    # so leaving `done` is when it regains them, to whatever open work it now overlaps.
+    reopened = prev_status == "done" and item.status != "done"
+    if (("touchpoints" in fields and fields["touchpoints"] is not None) or reopened) \
+            and item.touchpoints:
         from app.services.clustering import sync_code_links
         sync_code_links(db, item)
 
@@ -1498,6 +1502,13 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
             # The wait is the human act. Clearing it unblocks the original unless
             # another unmet dep remains. Does not rewrite `in_progress`.
             release_waiters(db, item)
+        # A stored `code` link to finished work is noise every read pays for (GRPH-1068);
+        # `related_items` still finds it by live overlap.
+        # Committed even when nothing matched: the DELETE alone opens a write transaction, and
+        # left open it locks SQLite against the enrichment session below.
+        from app.services.clustering import prune_code_links
+        prune_code_links(db, item)
+        db.commit()
         _record_superseded_intent(db, item, hold_at_completion)
         # The two MODEL calls, moved off the response path (GRPH-399). Measured on the live
         # instance: a trivial prompt to its 24B chat model takes 20s, each call is bounded by

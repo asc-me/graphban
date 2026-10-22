@@ -2839,6 +2839,10 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # into whatever happens to it next — a bounce that comes back for review starts at zero.
     item.review_takes = 0
     item.status = "done"
+    # The same completion rule as `update_item` (GRPH-1068): done work keeps no `code` links.
+    # Committed with the verdict below.
+    from app.services.clustering import prune_code_links
+    prune_code_links(db, item)
     from app.services import delegation as delegation_svc
     from app.services import harness as harness_svc
     delegation_svc.on_outcome(db, item, "signed_off")
