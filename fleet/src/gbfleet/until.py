@@ -163,6 +163,9 @@ class Report:
             # `undeclared`: measured paths that no DECLARED touchpoint covers (GRPH-785).
             # The partition's input was wrong; a worker changed a file nobody declared.
             "undeclared": dict(self.wave.undeclared) if self.wave else {},
+            # GRPH-1025: branches whose declaration could not be re-read at reap, so the
+            # check above used the delegation-time snapshot. Empty: every one was re-read.
+            "declared_unread": dict(self.wave.declared_unread) if self.wave else {},
             # GRPH-949: branches pushed but refused a PR (undeclared files / behind trunk),
             # and leases a reaped child no longer held (info, not failures).
             "unproposed": dict(self.wave.unproposed) if self.wave else {},

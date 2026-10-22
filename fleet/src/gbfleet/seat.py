@@ -229,6 +229,21 @@ COMMIT = (
     "credential file.\n"
 )
 
+#: GRPH-1025. The supervisor withholds a PR from a branch that changed a file outside every
+#: declared touchpoint (GRPH-949), and nothing ever told a child to declare. A planner files
+#: the source path; the acceptance then asks for a test, a migration or a regenerated README,
+#: and a child that does exactly what it was asked is refused for it — four of four branches
+#: on wave p48c, and both `up` waves measured on 2026-10-22. Told here rather than exempted by
+#: path pattern, so the guard still fires on the one case it exists for: a child that changed
+#: a file nobody declared and did not say so.
+DECLARE = (
+    "Before you move the item to review, call `update_item` with `touchpoints=[...]` naming "
+    "EVERY file you changed — tests, migrations and generated files included, not only the "
+    "source the item named. The supervisor compares your branch against the item's declared "
+    "touchpoints and does not open a pull request for a branch that changed an undeclared "
+    "file.\n"
+)
+
 
 #: GRPH-987. The reviewer half of the same race. A child says its work is done by moving the
 #: item to `review`, which makes it visible to every reviewer everywhere — but the branch is
@@ -266,7 +281,7 @@ INSTRUCTION = (
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT + NOT_YET +
+    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT + DECLARE + NOT_YET +
     "Call claim_review with wait_seconds=0. If there is nothing to review, call "
     "claim_cluster with wait_seconds=0 to take the next ready non-colliding cluster. "
     "EXIT when both are empty — exiting on an empty queue is the normal end of your "
@@ -284,7 +299,7 @@ BOUND_INSTRUCTION = (
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT + NOT_YET +
+    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT + DECLARE + NOT_YET +
     "This seat is BOUND to {item}: registering on it claims that item for you. Read the "
     "reply's `assigned`. If `assigned.state` is `claimed`, you HOLD {item} — read it with "
     "get_item_details, build it, COMMIT it, then move it to review with evidence. Then, "

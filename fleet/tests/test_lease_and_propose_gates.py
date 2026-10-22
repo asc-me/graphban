@@ -131,6 +131,20 @@ def test_undeclared_file_blocks_the_proposal_and_names_it(no_forge):
     assert "web/src/App.tsx" in wave.unproposed["wave/1"]
 
 
+def test_a_withheld_proposal_is_reported_on_the_item(no_forge):
+    """GRPH-1025. The reason lived only in the end-of-run failures, so a wave went by with
+    items `done` and nothing on main. Sabotage: drop `_record_withheld` and this fails."""
+    wave = Wave()
+    wave.undeclared["wave/1"] = ["web/src/App.tsx"]
+    client = _client({"update_item"})
+    propose_branch(wave, Path("."), "wave/1", ["GRPH-1"], client=client)
+    notes = [c.kwargs for c in client.call.call_args_list if c.args[0] == "update_item"]
+    assert len(notes) == 1 and notes[0]["id"] == "GRPH-1"
+    detail = notes[0]["evidence"][0]["detail"]
+    assert "not proposed as a PR" in detail and "web/src/App.tsx" in detail
+    assert "wave/1" in detail
+
+
 def test_behind_branch_is_refused(no_forge):
     wave = Wave()
     wave.stale["wave/1"] = (3, "origin/main")
