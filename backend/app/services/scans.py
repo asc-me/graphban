@@ -565,7 +565,8 @@ def scans_due(db: Session, project_id: str, *, head_sha: str = "") -> dict:
         for cat_key, cat in (comp.get("categories") or {}).items():
             st = cat.get("state")
             if st in ("never_scanned", "stale"):
-                # Only nag security (shipped) and coverage/work (derived, always meaningful).
+                # Nag security/coverage whenever unscanned or stale; refactor/stub/deadcode only
+                # once stale (a scanner has reported before).
                 if cat_key in ("security", "coverage") or (
                     cat_key in ("refactor", "stub", "deadcode") and st == "stale"
                 ):
