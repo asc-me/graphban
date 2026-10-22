@@ -354,7 +354,10 @@ def test_a_worker_credential_runs_on_core(client, auth):
 #: fail. This one disagrees the moment core moves, which forces whoever moved it to re-run
 #: the arithmetic — and moving core is the thing worth noticing, since core is what every
 #: key pays.
-CORE_TOKENS = 8919
+CORE_TOKENS = 8918
+# 8919 -> 8918 (GRPH-893): create_item/update_item `description` carries the ## Acceptance
+# convention planners never saw. Paid inside the same two tools (trimming prose on their
+# own descriptions, touchpoints, blocker, fidelity, prd_*), so core shrank by one.
 # 8923 -> 8919 (GRPH-1055): `claim_review` names a clause that needs `gh` or
 # `human-only` and says not to bounce it. Core by nature — every reviewer holds
 # it — and the new sentence is shorter than the one it replaced, so core shrank.
