@@ -410,6 +410,7 @@ class StackScanIn(BaseModel):
     scanner_version: str = ""
     category: str | None = None
     note: str = ""
+    tests: dict | None = None
 
 
 @router.post("/stack/scans")
@@ -437,7 +438,7 @@ def record_stack_scan(body: StackScanIn, db: Session = Depends(get_db),
             db, project_id=body.project_id, scanner_id=body.scanner_id,
             path=body.path, scanned_sha=body.scanned_sha,
             findings=list(body.findings or []), scanner_version=body.scanner_version,
-            category=body.category, note=body.note,
+            category=body.category, note=body.note, tests=body.tests,
             reported_by=fleet_svc.caller_identity(None, key),
         )
     except ValueError as e:

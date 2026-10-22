@@ -386,7 +386,8 @@ CORE_TOKENS = 8919
 # fleet 1051 → 1100: `mint_enrolment` gains `review_only` (GRPH-988), a seat that may review
 # and may never take build work. The whole bill is in this tier and CORE_TOKENS does not move,
 # which is the argument for not funding it out of prose every key pays for.
-TIER_TOKENS = {"prd": 1998, "codegraph": 1786, "fleet": 1100, "misc": 1238}
+TIER_TOKENS = {"prd": 1998, "codegraph": 1788, "fleet": 1100, "misc": 1238}
+# codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1009 -> 1786 (GRPH-1035): record_scan + scan_status + scans_due. Descriptions
 # trimmed; the two reads were unclassified and leaked into core manifests — tiering them
 # here is the bounce fix. CORE_TOKENS unchanged.

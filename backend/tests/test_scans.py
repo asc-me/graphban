@@ -356,3 +356,124 @@ def test_stale_and_never_scanned_cells_offer_a_cta(db):
         db, project_id="core", scanner_id="radon", path="backend/", scanned_sha="h1", findings=[],
     )
     assert _api(db)["categories"]["refactor"]["cta"] is None
+
+
+# ── GRPH-1061 · tests category ──────────────────────────────────────────────
+
+def _tests_scan(db, *, sha="h1", path="backend/", findings=None, counts=None, scanner="pytest",
+                **kw):
+    return scans_svc.record_scan(
+        db, project_id="core", scanner_id=scanner, path=path, scanned_sha=sha,
+        findings=findings or [], tests=counts, **kw,
+    )
+
+
+def test_pytest_without_a_category_is_stored_as_tests(db):
+    for sid in ("pytest", "vitest", "jest", "junit"):
+        out = _tests_scan(db, scanner=sid, counts={"passed": 3, "failed": 0, "skipped": 0})
+        assert out["category"] == "tests", sid
+    assert "tests" in scans_svc.CATEGORIES
+    assert scans_svc.CATEGORY_LABELS["tests"] == "Tests"
+
+
+def test_a_suite_that_ran_and_passed_at_head_is_clean(db):
+    out = _tests_scan(db, counts={"passed": 412, "failed": 0, "skipped": 3})
+    assert out["clean"] is True
+    assert out["tests"] == {"passed": 412, "failed": 0, "skipped": 3}
+    cell = _api(db)["categories"]["tests"]
+    assert cell["state"] == "clean_at_sha"
+    # Skips are reported, not folded silently into the passes.
+    assert "412 passed · 0 failed · 3 skipped" in cell["note"]
+
+
+def test_a_suite_that_executed_zero_tests_is_not_clean(db):
+    out = _tests_scan(db, counts={"passed": 0, "failed": 0, "skipped": 0})
+    assert out["clean"] is False
+    cell = _api(db)["categories"]["tests"]
+    assert cell["state"] == "has_findings"
+    assert "0 tests executed" in cell["findings"][0]["summary"]
+    assert cell["findings"][0]["severity"] == "high"
+
+
+def test_an_all_skipped_run_executed_nothing_and_is_not_clean(db):
+    _tests_scan(db, counts={"passed": 0, "failed": 0, "skipped": 9})
+    cell = _api(db)["categories"]["tests"]
+    assert cell["state"] == "has_findings"
+    assert "9 skipped" in cell["findings"][0]["summary"]
+
+
+def test_no_tests_result_at_head_is_never_scanned_or_stale(db):
+    assert _api(db)["categories"]["tests"]["state"] == "never_scanned"
+    assert _api(db)["rollup"]["state"] != "clean_at_sha"
+    _tests_scan(db, sha="old", counts={"passed": 5, "failed": 0, "skipped": 0})
+    assert _api(db)["categories"]["tests"]["state"] == "stale"
+    due = scans_svc.scans_due(db, "core", head_sha="h1")["due"]
+    assert {"component": "api", "category": "tests"} in [
+        {"component": d["component"], "category": d["category"]} for d in due
+    ]
+
+
+def test_a_tests_scan_without_counts_is_refused_and_writes_nothing(db):
+    with pytest.raises(ValueError, match="passed, failed, skipped"):
+        _tests_scan(db, counts=None)
+    with pytest.raises(ValueError, match="tests.skipped"):
+        _tests_scan(db, counts={"passed": 3, "failed": 0})
+    with pytest.raises(ValueError, match="tests.passed"):
+        _tests_scan(db, counts={"passed": -1, "failed": 0, "skipped": 0})
+    assert _api(db)["categories"]["tests"]["state"] == "never_scanned"
+
+
+def test_fewer_findings_than_failures_is_refused(db):
+    with pytest.raises(ValueError, match="every failing test must be a finding"):
+        _tests_scan(db, counts={"passed": 10, "failed": 2, "skipped": 0}, findings=[
+            {"summary": "tests/test_a.py::test_one", "path": "backend/tests/test_a.py"},
+        ])
+    assert _api(db)["categories"]["tests"]["state"] == "never_scanned"
+
+
+def test_counts_on_a_non_tests_scan_are_refused(db):
+    with pytest.raises(ValueError, match="only for the tests category"):
+        _tests_scan(db, scanner="bandit", counts={"passed": 1, "failed": 0, "skipped": 0})
+
+
+def test_each_failing_test_is_a_finding_with_its_id_and_file_filed_once(db):
+    fails = [
+        {"summary": "tests/test_a.py::test_one", "path": "backend/tests/test_a.py"},
+        {"summary": "tests/test_b.py::test_two", "path": "backend/tests/test_b.py"},
+    ]
+    _tests_scan(db, counts={"passed": 10, "failed": 2, "skipped": 0}, findings=fails)
+    cell = _api(db)["categories"]["tests"]
+    assert cell["state"] == "has_findings"
+    got = [(f["summary"], f["path"], f["severity"]) for f in cell["findings"]]
+    assert got == [
+        ("tests/test_a.py::test_one", "backend/tests/test_a.py", "high"),
+        ("tests/test_b.py::test_two", "backend/tests/test_b.py", "high"),
+    ]
+    keys = [f["filed_key"] for f in cell["findings"]]
+    assert len(set(keys)) == 2
+    # Re-running the same failing suite offers the same Defrag keys — filed once.
+    _tests_scan(db, counts={"passed": 10, "failed": 2, "skipped": 0}, findings=fails)
+    assert [f["filed_key"] for f in _api(db)["categories"]["tests"]["findings"]] == keys
+
+
+def test_mcp_and_rest_carry_tests_counts(client, auth):
+    key = client.post("/api/api-keys", json={"name": "tests-cat"}, headers=auth).json()["plaintext"]
+    headers = {"X-API-Key": key}
+    r = _mcp(client, headers, "record_scan", {
+        "scanner_id": "vitest", "path": "web/", "scanned_sha": "abc",
+        "tests": {"passed": 0, "failed": 0, "skipped": 0}, "project_id": "core",
+    })
+    sc = r.json()["result"]["structuredContent"]
+    assert sc["category"] == "tests" and sc["clean"] is False
+    assert sc["tests"] == {"passed": 0, "failed": 0, "skipped": 0}
+
+    rest = client.post("/api/platform/stack/scans", headers=headers, json={
+        "project_id": "core", "scanner_id": "pytest", "path": "backend/", "scanned_sha": "abc",
+        "tests": {"passed": 4, "failed": 0, "skipped": 1},
+    })
+    assert rest.status_code == 200, rest.text
+    assert rest.json()["tests"] == {"passed": 4, "failed": 0, "skipped": 1}
+    bad = client.post("/api/platform/stack/scans", headers=headers, json={
+        "project_id": "core", "scanner_id": "pytest", "path": "backend/", "scanned_sha": "abc",
+    })
+    assert bad.status_code == 422, bad.text
