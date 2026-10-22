@@ -26,11 +26,12 @@ from app.services import code_graph as code_svc
 from app.services.clustering import _match
 
 # Overlay categories — match docs/design/Stack.dc.html CAT list.
-CATEGORIES = ("security", "refactor", "stub", "coverage", "work")
+CATEGORIES = ("security", "refactor", "stub", "deadcode", "coverage", "work")
 CATEGORY_LABELS = {
     "security": "Security",
     "refactor": "Refactoring · complexity",
     "stub": "Partial implementation",
+    "deadcode": "Dead code · unused",
     "coverage": "Coverage · graph staleness",
     "work": "Open work",
 }
@@ -58,6 +59,9 @@ _SECURITY_SCANNERS = frozenset({
     "security", "pip-audit", "bandit", "npm-audit", "osv-scanner", "osv", "semgrep",
     "safety", "trivy",
 })
+
+# Unused functions, exports and files (GRPH-1060): vulture for Python, knip/ts-prune for TS/JS.
+_DEADCODE_SCANNERS = frozenset({"deadcode", "vulture", "knip", "ts-prune"})
 
 
 # Tag prefix on an item filed from the overlay (a finding's Defrag, a stale/never-run CTA).
@@ -103,6 +107,8 @@ def _infer_category(scanner_id: str, category: str | None) -> str:
         return "refactor"
     if sid in ("stubscan", "stub", "partial"):
         return "stub"
+    if sid in _DEADCODE_SCANNERS:
+        return "deadcode"
     if sid in ("graphcheck", "coverage", "code-graph"):
         return "coverage"
     # Default the first shipped producer.
@@ -550,7 +556,7 @@ def scans_due(db: Session, project_id: str, *, head_sha: str = "") -> dict:
     """Which component × category pairs need a (re)scan.
 
     Due = never_scanned or stale for the security category (the one we ship producers for),
-    plus coverage when the graph says something is wrong. Refactor/stub due only once a
+    plus coverage when the graph says something is wrong. Refactor/stub/deadcode due only once a
     scanner has ever reported (otherwise they stay never_scanned without nagging).
     """
     health = component_health(db, project_id, head_sha=head_sha)
@@ -559,9 +565,10 @@ def scans_due(db: Session, project_id: str, *, head_sha: str = "") -> dict:
         for cat_key, cat in (comp.get("categories") or {}).items():
             st = cat.get("state")
             if st in ("never_scanned", "stale"):
-                # Only nag security (shipped) and coverage/work (derived, always meaningful).
+                # Nag security/coverage whenever unscanned or stale; refactor/stub/deadcode only
+                # once stale (a scanner has reported before).
                 if cat_key in ("security", "coverage") or (
-                    cat_key in ("refactor", "stub") and st == "stale"
+                    cat_key in ("refactor", "stub", "deadcode") and st == "stale"
                 ):
                     due.append({
                         "component": comp["id"],
