@@ -1669,7 +1669,7 @@ class CodeScan(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)  # cs_...
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
-    # Category the overlay rolls up (security | refactor | stub | coverage | tests | work).
+    # Category the overlay rolls up (security | refactor | stub | deadcode | coverage | tests | work).
     category: Mapped[str] = mapped_column(String, default="security", server_default="security")
     scanner_id: Mapped[str] = mapped_column(String)  # pip-audit | bandit | osv-scanner | ...
     scanner_version: Mapped[str] = mapped_column(String, default="", server_default="")

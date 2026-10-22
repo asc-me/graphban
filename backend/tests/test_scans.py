@@ -413,6 +413,51 @@ def test_no_tests_result_at_head_is_never_scanned_or_stale(db):
     ]
 
 
+# ── GRPH-1060 · dead-code category ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize("scanner", ["vulture", "knip", "ts-prune"])
+def test_dead_code_scanners_infer_the_deadcode_category(db, scanner):
+    row = scans_svc.record_scan(
+        db, project_id="core", scanner_id=scanner, path="backend/", scanned_sha="h1",
+        findings=[{"severity": "low", "summary": "unused function poll_once",
+                   "path": "backend/app/sync/legacy.py"}],
+    )
+    assert row["category"] == "deadcode"
+    dead = _api(db)["categories"]["deadcode"]
+    assert dead["label"] == "Dead code · unused"
+    assert dead["state"] == "has_findings"
+    # It landed in deadcode only — not the security default.
+    assert _api(db)["categories"]["security"]["state"] == "never_scanned"
+
+
+def test_dead_code_absence_is_never_scanned_and_blocks_a_clean_rollup(db):
+    # Every other scanned category clean at head; dead code never run.
+    for sid in ("pip-audit", "radon", "stubscan"):
+        scans_svc.record_scan(
+            db, project_id="core", scanner_id=sid, path="backend/", scanned_sha="h1", findings=[],
+        )
+    api = _api(db)
+    assert api["categories"]["deadcode"]["state"] == "never_scanned"
+    assert api["categories"]["deadcode"]["cta"]["kind"] == "add_scanner"
+    assert api["rollup"]["state"] != "clean_at_sha"
+
+
+def test_dead_code_clean_at_head_vs_older_sha(db):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="vulture", path="backend/", scanned_sha="h1", findings=[],
+    )
+    assert _api(db)["categories"]["deadcode"]["state"] == "clean_at_sha"
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="vulture", path="backend/", scanned_sha="old", findings=[],
+    )
+    assert _api(db)["categories"]["deadcode"]["state"] == "stale"
+    due = scans_svc.scans_due(db, "core", head_sha="h1")["due"]
+    assert {"component": "api", "category": "deadcode"} in [
+        {"component": d["component"], "category": d["category"]} for d in due
+    ]
+
+
 def test_a_tests_scan_without_counts_is_refused_and_writes_nothing(db):
     with pytest.raises(ValueError, match="passed, failed, skipped"):
         _tests_scan(db, counts=None)
@@ -477,3 +522,27 @@ def test_mcp_and_rest_carry_tests_counts(client, auth):
         "project_id": "core", "scanner_id": "pytest", "path": "backend/", "scanned_sha": "abc",
     })
     assert bad.status_code == 422, bad.text
+
+
+def test_dead_code_nested_clean_does_not_roll_up_clean(db):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="vulture", path="backend/app/sync/",
+        scanned_sha="h1", findings=[],
+    )
+    assert _api(db)["categories"]["deadcode"]["state"] != "clean_at_sha"
+
+
+def test_dead_code_finding_files_once(db):
+    from app.services import items as items_svc
+
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="knip", path="backend/", scanned_sha="h1",
+        findings=[{"severity": "low", "summary": "unused export foo", "path": "backend/x.py"}],
+    )
+    f = _api(db)["categories"]["deadcode"]["findings"][0]
+    assert f["filed_item"] is None
+    it = items_svc.create_item(
+        db, project_id="core", title="Defrag backend/x.py: unused export foo",
+        tags=["defrag", "tech-debt", f["filed_key"]],
+    )
+    assert _api(db)["categories"]["deadcode"]["findings"][0]["filed_item"] == it.key

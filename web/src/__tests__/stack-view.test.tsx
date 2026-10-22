@@ -141,6 +141,14 @@ const health: StackHealth = {
           scanned_at: null,
           findings: [],
         },
+        deadcode: {
+          label: "Dead code · unused",
+          state: "never_scanned",
+          scanner: null,
+          scanned_sha: null,
+          scanned_at: null,
+          findings: [],
+        },
         coverage: {
           label: "Coverage · graph staleness",
           state: "never_scanned",
@@ -180,7 +188,7 @@ const health: StackHealth = {
         state: "never_scanned",
         worst_severity: null,
         severity_badges: [],
-        meta: "3 of 5 never run",
+        meta: "4 of 6 never run",
         finding_count: 0,
       },
       categories: {
@@ -202,6 +210,14 @@ const health: StackHealth = {
         },
         stub: {
           label: "Partial implementation",
+          state: "never_scanned",
+          scanner: null,
+          scanned_sha: null,
+          scanned_at: null,
+          findings: [],
+        },
+        deadcode: {
+          label: "Dead code · unused",
           state: "never_scanned",
           scanner: null,
           scanned_sha: null,
@@ -600,6 +616,104 @@ describe("StackView", () => {
     await user.click(within(report).getByTestId("stack-report-filter-sev-crit"));
     await user.click(within(report).getByTestId("stack-report-filter-sev-high"));
     expect(within(report).getByTestId("stack-report-finding")).toHaveTextContent("python-multipart");
+  });
+});
+
+describe("StackView dead-code category (GRPH-1060)", () => {
+  beforeEach(() => {
+    vi.mocked(api.stack).mockClear();
+    vi.mocked(api.stack).mockResolvedValue(topology);
+    vi.mocked(api.stackHealth).mockClear();
+    vi.mocked(api.stackHealth).mockResolvedValue(health);
+    vi.mocked(api.createItem).mockClear();
+  });
+
+  const withDeadCode = () => {
+    const h = structuredClone(health);
+    h.components[0].categories.security = {
+      ...h.components[0].categories.security,
+      state: "clean_at_sha",
+      findings: [],
+    };
+    h.components[0].categories.deadcode = {
+      label: "Dead code · unused",
+      state: "has_findings",
+      scanner: "vulture 2.14",
+      scanned_sha: "abc1234",
+      scanned_at: "2026-10-18T00:00:00Z",
+      findings: [
+        {
+          severity: "low",
+          summary: "unused function poll_once",
+          path: "backend/app/sync/legacy.py",
+          link_kind: "",
+          link_ref: "",
+          filed_key: "stack-filed:dddddddddddd",
+          filed_item: null,
+        },
+      ],
+    };
+    return h;
+  };
+
+  it("a never-scanned dead-code cell reads as not run in the inspector, not clean", async () => {
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await user.click(await screen.findByTestId("stack-node-web"));
+    const inspector = await screen.findByTestId("stack-inspector");
+    const cats = await within(inspector).findByTestId("stack-health-categories");
+    const row = within(cats).getByText("Dead code · unused").closest("li");
+    expect(row).not.toBeNull();
+    expect(row).not.toHaveTextContent(/clean/i);
+  });
+
+  it("the scan report has a Dead code column and a category filter for it", async () => {
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await screen.findByTestId("stack-canvas");
+    await user.click(screen.getByTestId("stack-report-toggle"));
+    const report = await screen.findByTestId("stack-report");
+    const matrix = within(report).getByTestId("stack-report-matrix");
+    const headers = within(matrix).getAllByRole("columnheader").map((th) => th.textContent);
+    expect(headers).toContain("Dead code");
+    // Ordered after Partial implementation, before Coverage.
+    expect(headers.indexOf("Dead code")).toBe(headers.indexOf("Partial implementation") + 1);
+    expect(within(report).getByTestId("stack-report-filter-cat-deadcode")).toBeInTheDocument();
+  });
+
+  it("filtering to dead code shows only dead-code findings", async () => {
+    vi.mocked(api.stackHealth).mockResolvedValue(withDeadCode());
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await screen.findByTestId("stack-canvas");
+    await user.click(screen.getByTestId("stack-report-toggle"));
+    const report = await screen.findByTestId("stack-report");
+    await user.click(within(report).getByTestId("stack-report-filter-cat-deadcode"));
+    const rows = within(report).getAllByTestId("stack-report-finding");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent("poll_once");
+  });
+
+  it("Defrag on a dead-code finding files one card, then shows it filed", async () => {
+    const dead = withDeadCode();
+    vi.mocked(api.stackHealth).mockResolvedValue(dead);
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await user.click(await screen.findByTestId("stack-node-api"));
+    const inspector = await screen.findByTestId("stack-inspector");
+    const filed = structuredClone(dead);
+    filed.components[0].categories.deadcode.findings[0].filed_item = "GRPH-77";
+    vi.mocked(api.stackHealth).mockResolvedValue(filed);
+    await user.click(await within(inspector).findByTestId("stack-health-defrag"));
+    expect(api.createItem).toHaveBeenCalledTimes(1);
+    const [, body] = vi.mocked(api.createItem).mock.calls[0];
+    expect(body.title).toContain("poll_once");
+    expect(body.tags).toContain("stack-filed:dddddddddddd");
+    // The refetch says it is filed: no second Defrag to click.
+    expect(await within(inspector).findByTestId("stack-health-filed")).toHaveTextContent(
+      "filed GRPH-77",
+    );
+    expect(within(inspector).queryByTestId("stack-health-defrag")).not.toBeInTheDocument();
   });
 });
 

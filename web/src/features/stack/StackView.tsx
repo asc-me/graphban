@@ -1132,7 +1132,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 // stale cells explicitly (absence must never read as clean), and the finding
 // count is over what a scanner actually reported, never a score.
 
-const CAT_ORDER = ["security", "refactor", "stub", "coverage", "tests", "work"];
+const CAT_ORDER = ["security", "refactor", "stub", "deadcode", "coverage", "tests", "work"];
 const SEV_RANK: Record<string, number> = { crit: 0, high: 1, med: 2, low: 3 };
 
 function normSev(s: string): string {
