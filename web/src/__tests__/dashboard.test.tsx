@@ -19,7 +19,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DashboardView } from "@/features/dashboard/DashboardView";
+import { ProjectHome } from "@/features/projecthome/ProjectHome";
 import { ProjectProvider } from "@/features/ProjectContext";
 import { STATUS_META, STATUS_ORDER, TYPE_META } from "@/lib/meta";
 import type { DashboardData, RequestType } from "@/lib/types";
@@ -100,7 +100,7 @@ function renderDashboard() {
     <QueryClientProvider client={qc}>
       <MemoryRouter>
         <ProjectProvider>
-          <DashboardView />
+          <ProjectHome />
         </ProjectProvider>
       </MemoryRouter>
     </QueryClientProvider>,

@@ -133,6 +133,13 @@ describe("path helpers", () => {
     });
     expect(placeFromPath("/tracker")).toEqual({ section: "Plan", page: "Tracker" });
     expect(placeFromPath("/fleet.v1")).toEqual({ section: "Build", page: "Fleet.v1" });
+    // Project home is the Dashboard, including the retired URL before it redirects.
+    expect(placeFromPath("/p/CORE")).toEqual({ section: "Dashboard", page: "Dashboard" });
+    expect(placeFromPath("/p/CORE/")).toEqual({ section: "Dashboard", page: "Dashboard" });
+    expect(placeFromPath("/home")).toEqual({ section: "Dashboard", page: "Dashboard" });
+    expect(placeFromPath("/dashboard")).toEqual({ section: "Dashboard", page: "Dashboard" });
+    expect(placeFromPath("/p/CORE/dashboard")).toEqual({ section: "Dashboard", page: "Dashboard" });
+    expect(placeFromPath("/p/CORE/tracker")).toEqual({ section: "Plan", page: "Tracker" });
   });
 });
 

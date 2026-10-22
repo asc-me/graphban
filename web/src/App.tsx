@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 
 import { AppFrame, ShellBootSkeleton } from "@/components/shell/AppFrame";
 import { useAuth } from "@/features/auth/AuthContext";
@@ -12,7 +12,6 @@ import { OperatorOrgs } from "@/features/admin/OperatorOrgs";
 import { OperatorUsers } from "@/features/admin/OperatorUsers";
 import { CodeGraphView } from "@/features/code/CodeGraphView";
 import { StackView } from "@/features/stack/StackView";
-import { DashboardView } from "@/features/dashboard/DashboardView";
 import { EmbedFeedbackPage } from "@/features/feedback/EmbedFeedbackPage";
 import { FeedbackKitView } from "@/features/feedback/FeedbackKitView";
 import { PublicBoardPage } from "@/features/public/PublicBoardPage";
@@ -93,7 +92,6 @@ const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["tracker", <TrackerView />],
   ["requests", <RequestsView />],
   ["triage", <TriageView />],
-  ["dashboard", <DashboardView />],
   ["links", <LinksGraphView />],
   ["code", <CodeGraphView />],
   ["stack", <StackView />],
@@ -140,7 +138,7 @@ function AuthedApp() {
           ? PROJECT_VIEWS.map(([path, el]) => (
               <Route key={path} path={`/p/:tag/${path}`} element={el} />
             ))
-          : PROJECT_VIEWS.filter(([path]) => !["dashboard", "mcp-tools"].includes(path)).map(
+          : PROJECT_VIEWS.filter(([path]) => path !== "mcp-tools").map(
               ([path, el]) => <Route key={path} path={`/${path}`} element={el} />,
             )}
         {/* /fleet is the old URL. The named pages are fleet.v1 (roster) and fleet.v2 (catalog). */}
@@ -148,6 +146,7 @@ function AuthedApp() {
           ? <Route path="/p/:tag/fleet" element={<FleetAliasRedirect />} />
           : <Route path="/fleet" element={<FleetAliasRedirect />} />}
         {hosted && <Route path="/p/:tag" element={<ProjectHome />} />}
+        {hosted && <Route path="/p/:tag/dashboard" element={<DashboardRedirect />} />}
         {!hosted && (
           <>
             <Route path="/home" element={<HomeView />} />
@@ -181,6 +180,8 @@ function AuthedApp() {
             {PROJECT_VIEWS.map(([path]) => (
               <Route key={`flat-${path}`} path={`/${path}`} element={<FlatRedirect />} />
             ))}
+            {/* Retired page. FlatRedirect lands on /p/:tag/dashboard, which then goes home. */}
+            <Route path="/dashboard" element={<FlatRedirect />} />
             <Route path="/fleet" element={<FlatRedirect />} />
             <Route path="/organization" element={<Navigate to={ORG_BASE} replace />} />
           </>
@@ -198,6 +199,12 @@ function AuthedApp() {
       </Route>
     </Routes>
   );
+}
+
+/** Old hosted dashboard bookmark. The page is project home (GRPH-1066). */
+function DashboardRedirect() {
+  const { tag = "" } = useParams();
+  return <Navigate to={projectPath(tag)} replace />;
 }
 
 /** Old `/fleet` bookmark — the redesign is Fleet.v2, roster is Fleet.v1. */
