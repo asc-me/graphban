@@ -99,7 +99,7 @@ def triage_queue(
     authz.require_readable(db, user.id, project_id)
     out: list[TriageRequestOut] = []
     for req in req_svc.list_requests(db, project_id=project_id):
-        if req.status != "new":
+        if not req_svc.is_untriaged(req):
             continue
         hits = dup_svc.find_duplicates(
             db, req.title, project_id=project_id, exclude_request_id=req.id, top_k=1

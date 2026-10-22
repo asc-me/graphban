@@ -10,7 +10,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import bindparam, func, or_, select, text
+from sqlalchemy import and_, bindparam, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -2123,6 +2123,35 @@ def _lesson_row(
     return row
 
 
+def published_lessons_where(db: Session, project_id: str):
+    """The Lessons catalog, before optional filters and per-row judgements.
+
+    `list_lessons` (what the Lessons view calls with no filters) and
+    `count_published_lessons` both use this. Published rows are never expired —
+    `age_state` only expires candidates, and flags a published shard `stale`
+    without hiding it — so a COUNT of this predicate is the view's unfiltered
+    `total`.
+    """
+    return and_(
+        MemoryShard.status == "published",
+        _project_match_where(
+            project_id,
+            sibling_project_ids(db, project_id),
+            _includes_global(db, project_id),
+        ),
+    )
+
+
+def count_published_lessons(db: Session, project_id: str) -> int:
+    """How many lessons the Lessons view's header would show. One COUNT."""
+    n = db.scalar(
+        select(func.count()).select_from(MemoryShard).where(
+            published_lessons_where(db, project_id)
+        )
+    )
+    return int(n or 0)
+
+
 def list_lessons(
     db: Session,
     project_id: str,
@@ -2136,17 +2165,14 @@ def list_lessons(
     """Published catalog. Reach-aware. Computes judgements after fetch, before limit.
 
     Skips origin_path_state (a code-graph walk per originating item). Empty
-    outcomes still go through lesson_effectiveness.
+    outcomes still go through lesson_effectiveness. The population is
+    `published_lessons_where` — the same predicate the shell count uses, so the
+    two cannot drift by one of them growing a private filter.
     """
     filters = filters or {}
     stmt = (
         select(MemoryShard)
-        .where(MemoryShard.status == "published")
-        .where(_project_match_where(
-            project_id,
-            sibling_project_ids(db, project_id),
-            _includes_global(db, project_id),
-        ))
+        .where(published_lessons_where(db, project_id))
         .order_by(MemoryShard.created_at.desc())
     )
     rows = [r for r in db.scalars(stmt).all() if age_state(r, now=now) != "expired"]

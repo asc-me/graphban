@@ -265,14 +265,24 @@ def retag_project(db: Session, project_id: str, new_tag: str) -> Project:
 # Making `review` a SQL count later is a real optimization, and its precondition is stated so
 # nobody does it by eye: move the expiry rule and the global-shard inclusion into the query
 # first, and keep `test_counts_match_the_collections_they_replace` as the pin.
+#
+# `triage_new` and `lessons_published` are the Project Home Jump-to populations
+# (GRPH-1064). They are one COUNT each, over the predicates the Triage and Lessons
+# views already use (`requests.untriaged_clause`, `memory.published_lessons_where`).
+# A second copy would drift, and loading the rows to call len() is the cost GRPH-431
+# removed. The statement count does not grow with the queue.
 def shell_counts(db: Session, project_id: str | None) -> dict:
     """The integers the shell draws, without the collections it used to draw them from."""
     from app.services import memory as mem_svc
+    from app.services import requests as req_svc
 
     if not project_id:
         # No project resolved means no scope. Zeroes, not the whole instance — asking bare
         # is how a nav badge ends up counting every project on the box.
-        return {"items": 0, "items_in_progress": 0, "requests": 0, "review": 0}
+        return {
+            "items": 0, "items_in_progress": 0, "requests": 0, "review": 0,
+            "triage_new": 0, "lessons_published": 0,
+        }
 
     def _count(model, **where) -> int:
         stmt = select(func.count()).select_from(model).where(model.project_id == project_id)
@@ -292,4 +302,6 @@ def shell_counts(db: Session, project_id: str | None) -> dict:
         "items_in_progress": _count(Item, status="in_progress"),
         "requests": _count(Request),
         "review": review,
+        "triage_new": req_svc.untriaged_count(db, project_id),
+        "lessons_published": mem_svc.count_published_lessons(db, project_id),
     }
