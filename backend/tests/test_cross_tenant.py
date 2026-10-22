@@ -562,3 +562,277 @@ def test_an_item_cannot_be_updated_to_reference_another_project_s_prd(client, te
     r = client.patch(f"/api/items/{mine['id']}", headers=tenants["alex"],
                      json={"prd_id": theirs["id"]})
     assert r.status_code >= 400, f"cross-project PRD reference accepted on update: {r.text}"
+
+
+# ---- Item links across projects (GRPH-1063) --------------------------------------
+# A link may join two projects the caller can read, inside ONE organization: self-host with no
+# orgs is one org of its own, hosted is the org, a linked box proxies to the cloud's org. A
+# blocker on the far side blocks whoever is looking, and is shown — never dropped — to a reader
+# who cannot see its project.
+
+HIDDEN = "(an item in a project you cannot see)"
+
+
+def _item(client, headers, pid, title, status="next"):
+    r = client.post("/api/items", json={"title": title, "project_id": pid, "status": status},
+                    headers=headers)
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def _key(client, headers, **body):
+    r = client.post("/api/api-keys", json={"name": "x", **body}, headers=headers)
+    assert r.status_code == 201, r.text
+    return r.json()["plaintext"]
+
+
+def _ok(res):
+    assert "result" in res and res["result"].get("isError") is not True, res
+    return res["result"]["structuredContent"]
+
+
+def _refusal(res):
+    result = res["result"]
+    assert result.get("isError") is True, f"a link was accepted: {result}"
+    err = result["structuredContent"]["error"]
+    assert err["code"] == "unauthorized", err
+    return err["message"]
+
+
+def _link_rows():
+    from app.db import SessionLocal
+    from app.models import Link
+
+    db = SessionLocal()
+    try:
+        return [(lk.a, lk.b) for lk in db.scalars(select(Link)).all()]
+    finally:
+        db.close()
+
+
+def _grant(user_id, project_id, access):
+    from app.db import SessionLocal
+    from app.models import Membership
+
+    db = SessionLocal()
+    try:
+        db.add(Membership(user_id=user_id, project_id=project_id, role="member", access=access))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_hosted_two_projects_in_one_org_link_and_block(client, tenants):
+    alex, pa = tenants["alex"], tenants["p_a"]
+    pa2 = _make_project(client, alex, "Project A2")
+    dependent = _item(client, alex, pa, "waits on A2")
+    blocker = _item(client, alex, pa2, "A2 change")
+
+    _ok(_mcp(client, tenants["alex_key"], "link_items",
+             {"a": dependent, "b": blocker, "type": "dependency"}))
+
+    rows = _ok(_mcp(client, tenants["alex_key"], "get_backlog", {"project_id": pa}))["results"]
+    row = next(r for r in rows if r["id"] == dependent)
+    assert row["ready"] is False and row["blocked_by"] == [blocker]
+
+
+def test_hosted_cross_org_link_refused_for_a_member_of_both_orgs(client, tenants):
+    """The hard case: alex is seated in BOTH orgs and can read org B's project, so nothing but
+    the org rule stands between her and the link."""
+    from app.db import SessionLocal
+    from app.models import OrgMembership
+
+    db = SessionLocal()
+    try:
+        db.add(OrgMembership(org_id=tenants["org_b"], user_id="u1", role="member"))
+        db.commit()
+    finally:
+        db.close()
+    key = _key(client, tenants["alex"])
+    mine, theirs = tenants["ids_a"]["item"], tenants["ids_b"]["item"]
+    # Positive control: she really can read org B, so the refusal below is the org rule.
+    assert _ok(_mcp(client, key, "get_item_details", {"id": theirs}))["id"] == theirs
+    before = _link_rows()
+
+    for a, b in [(mine, theirs), (theirs, mine)]:
+        msg = _refusal(_mcp(client, key, "link_items", {"a": a, "b": b}))
+        assert "another organization" in msg, msg
+        _refusal(_mcp(client, key, "unlink_items", {"a": a, "b": b}))
+    assert _link_rows() == before, "a refused cross-org link left a row behind"
+
+
+def test_hosted_cross_org_refusal_is_the_same_whether_the_far_item_exists(client, tenants):
+    key, mine, theirs = tenants["alex_key"], tenants["ids_a"]["item"], tenants["ids_b"]["item"]
+    ghost = theirs.rsplit("-", 1)[0] + "-99999"
+
+    real = _refusal(_mcp(client, key, "link_items", {"a": mine, "b": theirs}))
+    absent = _refusal(_mcp(client, key, "link_items", {"a": mine, "b": ghost}))
+    assert real.replace(theirs, "<b>") == absent.replace(ghost, "<b>"), (real, absent)
+    assert _refusal(_mcp(client, key, "unlink_items", {"a": mine, "b": theirs})).replace(
+        theirs, "<b>") == real.replace(theirs, "<b>")
+
+
+@pytest.fixture()
+def selfhost_pair(client):
+    """Self-host, no org rows at all: P1 holds a dependent, P2 its blocker. kate may write P1
+    and has no access to P2; alex may write both."""
+    from app.db import SessionLocal
+    from app.models import Organization
+
+    alex = _login(client, "alex@ascme-labs.com")
+    p1 = _make_project(client, alex, "Box side")
+    p2 = _make_project(client, alex, "Control plane")
+    dependent = _item(client, alex, p1, "dependent")
+    blocker = _item(client, alex, p2, "far blocker", status="in_progress")
+    _grant(_user_id("kate@ascme-labs.com"), p1, "write")
+
+    db = SessionLocal()
+    try:
+        assert db.scalar(select(Organization.id)) is None, "this case must run with no org rows"
+    finally:
+        db.close()
+    alex_key = _key(client, alex)
+    _ok(_mcp(client, alex_key, "link_items", {"a": dependent, "b": blocker}))
+    return {"alex": alex, "alex_key": alex_key, "p1": p1, "p2": p2,
+            "dependent": dependent, "blocker": blocker,
+            "kate_key": _key(client, _login(client, "kate@ascme-labs.com"), project_id=p1)}
+
+
+def _user_id(email):
+    from app.db import SessionLocal
+    from app.models import User
+
+    db = SessionLocal()
+    try:
+        return db.scalar(select(User.id).where(User.email == email))
+    finally:
+        db.close()
+
+
+def test_selfhost_links_two_projects_with_no_orgs(client, selfhost_pair):
+    s = selfhost_pair
+    details = _ok(_mcp(client, s["alex_key"], "get_item_details", {"id": s["dependent"]}))
+    assert {"type": "dependency", "a": s["dependent"], "b": s["blocker"], "reason": ""} \
+        in details["links"]
+    # The edge shows on BOTH projects' link reads, not only the one it is stored in.
+    for pid in (s["p1"], s["p2"]):
+        edges = client.get(f"/api/links?project_id={pid}", headers=s["alex"]).json()
+        assert any(e["a"] == s["dependent"] and e["b"] == s["blocker"]
+                   and e["b_status"] == "in_progress" for e in edges), (pid, edges)
+
+
+def test_a_far_blocker_the_reader_cannot_see_is_a_placeholder_not_a_gap(client, selfhost_pair):
+    s = selfhost_pair
+    kate = s["kate_key"]
+    details = _ok(_mcp(client, kate, "get_item_details", {"id": s["dependent"]}))
+    assert details["links"] == [{"type": "dependency", "a": s["dependent"], "b": HIDDEN,
+                                 "reason": ""}]
+    assert "far blocker" not in str(details) and s["blocker"] not in str(details)
+
+    row = next(r for r in _ok(_mcp(client, kate, "get_backlog", {}))["results"]
+               if r["id"] == s["dependent"])
+    assert row["ready"] is False and row["blocked_by"] == [HIDDEN]
+
+    edges = client.get(f"/api/links?project_id={s['p1']}",
+                       headers=_login(client, "kate@ascme-labs.com")).json()
+    assert [(e["b"], e["b_status"]) for e in edges] == [(HIDDEN, None)]
+
+
+def test_a_hidden_far_blocker_still_blocks_every_claim_path(client, selfhost_pair):
+    s = selfhost_pair
+    kate = s["kate_key"]
+    assert _ok(_mcp(client, kate, "claim_next", {}))["claimed"] is False
+    assert _ok(_mcp(client, kate, "next_cluster", {}))["claimed"] == 0
+    assert _ok(_mcp(client, kate, "claim_cluster", {}))["claimed"] is False
+
+    # Control: finishing the far blocker is what frees it — so the refusal above was the link.
+    r = client.patch(f"/api/items/{s['blocker']}", json={"status": "done"}, headers=s["alex"])
+    assert r.status_code < 400 or r.status_code == 409, r.text
+    if r.status_code >= 400:  # owner-close gate: finish it the way an attestation would
+        from app.db import SessionLocal
+        from app.models import Item
+        from app.services import keys
+
+        db = SessionLocal()
+        try:
+            db.get(Item, keys.resolve_item(db, s["blocker"])).status = "done"
+            db.commit()
+        finally:
+            db.close()
+    claimed = _ok(_mcp(client, kate, "claim_next", {}))
+    assert claimed["claimed"] is True and claimed["item"]["id"] == s["dependent"]
+
+
+def test_unlink_applies_the_same_scope_rule(client, selfhost_pair):
+    s = selfhost_pair
+    # kate cannot read the blocker's project: the unlink is refused and the edge survives.
+    _refusal(_mcp(client, s["kate_key"], "unlink_items",
+                  {"a": s["dependent"], "b": s["blocker"]}))
+    assert _ok(_mcp(client, s["alex_key"], "unlink_items",
+                    {"a": s["dependent"], "b": s["blocker"]}))["removed"] == 1
+
+
+def test_linking_needs_read_on_the_far_side_and_write_on_the_source(client, selfhost_pair):
+    s = selfhost_pair
+    other = _item(client, s["alex"], s["p1"], "second dependent")
+    before = _link_rows()
+    _refusal(_mcp(client, s["kate_key"], "link_items", {"a": other, "b": s["blocker"]}))
+    assert _link_rows() == before
+
+
+def test_a_linked_box_forwards_link_writes_and_never_writes_one_locally(
+        client, monkeypatch, selfhost_pair):
+    from app.services import assistant_tools as at
+    from app.services import mcp_proxy
+
+    assert "link_items" not in mcp_proxy.LOCAL_TOOLS
+    assert "unlink_items" not in mcp_proxy.LOCAL_TOOLS
+
+    sent = []
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"jsonrpc": "2.0", "id": 1, "result": {
+                "content": [{"type": "text", "text": "{}"}], "structuredContent": {"from": "cloud"}}}
+
+    monkeypatch.setattr(mcp_proxy.httpx, "post",
+                        lambda url, json=None, **_: sent.append(json["params"]["name"]) or _Resp())
+    monkeypatch.setattr(mcp_proxy.settings, "sync_cloud_url", "https://cloud")
+    monkeypatch.setattr(mcp_proxy.settings, "sync_api_key", "gb_sk_link")
+
+    s = selfhost_pair
+    other = _item(client, s["alex"], s["p1"], "linked-box dependent")
+    before = _link_rows()
+    for tool in ("link_items", "unlink_items"):
+        _mcp(client, s["alex_key"], tool, {"a": other, "b": s["blocker"]})
+    assert sent == ["link_items", "unlink_items"]
+
+    # The one local REST path that writes a link — the assistant — refuses rather than writing.
+    from app.db import SessionLocal
+    from app.providers.toolcall import ToolCall
+
+    db = SessionLocal()
+    try:
+        ctx = at.ToolContext(db=db, user_id=_user_id("alex@ascme-labs.com"), project_id=s["p1"],
+                             entity_type="item", entity_id=other)
+        res = at.dispatch(ctx, ToolCall(id="c1", name="link_items",
+                                        input={"target_id": s["blocker"]}))
+    finally:
+        db.close()
+    assert "linked cloud" in res.content, res
+    assert _link_rows() == before, "a linked box wrote a link the cloud never arbitrated"
+
+
+def test_an_item_still_cannot_reference_a_prd_in_another_project_on_one_deployment(
+        client, selfhost_pair):
+    """GRPH-457 is unchanged by cross-project LINKS: same deployment, no orgs, readable both
+    sides — a PRD reference still stays inside its project."""
+    s = selfhost_pair
+    prd = _prd(client, s["alex"], s["p2"], "Control-plane spec")
+    assert prd.get("id"), prd
+    r = client.post("/api/items", headers=s["alex"],
+                    json={"title": "borrowed", "project_id": s["p1"], "prd_id": prd["id"]})
+    assert r.status_code >= 400, f"cross-project PRD reference was accepted: {r.text}"

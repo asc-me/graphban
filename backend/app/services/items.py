@@ -1823,18 +1823,30 @@ def item_dict(item: Item) -> dict:
     return out
 
 
-def render_ref(db: Session, stored_id: str) -> str:
+#: What a link endpoint renders as for a viewer who cannot read its project (GRPH-1063). Not
+#: the key: a key names the project and proves the item exists. Not dropped either — a hidden
+#: blocker that vanished from the read would make its dependent look unblocked.
+HIDDEN_REF = "(an item in a project you cannot see)"
+
+
+def render_ref(db: Session, stored_id: str, readable: list[str] | None = None) -> str:
     """Render a link endpoint, which may be an item OR a request (`links.a`/`b` are untyped
     strings), under the project's current tag. Falls back to the stored id so a dangling edge
-    still serializes."""
+    still serializes.
+
+    `readable` is the viewer's project scope. Given, an endpoint in a project outside it renders
+    as `HIDDEN_REF` — links may cross projects (GRPH-1063), reads may not. None means the
+    caller already decided the viewer may see everything."""
     for kind in ("item", "request"):
         row = db.get(keys.MODELS[kind], stored_id)
         if row is not None:
+            if readable is not None and row.project_id not in readable:
+                return HIDDEN_REF
             return row.key
     return stored_id
 
 
-def get_item_details(db: Session, item_id: str) -> dict | None:
+def get_item_details(db: Session, item_id: str, readable: list[str] | None = None) -> dict | None:
     from app.models import Link, MemoryShard, Request
 
     item = db.get(Item, keys.resolve_item(db, item_id) or item_id)
@@ -1864,7 +1876,9 @@ def get_item_details(db: Session, item_id: str) -> dict | None:
         "branch": item.branch or "",
         # Every edge touching this item, both directions, endpoints rendered. The tool promises
         # "dependencies"; `brief.blocked_by` is one direction of one type, unfinished only.
-        "links": [{"type": link.type, "a": render_ref(db, link.a), "b": render_ref(db, link.b),
+        # A far endpoint the viewer cannot read stays in the list as `HIDDEN_REF` (GRPH-1063).
+        "links": [{"type": link.type, "a": render_ref(db, link.a, readable),
+                   "b": render_ref(db, link.b, readable),
                    "reason": link.reason or ""} for link in links],
         "linked_shards": [{"id": sh.id, "text": sh.text, "source": sh.source} for sh in shards],
         "linked_requests": [{"id": r.key, "title": r.title, "type": r.type} for r in reqs],

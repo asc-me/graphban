@@ -284,6 +284,7 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
 
 
 def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
+    from app.security import authz
     from app.services import fleet_profiles
     from app.services import items as items_svc
     from app.services import prioritization
@@ -291,7 +292,11 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
 
     touchpoints = [t for t in (item.touchpoints or []) if isinstance(t, str) and t.strip()]
     ctx = prioritization.context(db, item.project_id)
-    blocked_by = [ctx.by_id[d].key for d in prioritization.blocked_by(ctx, item)]
+    # A blocker may live in another project (GRPH-1063); one the user cannot read is named by
+    # a placeholder, not its key. No user (an internal caller) sees every key.
+    readable = authz.readable_project_ids(db, user_id) if user_id else None
+    blocked_by = [items_svc.render_ref(db, d, readable)
+                  for d in prioritization.blocked_by(ctx, item)]
     shards = db.scalars(select(MemoryShard).where(MemoryShard.item_id == item.id)
                         .order_by(MemoryShard.id).limit(LESSONS_MAX)).all()
     lessons = [{"id": s.id, "text": s.text} for s in shards]

@@ -110,8 +110,10 @@ def test_get_context_reports_scope(client, auth):
 def test_link_items_rejects_dangling_ids(client, auth):
     key = _mint(client, auth, project_id="core")
     res = _call(client, key, "link_items", {"a": "AL-12", "b": "AL-9999"})
-    assert _error_code(res) == "not_found"
-    assert "not found" in res["structuredContent"]["error"]["message"]
+    # The scope rule's refusal, not `not_found` (GRPH-1063): a missing id and an item in
+    # another org must answer alike, or the error tells a caller which ids are real.
+    assert _error_code(res) == "unauthorized"
+    assert "does not exist" in res["structuredContent"]["error"]["message"]
 
 
 # ---- REST membership guards ----
