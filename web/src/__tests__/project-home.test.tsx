@@ -54,12 +54,42 @@ const fleet = {
   clusters: [], seats: [], waves: [],
 };
 
+/** Non-zero on purpose. An all-zero payload is the page-wide empty state, which hides the grid. */
+const dash = {
+  items_total: 4,
+  items_by_status: { backlog: 1, next: 1, in_progress: 1, review: 1, done: 0, blocked: 0 },
+  effort_total: 0, done_count: 0, in_progress_count: 1, blocked_count: 0,
+  requests_total: 1,
+  requests_by_type: { bug: 1, feature: 0, enhancement: 0, feedback: 0 },
+  requests_by_status: { new: 1 },
+  shard_count: 2, prd_count: 1, mcp_calls: 3,
+  recent_items: [{ id: "CORE-1", title: "Ship the home", status: "in_progress" as const, date: "Oct 22" }],
+};
+
+const counts = {
+  items: 4, items_in_progress: 1, requests: 1, review: 2, triage_new: 1, lessons_published: 3,
+};
+
+const zeroDash = {
+  ...dash,
+  items_total: 0,
+  items_by_status: { backlog: 0, next: 0, in_progress: 0, review: 0, done: 0, blocked: 0 },
+  in_progress_count: 0, blocked_count: 0, requests_total: 0, requests_by_type: {},
+  requests_by_status: {}, shard_count: 0, prd_count: 0, mcp_calls: 0, recent_items: [],
+};
+
+const zeroCounts = {
+  items: 0, items_in_progress: 0, requests: 0, review: 0, triage_new: 0, lessons_published: 0,
+};
+
 vi.mock("@/lib/api", () => ({
   api: {
     projects: vi.fn(async () => [core]),
     orgs: vi.fn(async () => [{ id: "org_1", name: "Acme", plan: "team", role: "owner" }]),
     items: vi.fn(async () => [{ id: "CORE-1", status: "in_progress" }]),
     shards: vi.fn(async () => []),
+    dashboard: vi.fn(async () => dash),
+    counts: vi.fn(async () => counts),
     codeMap: vi.fn(async () => ({ nodes: [], edges: [], node_count: 40, edge_count: 0, outbound: [] })),
     prds: vi.fn(async () => []),
     fleet: vi.fn(async () => ({
@@ -98,6 +128,8 @@ describe("Project home", () => {
     );
     vi.mocked(api.items).mockResolvedValue([{ id: "CORE-1", status: "in_progress" }] as never);
     vi.mocked(api.shards).mockResolvedValue([] as never);
+    vi.mocked(api.dashboard).mockResolvedValue(dash as never);
+    vi.mocked(api.counts).mockResolvedValue(counts as never);
     vi.mocked(api.codeMap).mockResolvedValue(codeMap() as never);
     vi.mocked(api.prds).mockResolvedValue([] as never);
     vi.mocked(api.fleet).mockResolvedValue(fleet as never);
@@ -125,6 +157,9 @@ describe("Project home", () => {
     const dependedBy = (await screen.findByText("DEPENDED ON BY")).parentElement!;
     expect(within(dependedBy).getByText("WEB")).toBeInTheDocument();
     expect(within(dependedBy).getByText(/1 file/)).toBeInTheDocument();
+    // The design dropped this link. The 2026-10-22 decision keeps it.
+    expect(screen.getByRole("link", { name: "Open in galaxy →" }))
+      .toHaveAttribute("href", "/org/galaxy");
   });
 
   it("says nothing depends on it, rather than leaving the section blank", async () => {
@@ -149,6 +184,11 @@ describe("Project home", () => {
     renderHome();
     expect(await screen.findByText(/No deployment has pushed a code graph/)).toBeInTheDocument();
     expect(screen.getByText(/not because/)).toBeInTheDocument();
+    // Answered zero is the amber "not pushed", and the stat cell may say 0. An unread
+    // map must not — that case is the failure test below.
+    const code = screen.getByRole("link", { name: /Code graph/ });
+    expect(within(code).getByText("not pushed")).toHaveClass("text-st-review");
+    expect(screen.getByText("Graph nodes").parentElement).toHaveTextContent("0");
   });
 
   // ── PRD-47 S17: the states this screen was missing ─────────────────────────────────────
@@ -157,38 +197,37 @@ describe("Project home", () => {
   // the affordance for what actually happened, and the absence of the reassuring claim
   // that used to stand in for it.
 
-  it("splits the surfaces into Work and Agents-and-memory instead of one flat grid", async () => {
+  it("jumps to the eight surfaces with live meta, on project paths", async () => {
     renderHome();
 
-    const work = (await screen.findByRole("heading", { name: "Work" })).closest("section")!;
-    const agents = screen
-      .getByRole("heading", { name: "Agents and memory" })
-      .closest("section")!;
+    // The region is on the page during the skeleton too, with no metas yet.
+    await screen.findByText("1 in flight");
+    const jump = screen.getByRole("region", { name: "Jump to" });
+    const link = (name: RegExp) => within(jump).getByRole("link", { name });
 
-    // A group is what it contains AND what it excludes — eight cards in one grid satisfies
-    // the first half for both groups and the second for neither.
-    expect(within(work).getByRole("link", { name: /Tracker/ }))
-      .toHaveAttribute("href", "/p/CORE/tracker");
-    expect(within(work).getByRole("link", { name: /PRDs/ })).toBeInTheDocument();
-    expect(within(work).getByRole("link", { name: /Triage/ })).toBeInTheDocument();
-    expect(within(work).getByRole("link", { name: /Code graph/ })).toBeInTheDocument();
-    expect(within(work).queryByRole("link", { name: /^Memory/ })).not.toBeInTheDocument();
-    expect(within(work).queryByRole("link", { name: /^Live/ })).not.toBeInTheDocument();
-
-    expect(within(agents).getByRole("link", { name: /^Memory/ }))
-      .toHaveAttribute("href", "/p/CORE/memory-review");
-    expect(within(agents).getByRole("link", { name: /Lessons/ })).toBeInTheDocument();
-    expect(within(agents).getByRole("link", { name: /Fleet/ })).toBeInTheDocument();
-    expect(within(agents).getByRole("link", { name: /^Live/ })).toBeInTheDocument();
-    expect(within(agents).queryByRole("link", { name: /Tracker/ })).not.toBeInTheDocument();
-    expect(within(agents).queryByRole("link", { name: /Code graph/ })).not.toBeInTheDocument();
+    expect(link(/Tracker/)).toHaveAttribute("href", "/p/CORE/tracker");
+    expect(link(/Tracker/)).toHaveTextContent("1 in flight");
+    expect(link(/Triage/)).toHaveAttribute("href", "/p/CORE/triage");
+    expect(link(/Triage/)).toHaveTextContent("1 new");
+    expect(link(/PRDs/)).toHaveAttribute("href", "/p/CORE/prds");
+    expect(link(/PRDs/)).toHaveTextContent("1 docs");
+    expect(link(/Code graph/)).toHaveAttribute("href", "/p/CORE/code");
+    expect(link(/Code graph/)).toHaveTextContent("40 nodes");
+    expect(link(/^Memory/)).toHaveAttribute("href", "/p/CORE/memory-review");
+    expect(link(/^Memory/)).toHaveTextContent("2 to review");
+    expect(link(/Lessons/)).toHaveAttribute("href", "/p/CORE/lessons");
+    expect(link(/Lessons/)).toHaveTextContent("3 published");
+    expect(link(/Fleet/)).toHaveAttribute("href", "/p/CORE/fleet.v1");
+    expect(link(/Fleet/)).toHaveTextContent("0 online");
+    expect(link(/^Live/)).toHaveAttribute("href", "/p/CORE/live");
+    expect(link(/^Live/)).toHaveTextContent("0 on now");
   });
 
   it("placeholds the counts while a read is in flight rather than rendering 0", async () => {
     const { api } = await import("@/lib/api");
-    // Never settles. The other five answer, which is the point: an outstanding read used
-    // to sit beside four confident numbers as though it were one of them.
-    vi.mocked(api.items).mockReturnValue(new Promise(() => {}) as never);
+    // Never settles. The map answers 40, which is the point: an outstanding read used
+    // to sit beside a confident number as though the strip were already measured.
+    vi.mocked(api.dashboard).mockReturnValue(new Promise(() => {}) as never);
     renderHome();
 
     expect(await screen.findByLabelText("Loading counts")).toBeInTheDocument();
@@ -196,8 +235,12 @@ describe("Project home", () => {
     // Not a zero, and not the 40 graph nodes that DID arrive either — the strip is one
     // measurement, so it is withheld whole rather than half-guessed.
     expect(screen.queryByText("40")).not.toBeInTheDocument();
-    // The cards are static links, so navigation is not held hostage to the numbers.
+    expect(screen.queryByText("not pushed")).not.toBeInTheDocument();
+    expect(screen.queryByText(/No deployment has pushed a code graph/)).not.toBeInTheDocument();
+    // The tiles are static links, so navigation is not held hostage to the numbers.
     expect(screen.getByRole("link", { name: /Tracker/ })).toBeInTheDocument();
+    // Metas stay off the tiles until every count has answered.
+    expect(screen.getByRole("link", { name: /Tracker/ })).not.toHaveTextContent("in flight");
   });
 
   it("offers a retry when a count could not be read, and withholds the no-code-graph claim", async () => {
@@ -210,6 +253,14 @@ describe("Project home", () => {
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
     // A count that was not read is not a zero, and the page says which one it is.
     expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(1);
+    // The graph cell itself is the unread one. Legend zeros elsewhere are real answers
+    // from the dashboard, so this assertion stays on the cell and the tile.
+    const graph = screen.getByText("Graph nodes").parentElement!;
+    expect(graph).toHaveTextContent("—");
+    expect(graph).not.toHaveTextContent("0");
+    const code = screen.getByRole("link", { name: /Code graph/ });
+    expect(code).toHaveTextContent("—");
+    expect(code).not.toHaveTextContent("not pushed");
 
     // The other half: the strongest claim on the page stays unmade, and the failure does
     // not masquerade as the loading state either.
@@ -254,5 +305,57 @@ describe("Project home", () => {
     await user.click(retry);
     const dependedBy = (await screen.findByText("DEPENDED ON BY")).parentElement!;
     expect(within(dependedBy).getByText("WEB")).toBeInTheDocument();
+  });
+
+  it("omits the dependency panel while the galaxy has not answered", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.orgGalaxy).mockReturnValue(new Promise(() => {}) as never);
+    renderHome();
+
+    await screen.findByText("Items");
+    // Unknown is a third answer: no heading, no honest empty, no failure copy.
+    expect(screen.queryByRole("heading", { name: "Cross-project dependencies" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/No sibling repo declares this one/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/every dependency resolved to an external package/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/what depends on this project was not read/i)).not.toBeInTheDocument();
+  });
+
+  it("says nothing to summarise when every read came back zero", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.dashboard).mockResolvedValue(zeroDash as never);
+    vi.mocked(api.counts).mockResolvedValue(zeroCounts as never);
+    vi.mocked(api.codeMap).mockResolvedValue(codeMap(0) as never);
+    vi.mocked(api.fleet).mockResolvedValue(fleet as never);
+    renderHome();
+
+    expect(await screen.findByText("Nothing to summarise yet")).toBeInTheDocument();
+    // A strip of zeros, the jump tiles, and the graph warning are all measurements.
+    expect(screen.queryByText("Memory shards")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Jump to" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/No deployment has pushed a code graph/)).not.toBeInTheDocument();
+    expect(screen.queryByText("not pushed")).not.toBeInTheDocument();
+    // The agent card is guidance, and it stays on an empty project.
+    expect(screen.getByText("Put agents on the backlog")).toBeInTheDocument();
+  });
+
+  it("uses the per-panel empty lines when only part of the project is empty", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.dashboard).mockResolvedValue({ ...zeroDash, shard_count: 2 } as never);
+    vi.mocked(api.counts).mockResolvedValue(zeroCounts as never);
+    vi.mocked(api.codeMap).mockResolvedValue(codeMap(40) as never);
+    vi.mocked(api.fleet).mockResolvedValue(fleet as never);
+    renderHome();
+
+    expect(await screen.findByText("No items yet.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Create the first one in Tracker →" }))
+      .toHaveAttribute("href", "/p/CORE/tracker");
+    expect(screen.getByText("No requests yet.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Add the feedback widget →" }))
+      .toHaveAttribute("href", "/p/CORE/feedback-kit");
+    expect(screen.getByText("Nothing has happened here yet.")).toBeInTheDocument();
+    expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
+    // The stat grid stays: shards were measured, so a zero items cell is a real zero.
+    expect(screen.getByText("Items").parentElement).toHaveTextContent("0");
+    expect(screen.getByText("Memory shards").parentElement).toHaveTextContent("2");
   });
 });
