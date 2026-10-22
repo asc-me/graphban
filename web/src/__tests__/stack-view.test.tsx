@@ -158,6 +158,15 @@ const health: StackHealth = {
           findings: [],
           note: "No describe_code pass has run.",
         },
+        tests: {
+          label: "Tests",
+          state: "clean_at_sha",
+          scanner: "pytest 8.3.3",
+          scanned_sha: "abc1234",
+          scanned_at: "2026-10-18T00:00:00Z",
+          findings: [],
+          note: "412 passed · 0 failed · 3 skipped",
+        },
         work: {
           label: "Open work",
           state: "clean_at_sha",
@@ -217,6 +226,14 @@ const health: StackHealth = {
         },
         coverage: {
           label: "Coverage · graph staleness",
+          state: "never_scanned",
+          scanner: null,
+          scanned_sha: null,
+          scanned_at: null,
+          findings: [],
+        },
+        tests: {
+          label: "Tests",
           state: "never_scanned",
           scanner: null,
           scanned_sha: null,
@@ -508,6 +525,55 @@ describe("StackView", () => {
     await user.click(cta);
     const [, body] = vi.mocked(api.createItem).mock.calls[0];
     expect(body.title).toBe("Re-run radon 6.0.1 on backend/ at head");
+  });
+
+  it("inspector shows the Tests category with its passed/failed/skipped counts (GRPH-1061)", async () => {
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await user.click(await screen.findByTestId("stack-node-api"));
+    const inspector = await screen.findByTestId("stack-inspector");
+    expect(await within(inspector).findByTestId("stack-health-cat-tests")).toHaveTextContent("CLEAN");
+    expect(within(inspector).getByTestId("stack-health-categories")).toHaveTextContent(
+      "412 passed · 0 failed · 3 skipped",
+    );
+  });
+
+  it("a failing test is a finding with its test id and file, filterable by the Tests category", async () => {
+    const failing = structuredClone(health);
+    failing.components[0].categories.tests = {
+      ...failing.components[0].categories.tests,
+      state: "has_findings",
+      note: "410 passed · 2 failed · 3 skipped",
+      findings: [
+        {
+          severity: "high",
+          summary: "tests/test_scans.py::test_zero_run",
+          path: "backend/tests/test_scans.py",
+          filed_key: "stack-filed:dddddddddddd",
+          filed_item: null,
+        },
+      ],
+    };
+    vi.mocked(api.stackHealth).mockResolvedValue(failing);
+    const user = userEvent.setup();
+    wrap(<StackView />);
+    await screen.findByTestId("stack-canvas");
+    await user.click(screen.getByTestId("stack-report-toggle"));
+    const report = await screen.findByTestId("stack-report");
+    expect(within(report).getByTestId("stack-report-matrix")).toHaveTextContent("Tests");
+    await user.click(within(report).getByTestId("stack-report-filter-cat-tests"));
+    const row = within(report).getByTestId("stack-report-finding");
+    expect(row).toHaveTextContent("tests/test_scans.py::test_zero_run");
+    expect(row).toHaveTextContent("backend/tests/test_scans.py");
+    // web has no tests result at all — its Tests cell reads "not run", never clean.
+    const matrix = within(report).getByTestId("stack-report-matrix");
+    const heads = Array.from(matrix.querySelectorAll("thead th")).map((th) => th.textContent);
+    const col = heads.indexOf("Tests");
+    expect(col).toBeGreaterThan(0);
+    const webRow = Array.from(matrix.querySelectorAll("tbody tr")).find((tr) =>
+      tr.textContent?.startsWith("web"),
+    )!;
+    expect(webRow.querySelectorAll("td")[col]).toHaveTextContent("not run");
   });
 
   it("inspector marks infra boxes as code-health N/A", async () => {

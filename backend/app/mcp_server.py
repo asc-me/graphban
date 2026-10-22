@@ -1849,6 +1849,7 @@ _SEAT_SCOPE_ARG = {"scope": {
 #: them, which is the call whose narrowing was being discarded in silence.
 _FLEET_ONLY_OUT = {
     "update_item": {"touchpoint_intake": {"type": "object"}},
+    "record_scan": {"tests": {"type": ["object", "null"]}},
 }
 
 _FLEET_ONLY_ARGS = {
@@ -1892,6 +1893,14 @@ _FLEET_ONLY_ARGS = {
     "update_item": {"branch": {
         "type": "string",
         "description": "Planner/supervisor: retarget. Empty is not a write.",
+    }},
+    # GRPH-1061. A tests scan's counts. Fleet-only for the reason every entry here is: the
+    # ceiling had no room for it, and `record_scan` is a worker tool (fleet.py gates it to
+    # the worker role). The REST ingest (`POST /platform/stack/scans`) takes the same field.
+    "record_scan": {"tests": {
+        "type": "object",
+        "description": "Required for tests (pytest/vitest/jest/junit): passed, failed, skipped.",
+        "properties": {k: {"type": "integer"} for k in ("passed", "failed", "skipped")},
     }},
     # GRPH-807. Measured on a live instance: 177 agents, 27,391 tokens, of which ONE was live.
     # A planner polling a wave paid nearly twice the whole manifest, per poll.
@@ -3595,6 +3604,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             category=args.get("category"),
             note=str(args.get("note") or ""),
             reported_by=reported,
+            tests=args.get("tests"),
         )
     if name == "scan_status":
         return scans_svc.scan_status(

@@ -9,8 +9,15 @@ stores + serves; it never runs the scanner. A health badge NEVER defaults to gre
   stale         — a scan exists but scanned_sha ≠ head (result does not cover what's running)
 
 Ship security end-to-end first. Coverage and open-work are derived from the code graph /
-tracker (built-in, no agent producer required). Refactor and stub stay never_scanned until
-their own scanners report.
+tracker (built-in, no agent producer required). Refactor, stub and tests stay never_scanned
+until their own scanners report.
+
+Tests (GRPH-1061) is one result per component path at a commit from a test runner (pytest,
+vitest, jest, any JUnit producer). It must carry `tests={passed, failed, skipped}`: without
+counts an empty findings list cannot be told apart from a suite that collected nothing. Each
+failing test is a finding; a run that executed zero tests is stored WITH a finding, never as
+clean; skips are written into the note rather than folded into the passes. The counts live
+in the note, not a column — a reader sees them where the scan's other context already is.
 """
 from __future__ import annotations
 
@@ -26,13 +33,14 @@ from app.services import code_graph as code_svc
 from app.services.clustering import _match
 
 # Overlay categories — match docs/design/Stack.dc.html CAT list.
-CATEGORIES = ("security", "refactor", "stub", "deadcode", "coverage", "work")
+CATEGORIES = ("security", "refactor", "stub", "deadcode", "coverage", "tests", "work")
 CATEGORY_LABELS = {
     "security": "Security",
     "refactor": "Refactoring · complexity",
     "stub": "Partial implementation",
     "deadcode": "Dead code · unused",
     "coverage": "Coverage · graph staleness",
+    "tests": "Tests",
     "work": "Open work",
 }
 
@@ -62,6 +70,9 @@ _SECURITY_SCANNERS = frozenset({
 
 # Unused functions, exports and files (GRPH-1060): vulture for Python, knip/ts-prune for TS/JS.
 _DEADCODE_SCANNERS = frozenset({"deadcode", "vulture", "knip", "ts-prune"})
+# Test runners that roll into the tests category when `category` is omitted.
+_TEST_SCANNERS = frozenset({"pytest", "vitest", "jest", "junit", "tests"})
+_TEST_COUNTS = ("passed", "failed", "skipped")
 
 
 # Tag prefix on an item filed from the overlay (a finding's Defrag, a stale/never-run CTA).
@@ -111,6 +122,8 @@ def _infer_category(scanner_id: str, category: str | None) -> str:
         return "deadcode"
     if sid in ("graphcheck", "coverage", "code-graph"):
         return "coverage"
+    if sid in _TEST_SCANNERS:
+        return "tests"
     # Default the first shipped producer.
     return "security"
 
@@ -140,6 +153,26 @@ def _covers_component_root(scan_path: str, prefix: str) -> bool:
     return pref.startswith(sp + "/")
 
 
+def _test_counts(raw: object) -> dict[str, int]:
+    """Validate a tests scan's {passed, failed, skipped}. Every count is required.
+
+    A missing `skipped` defaulted to 0 would fold skips into a clean run, and a missing
+    `passed` cannot be told from zero executed — so nothing here has a default.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "a tests scan requires tests={passed, failed, skipped} — without counts an "
+            "empty findings list cannot be told apart from a suite that ran nothing"
+        )
+    out: dict[str, int] = {}
+    for k in _TEST_COUNTS:
+        v = raw.get(k)
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ValueError(f"tests.{k} must be a non-negative integer (got {v!r})")
+        out[k] = v
+    return out
+
+
 def record_scan(
     db: Session,
     *,
@@ -152,11 +185,13 @@ def record_scan(
     category: str | None = None,
     note: str = "",
     reported_by: str = "",
+    tests: dict | None = None,
 ) -> dict:
     """Upsert a scanner's report for `path` at `scanned_sha`.
 
     Empty `findings` is a deliberate clean result at that sha — not the same as never
     having scanned. Replaces any prior row for the same (project, scanner_id, path).
+    A tests-category scan also needs `tests` counts (see the module docstring).
     """
     sid = (scanner_id or "").strip()
     if not sid:
@@ -186,6 +221,36 @@ def record_scan(
                 f"findings[{i}] requires a non-empty summary "
                 f"(got keys {sorted(raw.keys())})"
             )
+
+    counts: dict[str, int] | None = None
+    default_sev = "medium"
+    if cat == "tests":
+        counts = _test_counts(tests)
+        if len(rows) < counts["failed"]:
+            # A dropped failure would leave fewer findings than failures — at the limit,
+            # failed=3 with no findings stores as a clean run.
+            raise ValueError(
+                f"tests.failed is {counts['failed']} but only {len(rows)} finding(s) were "
+                "given — every failing test must be a finding (summary = test id, path = file)"
+            )
+        if counts["passed"] + counts["failed"] == 0:
+            # Green with nothing in it is the absence-reads-as-clean defect: record the
+            # empty run as a finding so the cell cannot render clean.
+            rows.append({
+                "severity": "high",
+                "summary": (
+                    f"0 tests executed ({counts['skipped']} skipped) — an empty run is not a pass"
+                ),
+                "path": path_n,
+            })
+        tally = (
+            f"{counts['passed']} passed · {counts['failed']} failed · "
+            f"{counts['skipped']} skipped"
+        )
+        note = f"{tally}. {note.strip()}" if (note or "").strip() else tally
+        default_sev = "high"
+    elif tests is not None:
+        raise ValueError(f"tests counts are only for the tests category, not {cat}")
 
     # Replace prior result for this scanner+path (one live answer).
     prior = list(db.scalars(
@@ -219,7 +284,7 @@ def record_scan(
             scan_id=scan.id,
             project_id=project_id,
             path=str(raw.get("path") or path_n).strip() or path_n,
-            severity=_norm_sev(str(raw.get("severity") or "medium")),
+            severity=_norm_sev(str(raw.get("severity") or default_sev)),
             summary=summary,
             link_kind=str(raw.get("link_kind") or "").strip(),
             link_ref=str(raw.get("link_ref") or "").strip(),
@@ -236,6 +301,7 @@ def record_scan(
         "scanned_sha": scan.scanned_sha,
         "findings_recorded": stored,
         "clean": stored == 0,
+        "tests": counts,
         "reported_by": scan.reported_by,
         "scanned_at": scan.scanned_at.isoformat(),
     }
@@ -556,7 +622,7 @@ def scans_due(db: Session, project_id: str, *, head_sha: str = "") -> dict:
     """Which component × category pairs need a (re)scan.
 
     Due = never_scanned or stale for the security category (the one we ship producers for),
-    plus coverage when the graph says something is wrong. Refactor/stub/deadcode due only once a
+    plus coverage when the graph says something is wrong. Refactor/stub/deadcode/tests due only once a
     scanner has ever reported (otherwise they stay never_scanned without nagging).
     """
     health = component_health(db, project_id, head_sha=head_sha)
@@ -568,7 +634,7 @@ def scans_due(db: Session, project_id: str, *, head_sha: str = "") -> dict:
                 # Nag security/coverage whenever unscanned or stale; refactor/stub/deadcode only
                 # once stale (a scanner has reported before).
                 if cat_key in ("security", "coverage") or (
-                    cat_key in ("refactor", "stub", "deadcode") and st == "stale"
+                    cat_key in ("refactor", "stub", "deadcode", "tests") and st == "stale"
                 ):
                     due.append({
                         "component": comp["id"],
