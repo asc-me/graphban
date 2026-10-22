@@ -1268,8 +1268,9 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
                                       and (args or {}).get("to_status", "next") in _BEYOND_WORKER)):
         raise authz.Forbidden(
             f"{tool} needs to know which agent is calling: this credential is running a fleet, "
-            "so an unidentified caller cannot be assumed to be unrestricted",
-            hint="pass agent_id — the value register_agent returned")
+            "so an unidentified caller cannot be assumed to be unrestricted. Only this call "
+            "is gated — evidence and other fields write without an identity",
+            hint=_identify_hint(api_key))
     if required and role == "expired":
         # An expired session grants NO role, so every role-gated tool refuses — but only
         # those. The shared reads stay open deliberately: `fleet_status` is how the agent
@@ -1312,7 +1313,7 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
                 "update_item(branch=…) needs to know which agent is calling: this "
                 "credential is running a fleet, so an unidentified caller cannot be "
                 "assumed to be a planner",
-                hint="pass agent_id — the value register_agent returned",
+                hint=_identify_hint(api_key),
             )
 
     # `release_item` is how a worker hands work back — the release verb is shared across
@@ -1326,6 +1327,24 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
                 f"{who} is registered as 'worker'",
                 hint="release_item does not write `done`; the self-review ban gates sign-off",
             )
+
+
+def _identify_hint(api_key) -> str:
+    """The route to an identity for a caller the fleet gate cannot place (GRPH-934).
+
+    "Pass the agent_id register_agent returned" was a dead end for the session that hit it
+    most: a planner driving the board on the fleet's own credential, which never registered
+    because nothing it does needs a seat. `get_context` and `gban whoami` have no agent_id to
+    give it. It does not need an enrolment code — this refusal only fires on a credential
+    eligible for several roles, and `register_agent` without one grants a role the credential
+    already permits — so the hint names the call that mints the id, with a role that clears
+    the gate (anything but `worker`; `planner` when the credential allows it).
+    """
+    allowed = [r for r in eligible_roles(api_key) if r != "worker"]
+    role = "planner" if "planner" in allowed else (allowed[0] if allowed else "")
+    how = f"register_agent(role_hint={role!r})" if role else "register_agent"
+    return (f"pass agent_id. A session that never registered gets one from {how} — no "
+            "enrolment code needed on this credential — then passes the agent_id it returns")
 
 
 def tools_off_limits(role: str) -> list[str]:
