@@ -331,8 +331,8 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `get_backlog` | `limit`, `fields`, `project_id` | Prioritized backlog (lean rows + ranking fields by default, `fields="full"` for all) |
 | `get_item_details` | `id` | Every field the item reads share (`project_id`, `touchpoints`, `prd_id`, `prd_section`, authorship, bounce, hold — GRPH-821: built on the one renderer) + `description`, `blocker`, `pr`, `branch` + **`links`** (every edge touching the item, both directions, endpoints rendered) + linked shards + linked requests + **`brief`** (PRD-35): the delegation packet — summary, touchpoints, blockers, task class, lessons, a `lane` and `tier` **suggestion with its `basis`**, `previous` / `attempts` history, `text` to paste into a spawn (which carries no suggestion), the same **`profile`** / **`policy`** pair `fleet_status` carries (PRD-37 D9) — never in `text` — plus **`spend`** and **`mix`** (`n` / `by_harness` / `unreported` over the last 20 launches in the project; n=0 is unmeasured, not everyone at 0%) |
 | `suggest_next` | `project_id` | Best next item from state + memory |
-| `link_items` | `a`, `b`, `type`, `reason` | Create a typed relationship |
-| `unlink_items` | `a`, `b`, `type` | Remove a typed relationship (inverse of `link_items`); omit `type` to remove all types for the pair. Idempotent — returns `removed` |
+| `link_items` | `a`, `b`, `type`, `reason` | Create a typed relationship. May join two projects of one org when the caller can read both and write `a`; a blocker in another project still blocks, and shows as `(an item in a project you cannot see)` to a reader without access. Cross-org is always refused, with the same error as a missing id (GRPH-1063) |
+| `unlink_items` | `a`, `b`, `type` | Remove a typed relationship (inverse of `link_items`, same scope rule); omit `type` to remove all types for the pair. Idempotent — returns `removed` |
 | `extract_lessons` | `id` | Distil lessons into memory (returns `scheduled: true` immediately; shards land on `linked_shards`) |
 | `generate_digest` | `project_id` | Compose a progress digest across the project |
 | `prd_coverage` | `prd_id` | Spec-to-task rollup: per-section counts, `gaps` (no tasks), `empty_sections` (no substance). `shaped: false` is not a clean pass (read-only) |
@@ -516,6 +516,13 @@ blocked item, and `get_backlog` ranks **ready-first**, then by a composite score
 **dependency fan-out** (items that unblock many rank higher), **request votes** rolled onto the
 linked item, effort, and staleness. Each `get_backlog` row carries `ready`, `blocked_by`,
 `unblocks`, `votes`, and `score`, so an agent can plan against the real graph.
+
+`b` may live in **another project of the same organization** (GRPH-1063) — the cross-repo case,
+e.g. a control-plane item waiting on a box-side change. It blocks exactly like a local one, in
+`get_backlog`, `claim_next`, `claim_cluster` and `next_cluster`, even when the caller cannot read
+its project; there it renders as `(an item in a project you cannot see)` with no title or
+status, never dropped. Cross-org links are refused, and item-to-PRD references stay in one
+project (GRPH-457).
 
 ### Code-locality clustering (pick up related work at once)
 

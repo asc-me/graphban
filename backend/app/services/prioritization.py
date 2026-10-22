@@ -24,7 +24,14 @@ class Context:
     deps: dict[str, list[str]] = field(default_factory=dict)        # id -> items it depends on
     dependents: dict[str, list[str]] = field(default_factory=dict)  # id -> items that depend on it
     votes: dict[str, int] = field(default_factory=dict)             # id -> summed linked-request votes
+    # Blockers that live in ANOTHER project (GRPH-1063), loaded for their status only. Kept out
+    # of `by_id` so nothing iterating this project's items starts walking someone else's.
+    external: dict[str, Item] = field(default_factory=dict)
     now: object = None
+
+    def item(self, item_id: str) -> Item | None:
+        """This project's item, or a cross-project blocker of one of them."""
+        return self.by_id.get(item_id) or self.external.get(item_id)
 
 
 def context(db: Session, project_id: str | None) -> Context:
@@ -32,18 +39,31 @@ def context(db: Session, project_id: str | None) -> Context:
     by_id = {it.id: it for it in items}
     ctx = Context(items=items, by_id=by_id, now=utcnow())
 
-    # Scope link/request scans to the project (tenant isolation + efficiency, AL-70).
+    # Scope link/request scans to the project (tenant isolation + efficiency, AL-70). Links are
+    # scoped by ENDPOINT, not by `Link.project_id` (GRPH-1063): a cross-project edge is stored
+    # in one project, and a blocker in another repo's project must still block here. Filtering
+    # on the row's project silently dropped it, and a dropped blocker reads as "ready".
     link_q = select(Link).where(Link.type == "dependency")
     req_q = select(Request).where(Request.linked_to.is_not(None))
     if project_id:
-        link_q = link_q.where(Link.project_id == project_id)
+        mine = select(Item.id).where(Item.project_id == project_id)
+        link_q = link_q.where(or_(Link.a.in_(mine), Link.b.in_(mine)))
         req_q = req_q.where(Request.project_id == project_id)
 
+    far: set[str] = set()
     for lk in db.scalars(link_q).all():
         # a depends on b
-        if lk.a in by_id and lk.b in by_id:
-            ctx.deps.setdefault(lk.a, []).append(lk.b)
-            ctx.dependents.setdefault(lk.b, []).append(lk.a)
+        if lk.a not in by_id:
+            continue
+        if lk.b not in by_id:
+            far.add(lk.b)
+        ctx.deps.setdefault(lk.a, []).append(lk.b)
+        ctx.dependents.setdefault(lk.b, []).append(lk.a)
+    if far:
+        # Loaded whatever the caller can read: readiness is not a read of the blocker, and a
+        # blocker the caller cannot see must not read as "unblocked". An id that is no item at
+        # all (a deleted row, a request) stays out, exactly as it did when both were local.
+        ctx.external = {it.id: it for it in db.scalars(select(Item).where(Item.id.in_(far)))}
 
     for req in db.scalars(req_q).all():
         if req.linked_to in by_id:
@@ -55,7 +75,7 @@ def blocked_by(ctx: Context, item: Item) -> list[str]:
     """Dependency ids that aren't done yet (what's holding this item)."""
     return [
         d for d in ctx.deps.get(item.id, [])
-        if d in ctx.by_id and ctx.by_id[d].status != "done"
+        if (dep := ctx.item(d)) is not None and dep.status != "done"
     ]
 
 

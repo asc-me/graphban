@@ -22,6 +22,7 @@ from app.providers.toolcall import ToolCall, ToolResult, ToolSpec
 from app.security import authz
 from app.services import items as items_svc
 from app.services import links as links_svc
+from app.services import mcp_proxy
 from app.services import memory as mem_svc
 from app.services import prds as prd_svc
 
@@ -50,8 +51,13 @@ class _Tool:
 # ---- handlers (each reuses an existing service op; returns a compact result string) ----
 def _get_item_details(ctx: ToolContext, inp: dict) -> str:
     item_id = inp.get("item_id") or (ctx.entity_id if ctx.entity_type == "item" else "")
-    d = items_svc.get_item_details(ctx.db, item_id)
-    return json.dumps(d, default=str) if d else f"item not found: {item_id}"
+    readable = authz.readable_project_ids(ctx.db, ctx.user_id)
+    d = items_svc.get_item_details(ctx.db, item_id, readable=readable)
+    # The project check is the read's own, not only the link placeholder's: an id is global,
+    # and the assistant must not read further than the user could (GRPH-1063).
+    if d is None or d.get("project_id") not in readable:
+        return f"item not found: {item_id}"
+    return json.dumps(d, default=str)
 
 
 def _search_items(ctx: ToolContext, inp: dict) -> str:
@@ -111,11 +117,18 @@ def _link_items(ctx: ToolContext, inp: dict) -> str:
         return "target_id is required"
     if target == ctx.entity_id:
         return "cannot link an item to itself"
-    if not items_svc.get_item_details(ctx.db, target):
-        return f"target item not found: {target}"
+    if mcp_proxy.enabled():
+        # A linked box holds no authority over links: the cloud arbitrates the org boundary,
+        # and a local write here would be one it never saw (GRPH-1063).
+        return "links are managed by the linked cloud org on this instance; use link_items via MCP"
+    # The same scope rule as the MCP tool (GRPH-1063); its refusal surfaces as a tool error.
+    ia, ib = links_svc.link_endpoints(
+        ctx.db, ctx.entity_id, target,
+        readable=authz.readable_project_ids(ctx.db, ctx.user_id),
+        writable=authz.writable_project_ids(ctx.db, ctx.user_id))
     link = links_svc.create_link(  # raises ValueError on a bad type → surfaced as a tool error
-        ctx.db, a=ctx.entity_id, b=target, type_=inp.get("type") or "dependency",
-        reason=inp.get("reason", ""), project_id=ctx.project_id)
+        ctx.db, a=ia.id, b=ib.id, type_=inp.get("type") or "dependency",
+        reason=inp.get("reason", ""), project_id=ia.project_id)
     return f"linked {ctx.entity_id} → {target} ({link.type})"
 
 

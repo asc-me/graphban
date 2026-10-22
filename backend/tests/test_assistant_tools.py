@@ -107,7 +107,7 @@ def test_link_items_soft_rejects_unknown_target_and_self(db):
     # soft failures come back as content (not is_error) so the model can self-correct
     bad = at.dispatch(_ctx(db, "item", "AL-08"),
                       ToolCall(id="c1", name="link_items", input={"target_id": "AL-999"}))
-    assert "not found" in bad.content
+    assert "does not exist" in bad.content  # the scope rule's refusal (GRPH-1063)
     same = at.dispatch(_ctx(db, "item", "AL-08"),
                        ToolCall(id="c2", name="link_items", input={"target_id": "AL-08"}))
     assert "itself" in same.content
