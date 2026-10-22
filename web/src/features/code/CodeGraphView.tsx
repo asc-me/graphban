@@ -52,6 +52,7 @@ import { useCodeAnalysis, useCodeMap, useFleetPresence } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors, HeldArea, ProjectStub } from "@/lib/types";
 
 import { CodeChat } from "./CodeChat";
+import { CodeGraphCanvas } from "./CodeGraphCanvas";
 import { FleetLegend } from "./FleetLegend";
 
 const KIND_META: Record<string, { label: string; color: string }> = {
@@ -245,6 +246,8 @@ export function CodeGraphView() {
     imports: true, calls: true, owns: true, tested_by: true, references: true,
   });
   const [selPath, setSelPath] = React.useState<string | null>(null);
+  /** Find and hub picks tween the canvas camera. A canvas click does not. */
+  const [frameId, setFrameId] = React.useState<string | null>(null);
   const [hubsOpen, setHubsOpen] = React.useState(false);
   // AC-19. `armed` is the discoverable way in: alt-click is the PRD's gesture and is invisible,
   // and on some window managers alt-drag never reaches the page at all.
@@ -318,7 +321,11 @@ export function CodeGraphView() {
   // explain something. `worthCollapsing` checks the DISTRIBUTION, not just the count: this
   // project measured [146, 3, 1, 1, 1, 1] on the live graph, which passes a count check and
   // renders one huge dot beside five specks (GRPH-403).
+  // Above the detail budget the code view is canvas mode (PRD-52 D1). Galaxy
+  // collapse stays in this file for S9; it does not run while canvas mode is on.
+  const canvasMode = allIds.length > DETAIL_BUDGET;
   const galaxyMode =
+    !canvasMode &&
     entered === null &&
     allIds.length > DETAIL_BUDGET &&
     worthCollapsing(galaxy.superNodes, allIds.length);
@@ -346,8 +353,8 @@ export function CodeGraphView() {
   // Layout runs over the collapsed set in galaxy mode, and over one component's nodes once
   // entered — which is what makes the bound the largest COMPONENT rather than the repo.
   const layoutIds = React.useMemo(
-    () => (galaxyMode ? galaxy.superNodes.map((s) => s.id) : ids),
-    [galaxyMode, galaxy, ids],
+    () => (canvasMode ? [] : galaxyMode ? galaxy.superNodes.map((s) => s.id) : ids),
+    [canvasMode, galaxyMode, galaxy, ids],
   );
   const layoutEdges = React.useMemo(() => {
     if (galaxyMode) return galaxy.superEdges.map((e) => ({ a: e.a, b: e.b }));
@@ -402,12 +409,17 @@ export function CodeGraphView() {
   const firstMatch = find.active ? [...find.matches].sort()[0] : undefined;
   React.useEffect(() => {
     if (!firstMatch) return;
+    if (canvasMode) {
+      setSelPath(firstMatch);
+      setFrameId(firstMatch);
+      return;
+    }
     const home = galaxy.componentOf[firstMatch];
     setEntered((cur) => {
       if (cur !== null || allIds.length <= DETAIL_BUDGET) return cur;
       return home ?? cur;
     });
-  }, [firstMatch, galaxy, allIds.length]);
+  }, [firstMatch, galaxy, allIds.length, canvasMode]);
   const hubs = React.useMemo(() => topByDegree(ids, layoutEdges, LOD_TOP_N), [ids, layoutEdges]);
 
   // The kinds the legend has to explain: what is DRAWN, in the fixed order of the colour
@@ -578,13 +590,17 @@ export function CodeGraphView() {
   const pickHub = React.useCallback(
     (path: string) => {
       selectNode(path);
+      if (canvasMode) {
+        setFrameId(path);
+        return;
+      }
       if (!ids.includes(path)) {
         const holder = galaxy.superNodes.find((sn) => sn.members.includes(path));
         if (holder) setEntered(holder.id);
       }
       setPendingFocus(path);
     },
-    [ids, galaxy, selectNode],
+    [ids, galaxy, selectNode, canvasMode],
   );
 
   // Find is highlight-by-another-name: it feeds the same dim path as selection rather than
@@ -607,23 +623,40 @@ export function CodeGraphView() {
   posRef.current = pos;
   const matchKey = find.active ? [...find.matches].sort().join(",") : "";
   React.useEffect(() => {
-    if (!matchKey) return;
+    if (canvasMode || !matchKey) return;
     const points = matchKey.split(",").map((id) => posRef.current[id]).filter(Boolean);
     if (points.length) fitRef.current(points);
-  }, [matchKey]);
+  }, [matchKey, canvasMode]);
 
   // Deferred rather than done in the click: after entering a component the layout has not run
   // yet, so `pos[path]` is undefined for a frame or three.
   React.useEffect(() => {
-    if (!pendingFocus) return;
+    if (canvasMode || !pendingFocus) return;
     const at = posRef.current[pendingFocus];
     if (!at) return;
     fitRef.current([at]);
     setPendingFocus(null);
-  }, [pendingFocus, pos]);
+  }, [pendingFocus, pos, canvasMode]);
 
   // PRD-47 S1: a failure leaves `nodes` empty too, and the empty-state copy below is an
   // assertion that nothing has been *described*. Only claim it once the read answered.
+  const canvasNodes = React.useMemo(
+    () =>
+      allIds.map((id) => {
+        const n = nodeByPath[id];
+        return { id, path: n?.path ?? id, kind: n?.kind ?? "file", name: n?.name ?? "" };
+      }),
+    [allIds, nodeByPath],
+  );
+  // `truncated === false` means the server looked and the page is complete.
+  // A missing flag is complete only when the returned list matches the total.
+  const truncated =
+    map?.truncated === true
+      ? true
+      : map?.truncated === false
+        ? false
+        : (map?.node_count ?? nodes.length) > nodes.length;
+
   const failed = mapQ.isError && map === undefined;
   const empty = !isLoading && !failed && nodes.length === 0;
 
@@ -664,7 +697,7 @@ export function CodeGraphView() {
                 Unpin {pinsApi.pinCount}
               </button>
             )}
-            {isFiltered && (
+            {!canvasMode && isFiltered && (
               // Only offered under a filter: with every type on, the layout already reflects
               // exactly what is drawn and re-laying out would move nodes for no reason.
               <button
@@ -742,6 +775,21 @@ export function CodeGraphView() {
                 question on the right and the agent will tell you what it knows so far.
               </p>
             </div>
+          ) : canvasMode ? (
+            <CodeGraphCanvas
+              nodes={canvasNodes}
+              edges={allEdges}
+              enabledTypes={activeTypes}
+              isolate={isolate}
+              selectedId={selPath}
+              onSelect={(id) => {
+                if (id) selectNode(id);
+                else setSelPath(null);
+              }}
+              truncated={truncated}
+              totalNodes={map?.node_count ?? nodes.length}
+              frameId={frameId}
+            />
           ) : (
             <svg
               ref={view.svgRef}
@@ -1197,18 +1245,20 @@ export function CodeGraphView() {
                 <FleetLegend presence={presence} soloUser={soloUser} onSolo={setSoloUser} />
                 {!galaxyMode && <KindLegend kinds={drawnKinds} />}
               </div>
-              <GraphControls
-                depth={depth}
-                onDepth={setDepth}
-                isolate={isolate}
-                onIsolate={() => setIsolate((v) => !v)}
-                canIsolate={!!shown}
-                zoom={view.viewport.k}
-                onZoom={(factor) =>
-                  view.setViewport((v) => zoomAbout(v, factor, W / 2, H / 2))
-                }
-                onFit={view.reset}
-              />
+              {!canvasMode && (
+                <GraphControls
+                  depth={depth}
+                  onDepth={setDepth}
+                  isolate={isolate}
+                  onIsolate={() => setIsolate((v) => !v)}
+                  canIsolate={!!shown}
+                  zoom={view.viewport.k}
+                  onZoom={(factor) =>
+                    view.setViewport((v) => zoomAbout(v, factor, W / 2, H / 2))
+                  }
+                  onFit={view.reset}
+                />
+              )}
             </div>
           )}
         </div>

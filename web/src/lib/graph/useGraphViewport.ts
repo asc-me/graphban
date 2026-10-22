@@ -18,8 +18,13 @@ export interface Viewport {
 
 export const IDENTITY: Viewport = { k: 1, x: 0, y: 0 };
 
-export function clampZoom(k: number): number {
-  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, k));
+export interface ZoomRange {
+  min?: number;
+  max?: number;
+}
+
+export function clampZoom(k: number, min = MIN_ZOOM, max = MAX_ZOOM): number {
+  return Math.max(min, Math.min(max, k));
 }
 
 /**
@@ -28,8 +33,14 @@ export function clampZoom(k: number): number {
  * Zooming about the centre instead is the small wrongness that makes a graph feel unusable:
  * the user points at what they want, and the view walks away from it.
  */
-export function zoomAbout(v: Viewport, factor: number, px: number, py: number): Viewport {
-  const k = clampZoom(v.k * factor);
+export function zoomAbout(
+  v: Viewport,
+  factor: number,
+  px: number,
+  py: number,
+  range?: ZoomRange,
+): Viewport {
+  const k = clampZoom(v.k * factor, range?.min, range?.max);
   if (k === v.k) return v;
   // The world point under (px, py) must be invariant: (p - t) / k is held constant.
   return { k, x: px - ((px - v.x) / v.k) * k, y: py - ((py - v.y) / v.k) * k };
@@ -54,6 +65,7 @@ export function fitViewport(
   width: number,
   height: number,
   padding = 60,
+  range?: ZoomRange,
 ): Viewport {
   if (points.length === 0) return IDENTITY;
   const xs = points.map((p) => p.x);
@@ -64,7 +76,7 @@ export function fitViewport(
   const maxY = Math.max(...ys);
   const w = Math.max(1, maxX - minX);
   const h = Math.max(1, maxY - minY);
-  const k = clampZoom(Math.min((width - padding * 2) / w, (height - padding * 2) / h));
+  const k = clampZoom(Math.min((width - padding * 2) / w, (height - padding * 2) / h), range?.min, range?.max);
   // Centre the box: the midpoint of the fitted content lands on the midpoint of the frame.
   return {
     k,
@@ -104,11 +116,17 @@ export interface GraphViewport {
  * rewriting the viewBox, so every coordinate in the scene stays in the same space the layout
  * produced and nothing downstream has to know the view moved.
  */
-export function useGraphViewport(width: number, height: number): GraphViewport {
+export function useGraphViewport(
+  width: number,
+  height: number,
+  opts?: { minZoom?: number; maxZoom?: number },
+): GraphViewport {
   const [viewport, setViewport] = React.useState<Viewport>(IDENTITY);
   const [panning, setPanning] = React.useState(false);
   const svgRef = React.useRef<SVGSVGElement | null>(null);
   const panFrom = React.useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
+  const rangeRef = React.useRef<ZoomRange | undefined>(undefined);
+  rangeRef.current = opts ? { min: opts.minZoom, max: opts.maxZoom } : undefined;
 
   const toView = React.useCallback(
     (clientX: number, clientY: number): Pos => {
@@ -132,7 +150,7 @@ export function useGraphViewport(width: number, height: number): GraphViewport {
       const p = toView(e.clientX, e.clientY);
       // Exponential in the delta so a trackpad and a mouse wheel both feel proportional.
       const factor = Math.exp(-e.deltaY * 0.002);
-      setViewport((v) => zoomAbout(v, factor, p.x, p.y));
+      setViewport((v) => zoomAbout(v, factor, p.x, p.y, rangeRef.current));
     },
     [toView],
   );
@@ -171,7 +189,7 @@ export function useGraphViewport(width: number, height: number): GraphViewport {
   const onDoubleClick = reset;
 
   const fitTo = React.useCallback(
-    (points: Pos[]) => setViewport(fitViewport(points, width, height)),
+    (points: Pos[]) => setViewport(fitViewport(points, width, height, 60, rangeRef.current)),
     [width, height],
   );
 
