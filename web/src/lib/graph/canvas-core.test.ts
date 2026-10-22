@@ -381,11 +381,20 @@ describe("canvas bitmap scale", () => {
   it("draws nodes, edges, rings and glow in device pixels, not the CSS quarter", () => {
     let matrix = [1, 0, 0, 1, 0, 0];
     const draws: number[][] = [];
+    const dpr = 2;
+    const camera = { x: 10, y: 20, k: 3 };
+    const expected = [dpr * camera.k, 0, 0, dpr * camera.k, dpr * camera.x, dpr * camera.y];
+    // Each layer has to set the matrix itself. Inheriting it from the layer
+    // above would keep these draws correct after one of them stopped.
+    let cameraSets = 0;
     const ctx = new Proxy({} as CanvasRenderingContext2D, {
       get(_target, prop) {
         if (prop === "setTransform") {
           return (a: number, b: number, c: number, d: number, e: number, f: number) => {
             matrix = [a, b, c, d, e, f];
+            if (a === expected[0] && b === 0 && c === 0 && d === expected[3] && e === expected[4] && f === expected[5]) {
+              cameraSets += 1;
+            }
           };
         }
         if (prop === "fill" || prop === "stroke" || prop === "fillRect") {
@@ -401,8 +410,6 @@ describe("canvas bitmap scale", () => {
       height: 0,
       getContext: () => ctx,
     } as unknown as HTMLCanvasElement;
-    const dpr = 2;
-    const camera = { x: 10, y: 20, k: 3 };
     const scene: DrawScene = {
       width: 200,
       height: 100,
@@ -460,7 +467,7 @@ describe("canvas bitmap scale", () => {
     expect(renderer).not.toBeNull();
     renderer!.draw(scene);
     expect(draws.length).toBeGreaterThan(0);
-    const expected = [dpr * camera.k, 0, 0, dpr * camera.k, dpr * camera.x, dpr * camera.y];
+    expect(cameraSets).toBe(4);
     for (const drawn of draws) expect(drawn).toEqual(expected);
     expect(canvas.width).toBe(400);
     expect(canvas.height).toBe(200);

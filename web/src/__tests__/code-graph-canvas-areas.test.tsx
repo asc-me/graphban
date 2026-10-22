@@ -4,6 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import { bundlesFromEdges, bundleStrokes, quadPoint } from "@/features/code/canvas/edges";
 import type { ClusterLayout, RankedEdge } from "@/lib/graph/bigLayout";
 
+const layoutBox = vi.hoisted(() => ({
+  current: null as ClusterLayout | null,
+}));
+
 /**
  * A 12,000-node map draws areas and bundles only. The one file sits inside
  * hull A, which the fitted camera does not open, so a click there must not
@@ -48,7 +52,7 @@ const AREAS_LAYOUT: ClusterLayout = {
 
 vi.mock("@/lib/graph/useAreaLayout", () => ({
   useAreaLayout: () => ({
-    layout: AREAS_LAYOUT,
+    layout: layoutBox.current,
     pending: false,
     mode: "inline" as const,
     deaths: 0,
@@ -75,17 +79,34 @@ function pointer(host: HTMLElement, type: "pointerdown" | "pointerup" | "pointer
   });
 }
 
-function mount(onSelect = vi.fn()) {
+const SMALL_LAYOUT: ClusterLayout = {
+  ids: ["shown.py"],
+  x: Float32Array.from([0]),
+  y: Float32Array.from([0]),
+  r: Float32Array.from([8]),
+  kinds: ["file"],
+  colors: ["#ffffff"],
+  areaOf: ["A"],
+  areas: [{ id: "A", cx: 0, cy: 0, r: 40, color: "#111111", count: 1, label: "A" }],
+  bundles: [],
+  edges: [],
+  grid: { "0,0": [0] },
+  depth: 1,
+  nodeCount: 1,
+};
+
+function mount(layout: ClusterLayout, nodeId: string, onSelect = vi.fn()) {
+  layoutBox.current = layout;
   render(
     <CodeGraphCanvas
-      nodes={[{ id: "hidden.py", path: "hidden.py", kind: "file", name: "hidden.py" }]}
+      nodes={[{ id: nodeId, path: nodeId, kind: "file", name: nodeId }]}
       edges={[]}
       enabledTypes={["imports", "calls", "owns", "tested_by", "references"]}
       isolate={false}
       selectedId={null}
       onSelect={onSelect}
       truncated={false}
-      totalNodes={12001}
+      totalNodes={layout.nodeCount}
       frameId={null}
     />,
   );
@@ -121,7 +142,7 @@ function bundleScreen(t: number): { x: number; y: number } {
 
 describe("areas-only canvas", () => {
   it("does not select a file that is not drawn when the pointer goes up inside a hull", () => {
-    const { host, onSelect } = mount();
+    const { host, onSelect } = mount(AREAS_LAYOUT, "hidden.py");
     expect(screen.getByTestId("lod-caption")).toHaveTextContent(
       "Large map: zoom into an area to see its files",
     );
@@ -133,11 +154,27 @@ describe("areas-only canvas", () => {
     pointer(host, "pointerdown", clientX, clientY);
     pointer(host, "pointerup", clientX, clientY);
     expect(hitTest).not.toHaveBeenCalled();
-    expect(onSelect).not.toHaveBeenCalledWith("hidden.py");
+    // A click that never reaches the handler would also skip the id. The
+    // handler still runs, and it clears the selection instead of naming the file.
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith(null);
+  });
+
+  it("selects a file that is drawn on a small map", () => {
+    const { host, onSelect } = mount(SMALL_LAYOUT, "shown.py");
+    const circle = screen.getByTestId("hull-A").querySelector("circle");
+    const clientX = Number(circle?.getAttribute("cx"));
+    const clientY = Number(circle?.getAttribute("cy"));
+    expect(Number.isFinite(clientX)).toBe(true);
+    hitTest.mockClear();
+    pointer(host, "pointerdown", clientX, clientY);
+    pointer(host, "pointerup", clientX, clientY);
+    expect(hitTest).toHaveBeenCalled();
+    expect(onSelect).toHaveBeenCalledWith("shown.py");
   });
 
   it("shows both bundle counts when the pointer rests between the old 11 samples", () => {
-    const { host } = mount();
+    const { host } = mount(AREAS_LAYOUT, "hidden.py");
     const at = bundleScreen(0.05);
     pointer(host, "pointermove", at.x, at.y);
     expect(screen.getByTestId("canvas-tip")).toHaveTextContent("A→B 60 · B→A 40");

@@ -5,7 +5,7 @@
  */
 
 import { createCanvas2D } from "../../src/features/code/canvas/canvas2d";
-import { buildScene } from "../../src/features/code/canvas/scene";
+import { buildScene, type DrawScene } from "../../src/features/code/canvas/scene";
 import { clustersLayout, hitTest } from "../../src/lib/graph/bigLayout";
 import { dense, sparse, type BigMap } from "../../src/lib/graph/__fixtures__/bigMap";
 
@@ -64,10 +64,71 @@ function bench(name: "sparse" | "dense"): BenchResult {
   return { paintMs, panP95, hitMs, nodes: layout.nodeCount };
 }
 
+export interface DprProbe {
+  /** Red channel at the CSS center, read in device pixels. */
+  correct: number;
+  /** Red channel where a camera-only matrix paints the same node. */
+  quarter: number;
+  bitmap: number;
+}
+
+/**
+ * One node, drawn at dpr 2. The center in CSS pixels is (140, 100). On the
+ * bitmap that is (280, 200) when the camera matrix includes dpr, and (140, 100)
+ * when a layer replaces that matrix with the camera alone.
+ */
+function dprProbe(): DprProbe {
+  const canvas = document.getElementById("c") as HTMLCanvasElement;
+  const renderer = createCanvas2D(canvas);
+  if (!renderer) throw new Error("canvas 2d context missing");
+  const dpr = 2;
+  const width = 400;
+  const height = 300;
+  const scene: DrawScene = {
+    width,
+    height,
+    dpr,
+    camera: { x: 100, y: 80, k: 1 },
+    nodes: [
+      {
+        id: "n",
+        index: 0,
+        x: 40,
+        y: 20,
+        r: 8,
+        color: "#ff00ff",
+        kind: "file",
+        alpha: 1,
+        square: false,
+      },
+    ],
+    strokes: [],
+    hulls: [],
+    rings: [],
+    lod: "edges",
+    caption: "",
+    areasOnly: false,
+    revealed: null,
+    glow: [],
+  };
+  renderer.draw(scene);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("context lost");
+  const cssX = 140;
+  const cssY = 100;
+  const correct = ctx.getImageData(cssX * dpr, cssY * dpr, 1, 1).data[0];
+  const quarter = ctx.getImageData(cssX, cssY, 1, 1).data[0];
+  const bitmap = canvas.width;
+  renderer.destroy();
+  return { correct, quarter, bitmap };
+}
+
 declare global {
   interface Window {
     __bench: (name: "sparse" | "dense") => BenchResult;
+    __dprProbe: () => DprProbe;
   }
 }
 
 window.__bench = bench;
+window.__dprProbe = dprProbe;

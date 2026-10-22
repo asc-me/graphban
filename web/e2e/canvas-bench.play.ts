@@ -43,3 +43,21 @@ test("sparse canvas stays inside the frame budget and dense paints", async ({ pa
     description: `paint ${dense.paintMs.toFixed(1)}ms pan p95 ${dense.panP95.toFixed(1)}ms hit ${dense.hitMs.toFixed(3)}ms`,
   });
 });
+
+/**
+ * The unit suite's canvas mock never has a real bitmap, and the bench above
+ * passes dpr 1. This is the 2× case: the node has to land on the device pixel
+ * that the CSS hull would name, not in the top-left quarter.
+ */
+test("2× bitmap draws a node on its CSS pixel", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(
+    () => typeof (window as unknown as { __dprProbe?: () => { correct: number; quarter: number; bitmap: number } }).__dprProbe === "function",
+  );
+  const probe = await page.evaluate(() =>
+    (window as unknown as { __dprProbe: () => { correct: number; quarter: number; bitmap: number } }).__dprProbe(),
+  );
+  expect(probe.bitmap).toBe(800);
+  expect(probe.correct).toBeGreaterThan(200);
+  expect(probe.quarter).toBe(0);
+});
