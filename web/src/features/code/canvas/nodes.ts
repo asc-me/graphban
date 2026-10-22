@@ -5,9 +5,18 @@
 
 import type { DrawNode, DrawRing, DrawScene } from "./scene";
 
-function applyCamera(ctx: CanvasRenderingContext2D, scene: DrawScene) {
-  const { camera } = scene;
-  ctx.setTransform(camera.k, 0, 0, camera.k, camera.x, camera.y);
+/**
+ * World coordinates onto the bitmap.
+ *
+ * The camera maps world units to CSS pixels. The bitmap is `dpr` times the CSS
+ * box, so the matrix has to carry both. A camera-only `setTransform` replaces
+ * the dpr scale the clear just set, and on a 2× display the marks land in the
+ * top-left quarter while the DOM hulls and labels stay in CSS pixels.
+ */
+export function applyCamera(ctx: CanvasRenderingContext2D, scene: DrawScene) {
+  const { camera, dpr } = scene;
+  const scale = dpr * camera.k;
+  ctx.setTransform(scale, 0, 0, scale, dpr * camera.x, dpr * camera.y);
 }
 
 export function drawNodes(ctx: CanvasRenderingContext2D, scene: DrawScene): void {

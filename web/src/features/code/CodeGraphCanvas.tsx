@@ -24,7 +24,7 @@ import {
   type Cam,
   type Tween,
 } from "./canvas/camera";
-import { groupThousands, quadPoint, type Stroke } from "./canvas/edges";
+import { groupThousands, hitBundle } from "./canvas/edges";
 import { pickLabels, type LabelNode } from "./canvas/labels";
 import type { Renderer } from "./canvas/renderer";
 import {
@@ -62,17 +62,19 @@ function shortName(node: { path: string; name: string } | undefined, id: string)
   return parts.pop() ?? seg;
 }
 
-function hitBundle(strokes: Stroke[], wx: number, wy: number, cam: Cam): Stroke | null {
-  let best: { stroke: Stroke; d: number } | null = null;
-  for (const stroke of strokes) {
-    if (stroke.kind !== "quad") continue;
-    for (let step = 0; step <= 10; step++) {
-      const p = quadPoint(stroke, step / 10);
-      const d = Math.hypot(p.x - wx, p.y - wy) * cam.k;
-      if (d <= 10 && (best === null || d < best.d)) best = { stroke, d };
-    }
-  }
-  return best?.stroke ?? null;
+/**
+ * A drawn file under the pointer. Above 10k nodes the frame is areas and
+ * bundles until one area fills the view, and a hit on a file that is not
+ * drawn selects something the picture does not contain.
+ */
+function nodeAtPointer(
+  scene: DrawScene | null,
+  layout: ClusterLayout | null,
+  wx: number,
+  wy: number,
+): string | null {
+  if (!scene || !layout || scene.areasOnly) return null;
+  return hitTest(layout, wx, wy);
 }
 
 export interface CanvasControlApi {
@@ -295,7 +297,7 @@ export function CodeGraphCanvas({
       setTip(null);
       return;
     }
-    const hit = hitTest(layoutNow, w.x, w.y);
+    const hit = nodeAtPointer(sceneNow, layoutNow, w.x, w.y);
     setHover(hit);
     if (hit) {
       const node = nameOf.get(hit);
@@ -368,7 +370,7 @@ export function CodeGraphCanvas({
           const w = toWorld(e.clientX, e.clientY);
           const moved = Math.hypot(w.sx - from.px, w.sy - from.py);
           if (moved < 4 && layout) {
-            const hit = hitTest(layout, w.x, w.y);
+            const hit = nodeAtPointer(scene, layout, w.x, w.y);
             onSelect(hit);
           }
         }
@@ -376,7 +378,7 @@ export function CodeGraphCanvas({
       onDoubleClick={(e) => {
         if (!layout) return;
         const w = toWorld(e.clientX, e.clientY);
-        const hit = hitTest(layout, w.x, w.y);
+        const hit = nodeAtPointer(scene, layout, w.x, w.y);
         if (!hit) {
           setTween(null);
           setCam(fitCamera(layout.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r })), size.w, size.h));

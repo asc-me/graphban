@@ -7,14 +7,15 @@
 import type { Renderer } from "./renderer";
 import type { DrawScene } from "./scene";
 import { drawClouds } from "./clouds";
-import { drawNodes, drawRings } from "./nodes";
+import { applyCamera, drawNodes, drawRings } from "./nodes";
 
 function drawGlow(ctx: CanvasRenderingContext2D, scene: DrawScene) {
   if (scene.glow.length === 0) return;
   const { camera } = scene;
-  ctx.setTransform(camera.k, 0, 0, camera.k, camera.x, camera.y);
+  applyCamera(ctx, scene);
   ctx.shadowColor = "rgba(198,242,78,0.85)";
-  ctx.shadowBlur = 8;
+  // shadowBlur is in bitmap pixels and ignores the current transform.
+  ctx.shadowBlur = 8 * scene.dpr;
   ctx.globalAlpha = 0.95;
   ctx.lineWidth = 2.5 / Math.max(camera.k, 0.05);
   for (const stroke of scene.glow) {
@@ -30,7 +31,7 @@ function drawGlow(ctx: CanvasRenderingContext2D, scene: DrawScene) {
 
 function drawEdges(ctx: CanvasRenderingContext2D, scene: DrawScene) {
   const { camera } = scene;
-  ctx.setTransform(camera.k, 0, 0, camera.k, camera.x, camera.y);
+  applyCamera(ctx, scene);
   for (const stroke of scene.strokes) {
     ctx.beginPath();
     ctx.strokeStyle = stroke.color;

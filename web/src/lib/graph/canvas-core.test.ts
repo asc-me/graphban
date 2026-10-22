@@ -25,12 +25,16 @@ import {
 } from "./bigLayout";
 import { useAreaLayout, workerAfterDeath, type AreaWorker } from "./useAreaLayout";
 import { replaceTween, sampleTween, TWEEN_MS } from "@/features/code/canvas/camera";
+import { createCanvas2D } from "@/features/code/canvas/canvas2d";
+import type { DrawScene } from "@/features/code/canvas/scene";
 import {
   EDGE_CAP,
   LOD_ZOOM,
   bundleStrokes,
   capCaption,
   edgeLod,
+  hitBundle,
+  quadPoint,
   rankAndCap,
 } from "@/features/code/canvas/edges";
 import { LABEL_CAP, pickLabels, type LabelNode } from "@/features/code/canvas/labels";
@@ -338,6 +342,128 @@ describe("edge level of detail", () => {
     );
     expect(dominant).toHaveLength(1);
     expect(dominant[0].marker).toBeUndefined();
+  });
+
+  it("hits a long 60/40 bundle along the stroke, not only at 11 samples", () => {
+    const hullA = { id: "A", cx: 0, cy: 0, r: 40, color: "#111111", count: 10, label: "A" };
+    const hullB = { id: "B", cx: 800, cy: 0, r: 40, color: "#222222", count: 10, label: "B" };
+    const strokes = bundleStrokes(
+      {
+        a: "A",
+        b: "B",
+        ab: 60,
+        ba: 40,
+        colorA: hullA.color,
+        colorB: hullB.color,
+        label: bundleLabel("A", "B", 60, 40),
+        hullA,
+        hullB,
+      },
+      1,
+    );
+    expect(strokes.length).toBeGreaterThan(0);
+    expect(strokes[0].label).toBe("A→B 60 · B→A 40");
+    const cam = { x: 0, y: 0, k: 1 };
+    // t = 0.05 sits halfway between the old fixed samples at 0 and 0.1.
+    // On a fitted area pair that gap is wider than the 10px hit radius.
+    for (const stroke of strokes) {
+      for (const t of [0.05, 0.15, 0.5, 0.85, 0.95]) {
+        const p = quadPoint(stroke, t);
+        expect(hitBundle(strokes, p.x, p.y, cam)?.label).toBe("A→B 60 · B→A 40");
+      }
+    }
+    const mid = quadPoint(strokes[0], 0.5);
+    expect(hitBundle(strokes, mid.x, mid.y + 40, cam)).toBeNull();
+  });
+});
+
+describe("canvas bitmap scale", () => {
+  it("draws nodes, edges, rings and glow in device pixels, not the CSS quarter", () => {
+    let matrix = [1, 0, 0, 1, 0, 0];
+    const draws: number[][] = [];
+    const ctx = new Proxy({} as CanvasRenderingContext2D, {
+      get(_target, prop) {
+        if (prop === "setTransform") {
+          return (a: number, b: number, c: number, d: number, e: number, f: number) => {
+            matrix = [a, b, c, d, e, f];
+          };
+        }
+        if (prop === "fill" || prop === "stroke" || prop === "fillRect") {
+          return () => {
+            draws.push(matrix.slice());
+          };
+        }
+        return () => {};
+      },
+    });
+    const canvas = {
+      width: 0,
+      height: 0,
+      getContext: () => ctx,
+    } as unknown as HTMLCanvasElement;
+    const dpr = 2;
+    const camera = { x: 10, y: 20, k: 3 };
+    const scene: DrawScene = {
+      width: 200,
+      height: 100,
+      dpr,
+      camera,
+      nodes: [
+        {
+          id: "n",
+          index: 0,
+          x: 40,
+          y: 12,
+          r: 6,
+          color: "#7ca2ff",
+          kind: "file",
+          alpha: 1,
+          square: false,
+        },
+      ],
+      strokes: [
+        {
+          kind: "line",
+          x0: 0,
+          y0: 0,
+          cx: 0,
+          cy: 0,
+          x1: 30,
+          y1: 0,
+          color: "#8b949e",
+          widthPx: 1.25,
+          label: "a→b",
+        },
+      ],
+      hulls: [],
+      rings: [{ x: 40, y: 12, r: 13, color: "#7ca2ff", kind: "selection" }],
+      lod: "edges",
+      caption: "",
+      areasOnly: false,
+      revealed: null,
+      glow: [
+        {
+          kind: "line",
+          x0: 0,
+          y0: 0,
+          cx: 0,
+          cy: 0,
+          x1: 30,
+          y1: 0,
+          color: "#c6f24e",
+          widthPx: 2.5,
+          label: "",
+        },
+      ],
+    };
+    const renderer = createCanvas2D(canvas);
+    expect(renderer).not.toBeNull();
+    renderer!.draw(scene);
+    expect(draws.length).toBeGreaterThan(0);
+    const expected = [dpr * camera.k, 0, 0, dpr * camera.k, dpr * camera.x, dpr * camera.y];
+    for (const drawn of draws) expect(drawn).toEqual(expected);
+    expect(canvas.width).toBe(400);
+    expect(canvas.height).toBe(200);
   });
 });
 

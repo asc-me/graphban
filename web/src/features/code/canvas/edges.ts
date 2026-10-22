@@ -8,6 +8,7 @@
 
 import type { Bundle, Hull, RankedEdge } from "@/lib/graph/bigLayout";
 import { bundleLabel } from "@/lib/graph/bigLayout";
+import type { Cam } from "./camera";
 
 export const LOD_ZOOM = 2.6;
 export const EDGE_CAP = 6000;
@@ -75,6 +76,36 @@ export function quadPoint(q: Quad, t: number): { x: number; y: number } {
     x: u * u * q.x0 + 2 * u * t * q.cx + t * t * q.x1,
     y: u * u * q.y0 + 2 * u * t * q.cy + t * t * q.y1,
   };
+}
+
+/** A hover within this many screen pixels of a bundle stroke counts. */
+export const BUNDLE_HIT_PX = 10;
+
+/**
+ * The bundle under a world point, or null.
+ *
+ * Samples are spaced by the hit radius along the control polygon, which is at
+ * least as long as the curve. A fixed 11-sample walk leaves gaps on a fitted
+ * area pair (often longer than 200px), so the middle of the stroke never shows
+ * the A→B / B→A tooltip.
+ */
+export function hitBundle(strokes: Stroke[], wx: number, wy: number, cam: Cam): Stroke | null {
+  let best: { stroke: Stroke; d: number } | null = null;
+  const k = Math.max(Math.abs(cam.k), 1e-6);
+  for (const stroke of strokes) {
+    if (stroke.kind !== "quad") continue;
+    const span =
+      (Math.hypot(stroke.cx - stroke.x0, stroke.cy - stroke.y0) +
+        Math.hypot(stroke.x1 - stroke.cx, stroke.y1 - stroke.cy)) *
+      k;
+    const steps = Math.max(1, Math.ceil(span / BUNDLE_HIT_PX));
+    for (let step = 0; step <= steps; step++) {
+      const p = quadPoint(stroke, step / steps);
+      const d = Math.hypot(p.x - wx, p.y - wy) * k;
+      if (d <= BUNDLE_HIT_PX && (best === null || d < best.d)) best = { stroke, d };
+    }
+  }
+  return best?.stroke ?? null;
 }
 
 export interface Stroke {
