@@ -454,6 +454,10 @@ def _remember_holdings(children: Sequence[Child], partition: Partition) -> None:
         items = [i for i in (partition.held.get(child.agent_id) or []) if i]
         if items:
             child.held_items = list(items)
+            # GRPH-1079: remembered, not replaced. The next reading drops an item the child
+            # moved to review, and that item's work is still on this branch.
+            seen = child.ever_held
+            seen += [i for i in items if i not in seen]
 
 
 def item_status(client: Graphban) -> dict[str, dict]:
@@ -1318,7 +1322,8 @@ def _note_staleness(wave: Wave, tree: Worktree) -> None:
 def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) -> None:
     """Compare what this child CHANGED against what its items DECLARE (GRPH-785).
 
-    The declaration is RE-READ here, per held item, with `get_item_details` (GRPH-1025).
+    The declaration is RE-READ here, per item on the branch (`_branch_items`, GRPH-1079), with
+    `get_item_details` (GRPH-1025).
     Comparing against the delegation-time snapshot punished a child for widening its own
     declaration: `update_item(touchpoints=...)` unions into the item, the snapshot never saw
     it, and on wave p48c every branch was refused — one on its own declared test files. The
@@ -1342,9 +1347,7 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
         return
     declared: list[str] = []
     unread: list[str] = []
-    # `held_items`, not live roster holdings: `_roster` is overwritten after `release_item`,
-    # so at reap the live view is empty and the comparison would have no items to look up.
-    for item_id in (child.held_items or []):
+    for item_id in _branch_items(child):
         now, why = _declared_now(client, item_id)
         if now is None:
             unread.append(f"{item_id}: {why}")
@@ -1359,6 +1362,31 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
     # Recomputed over every branch measured so far, so the last reap holds the whole wave's
     # answer — a pairwise check at each reap would miss the pair reaped either side of it.
     wave.collided = tp_mod.overlaps(wave.touched)
+
+
+def _branch_items(child) -> list[str]:
+    """Every item whose work can be on this child's branch, bound item first (GRPH-1079).
+
+    Not `held_items` alone: that is the roster's LAST non-empty reading. A bound child builds
+    X, moves it to `review` (so it no longer holds X), and keeps claiming — at reap it holds
+    Y and Z, and X's own files were compared against Y's and Z's declarations and refused.
+    So: the seat's bound item, every item the roster ever read it holding, and what it holds
+    now. Not live roster holdings either: `_roster` is overwritten after `release_item`, so
+    at reap the live view is empty.
+
+    `getattr` because a Child rebuilt by hand or by `adopt` may carry only `held_items`.
+    """
+    ids: list[str] = []
+    assigned = getattr(child, "assigned", None)
+    if isinstance(assigned, dict):
+        ids.append(str(assigned.get("item") or "").strip())
+    ids += [str(i) for i in (getattr(child, "ever_held", None) or [])]
+    ids += [str(i) for i in (child.held_items or [])]
+    out: list[str] = []
+    for i in ids:
+        if i and i not in out:
+            out.append(i)
+    return out
 
 
 def _declared_now(client: Graphban | None, item_id: str) -> tuple[list[str] | None, str]:
