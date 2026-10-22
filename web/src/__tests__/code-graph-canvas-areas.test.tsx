@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { bundlesFromEdges, bundleStrokes, quadPoint } from "@/features/code/canvas/edges";
@@ -95,11 +95,12 @@ const SMALL_LAYOUT: ClusterLayout = {
   nodeCount: 1,
 };
 
-function mount(layout: ClusterLayout, nodeId: string, onSelect = vi.fn()) {
+function mount(layout: ClusterLayout, nodeId: string | string[], onSelect = vi.fn()) {
   layoutBox.current = layout;
+  const ids = Array.isArray(nodeId) ? nodeId : [nodeId];
   render(
     <CodeGraphCanvas
-      nodes={[{ id: nodeId, path: nodeId, kind: "file", name: nodeId }]}
+      nodes={ids.map((id) => ({ id, path: id, kind: "file", name: id }))}
       edges={[]}
       enabledTypes={["imports", "calls", "owns", "tested_by", "references"]}
       isolate={false}
@@ -178,5 +179,99 @@ describe("areas-only canvas", () => {
     const at = bundleScreen(0.05);
     pointer(host, "pointermove", at.x, at.y);
     expect(screen.getByTestId("canvas-tip")).toHaveTextContent("A→B 60 · B→A 40");
+  });
+});
+
+/**
+ * Fit is areas-only because C is far away. A and B sit close enough that
+ * zooming until A fills 35% of the short side still leaves B on screen.
+ * `side.py` is the file inside that neighbour; `open.py` is inside A.
+ */
+const ZOOMED_LAYOUT: ClusterLayout = {
+  ids: ["open.py", "side.py"],
+  x: Float32Array.from([0, 160]),
+  y: Float32Array.from([0, 0]),
+  r: Float32Array.from([8, 8]),
+  kinds: ["file", "file"],
+  colors: ["#ffffff", "#ffffff"],
+  areaOf: ["A", "B"],
+  areas: [
+    { id: "A", cx: 0, cy: 0, r: 100, color: "#111111", count: 6000, label: "A" },
+    { id: "B", cx: 160, cy: 0, r: 40, color: "#222222", count: 3000, label: "B" },
+    { id: "C", cx: 8000, cy: 0, r: 50, color: "#333333", count: 3001, label: "C" },
+  ],
+  bundles: [],
+  edges: [],
+  grid: { "0,0": [0], "16,0": [1] },
+  depth: 1,
+  nodeCount: 12_001,
+};
+
+function hullCircle(id: string): { x: number; y: number; r: number } {
+  const circle = screen.getByTestId(`hull-${id}`).querySelector("circle");
+  return {
+    x: Number(circle?.getAttribute("cx")),
+    y: Number(circle?.getAttribute("cy")),
+    r: Number(circle?.getAttribute("r")),
+  };
+}
+
+describe("a revealed area on a map above 10k nodes", () => {
+  it("does not select a file in a neighbouring hull that is still on screen", () => {
+    const { host, onSelect } = mount(ZOOMED_LAYOUT, ["open.py", "side.py"]);
+    expect(screen.getByTestId("lod-caption")).toHaveTextContent(
+      "Large map: zoom into an area to see its files",
+    );
+
+    const start = hullCircle("A");
+    pointer(host, "pointerdown", start.x, start.y);
+    pointer(host, "pointermove", 450, 280);
+    pointer(host, "pointerup", 450, 280);
+
+    let guard = 0;
+    while (
+      screen.getByTestId("lod-caption").textContent?.includes("Large map") &&
+      guard < 8
+    ) {
+      fireEvent.wheel(host, { clientX: 450, clientY: 280, deltaY: -400 });
+      guard += 1;
+    }
+    expect(guard).toBeGreaterThan(0);
+    expect(screen.getByTestId("lod-caption").textContent ?? "").not.toContain("Large map");
+
+    const opened = hullCircle("A");
+    // 35% of the short side (560). This is the threshold `revealedArea` uses.
+    expect(opened.r).toBeGreaterThanOrEqual(560 * 0.35);
+
+    const neighbour = hullCircle("B");
+    expect(neighbour.x).toBeGreaterThan(0);
+    expect(neighbour.x).toBeLessThan(900);
+    expect(neighbour.y).toBeGreaterThan(0);
+    expect(neighbour.y).toBeLessThan(560);
+
+    pointer(host, "pointermove", neighbour.x, neighbour.y);
+    expect(screen.queryByTestId("canvas-tip")).toBeNull();
+
+    hitTest.mockClear();
+    onSelect.mockClear();
+    pointer(host, "pointerdown", neighbour.x, neighbour.y);
+    pointer(host, "pointerup", neighbour.x, neighbour.y);
+    expect(hitTest).toHaveBeenCalled();
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith(null);
+    expect(onSelect).not.toHaveBeenCalledWith("side.py");
+
+    const mine = hullCircle("A");
+    onSelect.mockClear();
+    pointer(host, "pointerdown", mine.x, mine.y);
+    pointer(host, "pointerup", mine.x, mine.y);
+    expect(onSelect).toHaveBeenCalledWith("open.py");
+
+    onSelect.mockClear();
+    fireEvent.doubleClick(host, { clientX: neighbour.x, clientY: neighbour.y });
+    expect(onSelect).not.toHaveBeenCalledWith("side.py");
+    expect(screen.getByTestId("lod-caption")).toHaveTextContent(
+      "Large map: zoom into an area to see its files",
+    );
   });
 });

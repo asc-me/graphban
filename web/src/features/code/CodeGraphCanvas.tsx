@@ -66,6 +66,11 @@ function shortName(node: { path: string; name: string } | undefined, id: string)
  * A drawn file under the pointer. Above 10k nodes the frame is areas and
  * bundles until one area fills the view, and a hit on a file that is not
  * drawn selects something the picture does not contain.
+ *
+ * Opening that area does not hide the others: the reveal test is a 35%
+ * screen radius, so neighbouring hulls stay on screen. Click, hover and
+ * double-click all come through here, and a pointer on one of those hulls
+ * is not a file in the area this frame drew.
  */
 function nodeAtPointer(
   scene: DrawScene | null,
@@ -74,7 +79,11 @@ function nodeAtPointer(
   wy: number,
 ): string | null {
   if (!scene || !layout || scene.areasOnly) return null;
-  return hitTest(layout, wx, wy);
+  const id = hitTest(layout, wx, wy);
+  if (!id || !scene.revealed) return id;
+  const i = layout.ids.indexOf(id);
+  if (i < 0 || layout.areaOf[i] !== scene.revealed) return null;
+  return id;
 }
 
 export interface CanvasControlApi {
