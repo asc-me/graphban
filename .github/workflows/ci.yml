@@ -211,6 +211,10 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+      - name: Canvas perf bench
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm bench
       - run: pnpm typecheck
       - run: pnpm build
 

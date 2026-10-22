@@ -32,6 +32,9 @@ web/node_modules/
 web/dist/
 web/.vite/
 web/*.tsbuildinfo
+web/test-results/
+web/playwright-report/
+web/blob-report/
 
 # Env
 .env

@@ -51,7 +51,9 @@ import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useCodeAnalysis, useCodeMap, useFleetPresence } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors, HeldArea, ProjectStub } from "@/lib/types";
 
+import { CANVAS_MAX_K, CANVAS_MIN_K } from "./canvas/camera";
 import { CodeChat } from "./CodeChat";
+import { CodeGraphCanvas, type CanvasControlApi } from "./CodeGraphCanvas";
 import { FleetLegend } from "./FleetLegend";
 
 const KIND_META: Record<string, { label: string; color: string }> = {
@@ -245,6 +247,8 @@ export function CodeGraphView() {
     imports: true, calls: true, owns: true, tested_by: true, references: true,
   });
   const [selPath, setSelPath] = React.useState<string | null>(null);
+  /** Find and hub picks tween the canvas camera. A canvas click does not. */
+  const [frameId, setFrameId] = React.useState<string | null>(null);
   const [hubsOpen, setHubsOpen] = React.useState(false);
   // AC-19. `armed` is the discoverable way in: alt-click is the PRD's gesture and is invisible,
   // and on some window managers alt-drag never reaches the page at all.
@@ -261,6 +265,12 @@ export function CodeGraphView() {
   // instead, so a dense graph can be read at all. It needs a reach set to isolate against,
   // so with nothing selected the control is disabled rather than silently doing nothing.
   const [isolate, setIsolate] = React.useState(false);
+  // Canvas mode draws with its own camera (0.7×–16×). The shared control
+  // cluster reads this scale and drives that camera; the SVG viewport is a
+  // different range and must not move the canvas.
+  const canvasControlRef = React.useRef<CanvasControlApi | null>(null);
+  const [canvasK, setCanvasK] = React.useState(1);
+  const onCanvasZoom = React.useCallback((k: number) => setCanvasK(k), []);
   // Trail breadcrumb: the last N nodes the user selected, most-recent last. Clicking one
   // re-selects it without losing the rest — a back button that does not erase history.
   const [trail, setTrail] = React.useState<string[]>([]);
@@ -318,7 +328,11 @@ export function CodeGraphView() {
   // explain something. `worthCollapsing` checks the DISTRIBUTION, not just the count: this
   // project measured [146, 3, 1, 1, 1, 1] on the live graph, which passes a count check and
   // renders one huge dot beside five specks (GRPH-403).
+  // Above the detail budget the code view is canvas mode (PRD-52 D1). Galaxy
+  // collapse stays in this file for S9; it does not run while canvas mode is on.
+  const canvasMode = allIds.length > DETAIL_BUDGET;
   const galaxyMode =
+    !canvasMode &&
     entered === null &&
     allIds.length > DETAIL_BUDGET &&
     worthCollapsing(galaxy.superNodes, allIds.length);
@@ -346,8 +360,8 @@ export function CodeGraphView() {
   // Layout runs over the collapsed set in galaxy mode, and over one component's nodes once
   // entered — which is what makes the bound the largest COMPONENT rather than the repo.
   const layoutIds = React.useMemo(
-    () => (galaxyMode ? galaxy.superNodes.map((s) => s.id) : ids),
-    [galaxyMode, galaxy, ids],
+    () => (canvasMode ? [] : galaxyMode ? galaxy.superNodes.map((s) => s.id) : ids),
+    [canvasMode, galaxyMode, galaxy, ids],
   );
   const layoutEdges = React.useMemo(() => {
     if (galaxyMode) return galaxy.superEdges.map((e) => ({ a: e.a, b: e.b }));
@@ -402,12 +416,17 @@ export function CodeGraphView() {
   const firstMatch = find.active ? [...find.matches].sort()[0] : undefined;
   React.useEffect(() => {
     if (!firstMatch) return;
+    if (canvasMode) {
+      setSelPath(firstMatch);
+      setFrameId(firstMatch);
+      return;
+    }
     const home = galaxy.componentOf[firstMatch];
     setEntered((cur) => {
       if (cur !== null || allIds.length <= DETAIL_BUDGET) return cur;
       return home ?? cur;
     });
-  }, [firstMatch, galaxy, allIds.length]);
+  }, [firstMatch, galaxy, allIds.length, canvasMode]);
   const hubs = React.useMemo(() => topByDegree(ids, layoutEdges, LOD_TOP_N), [ids, layoutEdges]);
 
   // The kinds the legend has to explain: what is DRAWN, in the fixed order of the colour
@@ -578,13 +597,17 @@ export function CodeGraphView() {
   const pickHub = React.useCallback(
     (path: string) => {
       selectNode(path);
+      if (canvasMode) {
+        setFrameId(path);
+        return;
+      }
       if (!ids.includes(path)) {
         const holder = galaxy.superNodes.find((sn) => sn.members.includes(path));
         if (holder) setEntered(holder.id);
       }
       setPendingFocus(path);
     },
-    [ids, galaxy, selectNode],
+    [ids, galaxy, selectNode, canvasMode],
   );
 
   // Find is highlight-by-another-name: it feeds the same dim path as selection rather than
@@ -607,23 +630,40 @@ export function CodeGraphView() {
   posRef.current = pos;
   const matchKey = find.active ? [...find.matches].sort().join(",") : "";
   React.useEffect(() => {
-    if (!matchKey) return;
+    if (canvasMode || !matchKey) return;
     const points = matchKey.split(",").map((id) => posRef.current[id]).filter(Boolean);
     if (points.length) fitRef.current(points);
-  }, [matchKey]);
+  }, [matchKey, canvasMode]);
 
   // Deferred rather than done in the click: after entering a component the layout has not run
   // yet, so `pos[path]` is undefined for a frame or three.
   React.useEffect(() => {
-    if (!pendingFocus) return;
+    if (canvasMode || !pendingFocus) return;
     const at = posRef.current[pendingFocus];
     if (!at) return;
     fitRef.current([at]);
     setPendingFocus(null);
-  }, [pendingFocus, pos]);
+  }, [pendingFocus, pos, canvasMode]);
 
   // PRD-47 S1: a failure leaves `nodes` empty too, and the empty-state copy below is an
   // assertion that nothing has been *described*. Only claim it once the read answered.
+  const canvasNodes = React.useMemo(
+    () =>
+      allIds.map((id) => {
+        const n = nodeByPath[id];
+        return { id, path: n?.path ?? id, kind: n?.kind ?? "file", name: n?.name ?? "" };
+      }),
+    [allIds, nodeByPath],
+  );
+  // `truncated === false` means the server looked and the page is complete.
+  // A missing flag is complete only when the returned list matches the total.
+  const truncated =
+    map?.truncated === true
+      ? true
+      : map?.truncated === false
+        ? false
+        : (map?.node_count ?? nodes.length) > nodes.length;
+
   const failed = mapQ.isError && map === undefined;
   const empty = !isLoading && !failed && nodes.length === 0;
 
@@ -664,7 +704,7 @@ export function CodeGraphView() {
                 Unpin {pinsApi.pinCount}
               </button>
             )}
-            {isFiltered && (
+            {!canvasMode && isFiltered && (
               // Only offered under a filter: with every type on, the layout already reflects
               // exactly what is drawn and re-laying out would move nodes for no reason.
               <button
@@ -742,6 +782,23 @@ export function CodeGraphView() {
                 question on the right and the agent will tell you what it knows so far.
               </p>
             </div>
+          ) : canvasMode ? (
+            <CodeGraphCanvas
+              nodes={canvasNodes}
+              edges={allEdges}
+              enabledTypes={activeTypes}
+              isolate={isolate}
+              selectedId={selPath}
+              onSelect={(id) => {
+                if (id) selectNode(id);
+                else setSelPath(null);
+              }}
+              truncated={truncated}
+              totalNodes={map?.node_count ?? nodes.length}
+              frameId={frameId}
+              controlRef={canvasControlRef}
+              onZoom={onCanvasZoom}
+            />
           ) : (
             <svg
               ref={view.svgRef}
@@ -1203,11 +1260,17 @@ export function CodeGraphView() {
                 isolate={isolate}
                 onIsolate={() => setIsolate((v) => !v)}
                 canIsolate={!!shown}
-                zoom={view.viewport.k}
-                onZoom={(factor) =>
-                  view.setViewport((v) => zoomAbout(v, factor, W / 2, H / 2))
-                }
-                onFit={view.reset}
+                zoom={canvasMode ? canvasK : view.viewport.k}
+                minZoom={canvasMode ? CANVAS_MIN_K : MIN_ZOOM}
+                maxZoom={canvasMode ? CANVAS_MAX_K : MAX_ZOOM}
+                onZoom={(factor) => {
+                  if (canvasMode) canvasControlRef.current?.zoomBy(factor);
+                  else view.setViewport((v) => zoomAbout(v, factor, W / 2, H / 2));
+                }}
+                onFit={() => {
+                  if (canvasMode) canvasControlRef.current?.fit();
+                  else view.reset();
+                }}
               />
             </div>
           )}
@@ -1908,6 +1971,8 @@ function GraphControls({
   zoom,
   onZoom,
   onFit,
+  minZoom = MIN_ZOOM,
+  maxZoom = MAX_ZOOM,
 }: {
   depth: number;
   onDepth: (d: number) => void;
@@ -1917,6 +1982,8 @@ function GraphControls({
   zoom: number;
   onZoom: (factor: number) => void;
   onFit: () => void;
+  minZoom?: number;
+  maxZoom?: number;
 }) {
   // The design draws these segmented groups and their internal dividers at #1e242a, which is
   // --color-line-2 — a hairline, ~1.2:1. A control's border is its identity under WCAG 1.4.11,
@@ -1972,7 +2039,7 @@ function GraphControls({
         <button
           onClick={() => onZoom(1 / ZOOM_STEP)}
           aria-label="Zoom out"
-          disabled={zoom <= MIN_ZOOM + 1e-6}
+          disabled={zoom <= minZoom + 1e-6}
           className={stepper}
         >
           −
@@ -1986,7 +2053,7 @@ function GraphControls({
         <button
           onClick={() => onZoom(ZOOM_STEP)}
           aria-label="Zoom in"
-          disabled={zoom >= MAX_ZOOM - 1e-6}
+          disabled={zoom >= maxZoom - 1e-6}
           className={stepper}
         >
           +

@@ -1436,6 +1436,12 @@ export interface CodeMap {
   edge_count: number;
   /** Empty outside an org — no siblings to depend on, which differs from having none. */
   outbound: ProjectStub[];
+  /**
+   * The server already sends this. Absent is not the same as false: a missing flag
+   * with `node_count` above `nodes.length` is a page the client was not told about.
+   */
+  truncated?: boolean;
+  returned_nodes?: number;
 }
 
 export interface CodeLinkedItem {
