@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 from secrets import token_urlsafe
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Item, Request, RequestComment
@@ -12,6 +12,31 @@ from app.services import items as items_svc
 from app.services import keys
 
 REQUEST_TYPES = ["bug", "feature", "enhancement", "feedback"]
+
+# The triage queue (GET /requests/triage) is requests still `new`. `triaging` and
+# `linked` have been dispositioned and are not "N new". shell_counts.triage_new
+# counts this same status — do not copy the string into a second predicate.
+UNTRIAGED_STATUS = "new"
+
+
+def untriaged_clause():
+    """SQL form of the triage queue. `is_untriaged` is the same rule on a row."""
+    return Request.status == UNTRIAGED_STATUS
+
+
+def is_untriaged(req: Request) -> bool:
+    return req.status == UNTRIAGED_STATUS
+
+
+def untriaged_count(db: Session, project_id: str) -> int:
+    """How many requests the Triage view would list for this project. One COUNT."""
+    n = db.scalar(
+        select(func.count()).select_from(Request).where(
+            Request.project_id == project_id,
+            untriaged_clause(),
+        )
+    )
+    return int(n or 0)
 
 
 def list_requests(db: Session, project_id: str | None = None, type_: str | None = None) -> list[Request]:

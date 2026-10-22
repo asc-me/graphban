@@ -72,6 +72,16 @@ def test_counts_match_the_collections_they_replace(db, decoy):
     )
     assert counts["review"] == expected_review
 
+    # The Jump-to populations. `new` is the triage queue's own word for untriaged;
+    # the Lessons header is the unfiltered catalog total. A count that used a
+    # private status string would disagree with the page the tile links to.
+    assert counts["triage_new"] == sum(
+        1 for r in req_svc.list_requests(db, project_id="core") if r.status == "new"
+    )
+    assert counts["lessons_published"] == mem_svc.list_lessons(
+        db, "core", readable_project_ids={"core"},
+    )["total"]
+
 
 def test_an_expired_candidate_leaves_the_review_count(db):
     """`review` is not a SQL `count(*)`, and this is why. `list_shards` drops expired candidates
@@ -97,6 +107,7 @@ def test_no_project_counts_nothing(db):
     _seed(db)
     assert proj_svc.shell_counts(db, None) == {
         "items": 0, "items_in_progress": 0, "requests": 0, "review": 0,
+        "triage_new": 0, "lessons_published": 0,
     }
 
 
@@ -106,7 +117,10 @@ def test_the_counts_endpoint_is_small(client, auth):
     rows would show up here rather than as a slow page nobody can pin down."""
     r = client.get("/api/projects/core/counts", headers=auth)
     assert r.status_code == 200
-    assert set(r.json()) == {"items", "items_in_progress", "requests", "review"}
+    assert set(r.json()) == {
+        "items", "items_in_progress", "requests", "review",
+        "triage_new", "lessons_published",
+    }
     assert all(isinstance(v, int) for v in r.json().values())
     assert len(r.content) < 200, f"counts payload grew to {len(r.content)} bytes"
 
@@ -175,3 +189,149 @@ def test_the_counts_are_pinned_to_their_project(db, decoy):
     assert other["items"] == len(decoy_items), "the decoy cannot see its own rows"
     assert other["requests"] == len(req_svc.list_requests(db, project_id=did))
     assert core["items"] != len(core_items) + len(decoy_items)
+
+    core_new = [r for r in req_svc.list_requests(db, project_id="core") if r.status == "new"]
+    other_new = [r for r in req_svc.list_requests(db, project_id=did) if r.status == "new"]
+    assert len(other_new) >= decoy["requests"], "the decoy has no untriaged requests to leak"
+    assert core["triage_new"] == len(core_new), "core counted another project's queue"
+    assert other["triage_new"] == len(other_new), "the decoy cannot see its own queue"
+
+
+def test_jump_counts_match_the_views_including_zero(client, auth, db):
+    """Triage *N new* and Lessons *N published* are the views' populations.
+
+    Zero is a real project with nothing in either queue, not an absent field.
+    A candidate, a linked request, and a request already `triaging` stay out.
+    A project-local lesson next door stays out; an org-reach lesson next door
+    is in the Lessons catalog, so it is in the count. A report filed next door
+    does not move this project's triage tile.
+    """
+    from app.models import Project
+    from app.services import items as items_svc
+    from app.services import requests as req_svc
+
+    pid = proj_svc.create_project(
+        db, name="Jump counts", owner_user_id="u1", tag="JUMP",
+    ).id
+    other = proj_svc.create_project(
+        db, name="Next door", owner_user_id="u1", tag="NEXT",
+    ).id
+
+    def counts():
+        return proj_svc.shell_counts(db, pid)
+
+    def queue():
+        r = client.get(f"/api/requests/triage?project_id={pid}", headers=auth)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def catalog_total():
+        return mem_svc.list_lessons(db, pid, readable_project_ids={pid})["total"]
+
+    assert counts()["triage_new"] == 0
+    assert counts()["lessons_published"] == 0
+    assert queue() == []
+    assert catalog_total() == 0
+
+    mem_svc.add_memory(
+        db, text_body="still a candidate", project_id=pid,
+        status="candidate", auto_triage=False,
+    )
+    assert counts()["lessons_published"] == 0
+
+    mem_svc.add_memory(
+        db, text_body="stood behind", project_id=pid,
+        status="published", auto_triage=False,
+    )
+    assert counts()["lessons_published"] == 1
+    assert catalog_total() == 1
+
+    mem_svc.add_memory(
+        db, text_body="theirs alone", project_id=other,
+        status="published", auto_triage=False,
+    )
+    assert counts()["lessons_published"] == 1, "a project-local lesson next door leaked"
+
+    org = mem_svc.add_memory(
+        db, text_body="org lesson", project_id=other,
+        status="published", auto_triage=False,
+    )
+    org.reach = "org"
+    db.commit()
+    assert counts()["lessons_published"] == 2
+    assert catalog_total() == 2
+
+    mem_svc.add_memory(
+        db, text_body="global lesson", project_id=None,
+        status="published", auto_triage=False,
+    )
+    assert counts()["lessons_published"] == 3
+    assert catalog_total() == 3
+    project = db.get(Project, pid)
+    project.share_global_memory = False
+    db.commit()
+    assert counts()["lessons_published"] == 2, "opting out of global memory still counted it"
+    assert catalog_total() == 2
+
+    req_svc.create_request(db, type_="bug", title="just arrived", project_id=pid)
+    assert counts()["triage_new"] == 1
+
+    req_svc.create_request(db, type_="bug", title="next door report", project_id=other)
+    assert counts()["triage_new"] == 1, "another project's report joined this queue"
+
+    linked = req_svc.create_request(db, type_="bug", title="already linked", project_id=pid)
+    item = items_svc.create_item(db, title="from the request", project_id=pid)
+    req_svc.link_request(db, linked.id, item.id)
+
+    mid = req_svc.create_request(db, type_="feedback", title="being triaged", project_id=pid)
+    mid.status = "triaging"
+    db.commit()
+
+    assert counts()["triage_new"] == 1
+    titles = {row["request"]["title"] for row in queue()}
+    assert titles == {"just arrived"}
+
+
+def test_jump_counts_are_aggregates_whatever_the_queue_length(db):
+    """Adding rows must not add statements. A per-row loop, or `list_lessons`
+    (which clusters every shard), would grow with the queue. Sabotage: replace
+    either COUNT with a fetch-and-len and this fails."""
+    from sqlalchemy import event
+
+    from app.db import engine
+    from app.services import requests as req_svc
+
+    def measure():
+        seen: list[str] = []
+
+        def hook(conn, cursor, statement, parameters, context, executemany):
+            seen.append(statement)
+
+        event.listen(engine, "before_cursor_execute", hook)
+        try:
+            proj_svc.shell_counts(db, "core")
+        finally:
+            event.remove(engine, "before_cursor_execute", hook)
+        return seen
+
+    # Warm the session first. A Project already in the identity map is not
+    # selected again, so the first call of a fresh session issues statements
+    # the second call does not — which would look like the count shrinking.
+    proj_svc.shell_counts(db, "core")
+    before = measure()
+    for i in range(8):
+        req_svc.create_request(db, type_="feedback", title=f"more {i}", project_id="core")
+        mem_svc.add_memory(
+            db, text_body=f"published {i} for the count budget", project_id="core",
+            status="published", auto_triage=False,
+        )
+    after = measure()
+    assert len(before) == len(after), (
+        f"statement count grew from {len(before)} to {len(after)} after 8 more rows"
+    )
+
+    def aggregates(table: str, statements: list[str]) -> list[str]:
+        return [s for s in statements if "count(" in s.lower() and table in s.lower()]
+
+    assert len(aggregates("requests", after)) >= 2, after
+    assert aggregates("memory_shards", after), after

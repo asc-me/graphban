@@ -2061,12 +2061,18 @@ export interface OrgOverview {
   limits: Record<string, number>;
 }
 
-/** The integers the app shell renders as badges. See `api.counts` (GRPH-431). */
+/** The integers the app shell renders as badges. See `api.counts` (GRPH-431).
+ *  `triage_new` is the Triage queue (requests still new). `lessons_published` is
+ *  the Lessons catalog total. Both come from this payload (GRPH-1064) — the tiles
+ *  must not fetch the lists and call `.length`.
+ */
 export type ShellCounts = {
   items: number;
   items_in_progress: number;
   requests: number;
   review: number;
+  triage_new: number;
+  lessons_published: number;
 };
 
 /** A deployment credential (PRD-25). `used_by` and `falling_back` are DERIVED server-side. */
