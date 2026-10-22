@@ -137,7 +137,10 @@ CEILING = 15060
 # `human-only` is not offered, and not to bounce it. Paid by trimming that
 # tool's own description (the sentence is shorter than the one it replaced);
 # core 8923 -> 8919. Ceiling unchanged. Headroom 14.
-MEASURED_TOKENS = 15046
+# 15046 -> 15049 (GRPH-1060). `record_scan`'s category enum gains "deadcode"; the enum is
+# the contract an agent reads, so leaving it out would make the schema lie. Billed to the
+# opt-in codegraph tier (1786 -> 1789); core unchanged. Headroom 11.
+MEASURED_TOKENS = 15049
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

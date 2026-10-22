@@ -515,26 +515,28 @@ class Component extends DCLogic {
     const ov = this.state.overlay ?? this.props.healthOverlay ?? true;
     const filed = this.state.filed;
     const SEV = { crit: ["CRIT", "var(--sc)", 0], high: ["HIGH", "var(--sh)", 1], med: ["MED", "var(--sm)", 2], low: ["LOW", "var(--sl)", 3] };
-    const CAT = [["sec", "Security"], ["ref", "Refactoring · complexity"], ["stub", "Partial implementation"], ["cov", "Coverage · graph staleness"], ["work", "Open work"]];
+    const CAT = [["sec", "Security"], ["ref", "Refactoring · complexity"], ["stub", "Partial implementation"], ["dead", "Dead code · unused"], ["cov", "Coverage · graph staleness"], ["work", "Open work"]];
     const HATCH = "repeating-linear-gradient(45deg,var(--tx3) 0 1.5px,transparent 1.5px 3.5px)";
     const BANDH = "repeating-linear-gradient(45deg,transparent 0 6px,var(--hatch) 6px 7px),var(--panel2)";
     const cg = (st, sc, ran, rev, f, note) => ({ st, sc, ran, rev, f: f || [], note: note || "" });
     const NR = (sc) => cg("notrun", sc, "never", "", [], "Nothing has scanned cli/ for this. Until something does, its state is unknown.");
     const H = {
-      web: { head: "3f9c2a1", path: "web/", c: { sec: cg("clean", "osv-scanner 1.9.1", "3h ago", "3f9c2a1"), ref: cg("clean", "eslint complexity 9.12", "3h ago", "3f9c2a1"), stub: cg("clean", "gb stubscan 0.4.2", "3h ago", "3f9c2a1"), cov: cg("clean", "gb graphcheck 0.7.0", "3h ago", "3f9c2a1"), work: cg("clean", "tracker", "live", "", [], "No open defects or in-flight items mapped to web/.") } },
+      web: { head: "3f9c2a1", path: "web/", c: { sec: cg("clean", "osv-scanner 1.9.1", "3h ago", "3f9c2a1"), ref: cg("clean", "eslint complexity 9.12", "3h ago", "3f9c2a1"), stub: cg("clean", "gb stubscan 0.4.2", "3h ago", "3f9c2a1"), dead: cg("clean", "knip 5.36", "3h ago", "3f9c2a1"), cov: cg("clean", "gb graphcheck 0.7.0", "3h ago", "3f9c2a1"), work: cg("clean", "tracker", "live", "", [], "No open defects or in-flight items mapped to web/.") } },
       api: { head: "3f9c2a1", path: "api/", c: {
         sec: cg("findings", "osv-scanner 1.9.1 · semgrep 1.92", "3h ago", "3f9c2a1", [["high", "python-multipart pinned below 0.0.18 — multipart parsing DoS advisory", "pyproject.toml", "Build.dc.html#code"], ["med", "settings.py falls back to a default JWT secret when the env var is unset", "settings.Settings", "Build.dc.html#code"]]),
         ref: cg("findings", "radon 6.0.1", "3h ago", "3f9c2a1", [["med", "providers/resolve.py · resolve_chat() complexity 31, limit 15", "resolve_chat", "Build.dc.html#code"], ["low", "sync/engine.py · the same retry loop is copied 3 times", "sync/engine.py", "Build.dc.html#code"]]),
         stub: cg("findings", "gb stubscan 0.4.2", "3h ago", "3f9c2a1", [["med", "mcp/tools/export_trace raises NotImplementedError; the MCP catalog still lists it", "PRD · Log export", "Plan.dc.html"]]),
+        dead: cg("findings", "vulture 2.14", "3h ago", "3f9c2a1", [["low", "sync/legacy_poll.py · poll_once() has no callers since the webhook path landed", "sync/legacy_poll.py", "Build.dc.html#code"]]),
         cov: cg("findings", "gb graphcheck 0.7.0", "3h ago", "3f9c2a1", [["med", "4 files under sync/ aren't described in the Code graph", "sync/ in Code graph", "Build.dc.html#code"], ["low", "GRPH-905 still claims sync/linear.py, renamed 6 days ago", "GRPH-905", "Plan.dc.html"]]),
         work: cg("findings", "tracker", "live", "", [["high", "Defect: MCP error bodies echo the bearer token", "GRPH-941", "Plan.dc.html"], ["low", "In flight: change the provider fallback order", "GRPH-930", "Plan.dc.html"]]) } },
       fleet: { head: "9e1d07b", path: "fleet/", stale: "4c2b8aa", behind: "14 commits behind", c: {
         sec: cg("stale", "osv-scanner 1.8.3", "9d ago", "4c2b8aa", [], "0 findings at 4c2b8aa. The code has moved 14 commits since, so that result doesn't cover what's running."),
         ref: cg("stale", "radon 6.0.1", "9d ago", "4c2b8aa", [], "Last result is 14 commits old. Re-run before trusting it."),
         stub: cg("stale", "gb stubscan 0.4.0", "9d ago", "4c2b8aa", [], "Last result is 14 commits old."),
+        dead: cg("stale", "vulture 2.13", "9d ago", "4c2b8aa", [], "Last result is 14 commits old."),
         cov: cg("stale", "gb graphcheck 0.6.4", "9d ago", "4c2b8aa", [], "Graph descriptions for fleet/ predate 0.9.2."),
         work: cg("clean", "tracker", "live", "", [], "No open defects or in-flight items mapped to fleet/.") } },
-      cli: { head: "b77e310", path: "cli/", c: { sec: NR("no scanner configured"), ref: NR("no scanner configured"), stub: NR("no scanner configured"), cov: NR("gb graphcheck · cli/ not in scope"), work: cg("clean", "tracker", "live", "", [], "No open defects mapped to cli/. One clean category doesn't make the component clean.") } },
+      cli: { head: "b77e310", path: "cli/", c: { sec: NR("no scanner configured"), ref: NR("no scanner configured"), stub: NR("no scanner configured"), dead: NR("no scanner configured"), cov: NR("gb graphcheck · cli/ not in scope"), work: cg("clean", "tracker", "live", "", [], "No open defects mapped to cli/. One clean category doesn't make the component clean.") } },
     };
     const roll = (h) => {
       const cs = CAT.map(([k]) => h.c[k]);
@@ -546,7 +548,7 @@ class Component extends DCLogic {
       const gaps = [stale ? stale + " stale" : "", nr ? nr + " not run" : ""].filter(Boolean).join(" · ");
       if (fs.length) { const w = order.find((s) => cnt[s]); return { l: "FINDINGS", tc: SEV[w][1], sq: SEV[w][1], sqb: SEV[w][1], bg: "var(--panel2)", sev, meta: gaps || "@" + h.head }; }
       if (stale) return { l: "STALE", tc: "var(--tx2)", sq: HATCH, sqb: "var(--tx3)", bg: BANDH, sev: [], meta: "@" + h.stale + " · " + h.behind };
-      if (nr) return { l: "NOT SCANNED", tc: "var(--tx2)", sq: HATCH, sqb: "var(--tx3)", bg: BANDH, sev: [], meta: nr + " of 5 never run" };
+      if (nr) return { l: "NOT SCANNED", tc: "var(--tx2)", sq: HATCH, sqb: "var(--tx3)", bg: BANDH, sev: [], meta: nr + " of " + CAT.length + " never run" };
       return { l: "CLEAN", tc: "var(--cln)", sq: "var(--cln)", sqb: "var(--cln)", bg: "var(--panel2)", sev: [], meta: "@" + h.head + " = head" };
     };
     const hv = (n) => { const h = H[n.id]; if (!ov || !h || n.st === "off") return { hasHealth: false, hsev: [] }; const r = roll(h); return { hasHealth: true, hl: r.l, htc: r.tc, hsq: r.sq, hsqb: r.sqb, hb: r.bg, hsev: r.sev, hmeta: lod === "outline" ? "" : r.meta }; };
