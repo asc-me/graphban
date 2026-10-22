@@ -80,16 +80,85 @@ def test_one_branch_touching_a_file_twice_is_not_a_collision():
 
 # ---- at reap ----------------------------------------------------------------------------------
 
-def test_the_reap_compares_against_what_was_declared_when_work_was_handed_out():
-    """Not against whatever the item says now. The question is whether the DIVVY's input was
-    right, and that input is the snapshot the partition was computed from — the item has been
-    edited by the worker since."""
+class _Ledger:
+    """A client whose `get_item_details` answers with the item as it stands NOW."""
+
+    def __init__(self, items, *, fail=None):
+        self.allowed = frozenset({"get_item_details"})
+        self.items, self.fail, self.calls = items, fail, []
+
+    def call(self, tool, **kw):
+        self.calls.append((tool, kw))
+        if self.fail is not None:
+            raise self.fail
+        return {"id": kw["id"], "touchpoints": list(self.items.get(kw["id"]) or [])}
+
+
+def test_a_touchpoint_the_child_added_mid_build_counts_as_declared():
+    """THE p48c-2 SHAPE (GRPH-1025). Delegated with one area; the child then declared its two
+    test files with `update_item`, which the server unions into the item. Every changed file
+    is on the item at reap — and the snapshot comparison refused the branch on two of them.
+
+    Sabotage: compare against `wave.declared` instead of `_declared_now` and this goes red."""
+    wave = Wave()
+    _declared_into(wave, {"GRPH-943": {"touchpoints": ["web/src/features/roadmap/RoadmapView.tsx"]}})
+    changed = ["web/src/features/roadmap/RoadmapView.tsx",
+               "web/src/__tests__/absence-vs-failure.test.tsx",
+               "web/src/__tests__/roadmap-error-state.test.tsx"]
+    wave.touched["gb/p48c-2"] = list(changed)
+    ledger = _Ledger({"GRPH-943": changed})
+
+    _note_touchpoints(wave, _Child("gb/p48c-2", ["GRPH-943"]), ledger)
+    assert wave.undeclared == {}
+    assert wave.declared_unread == {}, "it was read, so the report must not say it was not"
+    assert ledger.calls == [("get_item_details", {"id": "GRPH-943"})]
+
+
+def test_a_file_the_item_still_does_not_declare_is_still_undeclared():
+    """THE CONTROL: the nine-file App.tsx case GRPH-949 was built for. Re-reading must not turn
+    into a pass — the item as it stands now does not cover App.tsx, so the branch is held."""
+    wave = Wave()
+    _declared_into(wave, {"GRPH-1": {"touchpoints": ["backend/app/services"]}})
+    wave.touched["gb/w-1"] = ["backend/app/services/fleet.py", "web/src/App.tsx"]
+    ledger = _Ledger({"GRPH-1": ["backend/app/services", "backend/tests/test_fleet.py"]})
+
+    _note_touchpoints(wave, _Child("gb/w-1", ["GRPH-1"]), ledger)
+    assert wave.undeclared == {"gb/w-1": ["web/src/App.tsx"]}
+
+
+def test_an_unreadable_item_falls_back_to_the_snapshot_and_says_so():
+    """A failed read is neither a pass nor a refusal with no reason: the snapshot is compared,
+    and the branch is named in `declared_unread` with why."""
+    from gbfleet.client import ServerUnreachable
+
     wave = Wave()
     _declared_into(wave, {"GRPH-1": {"touchpoints": ["backend/app/services"]}})
     wave.touched["gb/w-1"] = ["backend/app/services/fleet.py", "web/src/x.tsx"]
 
-    _note_touchpoints(wave, _Child("gb/w-1", ["GRPH-1"]))
+    _note_touchpoints(wave, _Child("gb/w-1", ["GRPH-1"]),
+                      _Ledger({}, fail=ServerUnreachable("connection refused")))
     assert wave.undeclared == {"gb/w-1": ["web/src/x.tsx"]}
+    assert "GRPH-1" in wave.declared_unread["gb/w-1"]
+    assert "connection refused" in wave.declared_unread["gb/w-1"]
+
+
+def test_no_client_is_an_unread_declaration_too():
+    wave = Wave()
+    _declared_into(wave, {"GRPH-1": {"touchpoints": ["backend"]}})
+    wave.touched["gb/w-1"] = ["backend/x.py"]
+    _note_touchpoints(wave, _Child("gb/w-1", ["GRPH-1"]))
+    assert wave.undeclared == {}
+    assert "no client" in wave.declared_unread["gb/w-1"]
+
+
+def test_an_item_read_as_declaring_nothing_is_an_answer_not_a_fallback():
+    """`[]` from a successful read is the item's declaration; only a FAILED read falls back."""
+    wave = Wave()
+    _declared_into(wave, {"GRPH-1": {"touchpoints": ["web"]}})
+    wave.touched["gb/w-1"] = ["web/src/x.tsx"]
+    _note_touchpoints(wave, _Child("gb/w-1", ["GRPH-1"]), _Ledger({"GRPH-1": []}))
+    assert wave.declared_unread == {}
+    assert wave.undeclared == {}, "an item that declares nothing is not drift"
 
 
 def test_the_collision_check_covers_the_whole_wave_not_just_the_last_pair():
@@ -111,21 +180,30 @@ def test_a_child_that_changed_nothing_reports_nothing():
     assert wave.undeclared == {} and wave.collided == {}
 
 
-def test_the_supervisor_writes_nothing_and_decides_nothing():
-    """It holds `fleet_status` and `propose_allocation` and cannot call `update_item`; what
-    "collides" means belongs to the server. This records and reports."""
+def test_the_supervisor_reads_but_writes_nothing_and_decides_nothing():
+    """What "collides" means belongs to the server; this records and reports. Since GRPH-1025
+    it READS the item's current declaration, and that read is the only call it makes."""
     import ast
     import inspect
     import textwrap
 
-    # The BODY, with the docstring dropped — which this function's own prose explains at
-    # length, so matching on raw source would fail on the explanation of the rule.
-    fn = ast.parse(textwrap.dedent(inspect.getsource(_note_touchpoints))).body[0]
-    body = fn.body[1:] if isinstance(fn.body[0], ast.Expr) and isinstance(
-        fn.body[0].value, ast.Constant) else fn.body
-    code = "\n".join(ast.unparse(node) for node in body)
-    for verb in ("update_item", "client", "record"):
-        assert verb not in code, f"_note_touchpoints reaches for {verb}"
+    from gbfleet.supervisor import _declared_now
+
+    def body(fn_obj):
+        # The BODY, with the docstring dropped — which these functions' own prose explains
+        # at length, so matching on raw source would fail on the explanation of the rule.
+        fn = ast.parse(textwrap.dedent(inspect.getsource(fn_obj))).body[0]
+        nodes = fn.body[1:] if isinstance(fn.body[0], ast.Expr) and isinstance(
+            fn.body[0].value, ast.Constant) else fn.body
+        return "\n".join(ast.unparse(node) for node in nodes)
+
+    for code in (body(_note_touchpoints), body(_declared_now)):
+        for verb in ("update_item", "release_item", "record."):
+            assert verb not in code, f"reaches for {verb}"
+    assert "client.call(" not in body(_note_touchpoints)
+    calls = [n for n in ast.walk(ast.parse(body(_declared_now)))
+             if isinstance(n, ast.Call) and ast.unparse(n.func) == "client.call"]
+    assert [ast.literal_eval(c.args[0]) for c in calls] == ["get_item_details"]
 
 
 # ---- and it is printed, which is where the last one of these died ------------------------------
@@ -143,6 +221,17 @@ def test_both_findings_reach_the_report():
     text = out.getvalue()
     assert "COLLIDED shared.py: changed on gb/w-1, gb/w-2" in text
     assert "UNDECLARED gb/w-1" in text and "web/src/x.tsx" in text
+
+
+def test_the_report_says_which_declaration_was_compared():
+    """GRPH-1025. Sabotage: drop the DECLARATION print and an UNDECLARED line computed from a
+    stale snapshot reads exactly like one computed from the item."""
+    wave = Wave()
+    wave.declared_unread = {"gb/w-1": "GRPH-1: connection refused"}
+    out = io.StringIO()
+    report(wave, out=out)
+    assert ("DECLARATION unread gb/w-1: compared against delegation-time snapshot "
+            "(GRPH-1: connection refused)") in out.getvalue()
 
 
 def test_a_long_undeclared_list_is_summarised_rather_than_dumped():

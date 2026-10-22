@@ -562,6 +562,12 @@ def report(wave: Wave, out=None) -> None:
         shown = ", ".join(paths[:5]) + (f" (+{len(paths) - 5} more)" if len(paths) > 5 else "")
         print(f"UNDECLARED {branch}: changed {len(paths)} file(s) no touchpoint covers — "
               f"{shown}", file=out)
+    # GRPH-1025: which declaration each undeclared check compared against. Normally the item
+    # as it stood at reap; a branch named here used the delegation-time snapshot, which a
+    # child that widened its own touchpoints would fail through no fault of its own.
+    for branch, why in sorted(wave.declared_unread.items()):
+        print(f"DECLARATION unread {branch}: compared against delegation-time snapshot ({why})",
+              file=out)
     # HOW STALE the reviewer's diff is (GRPH-786). The supervisor is the only party that
     # can answer it: the server has no git, and the reviewer sees a branch with no
     # indication of what it is a diff against.

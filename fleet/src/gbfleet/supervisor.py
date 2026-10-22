@@ -280,8 +280,14 @@ class Wave:
     #: The supervisor still decides nothing on the ledger with it, but it does refuse to
     #: open a PR for such a branch (GRPH-949, `_refuse_proposal`).
     undeclared: dict[str, list[str]] = field(default_factory=dict)
-    #: id -> declared touchpoints, as they stood when work was handed out.
+    #: id -> declared touchpoints, as they stood when work was handed out. NOT the operand
+    #: `_note_touchpoints` compares against: that is the item as it stands at reap (GRPH-1025).
+    #: This is the fallback for when the item cannot be read then.
     declared: dict[str, list[str]] = field(default_factory=dict)
+    #: branch -> why its items' declarations could not be re-read at reap, so the undeclared
+    #: check compared against the delegation-time snapshot instead (GRPH-1025). Empty means
+    #: every comparison used the item as it stood at reap — not that none was made.
+    declared_unread: dict[str, str] = field(default_factory=dict)
     #: What each finished child's own result record said the run cost (GRPH-834), by branch:
     #: `{tokens_in, tokens_out, turns_used, adapter}`. Read from the same vendor record
     #: `_report_exits` already posts to the ledger — the numbers existed and reached the
@@ -478,10 +484,9 @@ def item_status(client: Graphban) -> dict[str, dict]:
             # GRPH-850: `choose_resume` uses this to decide whether the lease is stale.
             # `item_dict` emits unix seconds (or "" when nobody holds).
             "claimed_at": row.get("claimed_at") or "",
-            # The DECLARATION the partition was computed from (GRPH-785). Kept here rather
-            # than re-read at reap on purpose: the question is whether the input to the
-            # divvy was right, and that input is this snapshot, not whatever the item says
-            # after the worker has been editing it.
+            # The DECLARATION the partition was computed from (GRPH-785). Only the FALLBACK
+            # for the reap-time check since GRPH-1025: comparing against this snapshot
+            # refused children for touchpoints they had correctly added mid-build.
             "touchpoints": list(row.get("touchpoints") or []),
             # GRPH-1031: a bounced item's recorded branch is the head the next spawn
             # resumes. Absent from the lean projection; `fields=full` carries both.
@@ -641,7 +646,7 @@ def up(
         wave.headroom_at_start = room.baseline
         if items is None:
             items = item_status(client)
-        # The declaration snapshot the divvy used, kept for the reap-time comparison.
+        # The declaration snapshot the divvy used: the reap-time fallback (GRPH-1025).
         _declared_into(wave, items)
         _start(
             wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client,
@@ -1257,7 +1262,7 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
         if git_paths is not None:
             wave.touched[child.branch] = tp_mod.including_stream(
                 child.adapter, git_paths, child.stdout_text())
-        _note_touchpoints(wave, child)
+        _note_touchpoints(wave, child, client)
         _note_staleness(wave, tree)
         salvaged = reaped.disposition is wt_mod.Disposition.SALVAGED
         _publish(wave, tree, client=client, child=child,
@@ -1310,12 +1315,23 @@ def _note_staleness(wave: Wave, tree: Worktree) -> None:
         wave.stale[tree.branch] = (behind, ref)
 
 
-def _note_touchpoints(wave: Wave, child: Child) -> None:
-    """Compare what this child CHANGED against what its items DECLARED (GRPH-785).
+def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) -> None:
+    """Compare what this child CHANGED against what its items DECLARE (GRPH-785).
 
-    Runs at reap, where the measurement is taken and both operands are already in hand:
-    `search_items(fields="full")` returns `touchpoints`, and it is a read the supervisor
-    already makes. No new permission, no write, and no new call.
+    The declaration is RE-READ here, per held item, with `get_item_details` (GRPH-1025).
+    Comparing against the delegation-time snapshot punished a child for widening its own
+    declaration: `update_item(touchpoints=...)` unions into the item, the snapshot never saw
+    it, and on wave p48c every branch was refused — one on its own declared test files. The
+    snapshot is the fallback when the read fails, and the branch is then named in
+    `declared_unread` so the report says which operand was used: an unreadable item must not
+    turn silently into either a pass or a refusal with no reason.
+
+    Known consequence, accepted: a child that writes its measured paths back before reap
+    (gbagent's `coord.record_measured` does, and the worker instruction's DECLARE asks every
+    child to) can never trip this. That is fine. Once a path is on the item the server's
+    partition sees it, and `touchpoints.overlaps` — which needs no declaration at all — still
+    catches two branches changing one file. What this check is left to catch is the case it
+    exists for: a child that changed a file nobody declared and did not say so.
 
     Both findings are recorded on the wave and printed by `report`. The supervisor writes
     nothing to the ledger with them — what "collides" means belongs to the server — but an
@@ -1325,10 +1341,17 @@ def _note_touchpoints(wave: Wave, child: Child) -> None:
     if not measured:
         return
     declared: list[str] = []
+    unread: list[str] = []
     # `held_items`, not live roster holdings: `_roster` is overwritten after `release_item`,
     # so at reap the live view is empty and the comparison would have no items to look up.
     for item_id in (child.held_items or []):
-        declared += list(wave.declared.get(item_id) or [])
+        now, why = _declared_now(client, item_id)
+        if now is None:
+            unread.append(f"{item_id}: {why}")
+            now = list(wave.declared.get(item_id) or [])
+        declared += now
+    if unread:
+        wave.declared_unread[child.branch] = "; ".join(unread)
     if declared:
         missing = tp_mod.undeclared(measured, declared)
         if missing:
@@ -1336,6 +1359,26 @@ def _note_touchpoints(wave: Wave, child: Child) -> None:
     # Recomputed over every branch measured so far, so the last reap holds the whole wave's
     # answer — a pairwise check at each reap would miss the pair reaped either side of it.
     wave.collided = tp_mod.overlaps(wave.touched)
+
+
+def _declared_now(client: Graphban | None, item_id: str) -> tuple[list[str] | None, str]:
+    """`item_id`'s touchpoints as the ledger holds them now, or (None, why it could not say).
+
+    `[]` is an answer — the item was read and declares nothing — and None is not, which is the
+    whole point of returning both: the caller falls back to the snapshot only on None.
+    """
+    if client is None:
+        return None, "no client to read the item with"
+    allowed = getattr(client, "allowed", None)
+    if allowed is not None and "get_item_details" not in allowed:
+        return None, "this client may not read items"
+    try:
+        got = client.call("get_item_details", id=item_id)
+    except Exception as exc:  # noqa: BLE001 — any failed read falls back, and says so
+        return None, str(exc) or type(exc).__name__
+    if not isinstance(got, dict):
+        return None, "item details were not a record"
+    return [str(p) for p in (got.get("touchpoints") or [])], ""
 
 
 #: What `exit_meaning` says when this supervisor saw an item in `review` whose branch it could
@@ -1884,6 +1927,7 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
         wave.proposed[branch] = propose_mod.Proposed(branch=branch, skipped=True, reason=refused)
         wave.unproposed[branch] = refused
         wave.failures.append(f"{branch}: not proposed — {refused}")
+        _record_withheld(wave, client, items, branch, refused)
         return
     if len(items) > 1:
         _propose_per_item(wave, repo, branch, items, base, client=client)
@@ -1915,6 +1959,24 @@ def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, s
             }])
         except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
             wave.failures.append(f"{item_id}: PR opened but not recorded ({exc})")
+
+
+def _record_withheld(wave: Wave, client: Graphban | None, items: list[str], branch: str,
+                     reason: str) -> None:
+    """Say on the ITEM that its branch was pushed and its PR withheld, and why (GRPH-1025).
+
+    The reason used to exist only in the wave's end-of-run failures, so a whole wave went by
+    with items reaching `done` and nothing on main, and the one line that explained it was
+    invisible until the supervisor exited. The item is where a reviewer and a planner look.
+    """
+    if client is None or not items:
+        return
+    detail = f"pushed `{branch}`; not proposed as a PR — {reason}"
+    for item_id in items:
+        try:
+            client.call("update_item", id=item_id, evidence=[{"kind": "note", "detail": detail}])
+        except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
+            wave.failures.append(f"{item_id}: withheld PR not recorded ({exc})")
 
 
 def _publish_item_branch(wave: Wave, repo: Path, name: str, base: str) -> bool:
@@ -2683,7 +2745,7 @@ def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = No
             wave.touched[child.branch] = tp_mod.including_stream(
                 child.adapter, git_paths, child.stdout_text(),
             )
-        _note_touchpoints(wave, child)
+        _note_touchpoints(wave, child, client)
         _note_staleness(wave, tree)
         salvaged = reaped.disposition is wt_mod.Disposition.SALVAGED
         _publish(wave, tree, client=client, child=child,
