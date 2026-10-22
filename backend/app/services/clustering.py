@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import fnmatch
 
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Item, Link
@@ -137,9 +137,13 @@ def next_cluster(
 
 
 def sync_code_links(db: Session, item: Item, project_id: str | None = None) -> int:
-    """Ensure a `code` link exists between `item` and every item sharing a touchpoint.
-    Idempotent — skips pairs that already have any link. Returns the number created."""
-    if not item.touchpoints:
+    """Ensure a `code` link exists between `item` and every OPEN item sharing a touchpoint.
+    Idempotent — skips pairs that already have any link. Returns the number created.
+
+    Done items take no stored `code` link, on either end (GRPH-1068): linking to every finished
+    item that ever touched a hub file gave one new item 178 links to history. `related_items`
+    reads overlap live, so finished work stays discoverable without the stored edge."""
+    if not item.touchpoints or item.status == "done":
         return 0
     from app.services import links as links_svc
 
@@ -147,7 +151,7 @@ def sync_code_links(db: Session, item: Item, project_id: str | None = None) -> i
     already = set(_links_for(db, item.id).keys())
     created = 0
     for other in items_svc.list_items(db, project_id=pid):
-        if other.id == item.id or other.id in already:
+        if other.id == item.id or other.id in already or other.status == "done":
             continue
         shared = shared_touchpoints(item.touchpoints, other.touchpoints or [])
         if shared:
@@ -158,3 +162,12 @@ def sync_code_links(db: Session, item: Item, project_id: str | None = None) -> i
             )
             created += 1
     return created
+
+
+def prune_code_links(db: Session, item: Item) -> int:
+    """Delete the `code` links on `item`, both directions — called when it reaches `done`
+    (GRPH-1068). Only `code`: `dependency` and `semantic` links are authored and stay. Does not
+    commit; returns the number removed."""
+    res = db.execute(delete(Link).where(
+        Link.type == "code", or_(Link.a == item.id, Link.b == item.id)))
+    return res.rowcount or 0
