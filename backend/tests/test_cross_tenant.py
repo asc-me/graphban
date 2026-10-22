@@ -836,3 +836,77 @@ def test_an_item_still_cannot_reference_a_prd_in_another_project_on_one_deployme
     r = client.post("/api/items", headers=s["alex"],
                     json={"title": "borrowed", "project_id": s["p1"], "prd_id": prd["id"]})
     assert r.status_code >= 400, f"cross-project PRD reference was accepted: {r.text}"
+
+
+@pytest.fixture()
+def far_wait(client):
+    """Self-host, no orgs: a blocked dependent in P1 waits on a typed human wait filed in P2."""
+    from app.db import SessionLocal
+    from app.services import items as items_svc
+
+    alex = _login(client, "alex@ascme-labs.com")
+    p1 = _make_project(client, alex, "Box side")
+    p2 = _make_project(client, alex, "Control plane")
+    dependent = _item(client, alex, p1, "needs the far merge", status="blocked")
+    wait = _item(client, alex, p2, "merge the far change", status="blocked")
+    db = SessionLocal()
+    try:
+        items_svc.update_item(db, wait, tags=["wait:merge"])
+    finally:
+        db.close()
+    _ok(_mcp(client, _key(client, alex), "link_items", {"a": dependent, "b": wait}))
+    return {"dependent": dependent, "wait": wait}
+
+
+def _status(item_id):
+    from app.db import SessionLocal
+    from app.services import items as items_svc
+
+    db = SessionLocal()
+    try:
+        return items_svc.get_item(db, item_id).status
+    finally:
+        db.close()
+
+
+def test_a_wait_in_another_project_still_gates_review(client, far_wait):
+    """SABOTAGE (grok, PR #979): `unfinished_wait_deps` looked waits up in its own project only,
+    so a wait filed in another project was invisible and the original moved to review."""
+    from app.db import SessionLocal
+    from app.services import items as items_svc
+
+    db = SessionLocal()
+    try:
+        with pytest.raises(ValueError, match="typed human wait"):
+            items_svc.update_item(db, far_wait["dependent"], status="review")
+    finally:
+        db.close()
+    assert _status(far_wait["dependent"]) == "blocked"
+
+
+def test_done_on_a_far_wait_releases_its_dependent(client, far_wait):
+    """SABOTAGE (grok, PR #979): `release_waiters` walked the wait's own project context, which
+    never holds a dependent in another project, so that dependent stayed blocked forever."""
+    from app.db import SessionLocal
+    from app.services import items as items_svc
+
+    db = SessionLocal()
+    try:
+        items_svc.update_item(db, far_wait["wait"], status="done")
+    finally:
+        db.close()
+    assert _status(far_wait["dependent"]) == "next", "the far wait cleared; its dependent did not"
+
+
+def test_an_idempotent_link_replay_does_not_reveal_a_far_key(client, selfhost_pair):
+    """Idempotency keys are global. A cached `link_items` reply is served before the scope rule
+    runs, so it must be rendered under the REPLAYING caller's read scope (grok, PR #979)."""
+    s = selfhost_pair
+    other = _item(client, s["alex"], s["p1"], "second dependent")
+    args = {"a": other, "b": s["blocker"], "idempotency_key": "replay-979"}
+    first = _ok(_mcp(client, s["alex_key"], "link_items", args))
+    assert first["b"] == s["blocker"]
+
+    replay = _ok(_mcp(client, s["kate_key"], "link_items", args))
+    assert replay["id"] == first["id"]
+    assert replay["b"] == HIDDEN and s["blocker"] not in str(replay), replay

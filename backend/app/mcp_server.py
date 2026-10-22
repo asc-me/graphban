@@ -2822,7 +2822,11 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "link_items":
         cached = _idempotent_get(db, args, "link_items", Link)
         if cached is not None:
-            return {"id": cached.id, "a": cached.a, "b": cached.b, "type": cached.type}
+            # Rendered under THIS caller's read scope: idempotency keys are global, so a replay
+            # from a caller who cannot read the far project must get the placeholder, not the
+            # stored id the original caller was entitled to (GRPH-1063).
+            return {"id": cached.id, "a": items_svc.render_ref(db, cached.a, readable),
+                    "b": items_svc.render_ref(db, cached.b, readable), "type": cached.type}
         # Both endpoints must exist, be readable and sit in one org; `a` must be writable
         # (GRPH-1063). Also stops dangling links from poisoning get_backlog's blocked_by.
         ia, ib = links_svc.link_endpoints(db, args["a"], args["b"],
