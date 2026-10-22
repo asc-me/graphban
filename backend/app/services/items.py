@@ -1481,7 +1481,11 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
     if pending_lesson_applies:
         _record_applied_lessons(db, item, pending_lesson_applies)
 
-    if "touchpoints" in fields and fields["touchpoints"] is not None and item.touchpoints:
+    # Reopening counts as a touchpoint change: a done item holds no `code` links (GRPH-1068),
+    # so leaving `done` is when it regains them, to whatever open work it now overlaps.
+    reopened = prev_status == "done" and item.status != "done"
+    if (("touchpoints" in fields and fields["touchpoints"] is not None) or reopened) \
+            and item.touchpoints:
         from app.services.clustering import sync_code_links
         sync_code_links(db, item)
 
@@ -1498,6 +1502,13 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
             # The wait is the human act. Clearing it unblocks the original unless
             # another unmet dep remains. Does not rewrite `in_progress`.
             release_waiters(db, item)
+        # A stored `code` link to finished work is noise every read pays for (GRPH-1068);
+        # `related_items` still finds it by live overlap.
+        # Committed even when nothing matched: the DELETE alone opens a write transaction, and
+        # left open it locks SQLite against the enrichment session below.
+        from app.services.clustering import prune_code_links
+        prune_code_links(db, item)
+        db.commit()
         _record_superseded_intent(db, item, hold_at_completion)
         # The two MODEL calls, moved off the response path (GRPH-399). Measured on the live
         # instance: a trivial prompt to its 24B chat model takes 20s, each call is bounded by
@@ -1823,18 +1834,30 @@ def item_dict(item: Item) -> dict:
     return out
 
 
-def render_ref(db: Session, stored_id: str) -> str:
+#: What a link endpoint renders as for a viewer who cannot read its project (GRPH-1063). Not
+#: the key: a key names the project and proves the item exists. Not dropped either — a hidden
+#: blocker that vanished from the read would make its dependent look unblocked.
+HIDDEN_REF = "(an item in a project you cannot see)"
+
+
+def render_ref(db: Session, stored_id: str, readable: list[str] | None = None) -> str:
     """Render a link endpoint, which may be an item OR a request (`links.a`/`b` are untyped
     strings), under the project's current tag. Falls back to the stored id so a dangling edge
-    still serializes."""
+    still serializes.
+
+    `readable` is the viewer's project scope. Given, an endpoint in a project outside it renders
+    as `HIDDEN_REF` — links may cross projects (GRPH-1063), reads may not. None means the
+    caller already decided the viewer may see everything."""
     for kind in ("item", "request"):
         row = db.get(keys.MODELS[kind], stored_id)
         if row is not None:
+            if readable is not None and row.project_id not in readable:
+                return HIDDEN_REF
             return row.key
     return stored_id
 
 
-def get_item_details(db: Session, item_id: str) -> dict | None:
+def get_item_details(db: Session, item_id: str, readable: list[str] | None = None) -> dict | None:
     from app.models import Link, MemoryShard, Request
 
     item = db.get(Item, keys.resolve_item(db, item_id) or item_id)
@@ -1864,7 +1887,9 @@ def get_item_details(db: Session, item_id: str) -> dict | None:
         "branch": item.branch or "",
         # Every edge touching this item, both directions, endpoints rendered. The tool promises
         # "dependencies"; `brief.blocked_by` is one direction of one type, unfinished only.
-        "links": [{"type": link.type, "a": render_ref(db, link.a), "b": render_ref(db, link.b),
+        # A far endpoint the viewer cannot read stays in the list as `HIDDEN_REF` (GRPH-1063).
+        "links": [{"type": link.type, "a": render_ref(db, link.a, readable),
+                   "b": render_ref(db, link.b, readable),
                    "reason": link.reason or ""} for link in links],
         "linked_shards": [{"id": sh.id, "text": sh.text, "source": sh.source} for sh in shards],
         "linked_requests": [{"id": r.key, "title": r.title, "type": r.type} for r in reqs],

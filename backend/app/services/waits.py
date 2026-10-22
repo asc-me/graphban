@@ -60,7 +60,9 @@ def unfinished_wait_deps(db: Session, item: Item) -> list[str]:
     ctx = prio.context(db, item.project_id)
     out = []
     for dep_id in prio.blocked_by(ctx, item):
-        dep = ctx.by_id.get(dep_id)
+        # `ctx.item`, not `by_id`: a wait filed in another project is still a wait (GRPH-1063),
+        # and missing it here let the original move to review past an open human wait.
+        dep = ctx.item(dep_id)
         if dep is not None and wait_tags_on(dep):
             out.append(dep.id)
     return out
@@ -70,14 +72,25 @@ def release_waiters(db: Session, wait: Item) -> list[str]:
     """After a wait item reaches `done`: blocked dependents with no remaining
     unmet deps return to `next`. Does not rewrite `in_progress`.
     """
+    from sqlalchemy import select
+
+    from app.models import Link
     from app.services import prioritization as prio
 
-    ctx = prio.context(db, wait.project_id)
+    # Dependents are found by the LINK, not through the wait's project context: a dependent
+    # in another project (GRPH-1063) is never in that context, and was left blocked forever.
+    # Each one is then judged in its OWN project's context, where all its deps resolve.
+    dependent_ids = db.scalars(
+        select(Link.a).where(Link.type == "dependency", Link.b == wait.id)).all()
+    contexts: dict[str, prio.Context] = {}
     released: list[str] = []
-    for dep_id in ctx.dependents.get(wait.id, []):
-        dependent = ctx.by_id.get(dep_id)
+    for dep_id in dict.fromkeys(dependent_ids):
+        dependent = db.get(Item, dep_id)
         if dependent is None or dependent.status != "blocked":
             continue
+        ctx = contexts.get(dependent.project_id)
+        if ctx is None:
+            ctx = contexts[dependent.project_id] = prio.context(db, dependent.project_id)
         if prio.blocked_by(ctx, dependent):
             continue
         dependent.status = "next"

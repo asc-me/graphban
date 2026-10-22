@@ -2781,7 +2781,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         ranking = ("ready", "blocked_by", "unblocks", "votes", "score")
         rows = [
             {**shape(r["item"]), "ready": r["ready"],
-             "blocked_by": [_ref_key(db, d) for d in r["blocked_by"]],
+             # A blocker in a project this key cannot read is listed as a placeholder, never
+             # dropped: dropped, its dependent would read as unblocked (GRPH-1063).
+             "blocked_by": [items_svc.render_ref(db, d, readable) for d in r["blocked_by"]],
              "unblocks": r["unblocks"], "votes": r["votes"], "score": r["score"]}
             for r in ranked
         ]
@@ -2792,7 +2794,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                          fields=(LEAN_FIELDS + ranking) if lean else None)
     if name == "get_item_details":
         item = _scoped_item(db, args["id"], readable)
-        details = items_svc.get_item_details(db, args["id"])
+        details = items_svc.get_item_details(db, args["id"], readable=readable)
         if details is None:
             raise errors.NotFound(f"item not found: {args['id']}")
         # PRD-35 D2: the delegation brief rides on the read a planner already makes.
@@ -2820,26 +2822,31 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "link_items":
         cached = _idempotent_get(db, args, "link_items", Link)
         if cached is not None:
-            return {"id": cached.id, "a": cached.a, "b": cached.b, "type": cached.type}
-        # Both endpoints must exist and be in scope — also stops dangling links
-        # from poisoning get_backlog's blocked_by.
-        _scoped_item(db, args["a"], allowed)
-        _scoped_item(db, args["b"], allowed)
+            # Rendered under THIS caller's read scope: idempotency keys are global, so a replay
+            # from a caller who cannot read the far project must get the placeholder, not the
+            # stored id the original caller was entitled to (GRPH-1063).
+            return {"id": cached.id, "a": items_svc.render_ref(db, cached.a, readable),
+                    "b": items_svc.render_ref(db, cached.b, readable), "type": cached.type}
+        # Both endpoints must exist, be readable and sit in one org; `a` must be writable
+        # (GRPH-1063). Also stops dangling links from poisoning get_backlog's blocked_by.
+        ia, ib = links_svc.link_endpoints(db, args["a"], args["b"],
+                                          readable=readable, writable=allowed)
+        # Stored by RESOLVED id in the source's project — a cross-project edge belongs to the
+        # item it constrains, not to whichever project the key happened to default to.
         link = links_svc.create_link(
-            db, a=args["a"], b=args["b"], type_=args.get("type", "dependency"),
-            reason=args.get("reason", ""), project_id=pid,
+            db, a=ia.id, b=ib.id, type_=args.get("type", "dependency"),
+            reason=args.get("reason", ""), project_id=ia.project_id,
         )
         _idempotent_remember(db, args, "link_items", link.id)
         return {"id": link.id, "a": _ref_key(db, link.a), "b": _ref_key(db, link.b),
                 "type": link.type}
     if name == "unlink_items":
-        # Both endpoints must be in scope — same guard as link_items, so a key can't
-        # probe or mutate links that touch items outside its project scope.
-        _scoped_item(db, args["a"], allowed)
-        _scoped_item(db, args["b"], allowed)
-        removed = links_svc.delete_link(
-            db, a=args["a"], b=args["b"], type_=args.get("type"), project_id=pid,
-        )
+        # The same rule as link_items (GRPH-1063), so a key can't probe or mutate links that
+        # touch items outside its scope. Both endpoints are pinned, so the pair needs no
+        # further project filter — and a cross-project edge is not in the key's default one.
+        ia, ib = links_svc.link_endpoints(db, args["a"], args["b"],
+                                          readable=readable, writable=allowed)
+        removed = links_svc.delete_link(db, a=ia.id, b=ib.id, type_=args.get("type"))
         return {"removed": removed}
     if name == "claim_next":
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)

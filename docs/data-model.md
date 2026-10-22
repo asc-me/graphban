@@ -19,7 +19,7 @@ Alembic; SQLite (tests / zero-infra dev) uses `create_all`.
 | `requests` | `id` (frozen at issue) | Triage: **`number`**, type, title, by, votes, status, `linked_to`. PRD-43: `published_at` (NULL = unpublished), `track_token_hash` (capability URL). Migration `0129` |
 | `request_comments` | `id` (`rcom_…`) | Operator comment on a request (PRD-43 D7). `visibility` `private\|public`, **server default private** — absence of the tag is private. Migration `0129` |
 | `request_votes` | `id` | Anonymous public upvote (PRD-43 D6). `voter_key` is a hash of the `gb_vote` cookie id, unique per `(request_id, voter_key)`. Not an email or IP. Migration `0129` |
-| `links` | `id` | Typed edge: `a`, `b`, `type` (dependency/code/semantic/tag), `confidence`, `reason` |
+| `links` | `id` | Typed edge: `a`, `b`, `type` (dependency/code/semantic/tag), `confidence`, `reason`. A `code` link joins two OPEN items sharing a touchpoint; it is never stored to a `done` item and is deleted when either end completes (GRPH-1068, sweep `0138`) |
 | `prds` | `id` (frozen at issue) | PRD: **`number`**, title, status, version, body (markdown), `linked` (item ids), updated |
 | `prd_versions` | `id` | Immutable snapshot: `prd_id`, version, date, note, body |
 | `milestones` | `id` | Roadmap entry: `phase` (mvp/post/later), title, tag, `done`, `sort_order` |

@@ -1371,11 +1371,15 @@ export type LinkType = "dependency" | "code" | "semantic" | "tag";
 
 export interface GraphLink {
   id: number;
+  /** An endpoint key, or `(an item in a project you cannot see)` when the far end of a
+   *  cross-project link is outside what the viewer can read (GRPH-1063). */
   a: string;
   b: string;
   type: LinkType;
   confidence: number;
   reason: string;
+  /** `b`'s status when it is an item the viewer can read, else null. */
+  b_status?: Status | null;
 }
 
 // ── Code structure graph ──────────────────────────────────────────────────

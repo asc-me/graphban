@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectProvider } from "@/features/ProjectContext";
 import { TrackerView } from "@/features/tracker/TrackerView";
 import { CHECK_COLOR, PR_STATE_COLOR } from "@/lib/meta";
-import type { Item } from "@/lib/types";
+import type { GraphLink, Item } from "@/lib/types";
 
 const items: Item[] = [
   {
@@ -26,6 +26,8 @@ const items: Item[] = [
 
 // What `api.items` serves. Defaults to the fixture; a test may swap it.
 let served: Item[] = items;
+// What `api.links` serves. None by default.
+let servedLinks: GraphLink[] = [];
 
 const project = {
   id: "core", name: "Core", accent: "#a78bfa", visibility: "private", description: "",
@@ -38,6 +40,7 @@ vi.mock("@/lib/api", () => ({
     projects: vi.fn(async () => [project]),
     items: vi.fn(async () => served),
     shards: vi.fn(async () => []),
+    links: vi.fn(async () => servedLinks),
     updateItem: vi.fn(async (id: string, body: Partial<Item>) => ({ ...items[0], id, ...body })),
     ownerClose: vi.fn(async (id: string) => ({ ...items[0], id, status: "done" as const })),
     reorderItems: vi.fn(async () => items),
@@ -199,6 +202,41 @@ describe("a bounced item", () => {
     } finally {
       served = items;
     }
+  });
+});
+
+describe("a blocker in another project (GRPH-1063)", () => {
+  beforeEach(() => {
+    Element.prototype.scrollTo = Element.prototype.scrollTo ?? (() => {});
+  });
+  afterEach(() => {
+    servedLinks = [];
+  });
+
+  const HIDDEN = "(an item in a project you cannot see)";
+  const dep = (b: string, b_status: GraphLink["b_status"]): GraphLink => ({
+    id: Math.floor(Math.random() * 1e6), a: "AL-01", b, type: "dependency", confidence: 1,
+    reason: "", b_status,
+  });
+
+  it("shows a blocker the viewer cannot read as a placeholder, still blocking", async () => {
+    // Not in this project's item list and no status: the absence must read as blocked.
+    servedLinks = [dep(HIDDEN, null), dep(HIDDEN, null)];
+    renderTracker();
+    await userEvent.click(await screen.findByText("In progress thing"));
+
+    expect(await screen.findAllByText(HIDDEN)).toHaveLength(2);
+    expect(screen.getByText(/Blocked by/)).toBeInTheDocument();
+  });
+
+  it("reads a finished far blocker's status off the link", async () => {
+    servedLinks = [dep("GBC-12", "done"), dep("GBC-13", "in_progress")];
+    renderTracker();
+    await userEvent.click(await screen.findByText("In progress thing"));
+
+    expect(await screen.findByText("GBC-13")).toBeInTheDocument();
+    expect(screen.queryByText("GBC-12")).not.toBeInTheDocument();
+    expect(screen.getByText(/Depends on 2 items · 1 done/)).toBeInTheDocument();
   });
 });
 

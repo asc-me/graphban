@@ -4,26 +4,16 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.mcp_server import TOOLS
-from app.models import User
+from app.models import Item, User
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import dashboard as dash_svc
 from app.services import events as events_svc
+from app.services import items as items_svc
 from app.services import links as links_svc
 from app.services import mcp_stats
 from app.services import roadmap as roadmap_svc
 
-
-def _ref_key(db, stored_id: str) -> str:
-    """A link endpoint is an item OR a request (`links.a`/`b` are untyped), so try both.
-    Falls back to the stored id so a dangling edge still serializes (PRD-13)."""
-    from app.services import keys
-
-    for kind in ("item", "request"):
-        row = db.get(keys.MODELS[kind], stored_id)
-        if row is not None:
-            return row.key
-    return stored_id
 
 router = APIRouter(tags=["analytics"])
 
@@ -86,11 +76,24 @@ def roadmap(project_id: str | None = None, db: Session = Depends(get_db), user: 
 def links(project_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     authz.require_readable(db, user.id, project_id)
     rows = links_svc.list_links(db, project_id=project_id)
+    # A cross-project edge (GRPH-1063) shows on both projects. Its far endpoint renders as a
+    # placeholder when the viewer cannot read that project, and its status rides along when
+    # they can — the item view's own item list holds only this project's, so without it a
+    # finished far blocker would read as still blocking.
+    readable = authz.readable_project_ids(db, user.id)
     return [
-        {"id": l.id, "a": _ref_key(db, l.a), "b": _ref_key(db, l.b), "type": l.type,
-         "confidence": l.confidence, "reason": l.reason}
+        {"id": l.id, "a": items_svc.render_ref(db, l.a, readable),
+         "b": items_svc.render_ref(db, l.b, readable), "type": l.type,
+         "confidence": l.confidence, "reason": l.reason,
+         "b_status": _status(db, l.b, readable)}
         for l in rows
     ]
+
+
+def _status(db, stored_id: str, readable: list[str]) -> str | None:
+    """A link endpoint's status, or None when it is not an item the viewer can read."""
+    item = db.get(Item, stored_id)
+    return item.status if item is not None and item.project_id in readable else None
 
 
 @router.get("/mcp/tools")

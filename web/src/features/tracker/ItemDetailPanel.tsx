@@ -31,10 +31,15 @@ export function ItemDetailPanel({
   const setFidelity = (f: Fidelity) => updateItem.mutate({ id: item.id, body: { fidelity: f } });
   const setReach = (r: Reach) => updateItem.mutate({ id: item.id, body: { reach: r } });
 
-  const statusOf = (id: string) => allItems.find((i) => i.id === id)?.status;
-  const deps = links.filter((l) => l.type === "dependency" && l.a === item.id).map((l) => l.b);
+  // A blocker may live in another project (GRPH-1063): its status rides on the link, since
+  // `allItems` holds only this project's. One the viewer cannot read has no status and counts
+  // as blocking — a hidden blocker must never read as done.
+  const depLinks = links.filter((l) => l.type === "dependency" && l.a === item.id);
+  const statusOf = (l: (typeof depLinks)[number]) =>
+    allItems.find((i) => i.id === l.b)?.status ?? l.b_status ?? undefined;
+  const deps = depLinks.map((l) => l.b);
   const dependents = links.filter((l) => l.type === "dependency" && l.b === item.id).map((l) => l.a);
-  const blockedBy = deps.filter((id) => statusOf(id) !== "done");
+  const blockedBy = depLinks.filter((l) => statusOf(l) !== "done").map((l) => l.b);
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -189,8 +194,8 @@ export function ItemDetailPanel({
               {blockedBy.length > 0 && (
                 <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[12px] text-st-blocked">
                   <span className="font-mono text-[10px] uppercase tracking-wide">Blocked by ·</span>
-                  {blockedBy.map((id) => (
-                    <span key={id} className="rounded border border-[rgba(255,107,107,0.3)] px-1.5 py-px font-mono text-[10px]">
+                  {blockedBy.map((id, i) => (
+                    <span key={`${id}-${i}`} className="rounded border border-[rgba(255,107,107,0.3)] px-1.5 py-px font-mono text-[10px]">
                       {id}
                     </span>
                   ))}
