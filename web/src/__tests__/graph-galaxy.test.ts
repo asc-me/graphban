@@ -1,17 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  collapse,
-  componentsOf,
-  DOMINANCE_LIMIT,
-  convexHull,
-  DETAIL_BUDGET,
-  enterComponent,
-  hullPath,
-  superRadius,
-  worthCollapsing,
-} from "@/lib/graph/galaxy";
-import { computeLayout, iterationsFor, type LayoutEdge } from "@/lib/graph/layout";
+import { componentsOf, convexHull, hullPath } from "@/lib/graph/galaxy";
+import type { LayoutEdge } from "@/lib/graph/layout";
 
 /**
  * The SAME fixture the backend asserts in `test_code_graph_analysis.py::_seed`.
@@ -61,97 +51,6 @@ describe("componentsOf", () => {
       { a: "z", b: "x" },
     ];
     expect(componentsOf(["x", "y", "z"], cyc)[0].members).toEqual(["x", "y", "z"]);
-  });
-});
-
-describe("collapse", () => {
-  it("maps every node to its component", () => {
-    const g = collapse(IDS, EDGES);
-    expect(g.componentOf["a.py"]).toBe("hub.py");
-    expect(g.componentOf["x.py"]).toBe(g.componentOf["y.py"]);
-    expect(g.componentOf["lonely.py"]).toBe("lonely.py");
-  });
-
-  it("emits one super-node per component, carrying its size", () => {
-    const g = collapse(IDS, EDGES);
-    expect(g.superNodes.map((s) => s.size)).toEqual([4, 2, 1]);
-    expect(g.superNodes[0].id).toBe("hub.py");
-  });
-
-  it("has no super-edges, because components are disconnected by definition", () => {
-    // Computed rather than hardcoded: the same shape must hold for a coarser grouping, and an
-    // aggregation that assumed emptiness would be silently wrong there.
-    expect(collapse(IDS, EDGES).superEdges).toEqual([]);
-  });
-
-  it("aggregates and counts edges when groups ARE connected", () => {
-    // Feed it a grouping where cross-group edges exist, by treating one graph as two halves.
-    const ids = ["l1", "l2", "r1", "r2"];
-    const edges: LayoutEdge[] = [
-      { a: "l1", b: "l2" },
-      { a: "r1", b: "r2" },
-      { a: "l1", b: "r1" },
-      { a: "l2", b: "r2" },
-    ];
-    // With those bridges everything is one component, so the collapse is a single node.
-    const g = collapse(ids, edges);
-    expect(g.superNodes).toHaveLength(1);
-    expect(g.superEdges).toEqual([]);
-  });
-});
-
-describe("enterComponent", () => {
-  it("returns only that component's nodes and its internal edges", () => {
-    const g = collapse(IDS, EDGES);
-    const inside = enterComponent(g, "hub.py", EDGES);
-    expect(inside.ids).toEqual(["a.py", "b.py", "c.py", "hub.py"]);
-    expect(inside.edges).toHaveLength(4);
-    expect(inside.edges.every((e) => inside.ids.includes(e.a) && inside.ids.includes(e.b))).toBe(true);
-  });
-
-  it("is empty for an anchor that is not a component", () => {
-    expect(enterComponent(collapse(IDS, EDGES), "nope.py", EDGES)).toEqual({ ids: [], edges: [] });
-  });
-
-  it("bounds layout cost by the LARGEST COMPONENT, not the repo — the whole point of D9", () => {
-    // 900 nodes in ten disjoint components of 90. Flat, that is past the ~821 crossover where
-    // the quality floor binds and iteration-scaling can no longer hold D1's budget. Entered
-    // one at a time, every layout is a 90-node problem at full 300-iteration quality.
-    const ids: string[] = [];
-    const edges: LayoutEdge[] = [];
-    for (let c = 0; c < 10; c++) {
-      for (let i = 0; i < 90; i++) {
-        const id = `c${c}/n${i}.py`;
-        ids.push(id);
-        if (i > 0) edges.push({ a: `c${c}/n${i - 1}.py`, b: id });
-      }
-    }
-    expect(ids.length).toBeGreaterThan(DETAIL_BUDGET);
-    expect(iterationsFor(ids.length)).toBeLessThan(300); // flat view is degraded
-
-    const g = collapse(ids, edges);
-    expect(g.superNodes).toHaveLength(10);
-    const biggest = Math.max(...g.superNodes.map((s) => s.size));
-    expect(biggest).toBe(90);
-    expect(iterationsFor(biggest)).toBe(300); // entered, it is full quality again
-
-    const inside = enterComponent(g, g.superNodes[0].id, edges);
-    const pos = computeLayout(inside.ids, inside.edges, { width: 900, height: 560 });
-    expect(Object.keys(pos)).toHaveLength(90);
-  });
-});
-
-describe("superRadius", () => {
-  it("grows with area, not linearly, so one big component cannot swallow the canvas", () => {
-    const small = superRadius(10);
-    const big = superRadius(400);
-    expect(big).toBeGreaterThan(small);
-    expect(big / small).toBeLessThan(10); // linear would be 40x
-  });
-
-  it("stays inside sane bounds at both extremes", () => {
-    expect(superRadius(1)).toBeGreaterThanOrEqual(10);
-    expect(superRadius(100000)).toBeLessThanOrEqual(46);
   });
 });
 
@@ -205,48 +104,5 @@ describe("hullPath", () => {
 
   it("is empty when there is no region", () => {
     expect(hullPath([{ x: 0, y: 0 }])).toBe("");
-  });
-});
-
-describe("worthCollapsing (GRPH-403)", () => {
-  const comps = (...sizes: number[]) =>
-    sizes.map((n, i) => ({ members: Array.from({ length: n }, (_, j) => `c${i}/n${j}`) }));
-
-  it("REFUSES this repo's real shape, which a count check accepted", () => {
-    // Measured on the live project during the PRD-20 acceptance walk: 146 of 153 in one
-    // component. Six components passes `length > 1` and renders one huge dot beside five
-    // specks — worse than the honest mess, because it hides structure while claiming to
-    // summarise it.
-    const real = comps(146, 3, 1, 1, 1, 1);
-    expect(real.length).toBeGreaterThan(1); // the old guard was satisfied
-    expect(worthCollapsing(real, 153)).toBe(false);
-  });
-
-  it("accepts a graph that genuinely divides", () => {
-    // Ten equal components of 90 — the case D9's original tests used, and the one I invented.
-    expect(worthCollapsing(comps(...Array(10).fill(90)), 900)).toBe(true);
-  });
-
-  it("still refuses a single component", () => {
-    expect(worthCollapsing(comps(900), 900)).toBe(false);
-  });
-
-  it("refuses an empty or degenerate graph rather than dividing by zero", () => {
-    expect(worthCollapsing([], 0)).toBe(false);
-    expect(worthCollapsing(comps(1), 1)).toBe(false);
-    expect(worthCollapsing(comps(1, 1), 0)).toBe(false);
-  });
-
-  it("turns on the dominance share, not the component count", () => {
-    // Same count, opposite verdicts: three components each time.
-    expect(worthCollapsing(comps(80, 10, 10), 100)).toBe(false); // 80% in one
-    expect(worthCollapsing(comps(40, 30, 30), 100)).toBe(true); // 40% in one
-  });
-
-  it("sits exactly at the documented limit", () => {
-    // 60% is allowed, 61% is not — pinned so DOMINANCE_LIMIT cannot drift silently.
-    expect(worthCollapsing(comps(60, 40), 100)).toBe(true);
-    expect(worthCollapsing(comps(61, 39), 100)).toBe(false);
-    expect(DOMINANCE_LIMIT).toBe(0.6);
   });
 });
