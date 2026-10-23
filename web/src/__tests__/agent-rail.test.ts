@@ -23,7 +23,7 @@ describe("the agent rail on arrival", () => {
     expect(hasOwnAside("/org/galaxy")).toBe(false);
   });
 
-  it.each(["/code", "/p/GRPH/code"])("starts closed on %s from the first frame, and open elsewhere", (graph) => {
+  it.each(["/code", "/p/GRPH/code"])("starts closed on %s from the first frame", (graph) => {
     // The FIRST render, not the settled one. Starting open and closing in an effect draws
     // the rail for a frame and then plays its 240ms close slide: the panel visibly opens
     // on its own, which is the complaint.
@@ -35,9 +35,22 @@ describe("the agent rail on arrival", () => {
     });
     expect(frames[0]).toBe(false);
     expect(frames.every((open) => !open)).toBe(true);
-
-    expect(renderHook(() => useAgentRail("/p/GRPH/tracker")).result.current[0]).toBe(true);
   });
+
+  it.each(["/tracker", "/p/GRPH/tracker", "/p/GRPH/stack", "/"])(
+    "is hidden by default on %s too, and the toggle opens it",
+    (path) => {
+      const frames: boolean[] = [];
+      const { result } = renderHook(() => {
+        const rail = useAgentRail(path);
+        frames.push(rail[0]);
+        return rail;
+      });
+      expect(frames.every((open) => !open)).toBe(true);
+      act(() => result.current[1](true));
+      expect(result.current[0]).toBe(true);
+    },
+  );
 
   it.each([
     ["/tracker", "/code"],
@@ -46,6 +59,7 @@ describe("the agent rail on arrival", () => {
     const { result, rerender } = renderHook(({ path }) => useAgentRail(path), {
       initialProps: { path: from },
     });
+    act(() => result.current[1](true));
     expect(result.current[0]).toBe(true);
     rerender({ path: to });
     expect(result.current[0]).toBe(false);
