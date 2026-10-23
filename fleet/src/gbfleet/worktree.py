@@ -94,6 +94,34 @@ class BranchExists(RuntimeError):
     """
 
 
+class RemoteBranchTaken(BranchExists):
+    """This name is already on the remote. The slot loop takes the next one.
+
+    A local collision and a remote collision are the same refusal (GRPH-1088). The
+    subclass is how the slot loop records WHY — a push onto the old name can
+    fast-forward when the old tip is an ancestor of the new cut, so the refusal
+    has to happen here, at the name. An `ls-remote` that fails is not this class:
+    that is unknown, and `create` raises `GitError` so the wave stops on one line
+    instead of burning every slot.
+    """
+
+
+@dataclass(frozen=True)
+class RemoteName:
+    """Whether `branch` is already a head on the remote.
+
+    `known=False` means the question was not answered. That is not "the name is
+    free". A repository with no remote is known: there is nowhere for the name
+    to already be.
+    """
+
+    known: bool
+    exists: bool
+    remote: str = ""
+    sha: str = ""
+    reason: str = ""
+
+
 class Disposition(str, Enum):
     """What became of a worktree at reap. Four outcomes, deliberately.
 
@@ -186,6 +214,21 @@ def create(
             f"{branch} already exists in {repo}. Refusing to spawn: forcing would "
             "attach this worker to somebody else's history, and auto-suffixing would "
             "make the branch stop identifying the agent. Reap or rename it first."
+        )
+    # Before any worktree exists. A name the remote already has is an earlier run's
+    # branch (GRPH-1088). Cutting it and pushing later fast-forwards that ref when
+    # the old tip is an ancestor — `push_branch` is right to allow that for a branch
+    # this process just published, so the refusal is choosing a different name.
+    named = remote_name(repo, branch)
+    if not named.known:
+        raise GitError(
+            f"could not ask {named.remote} whether {branch} already exists "
+            f"({named.reason}); not cutting a name that might be an earlier run's"
+        )
+    if named.exists:
+        raise RemoteBranchTaken(
+            f"{branch} exists on {named.remote} at {named.sha[:12]}; refusing to "
+            "cut onto a branch the remote already has"
         )
     base_sha = _git(repo, "rev-parse", base).strip()
 
@@ -498,6 +541,38 @@ def commits_beyond_base(repo: Path | str, branch: str, base: str) -> int:
         return int(out)
     except ValueError:
         return 0
+
+
+def remote_name(repo: Path | str, branch: str) -> RemoteName:
+    """Ask the remote whether `branch` is already a head.
+
+    `ls-remote`'s pattern is broader than one ref, so the answer is the line whose
+    ref is exactly `refs/heads/<branch>`. No remote is a known absence. A non-zero
+    exit is unknown, and the reason is kept so the wave can say why it stopped.
+    """
+    remote = remote_for(repo)
+    if not remote:
+        return RemoteName(known=True, exists=False)
+    proc = subprocess.run(
+        ["git", "ls-remote", "--heads", remote, f"refs/heads/{branch}"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        reason = (proc.stderr or proc.stdout or "").strip().replace("\n", " ")
+        if len(reason) > 200:
+            reason = reason[:200]
+        return RemoteName(
+            known=False, exists=False, remote=remote,
+            reason=reason or "ls-remote failed",
+        )
+    want = f"refs/heads/{branch}"
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == want:
+            return RemoteName(known=True, exists=True, remote=remote, sha=parts[0])
+    return RemoteName(known=True, exists=False, remote=remote)
 
 
 def remote_for(repo: Path | str) -> str:

@@ -522,6 +522,8 @@ def report(wave: Wave, out=None) -> None:
         print(f"RESUMED {branch}", file=out)
     for miss in wave.resume_misses:
         print(f"RESUME MISS {miss}", file=out)
+    for taken in wave.remote_taken:
+        print(f"BRANCH TAKEN {taken}", file=out)
     print(f"spawned {len(wave.spawned)}", file=out)
     for child in wave.spawned:
         latency = (

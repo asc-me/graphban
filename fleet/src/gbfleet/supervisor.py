@@ -354,6 +354,10 @@ class Wave:
     resumed: list[str] = field(default_factory=list)
     #: Resume attempted and abandoned — spawn from HEAD, leftover ref stays listed.
     resume_misses: list[str] = field(default_factory=list)
+    #: Names this wave refused because the remote already had them (GRPH-1088). The
+    #: next free slot is cut instead. Recorded as the refusal `create` raised, so the
+    #: report says which name and which commit were left alone.
+    remote_taken: list[str] = field(default_factory=list)
     #: Items a reaped child no longer held, so reap did not release them (GRPH-949). INFO,
     #: not `failures`: the child delivered to review, or its lease lapsed and moved on, and
     #: the server would rightly refuse the release. One line per item.
@@ -1006,8 +1010,17 @@ def _start(
                     continue
                 try:
                     tree = _tree_for(repo, workspace, wave_name, slot, base=base)
-                except wt_mod.BranchExists:
+                except wt_mod.BranchExists as exc:
                     taken.add(branch)
+                    if isinstance(exc, wt_mod.RemoteBranchTaken):
+                        wave.remote_taken.append(str(exc))
+                    # The pre-check above caps a local collision at 1000. A remote
+                    # that already has the name raises here instead, and an uncapped
+                    # continue would spin for as long as every name is taken.
+                    if slot_n > 1000:
+                        raise wt_mod.BranchExists(
+                            f"no free gb/{wave_name}-* slot under 1000"
+                        )
                     continue
                 break
             def remember(child: Child) -> None:

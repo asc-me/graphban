@@ -712,6 +712,11 @@ def list_agents(db: Session, project_id: str | None = None, *,
             # ISO string, not a datetime: this dict crosses the MCP boundary as JSON, and a
             # raw datetime raises there rather than at the call site that built it.
             "last_seen_at": a.last_seen_at.isoformat() if a.last_seen_at else None,
+            # When this row was created. A reused worktree is not unique: the previous
+            # run stays on the roster until it ages out, and the supervisor keeps the
+            # row registered after the child started (GRPH-1088). Lean keeps this — it
+            # is not display. A JSON field on the roster is not a migration.
+            "registered_at": a.registered_at.isoformat() if a.registered_at else None,
             # What it is holding right now. The roster's second question after "who is out
             # there" is "what is stuck with them".
             # `phase` and `phase_basis` are DERIVED server-side rather than reported by the child,
