@@ -304,11 +304,20 @@ class Wave:
     #: branch -> (commits behind, the ref it was measured against). How much had landed on
     #: the trunk that this worker never had in front of it (GRPH-786). A reviewer reading a
     #: branch cut from a base the trunk has moved past is reading a diff against a world
-    #: that no longer exists, and nothing said so.
+    #: that no longer exists, and nothing said so. The count is the measurement; whether it
+    #: blocks a proposal is `behind_clean` / `behind_block` (GRPH-1087).
     stale: dict[str, tuple] = field(default_factory=dict)
     #: Set when the trunk could not be fetched. "We could not ask" is not "nothing moved",
     #: and reporting the second for the first is the failure this whole check is about.
     stale_unmeasured: str = ""
+    #: branch -> "N behind ref, no shared files, merges clean", and ONLY when both checks
+    #: ran and neither fired (GRPH-1087). Present means the branch may be proposed despite
+    #: `stale`. Absent does not mean that: a stale branch with no entry here is refused.
+    behind_clean: dict[str, str] = field(default_factory=dict)
+    #: branch -> why being behind blocks the proposal, when the check ran and found a
+    #: shared file, a merge-tree conflict, or could not be asked. The unclassified stale
+    #: case (no entry here either) still refuses, with the older "rebase before proposing".
+    behind_block: dict[str, str] = field(default_factory=dict)
     #: PRD-41 D21: each matrix resolution this wave made, with every stage. `until`
     #: prints the list on its report (empty = looked, none resolved — not an absence).
     resolutions: list = field(default_factory=list)
@@ -350,7 +359,9 @@ class Wave:
     #: the server would rightly refuse the release. One line per item.
     lease_moved: list[str] = field(default_factory=list)
     #: Branches pushed but NOT proposed as a PR, with why (GRPH-949): a change outside every
-    #: declared touchpoint, or a base the trunk has moved past. Also in `proposed` as skipped.
+    #: declared touchpoint, or a base the trunk has moved past in a way that matters — a
+    #: shared file, a merge conflict, or a behind-check that could not be asked (GRPH-1087).
+    #: Also in `proposed` as skipped.
     unproposed: dict[str, str] = field(default_factory=dict)
     #: branch -> the head this wave pushed while its child was STILL RUNNING, because one of
     #: the child's items had already reached `review` (GRPH-987). Kept apart from `published`,
@@ -1137,6 +1148,9 @@ def watch_tick(
     # (GRPH-987). A bound seat keeps running after it moves its item to review, so waiting for
     # the reap left the branch local for the rest of that run — long enough for a reviewer in
     # any other checkout to be handed the item and bounce it for a reason that is not the diff.
+    # A bound_only seat (GRPH-1089) is told to exit at that moment instead of reviewing. This
+    # publish still has to land before that exit: the flag changes what the child does next,
+    # not whether its branch is on the remote when a reviewer arrives.
     #
     # The order is not cosmetic. `_reap_exited` owns a child that has EXITED and does the fuller
     # job — salvage, touchpoints, receipts — while `_reap_all` at the end of a wave writes the
@@ -1301,8 +1315,9 @@ def _note_staleness(wave: Wave, tree: Worktree) -> None:
 
     Fetches the trunk once per wave before measuring, because a remote-tracking ref is only
     as fresh as the last fetch and a check that never fetched would report every branch as
-    current. Rebasing somebody's work is not the supervisor's call; since GRPH-949 a BEHIND
-    branch is still pushed but not proposed as a PR (`_refuse_proposal`).
+    current. Rebasing somebody's work is not the supervisor's call. Since GRPH-949 a branch
+    that is behind is still pushed; since GRPH-1087 it is proposed unless the missed commits
+    share a file with it or `git merge-tree --write-tree` conflicts (`_classify_behind`).
     """
     if wave.stale_unmeasured or not tree.base:
         return
@@ -1317,6 +1332,54 @@ def _note_staleness(wave: Wave, tree: Worktree) -> None:
     behind = wt_mod.behind_ref(tree.repo, tree.base, ref)
     if behind:
         wave.stale[tree.branch] = (behind, ref)
+        _classify_behind(wave, tree, behind, ref)
+
+
+def _classify_behind(wave: Wave, tree: Worktree, behind: int, ref: str) -> None:
+    """Whether being `behind` commits behind `ref` should withhold the PR (GRPH-1087).
+
+    The count in `wave.stale` stays either way — the BEHIND line is how far the trunk
+    moved, and that fact does not go away because the merge is clean. What changes is
+    the proposal. Refuse when either check says the behind-ness matters:
+
+    1. the missed commits (`base`..`ref`) change a file the branch also changes, or
+    2. `git merge-tree --write-tree ref branch` reports a conflict.
+
+    Otherwise record "N behind ref, no shared files, merges clean" for the PR body and
+    the BEHIND line. A check that cannot be asked is a refusal, not a clean note: an
+    empty file list we failed to compute is how "1 behind, overlapping" would be proposed.
+    """
+    shared = wt_mod.shared_with_missed(tree.repo, tree.base, ref, tree.branch)
+    if shared is None:
+        wave.behind_block[tree.branch] = (
+            f"{behind} commit(s) behind {ref}; could not list the files those "
+            "commits change, so not proposing"
+        )
+        return
+    conflicts = wt_mod.merge_tree_conflicts(tree.repo, ref, tree.branch)
+    if conflicts is None:
+        wave.behind_block[tree.branch] = (
+            f"{behind} commit(s) behind {ref}; merge-tree could not be asked, "
+            "so not proposing"
+        )
+        return
+    if conflicts:
+        wave.behind_block[tree.branch] = (
+            f"{behind} commit(s) behind {ref}; merge-tree conflicts"
+        )
+        return
+    if shared:
+        shown = ", ".join(shared[:5]) + (
+            f" (+{len(shared) - 5} more)" if len(shared) > 5 else ""
+        )
+        wave.behind_block[tree.branch] = (
+            f"{behind} commit(s) behind {ref}; rebase before proposing — "
+            f"missed commits also change {shown}"
+        )
+        return
+    wave.behind_clean[tree.branch] = (
+        f"{behind} behind {ref}, no shared files, merges clean"
+    )
 
 
 def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) -> None:
@@ -1972,14 +2035,19 @@ def _record_cut_from(wave: Wave, client, item_id: str | None, branch: str, base:
 
 
 def _refuse_proposal(wave: Wave, branch: str) -> str:
-    """Why this branch must not be proposed as a PR, or "" (GRPH-949).
+    """Why this branch must not be proposed as a PR, or "" (GRPH-949, GRPH-1087).
 
     UNDECLARED and BEHIND were recorded and printed and never acted on, so one wave proposed
     a branch that changed nine undeclared files (App.tsx among them) and another three
     commits behind the trunk. A PR is a request to merge; asking for one on a branch whose
-    partition was wrong, or whose diff is against a trunk that no longer exists, hands the
-    reviewer a question the supervisor already had the answer to. Rebasing is not the
-    supervisor's call, so the branch is refused and the person decides.
+    partition was wrong hands the reviewer a question the supervisor already had the answer
+    to. Rebasing is not the supervisor's call.
+
+    Being behind is not itself that answer (GRPH-1087). A trunk that landed unrelated
+    commits during the build merges clean and shares no files, and refusing it made the
+    guard mostly refuse work that needed no rebase. Refuse the behind-ness only when
+    `_classify_behind` recorded a block, or when staleness was recorded and nobody
+    classified it — an unclassified stale mark is not a clean merge.
     """
     reasons = []
     missing = wave.undeclared.get(branch) or []
@@ -1987,9 +2055,13 @@ def _refuse_proposal(wave: Wave, branch: str) -> str:
         shown = ", ".join(missing[:5]) + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else "")
         reasons.append(f"changed file(s) outside every declared touchpoint: {shown}")
     stale = wave.stale.get(branch)
-    if stale:
-        behind, ref = stale
-        reasons.append(f"{behind} commit(s) behind {ref}; rebase before proposing")
+    if stale and branch not in wave.behind_clean:
+        block = wave.behind_block.get(branch)
+        if block:
+            reasons.append(block)
+        else:
+            behind, ref = stale
+            reasons.append(f"{behind} commit(s) behind {ref}; rebase before proposing")
     return "; ".join(reasons)
 
 
@@ -2048,6 +2120,12 @@ def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, s
     single-item branch does not, and its body stays the one it had.
     """
     title, body = propose_mod.describe(branch, items, subj, attest=attest)
+    note = wave.behind_clean.get(branch)
+    if note:
+        # The same sentence the BEHIND line prints (GRPH-1087). The reviewer reads the
+        # PR, not the supervisor's stdout, so a clean-but-behind branch that says so
+        # only in the log is a branch whose staleness the reviewer never sees.
+        body = body.rstrip() + "\n\n" + note + "\n"
     got = propose_mod.propose(repo, branch, base, title=title, body=body)
     wave.proposed[branch] = got
     if got.reason and not got.url:

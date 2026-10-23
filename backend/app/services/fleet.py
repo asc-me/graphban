@@ -1266,10 +1266,18 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
                                       and str((args or {}).get("branch") or "").strip())
                                   or (tool == "release_item"
                                       and (args or {}).get("to_status", "next") in _BEYOND_WORKER)):
-        raise authz.Forbidden(
+        # The evidence sentence is true of `update_item` only. `claim_next` and the
+        # other role-gated tools have no evidence fields, and attaching the sentence
+        # there tells the caller a write exists that the tool cannot do (GRPH-934).
+        message = (
             f"{tool} needs to know which agent is calling: this credential is running a fleet, "
-            "so an unidentified caller cannot be assumed to be unrestricted",
-            hint="pass agent_id — the value register_agent returned")
+            "so an unidentified caller cannot be assumed to be unrestricted"
+        )
+        if tool == "update_item":
+            message += (
+                ". Only this call is gated — evidence and other fields write without an identity"
+            )
+        raise authz.Forbidden(message, hint=_identify_hint(api_key, tool, args))
     if required and role == "expired":
         # An expired session grants NO role, so every role-gated tool refuses — but only
         # those. The shared reads stay open deliberately: `fleet_status` is how the agent
@@ -1312,7 +1320,7 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
                 "update_item(branch=…) needs to know which agent is calling: this "
                 "credential is running a fleet, so an unidentified caller cannot be "
                 "assumed to be a planner",
-                hint="pass agent_id — the value register_agent returned",
+                hint=_identify_hint(api_key, tool, args),
             )
 
     # `release_item` is how a worker hands work back — the release verb is shared across
@@ -1326,6 +1334,54 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
                 f"{who} is registered as 'worker'",
                 hint="release_item does not write `done`; the self-review ban gates sign-off",
             )
+
+
+def _identify_hint(api_key, tool: str, args: dict | None = None) -> str:
+    """The route to an identity, naming the role that clears THIS call (GRPH-934).
+
+    "Pass the agent_id register_agent returned" was a dead end for the session that hit it
+    most: a planner driving the board on the fleet's own credential, which never registered
+    because nothing it does needs a seat. `get_context` and `gban whoami` have no agent_id to
+    give it. It does not need an enrolment code — this refusal only fires on a credential
+    eligible for several roles, and `register_agent` without one grants a role the credential
+    already permits.
+
+    The role is the one the refused call needs, not a fixed planner. `update_item(status=
+    "done")` and `update_item(branch=…)` clear for a planner; a worker is past the ceiling
+    on both, so a worker hint would be refused again. Every other tool on this gate is in
+    `TOOL_ROLES`, and naming planner for `claim_next` registers a planner that is still
+    unauthorized ("claim_next requires role 'worker'"). A hint that names a route the call
+    cannot take is the same dead end, reworded.
+    """
+    role = _role_that_clears(tool, args)
+    if role not in eligible_roles(api_key):
+        role = ""
+    how = f"register_agent(role_hint={role!r})" if role else "register_agent"
+    return (f"pass agent_id. A session that never registered gets one from {how} — no "
+            "enrolment code needed on this credential — then passes the agent_id it returns")
+
+
+def _role_that_clears(tool: str, args: dict | None) -> str:
+    """The role a registration must hold for this call to pass the identity gate.
+
+    `update_item` is open to every role. The unidentified refusal on it is the ceiling:
+    `done` and a non-empty `branch` are planner work, so registering as worker would clear
+    the identity check and fail one line later. A tool in `TOOL_ROLES` clears for a role
+    that map allows. Worker is preferred where the tool accepts one — that is every worker
+    tool on this gate, including `release_item`, whose `done` ceiling is a later refusal
+    and not this one.
+    """
+    if tool == "update_item" and (
+        (args or {}).get("status") in _BEYOND_WORKER
+        or str((args or {}).get("branch") or "").strip()
+    ):
+        return "planner"
+    required = TOOL_ROLES.get(tool) or ()
+    if "worker" in required:
+        return "worker"
+    if required:
+        return required[0]
+    return ""
 
 
 def tools_off_limits(role: str) -> list[str]:
@@ -1771,6 +1827,12 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
     concrete payoff for running four heterogeneous windows rather than four identical ones.
     Preference, not requirement: a same-vendor review is far better than none.
     """
+    # GRPH-1089. Raised, not filtered to None. None is "nothing awaiting review", and a
+    # bound-only child that has finished its item would read that as an empty queue and
+    # exit believing the board was clear. The refusal names the binding. A seat without
+    # the flag is unaffected — a wave's finished workers still review each other.
+    if reason := items_svc.bound_only_refusal(db, agent_id):
+        raise items_svc.BoundOnlySeat(reason)
     me = db.get(Agent, agent_id)
     scope = items_svc.seat_scope(db, agent_id)
     stmt = select(Item).where(Item.status == "review")
@@ -3513,6 +3575,18 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
                 "held_by": [], "reason": items_svc.REVIEW_ONLY_REFUSAL,
                 "scope": items_svc.seat_scope(db, agent_id)}
 
+    # GRPH-1089. A bound_only seat whose item has left in_progress may not take build work.
+    # `claim_item` raises the same sentence from inside the member loop; answered once, here,
+    # the way the review-only refusal above is, so the caller gets a reason rather than an
+    # exception out of the loop. While the item is still in_progress this is None and the
+    # bound-seat checks below still apply. It has to be here, not only in `claim_item`:
+    # `_holds_bound_item` stops matching once the lease is released, and `open_bound_item`
+    # passes an item that is in review or done.
+    if reason := items_svc.bound_only_refusal(db, agent_id):
+        return {"claimed": False, "items": [], "areas": [], "predicted": False,
+                "held_by": [], "reason": reason,
+                "scope": items_svc.seat_scope(db, agent_id)}
+
     # GRPH-886: a bound seat already holds one item. Refuse to hand out more.
     bound_item = _holds_bound_item(db, agent_id)
     if bound_item:
@@ -3747,7 +3821,8 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
                     reissued_from: str | None = None, item_id: str | None = None,
                     delegation_id: str | None = None,
                     prd_id: str | None = None,
-                    review_only: bool = False) -> tuple[Enrolment, str]:
+                    review_only: bool = False,
+                    bound_only: bool = False) -> tuple[Enrolment, str]:
     """Mint one SEAT and return (row, plaintext). The code is shown once.
 
     One seat per agent, never one per role: two agents redeeming the same code would share an
@@ -3775,6 +3850,13 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
         raise ValueError("a review-only seat cannot also be bound to an item: binding "
                          "build-claims the item at registration, which would make the "
                          "reviewer its author and the self-review ban would then refuse it")
+    if bound_only and review_only:
+        raise ValueError("a bound_only seat cannot also be review-only: the two flags "
+                         "answer opposite questions")
+    if bound_only and not item_id:
+        # A flag with nothing to name is a silent no-op: claim_review would keep working
+        # and the minter would believe the child had been told to stop.
+        raise ValueError("bound_only needs an item this seat is bound to")
     body = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(6))
     code = f"{role.upper().replace('-', '')}-{body}"
     row = Enrolment(
@@ -3789,6 +3871,9 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
         # GRPH-988. Stored, not inferred: a seat that may review but not build is a fact
         # about the wave that minted it, and nothing downstream can reconstruct it.
         review_only=bool(review_only),
+        # GRPH-1089. Stored, not inferred from item_id: a bound seat that may still review
+        # other items is the default, and a crash must not be what turns it off or on.
+        bound_only=bool(bound_only),
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=ENROLMENT_TTL_MINUTES),
     )
     db.add(row)
@@ -3801,7 +3886,8 @@ def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str
                       api_key, wave: str | None = None, item_id: str | None = None,
                       delegation_id: str | None = None,
                       prd_id: str | None = None,
-                      review_only: bool = False) -> tuple[Enrolment, str]:
+                      review_only: bool = False,
+                      bound_only: bool = False) -> tuple[Enrolment, str]:
     """A planner mints a seat for an agent it is about to spawn (PRD-19 E7 / D-g).
 
     An orchestrator cannot paste a code out of a UI, so the capability has to exist for an
@@ -3830,7 +3916,7 @@ def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str
             hint="mint a credential for that role in the Fleet view first")
     return issue_enrolment(db, project_id=project_id, role=role, wave=wave, minted_by=minter_id,
                            item_id=item_id, delegation_id=delegation_id, prd_id=prd_id,
-                           review_only=review_only)
+                           review_only=review_only, bound_only=bound_only)
 
 
 def reissue_enrolment(db: Session, *, enrolment_id: str) -> tuple[Enrolment, str]:
@@ -3850,7 +3936,16 @@ def reissue_enrolment(db: Session, *, enrolment_id: str) -> tuple[Enrolment, str
                            # worker seat hands the replacement child the `claim_next` its wave
                            # was forbidden, and nothing in the reissue reply would say so. A
                            # control that a crash removes is not a control.
-                           review_only=old.review_only)
+                           review_only=old.review_only,
+                           # GRPH-1089. Carried across, and the ITEM with it, only when the
+                           # flag is set. An ordinary bound seat still drops item_id on
+                           # reissue — that binding is claimed once, at the first registration.
+                           # A bound_only seat that came back unbound would be a crash that
+                           # widens the seat: the replacement child could claim_review, which
+                           # is the power the flag exists to remove.
+                           bound_only=bool(old.bound_only),
+                           item_id=old.item_id if old.bound_only else None,
+                           delegation_id=old.delegation_id if old.bound_only else None)
 
 
 def enrolment_state(row: Enrolment, *, now: datetime | None = None) -> str:

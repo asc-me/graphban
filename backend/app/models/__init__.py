@@ -866,6 +866,14 @@ class Enrolment(Base):
     #: build. False is the default and what every seat minted before this column was.
     review_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
                                               nullable=False)
+    #: A BOUND-ONLY seat (GRPH-1089). Opt-in. Once the item this seat is bound to has left
+    #: `in_progress`, `claim_review` and `claim_next` refuse and name that item. False — the
+    #: default, and every seat minted before this column — keeps today's behaviour: a bound
+    #: child finishes its item and then reviews other agents' work. `gbfleet until` does not
+    #: set it, because a wave relies on that review. Mutually exclusive with `review_only`,
+    #: and meaningless without `item_id`; both combinations are refused at mint.
+    bound_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
+                                             nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     consumed_by: Mapped[str | None] = mapped_column(String, nullable=True)

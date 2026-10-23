@@ -149,6 +149,8 @@ CEILING = 15060
 # 15052 -> 15050 (GRPH-893). create_item/update_item `description` names the ## Acceptance
 # convention `sign_off` parses — the planner writing a description is the one who needs it.
 # Paid inside the same two tools' own prose; core 8919 -> 8918. Headroom 10.
+# GRPH-1089: `bound_only` rides `_FLEET_ONLY_ARGS` on delegate and mint_enrolment, so
+# MEASURED_TOKENS stays 15050, CORE_TOKENS 8918, and TIER_TOKENS fleet 1100.
 MEASURED_TOKENS = 15050
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming

@@ -677,7 +677,11 @@ supervisor already owns and none of them acted on:
   its base at spawn and never looked again. The trunk is fetched once per wave before measuring —
   a remote-tracking ref is only as fresh as its last fetch, and a check that skipped it would
   report every branch as current. `BEHIND unmeasured: <reason>` when it could not be asked,
-  because that is not the same as nothing having moved.
+  because that is not the same as nothing having moved. Being behind withholds the PR only
+  when those commits change a file the branch also changes, or `git merge-tree --write-tree`
+  reports a conflict (GRPH-1087). Otherwise the branch is proposed, and the line ends with
+  `N behind <ref>, no shared files, merges clean` — the same sentence is in the PR body.
+  Rebasing stays a person's call.
 
 Vendors and what each of them needs: [`docs/fleet-adapters.md`](https://github.com/asc-me/graphban/blob/main/docs/fleet-adapters.md).
 
