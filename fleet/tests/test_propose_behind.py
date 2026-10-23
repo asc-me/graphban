@@ -178,3 +178,24 @@ def test_a_behind_check_that_cannot_see_the_branch_does_not_propose(tmp_path, op
     assert opened == []
     assert "could not list" in wave.proposed["gb/w-1"].reason
     assert "gb/w-1" not in wave.behind_clean
+
+
+def test_a_split_branch_does_not_carry_the_behind_note_onto_its_per_item_prs(tmp_path, opened):
+    """A multi-item branch that is behind but clean is split (GRPH-1086), and each
+    per-item branch is replayed onto the CURRENT trunk, so none of them is behind.
+    A per-item PR that repeated the parent's "N behind" note would be stating a
+    staleness its own diff does not have."""
+    origin, repo, base = _remote_repo(tmp_path)
+    _on_branch(repo, {"b.txt": "branch\n"}, "GRPH-1: add b")
+    (repo / "d.txt").write_text("other item\n")
+    _git(repo, "add", "-A")
+    _git(repo, *_CFG, "commit", "-qm", "GRPH-2: add d")
+    _trunk_moves(origin, tmp_path, {"c.txt": "trunk\n"}, "unrelated")
+
+    wave = _measured(repo, base)
+    assert wave.behind_clean.get("gb/w-1")
+
+    propose_branch(wave, repo, "gb/w-1", ["GRPH-1", "GRPH-2"], client=None)
+    assert len(opened) == 2, (wave.proposed, wave.failures)
+    for body in opened:
+        assert "behind" not in body, body

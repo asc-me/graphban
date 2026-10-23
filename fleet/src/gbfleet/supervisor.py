@@ -2232,11 +2232,6 @@ def _propose_per_item(wave: Wave, repo: Path, branch: str, items: list[str], bas
         if not _publish_item_branch(wave, repo, name, base):
             wave.failures.append(f"{name}: not published, so {item} was not proposed")
             return
-        # The behind-ness was measured on the branch the child built. Each per-item PR
-        # is that same history, so the clean note travels with it (GRPH-1087).
-        parent_note = wave.behind_clean.get(branch)
-        if parent_note and name not in wave.behind_clean:
-            wave.behind_clean[name] = parent_note
         _open_pr(wave, repo, name, [item], base, propose_mod.subject(repo, name, base),
                  client=client, attest=True)
 
