@@ -67,10 +67,12 @@ const RING_LABEL: Record<number, { title: string; subtitle: string }> = {
   3: { title: "EXTERNAL SERVICES", subtitle: "we only call them, over the network" },
 };
 
-// Host column order: user machines, then agent hosts, then the compose/Railway
-// stack. Anything unrecognised falls after. External hosts get their own column.
+// Host column order: the project's own app first (it is the code we write), then user
+// machines, agent hosts and the compose/Railway stack. Anything unrecognised falls
+// after. External hosts get their own column.
 function hostRank(id: string): number {
   const s = id.toLowerCase();
+  if (s === "project_app") return -1;
   if (s.includes("user")) return 0;
   if (s.includes("agent") || s.includes("outpost")) return 1;
   if (s.includes("compose") || s.includes("stack") || s.includes("railway")) return 2;

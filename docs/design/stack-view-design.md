@@ -51,6 +51,15 @@ says the project's own deployables are not on the map. Vendor CLIs are never rin
 The code-health footer draws only on ring-1 boxes, because health is keyed by repo
 path and would otherwise credit the viewing project's `web/` to Graphban's `web`.
 
+**The project's own deployables** come from its code map: one ring-1 box per directory
+whose Dockerfile or package manifest (package.json, pyproject.toml, Cargo.toml, go.mod,
+Procfile, fly/railway/vercel config, …) the map describes. They sit in a first,
+`project_app` host column and are project-scoped. Their liveness is always unknown,
+because Graphban does not probe the app and the map does not say where it runs. Each
+gets an `app:<dir>` health component on `<dir>/`. Excluded: tests, fixtures, examples,
+docs, vendor and node_modules; a workspace-root manifest when packages sit below it;
+and a directory that is the source root of a Graphban box the project owns.
+
 ## Host groups (dashed frames inside the rings)
 
 Group boxes by host with a **dashed-border frame** and a mono label, e.g.

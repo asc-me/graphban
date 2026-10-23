@@ -215,6 +215,86 @@ def source_ownership(db: Session, project_id: str) -> dict[str, tuple[str, str]]
     return out
 
 
+# What makes a directory one of the project's OWN deployables, read from its code map.
+# The server never holds the repo; the describing agent's config/file nodes are the only
+# account of what the project builds. A container file is the strongest signal; a package
+# manifest says "a unit that ships". Compose files are not deployables themselves.
+_CONTAINER_NAMES = frozenset({"Dockerfile", "Containerfile"})
+_MANIFEST_NAMES = frozenset({
+    "package.json", "pyproject.toml", "setup.py", "Cargo.toml", "go.mod", "Gemfile",
+    "pom.xml", "build.gradle", "build.gradle.kts", "composer.json", "mix.exs", "deno.json",
+    "Procfile", "fly.toml", "railway.json", "railway.toml", "vercel.json", "netlify.toml",
+    "app.yaml",
+})
+# A manifest under any of these is a fixture, an example or tooling, not a deployable.
+_NOT_DEPLOYABLE_SEGMENTS = frozenset({
+    "node_modules", "test", "tests", "__tests__", "fixtures", "examples", "example",
+    "docs", "vendor", "dist", "build", ".github", ".cursor", ".vscode", ".claude",
+})
+HOST_PROJECT = "project_app"
+_MAX_OWN_DEPLOYABLES = 12
+
+
+def _is_deploy_file(name: str) -> str:
+    if name in _CONTAINER_NAMES or name.startswith("Dockerfile.") or name.endswith(".Dockerfile"):
+        return "container"
+    if name in _MANIFEST_NAMES:
+        return "manifest"
+    return ""
+
+
+def own_deployables(db: Session, project_id: str,
+                    owner: dict[str, tuple[str, str]] | None = None) -> list[dict[str, Any]]:
+    """The project's own deployables, one per directory whose Dockerfile or package
+    manifest its code map describes. `[{dir, files: [(path, summary)], container}]`.
+
+    Directories that are the source root of a Graphban box this project owns are left
+    out (Graphban's own project would otherwise draw `backend/` beside `api`). A repo
+    root with only a manifest is a workspace root when subdirectories also qualify, so it
+    is drawn only when it is the sole candidate or carries a container file.
+    """
+    from app.models import CodeNode
+
+    try:
+        rows = db.execute(
+            select(CodeNode.path, CodeNode.summary).where(CodeNode.project_id == project_id)
+        ).all()
+    except Exception:  # noqa: BLE001
+        logger.debug("code map unreadable for own deployables", exc_info=True)
+        return []
+    owned_markers = [
+        m for nid, (state, _) in (owner or {}).items() if state == OWNED
+        for m in GRAPHBAN_SOURCES[nid]["markers"]
+    ]
+    dirs: dict[str, dict[str, Any]] = {}
+    for path, summary in rows:
+        if "::" in path:
+            continue
+        parts = path.strip("/").split("/")
+        kind = _is_deploy_file(parts[-1])
+        if not kind:
+            continue
+        parent = parts[:-1]
+        if any(seg in _NOT_DEPLOYABLE_SEGMENTS for seg in parent):
+            continue
+        d = "/".join(parent)
+        if d and any(m == d or m.startswith(d + "/") for m in owned_markers):
+            continue
+        entry = dirs.setdefault(d, {"dir": d, "files": [], "container": False})
+        entry["files"].append((path, summary or ""))
+        entry["container"] = entry["container"] or kind == "container"
+    if "" in dirs and len(dirs) > 1 and not dirs[""]["container"]:
+        del dirs[""]
+    out = sorted(dirs.values(), key=lambda e: (not e["container"], e["dir"]))
+    for e in out:
+        e["files"].sort()
+    return out[:_MAX_OWN_DEPLOYABLES]
+
+
+def own_node_id(directory: str) -> str:
+    return f"app:{directory or '.'}"
+
+
 def _ownership_fact(node_id: str, owner: tuple[str, str]) -> dict[str, str]:
     state, marker = owner
     package = GRAPHBAN_SOURCES[node_id]["package"]
@@ -493,12 +573,48 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         "from": "cli", "to": "api", "protocol": "HTTP/JWT", "label": "HTTP/JWT",
     })
 
-    if not any(state == OWNED for state, _ in owner.values()):
+    # ── The project's own deployables (its code map's Dockerfiles / manifests) ──
+    project_name = ""
+    try:
+        from app.models import Project
+        proj = db.get(Project, project_id)
+        project_name = (proj.name if proj else "") or project_id
+    except Exception:  # noqa: BLE001
+        project_name = project_id
+    own = own_deployables(db, project_id, owner)
+    for dep in own:
+        d = dep["dir"]
+        facts = [
+            _fact(f"file:{p}", s or "(no summary)", "code map (code_nodes)") for p, s in dep["files"]
+        ]
+        facts.append(_fact(
+            "liveness", "Graphban does not probe this app; where it runs is not in the code map",
+            "model",
+        ))
+        nodes.append({
+            "id": own_node_id(d),
+            "label": d.rsplit("/", 1)[-1] if d else project_name,
+            "title": f"{d}/" if d else f"{project_name} (repo root)",
+            "kind": "deployable",
+            "ring": RING_CODE,
+            "scope": "project",
+            "host": HOST_PROJECT,
+            "liveness": LIVENESS_UNKNOWN,
+            "surfaces": [],
+            "extensions": [],
+            "facts": [
+                _fact("packaging", "container image" if dep["container"] else "package",
+                      "Dockerfile in the code map" if dep["container"] else "manifest in the code map"),
+                *facts,
+            ],
+        })
+
+    if not own and not any(state == OWNED for state, _ in owner.values()):
         empties.append({
             "id": "own_code",
-            "message": "this project's own deployables are not on this map — it draws the "
-                       "Graphban instance and tools this project runs to build, none of "
-                       "which this project's code map shows it writing",
+            "message": "this project's own deployables are not on this map — its code map "
+                       "describes no Dockerfile or package manifest (package.json, "
+                       "pyproject.toml, …) to draw them from",
         })
 
     # ── External: email (SMTP; item text says Resend) ────────────────────────
@@ -710,7 +826,11 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         "PlatformConfigOut.effective_chat_provider (project-scoped)",
     ))
 
-    host_groups = [
+    host_groups = ([{
+        "id": HOST_PROJECT,
+        "label": f"{project_name} — its own app (from the code map)",
+        "nodes": [n["id"] for n in nodes if n["host"] == HOST_PROJECT],
+    }] if own else []) + [
         {
             "id": HOST_COMPOSE,
             "label": "Compose / Railway stack",
