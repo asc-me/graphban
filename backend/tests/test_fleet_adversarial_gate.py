@@ -830,3 +830,24 @@ def test_the_refused_item_is_not_left_done(client, key, db):
 
     from app.models import Item
     assert db.get(Item, item).status == "review"
+
+
+@pytest.mark.parametrize("tool", ["create_item", "update_item"])
+def test_description_property_names_the_acceptance_convention(tool):
+    """GRPH-893's root cause: the convention was written only in the sign_off refusal, which
+    reviewers see; planners — who write descriptions — never did. The property they fill in
+    must name a heading the parser actually reads, or it teaches a convention the gate ignores.
+
+    Sabotage: `_ITEM_BODY_DESC = "Markdown body."` and both cases fail."""
+    import re
+
+    from app.mcp_server import TOOLS
+
+    spec = next(t for t in TOOLS if t["name"] == tool)
+    said = spec["inputSchema"]["properties"]["description"].get("description", "")
+    named = re.findall(r"##\s+([A-Za-z ]+?)(?=[;.,]|$)", said)
+    assert named, f"{tool}.description names no heading: {said!r}"
+    assert all(h.strip().lower() in fleet._ACCEPTANCE_HEADINGS for h in named), named
+    assert "list" in said.lower()
+    body = f"## {named[0].strip()}\n- the gate names the clause\n"
+    assert fleet.extract_acceptance_clauses(body) == ["the gate names the clause"]

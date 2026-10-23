@@ -109,6 +109,10 @@ _STATUS_ENUM = items_svc.STATUSES
 _FIDELITY_ENUM = items_svc.FIDELITIES
 _LINK_TYPE_ENUM = links_svc.LINK_TYPES
 _REQUEST_TYPE_ENUM = req_svc.REQUEST_TYPES
+#: GRPH-893. The acceptance convention `sign_off`'s gate parses (`fleet._ACCEPTANCE_HEADINGS`),
+#: said where descriptions are WRITTEN. It used to live only in the sign_off refusal hint, which
+#: reviewers see and planners — who write the descriptions — never do.
+_ITEM_BODY_DESC = "List acceptance under ## Acceptance; prose refuses sign_off."
 _EFFORT_DESC = "Relative effort estimate (higher = more work). No fixed unit."
 
 TOOLS: list[dict[str, Any]] = [
@@ -158,28 +162,28 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "create_item",
-        "description": "Create a tracker item. Returns the created item incl. its id and project_id.",
+        "description": "Create a tracker item; returns it with id and project_id.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
-                "description": {"type": "string", "description": "Markdown body."},
+                "description": {"type": "string", "description": _ITEM_BODY_DESC},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "touchpoints": {"type": "array", "items": {"type": "string"},
-                                "description": "Files/globs/modules this affects, e.g. backend/app/routers/*. Powers clustering."},
+                                "description": "Files/globs it affects, e.g. backend/app/routers/*. Powers clustering."},
                 "effort": {"type": "integer", "description": _EFFORT_DESC},
                 "status": {"type": "string", "enum": _STATUS_ENUM, "description": "Defaults to backlog."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
-                             "description": "low = specifiable now; high = needs a prototype. Default low."},
-                "prd_id": {"type": "string", "description": "The PRD this task implements (traceability)."},
-                "prd_section": {"type": "string", "description": "The PRD section this task implements."},
+                             "description": "high = needs a prototype first. Default low."},
+                "prd_id": {"type": "string", "description": "The PRD this implements."},
+                "prd_section": {"type": "string", "description": "Its PRD section."},
             },
             "required": ["title"],
         },
     },
     {
         "name": "update_item",
-        "description": "Patch fields or advance status on an existing item. Returns the updated item.",
+        "description": "Patch an item's fields or status; returns the updated item.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -188,14 +192,14 @@ TOOLS: list[dict[str, Any]] = [
                 "id": {"type": "string"},
                 "status": {"type": "string", "enum": _STATUS_ENUM},
                 "title": {"type": "string"},
-                "description": {"type": "string"},
+                "description": {"type": "string", "description": _ITEM_BODY_DESC},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "touchpoints": {"type": "array", "items": {"type": "string"},
-                                "description": "Files/globs/modules this item affects (for clustering). "
+                                "description": "Files/globs/modules it affects (for clustering). "
                                                "UNIONS — sending some never removes the rest. "
                                                "Empty is not a write."},
                 "effort": {"type": "integer", "description": _EFFORT_DESC},
-                "blocker": {"type": "string", "description": "Free-text blocker; empty string clears it."},
+                "blocker": {"type": "string", "description": "Empty string clears it."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
                              "description": "high = needs a prototype first."},
                 "prd_id": {"type": "string"},
