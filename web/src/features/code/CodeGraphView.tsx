@@ -504,6 +504,19 @@ export function CodeGraphView() {
   const outbound = map?.outbound ?? [];
   const [stubHover, setStubHover] = React.useState<ProjectStub | null>(null);
   const heldByNode = React.useMemo(() => indexByNode(presence), [presence]);
+  // `presence` missing is "nobody looked". An empty held list is "looked, and this node is free".
+  const holderOf = React.useCallback(
+    (id: string) => {
+      if (!presence) return { known: false as const };
+      const holders = heldByNode.get(id) ?? [];
+      if (holders.length === 0) return { known: true as const, label: null };
+      return {
+        known: true as const,
+        label: holders.map((h) => h.user_initials || h.agent_label || "an agent").join(" and "),
+      };
+    },
+    [presence, heldByNode],
+  );
   const clouds = React.useMemo(() => cloudsFor(presence, pos), [presence, pos]);
   const [soloUser, setSoloUser] = React.useState<string | null>(null);
   const soloed = React.useMemo(() => nodesHeldBy(presence, soloUser), [presence, soloUser]);
@@ -542,7 +555,7 @@ export function CodeGraphView() {
   );
   // Separate query from the hubs one: it is keyed on the endpoints and must not refetch the
   // whole ranking every time you trace a different pair.
-  const { data: trace } = useCodeAnalysis(
+  const { data: trace, isFetching: pathFetching } = useCodeAnalysis(
     {
       projectId: activeId,
       edgeTypes: activeTypes,
@@ -798,6 +811,16 @@ export function CodeGraphView() {
               frameId={frameId}
               controlRef={canvasControlRef}
               onZoom={onCanvasZoom}
+              holderOf={holderOf}
+              pathPending={Boolean(pathTo) && pathFetching}
+              pathArmed={armed}
+              onAbortPath={() => {
+                // Back to armed, so the next Escape disarms and a third clears
+                // the selection. One press must not skip those layers.
+                setPathTo(null);
+                setArmed(true);
+              }}
+              onDisarmPath={() => setArmed(false)}
             />
           ) : (
             <svg
