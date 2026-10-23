@@ -1,7 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { CANVAS_MAX_K } from "@/features/code/canvas/camera";
+import { writeAlpha } from "@/features/code/canvas/scene";
 import type { CodeEdge, CodeMap, CodeNode } from "@/lib/types";
 
 /**
@@ -62,11 +64,6 @@ function zoomPct(): number {
   return Number(el.textContent!.replace("%", ""));
 }
 
-/** A node on the canvas, addressed the way a screen reader would. */
-function canvasNode(path: string) {
-  return screen.queryByRole("button", { name: new RegExp(`File ${path},`) });
-}
-
 describe("the graph's zoom group", () => {
   it("renders −, a readout, + and Fit", async () => {
     await mount();
@@ -74,7 +71,7 @@ describe("the graph's zoom group", () => {
     expect(screen.getByRole("button", { name: "Zoom out" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Zoom in" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Fit" })).toBeInTheDocument();
-    expect(zoomPct()).toBe(100);
+    expect(zoomPct()).toBeGreaterThan(0);
   });
 
   it("zooms in and out, and the readout follows the view", async () => {
@@ -82,42 +79,56 @@ describe("the graph's zoom group", () => {
     // replaces, so the assertion is on the readout changing in the right DIRECTION — not
     // merely that it changed, which a single hardcoded value would also satisfy.
     const user = await mount();
+    const fitted = zoomPct();
 
     await user.click(screen.getByRole("button", { name: "Zoom in" }));
     const zoomedIn = zoomPct();
-    expect(zoomedIn).toBeGreaterThan(100);
+    expect(zoomedIn).toBeGreaterThan(fitted);
 
     await user.click(screen.getByRole("button", { name: "Zoom out" }));
     expect(zoomPct()).toBeLessThan(zoomedIn);
   });
 
-  it("Fit returns the view to 100%", async () => {
+  it("Fit frames the map again, not a fixed 100%", async () => {
+    // The SVG view's Fit reset to 100%, and on a real map 100% framed nothing: every node
+    // sat outside the frame. The canvas opens fitted, so Fit has to land back there.
     const user = await mount();
+    const fitted = zoomPct();
 
     await user.click(screen.getByRole("button", { name: "Zoom in" }));
-    expect(zoomPct()).not.toBe(100);
+    await user.click(screen.getByRole("button", { name: "Zoom in" }));
+    expect(zoomPct()).not.toBe(fitted);
 
     await user.click(screen.getByRole("button", { name: "Fit" }));
-    expect(zoomPct()).toBe(100);
+    expect(zoomPct()).toBe(fitted);
   });
 
   it("stops at the zoom ceiling rather than running past it", async () => {
-    // The control must not promise a zoom the viewport will clamp away: a button that stays
+    // The control must not promise a zoom the camera will clamp away: a button that stays
     // enabled while doing nothing reads as a broken control, which is the same class of
     // defect as the missing button it replaces.
     const user = await mount();
     const zin = screen.getByRole("button", { name: "Zoom in" });
 
-    for (let i = 0; i < 12 && !(zin as HTMLButtonElement).disabled; i++) {
+    for (let i = 0; i < 40 && !(zin as HTMLButtonElement).disabled; i++) {
       await user.click(zin);
     }
 
     expect(zin).toBeDisabled();
-    const ceiling = zoomPct();
     expect(screen.getByRole("button", { name: "Zoom out" })).toBeEnabled();
-    expect(ceiling).toBe(600); // MAX_ZOOM
+    expect(zoomPct()).toBe(CANVAS_MAX_K * 100);
   });
 });
+
+/** Select through Find, the way a user reaches a node the canvas draws but the DOM does not. */
+async function select(user: ReturnType<typeof userEvent.setup>, path: string) {
+  await user.type(screen.getByRole("textbox", { name: "Find a node" }), path);
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Matching nodes" })).getByRole("option", {
+      name: new RegExp(path.replace(".", "\\.")),
+    }),
+  );
+}
 
 describe("the graph's Isolate toggle", () => {
   it("is disabled until something is selected", async () => {
@@ -128,35 +139,25 @@ describe("the graph's Isolate toggle", () => {
     expect(screen.getByRole("button", { name: "Isolate" })).toBeDisabled();
   });
 
-  it("HIDES what dimming would merely fade, and the control is the difference", async () => {
-    // THE criterion, with its own control. `far.py` is outside the one-ring reach of `a.py`.
-    // Selected but not isolated it must still be in the DOM (dimmed to 0.22) — that half is
-    // what makes the second half mean something, because a test that only checked for absence
-    // after isolate would also pass if the node had never rendered at all.
-    const user = await mount();
+  it("fades what is outside the reach further than dimming does", () => {
+    // PRD-52 D5: outside the reach dims to 0.22, or 0.06 under Isolate. The pair is the
+    // claim — a buffer that wrote 0.06 either way would pass a check on the isolated half.
+    const reach = Uint8Array.from([1, 1, 0]);
+    const dimmed = writeAlpha(3, reach, false);
+    const isolated = writeAlpha(3, reach, true);
 
-    await user.click(canvasNode("a.py")!);
-    expect(canvasNode("far.py")).toBeInTheDocument();
-
-    const iso = screen.getByRole("button", { name: "Isolate" });
-    expect(iso).toBeEnabled();
-    await user.click(iso);
-
-    expect(canvasNode("far.py")).not.toBeInTheDocument();
-    // The reach itself survives: isolate hides the outside, it does not empty the canvas.
-    expect(canvasNode("a.py")).toBeInTheDocument();
-    expect(canvasNode("b.py")).toBeInTheDocument();
+    expect(dimmed[2]).toBe(Math.round(0.22 * 255));
+    expect(isolated[2]).toBe(Math.round(0.06 * 255));
+    expect(isolated[0]).toBe(255);
+    expect(isolated[1]).toBe(255);
   });
 
   it("stands down when the selection clears, so the button never lies", async () => {
-    // A pressed Isolate with nothing selected hides nothing while claiming to. Cleared here
-    // through the inspector's close button because that is the only dismissal reachable with
-    // focus on the toolbar: `kb.onKeyDown` is bound to the <svg>, so Escape does nothing once
-    // focus has left the canvas. The stand-down is an effect on the reach set, so it covers
-    // every clear path rather than just this one.
+    // A pressed Isolate with nothing selected hides nothing while claiming to. The stand-down
+    // is an effect on the reach set, so it covers every clear path rather than just this one.
     const user = await mount();
 
-    await user.click(canvasNode("a.py")!);
+    await select(user, "a.py");
     await user.click(screen.getByRole("button", { name: "Isolate" }));
     expect(screen.getByRole("button", { name: "Isolate" })).toHaveAttribute(
       "aria-pressed",
@@ -168,7 +169,6 @@ describe("the graph's Isolate toggle", () => {
     const iso = screen.getByRole("button", { name: "Isolate" });
     expect(iso).toHaveAttribute("aria-pressed", "false");
     expect(iso).toBeDisabled();
-    expect(canvasNode("far.py")).toBeInTheDocument();
   });
 });
 
