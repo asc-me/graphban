@@ -172,6 +172,32 @@ script into a shell. And it never writes the gate key into an MCP config: `gban 
 key must not carry `gate`, or the agent doing the work attests its own completion — which
 fails silently, since a gate that always says yes looks exactly like a gate that held.
 
+## `gban stack map`
+
+```bash
+gban stack map --dry-run
+gban stack map --project <id>
+```
+
+Reads this checkout and posts one app-topology record to `POST /api/platform/stack/app`.
+`--dry-run` prints that record and posts nothing; it needs no server and no key.
+Two runs of the same commit print the same JSON. There is no timestamp in it.
+
+What it reads:
+
+- Compose files (`compose.yml`, `docker-compose.yml`, and the `compose.*` / `docker-compose.*` variants): a service with `build` is a deployable, a service with only `image` is infrastructure, and `depends_on` is an edge. `environment` contributes variable **names** and, when a value is a literal URL, the bare host.
+- Dockerfiles (`Dockerfile`, `Dockerfile.*`, `*.Dockerfile`), for the deployable they sit in and for a `FROM` image the table knows.
+- Dependency manifests (`package.json`, `pyproject.toml`, `requirements*.txt`, `go.mod`, `Cargo.toml`, `Gemfile`), matched against the known-SDK table and attributed to the deployable whose directory contains them.
+- `.env.example` only. A real `.env` is not a template and is not opened. Source files are not scanned.
+
+The known-SDK table ships at `cli/src/gban/data/stack_sdks.toml` and is versioned with `gban`. A checkout may add rows in `.graphban/stack-sdks.toml` (same shape); those rows are consulted first.
+
+Compose is parsed by a subset, not by PyYAML: block mappings and lists, single-line `[...]` / `{...}` flow, and `|` / `>` scalars. Anchors and aliases are not expanded (`*name` stays text). A `<<` merge key is ignored. A file the subset cannot read is skipped with a warning on stderr; the rest of the tree is still mapped.
+
+Env values are never stored and never posted. A host taken from a URL is the bare host (`api.stripe.com`), because the posted shape rejects any string containing `://`. An image the table does not know is infrastructure named after the **compose service**, kind `unclassified image` — the image string is not stored. A `depends_on`, `external: true`, or `extends.file` that names something this file does not define becomes an `unresolved` node. It is not dropped and it is not a failure.
+
+A real post needs a git commit (there is nothing to send for a repo with no HEAD) and a project-write API key: `$GBFLEET_API_KEY`, then `$GRAPHBAN_API_KEY`, then the key `gban setup` stored for this project. The login session is a different credential and is not sent. Pass `--project` (or `$GRAPHBAN_PROJECT`) so the record names the project; without one, `--dry-run` still prints and a post is refused.
+
 ## `gban login` wants a real terminal
 
 It refuses without one, rather than prompting. `getpass` falls back to a plain **echoing**
