@@ -307,3 +307,32 @@ describe("buildStackLayout — edge routing does not pile parallel edges on one 
     }
   });
 });
+
+describe("buildStackLayout — a project that writes none of Graphban", () => {
+  // The usual case outside Graphban's own project: every Graphban box is ring 2.
+  const runOnly: StackTopology = {
+    ...topo,
+    nodes: topo.nodes.map((n) => ({ ...n, ring: n.ring === 1 ? 2 : n.ring })),
+  };
+  const layout = buildStackLayout(runOnly);
+
+  it("draws no code-we-write ring, and still frames the infra and the canvas", () => {
+    expect(layout.rings.map((r) => r.ring).sort()).toEqual([2, 3]);
+  });
+
+  it("places every box at a finite position with no overlap", () => {
+    const boxes = Object.values(layout.boxes);
+    expect(boxes).toHaveLength(runOnly.nodes.length);
+    for (const b of boxes) {
+      for (const v of [b.x, b.y, b.w, b.h]) expect(Number.isFinite(v)).toBe(true);
+    }
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i];
+        const c = boxes[j];
+        const overlap = a.x < c.x + c.w && c.x < a.x + a.w && a.y < c.y + c.h && c.y < a.y + a.h;
+        expect(overlap).toBe(false);
+      }
+    }
+  });
+});

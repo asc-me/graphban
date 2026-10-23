@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -154,6 +154,79 @@ def _cred_liveness(state: str | None) -> str:
     return LIVENESS_UNKNOWN
 
 
+# Graphban's own deployables, each with source paths unique to it. Ownership is relative
+# to the project being viewed: a box is "code we write" only when THIS project's code map
+# has described one of its markers. For every other project the same box is a tool it
+# runs to build its code, not code it wrote — the map used to call all four "ours"
+# everywhere. Markers are specific files/packages, never `backend/app` or `web/src`,
+# which half the FastAPI/Vite repos in the world also have.
+GRAPHBAN_SOURCES: dict[str, dict[str, Any]] = {
+    "api": {"package": "graphban-api",
+            "markers": ("backend/app/mcp_server.py", "backend/app/services/stack.py")},
+    "web": {"package": "graphban-web",
+            "markers": ("web/src/features/stack", "web/src/lib/graph")},
+    "fleet": {"package": "graphban-fleet", "markers": ("fleet/src/gbfleet",)},
+    "gbagent": {"package": "graphban-fleet", "markers": ("fleet/src/gbagent",)},
+    "cli": {"package": "graphban-cli", "markers": ("cli/src/gban",)},
+}
+
+OWNED = "owned"
+NOT_OWNED = "not_owned"
+OWNERSHIP_UNKNOWN = "unknown"
+
+
+def source_ownership(db: Session, project_id: str) -> dict[str, tuple[str, str]]:
+    """`{node_id: (state, matched_marker)}` for each Graphban deployable.
+
+    A project with no code map at all is `unknown`, not `not_owned`: nothing was looked
+    at. It still draws outside ring 1, because one project in an instance holds
+    Graphban's source and every other one runs it.
+    """
+    from app.models import CodeNode
+
+    try:
+        has_map = db.scalar(
+            select(CodeNode.id).where(CodeNode.project_id == project_id).limit(1)
+        ) is not None
+    except Exception:  # noqa: BLE001 — an unreadable map is unknown, not "not ours"
+        logger.debug("code map unreadable for ownership", exc_info=True)
+        has_map = False
+    out: dict[str, tuple[str, str]] = {}
+    for node_id, src in GRAPHBAN_SOURCES.items():
+        if not has_map:
+            out[node_id] = (OWNERSHIP_UNKNOWN, "")
+            continue
+        hit = ""
+        for marker in src["markers"]:
+            found = db.scalar(
+                select(CodeNode.path).where(
+                    CodeNode.project_id == project_id,
+                    or_(
+                        CodeNode.path == marker,
+                        CodeNode.path.startswith(marker + "/", autoescape=True),
+                        CodeNode.path.startswith(marker + "::", autoescape=True),
+                    ),
+                ).limit(1)
+            )
+            if found is not None:
+                hit = marker
+                break
+        out[node_id] = (OWNED, hit) if hit else (NOT_OWNED, "")
+    return out
+
+
+def _ownership_fact(node_id: str, owner: tuple[str, str]) -> dict[str, str]:
+    state, marker = owner
+    package = GRAPHBAN_SOURCES[node_id]["package"]
+    if state == OWNED:
+        value = f"{package} — this project writes it ({marker} is in its code map)"
+    elif state == NOT_OWNED:
+        value = f"{package} — a tool this project runs; its source is not in this project's code map"
+    else:
+        value = f"{package} — unknown: this project has no code map to check"
+    return _fact("source", value, "code map (code_nodes) vs Graphban source markers")
+
+
 def _fact(key: str, value: Any, provenance: str) -> dict[str, str]:
     if value is None or value == "":
         rendered = "unknown"
@@ -202,6 +275,11 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
 
     smtp_configured = bool(settings.smtp_host)
 
+    owner = source_ownership(db, project_id)
+
+    def ring_of(node_id: str) -> int:
+        return RING_CODE if owner[node_id][0] == OWNED else RING_INFRA
+
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     empties: list[dict[str, str]] = []
@@ -214,13 +292,14 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         _fact("mcp_tools", LIVE_TOOL_COUNT, "mcp_server.LIVE_TOOL_COUNT"),
         _fact("embed_provider", settings.embed_provider, "settings.embed_provider"),
         _fact("embed_ok", settings.embed_provider != "stub", "settings.embed_provider != stub"),
+        _ownership_fact("api", owner["api"]),
     ]
     nodes.append({
         "id": "api",
         "label": "api",
         "title": "graphban-api",
         "kind": "deployable",
-        "ring": RING_CODE,
+        "ring": ring_of("api"),
         "scope": "instance",
         "host": HOST_COMPOSE,
         "liveness": LIVENESS_REACHABLE,  # this process answered
@@ -232,13 +311,14 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
     web_facts = [
         _fact("bundle_sha", web_sha, "/version.txt"),
         _fact("role", "React SPA", "model"),
+        _ownership_fact("web", owner["web"]),
     ]
     nodes.append({
         "id": "web",
         "label": "web",
         "title": "web (React SPA)",
         "kind": "deployable",
-        "ring": RING_CODE,
+        "ring": ring_of("web"),
         "scope": "instance",
         "host": HOST_COMPOSE,
         # Serving the SPA is nginx/compose; the API can only report the stamped sha.
@@ -291,6 +371,7 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         _fact("agents_total", total, "GET /api/fleet"),
         _fact("posture", (roster or {}).get("posture"), "GET /api/fleet"),
         _fact("outpost_hosts", len(hosts), "fleet agents grouped by capabilities.host"),
+        _ownership_fact("fleet", owner["fleet"]),
     ]
     if roster is None:
         fleet_live = LIVENESS_UNKNOWN
@@ -306,10 +387,10 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
 
     nodes.append({
         "id": "fleet",
-        "label": "fleet",
-        "title": "graphban-fleet / gbfleet",
+        "label": "gbfleet",
+        "title": "gbfleet supervisor (graphban-fleet)",
         "kind": "deployable",
-        "ring": RING_CODE,
+        "ring": ring_of("fleet"),
         "scope": "instance",
         "host": HOST_AGENTS,
         "liveness": fleet_live,
@@ -330,21 +411,55 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         "label": "HTTP + MCP",
     })
 
-    # Vendor agents spawned by fleet — only when someone is online.
-    if online > 0:
+    # gbagent is Graphban's own coding agent: a separate binary in the graphban-fleet
+    # package that gbfleet spawns like a vendor CLI. Idle is normal for a spawned
+    # child, so none online is unknown, not unreachable.
+    def _vendor(a: dict) -> str:
+        return str((a.get("capabilities") or {}).get("vendor") or "")
+
+    live_agents = [a for a in agents if a.get("state") != "offline"]
+    gbagent_online = sum(1 for a in live_agents if _vendor(a) == "gbagent")
+    vendor_online = len(live_agents) - gbagent_online
+    nodes.append({
+        "id": "gbagent",
+        "label": "gbagent",
+        "title": "gbagent (graphban-fleet)",
+        "kind": "deployable",
+        "ring": ring_of("gbagent"),
+        "scope": "instance",
+        "host": HOST_AGENTS,
+        "liveness": LIVENESS_REACHABLE if gbagent_online else LIVENESS_UNKNOWN,
+        "surfaces": [],
+        "extensions": [],
+        "facts": [
+            _fact("online", gbagent_online, "GET /api/fleet (capabilities.vendor == gbagent)"),
+            _fact("role", "first-party coding agent, spawned by gbfleet", "model"),
+            _ownership_fact("gbagent", owner["gbagent"]),
+        ],
+    })
+    edges.append({
+        "from": "fleet", "to": "gbagent", "protocol": "spawn local process", "label": "spawn",
+    })
+    edges.append({
+        "from": "gbagent", "to": "api", "protocol": "MCP JSON-RPC", "label": "MCP",
+    })
+
+    # Vendor CLIs spawned by fleet — only when one is online. Nobody's project writes
+    # claude or grok, so they are never ring 1.
+    if vendor_online > 0:
         nodes.append({
             "id": "vendor_agents",
             "label": "vendor agents",
             "title": "Spawned vendor CLIs",
             "kind": "agent",
-            "ring": RING_CODE,
+            "ring": RING_INFRA,
             "scope": "instance",
             "host": HOST_AGENTS,
             "liveness": LIVENESS_REACHABLE,
             "surfaces": [],
             "extensions": [],
             "facts": [
-                _fact("online", online, "GET /api/fleet"),
+                _fact("online", vendor_online, "GET /api/fleet (capabilities.vendor != gbagent)"),
             ],
         })
         edges.append({
@@ -356,14 +471,14 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
             "label": "MCP",
         })
 
-    # ── CLI (user machines) — always present as a deployable; liveness unknown
+    # ── gban (user machines) — always present as a deployable; liveness unknown
     #    unless we invent a phone-home (we do not).
     nodes.append({
         "id": "cli",
-        "label": "cli",
-        "title": "graphban-cli / gb",
+        "label": "gban",
+        "title": "gban (graphban-cli)",
         "kind": "deployable",
-        "ring": RING_CODE,
+        "ring": ring_of("cli"),
         "scope": "instance",
         "host": HOST_USERS,
         "liveness": LIVENESS_UNKNOWN,
@@ -371,11 +486,20 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         "extensions": [],
         "facts": [
             _fact("note", "runs on user machines; no phone-home in v1", "model"),
+            _ownership_fact("cli", owner["cli"]),
         ],
     })
     edges.append({
         "from": "cli", "to": "api", "protocol": "HTTP/JWT", "label": "HTTP/JWT",
     })
+
+    if not any(state == OWNED for state, _ in owner.values()):
+        empties.append({
+            "id": "own_code",
+            "message": "this project's own deployables are not on this map — it draws the "
+                       "Graphban instance and tools this project runs to build, none of "
+                       "which this project's code map shows it writing",
+        })
 
     # ── External: email (SMTP; item text says Resend) ────────────────────────
     email_facts = [
