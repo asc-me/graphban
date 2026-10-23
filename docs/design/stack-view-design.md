@@ -60,6 +60,37 @@ gets an `app:<dir>` health component on `<dir>/`. Excluded: tests, fixtures, exa
 docs, vendor and node_modules; a workspace-root manifest when packages sit below it;
 and a directory that is the source root of a Graphban box the project owns.
 
+## App-first map and the collapsed Graphban box (GRPH-1099 / PRD-P55 §4)
+
+When a project has posted an app topology record (`gban stack map` → `POST
+/api/platform/stack/app`), the record IS the app: its components are ring-1 boxes in the
+`project_app` column, its infrastructure sits in the `app_infra` column beside and below
+the deployable that uses it, and its externals and `unresolved` references take the
+right-hand ring-3 column. Unresolved references render with a dashed amber border,
+named after the reference, with their file.
+
+Every node carries `plane` (`app` | `graphban`) and the payload carries
+`graphban_source` (`owned` | `not_owned` | `unknown`). On a project that does not own
+Graphban's source (anything but `owned`), the whole instance — api, web, db, gbfleet,
+gbagent, gban, wired providers — collapses into one **Built with Graphban** box in a
+build lane at the left edge, with a `builds` edge to each ring-1 deployable. Its
+liveness is the worst of the instance's core boxes, so a failed probe reads the box
+unreachable or unknown. Expanding it (inspector or header toggle) draws today's
+instance detail in place, framed "Built with Graphban", from the same payload: no extra
+call. Graphban's own project (`owned`) draws today's map with no self-box.
+
+`prepareStackMap(topo, expanded)` in `web/src/lib/stack/layout.ts` does the collapse;
+`buildStackLayout` stays a pure function of what it is given.
+
+**States.** A `mapping` banner always shows. `unmapped` names `gban stack map`, and on
+a project that does not own Graphban ring 3's gloss and a placeholder box read
+"services not mapped yet" — never an empty ring. `stale` names the mapped sha and the
+head it is behind. `freshness_unknown` never reads as current. An older API with no
+`mapping` block is treated as `unmapped`.
+
+The inspector for a record box shows its provenance as a link into the Code graph
+(`code?sel=<file>`), with the producer, its version and the mapped sha.
+
 ## Host groups (dashed frames inside the rings)
 
 Group boxes by host with a **dashed-border frame** and a mono label, e.g.

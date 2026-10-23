@@ -1134,6 +1134,27 @@ export interface StackNode {
   facts: StackFact[];
   outposts?: { host: string; online: number; agents: number }[];
   provider_kind?: string;
+  /** `app` for the project's own boxes (code map or posted record), `graphban` for the
+   * instance. Absent on an older API: treat as `graphban` unless the id is an app id. */
+  plane?: "app" | "graphban" | string;
+  /** Client-only: the boxes a collapsed "Built with Graphban" box stands for. */
+  members?: string[];
+  /** Where a posted-record box was read from (GRPH-1098). */
+  provenance?: { file?: string; rule?: string; line?: number };
+}
+
+/** Freshness of the posted app topology record (GRPH-1098 / PRD-P55 §2). */
+export type StackMappingState = "mapped" | "stale" | "unmapped" | "freshness_unknown";
+
+export interface StackMapping {
+  state: StackMappingState | string;
+  mapped_sha: string | null;
+  head_sha: string | null;
+  previous_mapped_sha: string | null;
+  producer_id: string | null;
+  producer_version: string | null;
+  mapped_at: string | null;
+  posted_by: string | null;
 }
 
 export interface StackEdge {
@@ -1163,6 +1184,10 @@ export interface StackTopology {
     db_engine: string | null;
     mcp_tools: number;
   };
+  /** Does this project write Graphban's source (#1020 markers)? Absent on an older API. */
+  graphban_source?: "owned" | "not_owned" | "unknown" | string;
+  /** Absent on an older API, which reads as unmapped — never as mapped. */
+  mapping?: StackMapping;
 }
 
 /** GET /api/platform/stack/health — code-health overlay (GRPH-1035 / PRD-P51 §3). */

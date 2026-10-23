@@ -293,6 +293,28 @@ def own_deployables(db: Session, project_id: str,
     return out[:_MAX_OWN_DEPLOYABLES]
 
 
+PLANE_APP = "app"
+PLANE_GRAPHBAN = "graphban"
+# Graph-id prefixes the posted record's boxes carry (`_fold_app_record`). Its externals
+# share the external host with Graphban's providers, so host alone cannot place them.
+_APP_ID_PREFIXES = ("app:", "infra:", "ext:", "unresolved:")
+
+
+def _is_app_node(node: dict[str, Any]) -> bool:
+    return node["host"] in (HOST_PROJECT, HOST_APP_INFRA) or str(node["id"]).startswith(
+        _APP_ID_PREFIXES
+    )
+
+
+def _graphban_source(owner: dict[str, tuple[str, str]]) -> str:
+    states = {state for state, _ in owner.values()}
+    if OWNED in states:
+        return OWNED
+    if NOT_OWNED in states:
+        return NOT_OWNED
+    return OWNERSHIP_UNKNOWN
+
+
 def own_node_id(directory: str) -> str:
     return f"app:{directory or '.'}"
 
@@ -833,6 +855,12 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         "PlatformConfigOut.effective_chat_provider (project-scoped)",
     ))
 
+    # Which plane each box belongs to (GRPH-1099). The map collapses Graphban into one
+    # "Built with Graphban" box on a project that does not write it, so the client must
+    # know which boxes are the instance and which are the app, without parsing ids.
+    for n in nodes:
+        n["plane"] = PLANE_APP if _is_app_node(n) else PLANE_GRAPHBAN
+
     project_nodes = [n["id"] for n in nodes if n["host"] == HOST_PROJECT]
     app_infra_nodes = [n["id"] for n in nodes if n["host"] == HOST_APP_INFRA]
     app_source = "the app topology record" if record is not None else "the code map"
@@ -887,6 +915,9 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
             "db_engine": db_meta.get("engine"),
             "mcp_tools": LIVE_TOOL_COUNT,
         },
+        # owned | not_owned | unknown. Unknown (no code map) is not "owned": the client
+        # collapses Graphban for it, and says why, rather than drawing it as ours.
+        "graphban_source": _graphban_source(owner),
         # Always present. Omitting it when nothing was posted would read as "no services".
         "mapping": _mapping_block(record, record_unreadable),
         "app": None if record is None else _record_public(record),
