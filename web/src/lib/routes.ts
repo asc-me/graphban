@@ -167,6 +167,21 @@ export function lastProjectTag(): string | null {
 }
 
 /**
+ * Cloud console origin. The org plane and the operator UI render there.
+ * Set `VITE_CONSOLE_URL` when this app and the console are not on the dev defaults.
+ */
+export function consoleOrigin(): string {
+  const raw = (import.meta.env.VITE_CONSOLE_URL as string | undefined)?.trim();
+  return (raw || "http://localhost:5174").replace(/\/+$/, "");
+}
+
+/** Absolute URL for a path on the cloud console (`/org`, `/admin`, …). */
+export function consoleHref(path: string): string {
+  const p = path.startsWith("/") ? path : `/${path}`;
+  return `${consoleOrigin()}${p}`;
+}
+
+/**
  * Drop org-plane state on a self-host boot.
  *
  * A self-host build has no way to serve an org, so an org key left behind by a hosted

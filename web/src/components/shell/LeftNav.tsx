@@ -12,7 +12,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { NewProjectDialog } from "@/features/onboarding/NewProjectDialog";
-import { SPECULATIVE_ENABLED } from "@/features/orgadmin/Speculative";
 import { CloudOrgLinkDialog } from "@/features/settings/CloudOrgLinkDialog";
 import { cn } from "@/lib/cn";
 import {
@@ -21,7 +20,10 @@ import {
   useOrgs,
   useSyncStatus,
 } from "@/lib/queries";
-import { ORG_BASE, adminPath, orgPath, projectPath, settingsPath, tagFromPath, usableHttpUrl } from "@/lib/routes";
+import { adminPath, consoleHref, orgPath, projectPath, settingsPath, tagFromPath, usableHttpUrl } from "@/lib/routes";
+
+/** Branding stays behind the same build flag the console route uses. */
+const SPECULATIVE_ENABLED = import.meta.env.VITE_SPECULATIVE === "1";
 
 /** Hosted workspace views grouped into Plan / Build / Observe (GRPH-940).
  * Dashboard is not one of them: it is the project home, rendered above the sections (GRPH-1066). */
@@ -109,8 +111,8 @@ function HostedLeftNav() {
   return (
     <aside className="flex w-[216px] flex-none flex-col border-r border-line bg-[rgba(9,11,13,0.5)] px-3 py-4">
       {hosted ? (
-        <NavLink
-          to={ORG_BASE}
+        <a
+          href={consoleHref(orgPath())}
           className="flex h-10 w-full items-center gap-2.5 rounded-[10px] border border-line-2 bg-surface-2 px-3 transition-colors hover:border-line-hover"
         >
           <span className="flex h-5 w-5 flex-none items-center justify-center rounded-md border border-accent/30 bg-accent/[0.16] font-mono text-[10px] font-semibold text-accent">
@@ -124,7 +126,7 @@ function HostedLeftNav() {
               {org?.plan ?? ""} plan
             </span>
           </span>
-        </NavLink>
+        </a>
       ) : (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -242,15 +244,15 @@ function HostedLeftNav() {
         <>
           <RailHeading>Admin</RailHeading>
           <nav className="flex flex-col gap-0.5">
-            <NavItem to={adminPath("users")} icon={<UsersRound size={16} />} label="Users & access" />
-            <NavItem to={adminPath("teams")} icon={<Users size={16} />} label="Teams" />
-            <NavItem to={adminPath("deployments")} icon={<Server size={16} />} label="Deployments" />
+            <NavItem href={consoleHref(adminPath("users"))} icon={<UsersRound size={16} />} label="Users & access" />
+            <NavItem href={consoleHref(adminPath("teams"))} icon={<Users size={16} />} label="Teams" />
+            <NavItem href={consoleHref(adminPath("deployments"))} icon={<Server size={16} />} label="Deployments" />
             {SPECULATIVE_ENABLED && (
-              <NavItem to={adminPath("branding")} icon={<Palette size={16} />} label="Branding" />
+              <NavItem href={consoleHref(adminPath("branding"))} icon={<Palette size={16} />} label="Branding" />
             )}
-            <NavItem to={adminPath("integrations")} icon={<Plug size={16} />} label="Integrations" />
-            <NavItem to={adminPath("gitops")} icon={<GitBranch size={16} />} label="Gitops" />
-            <NavItem to={adminPath("billing")} icon={<CreditCard size={16} />} label="Billing" />
+            <NavItem href={consoleHref(adminPath("integrations"))} icon={<Plug size={16} />} label="Integrations" />
+            <NavItem href={consoleHref(adminPath("gitops"))} icon={<GitBranch size={16} />} label="Gitops" />
+            <NavItem href={consoleHref(adminPath("billing"))} icon={<CreditCard size={16} />} label="Billing" />
           </nav>
         </>
       )}
@@ -269,13 +271,13 @@ function HostedLeftNav() {
         )}
         {hosted && (
           <>
-            <NavItem to={orgPath("galaxy")} icon={<Orbit size={16} />} label="Galaxy" />
-            <NavItem to={ORG_BASE} icon={<Building2 size={16} />} label="Organization" end />
+            <NavItem href={consoleHref(orgPath("galaxy"))} icon={<Orbit size={16} />} label="Galaxy" />
+            <NavItem href={consoleHref(orgPath())} icon={<Building2 size={16} />} label="Organization" />
           </>
         )}
         {!hosted && <NavItem to="/organization" icon={<Building2 size={16} />} label="Organization" />}
         <NavItem to="/usage" icon={<BarChart3 size={16} />} label="Usage" />
-        {isPlatformAdmin && <NavItem to="/admin" icon={<ShieldCheck size={16} />} label="Operator" />}
+        {isPlatformAdmin && <NavItem href={consoleHref("/admin")} icon={<ShieldCheck size={16} />} label="Operator" />}
         <NavItem to={viewPath("feedback-kit")} icon={<Sparkles size={16} />} label="Feedback Kit" />
         <NavItem to="/settings" icon={<Settings size={16} />} label="Settings" />
       </div>
@@ -470,7 +472,7 @@ function SelfHostLeftNav() {
         <OrgRailItem onOpenDialog={() => setOrgDialogOpen(true)} />
         <NavItem to="/usage" icon={<BarChart3 size={16} />} label="Usage" />
         <NavItem to="/feedback-kit" icon={<Sparkles size={16} />} label="Feedback Kit" />
-        {isPlatformAdmin && <NavItem to="/admin" icon={<ShieldCheck size={16} />} label="Operator" />}
+        {isPlatformAdmin && <NavItem href={consoleHref("/admin")} icon={<ShieldCheck size={16} />} label="Operator" />}
         <NavItem to="/settings" icon={<Settings size={16} />} label="Settings" />
       </div>
       <CloudOrgLinkDialog open={orgDialogOpen} onOpenChange={setOrgDialogOpen} />
@@ -556,6 +558,7 @@ function RailHeading({ children }: { children: React.ReactNode }) {
 
 function NavItem({
   to,
+  href,
   icon,
   label,
   count,
@@ -563,16 +566,18 @@ function NavItem({
   end,
 }: {
   to?: string;
+  /** Console origin. Those screens are not routes in this app. */
+  href?: string;
   icon: React.ReactNode;
   label: string;
   count?: number;
   soon?: boolean;
-  /** Match this path exactly. `/org` would otherwise light up on every `/org/*` page. */
+  /** Match this path exactly. A prefix would light the parent on every child page. */
   end?: boolean;
 }) {
   const base =
     "flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13px] transition-colors";
-  if (soon || !to) {
+  if (soon || (!to && !href)) {
     return (
       <div
         className={cn(base, "cursor-default text-faint-2")}
@@ -586,6 +591,20 @@ function NavItem({
       </div>
     );
   }
+  if (href) {
+    return (
+      <a href={href} className={cn(base, "text-muted hover:bg-surface-3 hover:text-fg-2")}>
+        {icon}
+        <span className="flex-1">{label}</span>
+        {count != null && (
+          <span className="rounded-md bg-surface-4 px-1.5 py-0.5 font-mono text-[10px] text-muted">
+            {count}
+          </span>
+        )}
+      </a>
+    );
+  }
+  if (!to) return null;
   return (
     <NavLink
       to={to}

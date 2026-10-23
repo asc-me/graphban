@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 /**
  * PRD-21 acceptance criterion 17 — self-host loses nothing, and gains no org plane.
  *
- * G9: every addition is org-gated and absent when `hosted_mode` is off. D1.2 is specific
- * about the mechanism — the routes are **never registered**, not registered-and-guarded —
- * so a stale bookmark falls through the SPA's existing catch-all like any unknown path.
- * No 404 page, no minimal org UI, no special case.
+ * The org plane and the operator console render in graphban-control. This app does not
+ * mount those screens. A hosted bookmark under the org base leaves for the console; a
+ * self-host build still does not register that base, so a stale `/org` falls through
+ * the catch-all like any unknown path.
  *
  * Asserted against App.tsx's source rather than a render, because what is under test is
  * the *registration*, and a render can only show what a given build registered. The
@@ -26,10 +26,17 @@ describe("the org plane is absent on self-host, not guarded", () => {
     expect(app).toContain("ORG_BASE");
   });
 
-  it("registers every org route inside a hosted gate", () => {
-    // Every `path={ORG_BASE...}` and `path={adminPath...}` must sit after a `hosted &&`
-    // in the same JSX block. The block is found by locating the gate and taking what
-    // follows it up to the matching close, which is how the file is actually structured.
+  it("does not mount the org or operator screens", () => {
+    expect(app).not.toContain("OrgOverviewView");
+    expect(app).not.toContain("OrgAdminShell");
+    expect(app).not.toContain("GalaxyView");
+    expect(app).not.toContain("AdminView");
+    expect(app).toContain("<ConsoleRedirect />");
+  });
+
+  it("sends hosted org bookmarks to the console, and does not register them on self-host", () => {
+    // The redirect sits inside the hosted gate. A self-host build has no org to send
+    // anywhere, so the base must not be registered before that gate.
     const gate = app.indexOf("{hosted && (");
     expect(gate, "the hosted gate must exist").toBeGreaterThan(0);
 
@@ -37,6 +44,8 @@ describe("the org plane is absent on self-host, not guarded", () => {
     expect(before, "no org route may be registered before the hosted gate").not.toMatch(
       /path=\{ORG_BASE/,
     );
+    const hosted = app.slice(gate);
+    expect(hosted).toMatch(/path=\{ORG_BASE\} element=\{<ConsoleRedirect \/>\}/);
   });
 
   it("mounts project views at the root when not hosted, and under /p/:tag when hosted", () => {

@@ -1,15 +1,11 @@
 import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 
+import { ConsoleRedirect } from "@/components/ConsoleRedirect";
 import { AppFrame, ShellBootSkeleton } from "@/components/shell/AppFrame";
 import { useAuth } from "@/features/auth/AuthContext";
 import { LoginPage } from "@/features/auth/LoginPage";
 import { ResetPasswordPage } from "@/features/auth/ResetPasswordPage";
 import { ActivityView } from "@/features/activity/ActivityView";
-import { AdminView } from "@/features/admin/AdminView";
-import { OperatorHome } from "@/features/admin/OperatorHome";
-import { OperatorLicensing } from "@/features/admin/OperatorLicensing";
-import { OperatorOrgs } from "@/features/admin/OperatorOrgs";
-import { OperatorUsers } from "@/features/admin/OperatorUsers";
 import { CodeGraphView } from "@/features/code/CodeGraphView";
 import { StackView } from "@/features/stack/StackView";
 import { EmbedFeedbackPage } from "@/features/feedback/EmbedFeedbackPage";
@@ -22,7 +18,6 @@ import { LinksGraphView } from "@/features/links/LinksGraphView";
 import { FleetView } from "@/features/fleet/FleetView";
 import { FleetV2View } from "@/features/fleet/FleetV2View";
 import { OutpostsView } from "@/features/fleet/OutpostsView";
-import { GalaxyView } from "@/features/galaxy/GalaxyView";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { LessonsView } from "@/features/lessons/LessonsView";
 import { HarnessView } from "@/features/harness/HarnessView";
@@ -30,17 +25,6 @@ import { LiveView } from "@/features/live/LiveView";
 import { MemoryReviewView } from "@/features/memory/MemoryReviewView";
 import { MemoryTriageView } from "@/features/memory/MemoryTriageView";
 import { InviteAcceptPage } from "@/features/onboarding/InviteAcceptPage";
-import { OrgAdminShell } from "@/features/orgadmin/OrgAdminShell";
-import { OrgOverviewView } from "@/features/orgadmin/OrgOverviewView";
-import { OrgBranding } from "@/features/orgadmin/OrgBranding";
-import { SPECULATIVE_ENABLED } from "@/features/orgadmin/Speculative";
-import { OrgBilling } from "@/features/orgadmin/OrgBilling";
-import { OrgIntegrations } from "@/features/orgadmin/OrgIntegrations";
-import { OrgGitops } from "@/features/orgadmin/OrgGitops";
-import { OrgDeployments } from "@/features/orgadmin/OrgDeployments";
-import { OrgTeams } from "@/features/orgadmin/OrgTeams";
-import { OrgUsers } from "@/features/orgadmin/OrgUsers";
-
 import { PrdEditorView } from "@/features/prds/PrdEditorView";
 import { PrdListView } from "@/features/prds/PrdListView";
 import { ProfileView } from "@/features/profile/ProfileView";
@@ -85,8 +69,9 @@ export function App() {
  *
  * On a hosted deployment they live under `/p/:tag/…`, and the flat paths become
  * resolvers that redirect into them. On self-host they stay at the root exactly as
- * today and `/org/*` is never registered at all — a self-host build has no org to
- * serve, so it must not carry routes that imply one.
+ * today. The org plane and the operator console are not mounted in either mode —
+ * those screens render in graphban-control, and a hosted bookmark under the org
+ * base leaves this origin. A self-host build still does not register that base.
  */
 const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["tracker", <TrackerView />],
@@ -124,13 +109,9 @@ function AuthedApp() {
 
   return (
     <Routes>
-      {/* Operator plane — its own shell, outside AppFrame, cross-tenant. */}
-      <Route path="/admin" element={<AdminView />}>
-        <Route index element={<OperatorHome />} />
-        <Route path="orgs" element={<OperatorOrgs />} />
-        <Route path="users" element={<OperatorUsers />} />
-        <Route path="licensing" element={<OperatorLicensing />} />
-      </Route>
+      {/* Operator console lives in graphban-control. A bookmark follows it. */}
+      <Route path="/admin" element={<ConsoleRedirect />} />
+      <Route path="/admin/*" element={<ConsoleRedirect />} />
 
       <Route element={<AppFrame />}>
         {/* ---- the project plane ---- */}
@@ -155,27 +136,11 @@ function AuthedApp() {
           </>
         )}
 
-        {/* ---- the org plane (hosted only) ---- */}
+        {/* ---- org-plane bookmarks (hosted only) leave for the console ---- */}
         {hosted && (
           <>
-            <Route path={ORG_BASE} element={<OrgOverviewView />} />
-            <Route path={`${ORG_BASE}/galaxy`} element={<GalaxyView />} />
-            <Route path={`${ORG_BASE}/admin`} element={<OrgAdminShell />}>
-              <Route index element={<Navigate to="users" replace />} />
-              <Route path="users" element={<OrgUsers />} />
-              <Route path="teams" element={<OrgTeams />} />
-              <Route path="deployments" element={<OrgDeployments />} />
-              {/* Gated on the ROUTE as well as the nav item. A speculative screen still
-                  reachable by URL gets linked to, screenshotted and demoed — and a nav
-                  gate on its own reads as an oversight rather than a decision, so the
-                  next person cannot tell which it was (PRD-21 D9). */}
-              {SPECULATIVE_ENABLED && (
-                <Route path="branding" element={<OrgBranding />} />
-              )}
-              <Route path="integrations" element={<OrgIntegrations />} />
-              <Route path="gitops" element={<OrgGitops />} />
-              <Route path="billing" element={<OrgBilling />} />
-            </Route>
+            <Route path={ORG_BASE} element={<ConsoleRedirect />} />
+            <Route path={`${ORG_BASE}/*`} element={<ConsoleRedirect />} />
             {/* Legacy flat paths resolve to the tag route rather than 404. */}
             {PROJECT_VIEWS.map(([path]) => (
               <Route key={`flat-${path}`} path={`/${path}`} element={<FlatRedirect />} />
