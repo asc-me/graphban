@@ -20,9 +20,11 @@ the wave — which is also the honest attribution.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -187,17 +189,16 @@ def _names(subject: str, item: str) -> bool:
 
 
 def split_by_item(repo: Path, branch: str, base: str,
-                  items: list[str]) -> tuple[list[tuple[str, str]], str]:
-    """Where each item's work ends on a branch that carries several: `[(item, sha)]` in
-    branch order, or `([], why)` when the commits do not separate them (GRPH-948).
+                  items: list[str]) -> tuple[list[tuple[str, list[str]]], str]:
+    """The commits that belong to each item, oldest first: `[(item, [sha, ...])]` in
+    the order the items first appear, or `([], why)` when they cannot be separated
+    (GRPH-948, GRPH-1086).
 
-    Read from the worker's own commit subjects, oldest first. A commit naming one item belongs
-    to it; one naming none belongs to the item before it (or, before any, the first); one
-    naming two cannot be divided. An item's commits must be CONTIGUOUS, because the per-item
-    branches are stacked — each PR's base is the previous item's branch, so its diff is only
-    its own item — and interleaved commits cannot be stacked without rewriting them. Rewriting
-    a worker's history is not the supervisor's call, so that is refused and the person splits
-    it.
+    Read from the worker's own commit subjects. A commit naming one of `items` belongs
+    to it. A commit naming none, or naming more than one, cannot be put on one item's
+    PR — the reason names that commit. Commits for one item need not be contiguous:
+    each item is cut from the base, not stacked on the previous item, so an earlier
+    item's commit is not an ancestor of the next item's branch.
     """
     if not base:
         return [], "there is no base to split it against"
@@ -205,30 +206,78 @@ def split_by_item(repo: Path, branch: str, base: str,
                           cwd=str(repo), capture_output=True, text=True)
     if done.returncode != 0:
         return [], "its commits could not be read"
-    blocks: list[list] = []  # [item, last sha]
+    blocks: list[list] = []  # [item, [sha, ...]]
     for line in (done.stdout or "").splitlines():
         sha, _, subj = line.partition("\t")
         named = [i for i in items if _names(subj, i)]
         if len(named) > 1:
             return [], f"commit {sha[:12]} names {', '.join(named)}"
         if not named:
-            if blocks:
-                blocks[-1][1] = sha
-            continue
+            # Not the previous item's. Folding it in is how a commit that names nothing
+            # rides into a PR and gets attested as that item (GRPH-1086).
+            return [], f"commit {sha[:12]} names no item"
         item = named[0]
-        if blocks and blocks[-1][0] == item:
-            blocks[-1][1] = sha
-        elif any(b[0] == item for b in blocks):
-            return [], f"{item}'s commits are interleaved with {blocks[-1][0]}'s"
+        owned = next((b for b in blocks if b[0] == item), None)
+        if owned is None:
+            blocks.append([item, [sha]])
         else:
-            blocks.append([item, sha])
+            owned[1].append(sha)
     missing = [i for i in items if not any(b[0] == i for b in blocks)]
     if missing:
         return [], f"no commit names {', '.join(missing)}"
-    return [(b[0], b[1]) for b in blocks], ""
+    return [(b[0], list(b[1])) for b in blocks], ""
 
 
-def describe(branch: str, items: list[str], commit_subject: str = "") -> tuple[str, str]:
+def replay_onto(repo: Path, base: str, commits: list[str]) -> tuple[str, str]:
+    """Replay `commits` onto `base`. `(sha, "")`, or `("", why)` naming the commit that
+    would not apply (GRPH-1086).
+
+    Done in a throwaway worktree so the caller's checkout stays where it is. A commit
+    whose parent is the current tip fast-forwards, which keeps the original sha for a
+    prefix of the branch. Anything else is cherry-picked, so the result contains those
+    commits and not the other item's. A patch that needs the other item's tree does not
+    apply; that is the refusal, and the branch is left uncut.
+    """
+    if not commits:
+        return "", "there are no commits to cut"
+    base_read = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{base}^{{commit}}"],
+        cwd=str(repo), capture_output=True, text=True)
+    if base_read.returncode != 0 or not (base_read.stdout or "").strip():
+        return "", "there is no base to cut it from"
+    base_sha = base_read.stdout.strip()
+    parent = Path(tempfile.mkdtemp(prefix="gb-split-"))
+    wt = parent / "wt"
+    env = {**os.environ, "GIT_EDITOR": "true", "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        added = subprocess.run(
+            ["git", "worktree", "add", "--detach", "-q", str(wt), base_sha],
+            cwd=str(repo), capture_output=True, text=True, env=env)
+        if added.returncode != 0:
+            tail = (added.stderr or added.stdout or "").strip().splitlines()
+            return "", (f"could not cut from {base_sha[:12]}: "
+                        f"{tail[-1][:160] if tail else added.returncode}")
+        for sha in commits:
+            picked = subprocess.run(
+                ["git", "-c", "commit.gpgsign=false", "cherry-pick", "--ff", sha],
+                cwd=str(wt), capture_output=True, text=True, env=env)
+            if picked.returncode != 0:
+                subprocess.run(["git", "cherry-pick", "--abort"], cwd=str(wt),
+                               capture_output=True, text=True, env=env)
+                return "", f"commit {sha[:12]} depends on an earlier item's commit"
+        tip = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(wt), capture_output=True, text=True)
+        if tip.returncode != 0 or not (tip.stdout or "").strip():
+            return "", "the cut branch has no commit"
+        return tip.stdout.strip(), ""
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(wt)],
+                       cwd=str(repo), capture_output=True, text=True)
+        shutil.rmtree(parent, ignore_errors=True)
+
+
+def describe(branch: str, items: list[str], commit_subject: str = "", *,
+             attest: bool = False) -> tuple[str, str]:
     """Title and body for work a wave produced — for ONE item, or none (GRPH-948).
 
     THE WORKER'S OWN SUBJECT LEADS (GRPH-817). The first version always composed
@@ -266,6 +315,12 @@ def describe(branch: str, items: list[str], commit_subject: str = "") -> tuple[s
           "is a judgement the supervisor did not make. The ledger holds the evidence — read "
           "the item before this description, which is generated and knows nothing.\n"
     )
+    # Only when the caller asks. A single-item branch keeps the body it had: CI still
+    # finds the id in the prose. A split PR must say `Attests:` so a body that mentions
+    # the branch, or the other item, cannot attest both (GRPH-1086). `attest` stays off
+    # the single-item path.
+    if attest and named:
+        body += f"Attests: {named}\n"
     return title, body
 
 
