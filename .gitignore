@@ -35,6 +35,8 @@ web/*.tsbuildinfo
 web/test-results/
 web/playwright-report/
 web/blob-report/
+# Playwright MCP browser session output (console logs, snapshots)
+.playwright-mcp/
 
 # Env
 .env
