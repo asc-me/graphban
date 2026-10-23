@@ -258,7 +258,6 @@ export function CodeGraphCanvas({
   const layout = area.layout;
   const layoutRef = React.useRef(layout);
   layoutRef.current = layout;
-  const drawnRef = React.useRef<ClusterLayout | null>(null);
 
   const frameToFit = React.useCallback(() => {
     const lay = layoutRef.current;
@@ -310,8 +309,10 @@ export function CodeGraphCanvas({
     return () => ro.disconnect();
   }, []);
 
-  // Before the fit effect. A regroup drops pins into the ref synchronously, so
-  // the fit that follows reads the positions that are still pinned.
+  // Before the fit and the node frame. A regroup drops pins into the ref
+  // synchronously, so both read the positions that are still pinned. The
+  // overlay from this render still has the pin, and neither effect runs
+  // again when that state lands.
   React.useEffect(() => {
     if (!layout) return;
     const index = new Map(layout.ids.map((id, i) => [id, i]));
@@ -385,9 +386,15 @@ export function CodeGraphCanvas({
     // A find or a hub pick frames one node at 7×. That loses to a pair and to
     // an area zoom: otherwise this effect runs again on every layout arrival
     // and the camera settles on the node instead of both hulls.
-    if (pairFocus || frameAreaId || !frameId) return;
-    const lay = drawnRef.current;
-    if (!lay) return;
+    //
+    // Read the ref reconcile just wrote, not the overlay from this render.
+    // With Find still armed, framing that overlay tweens to the pin a regroup
+    // has already dropped, while the node draws back in its packed cell.
+    if (pairFocus || frameAreaId || !frameId || !layout) return;
+    const lay = applyPinOverrides(
+      layout,
+      pinsFor(readPinsRef.current(), layoutModeRef.current),
+    );
     const i = lay.ids.indexOf(frameId);
     if (i < 0) return;
     const to = framePoint(lay.x[i], lay.y[i], FOCUS_ZOOM, size.w, size.h);
@@ -474,7 +481,6 @@ export function CodeGraphCanvas({
     );
     return { ...positioned, edges };
   }, [positioned, pairFocus, types]);
-  drawnRef.current = drawn;
   const pinIds = React.useMemo(() => {
     const ids = new Set(Object.keys(pinLayer));
     if (drag) ids.add(drag.id);

@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { FOCUS_ZOOM, framePoint } from "@/features/code/canvas/camera";
 import { CodeGraphCanvas, type CanvasControlApi } from "@/features/code/CodeGraphCanvas";
 import { CodeGraphView } from "@/features/code/CodeGraphView";
 import type { ClusterLayout } from "@/lib/graph/bigLayout";
@@ -201,6 +202,52 @@ describe("canvas drag-to-pin", () => {
     onSelect.mockClear();
     clickAt(host, cx, cy);
     expect(onSelect).toHaveBeenLastCalledWith("shown.py");
+  });
+
+  it("frames the packed cell when Find is still armed and a regroup drops the pin", () => {
+    const previous = window.matchMedia;
+    window.matchMedia = (query: string) =>
+      ({
+        matches: query.includes("reduce"),
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+        onchange: null,
+      }) as unknown as MediaQueryList;
+    try {
+      const { host, rerender, onSelect } = mount({ frameId: "shown.py" });
+      const before = cameraOf();
+      expect(before.k).toBeCloseTo(FOCUS_ZOOM, 5);
+      drag(host, before.cx, before.cy, 400);
+      expect(cameraOf().cx).toBeCloseTo(before.cx, 5);
+
+      pointer(host, "pointerdown", 8, 8);
+      pointer(host, "pointermove", 80, 8);
+      pointer(host, "pointerup", 80, 8);
+      const panned = cameraOf();
+      expect(panned.cx).not.toBeCloseTo(before.cx, 0);
+
+      layoutBox.current = { ...LAYOUT, areaOf: ["B"] };
+      rerender(element(onSelect, { frameId: "shown.py" }));
+      expect(screen.getByTestId("canvas-pin-toast")).toHaveTextContent(
+        "1 pins cleared: areas regrouped",
+      );
+
+      const packed = framePoint(0, 0, FOCUS_ZOOM, 900, 560);
+      const pinWorldX = 400 / before.k;
+      const abandoned = framePoint(pinWorldX, 0, FOCUS_ZOOM, 900, 560);
+      const after = cameraOf();
+      expect(after.k).toBeCloseTo(packed.k, 5);
+      expect(after.cx).toBeCloseTo(packed.x, 3);
+      expect(after.cy).toBeCloseTo(packed.y, 3);
+      expect(Math.abs(after.cx - abandoned.x)).toBeGreaterThan(100);
+      expect(host).toHaveAttribute("data-frame", "node");
+    } finally {
+      window.matchMedia = previous;
+    }
   });
 
   it("clears a pin whose area changed and shows the regroup toast", () => {
