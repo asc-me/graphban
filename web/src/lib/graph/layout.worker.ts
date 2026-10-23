@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { clustersLayout, type ClusterInput, type ClusterLayout } from "./bigLayout";
+import { layoutFor, type ClusterInput, type ClusterLayout } from "./bigLayout";
 import { runLayout, type LayoutEdge, type LayoutOpts, type Pos } from "./layout";
 
 export interface LayoutRequest {
@@ -15,7 +15,7 @@ export interface LayoutResponse {
   pos: Record<string, Pos>;
 }
 
-/** Canvas-mode clusters. Distinct from `LayoutRequest`, which GalaxyView still sends. */
+/** Canvas-mode area layout. Distinct from `LayoutRequest`, which GalaxyView still sends. */
 export interface AreaLayoutRequest extends ClusterInput {
   kind: "area";
   id: number;
@@ -33,8 +33,8 @@ function isArea(data: unknown): data is AreaLayoutRequest {
 
 self.onmessage = (ev: MessageEvent<LayoutRequest | AreaLayoutRequest>) => {
   if (isArea(ev.data)) {
-    const { id, nodes, edges, prevDepth } = ev.data;
-    const layout = clustersLayout({ nodes, edges, prevDepth });
+    const { id, nodes, edges, prevDepth, layout: layoutKind } = ev.data;
+    const layout = layoutFor(layoutKind, { nodes, edges, prevDepth });
     const reply: AreaLayoutWorkerResponse = { kind: "area", id, layout };
     (self as unknown as Worker).postMessage(reply);
     return;

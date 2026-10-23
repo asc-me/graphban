@@ -47,6 +47,19 @@ export interface Quad {
   y1: number;
 }
 
+/** Where a ray from the hull centre along `(ux, uy)` meets the hull. A Map tile uses its rect. */
+function rimPoint(h: Hull, ux: number, uy: number, sign: number): { x: number; y: number } {
+  if (h.rect && h.rect.w > 0 && h.rect.h > 0) {
+    const hw = h.rect.w / 2;
+    const hh = h.rect.h / 2;
+    const tx = Math.abs(ux) < 1e-9 ? Infinity : hw / Math.abs(ux);
+    const ty = Math.abs(uy) < 1e-9 ? Infinity : hh / Math.abs(uy);
+    const t = Math.min(tx, ty);
+    return { x: h.cx + ux * t * sign, y: h.cy + uy * t * sign };
+  }
+  return { x: h.cx + ux * h.r * sign, y: h.cy + uy * h.r * sign };
+}
+
 /** Quadratic between hull edges. Bend 0.1, control point from centres and radii only. */
 export function quadraticBetween(a: Hull, b: Hull): Quad {
   const dx = b.cx - a.cx;
@@ -54,10 +67,12 @@ export function quadraticBetween(a: Hull, b: Hull): Quad {
   const len = Math.hypot(dx, dy) || 1;
   const ux = dx / len;
   const uy = dy / len;
-  const x0 = a.cx + ux * a.r;
-  const y0 = a.cy + uy * a.r;
-  const x1 = b.cx - ux * b.r;
-  const y1 = b.cy - uy * b.r;
+  const p0 = rimPoint(a, ux, uy, 1);
+  const p1 = rimPoint(b, ux, uy, -1);
+  const x0 = p0.x;
+  const y0 = p0.y;
+  const x1 = p1.x;
+  const y1 = p1.y;
   const mx = (x0 + x1) / 2;
   const my = (y0 + y1) / 2;
   return {

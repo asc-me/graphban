@@ -5,7 +5,8 @@
  * recompute a position. Callers pass the alpha buffer they already wrote.
  */
 
-import type { ClusterLayout, RankedEdge } from "@/lib/graph/bigLayout";
+import type { ClusterLayout, OrbitRing, RankedEdge, TileRect } from "@/lib/graph/bigLayout";
+import { ORBIT_BUNDLE_CAP, topBundles } from "@/lib/graph/bigLayout";
 import type { Cam } from "./camera";
 import {
   EDGE_CAP,
@@ -44,6 +45,8 @@ export interface DrawHull {
   count: number;
   showName: boolean;
   showCount: boolean;
+  /** Map tile, in world space. Circle hulls leave it unset. */
+  rect?: TileRect;
 }
 
 export interface DrawRing {
@@ -76,6 +79,8 @@ export interface DrawScene {
    * decide, per edge, whether that edge is on the route.
    */
   edgesAlpha: number;
+  /** Orbit ring labels. Empty for Clusters and Map. */
+  orbitRings?: OrbitRing[];
 }
 
 export interface SceneOpts {
@@ -91,6 +96,8 @@ export interface SceneOpts {
   hoverId: string | null;
   /** Overrides the batch alpha. Absent keeps the ordinary 0.85. */
   edgesAlpha?: number;
+  /** Map tile under the pointer or selected, when no node is focused. */
+  tileId?: string | null;
 }
 
 export function worldInView(x: number, y: number, r: number, cam: Cam, w: number, h: number): boolean {
@@ -163,13 +170,60 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
     pool = pool.filter((e) => iso.has(e.src) && iso.has(e.dst));
   }
 
-  if (large && !revealed) {
+  const kind = layout.layout ?? "clusters";
+  const nodeFocus = opts.hoverId ?? opts.selectedId;
+  const focusedNode = nodeFocus && indexOf.has(nodeFocus) ? nodeFocus : null;
+  const bundlePool = () =>
+    opts.types || opts.isolate ? bundlesFromEdges(pool, layout.areas) : layout.bundles;
+
+  const pushLines = (id: string) => {
+    lod = "edges";
+    caption = "Individual edges";
+    for (const e of pool) {
+      if (e.src !== id && e.dst !== id) continue;
+      const ia = indexOf.get(e.src);
+      const ib = indexOf.get(e.dst);
+      if (ia === undefined || ib === undefined) continue;
+      strokes.push({
+        kind: "line",
+        x0: layout.x[ia],
+        y0: layout.y[ia],
+        cx: 0,
+        cy: 0,
+        x1: layout.x[ib],
+        y1: layout.y[ib],
+        color: EDGE_COLOR[e.type] ?? "#8b949e",
+        widthPx: 1.25,
+        label: `${e.src}→${e.dst}`,
+      });
+    }
+  };
+
+  if (kind === "map") {
+    // Map never follows the zoom LOD. Nothing focused draws nothing.
+    if (focusedNode) {
+      pushLines(focusedNode);
+    } else if (opts.tileId && layout.areas.some((a) => a.id === opts.tileId)) {
+      const tile = opts.tileId;
+      caption = "Area bundles";
+      for (const bundle of bundlePool().filter((b) => b.a === tile || b.b === tile)) {
+        strokes.push(...bundleStrokes(bundle, camera.k));
+      }
+    } else {
+      caption = "Hover an area to see its dependencies";
+    }
+  } else if (large && !revealed) {
     lod = "areas";
     caption = "Large map: zoom into an area to see its files";
-    const bundles = opts.types || opts.isolate ? bundlesFromEdges(pool, layout.areas) : layout.bundles;
+    const bundles = bundlePool();
     for (const bundle of bundles) strokes.push(...bundleStrokes(bundle, camera.k));
+  } else if (kind === "orbit" && !focusedNode && edgeLod(camera.k) === "bundles") {
+    const all = bundlePool();
+    const top = topBundles(all, ORBIT_BUNDLE_CAP);
+    for (const bundle of top) strokes.push(...bundleStrokes(bundle, camera.k));
+    if (all.length > ORBIT_BUNDLE_CAP) caption = "Top 30 area bundles";
   } else if (edgeLod(camera.k) === "bundles") {
-    const bundles = opts.types || opts.isolate ? bundlesFromEdges(pool, layout.areas) : layout.bundles;
+    const bundles = bundlePool();
     for (const bundle of bundles) strokes.push(...bundleStrokes(bundle, camera.k));
   } else {
     lod = "edges";
@@ -203,7 +257,7 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
   }
 
   const hulls: DrawHull[] = layout.areas.map((a) => {
-    const screen = a.r * camera.k;
+    const screen = a.rect ? Math.min(a.rect.w, a.rect.h) * camera.k : a.r * camera.k;
     return {
       id: a.id,
       cx: a.cx,
@@ -214,6 +268,7 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
       count: a.count,
       showName: screen >= 36,
       showCount: screen >= 90,
+      rect: a.rect,
     };
   });
 
@@ -267,6 +322,7 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
     revealed,
     glow,
     edgesAlpha: opts.edgesAlpha ?? 0.85,
+    orbitRings: layout.orbitRings ?? [],
   };
 }
 
