@@ -84,6 +84,8 @@ export interface SceneOpts {
   isolate: Set<string> | null;
   selectedId: string | null;
   hoverId: string | null;
+  /** Node ids that wear a pin ring at r+5. Positions come from the layout. */
+  pinned?: ReadonlySet<string> | null;
 }
 
 export function worldInView(x: number, y: number, r: number, cam: Cam, w: number, h: number): boolean {
@@ -211,6 +213,17 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
   });
 
   const rings: DrawRing[] = [];
+  if (opts.pinned && opts.pinned.size > 0) {
+    for (const id of opts.pinned) {
+      const i = indexOf.get(id);
+      if (i === undefined || !allow(i)) continue;
+      const x = layout.x[i];
+      const y = layout.y[i];
+      const r = layout.r[i];
+      if (!worldInView(x, y, r + 5, camera, width, height)) continue;
+      rings.push({ x, y, r: r + 5, color: "#8b949e", kind: "pin" });
+    }
+  }
   const focus = opts.hoverId ?? opts.selectedId;
   const glow: Stroke[] = [];
   if (focus) {

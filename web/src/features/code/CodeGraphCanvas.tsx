@@ -9,8 +9,9 @@
 import * as React from "react";
 
 import { zoomAbout } from "@/lib/graph/useGraphViewport";
-import { hitTest, type ClusterLayout } from "@/lib/graph/bigLayout";
+import { applyPinOverrides, fitTargets, hitTest, type ClusterLayout } from "@/lib/graph/bigLayout";
 import { useAreaLayout } from "@/lib/graph/useAreaLayout";
+import { DRAG_PIN_PX, pinsFor, useCanvasPins } from "@/lib/graph/useGraphPins";
 import { createCanvas2D } from "./canvas/canvas2d";
 import {
   CANVAS_MAX_K,
@@ -103,6 +104,7 @@ export function CodeGraphCanvas({
   frameId,
   controlRef,
   onZoom,
+  layoutId = "clusters",
 }: {
   nodes: CanvasGraphNode[];
   edges: CanvasGraphEdge[];
@@ -119,6 +121,12 @@ export function CodeGraphCanvas({
   controlRef?: { current: CanvasControlApi | null };
   /** Fired when the camera scale changes, so the shared readout can follow. */
   onZoom?: (k: number) => void;
+  /**
+   * Which layout the pins belong to. Clusters is the only chip this slice
+   * draws; Map, Orbit and Matrix stay disabled. A later slice passes its id
+   * so a pin made here is not applied on top of that layout.
+   */
+  layoutId?: string;
 }) {
   const hostRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -132,8 +140,22 @@ export function CodeGraphCanvas({
   camRef.current = cam;
   const sizeRef = React.useRef(size);
   sizeRef.current = size;
-  const panRef = React.useRef<{ px: number; py: number; cx: number; cy: number } | null>(null);
   const fitted = React.useRef("");
+  const pinsApi = useCanvasPins();
+  const pinsRef = React.useRef(pinsApi.byLayout);
+  pinsRef.current = pinsApi.byLayout;
+  const layoutIdRef = React.useRef(layoutId);
+  layoutIdRef.current = layoutId;
+  const [drag, setDrag] = React.useState<{ id: string; x: number; y: number } | null>(null);
+  const [toast, setToast] = React.useState<string | null>(null);
+  const gesture = React.useRef<{
+    nodeId: string | null;
+    px: number;
+    py: number;
+    cx: number;
+    cy: number;
+    dragging: boolean;
+  } | null>(null);
 
   const input = React.useMemo(
     () => (nodes.length > 0 ? { nodes: nodes.map((n) => ({ id: n.id, path: n.path, kind: n.kind })), edges } : null),
@@ -143,10 +165,56 @@ export function CodeGraphCanvas({
   const layout = area.layout;
   const layoutRef = React.useRef(layout);
   layoutRef.current = layout;
+  const layoutSeen = React.useRef<ClusterLayout | null>(null);
+  if (layout !== layoutSeen.current) {
+    layoutSeen.current = layout;
+    if (layout) {
+      const index = new Map(layout.ids.map((id, i) => [id, i]));
+      const cleared = pinsApi.reconcile((id) => {
+        const at = index.get(id);
+        return at === undefined ? undefined : layout.areaOf[at];
+      });
+      if (cleared > 0) setToast(`${cleared} pins cleared: areas regrouped`);
+    }
+  }
+
+  const pinLayer = pinsFor(pinsApi.byLayout, layoutId);
+  const overrides = React.useMemo(() => {
+    if (!drag) return pinLayer;
+    return {
+      ...pinLayer,
+      [drag.id]: { x: drag.x, y: drag.y, areaKey: pinLayer[drag.id]?.areaKey ?? "" },
+    };
+  }, [pinLayer, drag]);
+  const drawn = React.useMemo(
+    () => (layout ? applyPinOverrides(layout, overrides) : null),
+    [layout, overrides],
+  );
+  const drawnRef = React.useRef(drawn);
+  drawnRef.current = drawn;
+  const pinIds = React.useMemo(() => {
+    const ids = new Set(Object.keys(pinLayer));
+    if (drag) ids.add(drag.id);
+    return ids;
+  }, [pinLayer, drag]);
+
+  const frameToFit = React.useCallback(() => {
+    const lay = layoutRef.current;
+    const { w, h } = sizeRef.current;
+    if (!lay) return;
+    setTween(null);
+    setCam(fitCamera(fitTargets(lay, pinsFor(pinsRef.current, layoutIdRef.current)), w, h));
+  }, []);
 
   React.useEffect(() => {
     onZoom?.(cam.k);
   }, [cam.k, onZoom]);
+
+  React.useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   React.useEffect(() => {
     if (!controlRef) return;
@@ -159,17 +227,13 @@ export function CodeGraphCanvas({
         );
       },
       fit() {
-        const lay = layoutRef.current;
-        const { w, h } = sizeRef.current;
-        if (!lay) return;
-        setTween(null);
-        setCam(fitCamera(lay.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r })), w, h));
+        frameToFit();
       },
     };
     return () => {
       controlRef.current = null;
     };
-  }, [controlRef]);
+  }, [controlRef, frameToFit]);
 
   React.useEffect(() => {
     const el = hostRef.current;
@@ -187,15 +251,15 @@ export function CodeGraphCanvas({
     if (!layout || !sig || fitted.current === sig) return;
     fitted.current = sig;
     if (frameId && layout.ids.includes(frameId)) return;
-    setCam(fitCamera(layout.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r })), size.w, size.h));
-    setTween(null);
-  }, [layout, sig, size.w, size.h, frameId]);
+    frameToFit();
+  }, [layout, sig, size.w, size.h, frameId, frameToFit]);
 
   React.useEffect(() => {
-    if (!frameId || !layout) return;
-    const i = layout.ids.indexOf(frameId);
+    const lay = drawnRef.current;
+    if (!frameId || !lay) return;
+    const i = lay.ids.indexOf(frameId);
     if (i < 0) return;
-    const to = framePoint(layout.x[i], layout.y[i], FOCUS_ZOOM, size.w, size.h);
+    const to = framePoint(lay.x[i], lay.y[i], FOCUS_ZOOM, size.w, size.h);
     const next = replaceTween(camRef.current, to, performance.now(), prefersReducedMotion());
     setCam(next.cam);
     setTween(next.tween);
@@ -251,8 +315,8 @@ export function CodeGraphCanvas({
 
   const dpr = typeof window === "undefined" ? 1 : Math.min(2, window.devicePixelRatio || 1);
   const scene = React.useMemo(() => {
-    if (!layout || !alpha) return null;
-    return buildScene(layout, {
+    if (!drawn || !alpha) return null;
+    return buildScene(drawn, {
       camera: cam,
       width: size.w,
       height: size.h,
@@ -262,8 +326,9 @@ export function CodeGraphCanvas({
       isolate: isolateSet,
       selectedId,
       hoverId: hover,
+      pinned: pinIds,
     });
-  }, [layout, alpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover]);
+  }, [drawn, alpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover, pinIds]);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -296,11 +361,6 @@ export function CodeGraphCanvas({
 
   const move = (clientX: number, clientY: number, sceneNow: DrawScene | null, layoutNow: ClusterLayout | null) => {
     const w = toWorld(clientX, clientY);
-    if (panRef.current) {
-      const from = panRef.current;
-      setCam((c) => ({ ...c, x: from.cx + (w.sx - from.px), y: from.cy + (w.sy - from.py) }));
-      return;
-    }
     if (!layoutNow || !sceneNow) {
       setHover(null);
       setTip(null);
@@ -318,24 +378,24 @@ export function CodeGraphCanvas({
   };
 
   const labels = React.useMemo(() => {
-    if (!layout || !scene) return [];
+    if (!drawn || !scene) return [];
     const focus = hover ?? selectedId;
-    const fi = focus ? layout.ids.indexOf(focus) : -1;
+    const fi = focus ? drawn.ids.indexOf(focus) : -1;
     const neighbors: string[] = [];
     if (focus) {
-      for (const e of layout.edges) {
+      for (const e of drawn.edges) {
         if (!types.has(e.type)) continue;
         if (e.src === focus) neighbors.push(e.dst);
         else if (e.dst === focus) neighbors.push(e.src);
       }
     }
-    const labelNodes: LabelNode[] = layout.ids.map((id, i) => {
+    const labelNodes: LabelNode[] = drawn.ids.map((id, i) => {
       const text = shortName(nameOf.get(id), id);
-      const sx = layout.x[i] * cam.k + cam.x;
-      const sy = layout.y[i] * cam.k + cam.y;
+      const sx = drawn.x[i] * cam.k + cam.x;
+      const sy = drawn.y[i] * cam.k + cam.y;
       return {
         id,
-        area: layout.areaOf[i],
+        area: drawn.areaOf[i],
         degree: degree.get(id) ?? 0,
         inView: scene.nodes.some((n) => n.id === id) || id === selectedId || id === hover,
         box: { x: sx + 8, y: sy - 8, w: Math.min(180, 8 + text.length * 7), h: 14 },
@@ -346,10 +406,10 @@ export function CodeGraphCanvas({
       selectedId,
       hoverId: hover,
       neighbors,
-      focusKind: fi >= 0 ? layout.kinds[fi] : "file",
+      focusKind: fi >= 0 ? drawn.kinds[fi] : "file",
       zoom: cam.k,
     });
-  }, [layout, scene, hover, selectedId, cam.k, cam.x, cam.y, degree, nameOf, types]);
+  }, [drawn, scene, hover, selectedId, cam.k, cam.x, cam.y, degree, nameOf, types]);
 
   const shown = nodes.length;
 
@@ -358,6 +418,7 @@ export function CodeGraphCanvas({
       ref={hostRef}
       data-testid="code-graph-canvas"
       data-renderer={rendererRef.current?.kind ?? "canvas2d"}
+      data-layout={layoutId}
       role="application"
       aria-label={`Code graph canvas: ${shown} nodes. Clusters layout.`}
       className="absolute inset-0 touch-none"
@@ -367,34 +428,64 @@ export function CodeGraphCanvas({
         const target = e.target as HTMLElement;
         if (target.closest("button")) return;
         const w = toWorld(e.clientX, e.clientY);
-        panRef.current = { px: w.sx, py: w.sy, cx: cam.x, cy: cam.y };
+        const hit = nodeAtPointer(scene, drawn, w.x, w.y);
+        gesture.current = {
+          nodeId: hit,
+          px: w.sx,
+          py: w.sy,
+          cx: cam.x,
+          cy: cam.y,
+          dragging: false,
+        };
         setTween(null);
         e.currentTarget.setPointerCapture(e.pointerId);
       }}
-      onPointerMove={(e) => move(e.clientX, e.clientY, scene, layout)}
-      onPointerUp={(e) => {
-        const from = panRef.current;
-        panRef.current = null;
-        if (from) {
-          const w = toWorld(e.clientX, e.clientY);
-          const moved = Math.hypot(w.sx - from.px, w.sy - from.py);
-          if (moved < 4 && layout) {
-            const hit = nodeAtPointer(scene, layout, w.x, w.y);
-            onSelect(hit);
+      onPointerMove={(e) => {
+        const g = gesture.current;
+        const w = toWorld(e.clientX, e.clientY);
+        if (g) {
+          const dist = Math.hypot(w.sx - g.px, w.sy - g.py);
+          if (g.nodeId && dist > DRAG_PIN_PX) {
+            g.dragging = true;
+            setDrag({ id: g.nodeId, x: w.x, y: w.y });
+            setHover(g.nodeId);
+            setTip(null);
+            return;
           }
+          if (!g.nodeId) {
+            setCam((c) => ({ ...c, x: g.cx + (w.sx - g.px), y: g.cy + (w.sy - g.py) }));
+            return;
+          }
+          return;
+        }
+        move(e.clientX, e.clientY, scene, drawn);
+      }}
+      onPointerUp={(e) => {
+        const g = gesture.current;
+        gesture.current = null;
+        if (!g) return;
+        const w = toWorld(e.clientX, e.clientY);
+        if (g.dragging && g.nodeId && layout) {
+          const i = layout.ids.indexOf(g.nodeId);
+          if (i >= 0) pinsApi.place(layoutId, g.nodeId, w.x, w.y, layout.areaOf[i]);
+          setDrag(null);
+          return;
+        }
+        setDrag(null);
+        if (Math.hypot(w.sx - g.px, w.sy - g.py) < DRAG_PIN_PX) {
+          onSelect(nodeAtPointer(scene, drawn, w.x, w.y));
         }
       }}
       onDoubleClick={(e) => {
-        if (!layout) return;
+        if (!drawn) return;
         const w = toWorld(e.clientX, e.clientY);
-        const hit = nodeAtPointer(scene, layout, w.x, w.y);
+        const hit = nodeAtPointer(scene, drawn, w.x, w.y);
         if (!hit) {
-          setTween(null);
-          setCam(fitCamera(layout.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r })), size.w, size.h));
+          frameToFit();
           return;
         }
-        const i = layout.ids.indexOf(hit);
-        const to = framePoint(layout.x[i], layout.y[i], FOCUS_ZOOM, size.w, size.h);
+        const i = drawn.ids.indexOf(hit);
+        const to = framePoint(drawn.x[i], drawn.y[i], FOCUS_ZOOM, size.w, size.h);
         const next = replaceTween(camRef.current, to, performance.now(), prefersReducedMotion());
         setCam(next.cam);
         setTween(next.tween);
@@ -424,10 +515,10 @@ export function CodeGraphCanvas({
       )}
       <div className="pointer-events-none absolute inset-0">
         {labels.map((id) => {
-          const i = layout ? layout.ids.indexOf(id) : -1;
-          if (!layout || i < 0) return null;
-          const sx = layout.x[i] * cam.k + cam.x;
-          const sy = layout.y[i] * cam.k + cam.y;
+          const i = drawn ? drawn.ids.indexOf(id) : -1;
+          if (!drawn || i < 0) return null;
+          const sx = drawn.x[i] * cam.k + cam.x;
+          const sy = drawn.y[i] * cam.k + cam.y;
           return (
             <span
               key={id}
@@ -469,6 +560,26 @@ export function CodeGraphCanvas({
             </button>
           ))}
         </div>
+        {pinsApi.total > 0 && (
+          <button
+            type="button"
+            data-testid="unpin-all"
+            onClick={pinsApi.clearAll}
+            title="Release every pinned node"
+            className="rounded-lg border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-muted"
+          >
+            Unpin all
+          </button>
+        )}
+        {toast && (
+          <p
+            data-testid="canvas-pin-toast"
+            role="status"
+            className="rounded bg-surface/80 px-2 py-1 text-[11.5px] text-fg"
+          >
+            {toast}
+          </p>
+        )}
         {scene && (
           <p data-testid="lod-caption" className="max-w-[440px] rounded bg-surface/80 px-2 py-1 text-[11.5px] text-muted">
             {scene.caption}

@@ -466,3 +466,69 @@ export function hitTest(layout: ClusterLayout, wx: number, wy: number): string |
   lastHitVisits = visits;
   return best?.id ?? null;
 }
+
+function gridKey(x: number, y: number): string {
+  return `${Math.floor(x / GRID_CELL)},${Math.floor(y / GRID_CELL)}`;
+}
+
+/**
+ * Lay position overrides on a cached layout.
+ *
+ * The cached arrays stay as the worker left them. The copy's x/y move, and each
+ * moved node leaves its old grid cell for the new one, so hit-testing follows
+ * the pin instead of the packed slot. No pins returns the same object.
+ */
+export function applyPinOverrides(
+  layout: ClusterLayout,
+  pins: Record<string, { x: number; y: number }>,
+): ClusterLayout {
+  const entries = Object.entries(pins);
+  if (entries.length === 0) return layout;
+  const index = new Map(layout.ids.map((id, i) => [id, i]));
+  const moves: { i: number; x: number; y: number }[] = [];
+  for (const [id, pin] of entries) {
+    const i = index.get(id);
+    if (i === undefined) continue;
+    if (layout.x[i] === pin.x && layout.y[i] === pin.y) continue;
+    moves.push({ i, x: pin.x, y: pin.y });
+  }
+  if (moves.length === 0) return layout;
+  const x = new Float32Array(layout.x);
+  const y = new Float32Array(layout.y);
+  const grid: Record<string, number[]> = {};
+  for (const [key, bucket] of Object.entries(layout.grid)) grid[key] = bucket.slice();
+  for (const move of moves) {
+    const oldKey = gridKey(layout.x[move.i], layout.y[move.i]);
+    const bucket = grid[oldKey];
+    if (bucket) {
+      const at = bucket.indexOf(move.i);
+      if (at >= 0) bucket.splice(at, 1);
+      if (bucket.length === 0) delete grid[oldKey];
+    }
+    x[move.i] = move.x;
+    y[move.i] = move.y;
+    const nextKey = gridKey(move.x, move.y);
+    const next = grid[nextKey];
+    if (next) next.push(move.i);
+    else grid[nextKey] = [move.i];
+  }
+  return { ...layout, x, y, grid };
+}
+
+/**
+ * Hulls plus every pinned node. Fit on hulls alone leaves a pin that was
+ * dragged outside its area off the frame.
+ */
+export function fitTargets(
+  layout: ClusterLayout,
+  pins: Record<string, { x: number; y: number }>,
+): { x: number; y: number; r: number }[] {
+  const pts = layout.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r }));
+  const index = new Map(layout.ids.map((id, i) => [id, i]));
+  for (const [id, pin] of Object.entries(pins)) {
+    const i = index.get(id);
+    if (i === undefined) continue;
+    pts.push({ x: pin.x, y: pin.y, r: layout.r[i] });
+  }
+  return pts;
+}
