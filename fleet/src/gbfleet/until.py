@@ -649,9 +649,10 @@ def _loop(
             # skip-aheads the DAG. Do NOT reset `empty` either: `_wanted_workers` still
             # counts those free file-clusters, so zeroing here spun the loop forever
             # (CI cancelled the fleet suite after 6h). Count toward idle like a no-work tick.
+            flags: dict = {}
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
                                               request, prd, repo, base, held=held,
-                                              merger=merger)
+                                              merger=merger, bound_out=flags)
             if seed is None:
                 # No takeable work this tick. Fall through to the idle counter below.
                 pass
@@ -659,7 +660,7 @@ def _loop(
                 empty = 0
                 seat = Seat(shared=dict(shared or {}),
                             code=code, server_url=server, api_key=api_key, role="worker",
-                            item=seed)
+                            item=seed, bound_only=bool(flags.get("bound_only")))
                 minted += 1
                 factory = launch_factory
                 chosen = (adapter, "")
@@ -1490,6 +1491,7 @@ def _delegate_next(
     base: str = "",
     held: dict[str, list[str]] | None = None,
     merger: Merger | None = None,
+    bound_out: dict | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Write the delegation for the seed of the next free cluster, before its seat is minted.
 
@@ -1603,8 +1605,12 @@ def _delegate_next(
             try:
                 # PRD-36 D9: a BOUND seat. The server refuses one when the seed's areas are held
                 # by someone else (D13). GRPH-885: do not fall back to an unbound delegate.
+                # GRPH-1089: do not pass bound_only. A wave's finished bound workers review
+                # each other; the flag is opt-in for a caller that wants the child to exit.
                 reply = planner.call("delegate", id=candidate, lane=lane, tier=want, agent_id=agent_id,
                                      note=note, seat=True, wave=wave_name, **_seat_scope(prd))
+                if bound_out is not None and isinstance(reply, dict):
+                    bound_out["bound_only"] = bool(reply.get("bound_only"))
                 got_code = reply.get("enrolment_code") if isinstance(reply, dict) else None
                 code = str(got_code) if got_code else None
             except ToolFailed as exc:

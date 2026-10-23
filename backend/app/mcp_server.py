@@ -1845,6 +1845,16 @@ _SEAT_SCOPE_ARG = {"scope": {
     "description": "PRD this seat may claim within — the child cannot claim past it.",
 }}
 
+#: GRPH-1089. Fleet-only for the reason every entry in `_FLEET_ONLY_ARGS` is: the ceiling is
+#: measured on the base manifest, and a property only a planner sends should not be charged
+#: to every agent that connects. The dispatcher accepts it whether or not it was advertised.
+_BOUND_ONLY_ARG = {"bound_only": {
+    "type": "boolean",
+    "description": "Once the bound item leaves in_progress, claim_review, claim_next, "
+                   "claim_item, claim_cluster and next_cluster refuse, naming it. "
+                   "Omit to keep review-after-build.",
+}}
+
 #: GRPH-985. An OUTPUT property rather than an argument, advertised to the fleet tier for the
 #: reason every entry in `_FLEET_ONLY_ARGS` exists: the ceiling has no headroom for a field on
 #: every agent's manifest. Advertisement, never a boundary — the dispatcher returns
@@ -1879,8 +1889,17 @@ _FLEET_ONLY_ARGS = {
             "description": "This item's text reads like deployment work and you have checked "
                            "it is not. Recorded against the delegation.",
         },
+        **_BOUND_ONLY_ARG,
     },
-    "mint_enrolment": dict(_SEAT_SCOPE_ARG),
+    "mint_enrolment": {
+        **_SEAT_SCOPE_ARG,
+        **_BOUND_ONLY_ARG,
+        "item": {
+            "type": "string",
+            "description": "Item a bound_only seat is bound to. Required with bound_only; "
+                           "refused without it.",
+        },
+    },
     # GRPH-1007, and fleet-only for the reason every entry here is: the ceiling is measured on
     # the base manifest, and only a reviewer ever sends this. A predicate whose check could not
     # run now reports `passed: false` and blocks completion; this is how a reviewer admits one
@@ -2895,6 +2914,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 note=args.get("note", ""), lease_seconds=items_svc.DEFAULT_LEASE_SECONDS,
                 seat=bool(args.get("seat")), api_key=key, wave=args.get("wave"),
                 acknowledge_reach=bool(args.get("acknowledge_reach")),
+                bound_only=bool(args.get("bound_only")),
                 # The ITEM's project, not the key's default: a scope has to belong to the
                 # same project as the work it bounds, and `_scoped_item` has already proved
                 # the caller may read this one.
@@ -2907,6 +2927,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise errors.Conflict(msg, hint=e.hint)
         return {"delegation_id": row.id, "state": delegation_svc.state(row),
                 "withdrew": withdrew, "enrolment_code": code,
+                # GRPH-1089. Always present, like review_only on a seat: a caller can tell
+                # "flag false" from "this server never heard of it". True only when the call
+                # asked for it — a true value with seat omitted is refused before this return.
+                "bound_only": bool(args.get("bound_only")),
                 "brief": delegation_svc.brief(db, item, user_id=key.user_id)}
     if name == "assign_role":
         try:
@@ -3142,6 +3166,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # cannot live there: that list is derived from the ROLE, and this is not a role.
             # The gate in `claim_next`/`claim_item` is what enforces it.
             "review_only": items_svc.review_only_seat(db, agent.id),
+            # GRPH-1089. Same shape as review_only: always present, reply-only, not in the
+            # outputSchema. The gate in claim_review/claim_next is what enforces it, and only
+            # once the bound item has left in_progress — this reports the flag itself.
+            "bound_only": items_svc.bound_only_seat(db, agent.id),
             # The boundary, stated once, at the moment the role is granted. The MANIFEST cannot
             # say this: `tools/list` is fetched at connect, before any role exists, so a fleet
             # agent holds the full list all session and finds the edge by walking into it — and
@@ -3165,20 +3193,50 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                                      "held_by": None},
         }
     if name == "mint_enrolment":
+        # GRPH-1089. `item` is the binding for a bound_only seat, and only for that. Opening
+        # it on its own would be a second way to bind a seat that skips delegate's checks
+        # for every ordinary bound seat; requiring the flag keeps that path on delegate.
+        bound_only = bool(args.get("bound_only"))
+        item_key = args.get("item") or None
+        if bound_only and not item_key:
+            raise errors.Validation(
+                "bound_only needs an item this seat is bound to: pass item")
+        if item_key and not bound_only:
+            raise errors.Validation(
+                "item on mint_enrolment binds a bound_only seat: pass bound_only=true, "
+                "or bind through delegate(seat=true)")
+        item_id = None
+        project_id = pid
+        if item_key:
+            item = _scoped_item(db, item_key, readable)
+            me = db.get(Agent, args.get("agent_id") or "")
+            if me is None:
+                raise errors.Validation("mint_enrolment needs a registered agent_id")
+            try:
+                delegation_svc.refuse_bound_collision(db, agent=me, item=item)
+            except delegation_svc.DelegationRefused as e:
+                detail = "; ".join(f"{k}={v}" for k, v in e.detail.items())
+                msg = f"{e} ({detail})" if detail else str(e)
+                raise errors.Conflict(msg, hint=e.hint)
+            item_id = item.id
+            project_id = item.project_id
         try:
             row, code = fleet_svc.mint_enrolment_as(
-                db, minter_id=args["agent_id"], project_id=pid, role=args["role"],
+                db, minter_id=args["agent_id"], project_id=project_id, role=args["role"],
                 api_key=key, wave=args.get("wave"),
-                prd_id=_scope_id(db, pid, args.get("scope")),
-                review_only=bool(args.get("review_only")))
+                prd_id=_scope_id(db, project_id, args.get("scope")),
+                review_only=bool(args.get("review_only")),
+                item_id=item_id, bound_only=bound_only)
         except ValueError as e:
             raise errors.Validation(str(e))
         # Returned ONCE, like every other credential-shaped thing here. `review_only` is
         # echoed because it is the one property of the seat the minter cannot read back later:
         # the code is gone, and a planner that cannot confirm what it just minted cannot tell
-        # a review-only wave from one that quietly is not (GRPH-988).
+        # a review-only wave from one that quietly is not (GRPH-988). `bound_only` is the
+        # same kind of echo (GRPH-1089).
         return {"enrolment_code": code, "role": row.role, "seat_id": row.id,
                 "review_only": bool(row.review_only),
+                "bound_only": bool(row.bound_only),
                 "expires_at": row.expires_at.isoformat() if row.expires_at else None}
     if name == "fleet_status":
         minted_by = None
@@ -4141,6 +4199,14 @@ async def mcp_endpoint(
                          "nothing is wrong with the call and no item would have been the right "
                          "one: this seat may review and may not build. claim_review, then exit "
                          "when it answers claimed=false")
+        except items_svc.BoundOnlySeat as e:
+            # CONFLICT, same reason as ReviewOnlySeat (GRPH-1089). `claim_review` returns None
+            # for an empty queue; this must not become that, and it must not become `internal`
+            # ("safe to retry"). The bound item has left in_progress. The child exits.
+            return _fail("conflict", str(e),
+                         "nothing is wrong with the call: this seat is bound to one item and "
+                         "that item has left in_progress. Exit — that is the normal end of a "
+                         "bound-only run")
         except errors.AppError as e:
             # Expected, agent-correctable failure: not_found | validation | conflict.
             return _fail(e.code, str(e), e.hint)

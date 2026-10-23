@@ -1137,6 +1137,9 @@ def watch_tick(
     # (GRPH-987). A bound seat keeps running after it moves its item to review, so waiting for
     # the reap left the branch local for the rest of that run — long enough for a reviewer in
     # any other checkout to be handed the item and bounce it for a reason that is not the diff.
+    # A bound_only seat (GRPH-1089) is told to exit at that moment instead of reviewing. This
+    # publish still has to land before that exit: the flag changes what the child does next,
+    # not whether its branch is on the remote when a reviewer arrives.
     #
     # The order is not cosmetic. `_reap_exited` owns a child that has EXITED and does the fuller
     # job — salvage, touchpoints, receipts — while `_reap_all` at the end of a wave writes the
