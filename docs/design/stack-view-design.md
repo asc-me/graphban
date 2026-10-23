@@ -42,11 +42,22 @@ label:
 A node's `ring` (1/2/3) places it inside the matching frame. The ring is the
 **containing frame**, not a chip on a card.
 
+**Ownership is relative to the project being viewed.** Graphban's deployables
+(`api`, `web`, `gbfleet`, `gbagent`, `gban`) are ring 1 only for a project whose
+code map has described that box's source (`GRAPHBAN_SOURCES` in `stack.py`: specific
+files and packages, never a generic `backend/app` or `web/src`). For every other
+project they are ring 2, tools the project runs to build, and an `own_code` empty
+says the project's own deployables are not on the map. Vendor CLIs are never ring 1.
+The code-health footer draws only on ring-1 boxes, because health is keyed by repo
+path and would otherwise credit the viewing project's `web/` to Graphban's `web`.
+
 ## Host groups (dashed frames inside the rings)
 
 Group boxes by host with a **dashed-border frame** and a mono label, e.g.
 `SELF-HOSTED · LAN`. Hosts in the design: `stack` (compose/Railway: web+api+db),
-`agent` (fleet + spawned vendor agents), `user` (cli), `ext` (external services).
+`agent` (gbfleet, gbagent and spawned vendor agents), `user` (gban), `ext` (external
+services). The three CLIs are three boxes: `gbfleet` and `gbagent` ship in
+`graphban-fleet`, `gban` in `graphban-cli`.
 Selecting the `stack` host highlights every node on it.
 
 ## Boxes (deployables)
@@ -79,6 +90,8 @@ unreachable = red (dashed). The design's edge set and labels:
 | web → api | `HTTP · JWT` |
 | fleet → api | `HTTP + MCP` / `JSON-RPC` |
 | fleet → vendor | `spawns` / `local procs` |
+| fleet → gbagent | `spawn` |
+| gbagent → api | `MCP` |
 | api → pg (db) | `psycopg · :5432` |
 | api → ollama | `HTTP /api/chat` / `/api/embed` |
 | api → decider | `HTTP` / `/v1/systemone` |

@@ -241,7 +241,7 @@ export function StackView() {
     return m;
   }, [health]);
   const selected = data?.nodes.find((n) => n.id === selectedId) ?? null;
-  const selectedHealth = selected ? healthById[selected.id] ?? null : null;
+  const selectedHealth = selected ? ownHealth(selected, healthById) : null;
 
   React.useEffect(() => {
     if (!data) return;
@@ -635,7 +635,7 @@ function StackCanvas({
                     data.edges.filter((ed) => ed.from === n.id || ed.to === n.id).length
                   }
                   onSelect={() => onSelect(n.id)}
-                  health={overlayOn ? healthById[n.id] ?? null : null}
+                  health={overlayOn ? ownHealth(n, healthById) : null}
                 />
               </foreignObject>
             );
@@ -699,6 +699,19 @@ function EdgeLine({ edge, lod }: { edge: EdgeRoute; lod: boolean }) {
       )}
     </g>
   );
+}
+
+/**
+ * Code health belongs to a box only where this project writes it (ring 1). Health is
+ * keyed by repo path (`web/`, `backend/`), so on a project that merely runs Graphban
+ * the `web` component is THAT project's web/ folder — drawing it on Graphban's web box
+ * would credit one codebase's scans to another's deployable.
+ */
+function ownHealth(
+  node: StackNode,
+  healthById: Record<string, StackComponentHealth>,
+): StackComponentHealth | null {
+  return node.ring === 1 ? healthById[node.id] ?? null : null;
 }
 
 function NodeBox({

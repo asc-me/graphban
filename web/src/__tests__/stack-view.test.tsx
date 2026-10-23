@@ -381,6 +381,21 @@ describe("StackView", () => {
     expect(webFooter).not.toHaveTextContent("CLEAN");
   });
 
+  it("a box this project runs but does not write carries no code-health footer", async () => {
+    // Health is keyed by repo path, so on a project that only RUNS Graphban the `web`
+    // component is that project's own web/ — it must not paint on Graphban's web box.
+    const user = userEvent.setup();
+    vi.mocked(api.stack).mockResolvedValue({
+      ...topology,
+      nodes: topology.nodes.map((n) => (n.id === "web" ? { ...n, ring: 2 } : n)),
+    });
+    wrap(<StackView />);
+    await screen.findByTestId("stack-health-footer-api");
+    expect(screen.queryByTestId("stack-health-footer-web")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("stack-node-web"));
+    expect(await screen.findByTestId("stack-health-na")).toHaveTextContent(/didn't write/i);
+  });
+
   it("toggling the overlay hides health footers", async () => {
     const user = userEvent.setup();
     wrap(<StackView />);
