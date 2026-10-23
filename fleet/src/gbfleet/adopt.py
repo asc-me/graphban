@@ -58,6 +58,17 @@ class Snapshot:
     #: Per-child wall-clock cap override (GRPH-849). None means use the process default.
     #: Persisted so a supervisor restart does not drop a 4h override back to 3600s.
     wall_clock_cap: float | None = None
+    #: Every item the roster had ever read this child holding, in first-seen order
+    #: (GRPH-1085). `held_items` is only the latest reading. A takeover that restored
+    #: that and not this judged the branch against the item the child happened to hold
+    #: after the restart.
+    ever_held: list[str] = field(default_factory=list)
+    #: False when the file did not record `ever_held` — an older supervisor, or a rewrite
+    #: of that file before the server could say which items this agent authored. Distinct
+    #: from an empty list, which is a child that was watched and held nothing. `recover`
+    #: rewrites the roster as it attaches, so losing the distinction here would turn
+    #: "the file did not say" into "it held nothing" before reap ever asked.
+    ever_held_known: bool = True
 
 
 @dataclass
@@ -135,6 +146,8 @@ def snapshot_of(child: Child, slot: str = "") -> Snapshot:
         started_wall=time.time() - max(0.0, time.monotonic() - child.started_at),
         held_items=list(child.held_items or []),
         wall_clock_cap=child.wall_clock_cap,
+        ever_held=list(child.ever_held or []),
+        ever_held_known=bool(getattr(child, "ever_held_known", True)),
     )
 
 
@@ -262,6 +275,12 @@ def attach(snap: Snapshot) -> Child:
         attached=True,
         wall_clock_cap=snap.wall_clock_cap,
     )
+    # GRPH-1085. The live roster can only refill what the child holds NOW. The items it
+    # already handed off live in `ever_held`, and a Child that starts without them is
+    # judged against too few declarations at reap. Unknown (an older file) stays unknown
+    # so reap can ask the server instead of believing the empty list.
+    child.ever_held = list(snap.ever_held or [])
+    child.ever_held_known = bool(snap.ever_held_known)
     emit("adopted", pid=snap.pid, branch=snap.branch, agent_id=snap.agent_id or "")
     return child
 
@@ -282,7 +301,28 @@ def _as_dict(s: Snapshot) -> dict:
         "started_wall": s.started_wall,
         "held_items": list(s.held_items or []),
         "wall_clock_cap": s.wall_clock_cap,
+        "ever_held": list(s.ever_held or []),
+        "ever_held_known": bool(s.ever_held_known),
     }
+
+
+def _ever_held_of(row: dict) -> tuple[list[str], bool]:
+    """The persisted history, and whether the file actually recorded one (GRPH-1085).
+
+    A missing key is an older supervisor: empty, and unknown. A list is the history,
+    including an empty one. `ever_held_known: false` is a rewrite of an older file
+    before the server was asked — `recover` rewrites the roster as it attaches, and
+    writing the empty list as known would make the next takeover skip the fallback.
+    """
+    if "ever_held" not in row:
+        return [], False
+    raw = row.get("ever_held")
+    held = [str(i) for i in raw if i] if isinstance(raw, list) else []
+    if "ever_held_known" in row:
+        return held, bool(row.get("ever_held_known"))
+    # A list with no flag is a file from a supervisor that wrote the history and
+    # not the flag. null is "not recorded", the same as a missing key.
+    return held, isinstance(raw, list)
 
 
 def _parse_row(row: object) -> Snapshot | None:
@@ -294,6 +334,9 @@ def _parse_row(row: object) -> Snapshot | None:
         pid = int(row["pid"])
     except (KeyError, TypeError, ValueError):
         return None
+    # Tolerant, because a file written by an older supervisor has no such key and a
+    # takeover that refused to read it would strand the very trees this exists to save.
+    ever_held, ever_held_known = _ever_held_of(row)
     return Snapshot(
         pid=pid,
         start_token=str(row["start_token"]) if row.get("start_token") else None,
@@ -307,10 +350,10 @@ def _parse_row(row: object) -> Snapshot | None:
         seat_path=str(row.get("seat_path") or ""),
         log_dir=str(row.get("log_dir") or ""),
         started_wall=float(row["started_wall"]) if row.get("started_wall") else 0.0,
-        # Tolerant, because a file written by an older supervisor has no such key and a
-        # takeover that refused to read it would strand the very trees this exists to save.
         held_items=[str(i) for i in (row.get("held_items") or []) if i],
         wall_clock_cap=float(row["wall_clock_cap"]) if row.get("wall_clock_cap") is not None else None,
+        ever_held=ever_held,
+        ever_held_known=ever_held_known,
     )
 
 

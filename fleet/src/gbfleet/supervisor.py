@@ -1348,8 +1348,13 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
     measured = wave.touched.get(child.branch) or []
     if not measured:
         return
+    # Before the comparison, so an older roster's missing history is part of the operand
+    # and not a note written after the branch was already judged against too little.
+    history = _restore_authored(child, client)
     declared: list[str] = []
     unread: list[str] = []
+    if history:
+        unread.append(history)
     for item_id in _branch_items(child):
         now, why = _declared_now(client, item_id)
         if now is None:
@@ -1367,6 +1372,76 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
     wave.collided = tp_mod.overlaps(wave.touched)
 
 
+def _restore_authored(child, client) -> str:
+    """Fill `ever_held` from the ledger when the roster never recorded it (GRPH-1085).
+
+    An older children file has no `ever_held`. The live roster only knows what the child
+    holds now, so items it already handed to review are gone from that reading and the
+    branch is judged against too few declarations. Those items name this agent as
+    `built_by`. That read is the fallback, and only the fallback: a roster that recorded
+    the list, even an empty one, is the history and is not second-guessed.
+
+    Returns "" when the history is known. A non-empty string is why it is not, for the
+    caller to record — an unreadable authorship must not look like a child that held
+    only what it holds now.
+    """
+    if getattr(child, "ever_held_known", True):
+        return ""
+    agent = str(getattr(child, "agent_id", None) or "").strip()
+    authored, why = _authored_by(client, agent)
+    if authored is None:
+        return f"ever_held was not in the roster and authorship could not be read ({why})"
+    seen = getattr(child, "ever_held", None)
+    if not isinstance(seen, list):
+        child.ever_held = []
+        seen = child.ever_held
+    for item_id in authored:
+        if item_id not in seen:
+            seen.append(item_id)
+    child.ever_held_known = True
+    return ""
+
+
+def _authored_by(client, agent_id: str) -> tuple[list[str] | None, str]:
+    """Item ids whose `built_by` is `agent_id`, or (None, why that list was not read).
+
+    `[]` means the listing was read and this agent authored nothing in it. None means
+    it was not read, or it does not report authorship. A lean page carries no `built_by`,
+    and a missing field is not "nobody built this".
+    """
+    if not agent_id:
+        return None, "the adopted child has no agent id"
+    if client is None:
+        return None, "no client to read items with"
+    allowed = getattr(client, "allowed", None)
+    if allowed is not None and "search_items" not in allowed:
+        return None, "this client may not list items"
+    try:
+        payload = client.call("search_items", fields="full", limit=10_000)
+    except Exception as exc:  # noqa: BLE001 — any failed read is reported, not treated as none
+        return None, str(exc) or type(exc).__name__
+    if not isinstance(payload, dict):
+        return None, "item listing was not a record"
+    if payload.get("has_more"):
+        return None, "item listing was truncated"
+    fields = payload.get("fields")
+    if isinstance(fields, list) and "built_by" not in fields:
+        return None, "the listing does not report built_by"
+    rows = payload.get("results")
+    if not isinstance(rows, list):
+        return None, "item listing carried no results list"
+    out: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or "built_by" not in row:
+            return None, "a row did not report built_by"
+        if str(row.get("built_by") or "") != agent_id:
+            continue
+        item_id = str(row.get("id") or "").strip()
+        if item_id and item_id not in out:
+            out.append(item_id)
+    return out, ""
+
+
 def _branch_items(child) -> list[str]:
     """Every item whose work can be on this child's branch, bound item first (GRPH-1079).
 
@@ -1377,7 +1452,9 @@ def _branch_items(child) -> list[str]:
     now. Not live roster holdings either: `_roster` is overwritten after `release_item`, so
     at reap the live view is empty.
 
-    `getattr` because a Child rebuilt by hand or by `adopt` may carry only `held_items`.
+    `getattr` because a Child rebuilt by hand may carry only `held_items`. `adopt`
+    restores `ever_held` from the roster; a file that predates the field is filled by
+    `_restore_authored` before this runs, from items this agent authored.
     """
     ids: list[str] = []
     assigned = getattr(child, "assigned", None)
