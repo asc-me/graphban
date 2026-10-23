@@ -24,6 +24,7 @@ import { useCanvasListbox, type HolderReading } from "@/lib/graph/useGraphKeyboa
 import { nodesHeldBy } from "@/lib/graph/presence";
 import type { FleetPresence } from "@/lib/types";
 import { canvasClouds } from "./canvas/clouds";
+import { useAlphaFade } from "./canvas/fade";
 import { AreaMatrix, LayoutChips, type GraphLayoutId } from "./AreaMatrix";
 import type { CodePath } from "@/lib/types";
 import { createCanvas2D } from "./canvas/canvas2d";
@@ -34,6 +35,8 @@ import {
   CANVAS_MIN_K,
   FOCUS_ZOOM,
   fitCamera,
+  fitScale,
+  zoomFloor,
   framePair,
   framePoint,
   prefersReducedMotion,
@@ -119,6 +122,25 @@ function nodeAtPointer(
   return id;
 }
 
+/** Room left either side of a Map tile's name. */
+const TILE_NAME_PAD = 10;
+/** Average advance of the 11px overlay face; a name past this many per pixel is cut. */
+const TILE_CHAR_PX = 6.4;
+
+/**
+ * A Map tile's name, fitted to its width. Packed tiles are narrow, and a name wider than
+ * its tile ran into the next one. The count goes first, then the name is cut with an
+ * ellipsis; a tile with room for fewer than four characters shows none.
+ */
+export function fitTileName(label: string, count: number | null, widthPx: number): string | null {
+  const room = Math.floor(widthPx / TILE_CHAR_PX);
+  const full = count === null ? label : `${label} · ${count}`;
+  if (full.length <= room) return full;
+  if (label.length <= room) return label;
+  if (room < 4) return null;
+  return `${label.slice(0, room - 1)}…`;
+}
+
 /** The Map tile under a world point, or null. Node hits win over this. */
 function tileAt(layout: ClusterLayout | null, wx: number, wy: number): string | null {
   if (!layout || (layout.layout ?? "clusters") !== "map") return null;
@@ -148,6 +170,7 @@ export function CodeGraphCanvas({
   frameId,
   controlRef,
   onZoom,
+  onZoomFloor,
   holderOf,
   pathPending = false,
   pathArmed = false,
@@ -187,6 +210,8 @@ export function CodeGraphCanvas({
   controlRef?: { current: CanvasControlApi | null };
   /** Fired when the camera scale changes, so the shared readout can follow. */
   onZoom?: (k: number) => void;
+  /** The lowest scale this layout allows, so the zoom-out control stops where the camera does. */
+  onZoomFloor?: (k: number) => void;
   /**
    * Who holds this node, if anyone looked. Omit it and the live region says
    * the holder is unknown — an empty reading would claim the node is free.
@@ -308,13 +333,24 @@ export function CodeGraphCanvas({
   const layoutRef = React.useRef(layout);
   layoutRef.current = layout;
 
+  // Below 0.7 only when the whole layout needs it (a tall Map treemap does).
+  const minK = React.useMemo(
+    () => (layout ? zoomFloor(fitScale(fitTargets(layout, {}), size.w, size.h)) : CANVAS_MIN_K),
+    [layout, size.w, size.h],
+  );
+  const minKRef = React.useRef(minK);
+  minKRef.current = minK;
+  React.useEffect(() => {
+    onZoomFloor?.(minK);
+  }, [minK, onZoomFloor]);
+
   const frameToFit = React.useCallback(() => {
     const lay = layoutRef.current;
     const { w, h } = sizeRef.current;
     if (!lay) return;
     setTween(null);
     setCam(
-      fitCamera(fitTargets(lay, pinsFor(readPinsRef.current(), layoutModeRef.current)), w, h),
+      fitCamera(fitTargets(lay, pinsFor(readPinsRef.current(), layoutModeRef.current)), w, h, 48, minKRef.current),
     );
   }, []);
 
@@ -335,7 +371,7 @@ export function CodeGraphCanvas({
         const { w, h } = sizeRef.current;
         setTween(null);
         setCam((c) =>
-          zoomAbout(c, factor, w / 2, h / 2, { min: CANVAS_MIN_K, max: CANVAS_MAX_K }),
+          zoomAbout(c, factor, w / 2, h / 2, { min: minKRef.current, max: CANVAS_MAX_K }),
         );
       },
       fit() {
@@ -399,6 +435,8 @@ export function CodeGraphCanvas({
         fitTargets(layout, pinsFor(readPinsRef.current(), layoutModeRef.current)),
         size.w,
         size.h,
+        48,
+        minKRef.current,
       ),
     );
     setCameraOwner("fit");
@@ -642,14 +680,16 @@ export function CodeGraphCanvas({
     () => (drawn ? canvasClouds(drawn, presence, cam.k, soloUser) : []),
     [drawn, presence, cam.k, soloUser],
   );
+  // Eased toward `alpha`, so a hover or a selection fades in instead of snapping.
+  const faded = useAlphaFade(alpha, pathAlpha ? null : (hover ?? selectedId));
   const scene = React.useMemo(() => {
-    if (!drawn || !alpha) return null;
-    return buildScene(drawn, {
+    if (!drawn || !faded.alpha) return null;
+    const built = buildScene(drawn, {
       camera: cam,
       width: size.w,
       height: size.h,
       dpr,
-      alpha,
+      alpha: faded.alpha,
       types,
       // A path dims the whole edge batch. Isolate would drop those edges instead,
       // which is a different picture from "everything off the path, still drawn".
@@ -665,7 +705,8 @@ export function CodeGraphCanvas({
       clouds,
       reducedMotion: prefersReducedMotion(),
     });
-  }, [drawn, alpha, pathAlpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover, hoverTile, selectedTile, pinIds, presence, clouds]);
+    return { ...built, focusMix: faded.mix };
+  }, [drawn, faded, pathAlpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover, hoverTile, selectedTile, pinIds, presence, clouds]);
 
   sceneRef.current = scene;
 
@@ -756,7 +797,7 @@ export function CodeGraphCanvas({
     const px = r.width ? ((e.clientX - r.left) / r.width) * size.w : size.w / 2;
     const py = r.height ? ((e.clientY - r.top) / r.height) * size.h : size.h / 2;
     setTween(null);
-    setCam((c) => zoomAbout(c, Math.exp(-e.deltaY * 0.0015), px, py, { min: CANVAS_MIN_K, max: CANVAS_MAX_K }));
+    setCam((c) => zoomAbout(c, Math.exp(-e.deltaY * 0.0015), px, py, { min: minKRef.current, max: CANVAS_MAX_K }));
   };
 
   const move = (clientX: number, clientY: number, sceneNow: DrawScene | null, layoutNow: ClusterLayout | null) => {
@@ -1048,6 +1089,45 @@ export function CodeGraphCanvas({
       <div aria-live="polite" aria-atomic="true" data-testid="graph-live" className="sr-only">
         {kb.live}
       </div>
+      {/* Hull and tile SHAPES sit under the canvas, which is transparent, so area
+          bundles and nodes draw over them. Above it they covered the Map's links. The
+          names stay in the overlay. */}
+      {kind !== "none" && scene && (
+        <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden data-testid="hull-shapes">
+          {scene.hulls.map((h) => {
+            if (h.rect) {
+              return (
+                <rect
+                  key={h.id}
+                  data-testid={`hull-shape-${h.id}`}
+                  x={h.rect.x * cam.k + cam.x}
+                  y={h.rect.y * cam.k + cam.y}
+                  width={h.rect.w * cam.k}
+                  height={h.rect.h * cam.k}
+                  rx={6}
+                  fill={h.color}
+                  fillOpacity={0.05}
+                  stroke={h.color}
+                  strokeOpacity={0.35}
+                />
+              );
+            }
+            return (
+              <circle
+                key={h.id}
+                data-testid={`hull-shape-${h.id}`}
+                cx={h.cx * cam.k + cam.x}
+                cy={h.cy * cam.k + cam.y}
+                r={h.r * cam.k}
+                fill={h.color}
+                fillOpacity={0.05}
+                stroke={h.color}
+                strokeOpacity={0.35}
+              />
+            );
+          })}
+        </svg>
+      )}
       <canvas
         ref={glRef}
         data-testid="code-graph-webgl"
@@ -1077,13 +1157,15 @@ export function CodeGraphCanvas({
               const rx = h.rect.x * cam.k + cam.x;
               const ry = h.rect.y * cam.k + cam.y;
               const rw = h.rect.w * cam.k;
-              const rh = h.rect.h * cam.k;
+              const fitted = h.showName
+                ? fitTileName(h.label, h.showCount ? h.count : null, rw - TILE_NAME_PAD)
+                : null;
               return (
                 <g key={h.id} data-testid={`hull-${h.id}`}>
-                  <rect x={rx} y={ry} width={rw} height={rh} fill={h.color} fillOpacity={0.05} stroke={h.color} strokeOpacity={0.35} />
-                  {h.showName && (
+                  {fitted && (
                     <text x={rx + rw / 2} y={ry + 14} textAnchor="middle" fill={h.color} fontSize={11}>
-                      {name}
+                      <title>{h.label}</title>
+                      {fitted}
                     </text>
                   )}
                 </g>
@@ -1091,7 +1173,6 @@ export function CodeGraphCanvas({
             }
             return (
               <g key={h.id} data-testid={`hull-${h.id}`}>
-                <circle cx={sx} cy={sy} r={sr} fill={h.color} fillOpacity={0.05} stroke={h.color} strokeOpacity={0.35} />
                 {h.showName && (
                   <text x={sx} y={sy - sr - 4} textAnchor="middle" fill={h.color} fontSize={11}>
                     {name}

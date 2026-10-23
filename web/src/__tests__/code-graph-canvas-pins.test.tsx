@@ -102,7 +102,7 @@ function box(host: HTMLElement) {
 }
 
 function cameraOf() {
-  const circle = screen.getByTestId("hull-A").querySelector("circle");
+  const circle = screen.getByTestId("hull-shape-A");
   const cx = Number(circle?.getAttribute("cx"));
   const cy = Number(circle?.getAttribute("cy"));
   const k = Number(circle?.getAttribute("r")) / 40;
@@ -314,7 +314,7 @@ describe("canvas drag-to-pin", () => {
 
   it("selects a map tile on an empty click and does not pin", () => {
     const { host, onSelect } = mount({ layout: "map" });
-    const tile = screen.getByTestId("hull-A").querySelector("rect");
+    const tile = screen.getByTestId("hull-shape-A");
     const rx = Number(tile?.getAttribute("x"));
     const ry = Number(tile?.getAttribute("y"));
     const rw = Number(tile?.getAttribute("width"));

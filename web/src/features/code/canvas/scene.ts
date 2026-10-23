@@ -49,6 +49,12 @@ function keptKey(kept: RankedEdge[]): number {
   return h;
 }
 
+/** Build.dc.html glow: a 1.3px core at 0.95 over a 5px wash at 0.18, both in the edge colour. */
+export const GLOW_CORE_PX = 1.3;
+export const GLOW_WASH_PX = 5;
+export const GLOW_CORE_ALPHA = 0.95;
+export const GLOW_WASH_ALPHA = 0.18;
+
 export interface DrawNode {
   id: string;
   index: number;
@@ -102,6 +108,8 @@ export interface DrawScene {
   revealed: string | null;
   /** Focused node's incident edges, capped at 320. Drawn above the rings. */
   glow: Stroke[];
+  /** 0→1 while a highlight eases in. The glow is drawn at this share of its alpha. */
+  focusMix?: number;
   /**
    * One alpha for the whole edge batch. A path sets 0.05 so the batch does not
    * decide, per edge, whether that edge is on the route.
@@ -380,16 +388,23 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
         const ia = indexOf.get(e.src);
         const ib = indexOf.get(e.dst);
         if (ia === undefined || ib === undefined) continue;
+        // Build.dc.html `gGlow`: a quadratic (bend 0.14, 0.08 on Map) in the edge
+        // type's colour. The core is 1.3px; the renderers lay a 5px wash under it.
+        const x0 = layout.x[ia];
+        const y0 = layout.y[ia];
+        const x1 = layout.x[ib];
+        const y1 = layout.y[ib];
+        const bend = layout.layout === "map" ? 0.08 : 0.14;
         glow.push({
-          kind: "line",
-          x0: layout.x[ia],
-          y0: layout.y[ia],
-          cx: 0,
-          cy: 0,
-          x1: layout.x[ib],
-          y1: layout.y[ib],
+          kind: "quad",
+          x0,
+          y0,
+          cx: (x0 + x1) / 2 - (y1 - y0) * bend,
+          cy: (y0 + y1) / 2 + (x1 - x0) * bend,
+          x1,
+          y1,
           color: EDGE_COLOR[e.type] ?? "#8b949e",
-          widthPx: 2.5,
+          widthPx: GLOW_CORE_PX,
           label: "",
         });
       }

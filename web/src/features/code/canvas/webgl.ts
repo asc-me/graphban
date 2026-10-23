@@ -12,11 +12,11 @@
  * set, or the zoom (past 8% of the bake) actually change. The bench's ±0.05
  * zoom step stays inside that window at both 1× and 2.6×.
  *
- * Z-order matches Canvas 2D: clouds, edges, markers, nodes, rings, glow.
+ * Z-order matches Canvas 2D: clouds, edges, glow, markers, nodes, rings.
  */
 
 import type { Renderer } from "./renderer";
-import type { DrawNode, DrawScene } from "./scene";
+import { GLOW_CORE_ALPHA, GLOW_WASH_ALPHA, GLOW_WASH_PX, type DrawNode, type DrawScene } from "./scene";
 import type { Stroke } from "./edges";
 import { quadPoint } from "./edges";
 import { presenceClouds, predictedStrokes, type Cloud } from "./clouds";
@@ -24,7 +24,8 @@ import { createCanvas2D } from "./canvas2d";
 
 const STROKE = [10 / 255, 12 / 255, 14 / 255] as const;
 const NODE_FLOATS = 9;
-export const LINE_FLOATS = 9;
+/** x0,y0,x1,y1, halfWidth, rgba, then the mitred offset at each end (n0, n1). */
+export const LINE_FLOATS = 13;
 /** Rebake when zoom drifts more than this fraction from the uploaded bake. */
 const ZOOM_SLACK = 0.08;
 
@@ -127,12 +128,11 @@ export function groupStrokes(strokes: Stroke[], zoom: number): StrokeRun[] {
  * `alpha` is the batch alpha (`scene.edgesAlpha`); it is not decided per edge.
  */
 export function bakeLines(strokes: Stroke[], zoom: number, alpha: number): Float32Array {
-  const k = Math.max(Math.abs(zoom), 0.05);
   let count = 0;
   for (const s of strokes) count += s.kind === "line" ? 1 : quadSteps(s, zoom);
   const out = new Float32Array(count * LINE_FLOATS);
   if (count === 0) return out;
-  const ext = 0.5 / k;
+  const k = Math.max(Math.abs(zoom), 0.05);
   const colors = new Map<string, [number, number, number]>();
   const colorOf = (c: string): [number, number, number] => {
     let parsed = colors.get(c);
@@ -143,36 +143,74 @@ export function bakeLines(strokes: Stroke[], zoom: number, alpha: number): Float
     return parsed;
   };
   let o = 0;
-  const write = (x0: number, y0: number, x1: number, y1: number, hw: number, rgb: [number, number, number]) => {
-    const len = Math.hypot(x1 - x0, y1 - y0) || 1;
-    const ux = (x1 - x0) / len;
-    const uy = (y1 - y0) / len;
-    out[o++] = x0 - ux * ext;
-    out[o++] = y0 - uy * ext;
-    out[o++] = x1 + ux * ext;
-    out[o++] = y1 + uy * ext;
+  const write = (
+    x0: number, y0: number, x1: number, y1: number, hw: number, rgb: [number, number, number],
+    n0x: number, n0y: number, n1x: number, n1y: number,
+  ) => {
+    out[o++] = x0;
+    out[o++] = y0;
+    out[o++] = x1;
+    out[o++] = y1;
     out[o++] = hw;
     out[o++] = rgb[0];
     out[o++] = rgb[1];
     out[o++] = rgb[2];
     out[o++] = alpha;
+    out[o++] = n0x;
+    out[o++] = n0y;
+    out[o++] = n1x;
+    out[o++] = n1y;
   };
+  const xs: number[] = [];
+  const ys: number[] = [];
   for (const stroke of strokes) {
     const rgb = colorOf(stroke.color);
     const hw = stroke.widthPx / k / 2;
     if (stroke.kind === "line") {
-      write(stroke.x0, stroke.y0, stroke.x1, stroke.y1, hw, rgb);
+      const [nx, ny] = unitNormal(stroke.x1 - stroke.x0, stroke.y1 - stroke.y0);
+      write(stroke.x0, stroke.y0, stroke.x1, stroke.y1, hw, rgb, nx, ny, nx, ny);
       continue;
     }
     const steps = quadSteps(stroke, zoom);
-    let prev = quadPoint(stroke, 0);
-    for (let i = 1; i <= steps; i++) {
+    xs.length = 0;
+    ys.length = 0;
+    for (let i = 0; i <= steps; i++) {
       const p = quadPoint(stroke, i / steps);
-      write(prev.x, prev.y, p.x, p.y, hw, rgb);
-      prev = p;
+      xs.push(p.x);
+      ys.push(p.y);
+    }
+    // One offset per point, shared by the two segments that meet there.
+    const mx: number[] = [];
+    const my: number[] = [];
+    for (let i = 0; i <= steps; i++) {
+      const [ax, ay] = i > 0 ? unitNormal(xs[i] - xs[i - 1], ys[i] - ys[i - 1]) : unitNormal(xs[1] - xs[0], ys[1] - ys[0]);
+      const [bx, by] = i < steps ? unitNormal(xs[i + 1] - xs[i], ys[i + 1] - ys[i]) : [ax, ay];
+      const [m, scale] = miter(ax, ay, bx, by);
+      mx.push(m[0] * scale);
+      my.push(m[1] * scale);
+    }
+    for (let i = 0; i < steps; i++) {
+      write(xs[i], ys[i], xs[i + 1], ys[i + 1], hw, rgb, mx[i], my[i], mx[i + 1], my[i + 1]);
     }
   }
   return out;
+}
+
+function unitNormal(dx: number, dy: number): [number, number] {
+  const len = Math.hypot(dx, dy);
+  return len < 1e-9 ? [0, 1] : [-dy / len, dx / len];
+}
+
+/** The joint's offset direction, and how far along it the stroke edge sits (capped for sharp turns). */
+function miter(ax: number, ay: number, bx: number, by: number): [[number, number], number] {
+  let mx = ax + bx;
+  let my = ay + by;
+  const len = Math.hypot(mx, my);
+  if (len < 1e-6) return [[ax, ay], 1];
+  mx /= len;
+  my /= len;
+  const cos = mx * ax + my * ay;
+  return [[mx, my], 1 / Math.max(cos, 0.5)];
 }
 
 /** Geometry identity. The camera is deliberately absent: a pan must not miss. */
@@ -303,16 +341,27 @@ layout(location = 1) in vec2 a_p0;
 layout(location = 2) in vec2 a_p1;
 layout(location = 3) in float a_hw;
 layout(location = 4) in vec4 a_color;
+layout(location = 5) in vec2 a_n0;
+layout(location = 6) in vec2 a_n1;
 uniform vec3 u_cam;
 uniform float u_dpr;
 uniform vec2 u_view;
 out vec4 v_color;
+out float v_across;
+out float v_hwpx;
 void main() {
   v_color = a_color;
-  vec2 dir = a_p1 - a_p0;
-  float len = length(dir);
-  vec2 n = len < 1e-5 ? vec2(0.0, 1.0) : vec2(-dir.y, dir.x) / len;
-  vec2 world = mix(a_p0, a_p1, a_corner.x) + n * (a_corner.y * a_hw);
+  // The quad grows one device pixel past the stroke so the fragment shader has
+  // room to feather it. A line under a pixel wide is drawn at one pixel and
+  // faded by its width instead, so hairlines do not shimmer as they thin.
+  float pxPerWorld = max(abs(u_cam.z) * u_dpr, 1e-6);
+  v_hwpx = a_hw * pxPerWorld;
+  float outer = max(v_hwpx, 0.5) + 1.0;
+  // Each end carries the mitred offset it shares with the next segment, so a
+  // curve's segments meet edge to edge instead of overlapping at the joints.
+  vec2 n = mix(a_n0, a_n1, a_corner.x);
+  vec2 world = mix(a_p0, a_p1, a_corner.x) + n * (a_corner.y * outer / pxPerWorld);
+  v_across = a_corner.y * outer;
   vec2 css = world * u_cam.z + u_cam.xy;
   vec2 px = css * u_dpr;
   vec2 bit = max(u_view * u_dpr, vec2(1.0));
@@ -322,8 +371,15 @@ void main() {
 const LINE_FS = `#version 300 es
 precision highp float;
 in vec4 v_color;
+in float v_across;
+in float v_hwpx;
 out vec4 o;
-void main() { o = vec4(v_color.rgb * v_color.a, v_color.a); }`;
+void main() {
+  float h = max(v_hwpx, 0.5);
+  float cov = clamp(h + 0.5 - abs(v_across), 0.0, 1.0) * min(1.0, v_hwpx * 2.0);
+  float a = v_color.a * cov;
+  o = vec4(v_color.rgb * a, a);
+}`;
 
 function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader | null {
   const shader = gl.createShader(type);
@@ -410,6 +466,8 @@ const LINE_ATTRS = [
   { index: 2, size: 2, offset: 8 },
   { index: 3, size: 1, offset: 16 },
   { index: 4, size: 4, offset: 20 },
+  { index: 5, size: 2, offset: 36 },
+  { index: 6, size: 2, offset: 44 },
 ] as const;
 
 function bindInstanceGeom(
@@ -788,6 +846,15 @@ export function createWebGL(
       const aa = 1 / Math.max(Math.abs(zoom) * scene.dpr, 0.001);
       paintLines(scene, scene.strokes, scene.edgesAlpha, "lines");
 
+      // Build.dc.html draws the focus glow after the edges and before the nodes, so a
+      // node covers the ends of its own glow instead of being crossed by it.
+      if (scene.glow.length) {
+        const fade = scene.focusMix ?? 1;
+        const wash: Stroke[] = scene.glow.map((g) => ({ ...g, widthPx: GLOW_WASH_PX }));
+        paintLines(scene, wash, GLOW_WASH_ALPHA * fade, "halo");
+        paintLines(scene, scene.glow, GLOW_CORE_ALPHA * fade, "glow");
+      }
+
       const dots = markersOf(scene.strokes, zoom);
       paintNodes(scene, dotSigOf(dots), "dots", () => {
         const data = new Float32Array(dots.length * NODE_FLOATS);
@@ -827,11 +894,6 @@ export function createWebGL(
         return data;
       });
 
-      if (scene.glow.length) {
-        const halo: Stroke[] = scene.glow.map((g) => ({ ...g, widthPx: g.widthPx + 16, color: "#c6f24e" }));
-        paintLines(scene, halo, 0.35, "halo");
-        paintLines(scene, scene.glow, 0.95, "glow");
-      }
     },
     destroy() {
       dead = true;

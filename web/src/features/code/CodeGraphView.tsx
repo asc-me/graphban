@@ -301,6 +301,8 @@ export function CodeGraphView() {
   const [captionSlot, setCaptionSlot] = React.useState<HTMLDivElement | null>(null);
   const [canvasK, setCanvasK] = React.useState(1);
   const onCanvasZoom = React.useCallback((k: number) => setCanvasK(k), []);
+  // The canvas drops its floor below 0.7 when a whole layout needs it; zoom-out follows.
+  const [canvasMinK, setCanvasMinK] = React.useState(CANVAS_MIN_K);
   // Trail breadcrumb: the last N nodes the user selected, most-recent last. Clicking one
   // re-selects it without losing the rest — a back button that does not erase history.
   const [trail, setTrail] = React.useState<string[]>([]);
@@ -981,6 +983,7 @@ export function CodeGraphView() {
               frameId={frameId}
               controlRef={canvasControlRef}
               onZoom={onCanvasZoom}
+              onZoomFloor={setCanvasMinK}
               holderOf={holderOf}
               pathPending={canvasPath.pending}
               pathArmed={canvasPath.picking}
@@ -1398,7 +1401,7 @@ export function CodeGraphView() {
                 onIsolate={() => setIsolate((v) => !v)}
                 canIsolate={!!shown || !!pairFocus}
                 zoom={canvasMode ? canvasK : view.viewport.k}
-                minZoom={canvasMode ? CANVAS_MIN_K : MIN_ZOOM}
+                minZoom={canvasMode ? canvasMinK : MIN_ZOOM}
                 maxZoom={canvasMode ? CANVAS_MAX_K : MAX_ZOOM}
                 onZoom={(factor) => {
                   if (canvasMode) canvasControlRef.current?.zoomBy(factor);

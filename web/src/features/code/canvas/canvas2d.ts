@@ -1,31 +1,38 @@
 /**
  * Canvas 2D renderer (PRD-52 D5). Fallback when WebGL2 is missing or lost.
  *
- * Fixed z-order: clouds, edges, nodes, rings. Labels and hull names stay in the DOM.
+ * Fixed z-order: clouds, edges, glow, nodes, rings. Labels and hull names stay in the DOM.
  */
 
 import type { Renderer } from "./renderer";
-import type { DrawScene } from "./scene";
+import { GLOW_CORE_ALPHA, GLOW_CORE_PX, GLOW_WASH_ALPHA, GLOW_WASH_PX, type DrawScene } from "./scene";
 import { drawClouds } from "./clouds";
 import { applyCamera, drawNodes, drawRings } from "./nodes";
 
 function drawGlow(ctx: CanvasRenderingContext2D, scene: DrawScene) {
   if (scene.glow.length === 0) return;
   const { camera } = scene;
+  const fade = scene.focusMix ?? 1;
+  const k = Math.max(camera.k, 0.05);
   applyCamera(ctx, scene);
-  ctx.shadowColor = "rgba(198,242,78,0.85)";
-  // shadowBlur is in bitmap pixels and ignores the current transform.
-  ctx.shadowBlur = 8 * scene.dpr;
-  ctx.globalAlpha = 0.95;
-  ctx.lineWidth = 2.5 / Math.max(camera.k, 0.05);
-  for (const stroke of scene.glow) {
-    ctx.beginPath();
-    ctx.strokeStyle = stroke.color;
-    ctx.moveTo(stroke.x0, stroke.y0);
-    ctx.lineTo(stroke.x1, stroke.y1);
-    ctx.stroke();
+  ctx.lineCap = "round";
+  // Build.dc.html: a 5px wash at 0.18 under a 1.3px core at 0.95, in the edge colour.
+  for (const [width, alpha] of [
+    [GLOW_WASH_PX, GLOW_WASH_ALPHA],
+    [GLOW_CORE_PX, GLOW_CORE_ALPHA],
+  ] as const) {
+    ctx.globalAlpha = alpha * fade;
+    ctx.lineWidth = width / k;
+    for (const stroke of scene.glow) {
+      ctx.beginPath();
+      ctx.strokeStyle = stroke.color;
+      ctx.moveTo(stroke.x0, stroke.y0);
+      if (stroke.kind === "quad") ctx.quadraticCurveTo(stroke.cx, stroke.cy, stroke.x1, stroke.y1);
+      else ctx.lineTo(stroke.x1, stroke.y1);
+      ctx.stroke();
+    }
   }
-  ctx.shadowBlur = 0;
+  ctx.lineCap = "butt";
   ctx.globalAlpha = 1;
 }
 
@@ -82,9 +89,10 @@ export function createCanvas2D(canvas: HTMLCanvasElement): Renderer | null {
       ctx.clearRect(0, 0, scene.width, scene.height);
       drawClouds(ctx, scene);
       drawEdges(ctx, scene);
+      // Under the nodes, as Build.dc.html orders gGlow before gNodes.
+      drawGlow(ctx, scene);
       drawNodes(ctx, scene);
       drawRings(ctx, scene);
-      drawGlow(ctx, scene);
     },
     destroy() {
       dead = true;
