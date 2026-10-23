@@ -106,16 +106,17 @@ export function ProjectHome() {
   const online = num(fleetOk, fleetQ.data?.online);
   const requests = num(dashOk, dash?.requests_total);
   const prds = num(dashOk, dash?.prd_count);
-  const mcp = num(dashOk, dash?.mcp_calls);
   const triageNew = num(countsOk, counts?.triage_new);
   const lessons = num(countsOk, counts?.lessons_published);
   const review = num(countsOk, counts?.review);
 
   // Page-wide empty only when every read answered and every one of them is zero.
   // A hole in that set is "not measured", which must not wear the empty project's clothes.
+  // mcp_calls stays out: the dashboard fills it from the deployment's total, so one
+  // call anywhere would hide an empty project. It is not a measurement of this one.
   const measured = [
     dashItems, countItems, dashInFlight, countInFlight,
-    blocked, shards, nodes, online, requests, prds, mcp, triageNew, lessons, review,
+    blocked, shards, nodes, online, requests, prds, triageNew, lessons, review,
   ];
   const fresh =
     measured.every((n) => n === 0);

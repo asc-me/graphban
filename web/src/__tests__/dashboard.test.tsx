@@ -237,11 +237,14 @@ describe("an empty project is not a measured one", () => {
   });
 
   /**
-   * Each clause in `nothingToSummarise` needs a case where THAT count alone is
-   * non-zero. A fixture that sets two counts at once (the previous "5 requests
-   * and 12 MCP calls") does not pin either clause: deleting
-   * `data.requests_total === 0` still passed because mcp_calls kept the project
+   * Each member of the empty-project check needs a case where THAT count alone is
+   * non-zero. A fixture that sets two counts at once does not pin either clause:
+   * deleting one comparison still passed because the other count kept the project
    * non-empty, so shards-only or PRDs-only read as an empty project.
+   *
+   * mcp_calls is not a member. The dashboard fills it from the deployment's total,
+   * and the project-home suite is what pins that a positive figure still leaves
+   * the page-wide empty state.
    */
   it.each([
     { field: "items_total" as const, value: 3 },
@@ -250,7 +253,6 @@ describe("an empty project is not a measured one", () => {
     { field: "requests_total" as const, value: 5 },
     { field: "shard_count" as const, value: 2 },
     { field: "prd_count" as const, value: 1 },
-    { field: "mcp_calls" as const, value: 12 },
   ])("still draws the tiles when only $field is non-zero", async ({ field, value }) => {
     const { api } = await import("@/lib/api");
     vi.mocked(api.dashboard).mockResolvedValue({
