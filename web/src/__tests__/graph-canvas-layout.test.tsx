@@ -1,8 +1,11 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { drawNodes } from "@/features/code/canvas/nodes";
+import type { DrawScene } from "@/features/code/canvas/scene";
 import { areaColor } from "@/lib/graph/areas";
+import { clustersLayout } from "@/lib/graph/bigLayout";
 import type { CodeEdge, CodeMap, CodeNode, FleetPresence, HeldArea } from "@/lib/types";
 
 /**
@@ -89,6 +92,14 @@ const PRESENCE: FleetPresence = {
   total: 1,
 };
 
+const hoverHit = vi.hoisted(() => ({ current: null as string | null }));
+const mapBox = vi.hoisted(() => ({ current: null as CodeMap | null }));
+
+vi.mock("@/lib/graph/bigLayout", async (orig) => ({
+  ...(await orig<typeof import("@/lib/graph/bigLayout")>()),
+  hitTest: () => hoverHit.current,
+}));
+
 vi.mock("@/features/ProjectContext", async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   useProjectCtx: () => ({ activeId: "prj_1", setActiveId: vi.fn() }),
@@ -96,12 +107,14 @@ vi.mock("@/features/ProjectContext", async (orig) => ({
 
 vi.mock("@/lib/queries", async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  useCodeMap: () => ({ data: MAP, isLoading: false }),
+  useCodeMap: () => ({ data: mapBox.current ?? MAP, isLoading: false }),
   useCodeAnalysis: () => ({ data: null, isLoading: false }),
   useFleetPresence: () => ({ data: PRESENCE, isLoading: false }),
 }));
 
 beforeEach(() => {
+  hoverHit.current = null;
+  mapBox.current = null;
   Element.prototype.scrollTo = Element.prototype.scrollTo ?? (() => {});
 });
 
@@ -116,11 +129,19 @@ const bottomBar = () => screen.getByTestId("graph-bottom-bar");
 /** The canvas is what the bottom bar is laid over — the region the design keeps for the graph. */
 const canvas = () => bottomBar().parentElement!;
 
-/** A node on the canvas. Keyed on the path, not the kind — the fixture has more than one. */
-function canvasNode(path: string) {
-  return screen.queryByRole("button", {
-    name: new RegExp(`\\b${path.replace(/\./g, "\\.")},`),
-  });
+/**
+ * Pick a node the way a user reaches one the canvas draws but the DOM does not: Find. The
+ * canvas has no per-node DOM to click; its keyboard listbox is covered in canvas-listbox.
+ */
+async function pick(user: ReturnType<typeof userEvent.setup>, path: string) {
+  const box = screen.getByRole("textbox", { name: "Find a node" });
+  await user.clear(box);
+  await user.type(box, path);
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Matching nodes" })).getByRole("option", {
+      name: new RegExp(`^${path.replace(/\./g, "\\.")}`),
+    }),
+  );
 }
 
 describe("find, as a canvas overlay", () => {
@@ -189,15 +210,24 @@ describe("the design's bottom row", () => {
     expect(bar.getByTestId("kind-legend-file").querySelector("polygon")).toBeNull();
   });
 
-  it("draws those shapes on the canvas, not only in the legend", async () => {
-    // THE criterion. A KindGlyph helper the canvas never calls is the GRPH-360 hole: the
-    // legend would explain diamonds while every node was still a circle. The symbol on the
-    // canvas must be a polygon; the file must not.
-    await mount();
+  it("draws those shapes on the canvas, not only in the legend", () => {
+    // THE criterion. A legend that explains diamonds while every node is still a circle is
+    // the GRPH-360 hole. The canvas node layer must trace a diamond for a symbol, and an arc
+    // with no corners for a file.
+    const calls: { fn: string }[] = [];
+    const ctx = new Proxy({} as CanvasRenderingContext2D, {
+      get: (_t, fn: string) => (fn === "canvas" ? { width: 900, height: 560 } : (..._a: unknown[]) => calls.push({ fn })),
+      set: () => true,
+    });
+    const node = (kind: string) => ({ id: kind, index: 0, x: 0, y: 0, r: 6, color: "#fff", kind, alpha: 1, square: false });
+    const scene = (kind: string) => ({ nodes: [node(kind)], camera: { x: 0, y: 0, k: 1 }, dpr: 1 }) as unknown as DrawScene;
 
-    expect(canvasNode("b.py")!.querySelector("polygon")).toBeTruthy();
-    expect(canvasNode("a.py")!.querySelector("polygon")).toBeNull();
-    expect(canvasNode("a.py")!.querySelector("circle")).toBeTruthy();
+    drawNodes(ctx, scene("symbol"));
+    expect(calls.filter((c) => c.fn === "lineTo")).toHaveLength(3);
+    calls.length = 0;
+    drawNodes(ctx, scene("file"));
+    expect(calls.some((c) => c.fn === "arc")).toBe(true);
+    expect(calls.some((c) => c.fn === "lineTo")).toBe(false);
   });
 
   it("leaves the five moved panels with no positioning of their own", () => {
@@ -227,7 +257,7 @@ describe("the design's 300px aside", () => {
   it("holds the selection inspector, so it stops covering the graph", async () => {
     const user = await mount();
 
-    await user.click(canvasNode("a.py")!);
+    await pick(user, "a.py");
 
     const path = screen.getByRole("button", { name: /Path from here/ });
     expect(aside()).toContainElement(path);
@@ -237,8 +267,8 @@ describe("the design's 300px aside", () => {
   it("holds the trail once there are two stops", async () => {
     const user = await mount();
 
-    await user.click(canvasNode("a.py")!);
-    await user.click(canvasNode("b.py")!);
+    await pick(user, "a.py");
+    await pick(user, "b.py");
 
     const clear = screen.getByRole("button", { name: "Clear trail" });
     expect(aside()).toContainElement(clear);
@@ -253,7 +283,7 @@ describe("the design's 300px aside", () => {
 
     expect(within(aside()).getByText("Explore")).toBeInTheDocument();
 
-    await user.click(canvasNode("a.py")!);
+    await pick(user, "a.py");
 
     expect(within(aside()).queryByText("Explore")).not.toBeInTheDocument();
     expect(within(aside()).getByRole("button", { name: /Path from here/ })).toBeInTheDocument();
@@ -270,7 +300,7 @@ describe("the design's 300px aside", () => {
     expect(within(aside()).getByText(/Ask me about the codebase/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Path from here/ })).not.toBeInTheDocument();
 
-    await user.click(canvasNode("a.py")!);
+    await pick(user, "a.py");
 
     expect(screen.getByRole("button", { name: "Inspect" })).toHaveAttribute(
       "aria-pressed",
@@ -283,33 +313,51 @@ describe("the design's 300px aside", () => {
     );
   });
 
-  it("names areas under find, and a chip is a way in", async () => {
+  it("names the canvas's areas under find, and a chip frames that area", async () => {
+    // The chips used the SVG-era grouping (one chip per module) while the hulls on the
+    // canvas, and the Explore list beside it, named the areas at scale. Two names for one
+    // region. Ten files under each of two prefixes is two areas at scale, named by the
+    // shallowest depth that splits them; the SVG grouping names the full parent directory,
+    // so the two partitions disagree on every name here.
+    const files = (dir: string) =>
+      Array.from({ length: 10 }, (_, i) => node(`${dir}/f${i}.py`));
+    mapBox.current = {
+      nodes: [...files("src/web/views"), ...files("src/lib/util")],
+      edges: [],
+      node_count: 20,
+      edge_count: 0,
+      outbound: [],
+    };
     const user = await mount();
 
-    const chip = within(canvas()).getByRole("button", { name: /^web$/ });
-    expect(chip).toBeInTheDocument();
-    expect(screen.getByTestId("place-header")).not.toContainElement(chip);
+    const chips = within(canvas()).getByRole("group", { name: "Areas" });
+    const web = within(chips).getByRole("button", { name: /^src\/web$/ });
+    expect(within(chips).getByRole("button", { name: /^src\/lib$/ })).toBeInTheDocument();
+    expect(within(chips).queryByRole("button", { name: /views/ })).not.toBeInTheDocument();
+    expect(screen.getByTestId("place-header")).not.toContainElement(web);
 
-    await user.click(chip);
-    expect(within(aside()).getByText("Module")).toBeInTheDocument();
-    expect(within(aside()).getAllByText("web").length).toBeGreaterThan(0);
+    await user.click(web);
+    expect(screen.getByTestId("code-graph-canvas")).toHaveAttribute("data-frame-area", "src/web");
+    expect(web).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("shows the hover card for a node that is not the selection", async () => {
-    const user = await mount();
-
-    await user.hover(canvasNode("far.py")!);
-    const tip = screen.getByRole("tooltip");
+  it("shows the hover card with the node's summary, as the design does", async () => {
+    // Build.dc.html's tip is two lines: the node, then what an agent said it is. The canvas
+    // tip carried the name only.
+    await mount();
+    hoverHit.current = "far.py";
+    const host = screen.getByTestId("code-graph-canvas");
+    act(() => {
+      host.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 300, clientY: 200 }));
+    });
+    const tip = screen.getByTestId("canvas-tip");
     expect(tip).toHaveTextContent("far.py");
     expect(tip).toHaveTextContent("the other side of the graph");
-
-    await user.click(canvasNode("far.py")!);
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
 
   it("names the area on the inspector, not only the kind", async () => {
     const user = await mount();
-    await user.click(canvasNode("a.py")!);
+    await pick(user, "a.py");
     expect(within(aside()).getByText("File")).toBeInTheDocument();
     expect(within(aside()).getByText("web")).toBeInTheDocument();
     expect(within(aside()).getByText("the left nav")).toBeInTheDocument();
@@ -317,32 +365,28 @@ describe("the design's 300px aside", () => {
 });
 
 describe("area as a visual channel", () => {
-  it("draws a dashed hull around each area", async () => {
+  const input = {
+    nodes: MAP.nodes.map((n) => ({ id: n.id, path: n.path, kind: n.kind })),
+    edges: MAP.edges,
+  };
+
+  it("draws a hull around each area", async () => {
     await mount();
-    expect(screen.getByTestId("area-hull-web")).toBeInTheDocument();
-    expect(screen.getByTestId("area-hull-lib")).toBeInTheDocument();
+    const { areas } = clustersLayout(input);
+    expect(areas.length).toBeGreaterThan(0);
+    for (const area of areas) expect(screen.getByTestId(`hull-${area.id}`)).toBeInTheDocument();
   });
 
-  it("fills a file with its area colour, not the kind colour", async () => {
-    // THE criterion. KindGlyph taking a colour is not enough — the canvas must pass the
-    // AREA colour. A helper the canvas still feeds kind-blue is the GRPH-360 hole.
-    // The fixture's `web` hashes off #7ca2ff (file kind); if it ever lands on that token
-    // this assertion is the thing to retune, not to delete.
+  it("fills a node with its area colour, not the kind colour", () => {
+    // THE criterion. Colour is area (PRD-52 D5); the key in the legend is kind.
+    const lay = clustersLayout(input);
+    for (let i = 0; i < lay.ids.length; i++) {
+      expect(lay.colors[i]).toBe(areaColor(lay.areaOf[i]));
+    }
+  });
+
+  it("keeps the legend grey: the key is kind, not area", async () => {
     await mount();
-    expect(areaColor("web")).not.toBe("#7ca2ff");
-    expect(areaColor("web")).not.toBe(areaColor("lib"));
-
-    const fileFill = canvasNode("a.py")!
-      .querySelector("circle:not([fill='transparent'])")
-      ?.getAttribute("fill");
-    const farFill = canvasNode("far.py")!
-      .querySelector("circle:not([fill='transparent'])")
-      ?.getAttribute("fill");
-    expect(fileFill).toBe(areaColor("web"));
-    expect(farFill).toBe(areaColor("lib"));
-    expect(canvasNode("web")!.querySelector(`circle[fill="${areaColor("web")}"]`)).toBeTruthy();
-
-    // Legend stays grey shapes — fill on the canvas is area, the key is kind.
     const legendFile = screen.getByTestId("kind-legend-file").querySelector("circle");
     expect(legendFile).toHaveAttribute("fill", "#9aa3ab");
   });

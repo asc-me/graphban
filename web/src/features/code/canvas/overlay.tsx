@@ -102,6 +102,8 @@ export interface CanvasPathApi {
   toggle: () => void;
   disarm: () => void;
   pick: (id: string) => void;
+  /** Alt-click (PRD-20 AC-19): trace from the selection to `id` without arming first. */
+  traceTo: (id: string) => void;
   /** One layer. The view clears the selection only when this returns `selection`. */
   escape: () => "pending" | "armed" | "selection";
   retry: () => void;
@@ -279,6 +281,11 @@ export function useCanvasPath(opts: {
     run(id, typesRef.current);
   };
 
+  const traceTo = (id: string) => {
+    if (!sourceRef.current || sourceRef.current === id) return;
+    run(id, typesRef.current);
+  };
+
   const escape = (): "pending" | "armed" | "selection" => {
     if (pendingRef.current) {
       seqRef.current += 1;
@@ -333,6 +340,7 @@ export function useCanvasPath(opts: {
     toggle,
     disarm,
     pick,
+    traceTo,
     escape,
     retry,
     tryAll,

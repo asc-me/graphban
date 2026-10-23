@@ -91,7 +91,7 @@ describe("the graph's accessible name", () => {
     // described" on a fully described graph — and the first assertion would still pass.
     const label = await announce(ALL_DESCRIBED);
 
-    expect(label).toContain("Code graph:");
+    expect(label).toContain("Code graph canvas:");
     expect(label).not.toContain("referenced but not yet described");
   });
 
@@ -101,7 +101,7 @@ describe("the graph's accessible name", () => {
     // each one renders, so a divergence has to survive being read aloud side by side.
     const label = await announce(WITH_UNDESCRIBED);
 
-    expect(label).toContain("Code graph: 3 nodes");
+    expect(label).toContain("Code graph canvas: 3 nodes");
     expect(screen.getByText(/3 nodes · 2 edges/)).toBeInTheDocument();
     expect(screen.getByText(/1 referenced but not yet described/)).toBeInTheDocument();
   });
