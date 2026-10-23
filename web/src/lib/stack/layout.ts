@@ -324,12 +324,21 @@ export function buildStackLayout(topo: StackTopology): StackLayout {
   // it, didn't write it), so it belongs in the ring-2 band, not inside the lime
   // code ring. The host frame will still wrap it (a host legitimately spans the
   // code/infra line); the ownership ring must not.
+  //
+  // Only a column the ring-1 frame actually spans needs that drop. A column wholly
+  // beside the frame starts at the top: when a project's own app is its own column and
+  // every Graphban box is ring 2, dropping them all below the app made a tall staircase
+  // with an empty quadrant beside it.
   const INFRA_GAP = 28;
+  const ring1Span = ring1BoxesNow.length ? pad(bbox(ring1BoxesNow), 40) : null;
+  const besideRing1 = (x: number, w: number) =>
+    !ring1Span || x >= ring1Span.x + ring1Span.w || x + w <= ring1Span.x;
   const r2CursorY: Record<string, number> = {};
   for (const n of innerNodes.filter((x) => x.ring === 2)) {
     const { x, w } = colGeom[n.host] ?? { x: PAD + 40, w: sizeOf(n).w };
     const s = sizeOf(n);
-    const start = r2CursorY[n.host] ?? Math.max(ring1Bottom + INFRA_GAP, colCursorY[n.host] ?? 0);
+    const floor = besideRing1(x, w) ? TOP + 20 : ring1Bottom + INFRA_GAP;
+    const start = r2CursorY[n.host] ?? Math.max(floor, colCursorY[n.host] ?? 0);
     boxes[n.id] = { x: x + (w - s.w) / 2, y: start, w: s.w, h: s.h };
     r2CursorY[n.host] = start + s.h + V_GAP;
   }

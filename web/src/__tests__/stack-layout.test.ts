@@ -362,3 +362,46 @@ describe("buildStackLayout — the project's own app", () => {
     expect(layout.hostFrames.find((h) => h.id === "project_app")?.label).toMatch(/its own app/);
   });
 });
+
+describe("buildStackLayout — infra beside the project's own app is not pushed below it", () => {
+  // Republiq on 2026.10.15: three own boxes in their column, every Graphban box ring 2.
+  // Dropping all ring-2 boxes below the ring-1 frame drew a tall staircase.
+  const republiq: StackTopology = {
+    ...topo,
+    hosts: [
+      { id: "project_app", label: "Republiq — its own app", nodes: ["app:backend", "app:frontend", "app:scraper"] },
+      ...topo.hosts,
+    ],
+    nodes: [
+      node({ id: "app:backend", ring: 1, host: "project_app", scope: "project" }),
+      node({ id: "app:frontend", ring: 1, host: "project_app", scope: "project" }),
+      node({ id: "app:scraper", ring: 1, host: "project_app", scope: "project" }),
+      ...topo.nodes.map((n) => ({ ...n, ring: n.ring === 1 ? 2 : n.ring })),
+    ],
+  };
+  const layout = buildStackLayout(republiq);
+  const ring1 = layout.rings.find((r) => r.ring === 1)!;
+  const top = layout.boxes["app:backend"].y;
+
+  it("starts each column beside the code ring at the same top as the code ring", () => {
+    expect(layout.boxes["cli"].y).toBe(top);
+    expect(layout.boxes["api"].y).toBe(top);
+  });
+
+  it("still keeps every infra box out of the code ring's frame", () => {
+    for (const n of republiq.nodes.filter((x) => x.ring === 2)) {
+      const b = layout.boxes[n.id];
+      const inside = b.x < ring1.x + ring1.w && ring1.x < b.x + b.w && b.y < ring1.y + ring1.h && ring1.y < b.y + b.h;
+      expect(inside, n.id).toBe(false);
+    }
+  });
+
+  it("is no taller than the tallest column needs", () => {
+    const bottom = Math.max(...Object.values(layout.boxes).map((b) => b.y + b.h));
+    const app = ["app:backend", "app:frontend", "app:scraper"].map((id) => layout.boxes[id]);
+    const appBottom = Math.max(...app.map((b) => b.y + b.h));
+    const compose = ["api", "web", "db"].map((id) => layout.boxes[id]);
+    const composeBottom = Math.max(...compose.map((b) => b.y + b.h));
+    expect(bottom).toBe(Math.max(appBottom, composeBottom));
+  });
+});
