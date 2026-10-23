@@ -1964,9 +1964,13 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
 
 
 def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, subj: str, *,
-             client: Graphban | None) -> None:
-    """One draft PR for one branch carrying at most one item, and the receipt on that item."""
-    title, body = propose_mod.describe(branch, items, subj)
+             client: Graphban | None, attest: bool = False) -> None:
+    """One draft PR for one branch carrying at most one item, and the receipt on that item.
+
+    `attest` writes `Attests: <item>` into the body. The per-item split asks for it; a
+    single-item branch does not, and its body stays the one it had.
+    """
+    title, body = propose_mod.describe(branch, items, subj, attest=attest)
     got = propose_mod.propose(repo, branch, base, title=title, body=body)
     wave.proposed[branch] = got
     if got.reason and not got.url:
@@ -2019,54 +2023,65 @@ def _publish_item_branch(wave: Wave, repo: Path, name: str, base: str) -> bool:
     return pushed.ok
 
 
+def _refuse_mixed(wave: Wave, branch: str, items: list[str], why: str, *,
+                  client: Graphban | None) -> None:
+    """The branch stays pushed and no PR is opened. The reason names the commit when
+    one commit is why (GRPH-1086)."""
+    reason = (f"carries {len(items)} items ({', '.join(items)}) and {why}; "
+              "one PR per item, so split it by hand")
+    wave.proposed[branch] = propose_mod.Proposed(branch=branch, skipped=True, reason=reason)
+    wave.unproposed[branch] = reason
+    wave.failures.append(f"{branch}: not proposed — {reason}")
+    _record_withheld(wave, client, items, branch, reason)
+
+
 def _propose_per_item(wave: Wave, repo: Path, branch: str, items: list[str], base: str, *,
                       client: Graphban | None) -> None:
-    """One branch and one PR per item, for a branch that carries several (GRPH-948).
+    """One branch and one PR per item, each cut from the base (GRPH-948, GRPH-1086).
 
-    A cluster claim is a scheduling unit, not a delivery unit. The reported child built four
-    items on one branch and the one PR it became — titled with three of them — was 19 files
-    and ~2,500 lines, merged before review, and needed four fix PRs.
+    A cluster claim is a scheduling unit, not a delivery unit. The reported child built
+    four items on one branch and the one PR it became carried all of them. Stacking the
+    PRs still left the later branch containing the earlier item's commits, so one merge
+    carried unreviewed work.
 
-    Each item's work ends at a commit on the branch (`split_by_item`); a branch is cut there
-    per item and the PRs are STACKED, each against the previous item's branch, so each diff is
-    that item's alone. A branch whose commits do not separate its items is not proposed at
-    all: a PR carrying two items is the defect, and the person splits it.
+    Each item's own commits are replayed onto the base and proposed against the base.
+    The body carries `Attests:` for that item alone. A commit that names no item, names
+    two, or will not apply without another item's commit refuses the whole branch:
+    opening the ones that did apply would merge part of a history that does not separate.
     """
     blocks, why = propose_mod.split_by_item(repo, branch, base, items)
     if why:
-        reason = (f"carries {len(items)} items ({', '.join(items)}) and {why}; "
-                  "one PR per item, so split it by hand")
-        wave.proposed[branch] = propose_mod.Proposed(branch=branch, skipped=True, reason=reason)
-        wave.unproposed[branch] = reason
-        wave.failures.append(f"{branch}: not proposed — {reason}")
+        _refuse_mixed(wave, branch, items, why, client=client)
         return
+    cut: list[tuple[str, str, str]] = []
+    for item, shas in blocks:
+        sha, err = propose_mod.replay_onto(repo, base, shas)
+        if err:
+            _refuse_mixed(wave, branch, items, err, client=client)
+            return
+        name = wt_mod.item_branch(branch, item)
+        if wt_mod.branch_exists(repo, name) and _branch_head(repo, name) != sha:
+            # Never moved: an existing branch at another commit is somebody's work.
+            _refuse_mixed(wave, branch, items, f"{name} exists at another commit", client=client)
+            return
+        cut.append((item, name, sha))
+    for item, name, sha in cut:
+        if wt_mod.branch_exists(repo, name):
+            continue
+        try:
+            wt_mod._git(repo, "branch", name, sha)
+        except wt_mod.GitError as exc:
+            wave.failures.append(f"{name}: could not be cut ({exc}); {item} not proposed")
+            return
     wave.proposed[branch] = propose_mod.Proposed(
         branch=branch, skipped=True,
-        reason=f"split into {len(blocks)} per-item branches, one PR each")
-    remote = wt_mod.remote_for(repo)
-    prev = base
-    for item, sha in blocks:
-        name = wt_mod.item_branch(branch, item)
-        if wt_mod.branch_exists(repo, name):
-            if _branch_head(repo, name) != sha:
-                # Never moved: an existing branch at another commit is somebody's work.
-                wave.failures.append(f"{name}: exists at another commit; {item} not proposed")
-                return
-        else:
-            try:
-                wt_mod._git(repo, "branch", name, sha)
-            except wt_mod.GitError as exc:
-                wave.failures.append(f"{name}: could not be cut ({exc}); {item} not proposed")
-                return
-        if not _publish_item_branch(wave, repo, name, prev):
-            wave.failures.append(f"{name}: not published, so {item} and every item stacked "
-                                 "on it were not proposed")
+        reason=f"split into {len(cut)} per-item branches, one PR each")
+    for item, name, _sha in cut:
+        if not _publish_item_branch(wave, repo, name, base):
+            wave.failures.append(f"{name}: not published, so {item} was not proposed")
             return
-        _open_pr(wave, repo, name, [item], prev, propose_mod.subject(repo, name, prev),
-                 client=client)
-        # `propose` passes the part after the remote to `gh --base`, so the next item's base
-        # is named as a remote-tracking ref, which the push has just written.
-        prev = f"{remote}/{name}"
+        _open_pr(wave, repo, name, [item], base, propose_mod.subject(repo, name, base),
+                 client=client, attest=True)
 
 
 def _note_salvage(wave: Wave, client: Graphban | None, repo: Path, branch: str,
