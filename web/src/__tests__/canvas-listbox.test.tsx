@@ -2,6 +2,7 @@ import { act, render, screen, within } from "@testing-library/react";
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { FOCUS_ZOOM, framePoint } from "@/features/code/canvas/camera";
 import type { ClusterLayout } from "@/lib/graph/bigLayout";
 import {
   announceNode,
@@ -77,10 +78,12 @@ function mount(opts: {
   onAbortPath?: () => void;
   onDisarmPath?: () => void;
   nodes?: { id: string; path: string; kind: string; name: string }[];
+  grid?: Record<string, number[]>;
 }) {
   const nodes = opts.nodes ?? fileNodes(opts.count ?? 3);
   const xs = opts.xs ?? nodes.map((_, i) => (i === 0 ? 0 : 80_000 * i));
   layoutBox.current = layoutFor(nodes.map((n) => n.id), xs);
+  if (opts.grid) layoutBox.current = { ...layoutBox.current, grid: opts.grid };
   render(
     <CodeGraphCanvas
       nodes={nodes}
@@ -267,6 +270,63 @@ describe("canvas listbox", () => {
     expect(screen.getByTestId("graph-live")).toHaveTextContent("p/n01.py");
     expect(host.dataset.follow).toBe("p/n01.py");
     expect(host.getAttribute("data-tween")).toBe("1");
+  });
+
+  it("frames a listbox follow of a pinned node at the pin, not the packed cell", () => {
+    vi.stubGlobal("matchMedia", (q: string) => ({
+      matches: q.includes("reduce"),
+      addEventListener() {},
+      removeEventListener() {},
+    }));
+    const packedX = 80_000;
+    const { host } = mount({
+      count: 2,
+      xs: [0, packedX],
+      // hitTest only walks the spatial grid. 80000 / GRID_CELL (10) is cell 8000.
+      grid: { "0,0": [0], "8000,0": [1] },
+    });
+    host.getBoundingClientRect = () =>
+      ({
+        x: 0,
+        y: 0,
+        left: 0,
+        top: 0,
+        right: 900,
+        bottom: 560,
+        width: 900,
+        height: 560,
+        toJSON() {
+          return {};
+        },
+      }) as DOMRect;
+
+    press("End");
+    const packed = framePoint(packedX, 0, FOCUS_ZOOM, 900, 560);
+    expect(Number(host.getAttribute("data-camera-x"))).toBeCloseTo(packed.x, 3);
+
+    const dragPx = 700;
+    const cx = 900 / 2;
+    const cy = 560 / 2;
+    act(() => {
+      for (const [type, x] of [
+        ["pointerdown", cx],
+        ["pointermove", cx + dragPx],
+        ["pointerup", cx + dragPx],
+      ] as const) {
+        host.dispatchEvent(
+          new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: cy, button: 0 }),
+        );
+      }
+    });
+    expect(screen.getByRole("button", { name: "Unpin all" })).toBeInTheDocument();
+
+    press("End");
+    const pinWorldX = (cx + dragPx - packed.x) / FOCUS_ZOOM;
+    const pinned = framePoint(pinWorldX, 0, FOCUS_ZOOM, 900, 560);
+    const cameraX = Number(host.getAttribute("data-camera-x"));
+    expect(cameraX).toBeCloseTo(pinned.x, 3);
+    expect(Math.abs(cameraX - packed.x)).toBeGreaterThan(100);
+    expect(host.dataset.follow).toBe("p/n01.py");
   });
 
   it("jumps the camera when reduced motion is on", () => {

@@ -11,8 +11,14 @@ import * as React from "react";
 
 import { zoomAbout } from "@/lib/graph/useGraphViewport";
 import { pathAlphaBuffer } from "@/lib/graph/pathHighlight";
-import { hitTest, type AreaLayoutKind, type ClusterLayout } from "@/lib/graph/bigLayout";
+import { applyPinOverrides, fitTargets, hitTest, type AreaLayoutKind, type ClusterLayout } from "@/lib/graph/bigLayout";
 import { useAreaLayout } from "@/lib/graph/useAreaLayout";
+import {
+  DRAG_PIN_PX,
+  pinsFor,
+  useCanvasPins,
+  type CanvasPinsApi,
+} from "@/lib/graph/useGraphPins";
 import { useCanvasListbox, type HolderReading } from "@/lib/graph/useGraphKeyboard";
 import { AreaMatrix, LayoutChips, type GraphLayoutId } from "./AreaMatrix";
 import type { CodePath } from "@/lib/types";
@@ -145,6 +151,7 @@ export function CodeGraphCanvas({
   pathState,
   onPathTarget,
   onPathEmpty,
+  canvasPins,
 }: {
   nodes: CanvasGraphNode[];
   edges: CanvasGraphEdge[];
@@ -191,6 +198,11 @@ export function CodeGraphCanvas({
   onPathTarget?: (id: string) => void;
   /** Empty canvas while armed or pending. Disarms; does not clear the selection. */
   onPathEmpty?: () => void;
+  /**
+   * Session pins. The view holds them so Matrix, which unmounts this surface,
+   * does not drop them. Omitted, the canvas keeps its own store.
+   */
+  canvasPins?: CanvasPinsApi;
 }) {
   const hostRef = React.useRef<HTMLDivElement | null>(null);
   const listboxRef = React.useRef<HTMLDivElement | null>(null);
@@ -211,10 +223,25 @@ export function CodeGraphCanvas({
   camRef.current = cam;
   const sizeRef = React.useRef(size);
   sizeRef.current = size;
-  const panRef = React.useRef<{ px: number; py: number; cx: number; cy: number } | null>(null);
   const fitted = React.useRef("");
   const [localLayout, setLocalLayout] = React.useState<GraphLayoutId>("clusters");
   const layoutMode: GraphLayoutId = onLayout ? (layoutProp ?? "clusters") : localLayout;
+  const ownedPins = useCanvasPins();
+  const pinsApi = canvasPins ?? ownedPins;
+  const readPinsRef = React.useRef(pinsApi.read);
+  readPinsRef.current = pinsApi.read;
+  const layoutModeRef = React.useRef(layoutMode);
+  layoutModeRef.current = layoutMode;
+  const [drag, setDrag] = React.useState<{ id: string; x: number; y: number } | null>(null);
+  const [toast, setToast] = React.useState<string | null>(null);
+  const gesture = React.useRef<{
+    nodeId: string | null;
+    px: number;
+    py: number;
+    cx: number;
+    cy: number;
+    dragging: boolean;
+  } | null>(null);
   const layoutKind: AreaLayoutKind = layoutMode === "matrix" ? "clusters" : layoutMode;
   const chooseLayout = React.useCallback(
     (id: GraphLayoutId) => {
@@ -250,9 +277,25 @@ export function CodeGraphCanvas({
   const layoutRef = React.useRef(layout);
   layoutRef.current = layout;
 
+  const frameToFit = React.useCallback(() => {
+    const lay = layoutRef.current;
+    const { w, h } = sizeRef.current;
+    if (!lay) return;
+    setTween(null);
+    setCam(
+      fitCamera(fitTargets(lay, pinsFor(readPinsRef.current(), layoutModeRef.current)), w, h),
+    );
+  }, []);
+
   React.useEffect(() => {
     onZoom?.(cam.k);
   }, [cam.k, onZoom]);
+
+  React.useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   React.useEffect(() => {
     if (!controlRef) return;
@@ -265,17 +308,13 @@ export function CodeGraphCanvas({
         );
       },
       fit() {
-        const lay = layoutRef.current;
-        const { w, h } = sizeRef.current;
-        if (!lay) return;
-        setTween(null);
-        setCam(fitCamera(lay.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r })), w, h));
+        frameToFit();
       },
     };
     return () => {
       controlRef.current = null;
     };
-  }, [controlRef]);
+  }, [controlRef, frameToFit]);
 
   React.useEffect(() => {
     const el = hostRef.current;
@@ -287,6 +326,20 @@ export function CodeGraphCanvas({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  // Before the fit and the node frame. A regroup drops pins into the ref
+  // synchronously, so both read the positions that are still pinned. The
+  // overlay from this render still has the pin, and neither effect runs
+  // again when that state lands.
+  React.useEffect(() => {
+    if (!layout) return;
+    const index = new Map(layout.ids.map((id, i) => [id, i]));
+    const cleared = pinsApi.reconcile((id) => {
+      const at = index.get(id);
+      return at === undefined ? undefined : layout.areaOf[at];
+    });
+    if (cleared > 0) setToast(`${cleared} pins cleared: areas regrouped`);
+  }, [layout, pinsApi.reconcile]);
 
   const sig = layout
     ? `${layout.layout ?? "clusters"}:${layout.nodeCount}:${layout.depth ?? "x"}:${layout.ids[0] ?? ""}`
@@ -310,7 +363,13 @@ export function CodeGraphCanvas({
     }
     fitted.current = sig;
     setTween(null);
-    setCam(fitCamera(layout.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r })), size.w, size.h));
+    setCam(
+      fitCamera(
+        fitTargets(layout, pinsFor(readPinsRef.current(), layoutModeRef.current)),
+        size.w,
+        size.h,
+      ),
+    );
     setCameraOwner("fit");
   }, [layout, sig, size.w, size.h, frameId, pairFocus, frameAreaId]);
 
@@ -345,10 +404,18 @@ export function CodeGraphCanvas({
     // A find or a hub pick frames one node at 7×. That loses to a pair and to
     // an area zoom: otherwise this effect runs again on every layout arrival
     // and the camera settles on the node instead of both hulls.
+    //
+    // Read the ref reconcile just wrote, not the overlay from this render.
+    // With Find still armed, framing that overlay tweens to the pin a regroup
+    // has already dropped, while the node draws back in its packed cell.
     if (pairFocus || frameAreaId || !frameId || !layout) return;
-    const i = layout.ids.indexOf(frameId);
+    const lay = applyPinOverrides(
+      layout,
+      pinsFor(readPinsRef.current(), layoutModeRef.current),
+    );
+    const i = lay.ids.indexOf(frameId);
     if (i < 0) return;
-    const to = framePoint(layout.x[i], layout.y[i], FOCUS_ZOOM, size.w, size.h);
+    const to = framePoint(lay.x[i], lay.y[i], FOCUS_ZOOM, size.w, size.h);
     const next = replaceTween(camRef.current, to, performance.now(), prefersReducedMotion());
     setCam(next.cam);
     setTween(next.tween);
@@ -394,8 +461,14 @@ export function CodeGraphCanvas({
 
   const followNode = React.useCallback((id: string) => {
     const host = hostRef.current;
-    const layoutNow = layoutRef.current;
-    if (!host || !layoutNow) return;
+    const packed = layoutRef.current;
+    if (!host || !packed) return;
+    // Arrow keys frame the pin. layoutRef is the packed cell the drag left;
+    // the overlay is what is drawn and what a click already hit-tests.
+    const layoutNow = applyPinOverrides(
+      packed,
+      pinsFor(readPinsRef.current(), layoutModeRef.current),
+    );
     const i = layoutNow.ids.indexOf(id);
     if (i < 0) return;
     const { w, h } = sizeRef.current;
@@ -473,14 +546,31 @@ export function CodeGraphCanvas({
       (layout ? reachOf(layout, focusId, layout.edges.filter((e) => types.has(e.type))) : null),
     [pairReach, layout, focusId, types],
   );
-  const drawnLayout = React.useMemo(() => {
-    if (!layout) return null;
-    if (!pairFocus) return layout;
-    const edges = layout.edges.filter(
+  const pinLayer = pinsFor(pinsApi.byLayout, layoutMode);
+  const overrides = React.useMemo(() => {
+    if (!drag) return pinLayer;
+    return {
+      ...pinLayer,
+      [drag.id]: { x: drag.x, y: drag.y, areaKey: pinLayer[drag.id]?.areaKey ?? "" },
+    };
+  }, [pinLayer, drag]);
+  const positioned = React.useMemo(
+    () => (layout ? applyPinOverrides(layout, overrides) : null),
+    [layout, overrides],
+  );
+  const drawn = React.useMemo(() => {
+    if (!positioned) return null;
+    if (!pairFocus) return positioned;
+    const edges = positioned.edges.filter(
       (e) => types.has(e.type) && e.srcArea === pairFocus.src && e.dstArea === pairFocus.dst,
     );
-    return { ...layout, edges };
-  }, [layout, pairFocus, types]);
+    return { ...positioned, edges };
+  }, [positioned, pairFocus, types]);
+  const pinIds = React.useMemo(() => {
+    const ids = new Set(Object.keys(pinLayer));
+    if (drag) ids.add(drag.id);
+    return ids;
+  }, [pinLayer, drag]);
   // The path buffer replaces the reach buffer. It is keyed on the path, not the
   // camera, so a pan does not write it again.
   const pathAlpha = React.useMemo(
@@ -493,8 +583,8 @@ export function CodeGraphCanvas({
     return writeAlpha(layout.ids.length, reach, isolate && !!reach);
   }, [layout, pathAlpha, reach, isolate]);
   const segments = React.useMemo(
-    () => (layout && pathState?.path ? pathSegments(pathState.path, layout.ids, layout.x, layout.y) : []),
-    [layout, pathState?.path],
+    () => (drawn && pathState?.path ? pathSegments(pathState.path, drawn.ids, drawn.x, drawn.y) : []),
+    [drawn, pathState?.path],
   );
   const tracing = !!(pathState?.picking || pathState?.pending);
   const isolateSet = React.useMemo(() => {
@@ -506,8 +596,8 @@ export function CodeGraphCanvas({
 
   const dpr = typeof window === "undefined" ? 1 : Math.min(2, window.devicePixelRatio || 1);
   const scene = React.useMemo(() => {
-    if (!drawnLayout || !alpha) return null;
-    return buildScene(drawnLayout, {
+    if (!drawn || !alpha) return null;
+    return buildScene(drawn, {
       camera: cam,
       width: size.w,
       height: size.h,
@@ -523,8 +613,9 @@ export function CodeGraphCanvas({
       hoverId: pathAlpha ? null : hover,
       edgesAlpha: pathAlpha ? NON_PATH_EDGE_ALPHA : undefined,
       tileId: hoverTile ?? selectedTile,
+      pinned: pinIds,
     });
-  }, [drawnLayout, alpha, pathAlpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover, hoverTile, selectedTile]);
+  }, [drawn, alpha, pathAlpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover, hoverTile, selectedTile, pinIds]);
 
   sceneRef.current = scene;
 
@@ -597,11 +688,6 @@ export function CodeGraphCanvas({
 
   const move = (clientX: number, clientY: number, sceneNow: DrawScene | null, layoutNow: ClusterLayout | null) => {
     const w = toWorld(clientX, clientY);
-    if (panRef.current) {
-      const from = panRef.current;
-      setCam((c) => ({ ...c, x: from.cx + (w.sx - from.px), y: from.cy + (w.sy - from.py) }));
-      return;
-    }
     if (!layoutNow || !sceneNow) {
       setHover(null);
       setTip(null);
@@ -628,24 +714,24 @@ export function CodeGraphCanvas({
   };
 
   const labels = React.useMemo(() => {
-    if (!layout || !scene) return [];
+    if (!drawn || !scene) return [];
     const focus = hover ?? selectedId;
-    const fi = focus ? layout.ids.indexOf(focus) : -1;
+    const fi = focus ? drawn.ids.indexOf(focus) : -1;
     const neighbors: string[] = [];
     if (focus) {
-      for (const e of layout.edges) {
+      for (const e of drawn.edges) {
         if (!types.has(e.type)) continue;
         if (e.src === focus) neighbors.push(e.dst);
         else if (e.dst === focus) neighbors.push(e.src);
       }
     }
-    const labelNodes: LabelNode[] = layout.ids.map((id, i) => {
+    const labelNodes: LabelNode[] = drawn.ids.map((id, i) => {
       const text = shortName(nameOf.get(id), id);
-      const sx = layout.x[i] * cam.k + cam.x;
-      const sy = layout.y[i] * cam.k + cam.y;
+      const sx = drawn.x[i] * cam.k + cam.x;
+      const sy = drawn.y[i] * cam.k + cam.y;
       return {
         id,
-        area: layout.areaOf[i],
+        area: drawn.areaOf[i],
         degree: degree.get(id) ?? 0,
         inView: scene.nodes.some((n) => n.id === id) || id === selectedId || id === hover,
         box: { x: sx + 8, y: sy - 8, w: Math.min(180, 8 + text.length * 7), h: 14 },
@@ -656,16 +742,16 @@ export function CodeGraphCanvas({
       selectedId,
       hoverId: hover,
       neighbors,
-      focusKind: fi >= 0 ? layout.kinds[fi] : "file",
+      focusKind: fi >= 0 ? drawn.kinds[fi] : "file",
       zoom: cam.k,
     });
-  }, [layout, scene, hover, selectedId, cam.k, cam.x, cam.y, degree, nameOf, types]);
+  }, [drawn, scene, hover, selectedId, cam.k, cam.x, cam.y, degree, nameOf, types]);
 
   const shown = nodes.length;
   const drawnEdges = edges.reduce((n, e) => n + (types.has(e.type) ? 1 : 0), 0);
   const edgeClause =
     drawnEdges === edges.length ? `${edges.length} edges` : `${drawnEdges} of ${edges.length} edges`;
-  const pairEdges = pairFocus && drawnLayout ? drawnLayout.edges.length : 0;
+  const pairEdges = pairFocus && drawn ? drawn.edges.length : 0;
 
   if (layoutMode === "matrix") {
     return (
@@ -693,6 +779,7 @@ export function CodeGraphCanvas({
       data-frame={cameraOwner}
       data-depth={layout?.depth ?? ""}
       data-camera-x={cam.x}
+      data-layout={layoutMode}
       data-tween={tween ? "1" : "0"}
       role="application"
       aria-label={
@@ -708,49 +795,85 @@ export function CodeGraphCanvas({
         if (target.closest("button")) return;
         listboxRef.current?.focus({ preventScroll: true });
         const w = toWorld(e.clientX, e.clientY);
-        panRef.current = { px: w.sx, py: w.sy, cx: cam.x, cy: cam.y };
+        // Tracing returns before a pin. A drag while armed or pending pans,
+        // even when it started on a node, and the release picks the target.
+        const hit = tracing ? null : nodeAtPointer(scene, drawn, w.x, w.y);
+        gesture.current = {
+          nodeId: hit,
+          px: w.sx,
+          py: w.sy,
+          cx: cam.x,
+          cy: cam.y,
+          dragging: false,
+        };
         setTween(null);
         e.currentTarget.setPointerCapture(e.pointerId);
       }}
-      onPointerMove={(e) => move(e.clientX, e.clientY, scene, layout)}
-      onPointerUp={(e) => {
-        const from = panRef.current;
-        panRef.current = null;
-        if (from) {
-          const w = toWorld(e.clientX, e.clientY);
-          const moved = Math.hypot(w.sx - from.px, w.sy - from.py);
-          if (moved < 4 && layout) {
-            const hit = nodeAtPointer(scene, layout, w.x, w.y);
-            // Armed and pending both take a target. An empty click disarms
-            // without clearing the selection the path starts from.
-            if (tracing) {
-              if (hit) onPathTarget?.(hit);
-              else onPathEmpty?.();
-              return;
-            }
-            if (hit) {
-              setSelectedTile(null);
-              onSelect(hit);
-            } else {
-              const tile = tileAt(layout, w.x, w.y);
-              setSelectedTile(tile);
-              onSelect(null);
-            }
+      onPointerMove={(e) => {
+        const g = gesture.current;
+        const w = toWorld(e.clientX, e.clientY);
+        if (g) {
+          const dist = Math.hypot(w.sx - g.px, w.sy - g.py);
+          if (g.nodeId && dist > DRAG_PIN_PX) {
+            g.dragging = true;
+            setDrag({ id: g.nodeId, x: w.x, y: w.y });
+            setHover(g.nodeId);
+            setTip(null);
+            return;
           }
+          // Empty canvas, an undrawn file, or a trace: pan. A press that
+          // landed on a node and has not crossed the threshold stays put.
+          if (!g.nodeId) {
+            setCam((c) => ({ ...c, x: g.cx + (w.sx - g.px), y: g.cy + (w.sy - g.py) }));
+          }
+          return;
+        }
+        move(e.clientX, e.clientY, scene, drawn);
+      }}
+      onPointerUp={(e) => {
+        const g = gesture.current;
+        gesture.current = null;
+        if (!g) return;
+        const w = toWorld(e.clientX, e.clientY);
+        if (g.dragging && g.nodeId) {
+          const lay = layoutRef.current;
+          if (lay) {
+            const i = lay.ids.indexOf(g.nodeId);
+            if (i >= 0) pinsApi.place(layoutModeRef.current, g.nodeId, w.x, w.y, lay.areaOf[i]);
+          }
+          setDrag(null);
+          return;
+        }
+        setDrag(null);
+        if (Math.hypot(w.sx - g.px, w.sy - g.py) >= DRAG_PIN_PX) return;
+        // Hit-test the overlay. The cached layout still has the node in its
+        // packed cell, so a click at the drop would miss it.
+        const hit = nodeAtPointer(scene, drawn, w.x, w.y);
+        if (tracing) {
+          if (hit) onPathTarget?.(hit);
+          else onPathEmpty?.();
+          return;
+        }
+        if (hit) {
+          setSelectedTile(null);
+          onSelect(hit);
+        } else {
+          const tile = tileAt(layout, w.x, w.y);
+          setSelectedTile(tile);
+          onSelect(null);
         }
       }}
       onDoubleClick={(e) => {
         if (tracing) return;
-        if (!layout) return;
+        if (!drawn) return;
         const w = toWorld(e.clientX, e.clientY);
-        const hit = nodeAtPointer(scene, layout, w.x, w.y);
+        const hit = nodeAtPointer(scene, drawn, w.x, w.y);
         if (!hit) {
-          setTween(null);
-          setCam(fitCamera(layout.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r })), size.w, size.h));
+          frameToFit();
           return;
         }
-        const i = layout.ids.indexOf(hit);
-        const to = framePoint(layout.x[i], layout.y[i], FOCUS_ZOOM, size.w, size.h);
+        const i = drawn.ids.indexOf(hit);
+        const to = framePoint(drawn.x[i], drawn.y[i], FOCUS_ZOOM, size.w, size.h);
         const next = replaceTween(camRef.current, to, performance.now(), prefersReducedMotion());
         setCam(next.cam);
         setTween(next.tween);
@@ -869,10 +992,10 @@ export function CodeGraphCanvas({
       {kind !== "none" && (
       <div className="pointer-events-none absolute inset-0">
         {labels.map((id) => {
-          const i = layout ? layout.ids.indexOf(id) : -1;
-          if (!layout || i < 0) return null;
-          const sx = layout.x[i] * cam.k + cam.x;
-          const sy = layout.y[i] * cam.k + cam.y;
+          const i = drawn ? drawn.ids.indexOf(id) : -1;
+          if (!drawn || i < 0) return null;
+          const sx = drawn.x[i] * cam.k + cam.x;
+          const sy = drawn.y[i] * cam.k + cam.y;
           return (
             <span
               key={id}
@@ -899,6 +1022,26 @@ export function CodeGraphCanvas({
       {kind !== "none" && tracing && <PathBanner pending={!!pathState?.pending} slow={!!pathState?.slow} />}
       <div className="absolute left-3 top-3 z-20 flex flex-col items-start gap-1.5">
         <LayoutChips layout={layoutKind} onLayout={chooseLayout} returnTo={returnTo} />
+        {pinsApi.total > 0 && (
+          <button
+            type="button"
+            data-testid="unpin-all"
+            onClick={pinsApi.clearAll}
+            title="Release every pinned node"
+            className="rounded-lg border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-muted"
+          >
+            Unpin all
+          </button>
+        )}
+        {toast && (
+          <p
+            data-testid="canvas-pin-toast"
+            role="status"
+            className="rounded bg-surface/80 px-2 py-1 text-[11.5px] text-fg"
+          >
+            {toast}
+          </p>
+        )}
         {scene && (
           <p data-testid="lod-caption" className="max-w-[440px] rounded bg-surface/80 px-2 py-1 text-[11.5px] text-muted">
             {scene.caption}

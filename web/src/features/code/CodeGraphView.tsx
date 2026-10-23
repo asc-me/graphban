@@ -40,7 +40,7 @@ import { NODE_TAB_INDEX, useGraphKeyboard } from "@/lib/graph/useGraphKeyboard";
 import { HubsPanel, type HubSort } from "./HubsPanel";
 import { PathTrace } from "./PathTrace";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
-import { useGraphPins } from "@/lib/graph/useGraphPins";
+import { useCanvasPins, useGraphPins } from "@/lib/graph/useGraphPins";
 import {
   LABEL_ZOOM,
   MAX_ZOOM,
@@ -407,6 +407,9 @@ export function CodeGraphView() {
 
   const view = useGraphViewport(W, H);
   const pinsApi = useGraphPins(view.toWorld);
+  // Held here, not in the canvas: Matrix unmounts the canvas, and a pin is
+  // session state keyed by layout. The SVG pins above are a different store.
+  const canvasPins = useCanvasPins();
   const kindOf = React.useMemo(() => {
     const m: Record<string, string> = {};
     for (const id of allIds) m[id] = nodeByPath[id]?.kind ?? "";
@@ -1049,6 +1052,7 @@ export function CodeGraphView() {
               }}
               onPathTarget={canvasPath.pick}
               onPathEmpty={canvasPath.disarm}
+              canvasPins={canvasPins}
             />
           ) : (
             <svg
