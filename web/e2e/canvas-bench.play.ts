@@ -104,10 +104,10 @@ test("webgl paints both fixtures inside the frame budget", async ({ page }) => {
 test("sparse pixel diff stays close between canvas 2d and webgl", async ({ page }) => {
   await page.goto("/");
   await page.waitForFunction(
-    () => typeof (window as unknown as { __pixelDiff?: () => { blockMae: number; centerN: number; centerHit: number; ink2d: number; inkGl: number } }).__pixelDiff === "function",
+    () => typeof (window as unknown as { __pixelDiff?: () => { blockMae: number; centerN: number; centerHit: number; ink2d: number; inkGl: number; cloudMae: number } }).__pixelDiff === "function",
   );
   const diff = await page.evaluate(() =>
-    (window as unknown as { __pixelDiff: () => { blockMae: number; centerN: number; centerHit: number; ink2d: number; inkGl: number; zoom: number } }).__pixelDiff(),
+    (window as unknown as { __pixelDiff: () => { blockMae: number; centerN: number; centerHit: number; ink2d: number; inkGl: number; zoom: number; cloudMae: number; cloudInk2d: number; cloudInkGl: number } }).__pixelDiff(),
   );
   expect(diff.centerN).toBeGreaterThan(20);
   expect(diff.centerHit / diff.centerN).toBeGreaterThanOrEqual(0.75);
@@ -117,8 +117,14 @@ test("sparse pixel diff stays close between canvas 2d and webgl", async ({ page 
   const ratio = diff.inkGl / diff.ink2d;
   expect(ratio).toBeGreaterThan(0.45);
   expect(ratio).toBeLessThan(2.2);
+  expect(diff.cloudMae).toBeLessThanOrEqual(28);
+  // A soft falloff crosses alpha>20 at different radii on the two rasters, so
+  // the ink ratio is not the agreement check. Ink only proves each backend
+  // painted the cloud; blockMae is what says the pictures match.
+  expect(diff.cloudInk2d).toBeGreaterThan(100);
+  expect(diff.cloudInkGl).toBeGreaterThan(100);
   test.info().annotations.push({
     type: "pixel",
-    description: `mae ${diff.blockMae.toFixed(2)} centres ${diff.centerHit}/${diff.centerN} ink ${diff.ink2d}/${diff.inkGl} zoom ${diff.zoom.toFixed(2)}`,
+    description: `mae ${diff.blockMae.toFixed(2)} centres ${diff.centerHit}/${diff.centerN} ink ${diff.ink2d}/${diff.inkGl} zoom ${diff.zoom.toFixed(2)} cloud mae ${diff.cloudMae.toFixed(2)} ink ${diff.cloudInk2d}/${diff.cloudInkGl}`,
   });
 });

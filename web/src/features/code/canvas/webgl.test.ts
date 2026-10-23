@@ -140,7 +140,12 @@ describe("context loss", () => {
   });
 });
 
-function fakeGL(dynamic: { n: number }): WebGL2RenderingContext {
+function fakeGL(
+  dynamic: { n: number },
+  draws?: { buf: object | null }[],
+): WebGL2RenderingContext {
+  let bound: object | null = null;
+  let vao: { instance?: object | null } | null = null;
   const gl = {
     VERTEX_SHADER: 0x8b31,
     FRAGMENT_SHADER: 0x8b30,
@@ -173,13 +178,21 @@ function fakeGL(dynamic: { n: number }): WebGL2RenderingContext {
     deleteBuffer() {},
     createVertexArray: () => ({}),
     deleteVertexArray() {},
-    bindBuffer() {},
-    bindVertexArray() {},
+    bindBuffer(_target: number, buf: object | null) {
+      bound = buf;
+    },
+    bindVertexArray(next: { instance?: object | null } | null) {
+      vao = next;
+    },
     bufferData(_target: number, _data: ArrayBufferView, usage: number) {
       if (usage === 0x88e8) dynamic.n += 1;
     },
     enableVertexAttribArray() {},
-    vertexAttribPointer() {},
+    vertexAttribPointer() {
+      // The attribute keeps the buffer that was bound when the pointer was set.
+      // A later bindBuffer does not retarget it, which is what a shared slot would hide.
+      if (vao) vao.instance = bound;
+    },
     vertexAttribDivisor() {},
     enable() {},
     disable() {},
@@ -191,7 +204,9 @@ function fakeGL(dynamic: { n: number }): WebGL2RenderingContext {
     viewport() {},
     clearColor() {},
     clear() {},
-    drawArraysInstanced() {},
+    drawArraysInstanced() {
+      draws?.push({ buf: vao?.instance ?? null });
+    },
     isContextLost: () => false,
   };
   return gl as unknown as WebGL2RenderingContext;
@@ -242,5 +257,40 @@ describe("pan upload", () => {
       strokes: [{ ...line, x0: 3 }],
     });
     expect(dynamic.n).toBeGreaterThan(afterAlpha);
+  });
+
+  it("uploads a presence cloud once and keeps that buffer across a pan", () => {
+    const dynamic = { n: 0 };
+    const draws: { buf: object | null }[] = [];
+    const gl = fakeGL(dynamic, draws);
+    HTMLCanvasElement.prototype.getContext = function (type: string) {
+      if (type === "webgl2") return gl;
+      return null;
+    } as typeof original;
+    const canvas = document.createElement("canvas");
+    const renderer = createWebGL(canvas);
+    const scene = drawn();
+    renderer!.draw(scene);
+    const bare = dynamic.n;
+    const cloud = {
+      x: 4,
+      y: 6,
+      r: 20,
+      color: "#c6f24e",
+      userId: "ada",
+      predicted: false,
+      alpha: 0.16,
+    };
+    renderer!.draw({ ...scene, clouds: [cloud] });
+    expect(dynamic.n).toBeGreaterThan(bare);
+    const uploaded = dynamic.n;
+    draws.length = 0;
+    renderer!.draw({ ...scene, clouds: [cloud], camera: { x: 9, y: -3, k: 1 } });
+    expect(dynamic.n).toBe(uploaded);
+    // First instanced draw is the cloud. The last is the node. A shared buffer
+    // would make a pan redraw the cloud as the node.
+    expect(draws.length).toBeGreaterThan(1);
+    expect(draws[0].buf).not.toBe(draws[draws.length - 1].buf);
+    expect(draws[0].buf).toBeTruthy();
   });
 });

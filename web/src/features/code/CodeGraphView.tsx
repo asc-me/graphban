@@ -1053,6 +1053,8 @@ export function CodeGraphView() {
               onPathTarget={canvasPath.pick}
               onPathEmpty={canvasPath.disarm}
               canvasPins={canvasPins}
+              presence={presence}
+              soloUser={soloUser}
             />
           ) : (
             <svg

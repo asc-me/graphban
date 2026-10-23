@@ -7,7 +7,10 @@
 
 import type { ClusterLayout, OrbitRing, RankedEdge, TileRect } from "@/lib/graph/bigLayout";
 import { ORBIT_BUNDLE_CAP, topBundles } from "@/lib/graph/bigLayout";
+import type { FleetPresence } from "@/lib/types";
+import { contentionOf, indexByNode } from "@/lib/graph/presence";
 import type { Cam } from "./camera";
+import { CONTENTION_COLOR, PULSE_MEAN, type Cloud } from "./clouds";
 import {
   EDGE_CAP,
   EDGE_COLOR,
@@ -78,6 +81,8 @@ export interface DrawRing {
   r: number;
   color: string;
   kind: "contention" | "pin" | "selection";
+  /** Omitted rings draw at 0.9. Contention uses the pulse, or the static mean. */
+  alpha?: number;
 }
 
 export interface DrawScene {
@@ -104,6 +109,13 @@ export interface DrawScene {
   edgesAlpha: number;
   /** Orbit ring labels. Empty for Clusters and Map. */
   orbitRings?: OrbitRing[];
+  /** Presence blobs, already resolved for this zoom and solo. Empty is "nobody held". */
+  clouds?: readonly Cloud[];
+  /**
+   * Contention rings stay at {@link PULSE_MEAN} instead of pulsing. Set under
+   * prefers-reduced-motion. Absent means the canvas may animate them.
+   */
+  staticPresence?: boolean;
 }
 
 export interface SceneOpts {
@@ -123,6 +135,12 @@ export interface SceneOpts {
   tileId?: string | null;
   /** Node ids that wear a pin ring at r+5. Positions come from the layout. */
   pinned?: ReadonlySet<string> | null;
+  /** Live reservations. Contention rings come from this; clouds are passed in. */
+  presence?: FleetPresence | null;
+  /** Clouds for this frame. The canvas computes them so both renderers share one list. */
+  clouds?: readonly Cloud[];
+  /** Hold the contention ring at the pulse mean. The canvas sets this from matchMedia. */
+  reducedMotion?: boolean;
 }
 
 export function worldInView(x: number, y: number, r: number, cam: Cam, w: number, h: number): boolean {
@@ -310,6 +328,29 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
   });
 
   const rings: DrawRing[] = [];
+  // Contention sits inside the pin (r+5) and the selection (r+7). Binary:
+  // two agents of one user are not an alarm. Reduced motion is a static ring
+  // at the pulse's mean opacity; otherwise the canvas pulses this alpha.
+  if (opts.presence) {
+    const held = indexByNode(opts.presence);
+    for (const [id, holders] of held) {
+      if (!contentionOf(holders).contended) continue;
+      const i = indexOf.get(id);
+      if (i === undefined || !allow(i)) continue;
+      const x = layout.x[i];
+      const y = layout.y[i];
+      const r = layout.r[i];
+      if (!worldInView(x, y, r + 3, camera, width, height)) continue;
+      rings.push({
+        x,
+        y,
+        r: r + 3,
+        color: CONTENTION_COLOR,
+        kind: "contention",
+        alpha: opts.reducedMotion ? PULSE_MEAN : 0.9,
+      });
+    }
+  }
   if (opts.pinned && opts.pinned.size > 0) {
     for (const id of opts.pinned) {
       const i = indexOf.get(id);
@@ -371,6 +412,8 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
     glow,
     edgesAlpha: opts.edgesAlpha ?? 0.85,
     orbitRings: layout.orbitRings ?? [],
+    clouds: opts.clouds ?? [],
+    staticPresence: !!opts.reducedMotion,
   };
 }
 

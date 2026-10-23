@@ -72,7 +72,7 @@ export function drawRings(ctx: CanvasRenderingContext2D, scene: DrawScene): void
       ctx.beginPath();
       ctx.arc(ring.x, ring.y, ring.r, 0, Math.PI * 2);
       ctx.strokeStyle = ring.color;
-      ctx.globalAlpha = 0.9;
+      ctx.globalAlpha = ring.alpha ?? 0.9;
       ctx.lineWidth = 1.5 / Math.max(scene.camera.k, 0.05);
       ctx.stroke();
     }
