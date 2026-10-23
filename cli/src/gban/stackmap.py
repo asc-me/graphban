@@ -42,7 +42,11 @@ _SKIP_DIRS = frozenset({
     ".next", "coverage", "vendor", ".gbfleet", ".hg", ".svn",
 })
 _MAX_BYTES = 1_000_000
-_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "host.docker.internal"})
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"})
+#: Where a local host lands when no table row or single infra node of its kind claims it.
+#: One node for "this machine", whatever spelling the URL used: `host.docker.internal` is
+#: Docker's name for the same host `localhost` names, not a service the app calls.
+LOCAL_NODE = "local"
 _SCHEME = {
     "postgres": "postgres",
     "postgresql": "postgres",
@@ -457,6 +461,17 @@ def match_image(ref: str, rows: list[dict]) -> dict | None:
     return None
 
 
+def match_domain(host: str, rows: list[dict]) -> dict | None:
+    """The row whose `domains` holds `host` or a parent of it (`api.stripe.com` → stripe)."""
+    host = host.lower().rstrip(".")
+    for row in rows:
+        for domain in row.get("domains") or []:
+            domain = str(domain).lower().strip(".")
+            if domain and (host == domain or host.endswith("." + domain)):
+                return row
+    return None
+
+
 def match_env(name: str, rows: list[dict]) -> dict | None:
     for row in rows:
         if name in [str(n) for n in (row.get("names") or [])]:
@@ -484,12 +499,40 @@ def _skipped(path: Path, repo: Path) -> bool:
     return any(part in _SKIP_DIRS or part.endswith(".egg-info") for part in parts)
 
 
+def _tracked(repo: Path) -> list[Path] | None:
+    """The files git tracks under `repo`, sorted, or None when git cannot say.
+
+    The record is stamped with HEAD, so it reads what HEAD's tree names. A walk of
+    the working directory also read ignored build output: six packed releases under
+    `dist-release/` each drew their `backend/` as a deployable of this repo.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "-z", "--cached"],
+            capture_output=True, timeout=60, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    names = sorted(n for n in proc.stdout.decode("utf-8", "replace").split("\0") if n)
+    return [repo / name for name in names]
+
+
 def _iter_files(repo: Path):
     """Files under `repo`, pruning dependency and VCS directories.
 
-    Each directory is sorted so two runs walk in the same order when the
-    filesystem does not.
+    Git's tracked files when it can list them (see `_tracked`), else a walk.
+    Both are sorted so two runs read in the same order when the filesystem does
+    not.
     """
+    tracked = _tracked(repo)
+    if tracked is not None:
+        for path in tracked:
+            if _skipped(path, repo) or path.is_symlink() or not path.is_file():
+                continue
+            yield path
+        return
     for dirpath, dirnames, filenames in os.walk(repo):
         dirnames[:] = sorted(
             name for name in dirnames
@@ -661,9 +704,6 @@ def literal_hosts(value: str) -> list[tuple[str, str]]:
     URL (`${VAR:-https://api.example.com}`) is scanned on its own. Userinfo,
     path and query are discarded here. The original string is not returned.
     """
-    if not value or "://" not in value and "://" not in value:
-        # Still scan defaults: the `://` may live only inside `${VAR:-...}`.
-        pass
     extras: list[str] = []
 
     def repl(match: re.Match[str]) -> str:
@@ -954,6 +994,10 @@ class _Builder:
             found = self.unique_kind(kind) if kind else None
             if found:
                 return found
+            return self.add_infra(LOCAL_NODE, "this machine", "local", prov, env)
+        row = match_domain(host, self.table["sdk"])
+        if row is not None:
+            return self.ensure_row_node(row, prov, env)
         if "." in host:
             return self.add_external(host, host, prov, env)
         return self.add_unresolved(host, prov)
@@ -1274,6 +1318,9 @@ def build_record(start: Path, *, project_id: str = "") -> tuple[dict, list[str]]
     timestamp and no env value.
     """
     repo = find_root(start)
+    # HEAD first: the files read are HEAD's tracked files, so a repo with no commit
+    # has nothing to map for a reason worth naming.
+    sha = _sha(repo)
     table = load_table(repo)
     builder = _Builder(repo, project_id.strip(), table)
     files = sorted(_iter_files(repo), key=lambda path: _rel(path, repo))
@@ -1291,7 +1338,7 @@ def build_record(start: Path, *, project_id: str = "") -> tuple[dict, list[str]]
             _walk_env_template(builder, path)
     if not (builder.components or builder.infra or builder.external or builder.unresolved):
         raise MapError("nothing to map: no compose service, Dockerfile or known dependency")
-    return builder.finish(_sha(repo)), builder.warnings
+    return builder.finish(sha), builder.warnings
 
 
 def canonical(record: dict) -> str:

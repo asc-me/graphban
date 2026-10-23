@@ -180,8 +180,10 @@ def test_the_fixture_record_names_services_hosts_and_no_secrets(tmp_path):
 
     labels = {node["label"] for node in record["unresolved"]}
     assert {"payments", "legacy", "worker"} <= labels
-    assert _node(record, "external", "api.stripe.com")["label"] == "api.stripe.com"
+    # The `stripe` package and STRIPE_API_URL's api.stripe.com are one service (GRPH-1102).
     assert _node(record, "external", "stripe")["label"] == "Stripe"
+    assert not [n for n in record["external"] if "stripe.com" in (n["id"] + n["label"])]
+    assert [n["id"] for n in record["external"] if n["label"] == "Stripe"] == ["stripe"]
     assert _node(record, "external", "aws")["provenance"]["file"] == "web/package.json"
 
     depends = _edge(record, "api", "db", "postgres")
@@ -198,9 +200,8 @@ def test_the_fixture_record_names_services_hosts_and_no_secrets(tmp_path):
     assert [node["id"] for node in record["infrastructure"] if node.get("kind") == "postgres"] == ["db"]
     assert _edge(record, "web", "db", "postgres")["provenance"]["file"] == "web/package.json"
     assert _edge(record, "web", "cache", "redis")["env"] == "REDIS_URL"
-    host_edge = _edge(record, "api", "api.stripe.com", "https")
-    assert host_edge["provenance"]["rule"] == "env.template"
-    assert host_edge["env"] == "STRIPE_API_URL"
+    # The env template's edge lands on the same node, so api has one https edge to Stripe.
+    assert len([e for e in record["edges"] if e["from"] == "api" and e["to"] == "stripe"]) == 1
 
     assert "://" not in text
     for secret in (
@@ -452,8 +453,14 @@ def test_this_repo_compose_maps_without_leaking_defaults():
     assert "://" not in text
     assert "https://api.openai.com" not in text
     assert "http://host.docker.internal" not in text
-    assert "api.openai.com" in text
-    assert "host.docker.internal" in text
+    # api.openai.com is the openai row's domain; host.docker.internal is this machine.
+    assert _node(record, "external", "openai")["label"] == "OpenAI"
+    assert not [n for n in record["external"] + record["unresolved"]
+                if n["id"] in {"api.openai.com", "host.docker.internal"}]
+    assert _node(record, "infrastructure", stackmap.LOCAL_NODE)["kind"] == "local"
+    assert _edge(record, "api", stackmap.LOCAL_NODE, "https")["env"] == "OLLAMA_BASE_URL"
+    # Only tracked files: ignored build output (dist-release/, …) never draws a deployable.
+    assert sorted(n["dir"] for n in record["components"]) == ["backend", "web"]
     for secret in (
         "dev-secret-change-me",
         "POSTGRES_PASSWORD",
@@ -464,3 +471,69 @@ def test_this_repo_compose_maps_without_leaking_defaults():
     ):
         assert secret not in text
     assert canonical(record) == canonical(stackmap.build_record(ROOT)[0])
+
+
+def _local_repo(tmp_path, env_example: str):
+    repo = tmp_path / "local"
+    repo.mkdir()
+    (repo / "compose.yml").write_text(
+        "services:\n  app:\n    build: ./app\n", encoding="utf-8")
+    (repo / "app").mkdir()
+    (repo / "app" / "requirements.txt").write_text("httpx==0.27\n", encoding="utf-8")
+    (repo / ".env.example").write_text(env_example, encoding="utf-8")
+    _commit(repo)
+    return repo
+
+
+def test_every_local_host_is_this_machine_not_a_service(tmp_path):
+    """GRPH-1102: host.docker.internal was external while localhost was unresolved."""
+    repo = _local_repo(tmp_path,
+        "OLLAMA_BASE_URL=http://host.docker.internal:11434\n"
+        "API_URL=http://localhost:8000\n"
+        "LOOP_URL=http://127.0.0.1:9000\n"
+        "BIND_URL=http://0.0.0.0:7000\n")
+    record, _ = stackmap.build_record(repo)
+    assert record["external"] == []
+    assert record["unresolved"] == []
+    assert [n["id"] for n in record["infrastructure"]] == [stackmap.LOCAL_NODE]
+    local = [e for e in record["edges"] if e["to"] == stackmap.LOCAL_NODE]
+    assert {e["from"] for e in local} == {"app"}
+
+
+def test_a_local_host_still_names_the_row_its_variable_belongs_to(tmp_path):
+    repo = _local_repo(tmp_path, "DATABASE_URL=postgres://localhost/app\n")
+    record, _ = stackmap.build_record(repo)
+    assert [(n["id"], n["kind"]) for n in record["infrastructure"]] == [("postgres", "postgres")]
+
+
+_DOMAIN_ROWS = [row for row in load_table(None)["sdk"] if row.get("domains")]
+
+
+@pytest.mark.parametrize("row", _DOMAIN_ROWS, ids=[r["id"] for r in _DOMAIN_ROWS])
+def test_every_domain_row_claims_its_hosts(row):
+    from gban.stackmap import match_domain
+    rows = load_table(None)["sdk"]
+    for domain in row["domains"]:
+        assert match_domain(f"api.{domain}", rows)["node"] == row["node"]
+        assert match_domain(domain, rows)["node"] == row["node"]
+    assert match_domain(f"not{row['domains'][0]}", rows) is None
+
+
+def test_every_external_sdk_row_declares_its_domains():
+    missing = [r["id"] for r in load_table(None)["sdk"]
+               if r.get("group") == "external" and not r.get("domains")]
+    assert missing == []
+
+
+def test_ignored_and_untracked_files_are_not_mapped(tmp_path):
+    repo = tmp_path / "tracked"
+    repo.mkdir()
+    (repo / ".gitignore").write_text("dist-release/\n", encoding="utf-8")
+    (repo / "app").mkdir()
+    (repo / "app" / "Dockerfile").write_text("FROM node:22\n", encoding="utf-8")
+    _commit(repo)
+    for stray in ("dist-release/pkg-1/backend", "scratch"):
+        (repo / stray).mkdir(parents=True)
+        (repo / stray / "Dockerfile").write_text("FROM python:3.12\n", encoding="utf-8")
+    record, _ = stackmap.build_record(repo)
+    assert [n["dir"] for n in record["components"]] == ["app"]
