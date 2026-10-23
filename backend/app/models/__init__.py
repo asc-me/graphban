@@ -1717,6 +1717,34 @@ class ScanFinding(Base):
     )
 
 
+class AppTopology(Base):
+    """One current app-topology record per project (GRPH-1098 / PRD-P55 §2).
+
+    The server never holds the repo, so a producer that does posts the map. One row
+    per project; a valid post replaces it. `previous_mapped_sha` is the sha the
+    replaced row was mapped at, kept for display — not a history of the map.
+    No row means unmapped, which is not "this app calls nothing".
+    """
+
+    __tablename__ = "app_topologies"
+
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    producer_id: Mapped[str] = mapped_column(String, default="")
+    producer_version: Mapped[str] = mapped_column(String, default="")
+    mapped_sha: Mapped[str] = mapped_column(String, default="")
+    mapped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # The replaced record's mapped sha. "" on the first post — there was no previous.
+    previous_mapped_sha: Mapped[str] = mapped_column(String, default="", server_default="")
+    # The posting credential. Distinct from producer_id, which the producer declares
+    # (gban's name and version). A caller-supplied producer is not who held the key.
+    posted_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    components: Mapped[list] = mapped_column(JSON, default=list)
+    infrastructure: Mapped[list] = mapped_column(JSON, default=list)
+    external_services: Mapped[list] = mapped_column(JSON, default=list)
+    unresolved: Mapped[list] = mapped_column(JSON, default=list)
+    edges: Mapped[list] = mapped_column(JSON, default=list)
+
+
 class Milestone(Base):
     __tablename__ = "milestones"
 

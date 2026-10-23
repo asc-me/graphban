@@ -9,11 +9,12 @@ the whole system.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import or_, select, text, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -232,6 +233,7 @@ _NOT_DEPLOYABLE_SEGMENTS = frozenset({
     "docs", "vendor", "dist", "build", ".github", ".cursor", ".vscode", ".claude",
 })
 HOST_PROJECT = "project_app"
+HOST_APP_INFRA = "app_infra"
 _MAX_OWN_DEPLOYABLES = 12
 
 
@@ -581,7 +583,12 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         project_name = (proj.name if proj else "") or project_id
     except Exception:  # noqa: BLE001
         project_name = project_id
-    own = own_deployables(db, project_id, owner)
+    # A posted record is the app. Code-map deployables are what we draw only before
+    # the first post (PRD-P55 §4); drawing both would show the app twice.
+    record, record_unreadable = _load_app_record(db, project_id)
+    own = [] if record is not None else own_deployables(db, project_id, owner)
+    if record is not None:
+        _fold_app_record(nodes, edges, record, project_name)
     for dep in own:
         d = dep["dir"]
         facts = [
@@ -609,7 +616,7 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
             ],
         })
 
-    if not own and not any(state == OWNED for state, _ in owner.values()):
+    if record is None and not own and not any(state == OWNED for state, _ in owner.values()):
         empties.append({
             "id": "own_code",
             "message": "this project's own deployables are not on this map — its code map "
@@ -826,11 +833,18 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         "PlatformConfigOut.effective_chat_provider (project-scoped)",
     ))
 
+    project_nodes = [n["id"] for n in nodes if n["host"] == HOST_PROJECT]
+    app_infra_nodes = [n["id"] for n in nodes if n["host"] == HOST_APP_INFRA]
+    app_source = "the app topology record" if record is not None else "the code map"
     host_groups = ([{
         "id": HOST_PROJECT,
-        "label": f"{project_name} — its own app (from the code map)",
-        "nodes": [n["id"] for n in nodes if n["host"] == HOST_PROJECT],
-    }] if own else []) + [
+        "label": f"{project_name} — its own app (from {app_source})",
+        "nodes": project_nodes,
+    }] if project_nodes else []) + ([{
+        "id": HOST_APP_INFRA,
+        "label": f"{project_name} — infrastructure the app runs on",
+        "nodes": app_infra_nodes,
+    }] if app_infra_nodes else []) + [
         {
             "id": HOST_COMPOSE,
             "label": "Compose / Railway stack",
@@ -873,4 +887,633 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
             "db_engine": db_meta.get("engine"),
             "mcp_tools": LIVE_TOOL_COUNT,
         },
+        # Always present. Omitting it when nothing was posted would read as "no services".
+        "mapping": _mapping_block(record, record_unreadable),
+        "app": None if record is None else _record_public(record),
     }
+
+
+# ── Posted app topology (GRPH-1098 / PRD-P55 §2) ─────────────────────────────
+#
+# The server never holds the repo. A producer that does posts one current record
+# per project. A refused post writes nothing, so a bad payload cannot blank the map.
+
+class TopologyRefused(Exception):
+    """The whole post was refused. `errors` is `{path, reason}`; nothing was written."""
+
+    def __init__(self, errors: list[dict[str, str]]):
+        self.errors = errors
+        super().__init__(f"{len(errors)} problem(s)")
+
+
+_NO_HEAD = frozenset({"", "unknown"})
+_SECRET_REASON = "env values are never stored, only variable names"
+_DANGLING = (
+    "references a node the post does not define; declare it as an unresolved node"
+)
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# URLs, credential assignments, and known token prefixes. Matched on every string
+# the post would store. A variable name (`DATABASE_URL`) has none of these.
+_SECRET_RE = re.compile(
+    r"://"
+    r"|(?<![A-Za-z0-9_])(?:password|secret|api_key|token)\s*=\s*\S"
+    r"|(?:^|[^A-Za-z0-9])(?:"
+    r"sk-[A-Za-z0-9]|sk_live_|sk_test_|ghp_[A-Za-z0-9]|github_pat_|"
+    r"xox[baprs]-|AKIA[A-Z0-9]"
+    r")",
+    re.IGNORECASE,
+)
+_TOP_KEYS = frozenset({
+    "project_id", "producer_id", "producer_version", "mapped_sha",
+    "components", "infrastructure", "external", "unresolved", "edges",
+})
+_NODE_KEYS = {
+    "components": frozenset({"id", "dir", "label", "provenance", "env"}),
+    "infrastructure": frozenset({"id", "label", "kind", "provenance", "env"}),
+    "external": frozenset({"id", "label", "provenance", "env"}),
+    "unresolved": frozenset({"id", "label", "provenance", "env"}),
+}
+_EDGE_KEYS = frozenset({"from", "to", "protocol", "label", "provenance", "env"})
+_PROV_KEYS = frozenset({"file", "rule", "line"})
+_FORBIDDEN_KEYS = frozenset({
+    "value", "env_value", "secret", "password", "token", "api_key", "credential",
+})
+_GROUPS = ("components", "infrastructure", "external", "unresolved")
+
+
+def project_head_sha() -> str | None:
+    """The revision scans compare against, or None when this process has none.
+
+    Same source as the Stack identity (`instance_update.running`). `unknown` is the
+    sentinel that source returns when nothing was baked in (GRPH-426). A map compared
+    to that sentinel would read as current. No head is `freshness_unknown`.
+    """
+    running = instance_update.running()
+    raw = (running.get("git_sha") or settings.resolved_git_sha or "").strip()
+    if raw in _NO_HEAD:
+        return None
+    return raw
+
+
+def _looks_like_secret(value: str) -> bool:
+    return bool(_SECRET_RE.search(value))
+
+
+def _norm_dir(raw: str) -> str:
+    d = raw.strip().replace("\\", "/")
+    while d.startswith("./"):
+        d = d[2:]
+    d = d.strip("/")
+    if d == ".":
+        return ""
+    return d
+
+
+def _load_app_record(db: Session, project_id: str):
+    """`(row, unreadable)`. A failed read is not "nobody posted"."""
+    from app.models import AppTopology
+
+    try:
+        return db.get(AppTopology, project_id), False
+    except Exception:  # noqa: BLE001 — a missing table or a broken row is absence of a read
+        logger.debug("app topology unreadable", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            logger.debug("rollback after unreadable app topology failed", exc_info=True)
+        return None, True
+
+
+def _iso(value: datetime | None) -> str | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
+def _mapping_block(record, unreadable: bool) -> dict[str, Any]:
+    """`mapped | stale | unmapped | freshness_unknown`.
+
+    No record is `unmapped` even when the head is known — that is "nobody posted",
+    and it is not "this app calls nothing". A record with no head is
+    `freshness_unknown`, never `mapped`: staleness is the sha, and a missing sha
+    is not a match. An unreadable record is the same state with empty fields, so
+    a failed read cannot pass for a project that was never mapped.
+    """
+    head = project_head_sha()
+    empty = {
+        "state": "freshness_unknown" if unreadable else "unmapped",
+        "mapped_sha": None,
+        "head_sha": head,
+        "previous_mapped_sha": None,
+        "producer_id": None,
+        "producer_version": None,
+        "mapped_at": None,
+        "posted_by": None,
+    }
+    if unreadable or record is None:
+        return empty
+    mapped = (record.mapped_sha or "").strip()
+    if head is None:
+        state = "freshness_unknown"
+    elif head != mapped:
+        state = "stale"
+    else:
+        state = "mapped"
+    return {
+        "state": state,
+        "mapped_sha": mapped or None,
+        "head_sha": head,
+        "previous_mapped_sha": record.previous_mapped_sha or "",
+        "producer_id": record.producer_id,
+        "producer_version": record.producer_version,
+        "mapped_at": _iso(record.mapped_at),
+        "posted_by": record.posted_by or "",
+    }
+
+
+def _record_public(record) -> dict[str, Any]:
+    """The stored post, in the shape the producer sent. `external` is the wire key."""
+    return {
+        "project_id": record.project_id,
+        "producer_id": record.producer_id,
+        "producer_version": record.producer_version,
+        "mapped_sha": record.mapped_sha,
+        "mapped_at": _iso(record.mapped_at),
+        "previous_mapped_sha": record.previous_mapped_sha or "",
+        "posted_by": record.posted_by or "",
+        "components": list(record.components or []),
+        "infrastructure": list(record.infrastructure or []),
+        "external": list(record.external_services or []),
+        "unresolved": list(record.unresolved or []),
+        "edges": list(record.edges or []),
+    }
+
+
+def _prov_dict(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = {
+        "file": str(raw.get("file") or ""),
+        "rule": str(raw.get("rule") or ""),
+    }
+    line = raw.get("line")
+    if isinstance(line, int) and not isinstance(line, bool) and line >= 1:
+        out["line"] = line
+    return out
+
+
+def _fold_app_record(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
+                     record, project_name: str) -> None:
+    """Draw the posted record in place of code-map deployables.
+
+    Graph ids are prefixed (`app:`, `infra:`, `ext:`, `unresolved:`) so a producer
+    id of `api` or `db` cannot collide with the instance boxes. Edges whose
+    endpoints are not in this record are dropped: a corrupt row must not draw a
+    dangling edge the post path would have refused.
+    """
+    produced: dict[str, str] = {}
+
+    def add(graph_id: str, label: str, title: str, kind: str, ring: int, host: str,
+            prov: dict[str, Any], extra: list[dict[str, str]]) -> None:
+        facts = [
+            _fact("file", prov.get("file"), "app topology record"),
+            _fact("rule", prov.get("rule"), "app topology record"),
+        ]
+        if prov.get("line"):
+            facts.append(_fact("line", prov["line"], "app topology record"))
+        facts.append(_fact("producer", record.producer_id, "app topology record"))
+        facts.append(_fact("producer_version", record.producer_version, "app topology record"))
+        facts.append(_fact("mapped_sha", record.mapped_sha, "app topology record"))
+        facts.extend(extra)
+        facts.append(_fact("liveness", "Graphban does not probe this app", "model"))
+        nodes.append({
+            "id": graph_id,
+            "label": label,
+            "title": title,
+            "kind": kind,
+            "ring": ring,
+            "scope": "project",
+            "host": host,
+            "liveness": LIVENESS_UNKNOWN,
+            "surfaces": [],
+            "extensions": [],
+            "facts": facts,
+            "provenance": prov,
+        })
+
+    for comp in record.components or []:
+        if not isinstance(comp, dict):
+            continue
+        directory = comp.get("dir") if isinstance(comp.get("dir"), str) else ""
+        directory = _norm_dir(directory) if directory else ""
+        gid = own_node_id(directory)
+        label = (comp.get("label") or "").strip() if isinstance(comp.get("label"), str) else ""
+        if not label:
+            label = directory.rsplit("/", 1)[-1] if directory else (project_name or "app")
+        title = f"{directory}/" if directory else f"{project_name or 'app'} (repo root)"
+        prov = _prov_dict(comp.get("provenance"))
+        extra = [_fact("dir", directory or ".", "app topology record")]
+        if isinstance(comp.get("env"), str) and comp["env"]:
+            extra.append(_fact("env", comp["env"], "app topology record"))
+        add(gid, label, title, "deployable", RING_CODE, HOST_PROJECT, prov, extra)
+        produced[str(comp.get("id") or directory or ".")] = gid
+
+    def plain(group: str, prefix: str, kind: str, ring: int, host: str) -> None:
+        for item in getattr(record, group) or []:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            pid = str(item["id"])
+            gid = f"{prefix}:{pid}"
+            label = item.get("label") if isinstance(item.get("label"), str) else ""
+            label = label.strip() or pid
+            prov = _prov_dict(item.get("provenance"))
+            extra: list[dict[str, str]] = []
+            if group == "infrastructure" and isinstance(item.get("kind"), str) and item["kind"]:
+                extra.append(_fact("kind", item["kind"], "app topology record"))
+            if isinstance(item.get("env"), str) and item["env"]:
+                extra.append(_fact("env", item["env"], "app topology record"))
+            add(gid, label, label, kind, ring, host, prov, extra)
+            produced[pid] = gid
+
+    plain("infrastructure", "infra", "infra", RING_INFRA, HOST_APP_INFRA)
+    plain("external_services", "ext", "external", RING_EXTERNAL, HOST_EXTERNAL)
+    plain("unresolved", "unresolved", "unresolved", RING_EXTERNAL, HOST_EXTERNAL)
+
+    for edge in record.edges or []:
+        if not isinstance(edge, dict):
+            continue
+        src = produced.get(str(edge.get("from") or ""))
+        dst = produced.get(str(edge.get("to") or ""))
+        if not src or not dst:
+            logger.debug("app topology edge dropped; endpoint not in the record")
+            continue
+        edges.append({
+            "from": src,
+            "to": dst,
+            "protocol": str(edge.get("protocol") or ""),
+            "label": str(edge.get("label") or ""),
+            "provenance": _prov_dict(edge.get("provenance")),
+        })
+
+
+def _err(errors: list[dict[str, str]], path: str, reason: str) -> None:
+    errors.append({"path": path, "reason": reason})
+
+
+def _req_str(body: dict, key: str, errors: list[dict[str, str]]) -> str | None:
+    if key not in body or body[key] is None:
+        _err(errors, key, "missing")
+        return None
+    if not isinstance(body[key], str):
+        _err(errors, key, "must be a string")
+        return None
+    value = body[key].strip()
+    if not value:
+        _err(errors, key, "missing")
+        return None
+    if _looks_like_secret(value):
+        _err(errors, key, _SECRET_REASON)
+    return value
+
+
+def _field_str(item: dict, key: str, prefix: str, errors: list[dict[str, str]],
+               *, allow_empty: bool = False) -> str | None:
+    path = f"{prefix}.{key}"
+    if key not in item or item[key] is None:
+        _err(errors, path, "missing")
+        return None
+    if not isinstance(item[key], str):
+        _err(errors, path, "must be a string")
+        return None
+    value = item[key] if allow_empty else item[key].strip()
+    if not allow_empty and not value.strip():
+        _err(errors, path, "missing")
+        return None
+    if _looks_like_secret(value):
+        _err(errors, path, _SECRET_REASON)
+    return value.strip() if not allow_empty else value
+
+
+def _provenance(item: dict, prefix: str, errors: list[dict[str, str]]) -> dict | None:
+    path = f"{prefix}.provenance"
+    if "provenance" not in item or item["provenance"] is None or item["provenance"] == {}:
+        _err(errors, path, "missing")
+        return None
+    prov = item["provenance"]
+    if not isinstance(prov, dict):
+        _err(errors, path, "must be an object")
+        return None
+    for key in prov:
+        if key in _FORBIDDEN_KEYS:
+            _err(errors, f"{path}.{key}", _SECRET_REASON)
+        elif key not in _PROV_KEYS:
+            _err(errors, f"{path}.{key}", "unknown field")
+    ok = True
+    file_ = prov.get("file")
+    rule = prov.get("rule")
+    if not isinstance(file_, str) or not file_.strip():
+        _err(errors, f"{path}.file", "missing")
+        ok = False
+    elif _looks_like_secret(file_):
+        _err(errors, f"{path}.file", _SECRET_REASON)
+        ok = False
+    if not isinstance(rule, str) or not rule.strip():
+        _err(errors, f"{path}.rule", "missing")
+        ok = False
+    elif _looks_like_secret(rule):
+        _err(errors, f"{path}.rule", _SECRET_REASON)
+        ok = False
+    line = None
+    if "line" in prov and prov["line"] is not None:
+        line_v = prov["line"]
+        if isinstance(line_v, bool) or not isinstance(line_v, int) or line_v < 1:
+            _err(errors, f"{path}.line", "must be a positive integer")
+            ok = False
+        else:
+            line = line_v
+    if not ok:
+        return None
+    out: dict[str, Any] = {"file": file_.strip(), "rule": rule.strip()}
+    if line is not None:
+        out["line"] = line
+    return out
+
+
+def _optional_env(item: dict, prefix: str, errors: list[dict[str, str]]) -> str:
+    if "env" not in item or item["env"] is None or item["env"] == "":
+        return ""
+    env = item["env"]
+    if not isinstance(env, str) or not _IDENT.fullmatch(env):
+        _err(errors, f"{prefix}.env", "must be a variable name")
+        return ""
+    if _looks_like_secret(env):
+        _err(errors, f"{prefix}.env", _SECRET_REASON)
+        return ""
+    return env
+
+
+def _check_keys(item: dict, allowed: frozenset, prefix: str, errors: list[dict[str, str]]) -> None:
+    for key in item:
+        if key in _FORBIDDEN_KEYS:
+            _err(errors, f"{prefix}.{key}", _SECRET_REASON)
+        elif key not in allowed:
+            _err(errors, f"{prefix}.{key}", "unknown field")
+
+
+def _validate_app_post(body: Any) -> tuple[list[dict[str, str]], dict | None]:
+    """Every problem, sorted by path. A non-empty error list means store nothing."""
+    errors: list[dict[str, str]] = []
+    if not isinstance(body, dict):
+        return [{"path": "", "reason": "must be an object"}], None
+
+    for key in body:
+        if key in _FORBIDDEN_KEYS:
+            _err(errors, key, _SECRET_REASON)
+        elif key not in _TOP_KEYS:
+            _err(errors, key, "unknown field")
+
+    producer_id = _req_str(body, "producer_id", errors)
+    producer_version = _req_str(body, "producer_version", errors)
+    mapped_sha = _req_str(body, "mapped_sha", errors)
+    if isinstance(body.get("mapped_sha"), str) and body["mapped_sha"].strip() == "unknown":
+        _err(errors, "mapped_sha", "unknown is not a commit")
+    if isinstance(body.get("project_id"), str) and _looks_like_secret(body["project_id"]):
+        _err(errors, "project_id", _SECRET_REASON)
+
+    groups: dict[str, list] = {g: [] for g in _GROUPS}
+    id_owner: dict[str, str] = {}
+    dir_owner: dict[str, str] = {}
+
+    for group in _GROUPS:
+        if group not in body:
+            continue
+        raw = body[group]
+        if not isinstance(raw, list):
+            _err(errors, group, "must be a list")
+            continue
+        allowed = _NODE_KEYS[group]
+        for i, item in enumerate(raw):
+            prefix = f"{group}[{i}]"
+            if not isinstance(item, dict):
+                _err(errors, prefix, "must be an object")
+                continue
+            _check_keys(item, allowed, prefix, errors)
+            prov = _provenance(item, prefix, errors)
+            env = _optional_env(item, prefix, errors)
+            label = ""
+            if "label" in item and item["label"] is not None:
+                if not isinstance(item["label"], str):
+                    _err(errors, f"{prefix}.label", "must be a string")
+                else:
+                    label = item["label"].strip()
+                    if _looks_like_secret(label):
+                        _err(errors, f"{prefix}.label", _SECRET_REASON)
+
+            directory: str | None = None
+            kind = ""
+            if group == "components":
+                if "dir" not in item or item["dir"] is None:
+                    _err(errors, f"{prefix}.dir", "missing")
+                elif not isinstance(item["dir"], str):
+                    _err(errors, f"{prefix}.dir", "must be a string")
+                else:
+                    if _looks_like_secret(item["dir"]):
+                        _err(errors, f"{prefix}.dir", _SECRET_REASON)
+                    directory = _norm_dir(item["dir"])
+                raw_id = item.get("id")
+                if "id" in item and raw_id is not None and not isinstance(raw_id, str):
+                    _err(errors, f"{prefix}.id", "must be a string")
+                    pid = None
+                elif isinstance(raw_id, str) and raw_id.strip():
+                    pid = raw_id.strip()
+                    if _looks_like_secret(pid):
+                        _err(errors, f"{prefix}.id", _SECRET_REASON)
+                elif directory is None:
+                    pid = None
+                else:
+                    pid = directory or "."
+            else:
+                pid = None
+                raw_id = item.get("id")
+                if "id" not in item or raw_id is None or (isinstance(raw_id, str) and not raw_id.strip()):
+                    _err(errors, f"{prefix}.id", "missing")
+                elif not isinstance(raw_id, str):
+                    _err(errors, f"{prefix}.id", "must be a string")
+                else:
+                    pid = raw_id.strip()
+                    if _looks_like_secret(pid):
+                        _err(errors, f"{prefix}.id", _SECRET_REASON)
+                if group == "infrastructure" and "kind" in item and item["kind"] is not None:
+                    if not isinstance(item["kind"], str) or not item["kind"].strip():
+                        _err(errors, f"{prefix}.kind", "must be a string")
+                    else:
+                        kind = item["kind"].strip()
+                        if _looks_like_secret(kind):
+                            _err(errors, f"{prefix}.kind", _SECRET_REASON)
+
+            if pid:
+                if pid in id_owner:
+                    _err(errors, f"{prefix}.id", f"duplicate of {id_owner[pid]}")
+                else:
+                    id_owner[pid] = f"{prefix}.id"
+            if group == "components" and directory is not None:
+                if directory in dir_owner:
+                    _err(errors, f"{prefix}.dir", f"duplicate of {dir_owner[directory]}")
+                else:
+                    dir_owner[directory] = f"{prefix}.dir"
+
+            # Registered for edge checks even when provenance failed, so a posted
+            # node is not also reported as a node the post does not define.
+            node_broken = any(e["path"] == prefix or e["path"].startswith(prefix + ".") for e in errors)
+            if pid and not node_broken and prov is not None and (group != "components" or directory is not None):
+                norm: dict[str, Any] = {
+                    "id": pid,
+                    "label": label,
+                    "provenance": prov,
+                }
+                if env:
+                    norm["env"] = env
+                if group == "components":
+                    norm["dir"] = directory
+                if group == "infrastructure" and kind:
+                    norm["kind"] = kind
+                groups[group].append(norm)
+
+    node_paths = tuple(f"{g}[" for g in _GROUPS) + _GROUPS
+    structural = any(e["path"] in _GROUPS or e["path"].startswith(node_paths) for e in errors)
+    if sum(len(v) for v in groups.values()) == 0 and not structural:
+        _err(errors, "nodes", "missing")
+
+    edges_norm: list[dict[str, Any]] = []
+    if "edges" in body:
+        raw_edges = body["edges"]
+        if not isinstance(raw_edges, list):
+            _err(errors, "edges", "must be a list")
+        else:
+            for i, item in enumerate(raw_edges):
+                prefix = f"edges[{i}]"
+                if not isinstance(item, dict):
+                    _err(errors, prefix, "must be an object")
+                    continue
+                _check_keys(item, _EDGE_KEYS, prefix, errors)
+                src = _field_str(item, "from", prefix, errors)
+                dst = _field_str(item, "to", prefix, errors)
+                protocol = _field_str(item, "protocol", prefix, errors)
+                if "label" not in item or item["label"] is None:
+                    _err(errors, f"{prefix}.label", "missing")
+                    label = None
+                elif not isinstance(item["label"], str):
+                    _err(errors, f"{prefix}.label", "must be a string")
+                    label = None
+                else:
+                    label = item["label"]
+                    if _looks_like_secret(label):
+                        _err(errors, f"{prefix}.label", _SECRET_REASON)
+                prov = _provenance(item, prefix, errors)
+                env = _optional_env(item, prefix, errors)
+                if src and src not in id_owner:
+                    _err(errors, f"{prefix}.from", _DANGLING)
+                if dst and dst not in id_owner:
+                    _err(errors, f"{prefix}.to", _DANGLING)
+                edge_broken = any(
+                    e["path"] == prefix or e["path"].startswith(prefix + ".") for e in errors
+                )
+                if not edge_broken and src and dst and protocol is not None and label is not None and prov:
+                    edge: dict[str, Any] = {
+                        "from": src,
+                        "to": dst,
+                        "protocol": protocol,
+                        "label": label.strip(),
+                        "provenance": prov,
+                    }
+                    if env:
+                        edge["env"] = env
+                    edges_norm.append(edge)
+
+    seen: set[tuple[str, str]] = set()
+    uniq: list[dict[str, str]] = []
+    for e in sorted(errors, key=lambda item: (item["path"], item["reason"])):
+        key = (e["path"], e["reason"])
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(e)
+    if uniq:
+        return uniq, None
+    return [], {
+        "producer_id": producer_id,
+        "producer_version": producer_version,
+        "mapped_sha": mapped_sha,
+        "components": groups["components"],
+        "infrastructure": groups["infrastructure"],
+        "external": groups["external"],
+        "unresolved": groups["unresolved"],
+        "edges": edges_norm,
+    }
+
+
+def replace_app_topology(db: Session, project_id: str, body: dict, *, posted_by: str) -> dict:
+    """Validate, then replace the one current record. Last valid post wins.
+
+    The check finishes before any write. A refusal leaves the previous row
+    untouched — the map never goes blank because a post was wrong.
+    """
+    errors, norm = _validate_app_post(body)
+    if errors or norm is None:
+        raise TopologyRefused(errors)
+
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models import AppTopology, Project
+
+    if db.get(Project, project_id) is None:
+        raise TopologyRefused([{"path": "project_id", "reason": "unknown project"}])
+
+    # One UPDATE. `previous_mapped_sha = mapped_sha` is the old sha, evaluated
+    # from the row being replaced, so two valid posts cannot blank it and the
+    # last committed post is the record. No SELECT ... FOR UPDATE: an untested
+    # lock is a round trip (test_lock_concurrency).
+    payload = {
+        "previous_mapped_sha": AppTopology.mapped_sha,
+        "producer_id": norm["producer_id"],
+        "producer_version": norm["producer_version"],
+        "mapped_sha": norm["mapped_sha"],
+        "mapped_at": datetime.now(timezone.utc),
+        "posted_by": posted_by or "",
+        "components": list(norm["components"]),
+        "infrastructure": list(norm["infrastructure"]),
+        "external_services": list(norm["external"]),
+        "unresolved": list(norm["unresolved"]),
+        "edges": list(norm["edges"]),
+    }
+    updated = db.execute(
+        update(AppTopology).where(AppTopology.project_id == project_id).values(**payload)
+    )
+    if not updated.rowcount:
+        db.add(AppTopology(
+            project_id=project_id,
+            previous_mapped_sha="",
+            producer_id=norm["producer_id"],
+            producer_version=norm["producer_version"],
+            mapped_sha=norm["mapped_sha"],
+            mapped_at=payload["mapped_at"],
+            posted_by=payload["posted_by"],
+            components=list(norm["components"]),
+            infrastructure=list(norm["infrastructure"]),
+            external_services=list(norm["external"]),
+            unresolved=list(norm["unresolved"]),
+            edges=list(norm["edges"]),
+        ))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        db.execute(
+            update(AppTopology).where(AppTopology.project_id == project_id).values(**payload)
+        )
+        db.commit()
+    row = db.get(AppTopology, project_id)
+    db.refresh(row)
+    return _record_public(row)
