@@ -12,7 +12,19 @@ import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { projectPath, tagFromPath } from "@/lib/routes";
 import { useFileFromStack, useStack, useStackHealth } from "@/lib/queries";
-import { buildStackLayout, OUTPOST_PREVIEW, type Box, type EdgeRoute } from "@/lib/stack/layout";
+import {
+  BUILT_WITH_GRAPHBAN,
+  buildStackLayout,
+  GRAPHBAN_KIND,
+  isAppNode,
+  OUTPOST_PREVIEW,
+  PLACEHOLDER_KIND,
+  prepareStackMap,
+  SERVICES_NOT_MAPPED,
+  type Box,
+  type EdgeRoute,
+  type StackLayoutOptions,
+} from "@/lib/stack/layout";
 import {
   LABEL_ZOOM,
   useGraphViewport,
@@ -28,6 +40,7 @@ import type {
   StackEdge,
   StackHealth,
   StackLiveness,
+  StackMapping,
   StackNode,
   StackTopology,
 } from "@/lib/types";
@@ -233,7 +246,15 @@ export function StackView() {
   const [reportOpen, setReportOpen] = React.useState(false);
   const healthQ = useStackHealth(activeId, overlayOn || reportOpen);
 
-  const data = q.data;
+  const raw = q.data;
+  // GRPH-1099: Graphban collapses to one box on a project that does not write it.
+  // Expanding reads the same payload; it never makes another call.
+  const [graphbanOpen, setGraphbanOpen] = React.useState(false);
+  const map = React.useMemo(
+    () => (raw ? prepareStackMap(raw, graphbanOpen) : null),
+    [raw, graphbanOpen],
+  );
+  const data = map?.topo;
   const health = healthQ.data ?? null;
   const healthById = React.useMemo(() => {
     const m: Record<string, StackComponentHealth> = {};
@@ -257,6 +278,17 @@ export function StackView() {
         purpose="Derived architecture of what runs, where, and what each piece depends on — deployables and externals, not modules."
         action={
           <div className="flex items-center gap-2 print:hidden">
+            {map?.collapsible && (
+              <button
+                type="button"
+                data-testid="stack-graphban-toggle"
+                aria-pressed={graphbanOpen}
+                onClick={() => setGraphbanOpen((v) => !v)}
+                className="inline-flex items-center gap-1.5 rounded-[8px] border border-control bg-transparent px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:border-control-hover"
+              >
+                {graphbanOpen ? "Collapse Graphban" : "Expand Graphban"}
+              </button>
+            )}
             <button
               type="button"
               data-testid="stack-report-toggle"
@@ -305,11 +337,11 @@ export function StackView() {
       />
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        {q.isError && !data ? (
+        {q.isError && !raw ? (
           <div className="p-5">
             <PlannerError message={FETCH_FAILED} onRetry={() => void q.refetch()} />
           </div>
-        ) : q.isLoading || !data ? (
+        ) : q.isLoading || !raw || !data || !map ? (
           <div className="p-5">
             <CardGridSkeleton />
           </div>
@@ -326,10 +358,13 @@ export function StackView() {
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
               <div className="flex-none px-5 pt-4 print:px-2">
                 <IdentityStrip data={data} />
+                <MappingBanner mapping={raw.mapping} />
                 <EmptiesBanner empties={data.empties} catalog={data.catalog} />
               </div>
               <StackCanvas
                 data={data}
+                layoutOptions={map.layoutOptions}
+                onToggleGraphban={map.collapsible ? () => setGraphbanOpen((v) => !v) : undefined}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
                 overlayOn={overlayOn}
@@ -340,6 +375,11 @@ export function StackView() {
               <Inspector
                 node={selected}
                 edges={data.edges}
+                mapping={raw.mapping}
+                nodes={raw.nodes}
+                onExpand={
+                  selected.kind === GRAPHBAN_KIND ? () => setGraphbanOpen(true) : undefined
+                }
                 onSelect={setSelectedId}
                 onClose={() => setSelectedId(null)}
                 overlayOn={overlayOn}
@@ -369,6 +409,71 @@ function IdentityStrip({ data }: { data: StackTopology }) {
       <span className="text-fg-2">
         project <span className="text-accent">{data.project_id}</span>
       </span>
+    </div>
+  );
+}
+
+const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 12) : "unknown");
+
+/**
+ * Freshness of the posted app map (GRPH-1099). Every state says something: no record
+ * names the command that makes one, stale names both shas, and an unknown head never
+ * reads as current. A missing block (older API) is the unmapped state, not silence.
+ */
+function MappingBanner({ mapping }: { mapping: StackMapping | undefined }) {
+  const state = mapping?.state ?? "unmapped";
+  const by =
+    mapping?.producer_id
+      ? ` · by ${mapping.producer_id}${mapping.producer_version ? ` ${mapping.producer_version}` : ""}`
+      : "";
+  let tone = "border-amber-500/40 bg-amber-500/10 text-amber-100";
+  let body: React.ReactNode;
+  if (state === "unmapped") {
+    body = (
+      <>
+        No app topology record yet. These are the deployables the code map shows; the
+        services they use are not mapped. Run <code className="font-mono">gban stack map</code>{" "}
+        to map them.
+      </>
+    );
+  } else if (state === "stale") {
+    body = (
+      <>
+        App map is stale: mapped at{" "}
+        <span className="font-mono" data-testid="stack-mapping-mapped">{short(mapping?.mapped_sha)}</span>,
+        head is{" "}
+        <span className="font-mono" data-testid="stack-mapping-head">{short(mapping?.head_sha)}</span>
+        {by}. Run <code className="font-mono">gban stack map</code> to refresh.
+      </>
+    );
+  } else if (state === "mapped") {
+    tone = "border-line bg-surface-2/60 text-muted";
+    body = (
+      <>
+        App map current at <span className="font-mono">{short(mapping?.mapped_sha)}</span>
+        {by}.
+      </>
+    );
+  } else {
+    // freshness_unknown, or anything new: never reads as current.
+    body = mapping?.mapped_sha ? (
+      <>
+        App map freshness unknown: mapped at{" "}
+        <span className="font-mono">{short(mapping.mapped_sha)}</span>, and this API reports
+        no head to compare it with{by}.
+      </>
+    ) : (
+      <>App map freshness unknown: the app topology record could not be read.</>
+    );
+  }
+  return (
+    <div
+      className={cn("mb-3 rounded-[10px] border px-3 py-2 text-small", tone)}
+      data-testid="stack-mapping"
+      data-state={state}
+      role="status"
+    >
+      {body}
     </div>
   );
 }
@@ -407,18 +512,25 @@ function EmptiesBanner({
 
 function StackCanvas({
   data,
+  layoutOptions,
+  onToggleGraphban,
   selectedId,
   onSelect,
   overlayOn,
   healthById,
 }: {
   data: StackTopology;
+  layoutOptions?: StackLayoutOptions;
+  onToggleGraphban?: () => void;
   selectedId: string | null;
   onSelect: (id: string) => void;
   overlayOn: boolean;
   healthById: Record<string, StackComponentHealth>;
 }) {
-  const layout = React.useMemo(() => buildStackLayout(data), [data]);
+  const layout = React.useMemo(
+    () => buildStackLayout(data, layoutOptions),
+    [data, layoutOptions],
+  );
   const { width: W, height: H } = layout;
   const view = useGraphViewport(W, H);
   const lod = view.viewport.k < LABEL_ZOOM;
@@ -568,6 +680,38 @@ function StackCanvas({
             );
           })}
 
+          {/* The expanded instance's "Built with Graphban" lane. Its label collapses it. */}
+          {layout.lane && (
+            <g data-testid="stack-graphban-lane">
+              <rect
+                x={layout.lane.x}
+                y={layout.lane.y}
+                width={layout.lane.w}
+                height={layout.lane.h}
+                rx={14}
+                fill="none"
+                stroke="currentColor"
+                className="text-violet-400/50"
+                strokeWidth={1.5}
+              />
+              <g
+                role="button"
+                className="cursor-pointer"
+                onClick={onToggleGraphban}
+                data-testid="stack-graphban-lane-collapse"
+              >
+                <text
+                  x={layout.lane.x + 12}
+                  y={layout.lane.y + layout.lane.h + 16}
+                  className="fill-violet-300 font-mono"
+                  style={{ fontSize: 10.5, letterSpacing: "0.06em" }}
+                >
+                  {layout.lane.label.toUpperCase()} · collapse
+                </text>
+              </g>
+            </g>
+          )}
+
           {/* Host groups. Clicking the host label highlights its nodes. */}
           {layout.hostFrames.map((h) => {
             const on = hostSel === h.id;
@@ -621,6 +765,13 @@ function StackCanvas({
           {data.nodes.map((n) => {
             const b = layout.boxes[n.id];
             if (!b) return null;
+            if (n.kind === PLACEHOLDER_KIND) {
+              return (
+                <foreignObject key={n.id} x={b.x} y={b.y} width={b.w} height={b.h}>
+                  <PlaceholderBox node={n} box={b} />
+                </foreignObject>
+              );
+            }
             const member = hostSel ? !!hostMembers[hostSel]?.has(n.id) : false;
             return (
               <foreignObject key={n.id} x={b.x} y={b.y} width={b.w} height={b.h}>
@@ -738,6 +889,8 @@ function NodeBox({
   const live = liveMeta(node.liveness);
   const roll = health?.rollup;
   const hStyle = roll ? rollupStyle(roll) : null;
+  const graphban = node.kind === GRAPHBAN_KIND;
+  const unresolved = node.kind === "unresolved";
   return (
     <button
       type="button"
@@ -746,11 +899,19 @@ function NodeBox({
       aria-pressed={selected}
       data-host-lit={hostLit ? "" : undefined}
       data-health={roll?.state}
+      data-kind={node.kind}
       style={{ width: box.w, height: box.h }}
       className={cn(
         "flex flex-col overflow-hidden rounded-[10px] border p-2.5 text-left transition-[opacity,border-color]",
         "bg-surface-2 hover:border-control-hover",
-        selected || hostLit ? "border-accent ring-1 ring-accent/40" : "border-control",
+        unresolved && "border-dashed",
+        selected || hostLit
+          ? "border-accent ring-1 ring-accent/40"
+          : unresolved
+            ? "border-amber-500/60"
+            : graphban
+              ? "border-violet-400/60"
+              : "border-control",
         dim && "opacity-40",
       )}
     >
@@ -758,7 +919,11 @@ function NodeBox({
         <div className="min-w-0">
           <div className="truncate font-mono text-[13px] font-semibold text-fg">{node.label}</div>
           <div className="truncate text-[10px] text-muted">
-            {RING_LABEL[node.ring] || node.kind}
+            {graphban
+              ? "the instance that builds this app"
+              : unresolved
+                ? `unresolved reference${node.provenance?.file ? ` · ${node.provenance.file}` : ""}`
+                : RING_LABEL[node.ring] || node.kind}
           </div>
         </div>
         <span
@@ -796,6 +961,24 @@ function NodeBox({
                   {s}
                 </span>
               ))}
+            </div>
+          )}
+
+          {graphban && node.members && (
+            <div className="mt-1.5 flex flex-wrap gap-1" data-testid="stack-graphban-members">
+              {node.members.slice(0, 8).map((m) => (
+                <span
+                  key={m}
+                  className="rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-muted"
+                >
+                  {m}
+                </span>
+              ))}
+              {node.members.length > 8 && (
+                <span className="font-mono text-[10px] text-muted-2">
+                  +{node.members.length - 8} more
+                </span>
+              )}
             </div>
           )}
 
@@ -850,6 +1033,23 @@ function NodeBox({
         </div>
       )}
     </button>
+  );
+}
+
+/** Ring 3 before any record: says the services are not mapped, never an empty frame. */
+function PlaceholderBox({ node, box }: { node: StackNode; box: Box }) {
+  return (
+    <div
+      data-testid={`stack-node-${node.id}`}
+      data-kind={node.kind}
+      style={{ width: box.w, height: box.h }}
+      className="flex flex-col justify-center rounded-[10px] border border-dashed border-line px-3 text-left"
+    >
+      <div className="font-mono text-[12px] text-muted">{SERVICES_NOT_MAPPED}</div>
+      <div className="mt-1 text-[10.5px] text-muted-2">
+        run <code className="font-mono">gban stack map</code> to draw them
+      </div>
+    </div>
   );
 }
 
@@ -982,6 +1182,9 @@ function CanvasLegend({
 function Inspector({
   node,
   edges,
+  mapping,
+  nodes,
+  onExpand,
   onSelect,
   onClose,
   overlayOn,
@@ -990,6 +1193,10 @@ function Inspector({
 }: {
   node: StackNode;
   edges: StackEdge[];
+  mapping?: StackMapping;
+  /** Every box in the payload, so the collapsed box can list its members' liveness. */
+  nodes?: StackNode[];
+  onExpand?: () => void;
   onSelect: (id: string) => void;
   onClose: () => void;
   overlayOn: boolean;
@@ -1028,6 +1235,42 @@ function Inspector({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        {node.kind === GRAPHBAN_KIND && (
+          <Section title={BUILT_WITH_GRAPHBAN}>
+            <p className="mb-2 text-[12px] leading-snug text-muted">
+              This project runs Graphban; it does not write it. The whole instance is one box.
+            </p>
+            {onExpand && (
+              <button
+                type="button"
+                onClick={onExpand}
+                data-testid="stack-graphban-expand"
+                className="mb-2 rounded-[8px] border border-control px-2.5 py-1 text-[12px] text-fg-2 hover:border-control-hover"
+              >
+                Expand in place
+              </button>
+            )}
+            <ul className="space-y-1">
+              {(nodes ?? [])
+                .filter((n) => node.members?.includes(n.id))
+                .map((n) => {
+                  const m = liveMeta(n.liveness);
+                  return (
+                    <li key={n.id} className="flex items-center gap-2 font-mono text-small text-fg-2">
+                      <span className={cn("h-1.5 w-1.5 rounded-full", m.dot)} />
+                      <span className="flex-1 truncate">{n.label}</span>
+                      <span className="text-muted-2">{m.label}</span>
+                    </li>
+                  );
+                })}
+            </ul>
+          </Section>
+        )}
+
+        {isAppNode(node) && node.provenance && (
+          <ProvenanceSection node={node} mapping={mapping} />
+        )}
+
         {node.extensions.length > 0 && (
           <Section title="Inside this box">
             {node.extensions.map((ext) => (
@@ -1124,6 +1367,46 @@ function Inspector({
         </Section>
       </div>
     </aside>
+  );
+}
+
+/**
+ * Where a posted-record box came from: the file (a link into the Code graph), the
+ * producer and version that read it, and the sha it was mapped at (GRPH-1099).
+ */
+function ProvenanceSection({ node, mapping }: { node: StackNode; mapping?: StackMapping }) {
+  const { pathname } = useLocation();
+  const tag = tagFromPath(pathname);
+  const prov = node.provenance ?? {};
+  const fact = (k: string) => node.facts.find((f) => f.key === k)?.value;
+  const producer = mapping?.producer_id ?? fact("producer");
+  const version = mapping?.producer_version ?? fact("producer_version");
+  const sha = mapping?.mapped_sha ?? fact("mapped_sha");
+  const sub = prov.file ? `code?sel=${encodeURIComponent(prov.file)}` : null;
+  const href = sub ? (tag ? projectPath(tag, sub) : `/${sub}`) : null;
+  return (
+    <Section title="Provenance">
+      <div className="space-y-1 text-[12px]" data-testid="stack-provenance">
+        {href ? (
+          <Link
+            to={href}
+            className="block truncate font-mono text-accent hover:underline"
+            data-testid="stack-provenance-file"
+          >
+            {prov.file}
+            {prov.line ? `:${prov.line}` : ""} ↗
+          </Link>
+        ) : (
+          <div className="font-mono text-muted">file unknown</div>
+        )}
+        {prov.rule && <div className="font-mono text-small text-muted">rule {prov.rule}</div>}
+        <div className="text-muted">
+          by <span className="font-mono text-fg-2">{producer || "unknown"}</span>
+          {version ? <span className="font-mono text-fg-2"> {version}</span> : null}
+          {" "}at <span className="font-mono text-fg-2">{sha ? sha.slice(0, 12) : "unknown"}</span>
+        </div>
+      </div>
+    </Section>
   );
 }
 

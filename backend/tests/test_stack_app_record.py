@@ -435,3 +435,14 @@ def test_migration_0140_upgrades_and_downgrades_cleanly():
     assert "app_topologies" not in inspect(engine).get_table_names()
     run(mod.upgrade)
     assert "app_topologies" in inspect(engine).get_table_names()
+
+
+def test_record_boxes_are_the_app_plane_even_on_the_external_host(client, auth, monkeypatch):
+    # GRPH-1099: `ext:stripe` shares the external host with Graphban's providers; the
+    # collapsed map must still keep it outside the "Built with Graphban" box.
+    _head(monkeypatch, SHA)
+    key = _key(client, auth)
+    assert _post(client, key, _body()).status_code == 200
+    planes = {n["id"]: n["plane"] for n in _get(client, auth)["nodes"]}
+    assert planes["app:backend"] == planes["infra:db"] == planes["ext:stripe"] == "app"
+    assert planes["api"] == planes["db"] == "graphban"

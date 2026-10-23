@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { buildStackLayout } from "@/lib/stack/layout";
+import {
+  BUILD_LANE,
+  buildStackLayout,
+  GRAPHBAN_BOX,
+  prepareStackMap,
+  SERVICES_NOT_MAPPED,
+  UNMAPPED_BOX,
+} from "@/lib/stack/layout";
 import type { StackNode, StackTopology } from "@/lib/types";
 
 /** Minimal node with the fields buildStackLayout reads. */
@@ -403,5 +410,164 @@ describe("buildStackLayout — infra beside the project's own app is not pushed 
     const compose = ["api", "web", "db"].map((id) => layout.boxes[id]);
     const composeBottom = Math.max(...compose.map((b) => b.y + b.h));
     expect(bottom).toBe(Math.max(appBottom, composeBottom));
+  });
+});
+
+
+// ── GRPH-1099 / PRD-P55 §4: app-first map, collapsed Graphban ──────────────────
+
+/** A Republiq-shaped project: a posted record, Graphban run but not written. */
+function republiqRecord(): StackTopology {
+  const app = (p: Partial<StackNode> & Pick<StackNode, "id" | "ring" | "host">) =>
+    node({ scope: "project", plane: "app", ...p });
+  return {
+    ...topo,
+    project_id: "republiq",
+    graphban_source: "not_owned",
+    hosts: [
+      { id: "project_app", label: "republiq — its own app", nodes: ["app:backend", "app:frontend"] },
+      { id: "app_infra", label: "republiq — infrastructure", nodes: ["infra:redis", "infra:pg"] },
+      { id: "compose", label: "Compose / Railway stack", nodes: ["web", "api", "db"] },
+      { id: "user_machines", label: "User machines", nodes: ["cli"] },
+      { id: "external", label: "External services", nodes: ["ext:stripe", "unresolved:FOO_URL", "openai"] },
+    ],
+    nodes: [
+      app({ id: "app:frontend", ring: 1, host: "project_app" }),
+      app({ id: "app:backend", ring: 1, host: "project_app", provenance: { file: "backend/Dockerfile", rule: "dockerfile" } }),
+      app({ id: "infra:redis", ring: 2, host: "app_infra", kind: "infra" }),
+      app({ id: "infra:pg", ring: 2, host: "app_infra", kind: "infra" }),
+      app({ id: "ext:stripe", ring: 3, host: "external", kind: "external" }),
+      app({ id: "unresolved:FOO_URL", ring: 3, host: "external", kind: "unresolved" }),
+      ...topo.nodes.map((n) => ({ ...n, plane: "graphban", ring: n.ring === 1 ? 2 : n.ring })),
+      node({ id: "openai", ring: 3, host: "external", kind: "external", plane: "graphban" }),
+    ],
+    edges: [
+      { from: "app:frontend", to: "app:backend", protocol: "HTTP", label: "HTTP" },
+      { from: "app:backend", to: "infra:pg", protocol: "psycopg", label: "SQL" },
+      { from: "app:backend", to: "infra:redis", protocol: "redis", label: "cache" },
+      { from: "app:backend", to: "ext:stripe", protocol: "HTTPS", label: "charges" },
+      { from: "web", to: "api", protocol: "HTTP", label: "HTTP" },
+      { from: "api", to: "openai", protocol: "HTTPS", label: "chat" },
+    ],
+    mapping: {
+      state: "mapped", mapped_sha: "a".repeat(40), head_sha: "a".repeat(40),
+      previous_mapped_sha: "", producer_id: "gban", producer_version: "0.4.0",
+      mapped_at: null, posted_by: "key:x",
+    },
+  };
+}
+
+describe("prepareStackMap — a project that runs Graphban but does not write it", () => {
+  const view = prepareStackMap(republiqRecord());
+  const ids = view.topo.nodes.map((n) => n.id);
+  const layout = buildStackLayout(view.topo, view.layoutOptions);
+
+  it("collapses the whole instance into one box, providers included", () => {
+    expect(view.collapsible).toBe(true);
+    expect(view.collapsed).toBe(true);
+    expect(ids).toContain(GRAPHBAN_BOX);
+    for (const gid of ["api", "web", "db", "cli", "openai"]) expect(ids).not.toContain(gid);
+    const box = view.topo.nodes.find((n) => n.id === GRAPHBAN_BOX)!;
+    expect(box.members).toEqual(expect.arrayContaining(["api", "web", "db", "cli", "openai"]));
+    // No edge survives with a hidden end.
+    for (const e of view.topo.edges) {
+      expect(ids, `${e.from}->${e.to}`).toContain(e.from);
+      expect(ids, `${e.from}->${e.to}`).toContain(e.to);
+    }
+  });
+
+  it("draws a builds edge to every ring-1 deployable and to nothing else", () => {
+    const builds = view.topo.edges.filter((e) => e.protocol === "builds");
+    expect(builds.every((e) => e.from === GRAPHBAN_BOX)).toBe(true);
+    expect(builds.map((e) => e.to).sort()).toEqual(["app:backend", "app:frontend"]);
+  });
+
+  it("puts the collapsed box in a build lane at the left edge, the app beside it", () => {
+    const box = layout.boxes[GRAPHBAN_BOX];
+    const others = Object.entries(layout.boxes).filter(([id]) => id !== GRAPHBAN_BOX);
+    for (const [id, b] of others) expect(b.x, id).toBeGreaterThan(box.x + box.w);
+    expect(layout.hostFrames[0].id).toBe(BUILD_LANE);
+    // Collapsed, the box names itself; the lane frame (and its collapse control) is
+    // only for the expanded instance.
+    expect(layout.lane).toBeNull();
+    // The app's externals take the right-hand column; infra sits between.
+    expect(layout.boxes["ext:stripe"].x).toBeGreaterThan(layout.boxes["infra:pg"].x);
+    expect(layout.boxes["infra:pg"].x).toBeGreaterThan(layout.boxes["app:backend"].x);
+  });
+
+  it("sits infra beside the deployable that uses it, not above it", () => {
+    const backend = layout.boxes["app:backend"];
+    expect(layout.boxes["infra:pg"].y).toBeGreaterThanOrEqual(backend.y);
+    expect(layout.boxes["infra:redis"].y).toBeGreaterThanOrEqual(backend.y);
+  });
+
+  it("keeps unresolved references as their own box in ring 3", () => {
+    expect(ids).toContain("unresolved:FOO_URL");
+    expect(view.topo.nodes.find((n) => n.id === "unresolved:FOO_URL")!.ring).toBe(3);
+  });
+
+  it("a failed probe reads the collapsed box unreachable, never reachable", () => {
+    const t = republiqRecord();
+    t.nodes = t.nodes.map((n) => (n.id === "db" ? { ...n, liveness: "unreachable" } : n));
+    const box = prepareStackMap(t).topo.nodes.find((n) => n.id === GRAPHBAN_BOX)!;
+    expect(box.liveness).toBe("unreachable");
+  });
+
+  it("expanding draws the instance in place, framed, with no extra box", () => {
+    const open = prepareStackMap(republiqRecord(), true);
+    const openIds = open.topo.nodes.map((n) => n.id);
+    expect(openIds).not.toContain(GRAPHBAN_BOX);
+    for (const gid of ["api", "web", "db", "cli", "openai"]) expect(openIds).toContain(gid);
+    const l = buildStackLayout(open.topo, open.layoutOptions);
+    expect(l.lane).not.toBeNull();
+    // The instance stays in the lane, left of the app.
+    expect(l.boxes["api"].x + l.boxes["api"].w).toBeLessThan(l.boxes["app:backend"].x);
+    for (const id of ["api", "web", "db", "cli"]) {
+      const b = l.boxes[id];
+      expect(b.x >= l.lane!.x && b.x + b.w <= l.lane!.x + l.lane!.w, id).toBe(true);
+    }
+  });
+});
+
+describe("prepareStackMap — states before and after a record", () => {
+  it("with no record, ring 3 reads 'services not mapped yet', never empty", () => {
+    const t = republiqRecord();
+    t.mapping = { ...t.mapping!, state: "unmapped", mapped_sha: null };
+    t.nodes = t.nodes.filter((n) => !/^(ext|unresolved|infra):/.test(n.id));
+    const view = prepareStackMap(t);
+    expect(view.topo.nodes.map((n) => n.id)).toContain(UNMAPPED_BOX);
+    const l = buildStackLayout(view.topo, view.layoutOptions);
+    expect(l.rings.find((r) => r.ring === 3)!.subtitle).toBe(SERVICES_NOT_MAPPED);
+    expect(l.boxes[UNMAPPED_BOX]).toBeDefined();
+  });
+
+  it("an older API with no mapping block is unmapped, not mapped", () => {
+    const t = republiqRecord();
+    delete t.mapping;
+    expect(prepareStackMap(t).layoutOptions.ring3Subtitle).toBe(SERVICES_NOT_MAPPED);
+  });
+
+  it("a mapped record keeps ring 3's own gloss", () => {
+    const view = prepareStackMap(republiqRecord());
+    expect(view.layoutOptions.ring3Subtitle).toBeNull();
+    expect(view.topo.nodes.map((n) => n.id)).not.toContain(UNMAPPED_BOX);
+  });
+});
+
+describe("prepareStackMap — Graphban's own project", () => {
+  const grph: StackTopology = { ...topo, graphban_source: "owned" };
+  const view = prepareStackMap(grph);
+
+  it("draws today's map with no self-box and nothing collapsible", () => {
+    expect(view.collapsible).toBe(false);
+    expect(view.topo.nodes).toEqual(grph.nodes);
+    expect(view.topo.edges).toEqual(grph.edges);
+    expect(view.layoutOptions.graphbanLeft).toBe(false);
+    expect(buildStackLayout(view.topo, view.layoutOptions).lane).toBeNull();
+  });
+
+  it("an older API with ring-1 Graphban boxes reads as owned", () => {
+    const { graphban_source: _, ...old } = grph;
+    expect(prepareStackMap(old as StackTopology).collapsible).toBe(false);
   });
 });
