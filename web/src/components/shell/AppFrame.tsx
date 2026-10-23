@@ -14,6 +14,7 @@ import { useInputModality } from "@/lib/input-modality";
 import { ProjectBar } from "./ProjectBar";
 
 import { AgentSidebar } from "./AgentSidebar";
+import { useAgentRail } from "./agentRail";
 import { CommandPalette } from "./CommandPalette";
 import { LeftNav } from "./LeftNav";
 import { TopBar } from "./TopBar";
@@ -90,7 +91,7 @@ export function AppFrame() {
 function FrameBody({ hosted }: { hosted: boolean }) {
   const { projects, loading, active, notFound } = useProjectCtx();
   const { pathname } = useLocation();
-  const [agentOpen, setAgentOpen] = React.useState(true);
+  const [agentOpen, setAgentOpen] = useAgentRail(pathname);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   // Sticky modality at the moment of the toggle — keyboard Agent must not inherit a
   // later pointer event mid-slide (PRD-46 §6).
