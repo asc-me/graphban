@@ -391,3 +391,15 @@ describe("area as a visual channel", () => {
     expect(legendFile).toHaveAttribute("fill", "#9aa3ab");
   });
 });
+
+describe("Map tile names", () => {
+  it("fit the tile: the count goes first, then the name is cut, and a sliver shows none", async () => {
+    const { fitTileName } = await import("@/features/code/CodeGraphCanvas");
+    expect(fitTileName("backend/app/routers", 15, 400)).toBe("backend/app/routers · 15");
+    expect(fitTileName("backend/app/routers", 15, 130)).toBe("backend/app/routers");
+    const cut = fitTileName("backend/app/providers", 9, 80)!;
+    expect(cut.endsWith("…")).toBe(true);
+    expect(cut.length).toBeLessThanOrEqual(Math.floor(80 / 6.4));
+    expect(fitTileName("backend/app/providers", 9, 20)).toBeNull();
+  });
+});

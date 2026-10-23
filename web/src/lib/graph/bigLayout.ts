@@ -663,10 +663,19 @@ export function mapLayout(input: ClusterInput): ClusterLayout {
     if (!area || !rect) continue;
     const members = orderedMembers(area.members, prep.kindOf, prep.degree);
     const n = Math.max(members.length, 1);
-    const cols = Math.max(1, Math.ceil(Math.sqrt(n * (rect.w / Math.max(rect.h, 1)))));
-    const rows = Math.ceil(n / cols);
-    const cellW = rect.w / cols;
-    const cellH = rect.h / rows;
+    // Build.dc.html: a header band for the tile's name (34 on a tile taller than 70,
+    // else 10), 6 in from the sides and the bottom, and square cells. Filling the whole
+    // tile put the first row of nodes under the name.
+    const top = rect.h > 70 ? 34 : 10;
+    const gx = rect.x + 6;
+    const gy = rect.y + top;
+    const gw = Math.max(1, rect.w - 12);
+    const gh = Math.max(1, rect.h - top - 6);
+    let cols = Math.max(1, Math.ceil(Math.sqrt((n * gw) / gh)));
+    const cell = Math.min(gw / cols, gh / Math.ceil(n / cols));
+    cols = Math.max(1, Math.floor(gw / cell));
+    const cellW = cell;
+    const cellH = cell;
     members.forEach((m, i) => {
       const col = i % cols;
       const row = Math.floor(i / cols);
@@ -675,8 +684,8 @@ export function mapLayout(input: ClusterInput): ClusterLayout {
       kinds.push(m.kind);
       colors.push(area.color);
       areaIds.push(area.id);
-      xs.push(rect.x + (col + 0.5) * cellW);
-      ys.push(rect.y + (row + 0.5) * cellH);
+      xs.push(gx + (col + 0.5) * cellW);
+      ys.push(gy + (row + 0.5) * cellH);
       rs.push(Number.isFinite(rad) ? Math.max(1.25, rad) : 1.25);
     });
     hulls.push({
