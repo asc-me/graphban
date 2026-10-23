@@ -89,6 +89,24 @@ export function fitCamera(
   };
 }
 
+/**
+ * Frame a pair of hulls, then raise the scale to at least `minK` around that
+ * same centre. Fitting alone can sit below the fine-edge zoom; the pair is
+ * still the target, so the centre does not jump to one hull.
+ */
+export function framePair(
+  points: { x: number; y: number; r?: number }[],
+  width: number,
+  height: number,
+  minK: number,
+): Cam {
+  const fit = fitCamera(points, width, height);
+  if (fit.k >= minK || fit.k <= 0) return fit;
+  const midX = (width / 2 - fit.x) / fit.k;
+  const midY = (height / 2 - fit.y) / fit.k;
+  return framePoint(midX, midY, minK, width, height);
+}
+
 export function prefersReducedMotion(): boolean {
   return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
