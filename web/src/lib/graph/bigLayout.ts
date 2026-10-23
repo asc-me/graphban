@@ -12,9 +12,11 @@ import {
   areasAtScale,
   canonicalEdges,
   canonicalNodes,
+  type ScaleArea,
   type ScaleEdge,
   type ScaleNode,
 } from "./areas";
+import { buildAreaGraph, deriveLayers } from "./layers";
 
 export const GRID_CELL = 10;
 /** Hit-testing searches at most this many cells on a side. */
@@ -30,6 +32,26 @@ const KIND_RANK: Record<string, number> = {
   config: 4,
 };
 
+export type AreaLayoutKind = "clusters" | "map" | "orbit";
+
+/** Map tile, in the same world space as node positions. */
+export interface TileRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** One Orbit ring. Index 0 is the core. */
+export interface OrbitRing {
+  index: number;
+  label: string;
+  cx: number;
+  cy: number;
+  r: number;
+  areaIds: string[];
+}
+
 export interface Hull {
   id: string;
   cx: number;
@@ -39,7 +61,14 @@ export interface Hull {
   count: number;
   label: string;
   flat?: boolean;
+  /** Set by Map. Circle layouts leave it unset, and bundle curves stay radial. */
+  rect?: TileRect;
 }
+
+/** Unfocused Orbit draws at most this many area-pair bundles. */
+export const ORBIT_BUNDLE_CAP = 30;
+/** Phyllotaxis step. Irrational, so a shuffled member list cannot pile points up. */
+export const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
 export interface RankedEdge {
   src: string;
@@ -67,6 +96,8 @@ export interface ClusterInput {
   nodes: { id: string; path: string; kind: string }[];
   edges: { src: string; dst: string; type: string }[];
   prevDepth?: number;
+  /** Which canvas layout to compute. Absent means clusters. */
+  layout?: AreaLayoutKind;
 }
 
 export interface ClusterLayout {
@@ -84,6 +115,10 @@ export interface ClusterLayout {
   depth: number | null;
   /** How many nodes the layout placed. Above 10_000 the view draws areas only. */
   nodeCount: number;
+  /** Absent on a hand-built fixture means clusters. */
+  layout?: AreaLayoutKind;
+  /** Orbit only. Clusters and Map leave this empty. */
+  orbitRings?: OrbitRing[];
 }
 
 let layoutRuns = 0;
@@ -242,8 +277,8 @@ function relax(
 function fit(
   pos: { x: number; y: number }[],
   radii: number[],
-): { pos: { x: number; y: number }[]; scale: number } {
-  if (pos.length === 0) return { pos, scale: 1 };
+): { pos: { x: number; y: number }[]; scale: number; cx: number; cy: number } {
+  if (pos.length === 0) return { pos, scale: 1, cx: 0, cy: 0 };
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -263,6 +298,8 @@ function fit(
   const cy = (minY + maxY) / 2;
   return {
     scale,
+    cx,
+    cy,
     pos: pos.map((p) => ({
       x: WORLD_W / 2 + (p.x - cx) * scale,
       y: WORLD_H / 2 + (p.y - cy) * scale,
@@ -322,8 +359,6 @@ export function clustersLayout(input: ClusterInput): ClusterLayout {
     label: areas.areas[i]?.caption ?? p.id,
     flat: areas.areas[i]?.flat,
   }));
-  const hullById = new Map(hulls.map((h) => [h.id, h]));
-
   const ids: string[] = [];
   const kinds: string[] = [];
   const colors: string[] = [];
@@ -349,24 +384,56 @@ export function clustersLayout(input: ClusterInput): ClusterLayout {
     }
   });
 
+  return finishPlaced({
+    layout: "clusters",
+    ids,
+    xs,
+    ys,
+    rs,
+    kinds,
+    colors,
+    areaIds,
+    hulls,
+    depth: areas.depth,
+    edges,
+    areaOfId,
+  });
+}
+
+interface PlacedLayout {
+  layout: AreaLayoutKind;
+  ids: string[];
+  xs: number[];
+  ys: number[];
+  rs: number[];
+  kinds: string[];
+  colors: string[];
+  areaIds: string[];
+  hulls: Hull[];
+  depth: number | null;
+  edges: ScaleEdge[];
+  areaOfId: Map<string, string>;
+  orbitRings?: OrbitRing[];
+}
+
+function finishPlaced(placed: PlacedLayout): ClusterLayout {
   const grid: Record<string, number[]> = {};
-  for (let i = 0; i < ids.length; i++) {
-    const key = `${Math.floor(xs[i] / GRID_CELL)},${Math.floor(ys[i] / GRID_CELL)}`;
+  for (let i = 0; i < placed.ids.length; i++) {
+    const key = `${Math.floor(placed.xs[i] / GRID_CELL)},${Math.floor(placed.ys[i] / GRID_CELL)}`;
     const bucket = grid[key];
     if (bucket) bucket.push(i);
     else grid[key] = [i];
   }
-
-  const nonOwns = edges.filter((e) => e.type !== "owns");
+  const hullById = new Map(placed.hulls.map((h) => [h.id, h]));
+  const nonOwns = placed.edges.filter((e) => e.type !== "owns");
   const ranked: RankedEdge[] = nonOwns.map((e, index) => ({
     src: e.src,
     dst: e.dst,
     type: e.type,
     index,
-    srcArea: areaOfId.get(e.src) ?? "",
-    dstArea: areaOfId.get(e.dst) ?? "",
+    srcArea: placed.areaOfId.get(e.src) ?? "",
+    dstArea: placed.areaOfId.get(e.dst) ?? "",
   }));
-
   const bundleMap = new Map<string, { a: string; b: string; ab: number; ba: number }>();
   for (const e of ranked) {
     if (!e.srcArea || !e.dstArea || e.srcArea === e.dstArea) continue;
@@ -383,34 +450,437 @@ export function clustersLayout(input: ClusterInput): ClusterLayout {
   }
   const bundles: Bundle[] = [...bundleMap.values()]
     .sort((p, q) => byText(p.a, q.a) || byText(p.b, q.b))
-    .map((row) => {
-      const ha = hullById.get(row.a)!;
-      const hb = hullById.get(row.b)!;
-      return {
+    .flatMap((row) => {
+      const ha = hullById.get(row.a);
+      const hb = hullById.get(row.b);
+      if (!ha || !hb) return [];
+      return [{
         ...row,
         colorA: ha.color,
         colorB: hb.color,
         label: bundleLabel(ha.label, hb.label, row.ab, row.ba),
         hullA: ha,
         hullB: hb,
-      };
+      }];
     });
-
   return {
-    ids,
-    x: Float32Array.from(xs),
-    y: Float32Array.from(ys),
-    r: Float32Array.from(rs),
-    kinds,
-    colors,
-    areaOf: areaIds,
-    areas: hulls,
+    ids: placed.ids,
+    x: Float32Array.from(placed.xs),
+    y: Float32Array.from(placed.ys),
+    r: Float32Array.from(placed.rs),
+    kinds: placed.kinds,
+    colors: placed.colors,
+    areaOf: placed.areaIds,
+    areas: placed.hulls,
     bundles,
     edges: ranked,
     grid,
-    depth: areas.depth,
-    nodeCount: ids.length,
+    depth: placed.depth,
+    nodeCount: placed.ids.length,
+    layout: placed.layout,
+    orbitRings: placed.orbitRings ?? [],
   };
+}
+
+interface Prepared {
+  edges: ScaleEdge[];
+  areas: ScaleArea[];
+  depth: number | null;
+  kindOf: Map<string, string>;
+  degree: Map<string, number>;
+  areaOfId: Map<string, string>;
+}
+
+function prepare(input: ClusterInput): Prepared {
+  const nodes = canonicalNodes(input.nodes as ScaleNode[]);
+  const edges = canonicalEdges(input.edges as ScaleEdge[]);
+  const owns = edges.filter((e) => e.type === "owns");
+  const areas = areasAtScale(nodes, owns, input.prevDepth);
+  const kindOf = new Map(nodes.map((n) => [n.id, n.kind]));
+  const degree = new Map<string, number>();
+  for (const n of nodes) degree.set(n.id, 0);
+  for (const e of edges) {
+    if (e.type === "owns") continue;
+    degree.set(e.src, (degree.get(e.src) ?? 0) + 1);
+    degree.set(e.dst, (degree.get(e.dst) ?? 0) + 1);
+  }
+  const areaOfId = new Map<string, string>();
+  for (const area of areas.areas) {
+    for (const id of area.members) areaOfId.set(id, area.id);
+  }
+  return { edges, areas: areas.areas, depth: areas.depth, kindOf, degree, areaOfId };
+}
+
+function orderedMembers(
+  memberIds: string[],
+  kindOf: Map<string, string>,
+  degree: Map<string, number>,
+): { id: string; kind: string; degree: number }[] {
+  const members = memberIds.map((id) => ({
+    id,
+    kind: kindOf.get(id) ?? "file",
+    degree: degree.get(id) ?? 0,
+  }));
+  members.sort((a, b) => {
+    const ka = KIND_RANK[a.kind] ?? 9;
+    const kb = KIND_RANK[b.kind] ?? 9;
+    if (ka !== kb) return ka - kb;
+    if (a.degree !== b.degree) return b.degree - a.degree;
+    return byText(a.id, b.id);
+  });
+  return members;
+}
+
+interface Box {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+interface SqItem {
+  id: string;
+  area: number;
+}
+
+/** Worst aspect ratio of a row laid along `side`. Lower is squarer. */
+function worstRatio(row: SqItem[], side: number): number {
+  if (row.length === 0 || side <= 0) return Infinity;
+  let sum = 0;
+  let min = Infinity;
+  let max = 0;
+  for (const r of row) {
+    sum += r.area;
+    if (r.area < min) min = r.area;
+    if (r.area > max) max = r.area;
+  }
+  if (min <= 0 || sum <= 0) return Infinity;
+  const s2 = sum * sum;
+  const w2 = side * side;
+  return Math.max((w2 * max) / s2, s2 / (w2 * min));
+}
+
+function placeRow(row: SqItem[], box: Box): { rects: { id: string; rect: Box }[]; rest: Box } {
+  const sum = row.reduce((s, r) => s + r.area, 0);
+  if (box.w >= box.h) {
+    const width = box.h <= 0 ? box.w : sum / box.h;
+    const rects: { id: string; rect: Box }[] = [];
+    let y = box.y;
+    for (const r of row) {
+      const height = width <= 0 ? 0 : r.area / width;
+      rects.push({ id: r.id, rect: { x: box.x, y, w: width, h: height } });
+      y += height;
+    }
+    return {
+      rects,
+      rest: { x: box.x + width, y: box.y, w: Math.max(0, box.w - width), h: box.h },
+    };
+  }
+  const height = box.w <= 0 ? box.h : sum / box.w;
+  const rects: { id: string; rect: Box }[] = [];
+  let x = box.x;
+  for (const r of row) {
+    const width = height <= 0 ? 0 : r.area / height;
+    rects.push({ id: r.id, rect: { x, y: box.y, w: width, h: height } });
+    x += width;
+  }
+  return {
+    rects,
+    rest: { x: box.x, y: box.y + height, w: box.w, h: Math.max(0, box.h - height) },
+  };
+}
+
+/** Squarified treemap (Bruls). Input order is the placement order. */
+function squarify(items: SqItem[], box: Box): { id: string; rect: Box }[] {
+  if (items.length === 0 || box.w <= 0 || box.h <= 0) return [];
+  if (items.length === 1) {
+    return [{ id: items[0].id, rect: { x: box.x, y: box.y, w: box.w, h: box.h } }];
+  }
+  const side = Math.min(box.w, box.h);
+  const row: SqItem[] = [items[0]];
+  let i = 1;
+  while (i < items.length && worstRatio(row, side) >= worstRatio([...row, items[i]], side)) {
+    row.push(items[i]);
+    i += 1;
+  }
+  const placed = placeRow(row, box);
+  return placed.rects.concat(squarify(items.slice(i), placed.rest));
+}
+
+function insetRect(rect: Box, gap: number): Box {
+  const g = Math.min(gap, rect.w / 4, rect.h / 4);
+  return {
+    x: rect.x + g,
+    y: rect.y + g,
+    w: Math.max(1, rect.w - g * 2),
+    h: Math.max(1, rect.h - g * 2),
+  };
+}
+
+/**
+ * The heavy layouts, dispatched by name. The worker and the inline fallback
+ * both call this, so a layout chip cannot compute a different picture from
+ * the one the cache stored.
+ */
+export function layoutFor(kind: AreaLayoutKind | undefined, input: ClusterInput): ClusterLayout {
+  if (kind === "map") return mapLayout(input);
+  if (kind === "orbit") return orbitLayout(input);
+  return clustersLayout(input);
+}
+
+/** Heaviest bundles first. Ties break on area id so a shuffle cannot change the cut. */
+export function topBundles(bundles: Bundle[], cap: number): Bundle[] {
+  if (bundles.length <= cap) return bundles.slice();
+  return bundles
+    .slice()
+    .sort((p, q) => (q.ab + q.ba) - (p.ab + p.ba) || byText(p.a, q.a) || byText(p.b, q.b))
+    .slice(0, cap);
+}
+
+export function mapLayout(input: ClusterInput): ClusterLayout {
+  layoutRuns += 1;
+  const prep = prepare(input);
+  const margin = 24;
+  const bounds: Box = { x: margin, y: margin, w: WORLD_W - margin * 2, h: WORLD_H - margin * 2 };
+  const total = prep.areas.reduce((s, a) => s + a.count, 0) || 1;
+  const items: SqItem[] = prep.areas
+    .map((a) => ({ id: a.id, count: a.count }))
+    .sort((a, b) => b.count - a.count || byText(a.id, b.id))
+    .map((a) => ({ id: a.id, area: (a.count / total) * bounds.w * bounds.h }));
+  const tiles = new Map(squarify(items, bounds).map((t) => [t.id, insetRect(t.rect, 4)]));
+  const byId = new Map(prep.areas.map((a) => [a.id, a]));
+  const ids: string[] = [];
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const rs: number[] = [];
+  const kinds: string[] = [];
+  const colors: string[] = [];
+  const areaIds: string[] = [];
+  const hulls: Hull[] = [];
+  for (const item of items) {
+    const area = byId.get(item.id);
+    const rect = tiles.get(item.id);
+    if (!area || !rect) continue;
+    const members = orderedMembers(area.members, prep.kindOf, prep.degree);
+    const n = Math.max(members.length, 1);
+    const cols = Math.max(1, Math.ceil(Math.sqrt(n * (rect.w / Math.max(rect.h, 1)))));
+    const rows = Math.ceil(n / cols);
+    const cellW = rect.w / cols;
+    const cellH = rect.h / rows;
+    members.forEach((m, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const rad = Math.min(nodeRadius(m.kind, m.degree), cellW / 2 - 0.5, cellH / 2 - 0.5);
+      ids.push(m.id);
+      kinds.push(m.kind);
+      colors.push(area.color);
+      areaIds.push(area.id);
+      xs.push(rect.x + (col + 0.5) * cellW);
+      ys.push(rect.y + (row + 0.5) * cellH);
+      rs.push(Number.isFinite(rad) ? Math.max(1.25, rad) : 1.25);
+    });
+    hulls.push({
+      id: area.id,
+      cx: rect.x + rect.w / 2,
+      cy: rect.y + rect.h / 2,
+      r: Math.hypot(rect.w, rect.h) / 2,
+      color: area.color,
+      count: area.count,
+      label: area.caption ?? area.id,
+      flat: area.flat,
+      rect,
+    });
+  }
+  return finishPlaced({
+    layout: "map",
+    ids,
+    xs,
+    ys,
+    rs,
+    kinds,
+    colors,
+    areaIds,
+    hulls,
+    depth: prep.depth,
+    edges: prep.edges,
+    areaOfId: prep.areaOfId,
+  });
+}
+
+const SPIRAL_C = 16;
+
+function splitEven<T>(items: T[], slots: number): T[][] {
+  if (items.length === 0 || slots <= 0) return [];
+  const k = Math.min(slots, items.length);
+  const base = Math.floor(items.length / k);
+  let extra = items.length % k;
+  const out: T[][] = [];
+  let at = 0;
+  for (let s = 0; s < k; s++) {
+    const size = base + (extra > 0 ? 1 : 0);
+    if (extra > 0) extra -= 1;
+    out.push(items.slice(at, at + size));
+    at += size;
+  }
+  return out;
+}
+
+function largestId(ids: string[], countOf: Map<string, number>): string {
+  let best = ids[0] ?? "";
+  let bestN = -1;
+  for (const id of [...ids].sort(byText)) {
+    const n = countOf.get(id) ?? 0;
+    if (n > bestN) {
+      best = id;
+      bestN = n;
+    }
+  }
+  return best;
+}
+
+export function orbitLayout(input: ClusterInput): ClusterLayout {
+  layoutRuns += 1;
+  const prep = prepare(input);
+  const graph = buildAreaGraph(
+    prep.areas.map((a) => ({ id: a.id, members: a.members })),
+    prep.edges,
+  );
+  const derived = deriveLayers(graph);
+  const countOf = new Map(prep.areas.map((a) => [a.id, a.count]));
+  const caption = new Map(prep.areas.map((a) => [a.id, a.caption ?? a.id]));
+  const areaById = new Map(prep.areas.map((a) => [a.id, a]));
+  const byLayer = new Map<number, string[]>();
+  const support: string[] = [];
+  for (const row of derived.areas) {
+    if (row.layer == null) support.push(row.id);
+    else {
+      const list = byLayer.get(row.layer) ?? [];
+      list.push(row.id);
+      byLayer.set(row.layer, list);
+    }
+  }
+  const layerNums = [...byLayer.keys()].sort((a, b) => a - b);
+  const hasSupport = support.length > 0;
+  const slots = hasSupport ? Math.min(4, layerNums.length) : Math.min(5, layerNums.length);
+  const buckets = splitEven(layerNums, slots).map((group) => group.flatMap((n) => byLayer.get(n) ?? []));
+  if (hasSupport) buckets.push(support);
+  const ringsIn = buckets
+    .filter((ids) => ids.length > 0)
+    .map((ids) => {
+      const ordered = [...ids].sort(byText);
+      const best = largestId(ordered, countOf);
+      const tag = derived.byId[best]?.tag ?? "L0";
+      return { ids: ordered, label: `${tag} · ${caption.get(best) ?? best}` };
+    });
+
+  const local = new Map<string, { x: number; y: number; pack: LocalPack }>();
+  const ringGeom: { label: string; ids: string[]; r: number }[] = [];
+  let prevOuter = 0;
+  ringsIn.forEach((ring, i) => {
+    const packs = ring.ids.map((id) => {
+      const area = areaById.get(id);
+      return spiralPack(id, area?.members ?? [], prep.kindOf, prep.degree, area?.color ?? areaColor(id));
+    });
+    const maxR = Math.max(28, ...packs.map((p) => p.r));
+    const n = Math.max(packs.length, 1);
+    const chord = packs.length <= 1 ? 0 : (maxR + 22) / Math.sin(Math.PI / n);
+    const minCenter = i === 0 ? 0 : prevOuter + maxR + 32;
+    const ringR = Math.max(minCenter, chord);
+    packs.forEach((p, j) => {
+      const ang = -Math.PI / 2 + (j / n) * Math.PI * 2;
+      local.set(p.id, { x: Math.cos(ang) * ringR, y: Math.sin(ang) * ringR, pack: p });
+    });
+    prevOuter = ringR + maxR;
+    ringGeom.push({ label: ring.label, ids: ring.ids, r: ringR });
+  });
+
+  const order = [...local.keys()];
+  const raw = order.map((id) => {
+    const at = local.get(id)!;
+    return { x: at.x, y: at.y };
+  });
+  const radii = order.map((id) => local.get(id)!.pack.r);
+  const fitted = fit(raw, radii);
+  const ids: string[] = [];
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const rs: number[] = [];
+  const kinds: string[] = [];
+  const colors: string[] = [];
+  const areaIds: string[] = [];
+  const hulls: Hull[] = order.map((id, i) => {
+    const pack = local.get(id)!.pack;
+    const area = areaById.get(id);
+    const ox = fitted.pos[i].x;
+    const oy = fitted.pos[i].y;
+    const s = fitted.scale;
+    for (const m of pack.members) {
+      ids.push(m.id);
+      kinds.push(m.kind);
+      colors.push(pack.color);
+      areaIds.push(id);
+      xs.push(ox + m.lx * s);
+      ys.push(oy + m.ly * s);
+      rs.push(m.r * s);
+    }
+    return {
+      id,
+      cx: ox,
+      cy: oy,
+      r: pack.r * s,
+      color: pack.color,
+      count: pack.members.length,
+      label: area?.caption ?? id,
+      flat: area?.flat,
+    };
+  });
+  const orbitRings: OrbitRing[] = ringGeom.map((ring, index) => ({
+    index,
+    label: ring.label,
+    areaIds: ring.ids,
+    cx: WORLD_W / 2 + (0 - fitted.cx) * fitted.scale,
+    cy: WORLD_H / 2 + (0 - fitted.cy) * fitted.scale,
+    r: ring.r * fitted.scale,
+  }));
+  return finishPlaced({
+    layout: "orbit",
+    ids,
+    xs,
+    ys,
+    rs,
+    kinds,
+    colors,
+    areaIds,
+    hulls,
+    depth: prep.depth,
+    edges: prep.edges,
+    areaOfId: prep.areaOfId,
+    orbitRings,
+  });
+}
+
+function spiralPack(
+  id: string,
+  memberIds: string[],
+  kindOf: Map<string, string>,
+  degree: Map<string, number>,
+  color: string,
+): LocalPack {
+  const members = orderedMembers(memberIds, kindOf, degree);
+  const placed: LocalPack["members"] = members.map((m, i) => {
+    const rad = i === 0 ? 0 : SPIRAL_C * Math.sqrt(i);
+    const ang = i * GOLDEN_ANGLE;
+    return {
+      id: m.id,
+      kind: m.kind,
+      lx: Math.cos(ang) * rad,
+      ly: Math.sin(ang) * rad,
+      r: nodeRadius(m.kind, m.degree),
+    };
+  });
+  let r = 28;
+  for (const m of placed) r = Math.max(r, Math.hypot(m.lx, m.ly) + m.r + 16);
+  return { id, kind: "", color, members: placed, r };
 }
 
 export function bundleLabel(a: string, b: string, ab: number, ba: number): string {

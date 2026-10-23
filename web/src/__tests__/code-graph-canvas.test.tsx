@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { CodeGraphCanvas } from "@/features/code/CodeGraphCanvas";
@@ -34,11 +34,22 @@ describe("canvas chrome", () => {
     expect(screen.queryByTestId("truncated-caption")).not.toBeInTheDocument();
   });
 
-  it("enables Clusters and leaves the other layouts disabled", () => {
+  it("enables Clusters, Map and Orbit, and leaves Matrix disabled", async () => {
     mount(false);
     expect(screen.getByTestId("layout-chip-clusters")).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByTestId("layout-chip-map")).toBeDisabled();
-    expect(screen.getByTestId("layout-chip-orbit")).toBeDisabled();
+    const map = screen.getByTestId("layout-chip-map");
+    const orbit = screen.getByTestId("layout-chip-orbit");
+    expect(map).toBeEnabled();
+    expect(orbit).toBeEnabled();
+    expect(map).toHaveAttribute("aria-pressed", "false");
+    expect(orbit).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByTestId("layout-chip-matrix")).toBeDisabled();
+
+    fireEvent.click(map);
+    expect(map).toHaveAttribute("aria-pressed", "true");
+    expect(orbit).toHaveAttribute("aria-pressed", "false");
+    expect(await screen.findByTestId("lod-caption")).toHaveTextContent(
+      "Hover an area to see its dependencies",
+    );
   });
 });

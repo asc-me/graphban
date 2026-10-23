@@ -1,15 +1,15 @@
 /**
  * Canvas mode for a code map above DETAIL_BUDGET (PRD-52 D1, D4, D5).
  *
- * Clusters only in this slice. Map, Orbit and Matrix are chips on the row
- * and stay disabled until their slices land. The drawing is Canvas 2D behind
- * the Renderer interface; labels, hull names and the tooltip are DOM.
+ * Clusters, Map and Orbit are live. Matrix stays disabled until its slice.
+ * The drawing is Canvas 2D behind the Renderer interface; labels, hull names
+ * and the tooltip are DOM.
  */
 
 import * as React from "react";
 
 import { zoomAbout } from "@/lib/graph/useGraphViewport";
-import { hitTest, type ClusterLayout } from "@/lib/graph/bigLayout";
+import { hitTest, type AreaLayoutKind, type ClusterLayout } from "@/lib/graph/bigLayout";
 import { useAreaLayout } from "@/lib/graph/useAreaLayout";
 import { createCanvas2D } from "./canvas/canvas2d";
 import {
@@ -48,10 +48,10 @@ export interface CanvasGraphEdge {
   type: string;
 }
 
-const CHIPS: { id: string; label: string; on: boolean }[] = [
+const CHIPS: { id: AreaLayoutKind | "matrix"; label: string; on: boolean }[] = [
   { id: "clusters", label: "Clusters", on: true },
-  { id: "map", label: "Map", on: false },
-  { id: "orbit", label: "Orbit", on: false },
+  { id: "map", label: "Map", on: true },
+  { id: "orbit", label: "Orbit", on: true },
   { id: "matrix", label: "Matrix", on: false },
 ];
 
@@ -84,6 +84,17 @@ function nodeAtPointer(
   const i = layout.ids.indexOf(id);
   if (i < 0 || layout.areaOf[i] !== scene.revealed) return null;
   return id;
+}
+
+/** The Map tile under a world point, or null. Node hits win over this. */
+function tileAt(layout: ClusterLayout | null, wx: number, wy: number): string | null {
+  if (!layout || (layout.layout ?? "clusters") !== "map") return null;
+  for (const area of layout.areas) {
+    const rect = area.rect;
+    if (!rect) continue;
+    if (wx >= rect.x && wx < rect.x + rect.w && wy >= rect.y && wy < rect.y + rect.h) return area.id;
+  }
+  return null;
 }
 
 export interface CanvasControlApi {
@@ -127,6 +138,9 @@ export function CodeGraphCanvas({
   const [cam, setCam] = React.useState<Cam>({ x: 0, y: 0, k: 1 });
   const [tween, setTween] = React.useState<Tween | null>(null);
   const [hover, setHover] = React.useState<string | null>(null);
+  const [hoverTile, setHoverTile] = React.useState<string | null>(null);
+  const [selectedTile, setSelectedTile] = React.useState<string | null>(null);
+  const [layoutKind, setLayoutKind] = React.useState<AreaLayoutKind>("clusters");
   const [tip, setTip] = React.useState<{ x: number; y: number; text: string } | null>(null);
   const camRef = React.useRef(cam);
   camRef.current = cam;
@@ -136,8 +150,15 @@ export function CodeGraphCanvas({
   const fitted = React.useRef("");
 
   const input = React.useMemo(
-    () => (nodes.length > 0 ? { nodes: nodes.map((n) => ({ id: n.id, path: n.path, kind: n.kind })), edges } : null),
-    [nodes, edges],
+    () =>
+      nodes.length > 0
+        ? {
+            nodes: nodes.map((n) => ({ id: n.id, path: n.path, kind: n.kind })),
+            edges,
+            layout: layoutKind,
+          }
+        : null,
+    [nodes, edges, layoutKind],
   );
   const area = useAreaLayout(input);
   const layout = area.layout;
@@ -182,13 +203,23 @@ export function CodeGraphCanvas({
     return () => ro.disconnect();
   }, []);
 
-  const sig = layout ? `${layout.nodeCount}:${layout.depth ?? "x"}:${layout.ids[0] ?? ""}` : "";
+  const sig = layout
+    ? `${layout.layout ?? "clusters"}:${layout.nodeCount}:${layout.depth ?? "x"}:${layout.ids[0] ?? ""}`
+    : "";
+  const kindRef = React.useRef(layout?.layout ?? "clusters");
   React.useEffect(() => {
-    if (!layout || !sig || fitted.current === sig) return;
+    if (!layout || !sig) return;
+    const kind = layout.layout ?? "clusters";
+    const kindChanged = kindRef.current !== kind;
+    kindRef.current = kind;
+    if (!kindChanged && fitted.current === sig) return;
+    if (!kindChanged && frameId && layout.ids.includes(frameId)) {
+      fitted.current = sig;
+      return;
+    }
     fitted.current = sig;
-    if (frameId && layout.ids.includes(frameId)) return;
-    setCam(fitCamera(layout.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r })), size.w, size.h));
     setTween(null);
+    setCam(fitCamera(layout.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r })), size.w, size.h));
   }, [layout, sig, size.w, size.h, frameId]);
 
   React.useEffect(() => {
@@ -262,8 +293,9 @@ export function CodeGraphCanvas({
       isolate: isolateSet,
       selectedId,
       hoverId: hover,
+      tileId: hoverTile ?? selectedTile,
     });
-  }, [layout, alpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover]);
+  }, [layout, alpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover, hoverTile, selectedTile]);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -307,10 +339,19 @@ export function CodeGraphCanvas({
       return;
     }
     const hit = nodeAtPointer(sceneNow, layoutNow, w.x, w.y);
-    setHover(hit);
     if (hit) {
+      setHover(hit);
+      setHoverTile(null);
       const node = nameOf.get(hit);
       setTip({ x: w.sx + 12, y: w.sy - 8, text: shortName(node, hit) });
+      return;
+    }
+    setHover(null);
+    const tile = tileAt(layoutNow, w.x, w.y);
+    setHoverTile(tile);
+    if (tile) {
+      const area = layoutNow.areas.find((a) => a.id === tile);
+      setTip({ x: w.sx + 12, y: w.sy - 8, text: area?.label ?? tile });
       return;
     }
     const bundle = hitBundle(sceneNow.strokes, w.x, w.y, camRef.current);
@@ -359,7 +400,7 @@ export function CodeGraphCanvas({
       data-testid="code-graph-canvas"
       data-renderer={rendererRef.current?.kind ?? "canvas2d"}
       role="application"
-      aria-label={`Code graph canvas: ${shown} nodes. Clusters layout.`}
+      aria-label={`Code graph canvas: ${shown} nodes. ${layoutKind[0].toUpperCase()}${layoutKind.slice(1)} layout.`}
       className="absolute inset-0 touch-none"
       onWheel={onWheel}
       onPointerDown={(e) => {
@@ -380,7 +421,14 @@ export function CodeGraphCanvas({
           const moved = Math.hypot(w.sx - from.px, w.sy - from.py);
           if (moved < 4 && layout) {
             const hit = nodeAtPointer(scene, layout, w.x, w.y);
-            onSelect(hit);
+            if (hit) {
+              setSelectedTile(null);
+              onSelect(hit);
+            } else {
+              const tile = tileAt(layout, w.x, w.y);
+              setSelectedTile(tile);
+              onSelect(null);
+            }
           }
         }
       }}
@@ -408,15 +456,51 @@ export function CodeGraphCanvas({
             const sx = h.cx * cam.k + cam.x;
             const sy = h.cy * cam.k + cam.y;
             const sr = h.r * cam.k;
+            const name = (
+              <>
+                {h.label}
+                {h.showCount ? ` · ${h.count}` : ""}
+              </>
+            );
+            if (h.rect) {
+              const rx = h.rect.x * cam.k + cam.x;
+              const ry = h.rect.y * cam.k + cam.y;
+              const rw = h.rect.w * cam.k;
+              const rh = h.rect.h * cam.k;
+              return (
+                <g key={h.id} data-testid={`hull-${h.id}`}>
+                  <rect x={rx} y={ry} width={rw} height={rh} fill={h.color} fillOpacity={0.05} stroke={h.color} strokeOpacity={0.35} />
+                  {h.showName && (
+                    <text x={rx + rw / 2} y={ry + 14} textAnchor="middle" fill={h.color} fontSize={11}>
+                      {name}
+                    </text>
+                  )}
+                </g>
+              );
+            }
             return (
               <g key={h.id} data-testid={`hull-${h.id}`}>
                 <circle cx={sx} cy={sy} r={sr} fill={h.color} fillOpacity={0.05} stroke={h.color} strokeOpacity={0.35} />
                 {h.showName && (
                   <text x={sx} y={sy - sr - 4} textAnchor="middle" fill={h.color} fontSize={11}>
-                    {h.label}
-                    {h.showCount ? ` · ${h.count}` : ""}
+                    {name}
                   </text>
                 )}
+              </g>
+            );
+          })}
+          {(scene.orbitRings ?? []).map((ring) => {
+            const sx = ring.cx * cam.k + cam.x;
+            const sy = ring.cy * cam.k + cam.y;
+            const sr = ring.r * cam.k;
+            return (
+              <g key={ring.index} data-testid={`orbit-ring-${ring.index}`}>
+                {sr > 1 && (
+                  <circle cx={sx} cy={sy} r={sr} fill="none" stroke="currentColor" strokeOpacity={0.28} />
+                )}
+                <text x={sx} y={sy - sr - 6} textAnchor="middle" fill="currentColor" fontSize={11}>
+                  {ring.label}
+                </text>
               </g>
             );
           })}
@@ -452,22 +536,36 @@ export function CodeGraphCanvas({
 
       <div className="absolute left-3 top-3 z-10 flex flex-col items-start gap-1.5">
         <div data-testid="layout-chips" role="group" aria-label="Layout" className="flex gap-1">
-          {CHIPS.map((chip) => (
-            <button
-              key={chip.id}
-              type="button"
-              disabled={!chip.on}
-              aria-pressed={chip.on}
-              data-testid={`layout-chip-${chip.id}`}
-              className={
-                chip.on
-                  ? "rounded-lg border border-control-hover bg-surface-3 px-2 py-1 text-[11.5px] text-fg"
-                  : "rounded-lg border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-faint"
-              }
-            >
-              {chip.label}
-            </button>
-          ))}
+          {CHIPS.map((chip) => {
+            const pressed = chip.id === layoutKind;
+            return (
+              <button
+                key={chip.id}
+                type="button"
+                disabled={!chip.on}
+                aria-pressed={pressed}
+                data-testid={`layout-chip-${chip.id}`}
+                onClick={() => {
+                  if (!chip.on || chip.id === "matrix" || chip.id === layoutKind) return;
+                  setLayoutKind(chip.id);
+                  setHover(null);
+                  setHoverTile(null);
+                  setSelectedTile(null);
+                  setTween(null);
+                  fitted.current = "";
+                }}
+                className={
+                  !chip.on
+                    ? "rounded-lg border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-faint"
+                    : pressed
+                      ? "rounded-lg border border-control-hover bg-surface-3 px-2 py-1 text-[11.5px] text-fg"
+                      : "rounded-lg border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-fg"
+                }
+              >
+                {chip.label}
+              </button>
+            );
+          })}
         </div>
         {scene && (
           <p data-testid="lod-caption" className="max-w-[440px] rounded bg-surface/80 px-2 py-1 text-[11.5px] text-muted">
