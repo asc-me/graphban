@@ -126,6 +126,12 @@ class Seat:
     #: child that ignores the instruction it drives is stopped anyway. Last field, so a seat
     #: built positionally anywhere keeps its meaning.
     review_only: bool = False
+    #: Opt-in (GRPH-1089). A bound seat that must exit once its item leaves in_progress,
+    #: rather than reviewing other items. Hint only — the server stores it on the enrolment
+    #: and refuses `claim_review`/`claim_next` itself. Last field, so a seat built
+    #: positionally anywhere keeps its meaning. Default false: `gbfleet until` does not set
+    #: it, because a wave's finished workers review each other.
+    bound_only: bool = False
 
     def mcp_config(self, name: str = "graphban") -> dict:
         """The vendor-neutral core of every adapter's config file.
@@ -338,11 +344,36 @@ REVIEW_ONLY_INSTRUCTION = (
 )
 
 
+#: GRPH-1089. Same fragments as BOUND_INSTRUCTION up to the binding, then the opposite tail:
+#: exit after the item is in review. NOT the control. The seat is: `items.bound_only_refusal`
+#: refuses `claim_review` and `claim_next` once the bound item has left in_progress. This is
+#: here so the child does not spend a turn walking into that refusal and reading it as an
+#: empty queue. Selected only when the seat carries both an item and the flag. The default
+#: bound seat still gets BOUND_INSTRUCTION, whose tail tells it to review.
+BOUND_ONLY_INSTRUCTION = (
+    "Register with `register_agent` using enrolment_code={code!r}, worktree={worktree!r} "
+    "and branch={branch!r}.\n"
+    "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
+    "no parent. Declaring one would make you and your reviewer count as one call tree, "
+    "and review across this fleet would stop meaning anything.\n"
+    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT + DECLARE + NOT_YET +
+    "This seat is BOUND to {item} and it is bound-only. Read the reply's `assigned`. If "
+    "`assigned.state` is `claimed`, you HOLD {item} — read it with get_item_details, build "
+    "it, COMMIT it, then move it to review with evidence. Then EXIT. Do NOT call "
+    "claim_review or claim_next: once {item} has left in_progress the server refuses both "
+    "and the refusal names {item}. That refusal is the seat working, not an empty board. "
+    "If `assigned.state` is `taken`, somebody else holds it (the reply says who): EXIT — "
+    "that is the normal end of a bound-only run, not a failure."
+)
+
+
 def instruction_for(seat: Seat, worktree: Path, branch: str) -> str:
     # `review_only` first. A seat cannot be both that and bound — the server refuses to mint
     # one that is — and if that ever changed, the narrower promise is the one to state.
     if seat.review_only:
         tmpl = REVIEW_ONLY_INSTRUCTION
+    elif seat.item and seat.bound_only:
+        tmpl = BOUND_ONLY_INSTRUCTION
     elif seat.item:
         tmpl = BOUND_INSTRUCTION
     else:

@@ -801,11 +801,37 @@ def _refuse_by_reach(item: Item, acknowledged: bool) -> None:
                                      "to deploy in the UI")
 
 
+def refuse_bound_collision(db: Session, *, agent: Agent, item: Item) -> None:
+    """Refuse a bound seat whose areas someone else already holds (PRD-36 D13).
+
+    A steered claim bypasses the divvy, so the collision check the divvy would have made
+    happens here and names the holder. Writes nothing. Shared by `delegate(seat=true)` and
+    `mint_enrolment(bound_only=true, item=...)` so the second door is not a way around the
+    first (GRPH-1089).
+    """
+    from app.services import collision as collision_svc
+    from app.services import fleet as fleet_svc
+
+    areas, _ = collision_svc.touch_areas(db, item, item.project_id)
+    taken = fleet_svc.active_reservations(db, item.project_id, now=_now())
+    blocked = [r.area for r in taken if r.agent_id != agent.id]
+    if fleet_svc.areas_collide(areas, blocked):
+        holders = sorted({r.agent_id for r in taken
+                          if r.agent_id != agent.id
+                          and fleet_svc.areas_collide(areas, [r.area])})
+        raise DelegationRefused(
+            f"{item.key}'s areas are reserved by {', '.join(holders)}; a bound seat "
+            "would claim straight through that collision",
+            hint="delegate another item, or delegate without a seat and let the divvy decide",
+            detail={"held_by": ", ".join(holders)})
+
+
 def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
              note: str = "", lease_seconds: int, seat: bool = False, api_key=None,
              wave: str | None = None,
              scope: str | None = None,
-             acknowledge_reach: bool = False) -> tuple[Delegation, str | None, str | None]:
+             acknowledge_reach: bool = False,
+             bound_only: bool = False) -> tuple[Delegation, str | None, str | None]:
     """Write what the delegator asked for. Claims nothing, spawns nothing. Returns the new
     row, the id of the caller's own open delegation it withdrew (PRD-35 D14), and the bound
     seat's enrolment code when `seat` was asked for (PRD-36 D2), else None.
@@ -827,6 +853,12 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
             + (f": {item.blocker}" if item.blocker else " (status blocked)"),
             hint="clear the blocker before delegating")
     _refuse_by_reach(item, acknowledge_reach)
+    if bound_only and not seat:
+        # Before any write. A flag without a seat has nothing to store it on, and accepting
+        # the delegation would look like the child had been bound when it had not.
+        raise DelegationRefused(
+            "bound_only needs a seat bound to this item: pass seat=true",
+            code="validation")
     if item.claimed_by == agent.id:
         raise DelegationRefused(f"you hold {item.key}; release it or build it yourself",
                                 hint="a delegation is for work you are not holding")
@@ -844,24 +876,10 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
                 hint="wait for the pin to lapse, or let the author retry",
                 detail={"pinned_to": holder, "pinned_until": until.isoformat() if until else None})
     now = _now()
-    holders: list[str] = []
     if seat:
-        from app.services import collision as collision_svc
-
         # The mint gate is the mint gate: whoever may call mint_enrolment may bind a seat.
         fleet_svc.check_tool_role(db, tool="mint_enrolment", api_key=api_key, agent_id=agent.id)
-        areas, _ = collision_svc.touch_areas(db, item, item.project_id)
-        taken = fleet_svc.active_reservations(db, item.project_id, now=now)
-        blocked = [r.area for r in taken if r.agent_id != agent.id]
-        if fleet_svc.areas_collide(areas, blocked):
-            holders = sorted({r.agent_id for r in taken
-                              if r.agent_id != agent.id
-                              and fleet_svc.areas_collide(areas, [r.area])})
-            raise DelegationRefused(
-                f"{item.key}'s areas are reserved by {', '.join(holders)}; a bound seat "
-                "would claim straight through that collision",
-                hint="delegate another item, or delegate without a seat and let the divvy decide",
-                detail={"held_by": ", ".join(holders)})
+        refuse_bound_collision(db, agent=agent, item=item)
     withdrew: str | None = None
     for row in _open_rows(db, item):
         if row.delegated_by == agent.id:
@@ -903,7 +921,9 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
             # complaint being answered is precisely that the operator's flag stopped being
             # true one process down. A scope nobody asked for is a different surprise, not
             # a smaller one.
-            prd_id=scope or None)
+            prd_id=scope or None,
+            # GRPH-1089. Opt-in. Absent stays today's seat: the child reviews after it builds.
+            bound_only=bound_only)
     return row, withdrew, code
 
 

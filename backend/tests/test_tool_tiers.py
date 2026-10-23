@@ -389,6 +389,7 @@ CORE_TOKENS = 8918
 # fleet 1051 → 1100: `mint_enrolment` gains `review_only` (GRPH-988), a seat that may review
 # and may never take build work. The whole bill is in this tier and CORE_TOKENS does not move,
 # which is the argument for not funding it out of prose every key pays for.
+# GRPH-1089: bound_only is fleet-only args, not base TOOLS, so fleet stays 1100.
 TIER_TOKENS = {"prd": 1998, "codegraph": 1791, "fleet": 1100, "misc": 1238}
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".

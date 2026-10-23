@@ -2082,6 +2082,65 @@ def held_by_a_seat(db: Session, agent_id: str | None) -> bool:
     return bool(agent is not None and agent.enrolment_id)
 
 
+class BoundOnlySeat(Exception):
+    """This agent's seat was minted for one item and that item has left in_progress (GRPH-1089).
+
+    Deliberately NOT a subclass of `OutOfScope`, for the reason `ReviewOnlySeat` gives. A skip
+    loop would sweep the board and hand back an empty batch, and "nothing was ready" is the
+    reassuring reading of "you were told to stop". The flag is opt-in: a seat minted without
+    it reviews other items after its own, which is what a `gbfleet until` wave relies on.
+    """
+
+
+def bound_only_refusal(db: Session, agent_id: str | None) -> str | None:
+    """Why this seat may not call `claim_review` or `claim_next`, or None when it may.
+
+    Refuses only when the seat was minted `bound_only` AND its bound item is no longer
+    `in_progress` — review, done, blocked, next, or a row that has gone. While the item is
+    still `in_progress` the seat is doing the work it was minted for, and reviewing someone
+    else's item is still allowed. An unbound seat, a seat without the flag, and an agent
+    with no enrolment all read None and behave exactly as they did.
+    """
+    if not agent_id:
+        return None
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return None
+    seat = db.get(Enrolment, agent.enrolment_id)
+    if seat is None or not seat.bound_only or not seat.item_id:
+        return None
+    bound = db.get(Item, seat.item_id)
+    if bound is None:
+        return (
+            f"this seat is bound_only to {seat.item_id}, which is gone. "
+            "claim_review and claim_next are refused. Exit — that is the normal end of a "
+            "bound-only run, not a failure."
+        )
+    if bound.status == "in_progress":
+        return None
+    return (
+        f"this seat is bound_only to {bound.key}, which has left in_progress "
+        f"(status {bound.status}). claim_review and claim_next are refused. "
+        "Exit — that is the normal end of a bound-only run, not a failure."
+    )
+
+
+def bound_only_seat(db: Session, agent_id: str | None) -> bool:
+    """Is this agent on a seat minted BOUND-ONLY (GRPH-1089)?
+
+    Echoed on `register_agent`, always, so a child can tell "the flag is false" from "this
+    server has never heard of it". The gate is `bound_only_refusal`; this only reports the
+    flag, including while the bound item is still `in_progress` and the gate is silent.
+    """
+    if not agent_id:
+        return False
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return False
+    seat = db.get(Enrolment, agent.enrolment_id)
+    return bool(seat is not None and seat.bound_only)
+
+
 def review_only_seat(db: Session, agent_id: str | None) -> bool:
     """Is this agent on a seat minted REVIEW-ONLY (GRPH-988)?
 
@@ -2183,6 +2242,14 @@ def claim_next(
     # the answer different.
     if review_only_seat(db, agent_id):
         raise ReviewOnlySeat(REVIEW_ONLY_REFUSAL)
+    # GRPH-1089. Same shape as the review-only check, and checked BEFORE the live-lease
+    # refusal below. A bound child that has just moved its item to review still holds that
+    # lease, so `AlreadyHolding` would answer first and the reason would name the lease
+    # instead of the binding — and deleting this check would then leave the suite green,
+    # because the lease refusal looks like a refusal. The binding is a property of the SEAT:
+    # no release makes the answer different once the item has left in_progress.
+    if reason := bound_only_refusal(db, agent_id):
+        raise BoundOnlySeat(reason)
     # ONE AT A TIME (GRPH-504). Checked before any candidate is considered, so a caller that
     # already holds something is refused rather than quietly given a second item to abandon.
     held = live_claim(db, agent_id, lease_seconds=lease_seconds)

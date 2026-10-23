@@ -107,6 +107,12 @@ willing to pay for.
 `seat=true` mints a worker seat **bound to the item**, which is what makes the child claim it
 at registration rather than racing for it.
 
+`bound_only=true` (with `seat=true`) is the opt-in that stops the child reviewing other
+items. Once its bound item leaves `in_progress`, `claim_review` and `claim_next` refuse and
+name the binding, and the child is told to exit. Omit the flag and the child may review
+other items after it finishes — that is today's behaviour, and `gbfleet until` does not set
+the flag, because a wave relies on finished bound workers reviewing each other.
+
 Delegate whole items, never fragments. If it has no title, touchpoints and acceptance, it is
 not ready to hand over — the touchpoints become the area reservations that stop the child
 colliding with other work. File it properly or do it inline.
