@@ -36,10 +36,16 @@ import { TriageView } from "@/features/triage/TriageView";
  *
  * The factory is hoisted above every top-level binding, so `fail` is declared inside it.
  */
+const FAILING_ENDPOINTS = [
+  "dashboard", "counts", "events", "triageQueue", "fleet", "harness", "harnessProbeCandidates",
+  "items", "shards", "codeMap", "prds", "orgs", "galaxy", "platform", "mcpTools",
+  "links", "apiKeys",
+];
+
 vi.mock("@/lib/api", () => {
   const fail = () => Promise.reject(new Error("boom"));
   const endpoints = [
-    "dashboard", "events", "triageQueue", "fleet", "harness", "harnessProbeCandidates",
+    "dashboard", "counts", "events", "triageQueue", "fleet", "harness", "harnessProbeCandidates",
     "items", "shards", "codeMap", "prds", "orgs", "galaxy", "platform", "mcpTools",
     "links", "apiKeys",
   ];
@@ -51,29 +57,52 @@ vi.mock("@/lib/api", () => {
         { id: "core", name: "Core", tag: "GRPH", accent: "#c6f24e", description: "" },
       ]),
       config: vi.fn(async () => ({ hosted_mode: false })),
-      ...Object.fromEntries(endpoints.map((k) => [k, fail])),
+      ...Object.fromEntries(endpoints.map((k) => [k, vi.fn(fail)])),
     },
   };
 });
+
+/** Enough of a good read for the counts strip to show numbers rather than the empty project. */
+const homeDash = {
+  items_total: 4,
+  items_by_status: { backlog: 1, next: 1, in_progress: 1, review: 1, done: 0, blocked: 0 },
+  in_progress_count: 1, blocked_count: 0, requests_total: 1,
+  requests_by_type: { bug: 1, feature: 0, enhancement: 0, feedback: 0 },
+  shard_count: 2, prd_count: 1, mcp_calls: 0,
+  recent_items: [{ id: "GRPH-1", title: "Ship the home", status: "in_progress" as const, date: "Oct 22" }],
+};
+const homeCounts = {
+  items: 4, items_in_progress: 1, requests: 1, review: 2, triage_new: 1, lessons_published: 3,
+};
 
 function show(ui: React.ReactElement) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter>
-        <ProjectProvider>{ui}</ProjectProvider>
-      </MemoryRouter>
-    </QueryClientProvider>,
+  return Object.assign(
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <ProjectProvider>{ui}</ProjectProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+    { qc },
   );
 }
 
 /** The one-liner every surface shows when a request failed. */
 const FAILED_COPY = /the request failed/i;
+const STALE_BANNER = /stale — last good counts/i;
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
+  const { api } = await import("@/lib/api");
+  for (const key of FAILING_ENDPOINTS) {
+    const fn = api[key as keyof typeof api] as ReturnType<typeof vi.fn>;
+    fn.mockReset();
+    fn.mockRejectedValue(new Error("boom"));
+  }
 });
 
 describe("a failed fetch is not an empty project", () => {
@@ -126,5 +155,38 @@ describe("a failed fetch is not an empty project", () => {
     // The strongest claim on this page is that no deployment has pushed a graph. It is
     // only true once the code-map read answered.
     expect(screen.queryByText(/has pushed a code graph/i)).not.toBeInTheDocument();
+    // No good read preceded this failure, so the stale banner must not appear.
+    expect(screen.queryByText(STALE_BANNER)).not.toBeInTheDocument();
+  });
+
+  it("Project Home does not banner a read that succeeded", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.dashboard).mockResolvedValue(homeDash as never);
+    vi.mocked(api.counts).mockResolvedValue(homeCounts as never);
+    vi.mocked(api.codeMap).mockResolvedValue({ node_count: 40 } as never);
+    vi.mocked(api.fleet).mockResolvedValue({ online: 1 } as never);
+    show(<ProjectHome />);
+    expect(await screen.findByText("Items")).toBeInTheDocument();
+    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(screen.queryByText(STALE_BANNER)).not.toBeInTheDocument();
+    expect(screen.queryByText(FAILED_COPY)).not.toBeInTheDocument();
+  });
+
+  it("Project Home keeps the last good counts and names them stale when a refresh fails", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.dashboard).mockResolvedValue(homeDash as never);
+    vi.mocked(api.counts).mockResolvedValue(homeCounts as never);
+    vi.mocked(api.codeMap).mockResolvedValue({ node_count: 40 } as never);
+    vi.mocked(api.fleet).mockResolvedValue({ online: 1 } as never);
+    const { qc } = show(<ProjectHome />);
+    expect(await screen.findByText("Items")).toBeInTheDocument();
+    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+
+    vi.mocked(api.dashboard).mockRejectedValue(new Error("boom"));
+    await qc.refetchQueries({ queryKey: ["dashboard", "core"] }).catch(() => undefined);
+
+    expect(await screen.findByText(STALE_BANNER)).toBeInTheDocument();
+    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
   });
 });
