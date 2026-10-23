@@ -21,14 +21,14 @@ import {
   useOrgs,
   useSyncStatus,
 } from "@/lib/queries";
-import { ORG_BASE, adminPath, orgPath, projectPath, settingsPath, usableHttpUrl } from "@/lib/routes";
+import { ORG_BASE, adminPath, orgPath, projectPath, settingsPath, tagFromPath, usableHttpUrl } from "@/lib/routes";
 
-/** Hosted workspace views grouped into Plan / Build / Observe (GRPH-940). Same 16 items the flat list had — collapsed into sections, not lengthened. */
+/** Hosted workspace views grouped into Plan / Build / Observe (GRPH-940).
+ * Dashboard is not one of them: it is the project home, rendered above the sections (GRPH-1066). */
 const HOSTED_PLAN = [
   { to: "tracker", icon: <ListChecks size={16} />, label: "Tracker", count: "items" as const },
   { to: "requests", icon: <Star size={16} />, label: "Requests", count: "requests" as const },
   { to: "triage", icon: <Radar size={16} />, label: "Triage" },
-  { to: "dashboard", icon: <LayoutGrid size={16} />, label: "Dashboard" },
   { to: "prds", icon: <BarChart3 size={16} />, label: "PRDs" },
   { to: "roadmap", icon: <Map size={16} />, label: "Roadmap" },
 ];
@@ -87,6 +87,8 @@ function HostedLeftNav() {
   const isPlatformAdmin = !!adminMe?.is_platform_admin;
   const [newProjectOpen, setNewProjectOpen] = React.useState(false);
   const { pathname } = useLocation();
+  // The URL is the project, and it is known before the project list answers.
+  const homeTag = active?.tag ?? tagFromPath(pathname);
   const routeSection = hostedSectionFromPath(pathname);
   const [section, setSection] = React.useState<Section | null>(routeSection);
   const lastRoute = React.useRef(routeSection);
@@ -168,6 +170,14 @@ function HostedLeftNav() {
       <NewProjectDialog open={newProjectOpen} onOpenChange={setNewProjectOpen} />
 
       <nav className="mt-4 flex flex-col gap-0.5">
+        {homeTag && (
+          <NavItem
+            to={projectPath(homeTag)}
+            icon={<LayoutGrid size={16} />}
+            label="Dashboard"
+            end
+          />
+        )}
         <SectionHeader
           label="Plan"
           expanded={section === "plan"}
@@ -399,7 +409,7 @@ function SelfHostLeftNav() {
       <NewProjectDialog open={newProjectOpen} onOpenChange={setNewProjectOpen} />
 
       <nav className="mt-4 flex flex-col gap-0.5">
-        <NavItem to="/home" icon={<LayoutGrid size={16} />} label="Home" />
+        <NavItem to="/home" icon={<LayoutGrid size={16} />} label="Dashboard" end />
 
         <SectionHeader
           label="Plan"

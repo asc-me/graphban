@@ -1,5 +1,5 @@
 /**
- * Canvas 2D renderer (PRD-52 D5). WebGL2 is a later slice behind `Renderer`.
+ * Canvas 2D renderer (PRD-52 D5). Fallback when WebGL2 is missing or lost.
  *
  * Fixed z-order: clouds, edges, nodes, rings. Labels and hull names stay in the DOM.
  */

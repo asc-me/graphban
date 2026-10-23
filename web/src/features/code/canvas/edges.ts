@@ -242,9 +242,24 @@ export interface RankResult {
   capped: boolean;
 }
 
+interface RankMemo {
+  types: Set<string> | null;
+  isolate: Set<string> | null;
+  ranked: RankedEdge[];
+}
+
+/**
+ * Degree and sort do not read the camera. A pan used to sort the whole pool
+ * again on every frame (dense is ~27k edges). The memo is keyed by the pool
+ * array and the filter sets the caller passed, so a new Set still recomputes.
+ * The array is not copied: mutating it in place would serve a stale rank.
+ */
+const rankMemo = new WeakMap<RankedEdge[], RankMemo>();
+
 /**
  * Type filter, then Isolate, then viewport, then the 6,000 cap.
  * Rank: max endpoint degree, then the smaller one, then canonical index.
+ * The rank is computed from that filtered set, not from the camera.
  */
 export function rankAndCap(
   edges: RankedEdge[],
@@ -255,30 +270,42 @@ export function rankAndCap(
     cap: number;
   },
 ): RankResult {
-  let list = edges;
-  if (opts.types) {
-    const types = opts.types;
-    list = list.filter((e) => types.has(e.type));
+  const memo = rankMemo.get(edges);
+  let ranked: RankedEdge[];
+  if (memo && memo.types === opts.types && memo.isolate === opts.isolate) {
+    ranked = memo.ranked;
+  } else {
+    let list = edges;
+    if (opts.types) {
+      const types = opts.types;
+      list = list.filter((e) => types.has(e.type));
+    }
+    if (opts.isolate) {
+      const iso = opts.isolate;
+      list = list.filter((e) => iso.has(e.src) && iso.has(e.dst));
+    }
+    const deg = new Map<string, number>();
+    for (const e of list) {
+      deg.set(e.src, (deg.get(e.src) ?? 0) + 1);
+      deg.set(e.dst, (deg.get(e.dst) ?? 0) + 1);
+    }
+    ranked = list.slice().sort((a, b) => {
+      const amax = Math.max(deg.get(a.src) ?? 0, deg.get(a.dst) ?? 0);
+      const bmax = Math.max(deg.get(b.src) ?? 0, deg.get(b.dst) ?? 0);
+      if (amax !== bmax) return bmax - amax;
+      const amin = Math.min(deg.get(a.src) ?? 0, deg.get(a.dst) ?? 0);
+      const bmin = Math.min(deg.get(b.src) ?? 0, deg.get(b.dst) ?? 0);
+      if (amin !== bmin) return bmin - amin;
+      return a.index - b.index;
+    });
+    rankMemo.set(edges, { types: opts.types, isolate: opts.isolate, ranked });
   }
-  if (opts.isolate) {
-    const iso = opts.isolate;
-    list = list.filter((e) => iso.has(e.src) && iso.has(e.dst));
+  const kept: RankedEdge[] = [];
+  let totalInView = 0;
+  for (const e of ranked) {
+    if (!opts.inView(e.src) && !opts.inView(e.dst)) continue;
+    totalInView += 1;
+    if (kept.length < opts.cap) kept.push(e);
   }
-  const deg = new Map<string, number>();
-  for (const e of list) {
-    deg.set(e.src, (deg.get(e.src) ?? 0) + 1);
-    deg.set(e.dst, (deg.get(e.dst) ?? 0) + 1);
-  }
-  const ranked = list.slice().sort((a, b) => {
-    const amax = Math.max(deg.get(a.src) ?? 0, deg.get(a.dst) ?? 0);
-    const bmax = Math.max(deg.get(b.src) ?? 0, deg.get(b.dst) ?? 0);
-    if (amax !== bmax) return bmax - amax;
-    const amin = Math.min(deg.get(a.src) ?? 0, deg.get(a.dst) ?? 0);
-    const bmin = Math.min(deg.get(b.src) ?? 0, deg.get(b.dst) ?? 0);
-    if (amin !== bmin) return bmin - amin;
-    return a.index - b.index;
-  });
-  const visible = ranked.filter((e) => opts.inView(e.src) || opts.inView(e.dst));
-  const capped = visible.length > opts.cap;
-  return { kept: capped ? visible.slice(0, opts.cap) : visible, totalInView: visible.length, capped };
+  return { kept, totalInView, capped: totalInView > opts.cap };
 }

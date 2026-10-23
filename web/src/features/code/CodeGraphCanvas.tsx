@@ -2,8 +2,9 @@
  * Canvas mode for a code map above DETAIL_BUDGET (PRD-52 D1, D4, D5).
  *
  * Clusters, Map and Orbit are drawings. Matrix is the DOM grid (PRD-52 D4)
- * and replaces this surface when that chip is on. The drawing is Canvas 2D
- * behind the Renderer interface; labels, hull names and the tooltip are DOM.
+ * and replaces this surface when that chip is on. WebGL2 draws the bitmap,
+ * Canvas 2D is the fallback, and neither context shows the reduced Matrix.
+ * Labels, hull names and the tooltip are DOM.
  */
 
 import * as React from "react";
@@ -21,6 +22,8 @@ import {
 import { AreaMatrix, LayoutChips, type GraphLayoutId } from "./AreaMatrix";
 import type { CodePath } from "@/lib/types";
 import { createCanvas2D } from "./canvas/canvas2d";
+import { ReducedView } from "./canvas/reduced";
+import { createWebGL, swapToCanvas2D } from "./canvas/webgl";
 import {
   CANVAS_MAX_K,
   CANVAS_MIN_K,
@@ -185,8 +188,11 @@ export function CodeGraphCanvas({
   canvasPins?: CanvasPinsApi;
 }) {
   const hostRef = React.useRef<HTMLDivElement | null>(null);
-  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const glRef = React.useRef<HTMLCanvasElement | null>(null);
+  const d2Ref = React.useRef<HTMLCanvasElement | null>(null);
   const rendererRef = React.useRef<Renderer | null>(null);
+  const sceneRef = React.useRef<DrawScene | null>(null);
+  const [kind, setKind] = React.useState<"pending" | "webgl" | "canvas2d" | "none">("pending");
   const [size, setSize] = React.useState({ w: 900, h: 560 });
   const [cam, setCam] = React.useState<Cam>({ x: 0, y: 0, k: 1 });
   const [tween, setTween] = React.useState<Tween | null>(null);
@@ -520,12 +526,52 @@ export function CodeGraphCanvas({
     });
   }, [drawn, alpha, pathAlpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover, hoverTile, selectedTile, pinIds]);
 
+  sceneRef.current = scene;
+
   React.useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !scene) return;
-    if (!rendererRef.current) rendererRef.current = createCanvas2D(canvas);
-    rendererRef.current?.draw(scene);
-  }, [scene]);
+    const glCanvas = glRef.current;
+    const d2 = d2Ref.current;
+    if (!glCanvas || !d2) return;
+    let gone = false;
+    const gl = createWebGL(glCanvas, {
+      onLost() {
+        const next = swapToCanvas2D(glCanvas, d2, sceneRef.current);
+        rendererRef.current = next;
+        if (!gone) setKind(next ? "canvas2d" : "none");
+      },
+    });
+    if (gl) {
+      rendererRef.current = gl;
+      d2.hidden = true;
+      glCanvas.hidden = false;
+      setKind("webgl");
+      return () => {
+        gone = true;
+        gl.destroy();
+      };
+    }
+    glCanvas.hidden = true;
+    const fb = createCanvas2D(d2);
+    if (fb) {
+      rendererRef.current = fb;
+      d2.hidden = false;
+      setKind("canvas2d");
+      return () => {
+        gone = true;
+        fb.destroy();
+      };
+    }
+    d2.hidden = true;
+    setKind("none");
+    return () => {
+      gone = true;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!scene || kind === "pending" || kind === "none" || !rendererRef.current) return;
+    rendererRef.current.draw(scene);
+  }, [scene, kind]);
 
   React.useEffect(() => () => rendererRef.current?.destroy(), []);
 
@@ -631,7 +677,7 @@ export function CodeGraphCanvas({
     <div
       ref={hostRef}
       data-testid="code-graph-canvas"
-      data-renderer={rendererRef.current?.kind ?? "canvas2d"}
+      data-renderer={kind}
       data-pair={pairFocus ? `${pairFocus.src}→${pairFocus.dst}` : undefined}
       data-pair-edges={pairFocus ? String(pairEdges) : undefined}
       data-frame-area={frameAreaId ?? undefined}
@@ -733,8 +779,20 @@ export function CodeGraphCanvas({
         onSelect(hit);
       }}
     >
-      <canvas ref={canvasRef} className="h-full w-full" />
-      {scene && (
+      <canvas
+        ref={glRef}
+        data-testid="code-graph-webgl"
+        hidden={kind !== "webgl" && kind !== "pending"}
+        className="absolute inset-0 h-full w-full"
+      />
+      <canvas
+        ref={d2Ref}
+        data-testid="code-graph-2d"
+        hidden={kind !== "canvas2d"}
+        className="absolute inset-0 h-full w-full"
+      />
+      {kind === "none" && <ReducedView layout={layout} />}
+      {kind !== "none" && scene && (
         <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden>
           {scene.hulls.map((h) => {
             const sx = h.cx * cam.k + cam.x;
@@ -804,6 +862,7 @@ export function CodeGraphCanvas({
           })}
         </svg>
       )}
+      {kind !== "none" && (
       <div className="pointer-events-none absolute inset-0">
         {labels.map((id) => {
           const i = drawn ? drawn.ids.indexOf(id) : -1;
@@ -831,9 +890,10 @@ export function CodeGraphCanvas({
           </div>
         )}
       </div>
+      )}
 
-      {tracing && <PathBanner pending={!!pathState?.pending} slow={!!pathState?.slow} />}
-      <div className="absolute left-3 top-3 z-10 flex flex-col items-start gap-1.5">
+      {kind !== "none" && tracing && <PathBanner pending={!!pathState?.pending} slow={!!pathState?.slow} />}
+      <div className="absolute left-3 top-3 z-20 flex flex-col items-start gap-1.5">
         <LayoutChips layout={layoutKind} onLayout={chooseLayout} returnTo={returnTo} />
         {pinsApi.total > 0 && (
           <button
