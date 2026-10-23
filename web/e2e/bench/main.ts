@@ -109,6 +109,7 @@ function dprProbe(): DprProbe {
     caption: "",
     areasOnly: false,
     revealed: null,
+    edgesAlpha: 0.85,
     glow: [],
   };
   renderer.draw(scene);

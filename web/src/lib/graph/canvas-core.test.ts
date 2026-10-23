@@ -10,16 +10,24 @@ import { describe, expect, it, vi } from "vitest";
 import viewSrc from "../../features/code/CodeGraphView.tsx?raw";
 
 import { dense, sparse } from "./__fixtures__/bigMap";
+import workerSrc from "./layout.worker.ts?raw";
 import {
   clustersLayout,
   GRID_CELL,
   HIT_WINDOW,
   hitTest,
   hitVisits,
+  layoutFor,
   layoutRunCount,
+  mapLayout,
   nodeRadius,
+  orbitLayout,
+  ORBIT_BUNDLE_CAP,
   resetLayoutRuns,
+  WORLD_H,
+  WORLD_W,
   bundleLabel,
+  type AreaLayoutKind,
   type ClusterLayout,
   type RankedEdge,
 } from "./bigLayout";
@@ -448,6 +456,7 @@ describe("canvas bitmap scale", () => {
       caption: "",
       areasOnly: false,
       revealed: null,
+      edgesAlpha: 0.85,
       glow: [
         {
           kind: "line",
@@ -593,6 +602,195 @@ describe("layout worker", () => {
       "layout worker died twice; using inline layout for this session",
     );
     warn.mockRestore();
+  });
+});
+
+function moduleGraph(
+  mods: string[],
+  link: (mods: string[]) => { src: string; dst: string; type: string }[],
+) {
+  const nodes: { id: string; path: string; kind: string }[] = [];
+  const edges: { src: string; dst: string; type: string }[] = [];
+  for (const m of mods) {
+    nodes.push({ id: m, path: m, kind: "module" });
+    for (let i = 0; i < 10; i++) {
+      const id = `${m}/f${i}`;
+      nodes.push({ id, path: `${m}/f${i}.py`, kind: "file" });
+      edges.push({ src: m, dst: id, type: "owns" });
+    }
+  }
+  edges.push(...link(mods));
+  return { nodes, edges };
+}
+
+function chain() {
+  const mods = ["data", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "docs"];
+  return moduleGraph(mods, () => {
+    const linked: { src: string; dst: string; type: string }[] = [];
+    for (let n = 1; n <= 7; n++) {
+      const prev = n === 1 ? "data" : `l${n - 1}`;
+      linked.push({ src: `l${n}/f0`, dst: `${prev}/f0`, type: "imports" });
+    }
+    linked.push({ src: "l1/f0", dst: "docs/f0", type: "references" });
+    return linked;
+  });
+}
+
+function mesh() {
+  const mods = Array.from({ length: 12 }, (_, i) => `m${String(i).padStart(2, "0")}`);
+  return moduleGraph(mods, (ids) => {
+    const linked: { src: string; dst: string; type: string }[] = [];
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        linked.push({ src: `${ids[j]}/f0`, dst: `${ids[i]}/f0`, type: "imports" });
+      }
+    }
+    return linked;
+  });
+}
+
+describe("map and orbit layouts", () => {
+  it("places both identically across two runs and on shuffled input", () => {
+    const g = pair();
+    for (const lay of [mapLayout, orbitLayout]) {
+      const first = lay(g);
+      const second = lay(g);
+      expect(sig(first)).toBe(sig(second));
+      const shuffled = lay({ nodes: [...g.nodes].reverse(), edges: [...g.edges].reverse() });
+      expect(sig(shuffled)).toBe(sig(first));
+    }
+    const chained = chain();
+    expect(sig(orbitLayout(chained))).toBe(
+      sig(orbitLayout({ nodes: [...chained.nodes].reverse(), edges: [...chained.edges].reverse() })),
+    );
+  });
+
+  it("tiles areas by member count and keeps every member inside its tile", () => {
+    const g = pair();
+    const map = mapLayout(g);
+    const clusters = clustersLayout(g);
+    expect(map.layout).toBe("map");
+    expect(sig(map)).not.toBe(sig(clusters));
+    expect(map.areas.every((a) => a.rect)).toBe(true);
+    expect(clusters.areas.every((a) => !a.rect)).toBe(true);
+
+    const hullOf = new Map(map.areas.map((a) => [a.id, a]));
+    for (let i = 0; i < map.ids.length; i++) {
+      const rect = hullOf.get(map.areaOf[i])?.rect;
+      expect(rect).toBeTruthy();
+      if (!rect) continue;
+      expect(map.x[i] - map.r[i]).toBeGreaterThanOrEqual(rect.x - 1e-6);
+      expect(map.x[i] + map.r[i]).toBeLessThanOrEqual(rect.x + rect.w + 1e-6);
+      expect(map.y[i] - map.r[i]).toBeGreaterThanOrEqual(rect.y - 1e-6);
+      expect(map.y[i] + map.r[i]).toBeLessThanOrEqual(rect.y + rect.h + 1e-6);
+    }
+
+    const rects = map.areas.map((a) => a.rect!);
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        const a = rects[i];
+        const b = rects[j];
+        const overlap = a.x < b.x + b.w - 1e-6 && a.x + a.w > b.x + 1e-6 && a.y < b.y + b.h - 1e-6 && a.y + a.h > b.y + 1e-6;
+        expect(overlap).toBe(false);
+      }
+    }
+    const covered = rects.reduce((s, r) => s + r.w * r.h, 0);
+    const bounds = (WORLD_W - 48) * (WORLD_H - 48);
+    expect(covered).toBeGreaterThan(bounds * 0.7);
+  });
+
+  it("draws no edges until a tile or a node is focused, at any zoom", () => {
+    const map = mapLayout(pair());
+    for (const k of [1, 3]) {
+      const scene = buildScene(map, sceneOpts(k));
+      expect(scene.strokes).toHaveLength(0);
+      expect(scene.caption).toBe("Hover an area to see its dependencies");
+    }
+    const tile = buildScene(map, sceneOpts(1, { tileId: "alpha" }));
+    expect(tile.strokes.length).toBeGreaterThan(0);
+    expect(tile.strokes.every((s) => s.kind === "quad")).toBe(true);
+    expect(tile.caption).toBe("Area bundles");
+
+    const node = buildScene(map, sceneOpts(1, { hoverId: "alpha/f0", tileId: "alpha" }));
+    expect(node.strokes.length).toBeGreaterThan(0);
+    expect(node.strokes.every((s) => s.kind === "line")).toBe(true);
+    expect(node.strokes.some((s) => s.label.includes("alpha/f0"))).toBe(true);
+  });
+
+  it("rings derived layers, core first, support last, labelled by the largest member", () => {
+    const orbit = orbitLayout(chain());
+    const rings = orbit.orbitRings ?? [];
+    expect(rings.length).toBeLessThanOrEqual(5);
+    expect(rings.length).toBeGreaterThan(1);
+    expect(rings[0].areaIds).toContain("data");
+    expect(rings[0].label).toBe("L0 · data");
+    const outer = rings[rings.length - 1];
+    expect(outer.areaIds).toContain("docs");
+    expect(outer.label).toBe("support · docs");
+    expect(rings[0].r).toBeLessThan(outer.r);
+  });
+
+  it("draws only the top 30 area bundles until a node is focused", () => {
+    expect(ORBIT_BUNDLE_CAP).toBe(30);
+    const orbit = orbitLayout(mesh());
+    expect(orbit.layout).toBe("orbit");
+    expect(orbit.bundles.length).toBeGreaterThan(30);
+    const quiet = buildScene(orbit, sceneOpts(1));
+    expect(quiet.strokes).toHaveLength(30);
+    expect(new Set(quiet.strokes.map((s) => s.label)).size).toBe(30);
+    expect(quiet.caption).toBe("Top 30 area bundles");
+
+    const focused = buildScene(orbit, sceneOpts(1, { hoverId: "m00/f0" }));
+    expect(focused.strokes.length).toBeGreaterThan(30);
+  });
+});
+
+describe("layout cache", () => {
+  it("reuses a computed layout for the same kind and posts the kind to the worker", () => {
+    resetLayoutRuns();
+    const posts: { layout?: string }[] = [];
+    const spawn = (): AreaWorker => {
+      const worker: AreaWorker = {
+        postMessage(msg: unknown) {
+          const data = msg as {
+            id: number;
+            layout?: AreaLayoutKind;
+            nodes: { id: string; path: string; kind: string }[];
+            edges: { src: string; dst: string; type: string }[];
+            prevDepth?: number;
+          };
+          posts.push({ layout: data.layout });
+          const layout = layoutFor(data.layout, data);
+          worker.onmessage?.({ data: { kind: "area", id: data.id, layout } });
+        },
+        terminate() {},
+        onmessage: null,
+        onerror: null,
+      };
+      return worker;
+    };
+    const g = pair();
+    const { result, rerender } = renderHook(
+      ({ layout }: { layout: AreaLayoutKind }) => useAreaLayout({ ...g, layout }, { spawn }),
+      { initialProps: { layout: "map" } },
+    );
+    expect(result.current.layout?.layout).toBe("map");
+    const afterMap = layoutRunCount();
+    expect(posts.map((p) => p.layout)).toEqual(["map"]);
+
+    rerender({ layout: "orbit" });
+    expect(result.current.layout?.layout).toBe("orbit");
+    expect(layoutRunCount()).toBe(afterMap + 1);
+    expect(posts.map((p) => p.layout)).toEqual(["map", "orbit"]);
+
+    rerender({ layout: "map" });
+    expect(result.current.layout?.layout).toBe("map");
+    expect(posts).toHaveLength(2);
+    expect(layoutRunCount()).toBe(afterMap + 1);
+  });
+
+  it("asks the worker for layoutFor of the posted kind", () => {
+    expect(workerSrc).toMatch(/layoutFor\(layoutKind/);
   });
 });
 

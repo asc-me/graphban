@@ -10,7 +10,7 @@
 
 import * as React from "react";
 
-import { clustersLayout, type ClusterInput, type ClusterLayout } from "./bigLayout";
+import { layoutFor, type ClusterInput, type ClusterLayout } from "./bigLayout";
 
 export interface AreaWorker {
   postMessage(msg: unknown): void;
@@ -65,6 +65,7 @@ function inputKey(input: ClusterInput | null): string {
     mix(e.type);
   }
   mix(String(input.prevDepth ?? ""));
+  mix(input.layout ?? "clusters");
   return (h >>> 0).toString(16);
 }
 
@@ -85,13 +86,24 @@ export function useAreaLayout(
   const reqRef = React.useRef(0);
   const inputRef = React.useRef(input);
   inputRef.current = input;
+  const cacheRef = React.useRef(new Map<string, ClusterLayout>());
+  const keyForReq = React.useRef(new Map<number, string>());
   const spawnRef = React.useRef(spawn);
   spawnRef.current = spawn;
   const depthRef = React.useRef<number | undefined>(input?.prevDepth);
 
-  const runInline = React.useCallback((src: ClusterInput) => {
+  const runInline = React.useCallback((src: ClusterInput, key: string) => {
+    const cached = cacheRef.current.get(key);
+    if (cached) {
+      depthRef.current = cached.depth ?? undefined;
+      setLayout(cached);
+      setPending(false);
+      setMode("inline");
+      return;
+    }
     const t0 = performance.now();
-    const next = clustersLayout({ ...src, prevDepth: depthRef.current });
+    const next = layoutFor(src.layout, { ...src, prevDepth: depthRef.current });
+    cacheRef.current.set(key, next);
     depthRef.current = next.depth ?? undefined;
     setLayout(next);
     setPending(false);
@@ -102,6 +114,8 @@ export function useAreaLayout(
   const onMessage = React.useCallback((ev: { data: AreaLayoutResponse }) => {
     if (!ev.data || ev.data.kind !== "area") return;
     if (ev.data.id !== reqRef.current) return;
+    const cacheKey = keyForReq.current.get(ev.data.id);
+    if (cacheKey) cacheRef.current.set(cacheKey, ev.data.layout);
     depthRef.current = ev.data.layout.depth ?? undefined;
     setLayout(ev.data.layout);
     setPending(false);
@@ -124,21 +138,29 @@ export function useAreaLayout(
         const next = spawnRef.current();
         if (!next) {
           inlineRef.current = true;
-          if (src) runInline(src);
+          if (src) runInline(src, inputKey(src));
           return;
         }
         workerRef.current = next;
         wire(next);
         if (src) {
           const id = ++reqRef.current;
+          const cacheKey = inputKey(src);
+          keyForReq.current.set(id, cacheKey);
           setPending(true);
-          next.postMessage({ kind: "area", id, ...src, prevDepth: depthRef.current });
+          next.postMessage({
+            kind: "area",
+            id,
+            ...src,
+            layout: src.layout ?? "clusters",
+            prevDepth: depthRef.current,
+          });
         }
         return;
       }
       inlineRef.current = true;
       console.warn("layout worker died twice; using inline layout for this session");
-      if (src) runInline(src);
+      if (src) runInline(src, inputKey(src));
     };
   }, [onMessage, runInline]);
 
@@ -151,8 +173,15 @@ export function useAreaLayout(
       setPending(false);
       return;
     }
+    const cached = cacheRef.current.get(key);
+    if (cached) {
+      depthRef.current = cached.depth ?? undefined;
+      setLayout(cached);
+      setPending(false);
+      return;
+    }
     if (inlineRef.current) {
-      runInline(src);
+      runInline(src, key);
       return;
     }
     let worker = workerRef.current;
@@ -160,15 +189,22 @@ export function useAreaLayout(
       worker = spawnRef.current();
       if (!worker) {
         inlineRef.current = true;
-        runInline(src);
+        runInline(src, key);
         return;
       }
       workerRef.current = worker;
       wire(worker);
     }
     const id = ++reqRef.current;
+    keyForReq.current.set(id, key);
     setPending(true);
-    worker.postMessage({ kind: "area", id, ...src, prevDepth: depthRef.current });
+    worker.postMessage({
+      kind: "area",
+      id,
+      ...src,
+      layout: src.layout ?? "clusters",
+      prevDepth: depthRef.current,
+    });
   }, [key, runInline, wire]);
 
   React.useEffect(() => {
