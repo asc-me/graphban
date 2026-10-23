@@ -336,3 +336,29 @@ describe("buildStackLayout — a project that writes none of Graphban", () => {
     }
   });
 });
+
+describe("buildStackLayout — the project's own app", () => {
+  const withApp: StackTopology = {
+    ...topo,
+    hosts: [
+      { id: "project_app", label: "Republiq — its own app (from the code map)", nodes: ["app:frontend"] },
+      ...topo.hosts,
+    ],
+    nodes: [
+      ...topo.nodes.map((n) => ({ ...n, ring: n.ring === 1 ? 2 : n.ring })),
+      node({ id: "app:frontend", ring: 1, host: "project_app", scope: "project" }),
+    ],
+  };
+  const layout = buildStackLayout(withApp);
+
+  it("puts the project's own column first, inside the code-we-write ring", () => {
+    const own = layout.boxes["app:frontend"];
+    for (const [id, b] of Object.entries(layout.boxes)) {
+      if (id !== "app:frontend") expect(own.x).toBeLessThan(b.x);
+    }
+    const ring1 = layout.rings.find((r) => r.ring === 1)!;
+    expect(ring1.x).toBeLessThanOrEqual(own.x);
+    expect(ring1.x + ring1.w).toBeGreaterThanOrEqual(own.x + own.w);
+    expect(layout.hostFrames.find((h) => h.id === "project_app")?.label).toMatch(/its own app/);
+  });
+});

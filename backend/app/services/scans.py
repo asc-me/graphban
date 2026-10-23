@@ -22,6 +22,7 @@ in the note, not a column — a reader sees them where the scan's other context 
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -31,6 +32,8 @@ from sqlalchemy.orm import Session
 from app.models import CodeRef, CodeScan, Item, ScanFinding
 from app.services import code_graph as code_svc
 from app.services.clustering import _match
+
+logger = logging.getLogger("graphban.scans")
 
 # Overlay categories — match docs/design/Stack.dc.html CAT list.
 CATEGORIES = ("security", "refactor", "stub", "deadcode", "coverage", "tests", "work")
@@ -815,12 +818,29 @@ def _attach_offers(
         cell["cta"] = {"kind": kind, "path": prefix, "filed_key": k, "filed_item": filed.get(k)}
 
 
+def _component_paths(db: Session, project_id: str) -> dict[str, str]:
+    """Graphban's fixed components, plus one per deployable the project's own code map
+    describes (`app:<dir>` → `<dir>/`), so its scans land on its own boxes. A repo-root
+    deployable gets none: an empty prefix would claim every scan in the project."""
+    from app.services import stack as stack_svc
+
+    paths = dict(COMPONENT_PATHS)
+    try:
+        owner = stack_svc.source_ownership(db, project_id)
+        for dep in stack_svc.own_deployables(db, project_id, owner):
+            if dep["dir"]:
+                paths[stack_svc.own_node_id(dep["dir"])] = dep["dir"] + "/"
+    except Exception:  # noqa: BLE001 — derived components are additive
+        logger.debug("own deployables unavailable for health", exc_info=True)
+    return paths
+
+
 def component_health(db: Session, project_id: str, *, head_sha: str = "") -> dict:
     """Stack overlay payload: one entry per deployable with scannable code."""
     head = (head_sha or "").strip()
     filed = _filed_items(db, project_id)
     components = []
-    for cid, prefix in COMPONENT_PATHS.items():
+    for cid, prefix in _component_paths(db, project_id).items():
         scans = _scans_for_prefix(db, project_id, prefix)
         cats: dict[str, dict] = {}
         for cat in CATEGORIES:
