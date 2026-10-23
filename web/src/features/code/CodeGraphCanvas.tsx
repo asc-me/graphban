@@ -20,6 +20,9 @@ import {
   type CanvasPinsApi,
 } from "@/lib/graph/useGraphPins";
 import { useCanvasListbox, type HolderReading } from "@/lib/graph/useGraphKeyboard";
+import { nodesHeldBy } from "@/lib/graph/presence";
+import type { FleetPresence } from "@/lib/types";
+import { canvasClouds } from "./canvas/clouds";
 import { AreaMatrix, LayoutChips, type GraphLayoutId } from "./AreaMatrix";
 import type { CodePath } from "@/lib/types";
 import { createCanvas2D } from "./canvas/canvas2d";
@@ -152,6 +155,8 @@ export function CodeGraphCanvas({
   onPathTarget,
   onPathEmpty,
   canvasPins,
+  presence = null,
+  soloUser = null,
 }: {
   nodes: CanvasGraphNode[];
   edges: CanvasGraphEdge[];
@@ -198,6 +203,10 @@ export function CodeGraphCanvas({
   onPathTarget?: (id: string) => void;
   /** Empty canvas while armed or pending. Disarms; does not clear the selection. */
   onPathEmpty?: () => void;
+  /** Live reservations. The fleet legend solos through `soloUser`. */
+  presence?: FleetPresence | null;
+  /** Set by the fleet legend. That user's clouds stay; the others fade. */
+  soloUser?: string | null;
   /**
    * Session pins. The view holds them so Matrix, which unmounts this surface,
    * does not drop them. Omitted, the canvas keeps its own store.
@@ -577,11 +586,23 @@ export function CodeGraphCanvas({
     () => (layout && pathState?.path ? pathAlphaBuffer(layout.ids, pathState.path) : null),
     [layout, pathState?.path],
   );
+  const soloIds = React.useMemo(
+    () => (soloUser ? nodesHeldBy(presence ?? undefined, soloUser) : null),
+    [presence, soloUser],
+  );
   const alpha = React.useMemo(() => {
     if (!layout) return null;
     if (pathAlpha) return pathAlpha;
+    // Solo beats a selection, the same order the SVG view uses. Hover still
+    // wins, so a soloed teammate does not stop you reading a neighbour.
+    if (soloIds && !hover) {
+      const out = new Uint8Array(layout.ids.length);
+      const dim = Math.round(0.22 * 255);
+      for (let i = 0; i < layout.ids.length; i++) out[i] = soloIds.has(layout.ids[i]) ? 255 : dim;
+      return out;
+    }
     return writeAlpha(layout.ids.length, reach, isolate && !!reach);
-  }, [layout, pathAlpha, reach, isolate]);
+  }, [layout, pathAlpha, soloIds, hover, reach, isolate]);
   const segments = React.useMemo(
     () => (drawn && pathState?.path ? pathSegments(pathState.path, drawn.ids, drawn.x, drawn.y) : []),
     [drawn, pathState?.path],
@@ -595,6 +616,10 @@ export function CodeGraphCanvas({
   }, [isolate, reach, layout]);
 
   const dpr = typeof window === "undefined" ? 1 : Math.min(2, window.devicePixelRatio || 1);
+  const clouds = React.useMemo(
+    () => (drawn ? canvasClouds(drawn, presence, cam.k, soloUser) : []),
+    [drawn, presence, cam.k, soloUser],
+  );
   const scene = React.useMemo(() => {
     if (!drawn || !alpha) return null;
     return buildScene(drawn, {
@@ -614,8 +639,11 @@ export function CodeGraphCanvas({
       edgesAlpha: pathAlpha ? NON_PATH_EDGE_ALPHA : undefined,
       tileId: hoverTile ?? selectedTile,
       pinned: pinIds,
+      presence,
+      clouds,
+      reducedMotion: prefersReducedMotion(),
     });
-  }, [drawn, alpha, pathAlpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover, hoverTile, selectedTile, pinIds]);
+  }, [drawn, alpha, pathAlpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover, hoverTile, selectedTile, pinIds, presence, clouds]);
 
   sceneRef.current = scene;
 
@@ -661,7 +689,30 @@ export function CodeGraphCanvas({
 
   React.useEffect(() => {
     if (!scene || kind === "pending" || kind === "none" || !rendererRef.current) return;
-    rendererRef.current.draw(scene);
+    const renderer = rendererRef.current;
+    const pulse =
+      !scene.staticPresence && scene.rings.some((ring) => ring.kind === "contention");
+    if (!pulse) {
+      renderer.draw(scene);
+      return;
+    }
+    let raf = 0;
+    let dead = false;
+    const tick = (now: number) => {
+      if (dead) return;
+      // 2.4s, the same hold-pulse as the SVG ring: 0.85 at the peaks, 0.3 at the trough.
+      const alpha = 0.575 + 0.275 * Math.cos((now / 2400) * Math.PI * 2);
+      renderer.draw({
+        ...scene,
+        rings: scene.rings.map((ring) => (ring.kind === "contention" ? { ...ring, alpha } : ring)),
+      });
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      dead = true;
+      cancelAnimationFrame(raf);
+    };
   }, [scene, kind]);
 
   React.useEffect(() => () => rendererRef.current?.destroy(), []);

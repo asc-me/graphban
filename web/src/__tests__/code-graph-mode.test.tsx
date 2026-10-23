@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DETAIL_BUDGET } from "@/lib/graph/galaxy";
-import type { CodeMap, CodeNode } from "@/lib/types";
+import type { CodeMap, CodeNode, FleetPresence } from "@/lib/types";
 
 /**
  * Mode follows the node count (PRD-52 D1). The force layout is mocked so an
@@ -40,26 +40,7 @@ function mapOf(n: number, truncated?: boolean): CodeMap {
 }
 
 let current: CodeMap = mapOf(3);
-let presenceData: {
-  served_at: string;
-  heartbeat_interval_seconds: number;
-  held: {
-    area: string;
-    item_id: null;
-    expires_at: null;
-    agent_id: string;
-    agent_label: string;
-    active_role: string;
-    state: string;
-    user_id: string;
-    user_initials: string;
-    user_color: string;
-    node_paths: string[];
-  }[];
-  off_map: [];
-  truncated: boolean;
-  total: number;
-} | null = null;
+let presenceData: FleetPresence | null = null;
 
 vi.mock("@/lib/queries", async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -148,6 +129,54 @@ describe("code graph mode", () => {
     });
     expect(screen.getByTestId("graph-live")).toHaveTextContent("File mod/n0.py, 0 connections, held by AD");
     expect(screen.getByRole("application").getAttribute("aria-label")).toMatch(/801 nodes, 0 edges/);
+  });
+
+  it("keeps solo and the off-map tray in the canvas-mode bottom bar", async () => {
+    const user = userEvent.setup();
+    presenceData = {
+      served_at: "2026-10-23T00:00:00Z",
+      heartbeat_interval_seconds: 50,
+      held: [{
+        area: "mod",
+        item_id: null,
+        expires_at: null,
+        agent_id: "a",
+        agent_label: "Ada",
+        active_role: "worker",
+        state: "working",
+        user_id: "u",
+        user_initials: "AD",
+        user_color: "#c6f24e",
+        node_paths: ["mod/n0.py"],
+      }],
+      off_map: [{
+        area: "vercel env",
+        item_id: null,
+        expires_at: null,
+        agent_id: "b",
+        agent_label: "Bea",
+        active_role: "worker",
+        state: "working",
+        user_id: "u2",
+        user_initials: "BE",
+        user_color: "#7ca2ff",
+        reason: "undescribed",
+      }],
+      truncated: false,
+      total: 2,
+    };
+    await mount(801);
+    expect(screen.getByTestId("code-graph-canvas")).toBeInTheDocument();
+    const bar = screen.getByTestId("graph-bottom-bar");
+    expect(within(bar).getByRole("button", { name: "fleet" })).toBeInTheDocument();
+    const chip = within(bar).getByRole("button", { name: /1a · 1n/ });
+    await user.click(chip);
+    expect(chip).toHaveAttribute("aria-pressed", "true");
+    const tray = within(bar).getByRole("button", { name: /not on this map/ });
+    await user.click(tray);
+    expect(within(bar).getByText("vercel env")).toBeInTheDocument();
+    expect(within(bar).getByText("undescribed")).toBeInTheDocument();
+    expect(chip).toHaveAttribute("aria-pressed", "true");
   });
 
   it("Escape disarms path mode before it clears the selection", async () => {

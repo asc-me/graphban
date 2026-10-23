@@ -19,7 +19,7 @@ import type { Renderer } from "./renderer";
 import type { DrawNode, DrawScene } from "./scene";
 import type { Stroke } from "./edges";
 import { quadPoint } from "./edges";
-import { presenceClouds } from "./clouds";
+import { presenceClouds, predictedStrokes, type Cloud } from "./clouds";
 import { createCanvas2D } from "./canvas2d";
 
 const STROKE = [10 / 255, 12 / 255, 14 / 255] as const;
@@ -281,6 +281,9 @@ void main() {
     cov = strokeMask(abs(d - v_r), swRing * 0.5, aa);
   } else if (kind == 5) {
     cov = 1.0 - smoothstep(v_r - aa, v_r + aa, d);
+  } else if (kind == 6) {
+    float t = d / max(v_r, 0.0001);
+    cov = clamp(1.0 - t, 0.0, 1.0);
   } else {
     float inside = 1.0 - smoothstep(v_r - aa, v_r + aa, d);
     float strokeA = strokeMask(abs(d - v_r), swFile * 0.5, aa);
@@ -288,7 +291,10 @@ void main() {
     cov = max(inside, strokeA);
   }
   if (cov < 0.02) discard;
-  o = vec4(col, cov * v_alpha);
+  // Premultiplied. Straight SRC_ALPHA onto a cleared buffer stores a*a, so a
+  // 0.16 cloud lands under the ink threshold and never shows.
+  float a = cov * v_alpha;
+  o = vec4(col * a, a);
 }`;
 
 const LINE_VS = `#version 300 es
@@ -317,7 +323,7 @@ const LINE_FS = `#version 300 es
 precision highp float;
 in vec4 v_color;
 out vec4 o;
-void main() { o = v_color; }`;
+void main() { o = vec4(v_color.rgb * v_color.a, v_color.a); }`;
 
 function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader | null {
   const shader = gl.createShader(type);
@@ -377,72 +383,113 @@ interface Prog {
   program: WebGLProgram;
   vao: WebGLVertexArrayObject;
   buf: WebGLBuffer;
+  /** Shared corner quad. One per program, not per slot. */
+  corners: WebGLBuffer;
   cam: WebGLUniformLocation | null;
   dpr: WebGLUniformLocation | null;
   view: WebGLUniformLocation | null;
+  /**
+   * Another VAO and instance buffer for this same program.
+   * Slots cannot share one buffer: the last upload would be what every earlier
+   * slot draws on a pan, and the contention pulse rewrites only the ring.
+   */
+  fork: () => Prog | null;
+}
+
+const NODE_ATTRS = [
+  { index: 1, size: 2, offset: 0 },
+  { index: 2, size: 1, offset: 8 },
+  { index: 3, size: 1, offset: 12 },
+  { index: 4, size: 3, offset: 16 },
+  { index: 5, size: 1, offset: 28 },
+  { index: 6, size: 1, offset: 32 },
+] as const;
+
+const LINE_ATTRS = [
+  { index: 1, size: 2, offset: 0 },
+  { index: 2, size: 2, offset: 8 },
+  { index: 3, size: 1, offset: 16 },
+  { index: 4, size: 4, offset: 20 },
+] as const;
+
+function bindInstanceGeom(
+  gl: WebGL2RenderingContext,
+  corners: WebGLBuffer,
+  strideFloats: number,
+  attrs: readonly { index: number; size: number; offset: number }[],
+): { vao: WebGLVertexArrayObject; buf: WebGLBuffer } | null {
+  const vao = gl.createVertexArray();
+  const buf = gl.createBuffer();
+  if (!vao || !buf) return null;
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, corners);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.vertexAttribDivisor(0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  const stride = strideFloats * 4;
+  for (const attr of attrs) bindDivisor(gl, attr.index, attr.size, stride, attr.offset);
+  gl.bindVertexArray(null);
+  return { vao, buf };
 }
 
 function makeNodeProg(gl: WebGL2RenderingContext): (Prog & { k: WebGLUniformLocation | null }) | null {
   const program = link(gl, NODE_VS, NODE_FS);
   if (!program) return null;
-  const vao = gl.createVertexArray();
-  const buf = gl.createBuffer();
   const corners = gl.createBuffer();
-  if (!vao || !buf || !corners) return null;
-  gl.bindVertexArray(vao);
+  if (!corners) return null;
   gl.bindBuffer(gl.ARRAY_BUFFER, corners);
   gl.bufferData(gl.ARRAY_BUFFER, NODE_CORNERS, gl.STATIC_DRAW);
-  gl.enableVertexAttribArray(0);
-  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-  gl.vertexAttribDivisor(0, 0);
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  const stride = NODE_FLOATS * 4;
-  bindDivisor(gl, 1, 2, stride, 0);
-  bindDivisor(gl, 2, 1, stride, 8);
-  bindDivisor(gl, 3, 1, stride, 12);
-  bindDivisor(gl, 4, 3, stride, 16);
-  bindDivisor(gl, 5, 1, stride, 28);
-  bindDivisor(gl, 6, 1, stride, 32);
-  gl.bindVertexArray(null);
-  return {
+  const geom = () => bindInstanceGeom(gl, corners, NODE_FLOATS, NODE_ATTRS);
+  const first = geom();
+  if (!first) return null;
+  const base = {
     program,
-    vao,
-    buf,
+    corners,
     cam: gl.getUniformLocation(program, "u_cam"),
     dpr: gl.getUniformLocation(program, "u_dpr"),
     view: gl.getUniformLocation(program, "u_view"),
     k: gl.getUniformLocation(program, "u_k"),
   };
+  const pack = (g: { vao: WebGLVertexArrayObject; buf: WebGLBuffer }): Prog & { k: WebGLUniformLocation | null } => ({
+    ...base,
+    vao: g.vao,
+    buf: g.buf,
+    fork() {
+      const next = geom();
+      return next ? pack(next) : null;
+    },
+  });
+  return pack(first);
 }
 
 function makeLineProg(gl: WebGL2RenderingContext): Prog | null {
   const program = link(gl, LINE_VS, LINE_FS);
   if (!program) return null;
-  const vao = gl.createVertexArray();
-  const buf = gl.createBuffer();
   const corners = gl.createBuffer();
-  if (!vao || !buf || !corners) return null;
-  gl.bindVertexArray(vao);
+  if (!corners) return null;
   gl.bindBuffer(gl.ARRAY_BUFFER, corners);
   gl.bufferData(gl.ARRAY_BUFFER, LINE_CORNERS, gl.STATIC_DRAW);
-  gl.enableVertexAttribArray(0);
-  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-  gl.vertexAttribDivisor(0, 0);
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  const stride = LINE_FLOATS * 4;
-  bindDivisor(gl, 1, 2, stride, 0);
-  bindDivisor(gl, 2, 2, stride, 8);
-  bindDivisor(gl, 3, 1, stride, 16);
-  bindDivisor(gl, 4, 4, stride, 20);
-  gl.bindVertexArray(null);
-  return {
+  const geom = () => bindInstanceGeom(gl, corners, LINE_FLOATS, LINE_ATTRS);
+  const first = geom();
+  if (!first) return null;
+  const base = {
     program,
-    vao,
-    buf,
+    corners,
     cam: gl.getUniformLocation(program, "u_cam"),
     dpr: gl.getUniformLocation(program, "u_dpr"),
     view: gl.getUniformLocation(program, "u_view"),
   };
+  const pack = (g: { vao: WebGLVertexArrayObject; buf: WebGLBuffer }): Prog => ({
+    ...base,
+    vao: g.vao,
+    buf: g.buf,
+    fork() {
+      const next = geom();
+      return next ? pack(next) : null;
+    },
+  });
+  return pack(first);
 }
 
 function setFrame(gl: WebGL2RenderingContext, prog: Prog, scene: DrawScene) {
@@ -538,6 +585,19 @@ function ringSig(rings: DrawScene["rings"]): number {
     const r = rings[i];
     h = Math.imul(h ^ ((r.x * 100) | 0), 16777619) ^ ((r.y * 100) | 0);
     h = Math.imul(h ^ ((r.r * 100) | 0), 33) ^ r.kind.charCodeAt(0) ^ r.color.charCodeAt(1);
+    h = Math.imul(h, 33) ^ Math.round((r.alpha ?? 0.9) * 1000);
+  }
+  return h;
+}
+
+/** Identity of the cloud layer. A solo or a zoom that changes the blobs misses. */
+export function cloudSig(clouds: readonly Cloud[]): number {
+  let h = clouds.length | 0;
+  for (let i = 0; i < clouds.length; i++) {
+    const c = clouds[i];
+    h = Math.imul(h ^ ((c.x * 100) | 0), 16777619) ^ ((c.y * 100) | 0);
+    h = Math.imul(h ^ ((c.r * 100) | 0), 33) ^ Math.round(c.alpha * 1000);
+    h = Math.imul(h, 33) ^ c.color.charCodeAt(1) ^ (c.predicted ? 5 : 1);
   }
   return h;
 }
@@ -615,7 +675,9 @@ export function createWebGL(
       antialias: false,
       depth: false,
       stencil: false,
-      premultipliedAlpha: false,
+      // The shaders write premultiplied colour. The page compositor must
+      // treat the buffer the same way, or a translucent cloud is darkened twice.
+      premultipliedAlpha: true,
       preserveDrawingBuffer: false,
     });
   } catch {
@@ -625,8 +687,19 @@ export function createWebGL(
   const nodes = makeNodeProg(gl);
   const lines = makeLineProg(gl);
   if (!nodes || !lines) return null;
+  // Clouds, dots, nodes and rings share the node program. Edges, dashes, the
+  // halo and the glow share the line program. Each slot still needs its own
+  // instance buffer: a hit on pan skips the upload, and the buffer would
+  // otherwise still hold whichever slot drew last.
+  const cloudProg = nodes.fork();
+  const dotProg = nodes.fork();
+  const ringProg = nodes.fork();
+  const dashProg = lines.fork();
+  const glowProg = lines.fork();
+  const haloProg = lines.fork();
+  if (!cloudProg || !dotProg || !ringProg || !dashProg || !glowProg || !haloProg) return null;
   gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
   gl.disable(gl.DEPTH_TEST);
   let dead = false;
   let lineBake: Bake | null = null;
@@ -635,6 +708,8 @@ export function createWebGL(
   let ringBake: Bake | null = null;
   let glowBake: Bake | null = null;
   let haloBake: Bake | null = null;
+  let cloudBake: Bake | null = null;
+  let dashBake: Bake | null = null;
 
   const onLost = () => {
     if (dead) return;
@@ -643,10 +718,10 @@ export function createWebGL(
   };
   canvas.addEventListener("webglcontextlost", onLost);
 
-  const paintLines = (scene: DrawScene, strokes: Stroke[], alpha: number, slot: "lines" | "glow" | "halo") => {
+  const paintLines = (scene: DrawScene, strokes: Stroke[], alpha: number, slot: "lines" | "glow" | "halo" | "dash") => {
     const zoom = scene.camera.k;
     const sig = geometrySig(strokes, alpha);
-    const current = slot === "lines" ? lineBake : slot === "glow" ? glowBake : haloBake;
+    const current = slot === "lines" ? lineBake : slot === "glow" ? glowBake : slot === "dash" ? dashBake : haloBake;
     // Captured before the assign. A hit means this frame must not bufferData.
     const hit = sameBake(current, sig, zoom, scene.dpr);
     const bake: Bake = hit && current
@@ -654,29 +729,33 @@ export function createWebGL(
       : { sig, zoom, dpr: scene.dpr, data: bakeLines(strokes, zoom, alpha) };
     if (slot === "lines") lineBake = bake;
     else if (slot === "glow") glowBake = bake;
+    else if (slot === "dash") dashBake = bake;
     else haloBake = bake;
     if (bake.data.length === 0) return;
-    setFrame(gl!, lines, scene);
-    drawBake(gl!, lines, bake, LINE_FLOATS, !hit);
+    const prog = slot === "lines" ? lines : slot === "glow" ? glowProg : slot === "dash" ? dashProg : haloProg;
+    setFrame(gl!, prog, scene);
+    drawBake(gl!, prog, bake, LINE_FLOATS, !hit);
   };
 
   const paintNodes = (
     scene: DrawScene,
     sig: number,
-    slot: "nodes" | "dots" | "rings",
+    slot: "nodes" | "dots" | "rings" | "clouds",
     build: () => Float32Array,
   ) => {
     const zoom = scene.camera.k;
-    const current = slot === "nodes" ? nodeBake : slot === "dots" ? dotBake : ringBake;
+    const current = slot === "nodes" ? nodeBake : slot === "dots" ? dotBake : slot === "clouds" ? cloudBake : ringBake;
     const hit = sameBake(current, sig, zoom, scene.dpr);
     const bake: Bake = hit && current ? current : { sig, zoom, dpr: scene.dpr, data: build() };
     if (slot === "nodes") nodeBake = bake;
     else if (slot === "dots") dotBake = bake;
+    else if (slot === "clouds") cloudBake = bake;
     else ringBake = bake;
     if (bake.data.length === 0) return;
-    setFrame(gl!, nodes, scene);
+    const prog = slot === "nodes" ? nodes : slot === "dots" ? dotProg : slot === "clouds" ? cloudProg : ringProg;
+    setFrame(gl!, prog, scene);
     gl!.uniform1f(nodes.k, zoom);
-    drawBake(gl!, nodes, bake, NODE_FLOATS, !hit);
+    drawBake(gl!, prog, bake, NODE_FLOATS, !hit);
   };
 
   const api: Renderer = {
@@ -691,8 +770,19 @@ export function createWebGL(
       gl!.clearColor(0, 0, 0, 0);
       gl!.clear(gl!.COLOR_BUFFER_BIT);
 
-      // Bottom layer. S5 draws clouds here once presenceClouds returns any.
-      void presenceClouds(scene);
+      // Bottom layer. Same list Canvas 2D fills, so the pixel diff sees both.
+      const clouds = presenceClouds(scene);
+      const cloudPad = 1 / Math.max(Math.abs(scene.camera.k) * scene.dpr, 0.001);
+      paintNodes(scene, cloudSig(clouds), "clouds", () => {
+        const data = new Float32Array(clouds.length * NODE_FLOATS);
+        let o = 0;
+        for (const cloud of clouds) {
+          o = pushNode(data, o, cloud.x, cloud.y, cloud.r, cloud.r + cloudPad, cloud.color, 6, cloud.alpha);
+        }
+        return data;
+      });
+      const dashes = predictedStrokes(clouds);
+      if (dashes.length) paintLines(scene, dashes, 0.45, "dash");
 
       const zoom = scene.camera.k;
       const aa = 1 / Math.max(Math.abs(zoom) * scene.dpr, 0.001);
@@ -732,7 +822,7 @@ export function createWebGL(
         const data = new Float32Array(ordered.length * NODE_FLOATS);
         let o = 0;
         for (const ring of ordered) {
-          o = pushNode(data, o, ring.x, ring.y, ring.r, ring.r + ringPad, ring.color, 4, 0.9);
+          o = pushNode(data, o, ring.x, ring.y, ring.r, ring.r + ringPad, ring.color, 4, ring.alpha ?? 0.9);
         }
         return data;
       });
@@ -748,10 +838,12 @@ export function createWebGL(
       canvas.removeEventListener("webglcontextlost", onLost);
       gl!.deleteProgram(nodes.program);
       gl!.deleteProgram(lines.program);
-      gl!.deleteBuffer(nodes.buf);
-      gl!.deleteBuffer(lines.buf);
-      gl!.deleteVertexArray(nodes.vao);
-      gl!.deleteVertexArray(lines.vao);
+      gl!.deleteBuffer(nodes.corners);
+      gl!.deleteBuffer(lines.corners);
+      for (const slot of [nodes, cloudProg, dotProg, ringProg, lines, dashProg, glowProg, haloProg]) {
+        gl!.deleteBuffer(slot.buf);
+        gl!.deleteVertexArray(slot.vao);
+      }
     },
   };
   return api;

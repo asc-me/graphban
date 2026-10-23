@@ -26,6 +26,11 @@ function noop2d(): CanvasRenderingContext2D {
   return new Proxy({} as CanvasRenderingContext2D, {
     get(target, prop) {
       if (prop in target) return target[prop as keyof CanvasRenderingContext2D];
+      // Gradient and pattern factories return an object the caller then paints on.
+      // A bare noop would hand back undefined and throw on the first addColorStop.
+      if (prop === "createRadialGradient" || prop === "createLinearGradient" || prop === "createPattern") {
+        return () => noop2d();
+      }
       return () => {};
     },
     set(target, prop, value) {
