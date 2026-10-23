@@ -1,5 +1,17 @@
 import "@testing-library/jest-dom/vitest";
 
+// CodeGraphView reads layout, sel, depth, iso, and cell once on mount and
+// writes them back with replaceState. A test that opens Matrix or selects a
+// node would otherwise hand that link to the next test in the same file.
+beforeEach(() => {
+  if (!window.location.search) return;
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `${window.location.pathname}${window.location.hash}`,
+  );
+});
+
 // jsdom lacks these; Radix (dropdowns, dialogs) calls them.
 Element.prototype.hasPointerCapture = () => false;
 Element.prototype.setPointerCapture = () => {};

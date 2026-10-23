@@ -257,7 +257,16 @@ class Child:
     #: `held_items` is only the latest reading, so a bound child that hands its item to
     #: review and claims another has dropped the first one from it — and the first one is
     #: the work on the branch. Reap compares the branch against this, not the latest reading.
+    #: `adopt` writes it into the children file and restores it on takeover (GRPH-1085). A
+    #: rebuilt Child used to start from a fresh empty list, so the handed-off item's files
+    #: were judged against whatever the child held after the restart.
     ever_held: list = field(default_factory=list)
+    #: False only when this Child was rebuilt from a roster that did not record `ever_held`.
+    #: A child this process spawned knows its own history, including while the list is still
+    #: empty — empty-and-known is "watched, held nothing". Empty-and-unknown is "the file
+    #: did not say", and reap asks the server which items this agent authored rather than
+    #: treating that silence as a complete history.
+    ever_held_known: bool = True
     #: worker | reviewer (P30 D2). Until must not start both as a simultaneous cohort.
     role: str = "worker"
     #: The turn budget this child was launched with, when the adapter takes one. Posted with

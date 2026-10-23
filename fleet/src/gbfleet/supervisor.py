@@ -1405,8 +1405,13 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
     measured = wave.touched.get(child.branch) or []
     if not measured:
         return
+    # Before the comparison, so an older roster's missing history is part of the operand
+    # and not a note written after the branch was already judged against too little.
+    history = _restore_authored(child, client)
     declared: list[str] = []
     unread: list[str] = []
+    if history:
+        unread.append(history)
     for item_id in _branch_items(child):
         now, why = _declared_now(client, item_id)
         if now is None:
@@ -1424,6 +1429,76 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
     wave.collided = tp_mod.overlaps(wave.touched)
 
 
+def _restore_authored(child, client) -> str:
+    """Fill `ever_held` from the ledger when the roster never recorded it (GRPH-1085).
+
+    An older children file has no `ever_held`. The live roster only knows what the child
+    holds now, so items it already handed to review are gone from that reading and the
+    branch is judged against too few declarations. Those items name this agent as
+    `built_by`. That read is the fallback, and only the fallback: a roster that recorded
+    the list, even an empty one, is the history and is not second-guessed.
+
+    Returns "" when the history is known. A non-empty string is why it is not, for the
+    caller to record — an unreadable authorship must not look like a child that held
+    only what it holds now.
+    """
+    if getattr(child, "ever_held_known", True):
+        return ""
+    agent = str(getattr(child, "agent_id", None) or "").strip()
+    authored, why = _authored_by(client, agent)
+    if authored is None:
+        return f"ever_held was not in the roster and authorship could not be read ({why})"
+    seen = getattr(child, "ever_held", None)
+    if not isinstance(seen, list):
+        child.ever_held = []
+        seen = child.ever_held
+    for item_id in authored:
+        if item_id not in seen:
+            seen.append(item_id)
+    child.ever_held_known = True
+    return ""
+
+
+def _authored_by(client, agent_id: str) -> tuple[list[str] | None, str]:
+    """Item ids whose `built_by` is `agent_id`, or (None, why that list was not read).
+
+    `[]` means the listing was read and this agent authored nothing in it. None means
+    it was not read, or it does not report authorship. A lean page carries no `built_by`,
+    and a missing field is not "nobody built this".
+    """
+    if not agent_id:
+        return None, "the adopted child has no agent id"
+    if client is None:
+        return None, "no client to read items with"
+    allowed = getattr(client, "allowed", None)
+    if allowed is not None and "search_items" not in allowed:
+        return None, "this client may not list items"
+    try:
+        payload = client.call("search_items", fields="full", limit=10_000)
+    except Exception as exc:  # noqa: BLE001 — any failed read is reported, not treated as none
+        return None, str(exc) or type(exc).__name__
+    if not isinstance(payload, dict):
+        return None, "item listing was not a record"
+    if payload.get("has_more"):
+        return None, "item listing was truncated"
+    fields = payload.get("fields")
+    if isinstance(fields, list) and "built_by" not in fields:
+        return None, "the listing does not report built_by"
+    rows = payload.get("results")
+    if not isinstance(rows, list):
+        return None, "item listing carried no results list"
+    out: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or "built_by" not in row:
+            return None, "a row did not report built_by"
+        if str(row.get("built_by") or "") != agent_id:
+            continue
+        item_id = str(row.get("id") or "").strip()
+        if item_id and item_id not in out:
+            out.append(item_id)
+    return out, ""
+
+
 def _branch_items(child) -> list[str]:
     """Every item whose work can be on this child's branch, bound item first (GRPH-1079).
 
@@ -1434,7 +1509,9 @@ def _branch_items(child) -> list[str]:
     now. Not live roster holdings either: `_roster` is overwritten after `release_item`, so
     at reap the live view is empty.
 
-    `getattr` because a Child rebuilt by hand or by `adopt` may carry only `held_items`.
+    `getattr` because a Child rebuilt by hand may carry only `held_items`. `adopt`
+    restores `ever_held` from the roster; a file that predates the field is filled by
+    `_restore_authored` before this runs, from items this agent authored.
     """
     ids: list[str] = []
     assigned = getattr(child, "assigned", None)
@@ -2033,9 +2110,13 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
 
 
 def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, subj: str, *,
-             client: Graphban | None) -> None:
-    """One draft PR for one branch carrying at most one item, and the receipt on that item."""
-    title, body = propose_mod.describe(branch, items, subj)
+             client: Graphban | None, attest: bool = False) -> None:
+    """One draft PR for one branch carrying at most one item, and the receipt on that item.
+
+    `attest` writes `Attests: <item>` into the body. The per-item split asks for it; a
+    single-item branch does not, and its body stays the one it had.
+    """
+    title, body = propose_mod.describe(branch, items, subj, attest=attest)
     note = wave.behind_clean.get(branch)
     if note:
         # The same sentence the BEHIND line prints (GRPH-1087). The reviewer reads the
@@ -2094,59 +2175,70 @@ def _publish_item_branch(wave: Wave, repo: Path, name: str, base: str) -> bool:
     return pushed.ok
 
 
+def _refuse_mixed(wave: Wave, branch: str, items: list[str], why: str, *,
+                  client: Graphban | None) -> None:
+    """The branch stays pushed and no PR is opened. The reason names the commit when
+    one commit is why (GRPH-1086)."""
+    reason = (f"carries {len(items)} items ({', '.join(items)}) and {why}; "
+              "one PR per item, so split it by hand")
+    wave.proposed[branch] = propose_mod.Proposed(branch=branch, skipped=True, reason=reason)
+    wave.unproposed[branch] = reason
+    wave.failures.append(f"{branch}: not proposed — {reason}")
+    _record_withheld(wave, client, items, branch, reason)
+
+
 def _propose_per_item(wave: Wave, repo: Path, branch: str, items: list[str], base: str, *,
                       client: Graphban | None) -> None:
-    """One branch and one PR per item, for a branch that carries several (GRPH-948).
+    """One branch and one PR per item, each cut from the base (GRPH-948, GRPH-1086).
 
-    A cluster claim is a scheduling unit, not a delivery unit. The reported child built four
-    items on one branch and the one PR it became — titled with three of them — was 19 files
-    and ~2,500 lines, merged before review, and needed four fix PRs.
+    A cluster claim is a scheduling unit, not a delivery unit. The reported child built
+    four items on one branch and the one PR it became carried all of them. Stacking the
+    PRs still left the later branch containing the earlier item's commits, so one merge
+    carried unreviewed work.
 
-    Each item's work ends at a commit on the branch (`split_by_item`); a branch is cut there
-    per item and the PRs are STACKED, each against the previous item's branch, so each diff is
-    that item's alone. A branch whose commits do not separate its items is not proposed at
-    all: a PR carrying two items is the defect, and the person splits it.
+    Each item's own commits are replayed onto the base and proposed against the base.
+    The body carries `Attests:` for that item alone. A commit that names no item, names
+    two, or will not apply without another item's commit refuses the whole branch:
+    opening the ones that did apply would merge part of a history that does not separate.
     """
     blocks, why = propose_mod.split_by_item(repo, branch, base, items)
     if why:
-        reason = (f"carries {len(items)} items ({', '.join(items)}) and {why}; "
-                  "one PR per item, so split it by hand")
-        wave.proposed[branch] = propose_mod.Proposed(branch=branch, skipped=True, reason=reason)
-        wave.unproposed[branch] = reason
-        wave.failures.append(f"{branch}: not proposed — {reason}")
+        _refuse_mixed(wave, branch, items, why, client=client)
         return
+    cut: list[tuple[str, str, str]] = []
+    for item, shas in blocks:
+        sha, err = propose_mod.replay_onto(repo, base, shas)
+        if err:
+            _refuse_mixed(wave, branch, items, err, client=client)
+            return
+        name = wt_mod.item_branch(branch, item)
+        if wt_mod.branch_exists(repo, name) and _branch_head(repo, name) != sha:
+            # Never moved: an existing branch at another commit is somebody's work.
+            _refuse_mixed(wave, branch, items, f"{name} exists at another commit", client=client)
+            return
+        cut.append((item, name, sha))
+    for item, name, sha in cut:
+        if wt_mod.branch_exists(repo, name):
+            continue
+        try:
+            wt_mod._git(repo, "branch", name, sha)
+        except wt_mod.GitError as exc:
+            wave.failures.append(f"{name}: could not be cut ({exc}); {item} not proposed")
+            return
     wave.proposed[branch] = propose_mod.Proposed(
         branch=branch, skipped=True,
-        reason=f"split into {len(blocks)} per-item branches, one PR each")
-    remote = wt_mod.remote_for(repo)
-    prev = base
-    for item, sha in blocks:
-        name = wt_mod.item_branch(branch, item)
-        if wt_mod.branch_exists(repo, name):
-            if _branch_head(repo, name) != sha:
-                # Never moved: an existing branch at another commit is somebody's work.
-                wave.failures.append(f"{name}: exists at another commit; {item} not proposed")
-                return
-        else:
-            try:
-                wt_mod._git(repo, "branch", name, sha)
-            except wt_mod.GitError as exc:
-                wave.failures.append(f"{name}: could not be cut ({exc}); {item} not proposed")
-                return
-        if not _publish_item_branch(wave, repo, name, prev):
-            wave.failures.append(f"{name}: not published, so {item} and every item stacked "
-                                 "on it were not proposed")
+        reason=f"split into {len(cut)} per-item branches, one PR each")
+    for item, name, _sha in cut:
+        if not _publish_item_branch(wave, repo, name, base):
+            wave.failures.append(f"{name}: not published, so {item} was not proposed")
             return
         # The behind-ness was measured on the branch the child built. Each per-item PR
         # is that same history, so the clean note travels with it (GRPH-1087).
         parent_note = wave.behind_clean.get(branch)
         if parent_note and name not in wave.behind_clean:
             wave.behind_clean[name] = parent_note
-        _open_pr(wave, repo, name, [item], prev, propose_mod.subject(repo, name, prev),
-                 client=client)
-        # `propose` passes the part after the remote to `gh --base`, so the next item's base
-        # is named as a remote-tracking ref, which the push has just written.
-        prev = f"{remote}/{name}"
+        _open_pr(wave, repo, name, [item], base, propose_mod.subject(repo, name, base),
+                 client=client, attest=True)
 
 
 def _note_salvage(wave: Wave, client: Graphban | None, repo: Path, branch: str,
