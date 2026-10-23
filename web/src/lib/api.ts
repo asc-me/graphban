@@ -43,6 +43,7 @@ import type {
   LogExportSampleResponse,
   LogExportTestResult,
   LogExportView,
+  BoxHealth,
   UpdateCheck,
   UsageAggregate,
   Invite,
@@ -447,6 +448,21 @@ export const api = {
       body: JSON.stringify(body),
     }),
   updateCheck: () => request<UpdateCheck>("/platform/update-check"),
+  // What this box is serving right now. `/health`, not update-check: it asks no GitHub
+  // feed, so polling it through an install cannot spend the unauthenticated rate limit.
+  // Not under /api and needs no session. `timeoutMs` bounds one call — a request held by
+  // a restarting proxy must not hold the install poll with it.
+  health: async (timeoutMs: number): Promise<BoxHealth> => {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await fetch("/health", { cache: "no-store", signal: ctl.signal });
+      if (!res.ok) throw new ApiError(res.status, res.statusText);
+      return res.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  },
   // Log export is the deployment's, so none of these takes a project id (PRD-47 S15). One
   // collector, one exporter, one queue for the box — see `LogExportConfig` in types.ts.
   logExport: () => request<LogExportView>("/settings/log-export"),
