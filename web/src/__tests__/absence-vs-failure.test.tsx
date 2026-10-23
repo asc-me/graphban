@@ -23,7 +23,6 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ActivityView } from "@/features/activity/ActivityView";
-import { DashboardView } from "@/features/dashboard/DashboardView";
 import { OutpostsView } from "@/features/fleet/OutpostsView";
 import { HarnessView } from "@/features/harness/HarnessView";
 import { ProjectHome } from "@/features/projecthome/ProjectHome";
@@ -78,19 +77,6 @@ beforeEach(() => {
 });
 
 describe("a failed fetch is not an empty project", () => {
-  it("Dashboard names the failure instead of drawing zeroed KPIs", async () => {
-    show(<DashboardView />);
-    expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
-    // Labels stay. A zero, or the empty-project title, would be the claim that the
-    // read happened. — is the third answer.
-    expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
-    expect(screen.queryByText("0")).not.toBeInTheDocument();
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(6);
-    expect(screen.queryByText("not pushed")).not.toBeInTheDocument();
-    expect(screen.queryByText(/has pushed a code graph/i)).not.toBeInTheDocument();
-  });
-
   it("Activity names the failure instead of 'No activity yet'", async () => {
     show(<ActivityView />);
     expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
@@ -130,7 +116,9 @@ describe("a failed fetch is not an empty project", () => {
   it("Project Home shows unread counts as — and withholds the no-code-graph claim", async () => {
     show(<ProjectHome />);
     expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
     // Six counts, none of them readable, so none of them may render as 0.
+    // A zero, or the empty-project title, would be the claim that the read happened.
     expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(6);
     expect(screen.queryByText("0")).not.toBeInTheDocument();
     expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();

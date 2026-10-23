@@ -84,7 +84,7 @@ const VIEW_PLACE: Record<string, Place> = {
   tracker: { section: "Plan", page: "Tracker" },
   requests: { section: "Plan", page: "Requests" },
   triage: { section: "Plan", page: "Triage" },
-  dashboard: { section: "Plan", page: "Dashboard" },
+  dashboard: { section: "Dashboard", page: "Dashboard" },
   prds: { section: "Plan", page: "PRDs" },
   roadmap: { section: "Plan", page: "Roadmap" },
   links: { section: "Build", page: "Links" },
@@ -101,7 +101,7 @@ const VIEW_PLACE: Record<string, Place> = {
   live: { section: "Observe", page: "Live" },
   harness: { section: "Observe", page: "Harness" },
   "feedback-kit": { section: "Project", page: "Feedback Kit" },
-  home: { section: "Home", page: "Home" },
+  home: { section: "Dashboard", page: "Dashboard" },
   usage: { section: "Deployment", page: "Usage" },
 };
 
@@ -126,6 +126,10 @@ const SETTINGS_PAGE: Record<string, string> = {
  * title-cased slug — a missing name is louder than a guessed one.
  */
 export function placeFromPath(pathname: string): Place | null {
+  // Project home is the Dashboard. An empty `/p/:tag` is that page, not "no place".
+  if (tagFromPath(pathname) && viewFromPath(pathname) === "") {
+    return { section: "Dashboard", page: "Dashboard" };
+  }
   const hosted = viewFromPath(pathname);
   const rest = hosted || (tagFromPath(pathname) ? "" : pathname.replace(/^\/+/, ""));
   if (!rest) return null;

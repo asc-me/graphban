@@ -20,7 +20,7 @@ rounded bar ends with 2px gaps, and text in ink tokens (never the series color).
 - One call, `GET /api/dashboard`, aggregates everything: `backend/app/services/dashboard.py`
   computes status counts, effort totals, request breakdowns, shard/PRD counts, total MCP
   calls (from the metering table), and the recent-items list.
-- Frontend: `web/src/features/dashboard/DashboardView.tsx`.
+- Frontend: `web/src/features/projecthome/ProjectHome.tsx`. The nav calls this page Dashboard. `/dashboard` redirects to it (`/home` on self-host, `/p/:tag` when hosted).
 
 ## API
 

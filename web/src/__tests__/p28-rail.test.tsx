@@ -85,14 +85,20 @@ function wrap(ui: ReactNode, path = "/tracker") {
 }
 
 describe("P28 self-host rail", () => {
-  it("shows Plan children on /tracker and hides Dashboard, MCP Tools", async () => {
+  it("shows Plan children on /tracker, a top-level Dashboard, and no MCP Tools", async () => {
     wrap(<LeftNav />);
     expect(await screen.findByText("Tracker")).toBeInTheDocument();
     expect(screen.getByText("Plan")).toBeInTheDocument();
     expect(screen.getByText("Build")).toBeInTheDocument();
     expect(screen.getByText("Observe")).toBeInTheDocument();
-    expect(screen.getByText("Home")).toBeInTheDocument();
-    expect(screen.queryByText("Dashboard")).not.toBeInTheDocument();
+    const plan = document.getElementById("nav-plan");
+    expect(plan).not.toBeNull();
+    expect(within(plan!).queryByText("Dashboard")).not.toBeInTheDocument();
+    expect(within(plan!).getAllByRole("link")).toHaveLength(5);
+    const dash = screen.getByRole("link", { name: "Dashboard" });
+    expect(dash).toHaveAttribute("href", "/home");
+    expect(dash).not.toHaveAttribute("aria-current");
+    expect(screen.queryByText("Home")).not.toBeInTheDocument();
     expect(screen.queryByText("MCP Tools")).not.toBeInTheDocument();
     expect(screen.getByText("Feedback Kit")).toBeInTheDocument();
     expect(screen.queryByText("Galaxy")).not.toBeInTheDocument();
@@ -201,11 +207,18 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     wrap(<LeftNav hosted />, "/p/CORE/tracker");
     expect(await screen.findByText("Tracker")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Plan" })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("Requests")).toBeInTheDocument();
-    expect(screen.getByText("Triage")).toBeInTheDocument();
-    expect(screen.getByText("Dashboard")).toBeInTheDocument();
-    expect(screen.getByText("PRDs")).toBeInTheDocument();
-    expect(screen.getByText("Roadmap")).toBeInTheDocument();
+    const plan = document.getElementById("hosted-nav-plan");
+    expect(plan).not.toBeNull();
+    expect(within(plan!).getByText("Requests")).toBeInTheDocument();
+    expect(within(plan!).getByText("Triage")).toBeInTheDocument();
+    expect(within(plan!).queryByText("Dashboard")).not.toBeInTheDocument();
+    expect(within(plan!).getByText("PRDs")).toBeInTheDocument();
+    expect(within(plan!).getByText("Roadmap")).toBeInTheDocument();
+    // Five Plan links. Putting Dashboard back under Plan fails this count.
+    expect(within(plan!).getAllByRole("link")).toHaveLength(5);
+    const dash = screen.getByRole("link", { name: "Dashboard" });
+    expect(dash).toHaveAttribute("href", "/p/CORE");
+    expect(dash).not.toHaveAttribute("aria-current");
     expect(await screen.findByText("Users & access")).toBeInTheDocument();
     expect(screen.getByText("Feedback Kit")).toBeInTheDocument();
     expect(screen.getByText("Galaxy")).toBeInTheDocument();
@@ -274,6 +287,14 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     expect(hostedFn).toContain("HOSTED_PLAN");
     expect(hostedFn).toContain("HOSTED_BUILD");
     expect(hostedFn).toContain("HOSTED_OBSERVE");
+    // Dashboard sits above the sections, not inside Plan.
+    const plan = src.match(/const HOSTED_PLAN = \[[\s\S]*?\];/)?.[0] ?? "";
+    expect(plan).not.toContain("dashboard");
+    expect(plan.match(/label:/g)?.length).toBe(5);
+    const dash = hostedFn.indexOf('label="Dashboard"');
+    const planLabel = hostedFn.indexOf('label="Plan"');
+    expect(dash).toBeGreaterThan(-1);
+    expect(planLabel).toBeGreaterThan(dash);
   });
 });
 
@@ -348,6 +369,40 @@ function renderAppAt(path: string, hosted: boolean) {
     </QueryClientProvider>,
   );
 }
+
+describe("GRPH-1066 /dashboard is project home and the nav entry is current there", () => {
+  afterEach(() => {
+    vi.mocked(api.config).mockResolvedValue({ hosted_mode: false, signup_mode: "closed" });
+  });
+
+  it("hosted /p/:tag/dashboard lands on project home with Dashboard current", async () => {
+    renderAppAt("/p/CORE/dashboard", true);
+    expect(await screen.findByRole("heading", { name: "Core" })).toBeInTheDocument();
+    expect(screen.getByTestId("here")).toHaveTextContent(/^\/p\/CORE$/);
+    const dash = screen.getByRole("link", { name: "Dashboard" });
+    expect(dash).toHaveAttribute("href", "/p/CORE");
+    expect(dash).toHaveAttribute("aria-current", "page");
+    // This page owns no section, so Plan stays closed. Jump tiles still link to Tracker.
+    expect(screen.getByRole("button", { name: "Plan" })).toHaveAttribute("aria-expanded", "false");
+    expect(document.getElementById("hosted-nav-plan")).toBeNull();
+  });
+
+  it("hosted flat /dashboard resolves to the same home", async () => {
+    renderAppAt("/dashboard", true);
+    expect(await screen.findByRole("heading", { name: "Core" })).toBeInTheDocument();
+    expect(screen.getByTestId("here")).toHaveTextContent(/^\/p\/CORE$/);
+    expect(screen.getByRole("link", { name: "Dashboard" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("self-host /dashboard still lands on /home and highlights Dashboard", async () => {
+    renderAppAt("/dashboard", false);
+    expect(await screen.findByRole("heading", { name: "Core" })).toBeInTheDocument();
+    expect(screen.getByTestId("here")).toHaveTextContent(/^\/home$/);
+    const dash = screen.getByRole("link", { name: "Dashboard" });
+    expect(dash).toHaveAttribute("href", "/home");
+    expect(dash).toHaveAttribute("aria-current", "page");
+  });
+});
 
 describe("GRPH-978 the feedback-kit settings bookmark redirects", () => {
   // `config` is module-scoped, so the hosted test would otherwise leak into every later one.
