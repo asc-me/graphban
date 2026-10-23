@@ -254,7 +254,10 @@ export function rankAndCap(
     deg.set(e.src, (deg.get(e.src) ?? 0) + 1);
     deg.set(e.dst, (deg.get(e.dst) ?? 0) + 1);
   }
-  const ranked = list.slice().sort((a, b) => {
+  // Degree stays global. Sorting only the viewport subset matches a full sort
+  // followed by the same filter, and a pan must not sort edges that are off screen.
+  const visible = list.filter((e) => opts.inView(e.src) || opts.inView(e.dst));
+  visible.sort((a, b) => {
     const amax = Math.max(deg.get(a.src) ?? 0, deg.get(a.dst) ?? 0);
     const bmax = Math.max(deg.get(b.src) ?? 0, deg.get(b.dst) ?? 0);
     if (amax !== bmax) return bmax - amax;
@@ -263,7 +266,6 @@ export function rankAndCap(
     if (amin !== bmin) return bmin - amin;
     return a.index - b.index;
   });
-  const visible = ranked.filter((e) => opts.inView(e.src) || opts.inView(e.dst));
   const capped = visible.length > opts.cap;
   return { kept: capped ? visible.slice(0, opts.cap) : visible, totalInView: visible.length, capped };
 }
