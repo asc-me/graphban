@@ -186,6 +186,10 @@ def test_a_split_branch_does_not_carry_the_behind_note_onto_its_per_item_prs(tmp
     A per-item PR that repeated the parent's "N behind" note would be stating a
     staleness its own diff does not have."""
     origin, repo, base = _remote_repo(tmp_path)
+    # The split cherry-picks each item onto the trunk, which commits, so the clone needs
+    # an identity of its own; a CI runner has no global one.
+    _git(repo, "config", "user.email", "a@b.c")
+    _git(repo, "config", "user.name", "t")
     _on_branch(repo, {"b.txt": "branch\n"}, "GRPH-1: add b")
     (repo / "d.txt").write_text("other item\n")
     _git(repo, "add", "-A")
