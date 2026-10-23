@@ -1171,6 +1171,10 @@ def behind_ref(repo: Path | str, base: str, ref: str) -> int:
     Zero when the ref cannot be resolved, which is the honest answer for a repository with
     no remote or an unfetched one — and the caller reports "not measured" rather than "not
     behind", because those are different facts (GRPH-786).
+
+    The count is not a verdict on whether the branch can be proposed. A trunk that moved
+    in files this branch never touches still counts, and refusing on the count alone is
+    what GRPH-1087 stops. `shared_with_missed` and `merge_tree_conflicts` are that check.
     """
     if not base or not ref:
         return 0
@@ -1179,6 +1183,63 @@ def behind_ref(repo: Path | str, base: str, ref: str) -> int:
         return int(out)
     except ValueError:
         return 0
+
+
+def changed_paths(repo: Path | str, old: str, new: str) -> list[str] | None:
+    """Paths that differ between two commits. None when git cannot answer.
+
+    None is not an empty list. An empty list means the trees were compared and nothing
+    differs; None means the comparison was not made, and a caller that treats the two
+    alike will propose a branch it never looked at.
+    """
+    if not (old or "").strip() or not (new or "").strip():
+        return None
+    proc = subprocess.run(
+        ["git", "diff", "--name-only", old, new],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    return [line for line in proc.stdout.splitlines() if line.strip()]
+
+
+def shared_with_missed(repo: Path | str, base: str, ref: str, branch: str) -> list[str] | None:
+    """Files the missed commits (`base`..`ref`) change that `branch` also changes.
+
+    Net tree diff, not every path a commit in the range happened to touch: a change the
+    trunk made and then reverted is not a file the branch has to reconcile. None when
+    either side cannot be listed — "we could not look" is not "no shared files"
+    (GRPH-1087).
+    """
+    missed = changed_paths(repo, base, ref)
+    own = changed_paths(repo, base, branch)
+    if missed is None or own is None:
+        return None
+    return sorted(set(missed) & set(own))
+
+
+def merge_tree_conflicts(repo: Path | str, ref: str, branch: str) -> bool | None:
+    """Does `git merge-tree --write-tree ref branch` report a conflict?
+
+    False when git exits 0 (a clean merge). True when it exits 1 (conflicts). None on
+    any other status — a missing ref, a git that cannot run the merge — because that is
+    "could not be asked", and it must not read as a clean merge (GRPH-1087).
+
+    This is the check the path intersection cannot be: a rename on one side and an edit
+    of the old path on the other need not share a name in `git diff --name-only`, and
+    they still conflict.
+    """
+    if not (ref or "").strip() or not (branch or "").strip():
+        return None
+    proc = subprocess.run(
+        ["git", "merge-tree", "--write-tree", ref, branch],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    if proc.returncode == 0:
+        return False
+    if proc.returncode == 1:
+        return True
+    return None
 
 
 def reaches(repo: Path | str, base: str, commit: str) -> bool | None:
