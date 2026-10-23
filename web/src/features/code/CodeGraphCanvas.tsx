@@ -8,6 +8,7 @@
  */
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 
 import { zoomAbout } from "@/lib/graph/useGraphViewport";
 import { pathAlphaBuffer } from "@/lib/graph/pathHighlight";
@@ -71,6 +72,14 @@ export interface CanvasGraphNode {
   path: string;
   kind: string;
   name: string;
+  /** What an agent said the node is. The hover card's second line, as Build.dc.html draws it. */
+  summary?: string;
+}
+
+/** Build.dc.html `gTip`: the description, cut at 46 characters. */
+function tipSub(summary: string | undefined): string | undefined {
+  if (!summary) return undefined;
+  return summary.length > 46 ? `${summary.slice(0, 45)}…` : summary;
 }
 
 export interface CanvasGraphEdge {
@@ -135,6 +144,7 @@ export function CodeGraphCanvas({
   onSelect,
   truncated,
   totalNodes,
+  undescribed = 0,
   frameId,
   controlRef,
   onZoom,
@@ -154,6 +164,8 @@ export function CodeGraphCanvas({
   pathState,
   onPathTarget,
   onPathEmpty,
+  onTraceTo,
+  chromeSlots,
   canvasPins,
   presence = null,
   soloUser = null,
@@ -167,6 +179,8 @@ export function CodeGraphCanvas({
   /** True when the payload says the map is a page, or the flag is absent and the counts disagree. */
   truncated: boolean;
   totalNodes: number;
+  /** Referenced by an edge but never described. Read aloud, as the caption shows it. */
+  undescribed?: number;
   /** An external request (find, hubs) to tween this node to 7×. */
   frameId: string | null;
   /** The view's GraphControls cluster drives zoom and fit through this. */
@@ -203,6 +217,14 @@ export function CodeGraphCanvas({
   onPathTarget?: (id: string) => void;
   /** Empty canvas while armed or pending. Disarms; does not clear the selection. */
   onPathEmpty?: () => void;
+  /** Alt-click on another node traces a path from the selection (PRD-20 AC-19). */
+  onTraceTo?: (id: string) => void;
+  /**
+   * Where the view wants this surface's chrome. With a `status` slot the view draws the
+   * layout chips itself, above find, and the toasts and status lines go under find; the
+   * zoom caption goes in `caption`, inside the legend box. Omitted, all of it stays here.
+   */
+  chromeSlots?: { status: HTMLElement | null; caption: HTMLElement | null };
   /** Live reservations. The fleet legend solos through `soloUser`. */
   presence?: FleetPresence | null;
   /** Set by the fleet legend. That user's clouds stay; the others fade. */
@@ -226,7 +248,7 @@ export function CodeGraphCanvas({
   const [hover, setHover] = React.useState<string | null>(null);
   const [hoverTile, setHoverTile] = React.useState<string | null>(null);
   const [selectedTile, setSelectedTile] = React.useState<string | null>(null);
-  const [tip, setTip] = React.useState<{ x: number; y: number; text: string } | null>(null);
+  const [tip, setTip] = React.useState<{ x: number; y: number; text: string; sub?: string } | null>(null);
   const [cameraOwner, setCameraOwner] = React.useState<"fit" | "pair" | "area" | "node">("fit");
   const camRef = React.useRef(cam);
   camRef.current = cam;
@@ -749,7 +771,7 @@ export function CodeGraphCanvas({
       setHover(hit);
       setHoverTile(null);
       const node = nameOf.get(hit);
-      setTip({ x: w.sx + 12, y: w.sy - 8, text: shortName(node, hit) });
+      setTip({ x: w.sx + 12, y: w.sy - 8, text: shortName(node, hit), sub: tipSub(node?.summary) });
       return;
     }
     setHover(null);
@@ -818,6 +840,70 @@ export function CodeGraphCanvas({
     );
   }
 
+  const statusLines = (
+    <>
+      {pinsApi.total > 0 && (
+        <button
+          type="button"
+          data-testid="unpin-all"
+          onClick={pinsApi.clearAll}
+          title="Release every pinned node"
+          className="rounded-lg border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-muted"
+        >
+          Unpin all
+        </button>
+      )}
+      {toast && (
+        <p
+          data-testid="canvas-pin-toast"
+          role="status"
+          className="rounded bg-surface/80 px-2 py-1 text-[11.5px] text-fg"
+        >
+          {toast}
+        </p>
+      )}
+      {truncated && (
+        <p data-testid="truncated-caption" className="rounded bg-surface/80 px-2 py-1 text-[11.5px] text-fg">
+          Showing {groupThousands(shown)} of {groupThousands(totalNodes)} nodes (truncated)
+        </p>
+      )}
+      {area.slow && (
+        <p className="rounded bg-surface/80 px-2 py-1 text-[11.5px] text-muted">Layout took over 1s.</p>
+      )}
+    </>
+  );
+  const caption = scene ? (
+    <p
+      data-testid="lod-caption"
+      className={
+        chromeSlots?.caption
+          ? "max-w-[440px] font-mono text-[10px] text-[#5c656e]"
+          : "max-w-[440px] rounded bg-surface/80 px-2 py-1 text-[11.5px] text-muted"
+      }
+    >
+      {scene.caption}
+    </p>
+  ) : null;
+  let chrome: React.ReactNode;
+  if (!chromeSlots) {
+    chrome = (
+      <div className="absolute left-3 top-3 z-20 flex flex-col items-start gap-1.5">
+        <LayoutChips layout={layoutKind} onLayout={chooseLayout} returnTo={returnTo} />
+        {statusLines}
+        {caption}
+      </div>
+    );
+  } else {
+    // The view's slots mount a frame after this does; until then the chrome waits.
+    const captionAt = chromeSlots.caption ?? chromeSlots.status;
+    chrome = (
+      <>
+        {chromeSlots.status && createPortal(statusLines, chromeSlots.status)}
+        {captionAt && createPortal(caption, captionAt)}
+      </>
+    );
+  }
+
   return (
     <div
       ref={hostRef}
@@ -834,7 +920,8 @@ export function CodeGraphCanvas({
       data-tween={tween ? "1" : "0"}
       role="application"
       aria-label={
-        `Code graph canvas: ${shown} nodes, ${edgeClause}. ` +
+        `Code graph canvas: ${shown} nodes, ${edgeClause}` +
+        (undescribed ? `, ${undescribed} referenced but not yet described. ` : ". ") +
         `${layoutKind[0].toUpperCase()}${layoutKind.slice(1)} layout. ` +
         "Arrow keys, Home, End and type-ahead move between nodes. Enter selects. Escape clears."
       }
@@ -903,6 +990,10 @@ export function CodeGraphCanvas({
         if (tracing) {
           if (hit) onPathTarget?.(hit);
           else onPathEmpty?.();
+          return;
+        }
+        if (hit && e.altKey && selectedId && hit !== selectedId && onTraceTo) {
+          onTraceTo(hit);
           return;
         }
         if (hit) {
@@ -1065,48 +1156,14 @@ export function CodeGraphCanvas({
             style={{ left: tip.x, top: tip.y }}
           >
             {tip.text}
+            {tip.sub && <div className="font-sans text-muted">{tip.sub}</div>}
           </div>
         )}
       </div>
       )}
 
       {kind !== "none" && tracing && <PathBanner pending={!!pathState?.pending} slow={!!pathState?.slow} />}
-      <div className="absolute left-3 top-3 z-20 flex flex-col items-start gap-1.5">
-        <LayoutChips layout={layoutKind} onLayout={chooseLayout} returnTo={returnTo} />
-        {pinsApi.total > 0 && (
-          <button
-            type="button"
-            data-testid="unpin-all"
-            onClick={pinsApi.clearAll}
-            title="Release every pinned node"
-            className="rounded-lg border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-muted"
-          >
-            Unpin all
-          </button>
-        )}
-        {toast && (
-          <p
-            data-testid="canvas-pin-toast"
-            role="status"
-            className="rounded bg-surface/80 px-2 py-1 text-[11.5px] text-fg"
-          >
-            {toast}
-          </p>
-        )}
-        {scene && (
-          <p data-testid="lod-caption" className="max-w-[440px] rounded bg-surface/80 px-2 py-1 text-[11.5px] text-muted">
-            {scene.caption}
-          </p>
-        )}
-        {truncated && (
-          <p data-testid="truncated-caption" className="rounded bg-surface/80 px-2 py-1 text-[11.5px] text-fg">
-            Showing {groupThousands(shown)} of {groupThousands(totalNodes)} nodes (truncated)
-          </p>
-        )}
-        {area.slow && (
-          <p className="rounded bg-surface/80 px-2 py-1 text-[11.5px] text-muted">Layout took over 1s.</p>
-        )}
-      </div>
+      {chrome}
 
     </div>
   );

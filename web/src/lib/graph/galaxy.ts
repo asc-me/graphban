@@ -18,8 +18,12 @@ import { adjacency, degrees } from "./metrics";
  * - `orderWithin` — degree order inside one set of ids.
  */
 
-/** Above this many nodes the flat SVG view stops and canvas mode takes over. */
-export const DETAIL_BUDGET = 800;
+/**
+ * Above this many nodes the code graph is canvas mode. Zero: every non-empty map
+ * is drawn on the canvas, at every size. The SVG view below 800 opened on an
+ * empty frame and its Fit only reset to 100%.
+ */
+export const DETAIL_BUDGET = 0;
 
 export interface Component {
   /** Highest-inbound member — the label a component wears. */

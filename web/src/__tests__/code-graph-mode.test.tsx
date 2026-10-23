@@ -60,11 +60,12 @@ async function mount(n: number, truncated?: boolean) {
 }
 
 describe("code graph mode", () => {
-  it("keeps the SVG view at the detail budget", async () => {
-    expect(DETAIL_BUDGET).toBe(800);
-    await mount(800);
-    expect(screen.queryByTestId("code-graph-canvas")).not.toBeInTheDocument();
-    expect(screen.getByRole("application").tagName.toLowerCase()).toBe("svg");
+  it("renders canvas mode for a small map too", async () => {
+    // The SVG view below 800 opened on an empty frame, and its Fit only reset to 100%.
+    expect(DETAIL_BUDGET).toBe(0);
+    await mount(3);
+    expect(screen.getByTestId("code-graph-canvas")).toBeInTheDocument();
+    expect(screen.getAllByRole("application")).toHaveLength(1);
   });
 
   it("renders canvas mode above the detail budget", async () => {

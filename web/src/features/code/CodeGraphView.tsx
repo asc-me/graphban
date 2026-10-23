@@ -42,7 +42,7 @@ import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useCodeAnalysis, useCodeMap, useFleetPresence } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors, HeldArea, ProjectStub } from "@/lib/types";
 
-import { AreaMatrix, CellInspector, buildMatrix, cellFromModel, type GraphLayoutId } from "./AreaMatrix";
+import { AreaMatrix, CellInspector, LayoutChips, buildMatrix, cellFromModel, type GraphLayoutId } from "./AreaMatrix";
 import {
   LINKED_NODE_TOAST,
   readGraphUrl,
@@ -295,6 +295,10 @@ export function CodeGraphView() {
   // cluster reads this scale and drives that camera; the SVG viewport is a
   // different range and must not move the canvas.
   const canvasControlRef = React.useRef<CanvasControlApi | null>(null);
+  // The canvas's status lines and zoom caption go where Build.dc.html puts them: under
+  // find, and inside the legend box. Callback refs, so the canvas re-renders into them.
+  const [statusSlot, setStatusSlot] = React.useState<HTMLDivElement | null>(null);
+  const [captionSlot, setCaptionSlot] = React.useState<HTMLDivElement | null>(null);
   const [canvasK, setCanvasK] = React.useState(1);
   const onCanvasZoom = React.useCallback((k: number) => setCanvasK(k), []);
   // Trail breadcrumb: the last N nodes the user selected, most-recent last. Clicking one
@@ -341,7 +345,7 @@ export function CodeGraphView() {
     edges: allEdges.length,
   }), [allIds, nodes, allEdges]);
 
-  // Above the detail budget the code view is canvas mode (PRD-52 D1). The galaxy
+  // Every non-empty map is canvas mode (PRD-52 D1, budget now 0). The galaxy
   // collapse (PRD-20 D9) is gone (PRD-52 D8): every node is drawn, none is entered.
   const canvasMode = allIds.length > DETAIL_BUDGET;
   const ids = allIds;
@@ -684,7 +688,13 @@ export function CodeGraphView() {
     () =>
       allIds.map((id) => {
         const n = nodeByPath[id];
-        return { id, path: n?.path ?? id, kind: n?.kind ?? "file", name: n?.name ?? "" };
+        return {
+          id,
+          path: n?.path ?? id,
+          kind: n?.kind ?? "file",
+          name: n?.name ?? "",
+          summary: n?.summary ?? "",
+        };
       }),
     [allIds, nodeByPath],
   );
@@ -713,6 +723,23 @@ export function CodeGraphView() {
       meta: `${a.count} nodes`,
     }));
   }, [canvasMode, scale, areas]);
+  // One way into an area, from the Explore list and from the chips under find alike. On the
+  // canvas an area is a hull to frame; the SVG-era chips named a module to select instead.
+  const jumpToArea = React.useCallback(
+    (id: string) => {
+      if (canvasMode && scale?.areas.some((a) => a.id === id)) {
+        setLayoutMode("clusters");
+        setSelPath(null);
+        setPairFocus(null);
+        setReturnPoint(null);
+        setFrameId(null);
+        setFrameArea((cur) => ({ id, n: (cur?.n ?? 0) + 1 }));
+        return;
+      }
+      pickHub(id);
+    },
+    [canvasMode, scale, pickHub],
+  );
 
   // A layout-chip entry drops the previous cell. Back is the only way to restore it.
   const enterMatrix = React.useCallback(() => {
@@ -745,6 +772,13 @@ export function CodeGraphView() {
     setLayoutMode("matrix");
     setReturnPoint(null);
   }, [returnPoint]);
+  const canvasReturnTo = React.useMemo(
+    () =>
+      returnPoint
+        ? { text: `Back to matrix · ${returnPoint.row}→${returnPoint.col}`, onClick: backToMatrix }
+        : null,
+    [returnPoint, backToMatrix],
+  );
   const onLayoutChip = React.useCallback(
     (id: GraphLayoutId) => {
       // The Matrix chip is a fresh entry even when Matrix is already showing:
@@ -943,6 +977,7 @@ export function CodeGraphView() {
               }}
               truncated={truncated}
               totalNodes={map?.node_count ?? nodes.length}
+              undescribed={counts.undescribed}
               frameId={frameId}
               controlRef={canvasControlRef}
               onZoom={onCanvasZoom}
@@ -963,14 +998,8 @@ export function CodeGraphView() {
               prevDepth={keptDepth}
               onDepth={onAreaDepth}
               pairFocus={pairFocus}
-              returnTo={
-                returnPoint
-                  ? {
-                      text: `Back to matrix · ${returnPoint.row}→${returnPoint.col}`,
-                      onClick: backToMatrix,
-                    }
-                  : null
-              }
+              returnTo={canvasReturnTo}
+              chromeSlots={{ status: statusSlot, caption: captionSlot }}
               frameAreaId={frameArea?.id ?? null}
               frameAreaNonce={frameArea?.n ?? 0}
               pathState={{
@@ -981,6 +1010,7 @@ export function CodeGraphView() {
               }}
               onPathTarget={canvasPath.pick}
               onPathEmpty={canvasPath.disarm}
+              onTraceTo={canvasPath.traceTo}
               canvasPins={canvasPins}
               presence={presence}
               soloUser={soloUser}
@@ -1324,13 +1354,21 @@ export function CodeGraphView() {
           {/* Top-left, 320px, over the canvas — where the design puts find. The header's
               168px box is gone: a search whose results are nodes belongs on the surface
               that draws them, and the dropdown below it needs room the header never had. */}
-          {!isLoading && !empty && (
+          {/* Not over Matrix: it has no nodes to find, and the column sat on its header row. */}
+          {!isLoading && !empty && !(canvasMode && layoutMode === "matrix") && (
             <CanvasFind
               find={find}
               nodeByPath={nodeByPath}
               onPick={pickHub}
-              areas={areas}
-              activeId={selPath}
+              areas={jumpAreas}
+              onArea={jumpToArea}
+              activeId={canvasMode ? (frameArea?.id ?? null) : selPath}
+              head={
+                canvasMode ? (
+                  <LayoutChips layout={layoutMode} onLayout={onLayoutChip} returnTo={canvasReturnTo} />
+                ) : undefined
+              }
+              statusRef={canvasMode ? setStatusSlot : undefined}
             />
           )}
 
@@ -1347,7 +1385,10 @@ export function CodeGraphView() {
               <div className="flex min-w-0 flex-col items-start gap-2">
                 {stubHover && <StubEvidence stub={stubHover} />}
                 <FleetLegend presence={presence} soloUser={soloUser} onSolo={setSoloUser} />
-                <KindLegend kinds={drawnKinds} />
+                <KindLegend
+                  kinds={drawnKinds}
+                  captionRef={canvasMode && layoutMode !== "matrix" ? setCaptionSlot : undefined}
+                />
               </div>
               {layoutMode !== "matrix" && (
               <GraphControls
@@ -1522,21 +1563,7 @@ export function CodeGraphView() {
               !isLoading &&
               !empty &&
               !failed && (
-                <InteractionHint
-                  areas={jumpAreas}
-                  onJump={(id) => {
-                    if (canvasMode && scale?.areas.some((a) => a.id === id)) {
-                      setLayoutMode("clusters");
-                      setSelPath(null);
-                      setPairFocus(null);
-                      setReturnPoint(null);
-                      setFrameId(null);
-                      setFrameArea((cur) => ({ id, n: (cur?.n ?? 0) + 1 }));
-                      return;
-                    }
-                    pickHub(id);
-                  }}
-                />
+                <InteractionHint areas={jumpAreas} onJump={jumpToArea} />
               )
             )}
           </div>
@@ -1958,10 +1985,18 @@ const ZOOM_STEP = 1.3;
 // Only the kinds actually drawn are listed. A fixed five-row key over a graph of nothing but
 // files is a glossary, and it teaches the reader to ignore it.
 
-function KindLegend({ kinds }: { kinds: string[] }) {
+function KindLegend({
+  kinds,
+  captionRef,
+}: {
+  kinds: string[];
+  /** Build.dc.html sets the zoom caption under the legend, in the same box. */
+  captionRef?: (el: HTMLDivElement | null) => void;
+}) {
   if (kinds.length < 2) return null;
   return (
-    <div className="pointer-events-auto flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-[10px] border border-line-2 bg-surface/90 px-3 py-2 backdrop-blur-sm">
+    <div className="pointer-events-auto flex flex-col gap-1.5 rounded-[10px] border border-line-2 bg-surface/90 px-3 py-2 backdrop-blur-sm">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
       {kinds.map((k) => {
         const meta = kindMeta(k);
         return (
@@ -1980,6 +2015,8 @@ function KindLegend({ kinds }: { kinds: string[] }) {
           </span>
         );
       })}
+    </div>
+    {captionRef && <div ref={captionRef} className="empty:hidden" />}
     </div>
   );
 }
@@ -2000,16 +2037,26 @@ function CanvasFind({
   onPick,
   areas,
   activeId,
+  onArea,
+  head,
+  statusRef,
 }: {
   find: GraphFind;
   nodeByPath: Record<string, { name: string; kind: string }>;
   onPick: (path: string) => void;
   areas: { id: string; label: string; color: string; meta: string }[];
   activeId: string | null;
+  /** An area chip. Defaults to `onPick`, which selects the area's module. */
+  onArea?: (id: string) => void;
+  /** Build.dc.html stacks the layout chips above find, in this same column. */
+  head?: React.ReactNode;
+  /** Where the canvas puts its toasts and status lines, under the area chips. */
+  statusRef?: (el: HTMLDivElement | null) => void;
 }) {
   const hits = React.useMemo(() => [...find.matches].sort(), [find.matches]);
   return (
     <div className="pointer-events-auto absolute left-4 top-3.5 z-10 flex w-[min(320px,calc(100%-2rem))] flex-col gap-2">
+      {head}
       <div className="relative">
         <svg
           width="13"
@@ -2082,6 +2129,7 @@ function CanvasFind({
         <div
           className="flex flex-nowrap gap-1.5 overflow-x-auto pb-0.5"
           style={{ scrollbarWidth: "none" }}
+          role="group"
           aria-label="Areas"
         >
           {areas.map((a) => {
@@ -2089,7 +2137,7 @@ function CanvasFind({
             return (
               <button
                 key={a.id}
-                onClick={() => onPick(a.id)}
+                onClick={() => (onArea ?? onPick)(a.id)}
                 aria-pressed={on}
                 className={cn(
                   "inline-flex h-6 flex-none items-center gap-1.5 whitespace-nowrap rounded-xl border px-2.5 font-mono text-[10px] transition-colors",
@@ -2105,6 +2153,7 @@ function CanvasFind({
           })}
         </div>
       )}
+      {statusRef && <div ref={statusRef} className="flex flex-col items-start gap-1.5 empty:hidden" />}
     </div>
   );
 }
