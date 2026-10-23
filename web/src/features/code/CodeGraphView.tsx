@@ -53,6 +53,12 @@ import { useCodeAnalysis, useCodeMap, useFleetPresence } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors, HeldArea, ProjectStub } from "@/lib/types";
 
 import { AreaMatrix, CellInspector, buildMatrix, cellFromModel, type GraphLayoutId } from "./AreaMatrix";
+import {
+  LINKED_NODE_TOAST,
+  readGraphUrl,
+  replaceGraphUrl,
+  type GraphUrlSeed,
+} from "./useGraphUrlState";
 import { CANVAS_MAX_K, CANVAS_MIN_K } from "./canvas/camera";
 import { useCanvasPath } from "./canvas/overlay";
 import { CodeChat } from "./CodeChat";
@@ -243,13 +249,17 @@ function HoverTip({
 }
 
 export function CodeGraphView() {
+  // D10: one read, on mount. Later search-string edits do not move the view.
+  const urlSeed = React.useRef<GraphUrlSeed | null>(null);
+  if (urlSeed.current === null) urlSeed.current = readGraphUrl(window.location.search);
+  const seed = urlSeed.current;
   const { activeId } = useProjectCtx();
   const mapQ = useCodeMap(activeId);
   const { data: map, isLoading } = mapQ;
   const [enabled, setEnabled] = React.useState<Record<CodeEdgeType, boolean>>({
     imports: true, calls: true, owns: true, tested_by: true, references: true,
   });
-  const [selPath, setSelPath] = React.useState<string | null>(null);
+  const [selPath, setSelPath] = React.useState<string | null>(seed.sel);
   /** Find and hub picks tween the canvas camera. A canvas click does not. */
   const [frameId, setFrameId] = React.useState<string | null>(null);
   const [hubsOpen, setHubsOpen] = React.useState(false);
@@ -262,22 +272,26 @@ export function CodeGraphView() {
   const [hoverId, setHoverId] = React.useState<string | null>(null);
   // How many rings the selection lights. Shift-click (or Shift+Enter) widens it; a fresh
   // selection resets it, so depth never quietly persists into the next thing you click.
-  const [depth, setDepth] = React.useState(1);
+  const [depth, setDepth] = React.useState(seed.depth ?? 1);
   // Isolate (Build.dc.html): the design's toggle beside the depth chips. The canvas already
   // DIMS everything outside the reach ring to 0.22; isolate drops those nodes and edges
   // instead, so a dense graph can be read at all. It needs a reach set to isolate against,
   // so with nothing selected the control is disabled rather than silently doing nothing.
-  const [isolate, setIsolate] = React.useState(false);
+  const [isolate, setIsolate] = React.useState(seed.iso === true);
   // Matrix is the fourth layout. It is DOM, so the canvas unmounts while it
   // is showing. Show in graph comes back to Clusters with this pair isolated.
-  const [layoutMode, setLayoutMode] = React.useState<GraphLayoutId>("clusters");
+  const [layoutMode, setLayoutMode] = React.useState<GraphLayoutId>(seed.layout ?? "clusters");
   // D2 holds the area depth for the session. The canvas owns the layout hook,
   // and opening Matrix unmounts it, so the depth lives here and goes back in.
   const [keptDepth, setKeptDepth] = React.useState<number | undefined>(undefined);
   const onAreaDepth = React.useCallback((depth: number) => {
     setKeptDepth((cur) => (cur === depth ? cur : depth));
   }, []);
-  const [matrixCell, setMatrixCell] = React.useState<{ row: string; col: string } | null>(null);
+  const [matrixCell, setMatrixCell] = React.useState<{ row: string; col: string } | null>(seed.cell);
+  const [linkToast, setLinkToast] = React.useState<string | null>(null);
+  // False until the mount-time URL has been checked against the loaded map.
+  // Writing earlier would replace a shared link with the defaults.
+  const [urlReady, setUrlReady] = React.useState(false);
   const [matrixScroll, setMatrixScroll] = React.useState(0);
   const matrixScrollRef = React.useRef<HTMLDivElement | null>(null);
   const [returnPoint, setReturnPoint] = React.useState<{
@@ -800,6 +814,51 @@ export function CodeGraphView() {
     },
     [enterMatrix, layoutMode],
   );
+
+  React.useEffect(() => {
+    if (!linkToast) return;
+    const timer = window.setTimeout(() => setLinkToast(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [linkToast]);
+
+  // Check the mount-time link once the map has been read. An unknown sel or
+  // cell is dropped here and named; a later refetch does not re-read the URL.
+  React.useEffect(() => {
+    if (urlReady || isLoading || map === undefined) return;
+    const linked = urlSeed.current;
+    if (!linked) {
+      setUrlReady(true);
+      return;
+    }
+    let missing = false;
+    const selKnown = !!linked.sel && allIds.includes(linked.sel);
+    if (linked.sel && !selKnown) {
+      setSelPath(null);
+      missing = true;
+    } else if (selKnown && linked.sel) {
+      // Camera is not in the URL. A linked node is framed; otherwise the
+      // canvas fits on layout, and the SVG view resets to Fit.
+      setFrameId(linked.sel);
+      if (!canvasMode) setPendingFocus(linked.sel);
+    } else if (!canvasMode) {
+      view.reset();
+    }
+    const cellKnown = !!(linked.cell && matrixModel && cellFromModel(matrixModel, linked.cell));
+    if (linked.cellPresent && !cellKnown) {
+      setMatrixCell(null);
+      missing = true;
+    }
+    if (missing) setLinkToast(LINKED_NODE_TOAST);
+    setUrlReady(true);
+    // `view.reset` is a stable callback. Listing `view` would re-run this on
+    // every render, because the viewport object is rebuilt each time.
+  }, [urlReady, isLoading, map, allIds, canvasMode, matrixModel]);
+
+  React.useEffect(() => {
+    if (!urlReady) return;
+    replaceGraphUrl({ layout: layoutMode, sel: selPath, depth, iso: isolate, cell: matrixCell });
+  }, [urlReady, layoutMode, selPath, depth, isolate, matrixCell]);
+
   // `truncated === false` means the server looked and the page is complete.
   // A missing flag is complete only when the returned list matches the total.
   const truncated =
@@ -1466,6 +1525,17 @@ export function CodeGraphView() {
                 }}
               />
               )}
+            </div>
+          )}
+          {linkToast && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-16 z-20 flex justify-center">
+              <p
+                role="status"
+                data-testid="graph-link-toast"
+                className="rounded-lg border border-line bg-surface px-4 py-2 text-body text-fg shadow-lg"
+              >
+                {linkToast}
+              </p>
             </div>
           )}
         </div>
