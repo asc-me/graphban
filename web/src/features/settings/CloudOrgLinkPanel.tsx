@@ -9,8 +9,7 @@ import { SyncCredentialInstall } from "@/features/settings/SyncCredentialInstall
 import { api } from "@/lib/api";
 import { errorDetail } from "@/lib/errors";
 import { keys, useApiKeys } from "@/lib/queries";
-import { adminPath } from "@/lib/routes";
-import { NavLink } from "react-router-dom";
+import { adminPath, consoleHref } from "@/lib/routes";
 
 /**
  * Hosted Settings → Sync / Link. This org is the cloud side of the link.
@@ -75,9 +74,9 @@ export function CloudOrgLinkPanel() {
         </div>
         <p className="mb-3 max-w-[62ch] text-body leading-relaxed text-muted">
           The name is the deployment&rsquo;s identity on{" "}
-          <NavLink to={adminPath("deployments")} className="text-fg-2 underline-offset-2 hover:underline">
+          <a href={consoleHref(adminPath("deployments"))} className="text-fg-2 underline-offset-2 hover:underline">
             Deployments
-          </NavLink>
+          </a>
           . Pin the project the box will push — a key handed to a fleet can only ever push
           there. Shown once.
         </p>

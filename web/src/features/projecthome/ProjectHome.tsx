@@ -19,7 +19,7 @@ import {
   useGalaxy,
   useOrgs,
 } from "@/lib/queries";
-import { ORG_BASE, projectPath, tagFromPath } from "@/lib/routes";
+import { consoleHref, orgPath, projectPath, tagFromPath } from "@/lib/routes";
 import type { DashboardData, GalaxyEdge, RequestType, ShellCounts } from "@/lib/types";
 
 /**
@@ -580,9 +580,9 @@ function Dependencies({
     <section className="mt-5 rounded-[13px] border border-line bg-surface-2 p-4">
       <div className="flex items-center gap-2.5">
         <h2 className="flex-1 text-lead font-semibold">Cross-project dependencies</h2>
-        <Link to={`${ORG_BASE}/galaxy`} className="text-[12px] text-st-next transition-colors hover:text-fg">
+        <a href={consoleHref(orgPath("galaxy"))} className="text-[12px] text-st-next transition-colors hover:text-fg">
           Open in galaxy →
-        </Link>
+        </a>
       </div>
 
       <div className="mt-3 grid gap-4 sm:grid-cols-2">

@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectProvider } from "@/features/ProjectContext";
 import { ProjectHome } from "@/features/projecthome/ProjectHome";
+import { consoleHref, orgPath } from "@/lib/routes";
 import type { Project } from "@/lib/types";
 
 /**
@@ -164,7 +165,7 @@ describe("Project home", () => {
     expect(within(dependedBy).getByText(/1 file/)).toBeInTheDocument();
     // The design dropped this link. The 2026-10-22 decision keeps it.
     expect(screen.getByRole("link", { name: "Open in galaxy →" }))
-      .toHaveAttribute("href", "/org/galaxy");
+      .toHaveAttribute("href", consoleHref(orgPath("galaxy")));
   });
 
   it("says nothing depends on it, rather than leaving the section blank", async () => {

@@ -1,9 +1,9 @@
 import { Check, ChevronDown, Layers } from "lucide-react";
 import * as React from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import { useProjectCtx } from "@/features/ProjectContext";
-import { ORG_BASE, placeFromPath, projectPath, viewFromPath } from "@/lib/routes";
+import { consoleHref, orgPath, placeFromPath, projectPath, viewFromPath } from "@/lib/routes";
 
 /**
  * The project bar: which project you are in, and the way out of it.
@@ -31,12 +31,12 @@ export function ProjectBar() {
     <div className="relative z-30 flex flex-none items-center gap-3 border-b border-line bg-surface/60">
       <span className="w-1 self-stretch" style={{ background: active.accent }} />
       <div className="flex items-center gap-2.5 py-2 pl-2.5">
-        <Link
-          to={ORG_BASE}
+        <a
+          href={consoleHref(orgPath())}
           className="font-mono text-meta uppercase tracking-[0.06em] text-faint hover:text-accent"
         >
           org
-        </Link>
+        </a>
         <span className="font-mono text-[10px] text-faint-2">/</span>
         <button
           onClick={() => setOpen((v) => !v)}
@@ -101,13 +101,13 @@ export function ProjectBar() {
                 </button>
               ))}
             </div>
-            <Link
-              to={ORG_BASE}
+            <a
+              href={consoleHref(orgPath())}
               onClick={() => setOpen(false)}
               className="flex w-full items-center gap-2 px-3 py-2 text-[12px] text-muted hover:bg-surface-3 hover:text-fg"
             >
               <Layers size={12} /> All projects
-            </Link>
+            </a>
           </div>
         </>
       )}
