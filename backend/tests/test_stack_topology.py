@@ -283,3 +283,25 @@ def test_own_deployables_get_their_own_health_component(db, monkeypatch):
     # The workspace root was dropped, and a root deployable never gets an empty prefix.
     assert not any(c["path"] == "" or c["id"] == "app:." for c in comps.values())
     assert {"web", "api", "fleet", "cli"} <= set(comps)
+
+
+def test_each_box_names_its_plane_and_the_map_says_who_writes_graphban(db, monkeypatch):
+    # GRPH-1099: the client collapses Graphban into one box on a project that does not
+    # write it, so the payload must say which boxes are the instance and which the app.
+    monkeypatch.setattr("app.services.fleet.fleet_status", lambda *_a, **_k: _roster([]))
+    _clear_code_map(db)
+    _describe(db, "frontend/package.json")
+    body = stack_svc.topology(db, "core")
+    assert body["graphban_source"] == stack_svc.NOT_OWNED
+    planes = {n["id"]: n["plane"] for n in body["nodes"]}
+    assert planes["app:frontend"] == stack_svc.PLANE_APP
+    for gid in ("api", "web", "db", "fleet", "gbagent", "cli"):
+        assert planes[gid] == stack_svc.PLANE_GRAPHBAN, gid
+
+    _clear_code_map(db)
+    _describe(db, "backend/app/mcp_server.py")
+    assert stack_svc.topology(db, "core")["graphban_source"] == stack_svc.OWNED
+
+    _clear_code_map(db)
+    # No code map at all: nobody looked. Not "owned", and not a confident "not_owned".
+    assert stack_svc.topology(db, "core")["graphban_source"] == stack_svc.OWNERSHIP_UNKNOWN
