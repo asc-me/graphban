@@ -1114,6 +1114,8 @@ export const api = {
     limit?: number;
     a?: string;
     b?: string;
+    /** Aborts the in-flight read when a newer target supersedes it, or Esc does. */
+    signal?: AbortSignal;
   } = {}) => {
     const q = new URLSearchParams();
     if (opts.projectId) q.set("project_id", opts.projectId);
@@ -1122,7 +1124,7 @@ export const api = {
     if (opts.limit) q.set("limit", String(opts.limit));
     if (opts.a) q.set("a", opts.a);
     if (opts.b) q.set("b", opts.b);
-    return request<CodeAnalysis>(`/agent/code/analysis?${q.toString()}`);
+    return request<CodeAnalysis>(`/agent/code/analysis?${q.toString()}`, { signal: opts.signal });
   },
 
   codeChat: (message: string, projectId?: string) =>

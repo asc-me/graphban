@@ -15,12 +15,20 @@ import type { CodePath } from "@/lib/types";
  * them into one "not found" would report a missing description as an architectural boundary.
  */
 interface Props {
-  path: CodePath;
+  path: CodePath | null;
   onClear: () => void;
   onPick: (path: string) => void;
   /** Named so "no route" can say whether it was scoped to a subset of the edges. */
   edgeTypes: string[];
   allEdgeTypes: string[];
+  /**
+   * Canvas path mode (PRD-52 D6). The SVG trace keeps the older sentences;
+   * canvas says "no path over the shown edge types" and can retry a failed read.
+   */
+  canvas?: boolean;
+  requestError?: boolean;
+  onTryAll?: () => void;
+  onRetry?: () => void;
 }
 
 const leaf = (p: string) => {
@@ -42,15 +50,26 @@ function Node({ path, onPick }: { path: string; onPick: (p: string) => void }) {
   );
 }
 
-export function PathTrace({ path, onClear, onPick, edgeTypes, allEdgeTypes }: Props) {
+export function PathTrace({
+  path,
+  onClear,
+  onPick,
+  edgeTypes,
+  allEdgeTypes,
+  canvas = false,
+  requestError = false,
+  onTryAll,
+  onRetry,
+}: Props) {
   const scoped = edgeTypes.length > 0 && edgeTypes.length < allEdgeTypes.length;
+  if (!path && !requestError) return null;
 
   return (
     <div className="w-full overflow-hidden rounded-xl border border-line-2 bg-surface-2">
       <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-2.5">
         <h2 className="text-[13px] font-semibold tracking-[-0.1px]">
           Path
-          {path.found && (
+          {path?.found && (
             <span className="ml-2 font-mono text-small font-normal text-muted">
               {path.hops.length} {path.hops.length === 1 ? "hop" : "hops"}
             </span>
@@ -66,7 +85,18 @@ export function PathTrace({ path, onClear, onPick, edgeTypes, allEdgeTypes }: Pr
         </button>
       </div>
 
-      {path.missing.length > 0 ? (
+      {requestError ? (
+        <div className="px-3.5 py-4 text-[11.5px] leading-relaxed text-muted">
+          <p className="mb-2 text-fg-2">The path request failed.</p>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="h-[26px] rounded-[7px] border border-control bg-surface-2 px-2.5 text-small text-fg-2 hover:border-control-hover"
+          >
+            Retry
+          </button>
+        </div>
+      ) : path && path.missing.length > 0 ? (
         <div className="px-3.5 py-4 text-[11.5px] leading-relaxed text-muted">
           {/* Not "no path": the graph has never heard of these, which is a coverage gap and not
               a fact about the architecture. */}
@@ -79,16 +109,29 @@ export function PathTrace({ path, onClear, onPick, edgeTypes, allEdgeTypes }: Pr
             route to look for.
           </p>
         </div>
-      ) : !path.found ? (
-        <div className="px-3.5 py-4 text-[11.5px] leading-relaxed text-muted">
-          <p className="mb-1 text-fg-2">No route between them.</p>
-          <p className="text-faint">
-            {scoped
-              ? `Both are on the map, but nothing connects them through ${edgeTypes.join(" + ")} edges — try switching a chip back on.`
-              : "Both are on the map, and nothing connects them. They are in different components."}
-          </p>
-        </div>
-      ) : (
+      ) : path && !path.found ? (
+        canvas && path.missing.length === 0 ? (
+          <div className="px-3.5 py-4 text-[11.5px] leading-relaxed text-muted">
+            <p className="mb-2 text-fg-2">No path over the shown edge types</p>
+            <button
+              type="button"
+              onClick={onTryAll}
+              className="h-[26px] rounded-[7px] border border-control bg-surface-2 px-2.5 text-small text-fg-2 hover:border-control-hover"
+            >
+              Try all edge types
+            </button>
+          </div>
+        ) : (
+          <div className="px-3.5 py-4 text-[11.5px] leading-relaxed text-muted">
+            <p className="mb-1 text-fg-2">No route between them.</p>
+            <p className="text-faint">
+              {scoped
+                ? `Both are on the map, but nothing connects them through ${edgeTypes.join(" + ")} edges — try switching a chip back on.`
+                : "Both are on the map, and nothing connects them. They are in different components."}
+            </p>
+          </div>
+        )
+      ) : path ? (
         <ol className="max-h-[300px] overflow-y-auto px-3.5 py-3">
           <li className="min-w-0">
             <Node path={path.a} onPick={onPick} />
@@ -116,7 +159,7 @@ export function PathTrace({ path, onClear, onPick, edgeTypes, allEdgeTypes }: Pr
             </li>
           ))}
         </ol>
-      )}
+      ) : null}
 
       <div className="border-t border-line px-3.5 pb-3 pt-2 text-[10.5px] leading-relaxed text-faint">
         Walked without regard to direction; each hop reports which way its edge points

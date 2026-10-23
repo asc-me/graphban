@@ -9,9 +9,11 @@
 import * as React from "react";
 
 import { zoomAbout } from "@/lib/graph/useGraphViewport";
+import { pathAlphaBuffer } from "@/lib/graph/pathHighlight";
 import { hitTest, type AreaLayoutKind, type ClusterLayout } from "@/lib/graph/bigLayout";
 import { useAreaLayout } from "@/lib/graph/useAreaLayout";
 import { AreaMatrix, LayoutChips, type GraphLayoutId } from "./AreaMatrix";
+import type { CodePath } from "@/lib/types";
 import { createCanvas2D } from "./canvas/canvas2d";
 import {
   CANVAS_MAX_K,
@@ -30,12 +32,26 @@ import { LOD_ZOOM, groupThousands, hitBundle } from "./canvas/edges";
 import { pickLabels, type LabelNode } from "./canvas/labels";
 import type { Renderer } from "./canvas/renderer";
 import {
+  NON_PATH_EDGE_ALPHA,
+  PathBanner,
+  pathSegments,
+} from "./canvas/overlay";
+import {
   buildScene,
   reachOf,
   worldInView,
   writeAlpha,
   type DrawScene,
 } from "./canvas/scene";
+
+export interface CanvasPathState {
+  /** Armed: crosshair, banner, clicks pick a target instead of a selection. */
+  picking: boolean;
+  pending: boolean;
+  slow: boolean;
+  /** Set only when a route with hops should dim the canvas and draw on the overlay. */
+  path: CodePath | null;
+}
 
 export interface CanvasGraphNode {
   id: string;
@@ -117,6 +133,9 @@ export function CodeGraphCanvas({
   frameAreaNonce = 0,
   prevDepth,
   onDepth,
+  pathState,
+  onPathTarget,
+  onPathEmpty,
 }: {
   nodes: CanvasGraphNode[];
   edges: CanvasGraphEdge[];
@@ -146,6 +165,12 @@ export function CodeGraphCanvas({
   prevDepth?: number;
   /** Reports the depth this layout actually used, so the grid can keep it. */
   onDepth?: (depth: number) => void;
+  /** Path mode. Absent on the SVG-sized maps this canvas is not showing. */
+  pathState?: CanvasPathState | null;
+  /** A node click while armed or pending. Does not change the selection. */
+  onPathTarget?: (id: string) => void;
+  /** Empty canvas while armed or pending. Disarms; does not clear the selection. */
+  onPathEmpty?: () => void;
 }) {
   const hostRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -371,10 +396,22 @@ export function CodeGraphCanvas({
     );
     return { ...layout, edges };
   }, [layout, pairFocus, types]);
-  const alpha = React.useMemo(
-    () => (layout ? writeAlpha(layout.ids.length, reach, isolate && !!reach) : null),
-    [layout, reach, isolate],
+  // The path buffer replaces the reach buffer. It is keyed on the path, not the
+  // camera, so a pan does not write it again.
+  const pathAlpha = React.useMemo(
+    () => (layout && pathState?.path ? pathAlphaBuffer(layout.ids, pathState.path) : null),
+    [layout, pathState?.path],
   );
+  const alpha = React.useMemo(() => {
+    if (!layout) return null;
+    if (pathAlpha) return pathAlpha;
+    return writeAlpha(layout.ids.length, reach, isolate && !!reach);
+  }, [layout, pathAlpha, reach, isolate]);
+  const segments = React.useMemo(
+    () => (layout && pathState?.path ? pathSegments(pathState.path, layout.ids, layout.x, layout.y) : []),
+    [layout, pathState?.path],
+  );
+  const tracing = !!(pathState?.picking || pathState?.pending);
   const isolateSet = React.useMemo(() => {
     if (!isolate || !reach || !layout) return null;
     const set = new Set<string>();
@@ -392,12 +429,17 @@ export function CodeGraphCanvas({
       dpr,
       alpha,
       types,
-      isolate: isolateSet,
+      // A path dims the whole edge batch. Isolate would drop those edges instead,
+      // which is a different picture from "everything off the path, still drawn".
+      isolate: pathAlpha ? null : isolateSet,
       selectedId,
-      hoverId: hover,
+      // Hover stays in the tip. Feeding it to the scene would glow non-path edges
+      // back up to full strength over the dim.
+      hoverId: pathAlpha ? null : hover,
+      edgesAlpha: pathAlpha ? NON_PATH_EDGE_ALPHA : undefined,
       tileId: hoverTile ?? selectedTile,
     });
-  }, [drawnLayout, alpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover, hoverTile, selectedTile]);
+  }, [drawnLayout, alpha, pathAlpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover, hoverTile, selectedTile]);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -521,9 +563,10 @@ export function CodeGraphCanvas({
       data-frame-area={frameAreaId ?? undefined}
       data-frame={cameraOwner}
       data-depth={layout?.depth ?? ""}
+      data-camera-x={cam.x}
       role="application"
       aria-label={`Code graph canvas: ${shown} nodes. ${layoutKind[0].toUpperCase()}${layoutKind.slice(1)} layout.`}
-      className="absolute inset-0 touch-none"
+      className={`absolute inset-0 touch-none${tracing ? " cursor-crosshair" : ""}`}
       onWheel={onWheel}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
@@ -543,6 +586,13 @@ export function CodeGraphCanvas({
           const moved = Math.hypot(w.sx - from.px, w.sy - from.py);
           if (moved < 4 && layout) {
             const hit = nodeAtPointer(scene, layout, w.x, w.y);
+            // Armed and pending both take a target. An empty click disarms
+            // without clearing the selection the path starts from.
+            if (tracing) {
+              if (hit) onPathTarget?.(hit);
+              else onPathEmpty?.();
+              return;
+            }
             if (hit) {
               setSelectedTile(null);
               onSelect(hit);
@@ -555,6 +605,7 @@ export function CodeGraphCanvas({
         }
       }}
       onDoubleClick={(e) => {
+        if (tracing) return;
         if (!layout) return;
         const w = toWorld(e.clientX, e.clientY);
         const hit = nodeAtPointer(scene, layout, w.x, w.y);
@@ -626,6 +677,20 @@ export function CodeGraphCanvas({
               </g>
             );
           })}
+          {segments.map((s, i) => {
+            const x0 = s.x0 * cam.k + cam.x;
+            const y0 = s.y0 * cam.k + cam.y;
+            const x1 = s.x1 * cam.k + cam.x;
+            const y1 = s.y1 * cam.k + cam.y;
+            return (
+              <g key={`${s.src}-${s.dst}-${s.type}-${i}`} data-testid="path-edge" data-edge-type={s.type}>
+                <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={s.color} strokeWidth={2.5} />
+                <text x={(x0 + x1) / 2} y={(y0 + y1) / 2 - 6} textAnchor="middle" fill={s.color} fontSize={10}>
+                  {s.type}
+                </text>
+              </g>
+            );
+          })}
         </svg>
       )}
       <div className="pointer-events-none absolute inset-0">
@@ -656,6 +721,7 @@ export function CodeGraphCanvas({
         )}
       </div>
 
+      {tracing && <PathBanner pending={!!pathState?.pending} slow={!!pathState?.slow} />}
       <div className="absolute left-3 top-3 z-10 flex flex-col items-start gap-1.5">
         <LayoutChips layout={layoutKind} onLayout={chooseLayout} returnTo={returnTo} />
         {scene && (
