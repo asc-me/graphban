@@ -526,6 +526,19 @@ export function CodeGraphView() {
   const outbound = map?.outbound ?? [];
   const [stubHover, setStubHover] = React.useState<ProjectStub | null>(null);
   const heldByNode = React.useMemo(() => indexByNode(presence), [presence]);
+  // `presence` missing is "nobody looked". An empty held list is "looked, and this node is free".
+  const holderOf = React.useCallback(
+    (id: string) => {
+      if (!presence) return { known: false as const };
+      const holders = heldByNode.get(id) ?? [];
+      if (holders.length === 0) return { known: true as const, label: null };
+      return {
+        known: true as const,
+        label: holders.map((h) => h.user_initials || h.agent_label || "an agent").join(" and "),
+      };
+    },
+    [presence, heldByNode],
+  );
   const clouds = React.useMemo(() => cloudsFor(presence, pos), [presence, pos]);
   const [soloUser, setSoloUser] = React.useState<string | null>(null);
   const soloed = React.useMemo(() => nodesHeldBy(presence, soloUser), [presence, soloUser]);
@@ -942,6 +955,18 @@ export function CodeGraphView() {
               frameId={frameId}
               controlRef={canvasControlRef}
               onZoom={onCanvasZoom}
+              holderOf={holderOf}
+              pathPending={canvasPath.pending}
+              pathArmed={canvasPath.picking}
+              onAbortPath={() => {
+                // One layer: abort leaves the mode armed. The listbox owns
+                // Escape while it is focused, so this must be the canvas path,
+                // not the SVG flag the small map still uses.
+                canvasPath.escape();
+              }}
+              onDisarmPath={() => {
+                canvasPath.escape();
+              }}
               layout={layoutMode === "matrix" ? "clusters" : layoutMode}
               onLayout={onLayoutChip}
               prevDepth={keptDepth}
