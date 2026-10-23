@@ -187,11 +187,13 @@ export function toneColor(cell: MatrixCellModel): string {
   return areaColor(cell.row);
 }
 
-const CHIPS: { id: "clusters" | "map" | "orbit" | "matrix"; label: string; enabled: boolean }[] = [
-  { id: "clusters", label: "Clusters", enabled: true },
-  { id: "map", label: "Map", enabled: false },
-  { id: "orbit", label: "Orbit", enabled: false },
-  { id: "matrix", label: "Matrix", enabled: true },
+export type GraphLayoutId = "clusters" | "map" | "orbit" | "matrix";
+
+const CHIPS: { id: GraphLayoutId; label: string }[] = [
+  { id: "clusters", label: "Clusters" },
+  { id: "map", label: "Map" },
+  { id: "orbit", label: "Orbit" },
+  { id: "matrix", label: "Matrix" },
 ];
 
 export function LayoutChips({
@@ -199,31 +201,26 @@ export function LayoutChips({
   onLayout,
   returnTo,
 }: {
-  layout: "clusters" | "matrix";
-  onLayout: (id: "clusters" | "matrix") => void;
+  layout: GraphLayoutId;
+  onLayout: (id: GraphLayoutId) => void;
   returnTo?: { text: string; onClick: () => void } | null;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-1">
       <div data-testid="layout-chips" role="group" aria-label="Layout" className="flex gap-1">
         {CHIPS.map((chip) => {
-          const pressed = chip.enabled && layout === chip.id;
+          const pressed = layout === chip.id;
           return (
             <button
               key={chip.id}
               type="button"
-              disabled={!chip.enabled}
               aria-pressed={pressed}
               data-testid={`layout-chip-${chip.id}`}
-              onClick={() => {
-                if (chip.id === "clusters" || chip.id === "matrix") onLayout(chip.id);
-              }}
+              onClick={() => onLayout(chip.id)}
               className={
-                !chip.enabled
-                  ? "rounded-lg border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-faint"
-                  : pressed
-                    ? "rounded-lg border border-control-hover bg-surface-3 px-2 py-1 text-[11.5px] text-fg"
-                    : "rounded-lg border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-fg-2"
+                pressed
+                  ? "rounded-lg border border-control-hover bg-surface-3 px-2 py-1 text-[11.5px] text-fg"
+                  : "rounded-lg border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-fg-2"
               }
             >
               {chip.label}
@@ -309,23 +306,26 @@ export function AreaMatrix({
   onLayout,
   restoreScroll = 0,
   scrollRef,
+  prevDepth,
 }: {
   nodes: { id: string; path: string; kind: string }[];
   edges: MatrixEdge[];
   enabledTypes?: readonly string[];
   selected: MatrixSelection | null;
   onSelect: (cell: MatrixSelection) => void;
-  onLayout: (id: "clusters" | "matrix") => void;
+  onLayout: (id: GraphLayoutId) => void;
   restoreScroll?: number;
   scrollRef?: React.RefObject<HTMLDivElement | null>;
+  /** The depth the canvas is keeping. A fresh pick here names different areas than the hulls. */
+  prevDepth?: number;
 }) {
   const localRef = React.useRef<HTMLDivElement | null>(null);
   const ref = scrollRef ?? localRef;
-  const model = React.useMemo(() => {
+  const { model, depth } = React.useMemo(() => {
     const owns = edges.filter((e) => e.type === "owns");
-    const scaled = areasAtScale(nodes, owns);
-    return buildMatrix(scaled.areas, edges, enabledTypes);
-  }, [nodes, edges, enabledTypes]);
+    const scaled = areasAtScale(nodes, owns, prevDepth);
+    return { model: buildMatrix(scaled.areas, edges, enabledTypes), depth: scaled.depth };
+  }, [nodes, edges, enabledTypes, prevDepth]);
 
   React.useLayoutEffect(() => {
     const el = ref.current;
@@ -335,7 +335,7 @@ export function AreaMatrix({
 
   let seen = 0;
   return (
-    <div data-testid="area-matrix" className="absolute inset-0 flex flex-col bg-surface/40">
+    <div data-testid="area-matrix" data-depth={depth ?? ""} className="absolute inset-0 flex flex-col bg-surface/40">
       <div className="flex-none p-3">
         <LayoutChips layout="matrix" onLayout={onLayout} />
       </div>

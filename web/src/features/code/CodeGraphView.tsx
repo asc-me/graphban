@@ -52,7 +52,7 @@ import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useCodeAnalysis, useCodeMap, useFleetPresence } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors, HeldArea, ProjectStub } from "@/lib/types";
 
-import { AreaMatrix, CellInspector, buildMatrix, cellFromModel } from "./AreaMatrix";
+import { AreaMatrix, CellInspector, buildMatrix, cellFromModel, type GraphLayoutId } from "./AreaMatrix";
 import { CANVAS_MAX_K, CANVAS_MIN_K } from "./canvas/camera";
 import { CodeChat } from "./CodeChat";
 import { CodeGraphCanvas, type CanvasControlApi } from "./CodeGraphCanvas";
@@ -269,7 +269,13 @@ export function CodeGraphView() {
   const [isolate, setIsolate] = React.useState(false);
   // Matrix is the fourth layout. It is DOM, so the canvas unmounts while it
   // is showing. Show in graph comes back to Clusters with this pair isolated.
-  const [layoutMode, setLayoutMode] = React.useState<"clusters" | "matrix">("clusters");
+  const [layoutMode, setLayoutMode] = React.useState<GraphLayoutId>("clusters");
+  // D2 holds the area depth for the session. The canvas owns the layout hook,
+  // and opening Matrix unmounts it, so the depth lives here and goes back in.
+  const [keptDepth, setKeptDepth] = React.useState<number | undefined>(undefined);
+  const onAreaDepth = React.useCallback((depth: number) => {
+    setKeptDepth((cur) => (cur === depth ? cur : depth));
+  }, []);
   const [matrixCell, setMatrixCell] = React.useState<{ row: string; col: string } | null>(null);
   const [matrixScroll, setMatrixScroll] = React.useState(0);
   const matrixScrollRef = React.useRef<HTMLDivElement | null>(null);
@@ -681,8 +687,9 @@ export function CodeGraphView() {
     return areasAtScale(
       canvasNodes,
       allEdges.filter((e) => e.type === "owns"),
+      keptDepth,
     );
-  }, [canvasMode, canvasNodes, allEdges]);
+  }, [canvasMode, canvasNodes, allEdges, keptDepth]);
   const matrixModel = React.useMemo(
     () => (scale ? buildMatrix(scale.areas, allEdges, activeTypes) : null),
     [scale, allEdges, activeTypes],
@@ -706,6 +713,7 @@ export function CodeGraphView() {
     setPairFocus(null);
     setMatrixScroll(0);
     setFrameArea(null);
+    setFrameId(null);
     setLayoutMode("matrix");
   }, []);
   const showPairInGraph = React.useCallback(() => {
@@ -717,6 +725,7 @@ export function CodeGraphView() {
     setIsolate(true);
     setSelPath(null);
     setFrameArea(null);
+    setFrameId(null);
     setLayoutMode("clusters");
   }, [matrixCell]);
   const backToMatrix = React.useCallback(() => {
@@ -729,11 +738,20 @@ export function CodeGraphView() {
     setReturnPoint(null);
   }, [returnPoint]);
   const onLayoutChip = React.useCallback(
-    (id: "clusters" | "matrix") => {
-      if (id === "matrix") enterMatrix();
-      else setLayoutMode("clusters");
+    (id: GraphLayoutId) => {
+      // The Matrix chip is a fresh entry even when Matrix is already showing:
+      // it drops a cell that Back to matrix just restored. Re-clicking a
+      // drawing chip is a no-op so the camera is not reset in place.
+      if (id === "matrix") {
+        enterMatrix();
+        return;
+      }
+      if (id === layoutMode) return;
+      setPairFocus(null);
+      setFrameArea(null);
+      setLayoutMode(id);
     },
-    [enterMatrix],
+    [enterMatrix, layoutMode],
   );
   // `truncated === false` means the server looked and the page is complete.
   // A missing flag is complete only when the returned list matches the total.
@@ -872,6 +890,7 @@ export function CodeGraphView() {
               onLayout={onLayoutChip}
               restoreScroll={matrixScroll}
               scrollRef={matrixScrollRef}
+              prevDepth={keptDepth}
             />
           ) : canvasMode ? (
             <CodeGraphCanvas
@@ -889,8 +908,10 @@ export function CodeGraphView() {
               frameId={frameId}
               controlRef={canvasControlRef}
               onZoom={onCanvasZoom}
-              layout="clusters"
+              layout={layoutMode === "matrix" ? "clusters" : layoutMode}
               onLayout={onLayoutChip}
+              prevDepth={keptDepth}
+              onDepth={onAreaDepth}
               pairFocus={pairFocus}
               returnTo={
                 returnPoint
@@ -1466,6 +1487,7 @@ export function CodeGraphView() {
                   setMatrixCell(null);
                   setReturnPoint(null);
                   setPairFocus(null);
+                  setFrameArea(null);
                   setLayoutMode("clusters");
                   pickHub(src);
                 }}
@@ -1512,6 +1534,7 @@ export function CodeGraphView() {
                       setSelPath(null);
                       setPairFocus(null);
                       setReturnPoint(null);
+                      setFrameId(null);
                       setFrameArea((cur) => ({ id, n: (cur?.n ?? 0) + 1 }));
                       return;
                     }

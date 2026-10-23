@@ -1,18 +1,17 @@
 /**
  * Canvas mode for a code map above DETAIL_BUDGET (PRD-52 D1, D4, D5).
  *
- * Clusters is the drawing. Matrix is the DOM grid (PRD-52 D4) and replaces
- * this surface when that chip is on. Map and Orbit stay disabled until their
- * slices land. The drawing is Canvas 2D behind the Renderer interface;
- * labels, hull names and the tooltip are DOM.
+ * Clusters, Map and Orbit are drawings. Matrix is the DOM grid (PRD-52 D4)
+ * and replaces this surface when that chip is on. The drawing is Canvas 2D
+ * behind the Renderer interface; labels, hull names and the tooltip are DOM.
  */
 
 import * as React from "react";
 
 import { zoomAbout } from "@/lib/graph/useGraphViewport";
-import { hitTest, type ClusterLayout } from "@/lib/graph/bigLayout";
+import { hitTest, type AreaLayoutKind, type ClusterLayout } from "@/lib/graph/bigLayout";
 import { useAreaLayout } from "@/lib/graph/useAreaLayout";
-import { AreaMatrix, LayoutChips } from "./AreaMatrix";
+import { AreaMatrix, LayoutChips, type GraphLayoutId } from "./AreaMatrix";
 import { createCanvas2D } from "./canvas/canvas2d";
 import {
   CANVAS_MAX_K,
@@ -82,6 +81,17 @@ function nodeAtPointer(
   return id;
 }
 
+/** The Map tile under a world point, or null. Node hits win over this. */
+function tileAt(layout: ClusterLayout | null, wx: number, wy: number): string | null {
+  if (!layout || (layout.layout ?? "clusters") !== "map") return null;
+  for (const area of layout.areas) {
+    const rect = area.rect;
+    if (!rect) continue;
+    if (wx >= rect.x && wx < rect.x + rect.w && wy >= rect.y && wy < rect.y + rect.h) return area.id;
+  }
+  return null;
+}
+
 export interface CanvasControlApi {
   zoomBy: (factor: number) => void;
   fit: () => void;
@@ -105,6 +115,8 @@ export function CodeGraphCanvas({
   returnTo = null,
   frameAreaId = null,
   frameAreaNonce = 0,
+  prevDepth,
+  onDepth,
 }: {
   nodes: CanvasGraphNode[];
   edges: CanvasGraphEdge[];
@@ -122,14 +134,18 @@ export function CodeGraphCanvas({
   /** Fired when the camera scale changes, so the shared readout can follow. */
   onZoom?: (k: number) => void;
   /** Controlled by the view. Omitted, the chip row keeps its own choice. */
-  layout?: "clusters" | "matrix";
-  onLayout?: (id: "clusters" | "matrix") => void;
+  layout?: GraphLayoutId;
+  onLayout?: (id: GraphLayoutId) => void;
   /** Show in graph: only this directed area pair, at fine zoom. */
   pairFocus?: { src: string; dst: string } | null;
   returnTo?: { text: string; onClick: () => void } | null;
   /** Explore: frame this area's hull. `nonce` retriggers the same id. */
   frameAreaId?: string | null;
   frameAreaNonce?: number;
+  /** Depth kept by the view across a Matrix unmount. Seed for the next layout. */
+  prevDepth?: number;
+  /** Reports the depth this layout actually used, so the grid can keep it. */
+  onDepth?: (depth: number) => void;
 }) {
   const hostRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -138,26 +154,47 @@ export function CodeGraphCanvas({
   const [cam, setCam] = React.useState<Cam>({ x: 0, y: 0, k: 1 });
   const [tween, setTween] = React.useState<Tween | null>(null);
   const [hover, setHover] = React.useState<string | null>(null);
+  const [hoverTile, setHoverTile] = React.useState<string | null>(null);
+  const [selectedTile, setSelectedTile] = React.useState<string | null>(null);
   const [tip, setTip] = React.useState<{ x: number; y: number; text: string } | null>(null);
+  const [cameraOwner, setCameraOwner] = React.useState<"fit" | "pair" | "area" | "node">("fit");
   const camRef = React.useRef(cam);
   camRef.current = cam;
   const sizeRef = React.useRef(size);
   sizeRef.current = size;
   const panRef = React.useRef<{ px: number; py: number; cx: number; cy: number } | null>(null);
   const fitted = React.useRef("");
-  const [localLayout, setLocalLayout] = React.useState<"clusters" | "matrix">("clusters");
-  const layoutMode = onLayout ? (layoutProp ?? "clusters") : localLayout;
+  const [localLayout, setLocalLayout] = React.useState<GraphLayoutId>("clusters");
+  const layoutMode: GraphLayoutId = onLayout ? (layoutProp ?? "clusters") : localLayout;
+  const layoutKind: AreaLayoutKind = layoutMode === "matrix" ? "clusters" : layoutMode;
   const chooseLayout = React.useCallback(
-    (id: "clusters" | "matrix") => {
+    (id: GraphLayoutId) => {
       if (onLayout) onLayout(id);
-      else setLocalLayout(id);
+      else {
+        setLocalLayout(id);
+        if (id !== "matrix") {
+          setHover(null);
+          setHoverTile(null);
+          setSelectedTile(null);
+          setTween(null);
+          fitted.current = "";
+        }
+      }
     },
     [onLayout],
   );
 
   const input = React.useMemo(
-    () => (nodes.length > 0 ? { nodes: nodes.map((n) => ({ id: n.id, path: n.path, kind: n.kind })), edges } : null),
-    [nodes, edges],
+    () =>
+      nodes.length > 0
+        ? {
+            nodes: nodes.map((n) => ({ id: n.id, path: n.path, kind: n.kind })),
+            edges,
+            layout: layoutKind,
+            prevDepth,
+          }
+        : null,
+    [nodes, edges, layoutKind, prevDepth],
   );
   const area = useAreaLayout(input);
   const layout = area.layout;
@@ -202,19 +239,30 @@ export function CodeGraphCanvas({
     return () => ro.disconnect();
   }, []);
 
-  const sig = layout ? `${layout.nodeCount}:${layout.depth ?? "x"}:${layout.ids[0] ?? ""}` : "";
+  const sig = layout
+    ? `${layout.layout ?? "clusters"}:${layout.nodeCount}:${layout.depth ?? "x"}:${layout.ids[0] ?? ""}`
+    : "";
+  const kindRef = React.useRef(layout?.layout ?? "clusters");
   React.useEffect(() => {
-    if (!layout || !sig || fitted.current === sig) return;
-    // A pair frame or an area zoom owns the camera. Marking the sig here keeps
-    // the fit-all from running the moment that request clears.
-    if (pairFocus || frameAreaId) {
+    if (!layout || !sig) return;
+    const kind = layout.layout ?? "clusters";
+    const kindChanged = kindRef.current !== kind;
+    kindRef.current = kind;
+    if (!kindChanged && fitted.current === sig) return;
+    // A pair, an area zoom, or a node frame owns the camera. Marking the sig
+    // keeps the fit-all from running the moment that request clears. A
+    // drawing-kind change still fits: switching layout resets the camera.
+    if (
+      !kindChanged &&
+      (pairFocus || frameAreaId || (frameId && layout.ids.includes(frameId)))
+    ) {
       fitted.current = sig;
       return;
     }
     fitted.current = sig;
-    if (frameId && layout.ids.includes(frameId)) return;
-    setCam(fitCamera(layout.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r })), size.w, size.h));
     setTween(null);
+    setCam(fitCamera(layout.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r })), size.w, size.h));
+    setCameraOwner("fit");
   }, [layout, sig, size.w, size.h, frameId, pairFocus, frameAreaId]);
 
   React.useEffect(() => {
@@ -230,6 +278,7 @@ export function CodeGraphCanvas({
     const next = replaceTween(camRef.current, to, performance.now(), prefersReducedMotion());
     setCam(next.cam);
     setTween(next.tween);
+    setCameraOwner("pair");
   }, [pairFocus, layout, size.w, size.h]);
 
   React.useEffect(() => {
@@ -240,17 +289,27 @@ export function CodeGraphCanvas({
     const next = replaceTween(camRef.current, to, performance.now(), prefersReducedMotion());
     setCam(next.cam);
     setTween(next.tween);
+    setCameraOwner("area");
   }, [frameAreaId, frameAreaNonce, layout, size.w, size.h, pairFocus]);
 
   React.useEffect(() => {
-    if (!frameId || !layout) return;
+    // A find or a hub pick frames one node at 7×. That loses to a pair and to
+    // an area zoom: otherwise this effect runs again on every layout arrival
+    // and the camera settles on the node instead of both hulls.
+    if (pairFocus || frameAreaId || !frameId || !layout) return;
     const i = layout.ids.indexOf(frameId);
     if (i < 0) return;
     const to = framePoint(layout.x[i], layout.y[i], FOCUS_ZOOM, size.w, size.h);
     const next = replaceTween(camRef.current, to, performance.now(), prefersReducedMotion());
     setCam(next.cam);
     setTween(next.tween);
-  }, [frameId, layout, size.w, size.h]);
+    setCameraOwner("node");
+  }, [frameId, layout, size.w, size.h, pairFocus, frameAreaId]);
+
+  React.useEffect(() => {
+    if (layout?.depth == null) return;
+    onDepth?.(layout.depth);
+  }, [layout, onDepth]);
 
   React.useEffect(() => {
     if (!tween) return;
@@ -336,8 +395,9 @@ export function CodeGraphCanvas({
       isolate: isolateSet,
       selectedId,
       hoverId: hover,
+      tileId: hoverTile ?? selectedTile,
     });
-  }, [drawnLayout, alpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover]);
+  }, [drawnLayout, alpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover, hoverTile, selectedTile]);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -381,10 +441,19 @@ export function CodeGraphCanvas({
       return;
     }
     const hit = nodeAtPointer(sceneNow, layoutNow, w.x, w.y);
-    setHover(hit);
     if (hit) {
+      setHover(hit);
+      setHoverTile(null);
       const node = nameOf.get(hit);
       setTip({ x: w.sx + 12, y: w.sy - 8, text: shortName(node, hit) });
+      return;
+    }
+    setHover(null);
+    const tile = tileAt(layoutNow, w.x, w.y);
+    setHoverTile(tile);
+    if (tile) {
+      const area = layoutNow.areas.find((a) => a.id === tile);
+      setTip({ x: w.sx + 12, y: w.sy - 8, text: area?.label ?? tile });
       return;
     }
     const bundle = hitBundle(sceneNow.strokes, w.x, w.y, camRef.current);
@@ -437,6 +506,7 @@ export function CodeGraphCanvas({
         selected={null}
         onSelect={() => {}}
         onLayout={chooseLayout}
+        prevDepth={prevDepth}
       />
     );
   }
@@ -449,8 +519,10 @@ export function CodeGraphCanvas({
       data-pair={pairFocus ? `${pairFocus.src}→${pairFocus.dst}` : undefined}
       data-pair-edges={pairFocus ? String(pairEdges) : undefined}
       data-frame-area={frameAreaId ?? undefined}
+      data-frame={cameraOwner}
+      data-depth={layout?.depth ?? ""}
       role="application"
-      aria-label={`Code graph canvas: ${shown} nodes. Clusters layout.`}
+      aria-label={`Code graph canvas: ${shown} nodes. ${layoutKind[0].toUpperCase()}${layoutKind.slice(1)} layout.`}
       className="absolute inset-0 touch-none"
       onWheel={onWheel}
       onPointerDown={(e) => {
@@ -471,7 +543,14 @@ export function CodeGraphCanvas({
           const moved = Math.hypot(w.sx - from.px, w.sy - from.py);
           if (moved < 4 && layout) {
             const hit = nodeAtPointer(scene, layout, w.x, w.y);
-            onSelect(hit);
+            if (hit) {
+              setSelectedTile(null);
+              onSelect(hit);
+            } else {
+              const tile = tileAt(layout, w.x, w.y);
+              setSelectedTile(tile);
+              onSelect(null);
+            }
           }
         }
       }}
@@ -499,15 +578,51 @@ export function CodeGraphCanvas({
             const sx = h.cx * cam.k + cam.x;
             const sy = h.cy * cam.k + cam.y;
             const sr = h.r * cam.k;
+            const name = (
+              <>
+                {h.label}
+                {h.showCount ? ` · ${h.count}` : ""}
+              </>
+            );
+            if (h.rect) {
+              const rx = h.rect.x * cam.k + cam.x;
+              const ry = h.rect.y * cam.k + cam.y;
+              const rw = h.rect.w * cam.k;
+              const rh = h.rect.h * cam.k;
+              return (
+                <g key={h.id} data-testid={`hull-${h.id}`}>
+                  <rect x={rx} y={ry} width={rw} height={rh} fill={h.color} fillOpacity={0.05} stroke={h.color} strokeOpacity={0.35} />
+                  {h.showName && (
+                    <text x={rx + rw / 2} y={ry + 14} textAnchor="middle" fill={h.color} fontSize={11}>
+                      {name}
+                    </text>
+                  )}
+                </g>
+              );
+            }
             return (
               <g key={h.id} data-testid={`hull-${h.id}`}>
                 <circle cx={sx} cy={sy} r={sr} fill={h.color} fillOpacity={0.05} stroke={h.color} strokeOpacity={0.35} />
                 {h.showName && (
                   <text x={sx} y={sy - sr - 4} textAnchor="middle" fill={h.color} fontSize={11}>
-                    {h.label}
-                    {h.showCount ? ` · ${h.count}` : ""}
+                    {name}
                   </text>
                 )}
+              </g>
+            );
+          })}
+          {(scene.orbitRings ?? []).map((ring) => {
+            const sx = ring.cx * cam.k + cam.x;
+            const sy = ring.cy * cam.k + cam.y;
+            const sr = ring.r * cam.k;
+            return (
+              <g key={ring.index} data-testid={`orbit-ring-${ring.index}`}>
+                {sr > 1 && (
+                  <circle cx={sx} cy={sy} r={sr} fill="none" stroke="currentColor" strokeOpacity={0.28} />
+                )}
+                <text x={sx} y={sy - sr - 6} textAnchor="middle" fill="currentColor" fontSize={11}>
+                  {ring.label}
+                </text>
               </g>
             );
           })}
@@ -542,7 +657,7 @@ export function CodeGraphCanvas({
       </div>
 
       <div className="absolute left-3 top-3 z-10 flex flex-col items-start gap-1.5">
-        <LayoutChips layout="clusters" onLayout={chooseLayout} returnTo={returnTo} />
+        <LayoutChips layout={layoutKind} onLayout={chooseLayout} returnTo={returnTo} />
         {scene && (
           <p data-testid="lod-caption" className="max-w-[440px] rounded bg-surface/80 px-2 py-1 text-[11.5px] text-muted">
             {scene.caption}

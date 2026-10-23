@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -344,4 +344,88 @@ describe("matrix in the code graph", () => {
     expect(within(aside).queryByRole("button", { name: /Path from here/ })).not.toBeInTheDocument();
     await waitFor(() => expect(zoomText()).not.toBe(before));
   });
+
+  it("stays framed on the pair after a find", async () => {
+    const user = userEvent.setup();
+    await mountView();
+    fireEvent.change(screen.getByPlaceholderText(/Find a file/), {
+      target: { value: "p00/f0.py" },
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("code-graph-canvas")).toHaveAttribute("data-frame", "node"),
+    );
+
+    await user.click(screen.getByTestId("layout-chip-matrix"));
+    await user.click(screen.getByTestId("matrix-cell-p00-p02"));
+    await user.click(screen.getByRole("button", { name: "Show in graph" }));
+    const canvas = await screen.findByTestId("code-graph-canvas");
+    await waitFor(() => expect(canvas).toHaveAttribute("data-frame", "pair"));
+    expect(canvas).toHaveAttribute("data-pair", "p00→p02");
+    expect(canvas).toHaveAttribute("data-pair-edges", "1");
+
+    fireEvent.change(screen.getByPlaceholderText(/Find a file/), {
+      target: { value: "p01/f0.py" },
+    });
+    await waitFor(() => {
+      expect(
+        within(screen.getByTestId("graph-aside")).getByRole("button", { name: /Path from here/ }),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("code-graph-canvas")).toHaveAttribute("data-frame", "pair");
+    });
+  });
+
+  it("keeps the canvas depth on the matrix after the canvas unmounts", async () => {
+    const user = userEvent.setup();
+    current = depthMap(8);
+    const { CodeGraphView } = await import("@/features/code/CodeGraphView");
+    const { rerender } = render(<CodeGraphView />);
+    await waitFor(() =>
+      expect(screen.getByTestId("code-graph-canvas")).toHaveAttribute("data-depth", "3"),
+    );
+
+    current = depthMap(12);
+    rerender(<CodeGraphView />);
+    await waitFor(() =>
+      expect(screen.getByTestId("code-graph-canvas")).toHaveAttribute("data-depth", "3"),
+    );
+
+    await user.click(screen.getByTestId("layout-chip-matrix"));
+    const matrix = screen.getByTestId("area-matrix");
+    expect(matrix).toHaveAttribute("data-depth", "3");
+    expect(screen.getByTestId("matrix-row-s/00/a")).toBeInTheDocument();
+    expect(screen.queryByTestId("matrix-row-s/00")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("layout-chip-clusters"));
+    await waitFor(() =>
+      expect(screen.getByTestId("code-graph-canvas")).toHaveAttribute("data-depth", "3"),
+    );
+    current = bigMap();
+  });
 });
+
+/** 8 groups fresh-pick depth 3; 12 groups fresh-pick depth 2 and still keep 3. */
+function depthMap(groups: number): CodeMap {
+  const nodes: CodeNode[] = [];
+  const edges: CodeEdge[] = [];
+  for (let g = 0; g < groups; g++) {
+    const stem = `s/${String(g).padStart(2, "0")}`;
+    for (const side of ["a", "b"]) {
+      const home = `${stem}/${side}`;
+      nodes.push({
+        id: home,
+        path: home,
+        kind: "module",
+        name: side,
+        lang: "py",
+        summary: "",
+        fresh: true,
+      });
+      for (let i = 0; i < 50; i++) {
+        const id = `${home}/f${i}`;
+        nodes.push({ id, path: id, kind: "file", name: `f${i}`, lang: "py", summary: "", fresh: true });
+        edges.push({ src: home, dst: id, type: "owns" });
+      }
+    }
+  }
+  return { nodes, edges, node_count: nodes.length, edge_count: edges.length, outbound: [] };
+}
