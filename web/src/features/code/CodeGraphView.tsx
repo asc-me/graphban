@@ -52,6 +52,7 @@ import { useCodeAnalysis, useCodeMap, useFleetPresence } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors, HeldArea, ProjectStub } from "@/lib/types";
 
 import { CANVAS_MAX_K, CANVAS_MIN_K } from "./canvas/camera";
+import { useCanvasPath } from "./canvas/overlay";
 import { CodeChat } from "./CodeChat";
 import { CodeGraphCanvas, type CanvasControlApi } from "./CodeGraphCanvas";
 import { FleetLegend } from "./FleetLegend";
@@ -558,6 +559,39 @@ export function CodeGraphView() {
   /** What the canvas dims against: a live path wins, otherwise the reach ring. */
   const shown = pathHl ?? hl;
 
+  // Canvas path mode is a different request from the SVG one: it has to abort.
+  // Passing a null source outside canvas mode keeps this hook from tracing a
+  // pair the SVG query is already tracing.
+  const enableAllEdges = React.useCallback(() => {
+    setEnabled({ imports: true, calls: true, owns: true, tested_by: true, references: true });
+  }, []);
+  const canvasPath = useCanvasPath({
+    projectId: activeId,
+    source: canvasMode ? selPath : null,
+    edgeTypes: activeTypes,
+    allEdgeTypes: EDGE_TYPES,
+    onUseAllTypes: enableAllEdges,
+  });
+  const canvasPathRef = React.useRef(canvasPath);
+  canvasPathRef.current = canvasPath;
+  React.useEffect(() => {
+    if (!canvasMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      // Innermost layer first: abort, then disarm, then the selection.
+      const layer = canvasPathRef.current.escape();
+      if (layer === "selection") {
+        setSelPath(null);
+        setPathTo(null);
+        setArmed(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [canvasMode]);
+
   // Isolate stands down when there is nothing to isolate against. Without this the button
   // stays pressed after the selection clears while hiding nothing — a control whose state
   // disagrees with the canvas. One effect rather than a call in each of the four clear paths
@@ -798,6 +832,14 @@ export function CodeGraphView() {
               frameId={frameId}
               controlRef={canvasControlRef}
               onZoom={onCanvasZoom}
+              pathState={{
+                picking: canvasPath.picking,
+                pending: canvasPath.pending,
+                slow: canvasPath.slow,
+                path: canvasPath.path,
+              }}
+              onPathTarget={canvasPath.pick}
+              onPathEmpty={canvasPath.disarm}
             />
           ) : (
             <svg
@@ -1329,14 +1371,28 @@ export function CodeGraphView() {
               />
             )}
 
-            {walk && (
+            {canvasMode && (canvasPath.trace || canvasPath.requestError) ? (
               <PathTrace
-                path={walk}
-                onClear={() => setPathTo(null)}
+                path={canvasPath.trace}
+                onClear={canvasPath.clearTrace}
                 onPick={pickHub}
                 edgeTypes={activeTypes}
                 allEdgeTypes={EDGE_TYPES}
+                canvas
+                requestError={canvasPath.requestError}
+                onTryAll={canvasPath.tryAll}
+                onRetry={canvasPath.retry}
               />
+            ) : (
+              walk && (
+                <PathTrace
+                  path={walk}
+                  onClear={() => setPathTo(null)}
+                  onPick={pickHub}
+                  edgeTypes={activeTypes}
+                  allEdgeTypes={EDGE_TYPES}
+                />
+              )
             )}
 
             {trail.length > 1 && (
@@ -1360,8 +1416,11 @@ export function CodeGraphView() {
                 reach={hl?.hlNodes.size ?? 1}
                 holders={heldByNode.get(selPath) ?? []}
                 servedAt={presence?.served_at ?? null}
-                armed={armed}
-                onArm={() => setArmed((a) => !a)}
+                armed={canvasMode ? canvasPath.picking : armed}
+                onArm={() => {
+                  if (canvasMode) canvasPath.toggle();
+                  else setArmed((a) => !a);
+                }}
                 onExpand={() => setDepth((d) => Math.min(4, d + 1))}
                 onClose={() => setSelPath(null)}
                 onZoom={() => pickHub(selPath)}

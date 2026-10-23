@@ -71,6 +71,11 @@ export interface DrawScene {
   revealed: string | null;
   /** Focused node's incident edges, capped at 320. Drawn above the rings. */
   glow: Stroke[];
+  /**
+   * One alpha for the whole edge batch. A path sets 0.05 so the batch does not
+   * decide, per edge, whether that edge is on the route.
+   */
+  edgesAlpha: number;
 }
 
 export interface SceneOpts {
@@ -84,6 +89,8 @@ export interface SceneOpts {
   isolate: Set<string> | null;
   selectedId: string | null;
   hoverId: string | null;
+  /** Overrides the batch alpha. Absent keeps the ordinary 0.85. */
+  edgesAlpha?: number;
 }
 
 export function worldInView(x: number, y: number, r: number, cam: Cam, w: number, h: number): boolean {
@@ -259,6 +266,7 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
     areasOnly: large && !revealed,
     revealed,
     glow,
+    edgesAlpha: opts.edgesAlpha ?? 0.85,
   };
 }
 

@@ -32,10 +32,12 @@ function drawGlow(ctx: CanvasRenderingContext2D, scene: DrawScene) {
 function drawEdges(ctx: CanvasRenderingContext2D, scene: DrawScene) {
   const { camera } = scene;
   applyCamera(ctx, scene);
+  // One alpha for the batch. A path dims every non-path edge by setting this
+  // once; deciding inside the loop would walk every edge on the path frame.
+  ctx.globalAlpha = scene.edgesAlpha;
   for (const stroke of scene.strokes) {
     ctx.beginPath();
     ctx.strokeStyle = stroke.color;
-    ctx.globalAlpha = 0.85;
     ctx.lineWidth = stroke.widthPx / Math.max(camera.k, 0.05);
     if (stroke.kind === "quad") {
       ctx.moveTo(stroke.x0, stroke.y0);
