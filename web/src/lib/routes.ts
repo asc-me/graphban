@@ -77,6 +77,16 @@ export function viewFromPath(pathname: string): string {
   return m ? m[1] : "";
 }
 
+/** The view part of either URL shape: hosted `/p/GRPH/code/x` and self-host `/code/x` → `code/x`. */
+function viewRest(pathname: string): string {
+  return viewFromPath(pathname) || (tagFromPath(pathname) ? "" : pathname.replace(/^\/+/, ""));
+}
+
+/** The view a path names, in either URL shape: `/p/GRPH/code/x` and `/code/x` → `code`. */
+export function viewSegment(pathname: string): string {
+  return viewRest(pathname).split("/").filter(Boolean)[0] ?? "";
+}
+
 /** Section · page for the project bar (GRPH-953). Never title-cases the whole path. */
 export type Place = { section: string; page: string };
 
@@ -130,8 +140,7 @@ export function placeFromPath(pathname: string): Place | null {
   if (tagFromPath(pathname) && viewFromPath(pathname) === "") {
     return { section: "Dashboard", page: "Dashboard" };
   }
-  const hosted = viewFromPath(pathname);
-  const rest = hosted || (tagFromPath(pathname) ? "" : pathname.replace(/^\/+/, ""));
+  const rest = viewRest(pathname);
   if (!rest) return null;
   const segs = rest.split("/").filter(Boolean);
   const first = segs[0] ?? "";

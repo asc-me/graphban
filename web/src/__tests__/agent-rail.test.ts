@@ -8,7 +8,14 @@ import { hasOwnAside, useAgentRail } from "@/components/shell/agentRail";
  * then sat beside. Arriving at the graph must leave it closed; the toggle still works there.
  */
 describe("the agent rail on arrival", () => {
-  it("knows which views carry their own aside", () => {
+  it("knows which views carry their own aside, in both URL shapes", () => {
+    // Self-host serves flat paths (`/code`); hosted nests them under the project tag.
+    // The first version read only the hosted shape and missed every self-host graph.
+    expect(hasOwnAside("/code")).toBe(true);
+    expect(hasOwnAside("/code/backend/app.py")).toBe(true);
+    expect(hasOwnAside("/tracker")).toBe(false);
+    expect(hasOwnAside("/codex")).toBe(false);
+    expect(hasOwnAside("/")).toBe(false);
     expect(hasOwnAside("/p/GRPH/code")).toBe(true);
     expect(hasOwnAside("/p/GRPH/code/backend/app.py")).toBe(true);
     expect(hasOwnAside("/p/GRPH/tracker")).toBe(false);
@@ -16,13 +23,13 @@ describe("the agent rail on arrival", () => {
     expect(hasOwnAside("/org/galaxy")).toBe(false);
   });
 
-  it("starts open on an ordinary view and closed on the code graph, from the first frame", () => {
+  it.each(["/code", "/p/GRPH/code"])("starts closed on %s from the first frame, and open elsewhere", (graph) => {
     // The FIRST render, not the settled one. Starting open and closing in an effect draws
     // the rail for a frame and then plays its 240ms close slide: the panel visibly opens
     // on its own, which is the complaint.
     const frames: boolean[] = [];
     renderHook(() => {
-      const rail = useAgentRail("/p/GRPH/code");
+      const rail = useAgentRail(graph);
       frames.push(rail[0]);
       return rail;
     });
@@ -32,12 +39,15 @@ describe("the agent rail on arrival", () => {
     expect(renderHook(() => useAgentRail("/p/GRPH/tracker")).result.current[0]).toBe(true);
   });
 
-  it("closes when you navigate to the code graph with it open", () => {
+  it.each([
+    ["/tracker", "/code"],
+    ["/p/GRPH/tracker", "/p/GRPH/code"],
+  ])("closes when you navigate from %s to %s with it open", (from, to) => {
     const { result, rerender } = renderHook(({ path }) => useAgentRail(path), {
-      initialProps: { path: "/p/GRPH/tracker" },
+      initialProps: { path: from },
     });
     expect(result.current[0]).toBe(true);
-    rerender({ path: "/p/GRPH/code" });
+    rerender({ path: to });
     expect(result.current[0]).toBe(false);
   });
 

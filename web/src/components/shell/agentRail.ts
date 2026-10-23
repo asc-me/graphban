@@ -1,6 +1,6 @@
 import * as React from "react";
 
-import { viewFromPath } from "@/lib/routes";
+import { viewSegment } from "@/lib/routes";
 
 /**
  * Views that draw their own right-hand aside. The code graph's Inspect / Ask column is
@@ -9,7 +9,7 @@ import { viewFromPath } from "@/lib/routes";
 const OWN_ASIDE = new Set(["code"]);
 
 export function hasOwnAside(pathname: string): boolean {
-  return OWN_ASIDE.has(viewFromPath(pathname).split("/")[0]);
+  return OWN_ASIDE.has(viewSegment(pathname));
 }
 
 /**
