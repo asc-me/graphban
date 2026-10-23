@@ -249,6 +249,26 @@ describe("canvas listbox", () => {
     expect(host.getAttribute("data-camera-k")).not.toBe("7.000");
   });
 
+  it("cancels the tween when the next key lands on a node already in frame", () => {
+    const { host } = mount({ count: 5 });
+    act(() => {
+      const list = screen.getByRole("listbox", { name: "Graph nodes" });
+      for (const key of ["ArrowDown", "ArrowDown", "ArrowUp"]) {
+        list.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+      }
+    });
+    // n00 is inside the fitted camera. Down, down aims a tween at n01. Up returns
+    // to n00 in the same turn, so the flight must stop instead of finishing toward n01.
+    expect(screen.getByTestId("graph-live")).toHaveTextContent("p/n00.py");
+    expect(host.dataset.follow).toBe("in-view");
+    expect(host.getAttribute("data-tween")).toBe("0");
+
+    press("ArrowDown");
+    expect(screen.getByTestId("graph-live")).toHaveTextContent("p/n01.py");
+    expect(host.dataset.follow).toBe("p/n01.py");
+    expect(host.getAttribute("data-tween")).toBe("1");
+  });
+
   it("jumps the camera when reduced motion is on", () => {
     vi.stubGlobal("matchMedia", (q: string) => ({
       matches: q.includes("reduce"),

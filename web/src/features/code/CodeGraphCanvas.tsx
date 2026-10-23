@@ -1,9 +1,9 @@
 /**
  * Canvas mode for a code map above DETAIL_BUDGET (PRD-52 D1, D4, D5).
  *
- * Clusters, Map and Orbit are live. Matrix stays disabled until its slice.
- * The drawing is Canvas 2D behind the Renderer interface; labels, hull names
- * and the tooltip are DOM.
+ * Clusters, Map and Orbit are drawings. Matrix is the DOM grid (PRD-52 D4)
+ * and replaces this surface when that chip is on. The drawing is Canvas 2D
+ * behind the Renderer interface; labels, hull names and the tooltip are DOM.
  */
 
 import * as React from "react";
@@ -13,6 +13,7 @@ import { pathAlphaBuffer } from "@/lib/graph/pathHighlight";
 import { hitTest, type AreaLayoutKind, type ClusterLayout } from "@/lib/graph/bigLayout";
 import { useAreaLayout } from "@/lib/graph/useAreaLayout";
 import { useCanvasListbox, type HolderReading } from "@/lib/graph/useGraphKeyboard";
+import { AreaMatrix, LayoutChips, type GraphLayoutId } from "./AreaMatrix";
 import type { CodePath } from "@/lib/types";
 import { createCanvas2D } from "./canvas/canvas2d";
 import {
@@ -20,6 +21,7 @@ import {
   CANVAS_MIN_K,
   FOCUS_ZOOM,
   fitCamera,
+  framePair,
   framePoint,
   prefersReducedMotion,
   replaceTween,
@@ -27,7 +29,7 @@ import {
   type Cam,
   type Tween,
 } from "./canvas/camera";
-import { groupThousands, hitBundle } from "./canvas/edges";
+import { LOD_ZOOM, groupThousands, hitBundle } from "./canvas/edges";
 import { pickLabels, type LabelNode } from "./canvas/labels";
 import type { Renderer } from "./canvas/renderer";
 import {
@@ -64,13 +66,6 @@ export interface CanvasGraphEdge {
   dst: string;
   type: string;
 }
-
-const CHIPS: { id: AreaLayoutKind | "matrix"; label: string; on: boolean }[] = [
-  { id: "clusters", label: "Clusters", on: true },
-  { id: "map", label: "Map", on: true },
-  { id: "orbit", label: "Orbit", on: true },
-  { id: "matrix", label: "Matrix", on: false },
-];
 
 function shortName(node: { path: string; name: string } | undefined, id: string): string {
   if (node?.name) return node.name;
@@ -136,6 +131,14 @@ export function CodeGraphCanvas({
   pathArmed = false,
   onAbortPath,
   onDisarmPath,
+  layout: layoutProp,
+  onLayout,
+  pairFocus = null,
+  returnTo = null,
+  frameAreaId = null,
+  frameAreaNonce = 0,
+  prevDepth,
+  onDepth,
   pathState,
   onPathTarget,
   onPathEmpty,
@@ -166,6 +169,19 @@ export function CodeGraphCanvas({
   pathArmed?: boolean;
   onAbortPath?: () => void;
   onDisarmPath?: () => void;
+  /** Controlled by the view. Omitted, the chip row keeps its own choice. */
+  layout?: GraphLayoutId;
+  onLayout?: (id: GraphLayoutId) => void;
+  /** Show in graph: only this directed area pair, at fine zoom. */
+  pairFocus?: { src: string; dst: string } | null;
+  returnTo?: { text: string; onClick: () => void } | null;
+  /** Explore: frame this area's hull. `nonce` retriggers the same id. */
+  frameAreaId?: string | null;
+  frameAreaNonce?: number;
+  /** Depth kept by the view across a Matrix unmount. Seed for the next layout. */
+  prevDepth?: number;
+  /** Reports the depth this layout actually used, so the grid can keep it. */
+  onDepth?: (depth: number) => void;
   /** Path mode. Absent on the SVG-sized maps this canvas is not showing. */
   pathState?: CanvasPathState | null;
   /** A node click while armed or pending. Does not change the selection. */
@@ -183,14 +199,33 @@ export function CodeGraphCanvas({
   const [hover, setHover] = React.useState<string | null>(null);
   const [hoverTile, setHoverTile] = React.useState<string | null>(null);
   const [selectedTile, setSelectedTile] = React.useState<string | null>(null);
-  const [layoutKind, setLayoutKind] = React.useState<AreaLayoutKind>("clusters");
   const [tip, setTip] = React.useState<{ x: number; y: number; text: string } | null>(null);
+  const [cameraOwner, setCameraOwner] = React.useState<"fit" | "pair" | "area" | "node">("fit");
   const camRef = React.useRef(cam);
   camRef.current = cam;
   const sizeRef = React.useRef(size);
   sizeRef.current = size;
   const panRef = React.useRef<{ px: number; py: number; cx: number; cy: number } | null>(null);
   const fitted = React.useRef("");
+  const [localLayout, setLocalLayout] = React.useState<GraphLayoutId>("clusters");
+  const layoutMode: GraphLayoutId = onLayout ? (layoutProp ?? "clusters") : localLayout;
+  const layoutKind: AreaLayoutKind = layoutMode === "matrix" ? "clusters" : layoutMode;
+  const chooseLayout = React.useCallback(
+    (id: GraphLayoutId) => {
+      if (onLayout) onLayout(id);
+      else {
+        setLocalLayout(id);
+        if (id !== "matrix") {
+          setHover(null);
+          setHoverTile(null);
+          setSelectedTile(null);
+          setTween(null);
+          fitted.current = "";
+        }
+      }
+    },
+    [onLayout],
+  );
 
   const input = React.useMemo(
     () =>
@@ -199,9 +234,10 @@ export function CodeGraphCanvas({
             nodes: nodes.map((n) => ({ id: n.id, path: n.path, kind: n.kind })),
             edges,
             layout: layoutKind,
+            prevDepth,
           }
         : null,
-    [nodes, edges, layoutKind],
+    [nodes, edges, layoutKind, prevDepth],
   );
   const area = useAreaLayout(input);
   const layout = area.layout;
@@ -256,24 +292,67 @@ export function CodeGraphCanvas({
     const kindChanged = kindRef.current !== kind;
     kindRef.current = kind;
     if (!kindChanged && fitted.current === sig) return;
-    if (!kindChanged && frameId && layout.ids.includes(frameId)) {
+    // A pair, an area zoom, or a node frame owns the camera. Marking the sig
+    // keeps the fit-all from running the moment that request clears. A
+    // drawing-kind change still fits: switching layout resets the camera.
+    if (
+      !kindChanged &&
+      (pairFocus || frameAreaId || (frameId && layout.ids.includes(frameId)))
+    ) {
       fitted.current = sig;
       return;
     }
     fitted.current = sig;
     setTween(null);
     setCam(fitCamera(layout.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r })), size.w, size.h));
-  }, [layout, sig, size.w, size.h, frameId]);
+    setCameraOwner("fit");
+  }, [layout, sig, size.w, size.h, frameId, pairFocus, frameAreaId]);
 
   React.useEffect(() => {
-    if (!frameId || !layout) return;
+    if (!pairFocus || !layout) return;
+    const hulls = layout.areas.filter((a) => a.id === pairFocus.src || a.id === pairFocus.dst);
+    if (hulls.length === 0) return;
+    const to = framePair(
+      hulls.map((h) => ({ x: h.cx, y: h.cy, r: h.r })),
+      size.w,
+      size.h,
+      LOD_ZOOM,
+    );
+    const next = replaceTween(camRef.current, to, performance.now(), prefersReducedMotion());
+    setCam(next.cam);
+    setTween(next.tween);
+    setCameraOwner("pair");
+  }, [pairFocus, layout, size.w, size.h]);
+
+  React.useEffect(() => {
+    if (!frameAreaId || !layout || pairFocus) return;
+    const hull = layout.areas.find((a) => a.id === frameAreaId);
+    if (!hull) return;
+    const to = fitCamera([{ x: hull.cx, y: hull.cy, r: hull.r }], size.w, size.h);
+    const next = replaceTween(camRef.current, to, performance.now(), prefersReducedMotion());
+    setCam(next.cam);
+    setTween(next.tween);
+    setCameraOwner("area");
+  }, [frameAreaId, frameAreaNonce, layout, size.w, size.h, pairFocus]);
+
+  React.useEffect(() => {
+    // A find or a hub pick frames one node at 7×. That loses to a pair and to
+    // an area zoom: otherwise this effect runs again on every layout arrival
+    // and the camera settles on the node instead of both hulls.
+    if (pairFocus || frameAreaId || !frameId || !layout) return;
     const i = layout.ids.indexOf(frameId);
     if (i < 0) return;
     const to = framePoint(layout.x[i], layout.y[i], FOCUS_ZOOM, size.w, size.h);
     const next = replaceTween(camRef.current, to, performance.now(), prefersReducedMotion());
     setCam(next.cam);
     setTween(next.tween);
-  }, [frameId, layout, size.w, size.h]);
+    setCameraOwner("node");
+  }, [frameId, layout, size.w, size.h, pairFocus, frameAreaId]);
+
+  React.useEffect(() => {
+    if (layout?.depth == null) return;
+    onDepth?.(layout.depth);
+  }, [layout, onDepth]);
 
   React.useEffect(() => {
     if (!tween) return;
@@ -317,6 +396,9 @@ export function CodeGraphCanvas({
     const c = camRef.current;
     if (worldInView(layoutNow.x[i], layoutNow.y[i], layoutNow.r[i], c, w, h)) {
       host.dataset.follow = "in-view";
+      // Already in frame. The previous key may still be flying toward the node
+      // just left; leaving that tween running moves the camera after the listbox.
+      setTween(null);
       return;
     }
     const to = framePoint(layoutNow.x[i], layoutNow.y[i], FOCUS_ZOOM, w, h);
@@ -363,12 +445,36 @@ export function CodeGraphCanvas({
     idPrefix: listId,
   });
 
-  // Pointer hover wins the ring. Otherwise the keyboard cursor, then the selection.
-  const focusId = hover ?? kb.activeId ?? selectedId;
+  // A pair draws both areas, not one node. Otherwise the pointer wins, then
+  // the keyboard cursor, then the selection.
+  const focusId = pairFocus ? null : hover ?? kb.activeId ?? selectedId;
+  const pairReach = React.useMemo(() => {
+    if (!pairFocus || !layout) return null;
+    const out = new Uint8Array(layout.ids.length);
+    let any = false;
+    for (let i = 0; i < layout.ids.length; i++) {
+      const areaId = layout.areaOf[i];
+      if (areaId === pairFocus.src || areaId === pairFocus.dst) {
+        out[i] = 1;
+        any = true;
+      }
+    }
+    return any ? out : null;
+  }, [pairFocus, layout]);
   const reach = React.useMemo(
-    () => (layout ? reachOf(layout, focusId, layout.edges.filter((e) => types.has(e.type))) : null),
-    [layout, focusId, types],
+    () =>
+      pairReach ??
+      (layout ? reachOf(layout, focusId, layout.edges.filter((e) => types.has(e.type))) : null),
+    [pairReach, layout, focusId, types],
   );
+  const drawnLayout = React.useMemo(() => {
+    if (!layout) return null;
+    if (!pairFocus) return layout;
+    const edges = layout.edges.filter(
+      (e) => types.has(e.type) && e.srcArea === pairFocus.src && e.dstArea === pairFocus.dst,
+    );
+    return { ...layout, edges };
+  }, [layout, pairFocus, types]);
   // The path buffer replaces the reach buffer. It is keyed on the path, not the
   // camera, so a pan does not write it again.
   const pathAlpha = React.useMemo(
@@ -394,8 +500,8 @@ export function CodeGraphCanvas({
 
   const dpr = typeof window === "undefined" ? 1 : Math.min(2, window.devicePixelRatio || 1);
   const scene = React.useMemo(() => {
-    if (!layout || !alpha) return null;
-    return buildScene(layout, {
+    if (!drawnLayout || !alpha) return null;
+    return buildScene(drawnLayout, {
       camera: cam,
       width: size.w,
       height: size.h,
@@ -412,7 +518,7 @@ export function CodeGraphCanvas({
       edgesAlpha: pathAlpha ? NON_PATH_EDGE_ALPHA : undefined,
       tileId: hoverTile ?? selectedTile,
     });
-  }, [layout, alpha, pathAlpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover, hoverTile, selectedTile]);
+  }, [drawnLayout, alpha, pathAlpha, cam, size.w, size.h, dpr, types, isolateSet, selectedId, hover, hoverTile, selectedTile]);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -513,6 +619,21 @@ export function CodeGraphCanvas({
   const drawnEdges = edges.reduce((n, e) => n + (types.has(e.type) ? 1 : 0), 0);
   const edgeClause =
     drawnEdges === edges.length ? `${edges.length} edges` : `${drawnEdges} of ${edges.length} edges`;
+  const pairEdges = pairFocus && drawnLayout ? drawnLayout.edges.length : 0;
+
+  if (layoutMode === "matrix") {
+    return (
+      <AreaMatrix
+        nodes={nodes}
+        edges={edges}
+        enabledTypes={enabledTypes}
+        selected={null}
+        onSelect={() => {}}
+        onLayout={chooseLayout}
+        prevDepth={prevDepth}
+      />
+    );
+  }
 
   return (
     <div
@@ -520,6 +641,11 @@ export function CodeGraphCanvas({
       data-testid="code-graph-canvas"
       data-renderer={rendererRef.current?.kind ?? "canvas2d"}
       data-camera-k={cam.k.toFixed(3)}
+      data-pair={pairFocus ? `${pairFocus.src}→${pairFocus.dst}` : undefined}
+      data-pair-edges={pairFocus ? String(pairEdges) : undefined}
+      data-frame-area={frameAreaId ?? undefined}
+      data-frame={cameraOwner}
+      data-depth={layout?.depth ?? ""}
       data-camera-x={cam.x}
       data-tween={tween ? "1" : "0"}
       role="application"
@@ -712,38 +838,7 @@ export function CodeGraphCanvas({
 
       {tracing && <PathBanner pending={!!pathState?.pending} slow={!!pathState?.slow} />}
       <div className="absolute left-3 top-3 z-10 flex flex-col items-start gap-1.5">
-        <div data-testid="layout-chips" role="group" aria-label="Layout" className="flex gap-1">
-          {CHIPS.map((chip) => {
-            const pressed = chip.id === layoutKind;
-            return (
-              <button
-                key={chip.id}
-                type="button"
-                disabled={!chip.on}
-                aria-pressed={pressed}
-                data-testid={`layout-chip-${chip.id}`}
-                onClick={() => {
-                  if (!chip.on || chip.id === "matrix" || chip.id === layoutKind) return;
-                  setLayoutKind(chip.id);
-                  setHover(null);
-                  setHoverTile(null);
-                  setSelectedTile(null);
-                  setTween(null);
-                  fitted.current = "";
-                }}
-                className={
-                  !chip.on
-                    ? "rounded-lg border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-faint"
-                    : pressed
-                      ? "rounded-lg border border-control-hover bg-surface-3 px-2 py-1 text-[11.5px] text-fg"
-                      : "rounded-lg border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-fg"
-                }
-              >
-                {chip.label}
-              </button>
-            );
-          })}
-        </div>
+        <LayoutChips layout={layoutKind} onLayout={chooseLayout} returnTo={returnTo} />
         {scene && (
           <p data-testid="lod-caption" className="max-w-[440px] rounded bg-surface/80 px-2 py-1 text-[11.5px] text-muted">
             {scene.caption}

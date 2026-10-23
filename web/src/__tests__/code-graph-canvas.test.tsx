@@ -34,16 +34,18 @@ describe("canvas chrome", () => {
     expect(screen.queryByTestId("truncated-caption")).not.toBeInTheDocument();
   });
 
-  it("enables Clusters, Map and Orbit, and leaves Matrix disabled", async () => {
+  it("enables Clusters, Map, Orbit and Matrix", async () => {
     mount(false);
     expect(screen.getByTestId("layout-chip-clusters")).toHaveAttribute("aria-pressed", "true");
     const map = screen.getByTestId("layout-chip-map");
     const orbit = screen.getByTestId("layout-chip-orbit");
+    const matrix = screen.getByTestId("layout-chip-matrix");
     expect(map).toBeEnabled();
     expect(orbit).toBeEnabled();
+    expect(matrix).toBeEnabled();
     expect(map).toHaveAttribute("aria-pressed", "false");
     expect(orbit).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByTestId("layout-chip-matrix")).toBeDisabled();
+    expect(matrix).toHaveAttribute("aria-pressed", "false");
 
     fireEvent.click(map);
     expect(map).toHaveAttribute("aria-pressed", "true");

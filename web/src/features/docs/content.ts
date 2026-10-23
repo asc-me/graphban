@@ -25,6 +25,18 @@ export interface DocEntry {
   related?: DocRelated[];
 }
 
+/** Project home. The nav calls it Dashboard in both modes; `/dashboard` redirects here (GRPH-1066). */
+const DASHBOARD_DOC: DocEntry = {
+  badge: "DASHBOARD",
+  title: "Dashboard",
+  tagline: "Project health at a glance — items, memory, and who is in flight.",
+  sections: [
+    { num: 1, h: "Counts, not a fetch of everything", b: "The stat grid and jump tiles come from the dashboard payload and the shell counts endpoint. Fetching items to call .length is how this page once cost megabytes on every route." },
+    { num: 2, h: "One page, both modes", b: "Hosted project home (/p/:tag) and self-host /home are this page. /dashboard still opens it: self-host goes to /home, and hosted /p/:tag/dashboard goes to /p/:tag." },
+  ],
+  related: [{ label: "Tracker", to: "/tracker" }],
+};
+
 const DEFAULT: DocEntry = {
   badge: "GRAPHBAN",
   title: "Graphban",
@@ -106,27 +118,9 @@ const CONTENT: Record<string, DocEntry> = {
     ],
   },
 
-  "/home": {
-    badge: "HOME",
-    title: "Home",
-    tagline: "Project health at a glance — items, memory, and who is in flight.",
-    sections: [
-      { num: 1, h: "Counts, not a fetch of everything", b: "Tiles come from the dashboard payload and the shell counts endpoint. Fetching items to call .length is how this page once cost megabytes on every route." },
-      { num: 2, h: "Attention first", b: "Blocked, in review, and live agents sit above the rest. Stale counts say stale — last good numbers, not a quiet zero." },
-    ],
-    related: [{ label: "Tracker", to: "/tracker" }],
-  },
+  "/home": DASHBOARD_DOC,
 
-  "/dashboard": {
-    badge: "DASHBOARD",
-    title: "Dashboard",
-    tagline: "Project health at a glance.",
-    sections: [
-      { num: 1, h: "KPIs & distribution", b: "Tiles summarize items, memory, PRDs, and MCP activity. The status bar shows the spread across the six states with a labeled legend." },
-      { num: 2, h: "Requests & activity", b: "See requests broken down by type and the most recently updated items." },
-    ],
-    related: [{ label: "Tracker", to: "/tracker" }],
-  },
+  "/dashboard": DASHBOARD_DOC,
 
   "/triage": {
     badge: "TRIAGE",
@@ -584,14 +578,7 @@ const CONTENT: Record<string, DocEntry> = {
     ],
   },
 
-  "project-home": {
-    badge: "PROJECT",
-    title: "Project home",
-    tagline: "The existing app, from this project's place in the org.",
-    sections: [
-      { num: 1, h: "A landing pad", b: "No new backend. The strip is this project's galaxy edges: what it depends on, and what depends on it. Only one of those is visible from inside the repo." },
-    ],
-  },
+  "project-home": DASHBOARD_DOC,
 
   "operator": {
     badge: "OPERATOR",

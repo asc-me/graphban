@@ -338,6 +338,21 @@ describe("Project home", () => {
     expect(screen.getByText("Put agents on the backlog")).toBeInTheDocument();
   });
 
+  it("says nothing to summarise when the only non-zero figure is deployment-wide MCP calls", async () => {
+    const { api } = await import("@/lib/api");
+    // The seed that hid this state had thousands of calls. Any positive count is enough:
+    // mcp_calls is the deployment's total, not a count of this project.
+    vi.mocked(api.dashboard).mockResolvedValue({ ...zeroDash, mcp_calls: 15850 } as never);
+    vi.mocked(api.counts).mockResolvedValue(zeroCounts as never);
+    vi.mocked(api.codeMap).mockResolvedValue(codeMap(0) as never);
+    vi.mocked(api.fleet).mockResolvedValue(fleet as never);
+    renderHome();
+
+    expect(await screen.findByText("Nothing to summarise yet")).toBeInTheDocument();
+    expect(screen.queryByText("Memory shards")).not.toBeInTheDocument();
+    expect(screen.queryByText("No items yet.")).not.toBeInTheDocument();
+  });
+
   it("uses the per-panel empty lines when only part of the project is empty", async () => {
     const { api } = await import("@/lib/api");
     vi.mocked(api.dashboard).mockResolvedValue({ ...zeroDash, shard_count: 2 } as never);

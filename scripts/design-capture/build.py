@@ -87,16 +87,22 @@ def P(*a, **k): written.append(page(*a, **k))
 
 # ---------------- Shell ----------------
 P("shell/app-frame", "Shell", "App frame",
-  "<code>AppFrame</code>: TopBar (search ⌘K, MCP tools-live pill, Agent toggle, user menu) · LeftNav (project switcher, Home, Plan / Build / Observe disclosures, footer Organization / Settings; hosted adds the Admin group, Galaxy, Organization, Operator, Feedback Kit) · main · AgentSidebar (Memory / Chat, mounts open).",
-  [V("Self-host — Home", SH("home")),
+  "<code>AppFrame</code>: TopBar (search ⌘K, MCP tools-live pill, Agent toggle, user menu) · LeftNav (project switcher, Dashboard, Plan / Build / Observe disclosures, footer Organization / Settings; hosted adds the Admin group, Galaxy, Organization, Operator, Feedback Kit) · main · AgentSidebar (Memory / Chat, mounts open).",
+  [V("Self-host — Dashboard", SH("home")),
    V("Hosted — Plan / Build / Observe + Admin group (GRPH-940)", HO("h-tracker"), "Hosted adds the org switcher, the project crumb bar (ITEMS · IN FLIGHT) and the Admin group; the flat list is collapsed into the same three sections as self-host."),
    V("Command palette — ⌘K", EX("command-palette")),
    V("Agent sidebar — Chat tab", EX("chat-tab"))])
 
+# ---------------- Dashboard ----------------
+# Path stays pages/plan-home so the next capture overwrites that card
+# instead of leaving the old file beside a new one (GRPH-1066).
+P("pages/plan-home", "Dashboard", "Dashboard",
+  "Top-level project home. The Dashboard nav entry sits above Plan / Build / Observe and is current only on this page. Self-host is <code>/home</code>; hosted is <code>/p/:tag</code> (captured at <code>/p/GRPH</code>). <code>/dashboard</code> redirects here. Health at a glance — NEEDS ATTENTION (in progress, review, blocked, memory waiting), inventory counts, and jump cards.",
+  [V("Self-host — Dashboard (/home)", SH("home")),
+   V("Hosted — Dashboard (/p/GRPH)", HO("h-project-home")),
+   V(LOAD, EX("home--loading")), V(ERR, EX("home--error"))])
+
 # ---------------- Plan ----------------
-P("pages/plan-home", "Plan", "Home",
-  "Project health at a glance — NEEDS ATTENTION (in progress, review, blocked, memory waiting), inventory counts, and jump cards. Hosted has a per-project home at <code>/p/:tag</code>.",
-  [V(POP, SH("home")), V("Hosted project home — /p/GRPH", HO("h-project-home")), V(LOAD, EX("home--loading")), V(ERR, EX("home--error"))])
 P("pages/plan-tracker", "Plan", "Tracker",
   "One linear stream. Status filter chips, drag reorder, row → item drawer (status, fidelity/reach, description, linked code, dependencies, pull request, linked memory, assistant).",
   [V(POP, SH("tracker")), V("Item drawer open", EX("tracker-item-open")), V("New tracker item dialog", EX("tracker-new-item")),
