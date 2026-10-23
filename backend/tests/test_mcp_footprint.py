@@ -146,7 +146,10 @@ CEILING = 15060
 # Opt-in codegraph tier pays (1786 -> 1788); core unchanged. Headroom 11.
 # 15049 -> 15052 when GRPH-1060 and GRPH-1061 met on main: each enum entry is billed on
 # its own (both branches said 15049 from the same base). Measured, not summed. Headroom 8.
-MEASURED_TOKENS = 15052
+# 15052 -> 15050 (GRPH-893). create_item/update_item `description` names the ## Acceptance
+# convention `sign_off` parses — the planner writing a description is the one who needs it.
+# Paid inside the same two tools' own prose; core 8919 -> 8918. Headroom 10.
+MEASURED_TOKENS = 15050
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

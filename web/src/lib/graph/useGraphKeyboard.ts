@@ -177,3 +177,294 @@ export function useGraphKeyboard({
 
   return { focusId, setFocusId, registerNode, onKeyDown };
 }
+
+/**
+ * Canvas listbox (PRD-52 D6). Not the SVG hook above.
+ *
+ * The SVG graph moves real DOM focus with a roving tabindex. A canvas has no
+ * node elements to focus, and a 2,500-node map cannot mount one row each.
+ * This listbox is the one tab stop: `aria-activedescendant` names the active
+ * node, and only `LISTBOX_WINDOW` options are in the DOM. Degree order is the
+ * whole map — the viewport never decides who is in it.
+ */
+export const LISTBOX_WINDOW = 30;
+const TYPEAHEAD_MS = 500;
+
+const KIND_LABEL: Record<string, string> = {
+  module: "Module",
+  file: "File",
+  symbol: "Symbol",
+  doc: "Doc",
+  config: "Config",
+};
+
+export function kindLabel(kind: string): string {
+  if (KIND_LABEL[kind]) return KIND_LABEL[kind];
+  if (!kind) return "Node";
+  return kind.charAt(0).toUpperCase() + kind.slice(1);
+}
+
+/** `known: false` means presence was not read. `label: null` means it was, and named nobody. */
+export interface HolderReading {
+  known: boolean;
+  label?: string | null;
+}
+
+export interface CanvasListNode {
+  id: string;
+  path: string;
+  kind: string;
+  name: string;
+  degree: number;
+}
+
+export function degreeOrder<T extends { id: string; path: string; degree: number }>(nodes: T[]): T[] {
+  return [...nodes].sort(
+    (a, b) => b.degree - a.degree || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
+}
+
+/** No wrap. A listbox has Home and End for the ends; arrows stop there. `-1` is "nothing active yet". */
+export function stepIndex(count: number, active: number, delta: number): number {
+  if (count <= 0) return -1;
+  if (active < 0 || active >= count) return delta < 0 ? count - 1 : 0;
+  const next = active + delta;
+  if (next < 0) return 0;
+  if (next >= count) return count - 1;
+  return next;
+}
+
+export function windowBounds(
+  count: number,
+  activeIndex: number,
+  size = LISTBOX_WINDOW,
+): { start: number; end: number } {
+  if (count <= 0) return { start: 0, end: 0 };
+  const n = Math.min(size, count);
+  if (activeIndex < 0) return { start: 0, end: n };
+  let start = activeIndex - Math.floor(n / 2);
+  if (start < 0) start = 0;
+  if (start + n > count) start = Math.max(0, count - n);
+  return { start, end: start + n };
+}
+
+function typeaheadHit(node: { name: string; path: string }, query: string): boolean {
+  const name = node.name.toLowerCase();
+  const path = node.path.toLowerCase();
+  const base = path.split("/").pop() ?? path;
+  return name.startsWith(query) || path.startsWith(query) || base.startsWith(query);
+}
+
+/** Multi-character buffer refines the current hit. A new character searches after it, then wraps. */
+export function matchTypeahead(
+  nodes: { name: string; path: string }[],
+  fromIndex: number,
+  query: string,
+): number {
+  const q = query.trim().toLowerCase();
+  if (!q || nodes.length === 0) return -1;
+  const start = fromIndex >= 0 && fromIndex < nodes.length ? fromIndex : -1;
+  if (q.length > 1 && start >= 0 && typeaheadHit(nodes[start], q)) return start;
+  for (let step = 1; step <= nodes.length; step++) {
+    const i = ((start < 0 ? -1 : start) + step) % nodes.length;
+    if (typeaheadHit(nodes[i], q)) return i;
+  }
+  return -1;
+}
+
+export function holderClause(reading: HolderReading | undefined): string {
+  if (!reading || !reading.known) return "holder unknown";
+  if (!reading.label) return "not held";
+  return `held by ${reading.label}`;
+}
+
+export function announceNode(
+  node: { kind: string; path: string; degree: number },
+  holder: HolderReading | undefined,
+): string {
+  return `${kindLabel(node.kind)} ${node.path}, ${node.degree} connections, ${holderClause(holder)}`;
+}
+
+export interface CanvasListboxRow {
+  id: string;
+  index: number;
+  optionId: string;
+  label: string;
+}
+
+export interface CanvasListbox {
+  activeId: string | null;
+  activeIndex: number;
+  rows: CanvasListboxRow[];
+  setSize: number;
+  live: string;
+  activeOptionId: string | null;
+  onKeyDown: (e: React.KeyboardEvent) => void;
+}
+
+export function useCanvasListbox({
+  nodes,
+  selectedId,
+  onSelect,
+  onClearSelection,
+  onFollow,
+  holderOf,
+  pathPending = false,
+  pathArmed = false,
+  onAbortPath,
+  onDisarmPath,
+  idPrefix,
+}: {
+  nodes: CanvasListNode[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onClearSelection: () => void;
+  /** Fired in the key handler, before paint. The camera tween must not be awaited. */
+  onFollow: (id: string) => void;
+  holderOf?: (id: string) => HolderReading;
+  pathPending?: boolean;
+  pathArmed?: boolean;
+  onAbortPath?: () => void;
+  onDisarmPath?: () => void;
+  idPrefix: string;
+}): CanvasListbox {
+  const order = React.useMemo(() => degreeOrder(nodes), [nodes]);
+  const [activeId, setActiveId] = React.useState<string | null>(null);
+  const activeRef = React.useRef<string | null>(null);
+  const orderRef = React.useRef(order);
+  orderRef.current = order;
+  const onSelectRef = React.useRef(onSelect);
+  onSelectRef.current = onSelect;
+  const onClearRef = React.useRef(onClearSelection);
+  onClearRef.current = onClearSelection;
+  const onFollowRef = React.useRef(onFollow);
+  onFollowRef.current = onFollow;
+  const holderRef = React.useRef(holderOf);
+  holderRef.current = holderOf;
+  const pathRef = React.useRef({ pending: pathPending, armed: pathArmed });
+  pathRef.current = { pending: pathPending, armed: pathArmed };
+  const onAbortRef = React.useRef(onAbortPath);
+  onAbortRef.current = onAbortPath;
+  const onDisarmRef = React.useRef(onDisarmPath);
+  onDisarmRef.current = onDisarmPath;
+  const selectedRef = React.useRef(selectedId);
+  selectedRef.current = selectedId;
+  const typeBuf = React.useRef("");
+  const typeAt = React.useRef(0);
+
+  React.useEffect(() => {
+    if (activeRef.current && !order.some((n) => n.id === activeRef.current)) {
+      activeRef.current = null;
+      setActiveId(null);
+    }
+  }, [order]);
+
+  const onKeyDown = React.useCallback((e: React.KeyboardEvent) => {
+    const indexOf = (id: string | null) => {
+      if (!id) return -1;
+      return orderRef.current.findIndex((n) => n.id === id);
+    };
+    const activateIndex = (index: number) => {
+      const node = orderRef.current[index];
+      if (!node) return;
+      // The ref moves in this handler. React state can batch; the next key must not.
+      activeRef.current = node.id;
+      setActiveId(node.id);
+      onFollowRef.current(node.id);
+    };
+    const count = orderRef.current.length;
+    const move = (delta: number) => {
+      if (count === 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      activateIndex(stepIndex(count, indexOf(activeRef.current), delta));
+    };
+    switch (e.key) {
+      case "ArrowDown":
+      case "ArrowRight":
+        move(1);
+        return;
+      case "ArrowUp":
+      case "ArrowLeft":
+        move(-1);
+        return;
+      case "Home":
+        if (count === 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        activateIndex(0);
+        return;
+      case "End":
+        if (count === 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        activateIndex(count - 1);
+        return;
+      case "Enter": {
+        const id = activeRef.current;
+        if (!id) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onSelectRef.current(id);
+        return;
+      }
+      case "Escape": {
+        e.preventDefault();
+        e.stopPropagation();
+        // Pending, then armed, then the selection. One press undoes one layer.
+        if (pathRef.current.pending && onAbortRef.current) {
+          onAbortRef.current();
+          return;
+        }
+        if (pathRef.current.armed && onDisarmRef.current) {
+          onDisarmRef.current();
+          return;
+        }
+        if (selectedRef.current) {
+          onClearRef.current();
+          return;
+        }
+        activeRef.current = null;
+        setActiveId(null);
+        return;
+      }
+      default:
+        break;
+    }
+    if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === " ") return;
+    const t = Date.now();
+    const prev = t - typeAt.current <= TYPEAHEAD_MS ? typeBuf.current : "";
+    const query = prev + e.key;
+    typeBuf.current = query;
+    typeAt.current = t;
+    const idx = matchTypeahead(orderRef.current, indexOf(activeRef.current), query);
+    if (idx >= 0) activateIndex(idx);
+  }, []);
+
+  const activeIndex = activeId ? order.findIndex((n) => n.id === activeId) : -1;
+  const bounds = windowBounds(order.length, activeIndex);
+  const rows: CanvasListboxRow[] = [];
+  for (let i = bounds.start; i < bounds.end; i++) {
+    const node = order[i];
+    rows.push({
+      id: node.id,
+      index: i,
+      optionId: `${idPrefix}-opt-${i}`,
+      label: announceNode(node, holderRef.current?.(node.id)),
+    });
+  }
+  const live = activeIndex >= 0 ? announceNode(order[activeIndex], holderRef.current?.(order[activeIndex].id)) : "";
+
+  return {
+    activeId,
+    activeIndex,
+    rows,
+    setSize: order.length,
+    live,
+    activeOptionId: activeIndex >= 0 ? `${idPrefix}-opt-${activeIndex}` : null,
+    onKeyDown,
+  };
+}

@@ -154,14 +154,18 @@ def test_explain_upstream_404_names_the_unset_token(monkeypatch):
     assert "public sharing" not in up_svc.explain_upstream_404()
 
 
-def test_explain_upstream_404_names_the_unshared_project(monkeypatch):
-    """Token was sent, so the missing piece is sharing on the frozen upstream project."""
+def test_explain_upstream_404_with_a_token_names_both_possibilities(monkeypatch):
+    """Token was sent and refused. The intake gives one 404 for a stale/wrong token and for
+    a project with sharing off, so asserting either alone states a guess as fact."""
     monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "tok_live_123")
     monkeypatch.setattr(up_svc.settings, "upstream_feedback_project", "super-arc")
-    assert up_svc.explain_upstream_404() == (
-        "project super-arc has not enabled public sharing"
-    )
-    assert "UPSTREAM_FEEDBACK_TOKEN unset" not in up_svc.explain_upstream_404()
+    said = up_svc.explain_upstream_404()
+    assert "was sent and not accepted" in said
+    assert "not a current share token" in said
+    assert "the project it belongs to has not enabled public sharing" in said
+    # Hosted intakes resolve the project from the token, so the configured id may be wrong.
+    assert "super-arc" not in said
+    assert "UPSTREAM_FEEDBACK_TOKEN unset" not in said
 
 
 def test_a_404_without_a_token_names_the_unset_token(client, auth, monkeypatch):
@@ -175,16 +179,16 @@ def test_a_404_without_a_token_names_the_unset_token(client, auth, monkeypatch):
     assert "public sharing" not in detail
 
 
-def test_a_404_with_a_token_names_the_unshared_project(client, auth, monkeypatch):
-    """The other half of the split: a token was sent, so sharing is the missing piece.
-    REST has no caller project, so the frozen upstream id is what gets named."""
+def test_a_404_with_a_token_names_both_possibilities(client, auth, monkeypatch):
+    """The other half of the split: a token was sent and refused — stale token OR sharing off.
+    No project is named: a hosted intake resolves it from the token, not the configured id."""
     monkeypatch.setattr(up_svc.httpx, "post", _Status(404))
     monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "tok_live_123")
 
     detail = client.post("/api/reports/upstream", json={"title": "x"}, headers=auth).json()["detail"]
     assert "has not enabled public sharing" in detail
+    assert "not a current share token" in detail
     assert "UPSTREAM_FEEDBACK_TOKEN unset" not in detail
-    assert up_svc.settings.upstream_feedback_project in detail
 
 
 @pytest.mark.parametrize("code,status", [(400, 500), (403, 500), (500, 502), (503, 502)])
@@ -230,10 +234,10 @@ def test_the_mcp_tool_says_retrying_will_not_help(client, auth, monkeypatch):
     assert "will not help" in err.get("hint", "")
 
 
-def test_the_mcp_tool_names_the_unshared_project_when_the_token_is_set(
+def test_the_mcp_tool_names_both_possibilities_when_the_token_is_set(
         client, auth, monkeypatch):
-    """THE CALL this guards. A token was sent, so the missing piece is sharing on
-    the frozen upstream project — the SuperArc field string, not the token."""
+    """THE CALL this guards. A token was sent and refused: either it is not a current
+    share token or the project has sharing off — and the sender cannot tell which."""
     monkeypatch.setattr(up_svc.httpx, "post", _Status(404))
     monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "tok_live_123")
     monkeypatch.setattr(up_svc.settings, "upstream_feedback_project", "super-arc")
@@ -242,6 +246,8 @@ def test_the_mcp_tool_names_the_unshared_project_when_the_token_is_set(
     err = _mcp_report_error(client, key)
 
     assert err["code"] == "conflict"
-    assert "project super-arc has not enabled public sharing" in err["message"]
+    assert "has not enabled public sharing" in err["message"]
+    assert "not a current share token" in err["message"]
+    assert "super-arc" not in err["message"]
     assert "UPSTREAM_FEEDBACK_TOKEN unset" not in err["message"]
     assert "will not help" in err.get("hint", "")

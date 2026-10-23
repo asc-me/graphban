@@ -19,6 +19,7 @@ import {
   useCanvasPins,
   type CanvasPinsApi,
 } from "@/lib/graph/useGraphPins";
+import { useCanvasListbox, type HolderReading } from "@/lib/graph/useGraphKeyboard";
 import { AreaMatrix, LayoutChips, type GraphLayoutId } from "./AreaMatrix";
 import type { CodePath } from "@/lib/types";
 import { createCanvas2D } from "./canvas/canvas2d";
@@ -134,6 +135,11 @@ export function CodeGraphCanvas({
   frameId,
   controlRef,
   onZoom,
+  holderOf,
+  pathPending = false,
+  pathArmed = false,
+  onAbortPath,
+  onDisarmPath,
   layout: layoutProp,
   onLayout,
   pairFocus = null,
@@ -162,6 +168,17 @@ export function CodeGraphCanvas({
   controlRef?: { current: CanvasControlApi | null };
   /** Fired when the camera scale changes, so the shared readout can follow. */
   onZoom?: (k: number) => void;
+  /**
+   * Who holds this node, if anyone looked. Omit it and the live region says
+   * the holder is unknown — an empty reading would claim the node is free.
+   */
+  holderOf?: (id: string) => HolderReading;
+  /** A path request is in flight. Escape aborts it and leaves the mode armed. */
+  pathPending?: boolean;
+  /** Path mode is armed and waiting for a target. Escape disarms it. */
+  pathArmed?: boolean;
+  onAbortPath?: () => void;
+  onDisarmPath?: () => void;
   /** Controlled by the view. Omitted, the chip row keeps its own choice. */
   layout?: GraphLayoutId;
   onLayout?: (id: GraphLayoutId) => void;
@@ -188,6 +205,7 @@ export function CodeGraphCanvas({
   canvasPins?: CanvasPinsApi;
 }) {
   const hostRef = React.useRef<HTMLDivElement | null>(null);
+  const listboxRef = React.useRef<HTMLDivElement | null>(null);
   const glRef = React.useRef<HTMLCanvasElement | null>(null);
   const d2Ref = React.useRef<HTMLCanvasElement | null>(null);
   const rendererRef = React.useRef<Renderer | null>(null);
@@ -441,7 +459,74 @@ export function CodeGraphCanvas({
     return d;
   }, [layout, types]);
 
-  const focusId = pairFocus ? null : hover ?? selectedId;
+  const followNode = React.useCallback((id: string) => {
+    const host = hostRef.current;
+    const packed = layoutRef.current;
+    if (!host || !packed) return;
+    // Arrow keys frame the pin. layoutRef is the packed cell the drag left;
+    // the overlay is what is drawn and what a click already hit-tests.
+    const layoutNow = applyPinOverrides(
+      packed,
+      pinsFor(readPinsRef.current(), layoutModeRef.current),
+    );
+    const i = layoutNow.ids.indexOf(id);
+    if (i < 0) return;
+    const { w, h } = sizeRef.current;
+    const c = camRef.current;
+    if (worldInView(layoutNow.x[i], layoutNow.y[i], layoutNow.r[i], c, w, h)) {
+      host.dataset.follow = "in-view";
+      // Already in frame. The previous key may still be flying toward the node
+      // just left; leaving that tween running moves the camera after the listbox.
+      setTween(null);
+      return;
+    }
+    const to = framePoint(layoutNow.x[i], layoutNow.y[i], FOCUS_ZOOM, w, h);
+    const reduced = prefersReducedMotion();
+    const next = replaceTween(c, to, performance.now(), reduced);
+    // Same-turn keys read this. The render below copies state back into the ref.
+    camRef.current = next.cam;
+    const n = Number(host.dataset.followCount ?? "0") + 1;
+    host.dataset.follow = id;
+    host.dataset.followCount = String(n);
+    setCam(next.cam);
+    setTween(next.tween);
+  }, []);
+
+  const listNodes = React.useMemo(() => {
+    const d = new Map<string, number>();
+    for (const n of nodes) d.set(n.id, 0);
+    for (const e of edges) {
+      if (!types.has(e.type)) continue;
+      if (d.has(e.src)) d.set(e.src, (d.get(e.src) ?? 0) + 1);
+      if (e.dst !== e.src && d.has(e.dst)) d.set(e.dst, (d.get(e.dst) ?? 0) + 1);
+    }
+    return nodes.map((n) => ({
+      id: n.id,
+      path: n.path || n.id,
+      kind: n.kind,
+      name: n.name,
+      degree: d.get(n.id) ?? 0,
+    }));
+  }, [nodes, edges, types]);
+
+  const listId = React.useId();
+  const kb = useCanvasListbox({
+    nodes: listNodes,
+    selectedId,
+    onSelect: (id) => onSelect(id),
+    onClearSelection: () => onSelect(null),
+    onFollow: followNode,
+    holderOf,
+    pathPending,
+    pathArmed,
+    onAbortPath,
+    onDisarmPath,
+    idPrefix: listId,
+  });
+
+  // A pair draws both areas, not one node. Otherwise the pointer wins, then
+  // the keyboard cursor, then the selection.
+  const focusId = pairFocus ? null : hover ?? kb.activeId ?? selectedId;
   const pairReach = React.useMemo(() => {
     if (!pairFocus || !layout) return null;
     const out = new Uint8Array(layout.ids.length);
@@ -663,6 +748,9 @@ export function CodeGraphCanvas({
   }, [drawn, scene, hover, selectedId, cam.k, cam.x, cam.y, degree, nameOf, types]);
 
   const shown = nodes.length;
+  const drawnEdges = edges.reduce((n, e) => n + (types.has(e.type) ? 1 : 0), 0);
+  const edgeClause =
+    drawnEdges === edges.length ? `${edges.length} edges` : `${drawnEdges} of ${edges.length} edges`;
   const pairEdges = pairFocus && drawn ? drawn.edges.length : 0;
 
   if (layoutMode === "matrix") {
@@ -684,6 +772,7 @@ export function CodeGraphCanvas({
       ref={hostRef}
       data-testid="code-graph-canvas"
       data-renderer={kind}
+      data-camera-k={cam.k.toFixed(3)}
       data-pair={pairFocus ? `${pairFocus.src}→${pairFocus.dst}` : undefined}
       data-pair-edges={pairFocus ? String(pairEdges) : undefined}
       data-frame-area={frameAreaId ?? undefined}
@@ -691,14 +780,20 @@ export function CodeGraphCanvas({
       data-depth={layout?.depth ?? ""}
       data-camera-x={cam.x}
       data-layout={layoutMode}
+      data-tween={tween ? "1" : "0"}
       role="application"
-      aria-label={`Code graph canvas: ${shown} nodes. ${layoutKind[0].toUpperCase()}${layoutKind.slice(1)} layout.`}
+      aria-label={
+        `Code graph canvas: ${shown} nodes, ${edgeClause}. ` +
+        `${layoutKind[0].toUpperCase()}${layoutKind.slice(1)} layout. ` +
+        "Arrow keys, Home, End and type-ahead move between nodes. Enter selects. Escape clears."
+      }
       className={`absolute inset-0 touch-none${tracing ? " cursor-crosshair" : ""}`}
       onWheel={onWheel}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         const target = e.target as HTMLElement;
         if (target.closest("button")) return;
+        listboxRef.current?.focus({ preventScroll: true });
         const w = toWorld(e.clientX, e.clientY);
         // Tracing returns before a pin. A drag while armed or pending pans,
         // even when it started on a node, and the release picks the target.
@@ -785,6 +880,32 @@ export function CodeGraphCanvas({
         onSelect(hit);
       }}
     >
+      <div
+        ref={listboxRef}
+        role="listbox"
+        tabIndex={0}
+        aria-label="Graph nodes"
+        aria-activedescendant={kb.activeOptionId ?? undefined}
+        data-testid="graph-node-listbox"
+        className="sr-only"
+        onKeyDown={kb.onKeyDown}
+      >
+        {kb.rows.map((row) => (
+          <div
+            key={row.id}
+            id={row.optionId}
+            role="option"
+            aria-selected={row.id === selectedId}
+            aria-setsize={kb.setSize}
+            aria-posinset={row.index + 1}
+          >
+            {row.label}
+          </div>
+        ))}
+      </div>
+      <div aria-live="polite" aria-atomic="true" data-testid="graph-live" className="sr-only">
+        {kb.live}
+      </div>
       <canvas
         ref={glRef}
         data-testid="code-graph-webgl"

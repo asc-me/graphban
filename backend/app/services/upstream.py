@@ -32,13 +32,20 @@ def explain_upstream_404() -> str:
     The intake returns one 404 for both "no share token" and "project not shared" on
     purpose, so the surface cannot be probed. The sender already knows whether it
     sent a token, so that half needs no upstream disclosure: unset → the token is
-    the missing piece; set → sharing is off for the frozen upstream project. Does
-    not skip the POST — a self-hosted intake still accepts a report with no token.
+    the missing piece. Set → the token was sent and NOT accepted, and that is all the
+    sender knows: the intake's `_public_project` raises the same 404 for a typo'd token,
+    a rotated one, one belonging to another project, and a project with sharing or
+    intake off. Stating any one of those as fact is one-message-many-causes with the
+    wrong half asserted, so the set case names both. Does not skip the POST — a
+    self-hosted intake still accepts a report with no token.
     """
     if not settings.upstream_feedback_token:
         return "UPSTREAM_FEEDBACK_TOKEN unset on this server"
+    # No project is named: a hosted intake resolves the project FROM the token and ignores
+    # `project_id`, so naming `upstream_feedback_project` could name the wrong one.
     return (
-        f"project {settings.upstream_feedback_project} has not enabled public sharing"
+        "UPSTREAM_FEEDBACK_TOKEN was sent and not accepted: either it is not a current "
+        "share token, or the project it belongs to has not enabled public sharing (or intake)"
     )
 
 

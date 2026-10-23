@@ -97,7 +97,7 @@ P("shell/app-frame", "Shell", "App frame",
 # Path stays pages/plan-home so the next capture overwrites that card
 # instead of leaving the old file beside a new one (GRPH-1066).
 P("pages/plan-home", "Dashboard", "Dashboard",
-  "Top-level project home. The Dashboard nav entry sits above Plan / Build / Observe and is current only on this page. Self-host is <code>/home</code>; hosted is <code>/p/:tag</code> (captured at <code>/p/GRPH</code>). <code>/dashboard</code> redirects here. Health at a glance — NEEDS ATTENTION (in progress, review, blocked, memory waiting), inventory counts, and jump cards.",
+  "Top-level project home. The Dashboard nav entry sits above Plan / Build / Observe and is current only on this page. Self-host is <code>/home</code>; hosted is <code>/p/:tag</code> (captured at <code>/p/GRPH</code>). <code>/dashboard</code> redirects here. One view for both: counts (items, in flight, blocked, memory shards, graph nodes, agents live), status and requests, recent activity, and jump cards; hosted adds cross-project dependencies. An unread count is —; a failed refresh after a good read keeps the last numbers and says they are stale.",
   [V("Self-host — Dashboard (/home)", SH("home")),
    V("Hosted — Dashboard (/p/GRPH)", HO("h-project-home")),
    V(LOAD, EX("home--loading")), V(ERR, EX("home--error"))])

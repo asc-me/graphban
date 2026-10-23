@@ -53,6 +53,11 @@ function missed(q: { isError: boolean; data: unknown }): boolean {
   return q.isError && q.data === undefined;
 }
 
+/** `data && isError`: TanStack Query keeps the last payload and flags the refresh. */
+function lastGood(q: { isError: boolean; data: unknown }): boolean {
+  return Boolean(q.data) && q.isError;
+}
+
 /** A successful numeric field. Missing, failed, or non-numeric is unknown — not zero. */
 function num(ok: boolean, value: unknown): number | null {
   if (!ok || typeof value !== "number" || !Number.isFinite(value)) return null;
@@ -84,6 +89,8 @@ export function ProjectHome() {
   const reads = [dashQ, countsQ, mapQ, fleetQ];
   const settling = reads.some(waiting);
   const failed = reads.filter(missed);
+  // A failed refresh after a good read. The numbers below are that read, not a new one.
+  const stale = reads.some(lastGood);
   const dash = dashQ.data;
   const counts = countsQ.data;
   const dashOk = dash !== undefined;
@@ -136,6 +143,12 @@ export function ProjectHome() {
       </div>
       {active.description && (
         <p className="mt-1.5 max-w-[76ch] text-body leading-relaxed text-muted">{active.description}</p>
+      )}
+
+      {stale && (
+        <div className="mt-4 rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 font-mono text-small uppercase tracking-wide text-st-review">
+          stale — last good counts
+        </div>
       )}
 
       {settling ? (

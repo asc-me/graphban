@@ -103,18 +103,23 @@ vi.mock("@/lib/api", () => ({
 
 function renderHome() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/p/CORE"]}>
-        <ProjectProvider>
-          <Routes>
-            <Route path="/p/:tag" element={<ProjectHome />} />
-          </Routes>
-        </ProjectProvider>
-      </MemoryRouter>
-    </QueryClientProvider>,
+  return Object.assign(
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={["/p/CORE"]}>
+          <ProjectProvider>
+            <Routes>
+              <Route path="/p/:tag" element={<ProjectHome />} />
+            </Routes>
+          </ProjectProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+    { qc },
   );
 }
+
+const STALE_BANNER = /stale — last good counts/i;
 
 describe("Project home", () => {
   beforeEach(async () => {
@@ -266,6 +271,8 @@ describe("Project home", () => {
     // not masquerade as the loading state either.
     expect(screen.queryByText(/No deployment has pushed a code graph/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Loading counts")).not.toBeInTheDocument();
+    // First load never had a good read, so the stale banner would be a claim that it did.
+    expect(screen.queryByText(STALE_BANNER)).not.toBeInTheDocument();
 
     // The retry re-issues the read that failed — a button that does nothing is the same
     // defect wearing an affordance.
@@ -372,5 +379,29 @@ describe("Project home", () => {
     // The stat grid stays: shards were measured, so a zero items cell is a real zero.
     expect(screen.getByText("Items").parentElement).toHaveTextContent("0");
     expect(screen.getByText("Memory shards").parentElement).toHaveTextContent("2");
+  });
+
+  it("does not call a healthy read stale", async () => {
+    renderHome();
+    expect(await screen.findByText("Items")).toBeInTheDocument();
+    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(screen.queryByText(STALE_BANNER)).not.toBeInTheDocument();
+    expect(screen.queryByText(/the request failed/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps the last good counts and names them stale when a refresh fails", async () => {
+    const { api } = await import("@/lib/api");
+    const { qc } = renderHome();
+    expect(await screen.findByText("Items")).toBeInTheDocument();
+    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(screen.queryByText(STALE_BANNER)).not.toBeInTheDocument();
+
+    vi.mocked(api.dashboard).mockRejectedValue(new Error("boom"));
+    await qc.refetchQueries({ queryKey: ["dashboard", core.id] }).catch(() => undefined);
+
+    expect(await screen.findByText(STALE_BANNER)).toBeInTheDocument();
+    // The failed refresh must not replace the last read with — or with the first-load error.
+    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(screen.queryByText(/A count showing — was not read/i)).not.toBeInTheDocument();
   });
 });

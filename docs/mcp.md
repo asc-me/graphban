@@ -428,6 +428,14 @@ including the offline one, and `fleet.sign_off` reports no head. The stronger gu
 opt-in, and visibly so: an item completed under the weak check is exactly one whose
 `head_commit` is empty.
 
+**Write acceptance as a list** (GRPH-893). `sign_off`'s `acceptance_coverage` reads clauses
+from a list under a `## Tests`, `## Acceptance` or `## Acceptance criteria` heading, one clause
+per item, and needs a named test for each. Acceptance it cannot structure — an inline
+`Acceptance: …` line, or one of those headings with no list under it — makes `sign_off` refuse
+rather than attest a pass for clauses it never read. The `description` property on
+`create_item` and `update_item` says so, because the planner writing the description is the
+one who has to know; it used to be said only in the refusal a reviewer sees.
+
 **Completion is gated.** `update_item` refuses `status: "done"` unless the item carries a
 valid attestation, and answers `conflict` — not `unauthorized`, because the caller *may*
 complete it; the work simply is not accounted for yet. Over REST the same refusal is a
