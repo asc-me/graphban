@@ -52,6 +52,27 @@ def _agent(db, project_id, label="claude @ macbook", **over):
 
 # ---- identity ---------------------------------------------------------------------------
 
+def test_the_roster_says_when_the_agent_registered(db, proj):
+    """GRPH-1088. A reused worktree is not unique, and the supervisor drops the row
+    registered before the child started. It can do that only when this call emits the
+    field. Lean keeps it, because that is the view the supervisor reads.
+
+    Sabotage: omit `registered_at` from `list_agents` and this fails. A matcher fed a
+    hand-built roster stays green, which is a correct function the server never calls.
+    """
+    from datetime import datetime
+
+    row = _agent(db, proj)
+    assert row.registered_at is not None
+    listed = fleet.list_agents(db, proj)
+    assert len(listed) == 1
+    stamp = listed[0].get("registered_at")
+    assert isinstance(stamp, str) and stamp
+    datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    lean = fleet.roster_view({"agents": listed}, "lean")["agents"][0]
+    assert lean.get("registered_at") == stamp
+
+
 def test_two_registrations_on_one_key_are_two_agents(db, proj):
     """THE bug this table fixes. Two identical Claude Code windows on one machine is a
     legitimate fleet shape; merging them by label would recreate exactly the condition where

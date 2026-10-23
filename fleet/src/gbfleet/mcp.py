@@ -646,7 +646,9 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
             slot = str(fleet.started)
             try:
                 tree = _tree_for(fleet.repo, fleet.workspace, wave, slot, base=fleet.base.ref)
-            except wt_mod.BranchExists:
+            except wt_mod.BranchExists as exc:
+                if isinstance(exc, wt_mod.RemoteBranchTaken):
+                    fleet.wave.remote_taken.append(str(exc))
                 continue
         declare = matrix_mod.declaration(adapter, model or "", tier if via_tier else None,
                                          fleet.matrix)

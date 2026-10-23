@@ -21,6 +21,7 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
@@ -421,6 +422,88 @@ def _account_limit(child: Child) -> str:
     return adapter.account_limit(child.stdout_text(), child.tail(_STDERR, 200))
 
 
+#: A row the server still lists, and that cannot be a child that just started (GRPH-1088).
+#: `offline` is derived from `last_seen_at`; `quarantined` is a stored refusal. Either way
+#: the process we just spawned is not that row.
+_ABSENT_STATES = ("offline", "quarantined")
+
+#: The child's clock and the server's clock are not the same reading. A row written in the
+#: same second the child started is this child; a row from the previous run is hours older.
+_REGISTRATION_SLACK = timedelta(seconds=2)
+
+
+def _started_wall(child: Child) -> datetime:
+    """Wall time of `child.started_at`. That field is monotonic, not a timestamp."""
+    elapsed = max(0.0, time.monotonic() - child.started_at)
+    return datetime.now(timezone.utc) - timedelta(seconds=elapsed)
+
+
+def _registered_at(agent: dict) -> datetime | None:
+    """The roster's `registered_at`, or None when the row does not carry one.
+
+    None does not mean "old". Fixtures and servers from before this field omit it, and
+    treating that omission as "registered before the child" would refuse every child.
+    A value that does not parse is the same: unknown, not earlier.
+    """
+    raw = agent.get("registered_at")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _cannot_be_this_child(agent: dict, child: Child, started_wall: datetime) -> bool:
+    """True when this roster row is some other run's agent on the same directory.
+
+    A reused wave name reuses the worktree path. The previous row stays listed, often
+    still `working`, until presence lapses — and the first row with that path is the
+    previous run (GRPH-1088). Skipping it is the match. Waiting for it to disappear
+    is how the new child got stopped under the old id.
+    """
+    if agent.get("retired") or agent.get("dismissed"):
+        return True
+    if agent.get("state") in _ABSENT_STATES:
+        return True
+    seat = child.seat_id
+    enrolment = agent.get("enrolment_id")
+    # Set only when this process already knows the seat (adopt, or a test). A fresh
+    # child learns `seat_id` FROM the row, so an empty seat does not filter.
+    if seat and enrolment and enrolment != seat:
+        return True
+    registered = _registered_at(agent)
+    if registered is not None and registered < started_wall - _REGISTRATION_SLACK:
+        return True
+    return False
+
+
+def _pick_this_child(candidates: list[dict]) -> dict | None:
+    """One row that can be this child, or None when the roster does not say.
+
+    A stamp wins over an unstamped row: the server emits `registered_at`, and the
+    latest one is the registration that just happened. One unstamped row still
+    matches, because that is every fixture from before the field existed. Several
+    unstamped rows on one path do not: taking the first is the bug.
+    """
+    if not candidates:
+        return None
+    dated: list[tuple[datetime, dict]] = []
+    for agent in candidates:
+        when = _registered_at(agent)
+        if when is not None:
+            dated.append((when, agent))
+    if dated:
+        return max(dated, key=lambda pair: pair[0])[1]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 def await_registration(
     child: Child,
     roster: Callable[[], dict],
@@ -430,13 +513,19 @@ def await_registration(
 ) -> dict:
     """Block until the child appears on the roster, or kill it and say which adapter.
 
-    **Matched on `worktree`.** The obvious key would be the enrolment id — walk step 3
-    asks for exactly that — but `fleet_status` exposes `enrolled` as a bare boolean and
-    never the id (the gap PRD-22 §6 is about, and GRPH-451's to close). The worktree is
-    the next best thing and is structurally unique: one worker one worktree (D-g), and
-    one supervisor per repo (D-h). It is self-reported by the child, so this is
-    cooperative identification and not authentication — which is all it needs to be,
-    since the child is ours and the server is what actually decides anything.
+    **Matched on the worktree, then on which row can be this child.** The worktree is
+    what the child reports and what this supervisor created. It is not unique across
+    runs (GRPH-1088): the previous agent's row is still there, and the first row with
+    that path is the previous run. Offline, quarantined, retired, dismissed, registered
+    before this child started, or sitting on a different seat — none of those is this
+    child. When `child.seat_id` is already set, that seat is the stronger key.
+
+    The enrolment id has been on the roster since GRPH-451. A fresh child does not
+    know it until this match reads it, so the production path filters on
+    `registered_at` rather than waiting for a seat id the child does not have yet.
+    It is self-reported by the child, so this is cooperative identification and not
+    authentication — which is all it needs to be, since the child is ours and the
+    server is what actually decides anything.
     """
     # Compared RESOLVED (GRPH-718 walk finding): the child reports `os.path.realpath` of its
     # worktree, and a supervisor started with `--workspace ../x` or through a symlink carries
@@ -446,22 +535,30 @@ def await_registration(
     deadline = child.started_at + window
 
     def matched() -> dict | None:
+        started_wall = _started_wall(child)
+        candidates = []
         for agent in roster().get("agents") or []:
-            if _resolved(str(agent.get("worktree") or "")) == target:
-                child.agent_id = agent.get("id")
-                # Available since GRPH-451 put the seat on the roster. Before that,
-                # `enrolled` was a bare boolean and a supervisor could not name the seat
-                # its own child had redeemed.
-                child.seat_id = agent.get("enrolment_id")
-                got = agent.get("assigned")
-                child.assigned = got if isinstance(got, dict) else None
-                child.registration_latency = time.monotonic() - child.started_at
-                held = [h.get("id") for h in build_holdings(agent) if h.get("id")]
-                if held:
-                    child.held_items = held
-                    child.ever_held += [i for i in held if i not in child.ever_held]
-                return agent
-        return None
+            if _resolved(str(agent.get("worktree") or "")) != target:
+                continue
+            if _cannot_be_this_child(agent, child, started_wall):
+                continue
+            candidates.append(agent)
+        agent = _pick_this_child(candidates)
+        if agent is None:
+            return None
+        child.agent_id = agent.get("id")
+        # Available since GRPH-451 put the seat on the roster. Before that,
+        # `enrolled` was a bare boolean and a supervisor could not name the seat
+        # its own child had redeemed.
+        child.seat_id = agent.get("enrolment_id")
+        got = agent.get("assigned")
+        child.assigned = got if isinstance(got, dict) else None
+        child.registration_latency = time.monotonic() - child.started_at
+        held = [h.get("id") for h in build_holdings(agent) if h.get("id")]
+        if held:
+            child.held_items = held
+            child.ever_held += [i for i in held if i not in child.ever_held]
+        return agent
 
     while True:
         if not child.running:
