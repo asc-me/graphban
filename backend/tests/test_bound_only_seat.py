@@ -3,7 +3,8 @@
 A worker on `delegate(seat=true)` claims and builds that item, then carries on into
 `claim_review` and reviews other agents' items. A `gbfleet until` wave relies on that, so
 it stays the default. `bound_only` is the opt-in that stops it: once the bound item has
-left `in_progress`, `claim_review` and `claim_next` refuse and name the binding.
+left `in_progress`, `claim_review`, `claim_next`, `claim_item`, `claim_cluster` and
+`next_cluster` refuse and name the binding.
 
 The refusal is an exception, not an empty result. None means "nothing was ready", and a
 child that finished its one item would go home believing the board was clear.
@@ -166,6 +167,90 @@ def test_bound_only_cannot_take_another_review_or_another_item(client, key, db, 
         items_svc.claim_next(db, child, project_id=proj)
     assert _stored(db, ready).claimed_by is None
     assert _stored(db, ready).status == "next"
+
+
+def _to_review_and_release(client, key, db, child, bound):
+    """Move the bound item to review and drop the lease. That is the hole: `claimed_by`
+    is what `_holds_bound_item` matches, and review is a status `open_bound_item` ignores."""
+    _ok(_mcp(client, key, "update_item",
+             {"id": bound, "status": "review", "agent_id": child}))
+    # The status move committed on the request's session. This one still has the
+    # in_progress row cached, and release_item would then rewrite it to `next`.
+    db.expire_all()
+    released = items_svc.release_item(db, bound, child)
+    assert released is not None
+    assert released.status == "review" and released.claimed_by is None
+    return released
+
+
+def test_bound_only_refuses_claim_item_and_claim_cluster_after_release(
+        client, key, db, proj):
+    """THE BOUNCE. `claim_review` and `claim_next` already refused. `claim_item` is the
+    choke point `claim_cluster` and `next_cluster` share, and it did not, so after release
+    `claim_cluster` leased the next ready item.
+
+    Sabotage the call, not the helper. Delete the `bound_only_refusal` raise in
+    `claim_item`: this test's `claim_item` assertion stops raising and the ready item is
+    leased. Delete only the early return in `claim_cluster`: `claim_item` still raises, and
+    `claim_cluster` raises out of its member loop instead of returning the reason — the
+    dict assertion fails. Both have to stay.
+    """
+    from app.services import clustering as cluster_svc
+
+    ready = _item(client, key, "still ready", ["backend/app/ready.py"])
+    child, bound, _out, _reg = _bound_child(client, key, db, bound_only=True)
+    held = _stored(db, bound)
+    _to_review_and_release(client, key, db, child, bound)
+
+    with pytest.raises(items_svc.BoundOnlySeat, match=held.key):
+        items_svc.claim_item(db, ready, child)
+    got = fleet_svc.claim_cluster(db, agent_id=child, project_id=proj)
+    assert got["claimed"] is False
+    assert held.key in got["reason"] and "bound_only" in got["reason"]
+    with pytest.raises(items_svc.BoundOnlySeat, match=held.key):
+        cluster_svc.next_cluster(db, child, project_id=proj)
+
+    wire = _ok(_mcp(client, key, "claim_cluster", {"agent_id": child}))
+    assert wire["claimed"] is False
+    assert held.key in wire["reason"] and "bound_only" in wire["reason"]
+    wire_next = _err(_mcp(client, key, "next_cluster", {"agent_id": child}))
+    assert wire_next["code"] == "conflict"
+    assert held.key in wire_next["message"]
+
+    assert _stored(db, ready).claimed_by is None
+    assert _stored(db, ready).status == "next"
+
+
+def test_bound_only_refuses_the_same_doors_once_the_item_is_done(client, key, db, proj):
+    """The lease-dropped opening again, with status done rather than review. `_holds_bound_item`
+    and `open_bound_item` both miss a finished item the same way they miss one in review."""
+    ready = _item(client, key, "still ready", ["backend/app/ready.py"])
+    child, bound, _out, _reg = _bound_child(client, key, db, bound_only=True)
+    held = _stored(db, bound)
+    _to_review_and_release(client, key, db, child, bound)
+    row = _stored(db, bound)
+    row.status = "done"
+    db.commit()
+
+    with pytest.raises(items_svc.BoundOnlySeat, match=held.key):
+        items_svc.claim_item(db, ready, child)
+    got = fleet_svc.claim_cluster(db, agent_id=child, project_id=proj)
+    assert got["claimed"] is False
+    assert held.key in got["reason"] and "bound_only" in got["reason"]
+    assert _stored(db, ready).claimed_by is None
+    assert _stored(db, ready).status == "next"
+
+
+def test_without_the_flag_claim_cluster_still_claims_after_release(client, key, db, proj):
+    """The flag is opt-in. A bound seat without it still takes the next cluster once its own
+    item is in review and the lease is dropped — that is what a wave relies on."""
+    ready = _item(client, key, "still ready", ["backend/app/ready.py"])
+    child, bound, _out, _reg = _bound_child(client, key, db, bound_only=False)
+    _to_review_and_release(client, key, db, child, bound)
+
+    got = fleet_svc.claim_cluster(db, agent_id=child, project_id=proj)
+    assert got["claimed"] is True
+    assert any(it["stored_id"] == ready for it in got["items"])
 
 
 def test_without_the_flag_the_same_child_can_review_and_claim(client, key, db, proj):

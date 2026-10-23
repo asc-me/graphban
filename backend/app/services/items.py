@@ -2093,13 +2093,20 @@ class BoundOnlySeat(Exception):
 
 
 def bound_only_refusal(db: Session, agent_id: str | None) -> str | None:
-    """Why this seat may not call `claim_review` or `claim_next`, or None when it may.
+    """Why this seat may not take another item or another review, or None when it may.
 
     Refuses only when the seat was minted `bound_only` AND its bound item is no longer
     `in_progress` — review, done, blocked, next, or a row that has gone. While the item is
     still `in_progress` the seat is doing the work it was minted for, and reviewing someone
     else's item is still allowed. An unbound seat, a seat without the flag, and an agent
     with no enrolment all read None and behave exactly as they did.
+
+    The sentence is one, and every door says it: `claim_review`, `claim_next`, `claim_item`
+    (which is where `claim_cluster`'s members and `next_cluster`'s neighbours claim), and
+    `claim_cluster` itself, which returns the sentence before its loop. A door that does not
+    consult this hands the seat more build work once the lease is dropped, because
+    `_holds_bound_item` only matches a live `claimed_by` and `open_bound_item` returns None
+    for review and done.
     """
     if not agent_id:
         return None
@@ -2113,16 +2120,33 @@ def bound_only_refusal(db: Session, agent_id: str | None) -> str | None:
     if bound is None:
         return (
             f"this seat is bound_only to {seat.item_id}, which is gone. "
-            "claim_review and claim_next are refused. Exit — that is the normal end of a "
-            "bound-only run, not a failure."
+            "claim_review, claim_next, claim_item, claim_cluster and next_cluster are "
+            "refused. Exit — that is the normal end of a bound-only run, not a failure."
         )
     if bound.status == "in_progress":
         return None
     return (
         f"this seat is bound_only to {bound.key}, which has left in_progress "
-        f"(status {bound.status}). claim_review and claim_next are refused. "
+        f"(status {bound.status}). claim_review, claim_next, claim_item, claim_cluster "
+        "and next_cluster are refused. "
         "Exit — that is the normal end of a bound-only run, not a failure."
     )
+
+
+def _is_bound_item(db: Session, agent_id: str | None, item: Item) -> bool:
+    """Is `item` the one this agent's seat is bound to, whatever status it is in?
+
+    `open_bound_item` hides a row that is in review or done, which is the opposite of the
+    question `claim_item` has to ask before it raises `BoundOnlySeat`: the bound row is
+    claimed through `claim_item` at registration, and that claim must still land.
+    """
+    if not agent_id:
+        return False
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return False
+    seat = db.get(Enrolment, agent.enrolment_id)
+    return bool(seat is not None and seat.item_id and seat.item_id == item.id)
 
 
 def bound_only_seat(db: Session, agent_id: str | None) -> bool:
@@ -2410,6 +2434,20 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
     # can. `claim_next` says the same sentence; see REVIEW_ONLY_REFUSAL.
     if review_only_seat(db, agent_id):
         raise ReviewOnlySeat(REVIEW_ONLY_REFUSAL)
+    # GRPH-1089. Beside the review-only check, and for the same reason it lives in
+    # `claim_next`: this is the write `claim_cluster`'s members and `next_cluster`'s
+    # neighbours share. A check that exists only on `claim_next` leaves both open once the
+    # bound item has left in_progress — `_holds_bound_item` stops matching when the lease is
+    # released, and `open_bound_item` below returns None for review and done. Raised rather
+    # than returned as None, for the reason `ReviewOnlySeat` gives: None is "not claimable".
+    #
+    # Not when the candidate IS the bound item. Registration claims that row through here
+    # while it is still `next`, and `bound_only_refusal` treats `next` as having left
+    # in_progress. Refusing that claim refuses the seat's only job. A different item is
+    # the hole the bounce reproduced.
+    if reason := bound_only_refusal(db, agent_id):
+        if not _is_bound_item(db, agent_id, it):
+            raise BoundOnlySeat(reason)
     if (it.reach or "repo") == "deploy" and held_by_a_seat(db, agent_id):
         # GRPH-832. The reported escape was SELF-CLAIMED, not delegated: the ops item was the
         # highest-scored row in the project, so it sat at the top of every worker's queue and

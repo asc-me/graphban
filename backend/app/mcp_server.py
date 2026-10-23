@@ -1850,8 +1850,9 @@ _SEAT_SCOPE_ARG = {"scope": {
 #: to every agent that connects. The dispatcher accepts it whether or not it was advertised.
 _BOUND_ONLY_ARG = {"bound_only": {
     "type": "boolean",
-    "description": "Once the bound item leaves in_progress, claim_review and claim_next "
-                   "refuse, naming it. Omit to keep review-after-build.",
+    "description": "Once the bound item leaves in_progress, claim_review, claim_next, "
+                   "claim_item, claim_cluster and next_cluster refuse, naming it. "
+                   "Omit to keep review-after-build.",
 }}
 
 #: GRPH-985. An OUTPUT property rather than an argument, advertised to the fleet tier for the

@@ -3519,6 +3519,18 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
                 "held_by": [], "reason": items_svc.REVIEW_ONLY_REFUSAL,
                 "scope": items_svc.seat_scope(db, agent_id)}
 
+    # GRPH-1089. A bound_only seat whose item has left in_progress may not take build work.
+    # `claim_item` raises the same sentence from inside the member loop; answered once, here,
+    # the way the review-only refusal above is, so the caller gets a reason rather than an
+    # exception out of the loop. While the item is still in_progress this is None and the
+    # bound-seat checks below still apply. It has to be here, not only in `claim_item`:
+    # `_holds_bound_item` stops matching once the lease is released, and `open_bound_item`
+    # passes an item that is in review or done.
+    if reason := items_svc.bound_only_refusal(db, agent_id):
+        return {"claimed": False, "items": [], "areas": [], "predicted": False,
+                "held_by": [], "reason": reason,
+                "scope": items_svc.seat_scope(db, agent_id)}
+
     # GRPH-886: a bound seat already holds one item. Refuse to hand out more.
     bound_item = _holds_bound_item(db, agent_id)
     if bound_item:
