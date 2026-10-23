@@ -570,9 +570,15 @@ def report(wave: Wave, out=None) -> None:
               file=out)
     # HOW STALE the reviewer's diff is (GRPH-786). The supervisor is the only party that
     # can answer it: the server has no git, and the reviewer sees a branch with no
-    # indication of what it is a diff against.
+    # indication of what it is a diff against. When the missed commits share no file
+    # with the branch and the merge is clean, the line says so (GRPH-1087) — the same
+    # sentence that goes in the PR body. A behind branch with no such note was refused.
     for branch, (behind, ref) in sorted(wave.stale.items()):
-        print(f"BEHIND {branch}: cut from a base {behind} commit(s) behind {ref}", file=out)
+        line = f"BEHIND {branch}: cut from a base {behind} commit(s) behind {ref}"
+        note = wave.behind_clean.get(branch)
+        if note:
+            line += f"; {note}"
+        print(line, file=out)
     if wave.stale_unmeasured:
         print(f"BEHIND unmeasured: {wave.stale_unmeasured}", file=out)
     # GRPH-1053. A push that could not check whether a commit of the item is already in
