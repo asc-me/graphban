@@ -456,6 +456,7 @@ describe("canvas bitmap scale", () => {
       caption: "",
       areasOnly: false,
       revealed: null,
+      edgesAlpha: 0.85,
       glow: [
         {
           kind: "line",

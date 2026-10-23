@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { pathHighlight } from "@/lib/graph/pathHighlight";
+import { PATH_NODE_OFF, pathAlphaBuffer, pathHighlight } from "@/lib/graph/pathHighlight";
 import type { CodePath } from "@/lib/types";
 
 /**
@@ -79,5 +79,23 @@ describe("no path means no highlight, so nothing dims for nothing", () => {
     // A node to itself: `found`, zero hops. Returning an empty highlight would dim every
     // edge on the canvas and light none — a blank graph presented as an answer.
     expect(pathHighlight(path([], { found: true }), EDGES)).toBeNull();
+  });
+});
+
+describe("the canvas alpha buffer dims everything off the path", () => {
+  const ids = ["a.py", "b.py", "c.py", "z.py"];
+
+  it("lights nodes on the route and dims the rest", () => {
+    const alpha = pathAlphaBuffer(ids, WALK)!;
+    expect(alpha[0]).toBe(255);
+    expect(alpha[1]).toBe(255);
+    expect(alpha[2]).toBe(255);
+    expect(alpha[3]).toBe(PATH_NODE_OFF);
+  });
+
+  it("returns null when there is no route, so the reach dimming stays", () => {
+    expect(pathAlphaBuffer(ids, null)).toBeNull();
+    expect(pathAlphaBuffer(ids, path([], { found: false }))).toBeNull();
+    expect(pathAlphaBuffer(ids, path([], { found: true }))).toBeNull();
   });
 });
