@@ -34,11 +34,12 @@ describe("canvas chrome", () => {
     expect(screen.queryByTestId("truncated-caption")).not.toBeInTheDocument();
   });
 
-  it("enables Clusters and leaves the other layouts disabled", () => {
+  it("enables Clusters and Matrix and leaves Map and Orbit disabled", () => {
     mount(false);
     expect(screen.getByTestId("layout-chip-clusters")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("layout-chip-matrix")).toBeEnabled();
+    expect(screen.getByTestId("layout-chip-matrix")).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByTestId("layout-chip-map")).toBeDisabled();
     expect(screen.getByTestId("layout-chip-orbit")).toBeDisabled();
-    expect(screen.getByTestId("layout-chip-matrix")).toBeDisabled();
   });
 });

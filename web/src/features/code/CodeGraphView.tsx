@@ -17,6 +17,7 @@ import {
 import {
   areaColor,
   areaOf,
+  areasAtScale,
   areasForChips,
   groupAreas,
   parentMap,
@@ -51,6 +52,7 @@ import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useCodeAnalysis, useCodeMap, useFleetPresence } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors, HeldArea, ProjectStub } from "@/lib/types";
 
+import { AreaMatrix, CellInspector, buildMatrix, cellFromModel } from "./AreaMatrix";
 import { CANVAS_MAX_K, CANVAS_MIN_K } from "./canvas/camera";
 import { CodeChat } from "./CodeChat";
 import { CodeGraphCanvas, type CanvasControlApi } from "./CodeGraphCanvas";
@@ -265,6 +267,19 @@ export function CodeGraphView() {
   // instead, so a dense graph can be read at all. It needs a reach set to isolate against,
   // so with nothing selected the control is disabled rather than silently doing nothing.
   const [isolate, setIsolate] = React.useState(false);
+  // Matrix is the fourth layout. It is DOM, so the canvas unmounts while it
+  // is showing. Show in graph comes back to Clusters with this pair isolated.
+  const [layoutMode, setLayoutMode] = React.useState<"clusters" | "matrix">("clusters");
+  const [matrixCell, setMatrixCell] = React.useState<{ row: string; col: string } | null>(null);
+  const [matrixScroll, setMatrixScroll] = React.useState(0);
+  const matrixScrollRef = React.useRef<HTMLDivElement | null>(null);
+  const [returnPoint, setReturnPoint] = React.useState<{
+    row: string;
+    col: string;
+    scroll: number;
+  } | null>(null);
+  const [pairFocus, setPairFocus] = React.useState<{ src: string; dst: string } | null>(null);
+  const [frameArea, setFrameArea] = React.useState<{ id: string; n: number } | null>(null);
   // Canvas mode draws with its own camera (0.7×–16×). The shared control
   // cluster reads this scale and drives that camera; the SVG viewport is a
   // different range and must not move the canvas.
@@ -515,6 +530,8 @@ export function CodeGraphView() {
   );
   const selectNode = React.useCallback(
     (id: string) => {
+      // A node pick leaves the matrix pair. The return chip stays until Back or a fresh Matrix entry.
+      setPairFocus(null);
       // Armed: the next pick is the far end of a path, not a new selection. Routing click,
       // Enter and the toolbar through here is what keeps the keyboard equal to the mouse.
       if (armed && selPath && id !== selPath) {
@@ -563,8 +580,10 @@ export function CodeGraphView() {
   // disagrees with the canvas. One effect rather than a call in each of the four clear paths
   // (keyboard Escape, inspector close, background click, trail clear).
   React.useEffect(() => {
-    if (!shown) setIsolate(false);
-  }, [shown]);
+    // Pair focus is a reach set with no selected node. Clearing isolate here
+    // would undo Show in graph on the same commit that armed it.
+    if (!shown && !pairFocus) setIsolate(false);
+  }, [shown, pairFocus]);
 
   // A selection made anywhere — canvas, hub, find result, a grounding chip in the chat —
   // renders in the Inspect pane. Without this, clicking a node while the aside sits on Ask
@@ -654,6 +673,67 @@ export function CodeGraphView() {
         return { id, path: n?.path ?? id, kind: n?.kind ?? "file", name: n?.name ?? "" };
       }),
     [allIds, nodeByPath],
+  );
+  // The matrix and the canvas must name the same areas, or a cell and the hull
+  // it frames are different partitions of one map.
+  const scale = React.useMemo(() => {
+    if (!canvasMode) return null;
+    return areasAtScale(
+      canvasNodes,
+      allEdges.filter((e) => e.type === "owns"),
+    );
+  }, [canvasMode, canvasNodes, allEdges]);
+  const matrixModel = React.useMemo(
+    () => (scale ? buildMatrix(scale.areas, allEdges, activeTypes) : null),
+    [scale, allEdges, activeTypes],
+  );
+  const selectedMatrix =
+    layoutMode === "matrix" && matrixModel ? cellFromModel(matrixModel, matrixCell) : null;
+  const jumpAreas = React.useMemo(() => {
+    if (!canvasMode || !scale) return areas;
+    return scale.areas.map((a) => ({
+      id: a.id,
+      label: a.caption ?? a.id,
+      color: a.color,
+      meta: `${a.count} nodes`,
+    }));
+  }, [canvasMode, scale, areas]);
+
+  // A layout-chip entry drops the previous cell. Back is the only way to restore it.
+  const enterMatrix = React.useCallback(() => {
+    setMatrixCell(null);
+    setReturnPoint(null);
+    setPairFocus(null);
+    setMatrixScroll(0);
+    setFrameArea(null);
+    setLayoutMode("matrix");
+  }, []);
+  const showPairInGraph = React.useCallback(() => {
+    if (!matrixCell) return;
+    const scroll = matrixScrollRef.current?.scrollTop ?? 0;
+    setMatrixScroll(scroll);
+    setReturnPoint({ row: matrixCell.row, col: matrixCell.col, scroll });
+    setPairFocus({ src: matrixCell.row, dst: matrixCell.col });
+    setIsolate(true);
+    setSelPath(null);
+    setFrameArea(null);
+    setLayoutMode("clusters");
+  }, [matrixCell]);
+  const backToMatrix = React.useCallback(() => {
+    if (!returnPoint) return;
+    setMatrixCell({ row: returnPoint.row, col: returnPoint.col });
+    setMatrixScroll(returnPoint.scroll);
+    setPairFocus(null);
+    setIsolate(false);
+    setLayoutMode("matrix");
+    setReturnPoint(null);
+  }, [returnPoint]);
+  const onLayoutChip = React.useCallback(
+    (id: "clusters" | "matrix") => {
+      if (id === "matrix") enterMatrix();
+      else setLayoutMode("clusters");
+    },
+    [enterMatrix],
   );
   // `truncated === false` means the server looked and the page is complete.
   // A missing flag is complete only when the returned list matches the total.
@@ -782,6 +862,17 @@ export function CodeGraphView() {
                 question on the right and the agent will tell you what it knows so far.
               </p>
             </div>
+          ) : canvasMode && layoutMode === "matrix" ? (
+            <AreaMatrix
+              nodes={canvasNodes}
+              edges={allEdges}
+              enabledTypes={activeTypes}
+              selected={matrixCell}
+              onSelect={setMatrixCell}
+              onLayout={onLayoutChip}
+              restoreScroll={matrixScroll}
+              scrollRef={matrixScrollRef}
+            />
           ) : canvasMode ? (
             <CodeGraphCanvas
               nodes={canvasNodes}
@@ -798,6 +889,19 @@ export function CodeGraphView() {
               frameId={frameId}
               controlRef={canvasControlRef}
               onZoom={onCanvasZoom}
+              layout="clusters"
+              onLayout={onLayoutChip}
+              pairFocus={pairFocus}
+              returnTo={
+                returnPoint
+                  ? {
+                      text: `Back to matrix · ${returnPoint.row}→${returnPoint.col}`,
+                      onClick: backToMatrix,
+                    }
+                  : null
+              }
+              frameAreaId={frameArea?.id ?? null}
+              frameAreaNonce={frameArea?.n ?? 0}
             />
           ) : (
             <svg
@@ -1254,12 +1358,13 @@ export function CodeGraphView() {
                 <FleetLegend presence={presence} soloUser={soloUser} onSolo={setSoloUser} />
                 {!galaxyMode && <KindLegend kinds={drawnKinds} />}
               </div>
+              {layoutMode !== "matrix" && (
               <GraphControls
                 depth={depth}
                 onDepth={setDepth}
                 isolate={isolate}
                 onIsolate={() => setIsolate((v) => !v)}
-                canIsolate={!!shown}
+                canIsolate={!!shown || !!pairFocus}
                 zoom={canvasMode ? canvasK : view.viewport.k}
                 minZoom={canvasMode ? CANVAS_MIN_K : MIN_ZOOM}
                 maxZoom={canvasMode ? CANVAS_MAX_K : MAX_ZOOM}
@@ -1272,6 +1377,7 @@ export function CodeGraphView() {
                   else view.reset();
                 }}
               />
+              )}
             </div>
           )}
         </div>
@@ -1352,7 +1458,19 @@ export function CodeGraphView() {
               />
             )}
 
-            {selPath ? (
+            {layoutMode === "matrix" && selectedMatrix ? (
+              <CellInspector
+                cell={selectedMatrix}
+                onShowInGraph={showPairInGraph}
+                onJump={(src) => {
+                  setMatrixCell(null);
+                  setReturnPoint(null);
+                  setPairFocus(null);
+                  setLayoutMode("clusters");
+                  pickHub(src);
+                }}
+              />
+            ) : selPath ? (
               <NodeInspector
                 path={selPath}
                 nb={nb}
@@ -1387,8 +1505,19 @@ export function CodeGraphView() {
                 <InteractionHint
                   galaxyMode={galaxyMode}
                   superNodes={galaxy.superNodes}
-                  areas={areas}
-                  onJump={(id) => (galaxyMode ? setEntered(id) : pickHub(id))}
+                  areas={jumpAreas}
+                  onJump={(id) => {
+                    if (canvasMode && scale?.areas.some((a) => a.id === id)) {
+                      setLayoutMode("clusters");
+                      setSelPath(null);
+                      setPairFocus(null);
+                      setReturnPoint(null);
+                      setFrameArea((cur) => ({ id, n: (cur?.n ?? 0) + 1 }));
+                      return;
+                    }
+                    if (galaxyMode) setEntered(id);
+                    else pickHub(id);
+                  }}
                 />
               )
             )}
