@@ -994,6 +994,84 @@ export function applyPinOverrides(
   return { ...layout, x, y, grid };
 }
 
+/** Seconds for the core ring to turn once. Each ring further out is slower. */
+export const ORBIT_PERIOD_S = 120;
+/** How much longer each ring out takes than the one inside it, as a fraction of the core's period. */
+export const ORBIT_PERIOD_STEP = 0.35;
+/** Seconds for one in-and-out sway of an area off its ring. */
+export const ORBIT_SWAY_S = 24;
+/**
+ * Largest sway off the ring, in world units. Rings sit at least 32 apart, so two
+ * neighbours swaying toward each other still clear.
+ */
+export const ORBIT_SWAY_MAX = 14;
+
+/**
+ * How far ring `index` has turned after `seconds` of drift, in radians. Even
+ * rings turn clockwise and odd rings anticlockwise, so the links between two
+ * neighbouring rings shear instead of the whole picture spinning as one.
+ */
+export function orbitAngle(index: number, seconds: number): number {
+  const dir = index % 2 === 0 ? 1 : -1;
+  return (dir * seconds * Math.PI * 2) / (ORBIT_PERIOD_S * (1 + ORBIT_PERIOD_STEP * index));
+}
+
+/**
+ * Orbit after `seconds` of drift. Each area travels round its ring's centre and
+ * sways a little in and out of it, out of step with its neighbours, so links
+ * flex even when every area shares one ring (a small map has only the core).
+ * Its files keep their offsets inside it, so an area moves without spinning.
+ * Hulls, bundles and the hit grid move with it. Any other layout, and zero
+ * seconds, returns the same object.
+ */
+export function driftOrbit(layout: ClusterLayout, seconds: number): ClusterLayout {
+  const rings = layout.orbitRings;
+  if (layout.layout !== "orbit" || !rings?.length || seconds === 0) return layout;
+  const shift = new Map<string, { dx: number; dy: number }>();
+  const hullById = new Map(layout.areas.map((h) => [h.id, h]));
+  for (const ring of rings) {
+    const turn = orbitAngle(ring.index, seconds);
+    const sway = Math.min(ORBIT_SWAY_MAX, ring.r * 0.05);
+    ring.areaIds.forEach((id, j) => {
+      const hull = hullById.get(id);
+      if (!hull) return;
+      const ox = hull.cx - ring.cx;
+      const oy = hull.cy - ring.cy;
+      const r0 = Math.hypot(ox, oy);
+      // An area on the centre point has no ring to travel or sway along.
+      if (r0 < 1e-6) return;
+      // Neighbours start the sway a third of a cycle apart, so they never move as one.
+      const phase = (seconds / ORBIT_SWAY_S + j / 3) * Math.PI * 2;
+      const r = r0 + sway * Math.sin(phase);
+      const a = Math.atan2(oy, ox) + turn;
+      shift.set(id, { dx: ring.cx + Math.cos(a) * r - hull.cx, dy: ring.cy + Math.sin(a) * r - hull.cy });
+    });
+  }
+  const x = new Float32Array(layout.x.length);
+  const y = new Float32Array(layout.y.length);
+  const grid: Record<string, number[]> = {};
+  for (let i = 0; i < x.length; i++) {
+    const d = shift.get(layout.areaOf[i]);
+    x[i] = layout.x[i] + (d?.dx ?? 0);
+    y[i] = layout.y[i] + (d?.dy ?? 0);
+    const key = gridKey(x[i], y[i]);
+    const bucket = grid[key];
+    if (bucket) bucket.push(i);
+    else grid[key] = [i];
+  }
+  const areas = layout.areas.map((h) => {
+    const d = shift.get(h.id);
+    return d ? { ...h, cx: h.cx + d.dx, cy: h.cy + d.dy } : h;
+  });
+  const moved = new Map(areas.map((h) => [h.id, h]));
+  const bundles = layout.bundles.map((b) => ({
+    ...b,
+    hullA: moved.get(b.a) ?? b.hullA,
+    hullB: moved.get(b.b) ?? b.hullB,
+  }));
+  return { ...layout, x, y, grid, areas, bundles };
+}
+
 /**
  * Hulls plus every pinned node. Fit on hulls alone leaves a pin that was
  * dragged outside its area off the frame.
@@ -1003,6 +1081,16 @@ export function fitTargets(
   pins: Record<string, { x: number; y: number }>,
 ): { x: number; y: number; r: number }[] {
   const pts = layout.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r }));
+  // Orbit areas drift round their rings, so fit frames every circle an area can
+  // travel, not only where the areas started.
+  if (layout.layout === "orbit") {
+    const radius = new Map(layout.areas.map((a) => [a.id, a.r]));
+    for (const ring of layout.orbitRings ?? []) {
+      if (ring.r <= 0) continue;
+      const widest = Math.max(0, ...ring.areaIds.map((id) => radius.get(id) ?? 0));
+      pts.push({ x: ring.cx, y: ring.cy, r: ring.r + widest + Math.min(ORBIT_SWAY_MAX, ring.r * 0.05) });
+    }
+  }
   const index = new Map(layout.ids.map((id, i) => [id, i]));
   for (const [id, pin] of Object.entries(pins)) {
     const i = index.get(id);
