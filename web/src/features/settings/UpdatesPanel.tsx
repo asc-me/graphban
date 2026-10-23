@@ -2,6 +2,8 @@
  * This box → Updates. Three states; unknown is not current.
  * Check refetches. Install is enabled when `apply` is true and a cut is
  * available — compose apply is the host helper, not a Docker socket in the API.
+ * After Install, the page polls `/health` until this box serves the tag, says so, and
+ * reloads, because the old bundle is still running in this tab.
  */
 import * as React from "react";
 
@@ -139,12 +141,50 @@ function installHint(data: UpdateCheck | undefined): string {
     return "Install unpacks the published tarball and swaps /opt/graphban/current. The API will be down for a few seconds.";
   }
   if (data.apply) {
-    return "Install rebuilds this box from the published cut. The API will be down for a few seconds.";
+    return "Install rebuilds this box from the published cut. The build takes a few minutes while this release keeps serving; the API is down for a few seconds at the end.";
   }
   const tag = data.latest?.tag;
   return tag
     ? `Install from this page needs a compose host helper or a native /opt/graphban install. Until then: scripts/deploy.sh ${tag}`
     : "Install from this page needs a compose host helper or a native /opt/graphban install.";
+}
+
+/**
+ * Install's clock, an object so tests can shrink it. Compose `up -d --build` rebuilds
+ * both images while the old cut keeps serving — minutes, not the 90s this used to wait.
+ */
+export const installTiming = { pollMs: 3000, requestMs: 5000, budgetMs: 15 * 60_000, reloadMs: 1500 };
+
+/** jsdom has no navigation; tests replace `run`. */
+export const pageReload = { run: () => window.location.reload() };
+
+type Phase = "" | "starting" | "building" | "restarting";
+
+/**
+ * A status is the API answering, so the apply was refused (403/409/502/503), not started.
+ * No status is a dropped request — the apply recreating this process. Null means started.
+ */
+function refusal(err: unknown): string | null {
+  const status = (err as { status?: unknown } | null)?.status;
+  if (typeof status !== "number") return null;
+  const raw = err instanceof Error ? err.message : "";
+  try {
+    const detail = JSON.parse(raw)?.detail;
+    if (typeof detail === "string" && detail) return detail;
+  } catch {
+    /* not a FastAPI body */
+  }
+  return raw || `HTTP ${status}`;
+}
+
+function PhaseCopy({ phase, tag, from }: { phase: Phase; tag: string; from: string }) {
+  if (!phase) return null;
+  const text = phase === "starting"
+    ? "Starting the install…"
+    : phase === "building"
+      ? `Building ${tag}. This box keeps serving ${from} until the new cut is ready — this can take several minutes.`
+      : `Restarting on ${tag}…`;
+  return <p className="mt-2 text-[12px] text-fg-2">{text}</p>;
 }
 
 export function UpdatesPanel() {
@@ -161,31 +201,65 @@ export function UpdatesPanel() {
   const [confirming, setConfirming] = React.useState(false);
   const [applying, setApplying] = React.useState(false);
   const [applyError, setApplyError] = React.useState("");
+  const [phase, setPhase] = React.useState<Phase>("");
+  const [installed, setInstalled] = React.useState("");
+  const alive = React.useRef(true);
+  React.useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
 
   async function install() {
     if (!tag) return;
+    const via = data?.via;
     setApplying(true);
     setApplyError("");
+    setPhase("starting");
     try {
       await api.updateApply(tag);
-    } catch {
-      // deploy.sh recreates the API container; a dropped request is the apply starting.
+    } catch (err) {
+      const why = refusal(err);
+      if (why !== null) {
+        setApplying(false);
+        setPhase("");
+        setApplyError(`Install was refused: ${why}`);
+        return;
+      }
+      // No status: deploy.sh recreates the API container, so a dropped request is the apply starting.
     }
-    for (let i = 0; i < 45; i++) {
+    // Poll /health, not update-check: every update-check asks GitHub, and a 15-minute
+    // poll of it spends the unauthenticated limit and then reads `unknown` forever.
+    const deadline = Date.now() + installTiming.budgetMs;
+    while (alive.current && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, installTiming.pollMs));
+      if (!alive.current) return;
       try {
-        const next = await refetch();
-        if (next.data?.state === "current") {
+        const health = await api.health(installTiming.requestMs);
+        if (health.version === tag) {
+          setPhase("");
           setApplying(false);
           setConfirming(false);
+          setInstalled(tag);
+          void refetch();
+          // The web container was rebuilt too; this tab is still running the old bundle.
+          setTimeout(() => { if (alive.current) pageReload.run(); }, installTiming.reloadMs);
           return;
         }
+        setPhase("building");
       } catch {
-        /* API is down during rebuild */
+        setPhase("restarting");
       }
-      await new Promise((r) => setTimeout(r, 2000));
     }
+    if (!alive.current) return;
     setApplying(false);
-    setApplyError("The helper started the apply, but this box did not come back on the new cut.");
+    setPhase("");
+    const minutes = Math.round(installTiming.budgetMs / 60_000);
+    setApplyError(
+      `This box is still not serving ${tag} after ${minutes} minutes. The apply may have failed — `
+      + (via === "compose"
+        ? "the helper appends deploy.sh output to deploy.log beside its socket (~/.graphban-apply/deploy.log by default) on the host."
+        : "check graphban_host.py upgrade on the host."),
+    );
   }
 
   return (
@@ -244,9 +318,17 @@ export function UpdatesPanel() {
             </>
           )}
         </div>
-        {!hosted && (
+        {!hosted && !installed && (
           <p className="mt-2 text-[12px] text-muted">{installHint(data)}</p>
         )}
+        <div role="status" aria-live="polite">
+          <PhaseCopy phase={phase} tag={tag} from={data?.running.version ?? ""} />
+          {installed ? (
+            <p className="mt-2 text-[13px] font-semibold text-fg">
+              Installed {installed}. Reloading this page to load the new release…
+            </p>
+          ) : null}
+        </div>
         {applyError ? <p className="mt-2 text-[12px] text-danger">{applyError}</p> : null}
       </div>
     </div>

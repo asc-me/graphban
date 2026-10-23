@@ -76,6 +76,13 @@ export interface UpdateCheck {
   note: string;
 }
 
+/** `/health` — the cut this box is serving. Install polls it, not update-check. */
+export interface BoxHealth {
+  status: string;
+  version: string;
+  git_sha: string;
+}
+
 /** PRD-47 S14 — one aggregate for the deployment-wide Usage page. */
 export interface UsageBucket {
   start: string;
