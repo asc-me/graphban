@@ -1,6 +1,6 @@
 /**
- * The renderer seam (PRD-52 D5). Canvas 2D implements it in this slice.
- * WebGL2 (S10) implements the same interface over the same layer modules.
+ * The renderer seam (PRD-52 D5). WebGL2 is primary; Canvas 2D is the fallback.
+ * Both rasterise the same scene. Labels, hulls and the tooltip stay in the DOM.
  */
 
 import type { DrawScene } from "./scene";

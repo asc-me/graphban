@@ -7,6 +7,18 @@
 
 import type { DrawScene } from "./scene";
 
+export interface Cloud {
+  x: number;
+  y: number;
+  r: number;
+  color: string;
+}
+
 export function drawClouds(_ctx: CanvasRenderingContext2D, _scene: DrawScene): void {
   // No presence in S2. The call is the contract.
+}
+
+/** Bottom layer for both renderers. S5 fills this; an empty list is "no presence". */
+export function presenceClouds(_scene: DrawScene): readonly Cloud[] {
+  return [];
 }

@@ -23,6 +23,29 @@ export const AREAS_ONLY = 10_000;
 export const VIEW_MARGIN = 30;
 export const SQUARE_PX = 2.2;
 
+interface StrokeMemo {
+  key: number;
+  pos: number;
+  strokes: Stroke[];
+}
+
+const strokeMemo = new WeakMap<RankedEdge[], StrokeMemo>();
+
+function posStamp(layout: ClusterLayout): number {
+  let h = layout.x.length | 0;
+  for (let i = 0; i < layout.x.length; i++) {
+    h = (Math.imul(h, 31) ^ (layout.x[i] * 10)) | 0;
+    h = (Math.imul(h, 31) ^ (layout.y[i] * 10)) | 0;
+  }
+  return h;
+}
+
+function keptKey(kept: RankedEdge[]): number {
+  let h = kept.length | 0;
+  for (let i = 0; i < kept.length; i++) h = Math.imul(h, 31) ^ kept[i].index;
+  return h;
+}
+
 export interface DrawNode {
   id: string;
   index: number;
@@ -236,23 +259,35 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
     caption = ranked.capped
       ? capCaption(ranked.kept.length, ranked.totalInView)
       : "Individual edges";
-    const pos = indexOf;
-    for (const e of ranked.kept) {
-      const ia = pos.get(e.src);
-      const ib = pos.get(e.dst);
-      if (ia === undefined || ib === undefined) continue;
-      strokes.push({
-        kind: "line",
-        x0: layout.x[ia],
-        y0: layout.y[ia],
-        cx: 0,
-        cy: 0,
-        x1: layout.x[ib],
-        y1: layout.y[ib],
-        color: EDGE_COLOR[e.type] ?? "#8b949e",
-        widthPx: 1.25,
-        label: `${e.src}→${e.dst}`,
-      });
+    const key = keptKey(ranked.kept);
+    const pos = posStamp(layout);
+    const memo = strokeMemo.get(pool);
+    // Same kept edges and the same packed positions: a pan must not allocate
+    // 6,000 stroke objects. The pool array is the key, so a freshly filtered
+    // pool (type filter, Isolate) misses and rebuilds.
+    if (memo && memo.key === key && memo.pos === pos) {
+      strokes = memo.strokes;
+    } else {
+      const built: Stroke[] = [];
+      for (const e of ranked.kept) {
+        const ia = indexOf.get(e.src);
+        const ib = indexOf.get(e.dst);
+        if (ia === undefined || ib === undefined) continue;
+        built.push({
+          kind: "line",
+          x0: layout.x[ia],
+          y0: layout.y[ia],
+          cx: 0,
+          cy: 0,
+          x1: layout.x[ib],
+          y1: layout.y[ib],
+          color: EDGE_COLOR[e.type] ?? "#8b949e",
+          widthPx: 1.25,
+          label: `${e.src}→${e.dst}`,
+        });
+      }
+      strokes = built;
+      strokeMemo.set(pool, { key, pos, strokes });
     }
   }
 
