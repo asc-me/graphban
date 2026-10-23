@@ -1266,11 +1266,18 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
                                       and str((args or {}).get("branch") or "").strip())
                                   or (tool == "release_item"
                                       and (args or {}).get("to_status", "next") in _BEYOND_WORKER)):
-        raise authz.Forbidden(
+        # The evidence sentence is true of `update_item` only. `claim_next` and the
+        # other role-gated tools have no evidence fields, and attaching the sentence
+        # there tells the caller a write exists that the tool cannot do (GRPH-934).
+        message = (
             f"{tool} needs to know which agent is calling: this credential is running a fleet, "
-            "so an unidentified caller cannot be assumed to be unrestricted. Only this call "
-            "is gated — evidence and other fields write without an identity",
-            hint=_identify_hint(api_key))
+            "so an unidentified caller cannot be assumed to be unrestricted"
+        )
+        if tool == "update_item":
+            message += (
+                ". Only this call is gated — evidence and other fields write without an identity"
+            )
+        raise authz.Forbidden(message, hint=_identify_hint(api_key, tool, args))
     if required and role == "expired":
         # An expired session grants NO role, so every role-gated tool refuses — but only
         # those. The shared reads stay open deliberately: `fleet_status` is how the agent
@@ -1313,7 +1320,7 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
                 "update_item(branch=…) needs to know which agent is calling: this "
                 "credential is running a fleet, so an unidentified caller cannot be "
                 "assumed to be a planner",
-                hint=_identify_hint(api_key),
+                hint=_identify_hint(api_key, tool, args),
             )
 
     # `release_item` is how a worker hands work back — the release verb is shared across
@@ -1329,22 +1336,52 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
             )
 
 
-def _identify_hint(api_key) -> str:
-    """The route to an identity for a caller the fleet gate cannot place (GRPH-934).
+def _identify_hint(api_key, tool: str, args: dict | None = None) -> str:
+    """The route to an identity, naming the role that clears THIS call (GRPH-934).
 
     "Pass the agent_id register_agent returned" was a dead end for the session that hit it
     most: a planner driving the board on the fleet's own credential, which never registered
     because nothing it does needs a seat. `get_context` and `gban whoami` have no agent_id to
     give it. It does not need an enrolment code — this refusal only fires on a credential
     eligible for several roles, and `register_agent` without one grants a role the credential
-    already permits — so the hint names the call that mints the id, with a role that clears
-    the gate (anything but `worker`; `planner` when the credential allows it).
+    already permits.
+
+    The role is the one the refused call needs, not a fixed planner. `update_item(status=
+    "done")` and `update_item(branch=…)` clear for a planner; a worker is past the ceiling
+    on both, so a worker hint would be refused again. Every other tool on this gate is in
+    `TOOL_ROLES`, and naming planner for `claim_next` registers a planner that is still
+    unauthorized ("claim_next requires role 'worker'"). A hint that names a route the call
+    cannot take is the same dead end, reworded.
     """
-    allowed = [r for r in eligible_roles(api_key) if r != "worker"]
-    role = "planner" if "planner" in allowed else (allowed[0] if allowed else "")
+    role = _role_that_clears(tool, args)
+    if role not in eligible_roles(api_key):
+        role = ""
     how = f"register_agent(role_hint={role!r})" if role else "register_agent"
     return (f"pass agent_id. A session that never registered gets one from {how} — no "
             "enrolment code needed on this credential — then passes the agent_id it returns")
+
+
+def _role_that_clears(tool: str, args: dict | None) -> str:
+    """The role a registration must hold for this call to pass the identity gate.
+
+    `update_item` is open to every role. The unidentified refusal on it is the ceiling:
+    `done` and a non-empty `branch` are planner work, so registering as worker would clear
+    the identity check and fail one line later. A tool in `TOOL_ROLES` clears for a role
+    that map allows. Worker is preferred where the tool accepts one — that is every worker
+    tool on this gate, including `release_item`, whose `done` ceiling is a later refusal
+    and not this one.
+    """
+    if tool == "update_item" and (
+        (args or {}).get("status") in _BEYOND_WORKER
+        or str((args or {}).get("branch") or "").strip()
+    ):
+        return "planner"
+    required = TOOL_ROLES.get(tool) or ()
+    if "worker" in required:
+        return "worker"
+    if required:
+        return required[0]
+    return ""
 
 
 def tools_off_limits(role: str) -> list[str]:
