@@ -12,7 +12,14 @@ import { createPortal } from "react-dom";
 
 import { zoomAbout } from "@/lib/graph/useGraphViewport";
 import { pathAlphaBuffer } from "@/lib/graph/pathHighlight";
-import { applyPinOverrides, fitTargets, hitTest, type AreaLayoutKind, type ClusterLayout } from "@/lib/graph/bigLayout";
+import {
+  applyPinOverrides,
+  driftOrbit,
+  fitTargets,
+  hitTest,
+  type AreaLayoutKind,
+  type ClusterLayout,
+} from "@/lib/graph/bigLayout";
 import { useAreaLayout } from "@/lib/graph/useAreaLayout";
 import {
   DRAG_PIN_PX,
@@ -121,6 +128,9 @@ function nodeAtPointer(
   if (i < 0 || layout.areaOf[i] !== scene.revealed) return null;
   return id;
 }
+
+/** Orbit drift steps at most this often. It moves a few pixels a second, so 30fps reads as smooth. */
+const DRIFT_FRAME_MS = 1000 / 30;
 
 /** Room left either side of a Map tile's name. */
 const TILE_NAME_PAD = 10;
@@ -290,6 +300,11 @@ export function CodeGraphCanvas({
   layoutModeRef.current = layoutMode;
   const [drag, setDrag] = React.useState<{ id: string; x: number; y: number } | null>(null);
   const [toast, setToast] = React.useState<string | null>(null);
+  // Orbit drift: seconds of motion so far, and whether the viewer wants it.
+  const [driftS, setDriftS] = React.useState(0);
+  const driftRef = React.useRef(0);
+  driftRef.current = driftS;
+  const [orbitOn, setOrbitOn] = React.useState(true);
   const gesture = React.useRef<{
     nodeId: string | null;
     px: number;
@@ -334,10 +349,13 @@ export function CodeGraphCanvas({
   layoutRef.current = layout;
 
   // Below 0.7 only when the whole layout needs it (a tall Map treemap does).
-  const minK = React.useMemo(
-    () => (layout ? zoomFloor(fitScale(fitTargets(layout, {}), size.w, size.h)) : CANVAS_MIN_K),
+  const fitK = React.useMemo(
+    () => (layout ? fitScale(fitTargets(layout, {}), size.w, size.h) : null),
     [layout, size.w, size.h],
   );
+  const fitKRef = React.useRef(fitK);
+  fitKRef.current = fitK;
+  const minK = fitK === null ? CANVAS_MIN_K : zoomFloor(fitK);
   const minKRef = React.useRef(minK);
   minKRef.current = minK;
   React.useEffect(() => {
@@ -352,6 +370,7 @@ export function CodeGraphCanvas({
     setCam(
       fitCamera(fitTargets(lay, pinsFor(readPinsRef.current(), layoutModeRef.current)), w, h, 48, minKRef.current),
     );
+    setCameraOwner("fit");
   }, []);
 
   React.useEffect(() => {
@@ -444,7 +463,9 @@ export function CodeGraphCanvas({
 
   React.useEffect(() => {
     if (!pairFocus || !layout) return;
-    const hulls = layout.areas.filter((a) => a.id === pairFocus.src || a.id === pairFocus.dst);
+    const hulls = driftOrbit(layout, driftRef.current).areas.filter(
+      (a) => a.id === pairFocus.src || a.id === pairFocus.dst,
+    );
     if (hulls.length === 0) return;
     const to = framePair(
       hulls.map((h) => ({ x: h.cx, y: h.cy, r: h.r })),
@@ -460,7 +481,7 @@ export function CodeGraphCanvas({
 
   React.useEffect(() => {
     if (!frameAreaId || !layout || pairFocus) return;
-    const hull = layout.areas.find((a) => a.id === frameAreaId);
+    const hull = driftOrbit(layout, driftRef.current).areas.find((a) => a.id === frameAreaId);
     if (!hull) return;
     const to = fitCamera([{ x: hull.cx, y: hull.cy, r: hull.r }], size.w, size.h);
     const next = replaceTween(camRef.current, to, performance.now(), prefersReducedMotion());
@@ -479,7 +500,7 @@ export function CodeGraphCanvas({
     // has already dropped, while the node draws back in its packed cell.
     if (pairFocus || frameAreaId || !frameId || !layout) return;
     const lay = applyPinOverrides(
-      layout,
+      driftOrbit(layout, driftRef.current),
       pinsFor(readPinsRef.current(), layoutModeRef.current),
     );
     const i = lay.ids.indexOf(frameId);
@@ -535,7 +556,7 @@ export function CodeGraphCanvas({
     // Arrow keys frame the pin. layoutRef is the packed cell the drag left;
     // the overlay is what is drawn and what a click already hit-tests.
     const layoutNow = applyPinOverrides(
-      packed,
+      driftOrbit(packed, driftRef.current),
       pinsFor(readPinsRef.current(), layoutModeRef.current),
     );
     const i = layoutNow.ids.indexOf(id);
@@ -554,6 +575,8 @@ export function CodeGraphCanvas({
     const next = replaceTween(c, to, performance.now(), reduced);
     // Same-turn keys read this. The render below copies state back into the ref.
     camRef.current = next.cam;
+    // The node owns the camera now, so Orbit stops drifting it out of frame.
+    setCameraOwner("node");
     const n = Number(host.dataset.followCount ?? "0") + 1;
     host.dataset.follow = id;
     host.dataset.followCount = String(n);
@@ -623,10 +646,44 @@ export function CodeGraphCanvas({
       [drag.id]: { x: drag.x, y: drag.y, areaKey: pinLayer[drag.id]?.areaKey ?? "" },
     };
   }, [pinLayer, drag]);
+  const drifted = React.useMemo(() => (layout ? driftOrbit(layout, driftS) : null), [layout, driftS]);
   const positioned = React.useMemo(
-    () => (layout ? applyPinOverrides(layout, overrides) : null),
-    [layout, overrides],
+    () => (drifted ? applyPinOverrides(drifted, overrides) : null),
+    [drifted, overrides],
   );
+  // Orbit turns slowly so the links between rings move. It holds while the pointer is
+  // on a node, a drag or a camera tween runs, or a node, area or pair owns the camera,
+  // since any of those would slide the thing being read out from under it.
+  const reducedMotion = prefersReducedMotion();
+  const drifting =
+    layoutKind === "orbit" &&
+    orbitOn &&
+    !reducedMotion &&
+    (kind === "webgl" || kind === "canvas2d") &&
+    !hover &&
+    !drag &&
+    !tween &&
+    cameraOwner === "fit";
+  React.useEffect(() => {
+    if (!drifting) return;
+    let raf = 0;
+    let last: number | null = null;
+    const tick = (now: number) => {
+      if (last === null) last = now;
+      const dt = now - last;
+      if (dt >= DRIFT_FRAME_MS) {
+        last = now;
+        // Zoomed in, the clock slows by the zoom, so an area crosses the screen no
+        // faster than it does at fit. A backgrounded tab resumes where it left off.
+        const k = camRef.current.k;
+        const rate = fitKRef.current && k > fitKRef.current ? fitKRef.current / k : 1;
+        setDriftS((s) => s + (Math.min(dt, 250) / 1000) * rate);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [drifting]);
   const drawn = React.useMemo(() => {
     if (!positioned) return null;
     if (!pairFocus) return positioned;
@@ -881,8 +938,29 @@ export function CodeGraphCanvas({
     );
   }
 
+  const orbitHeld = orbitOn && cameraOwner !== "fit";
   const statusLines = (
     <>
+      {layoutKind === "orbit" && !reducedMotion && kind !== "none" && (
+        <button
+          type="button"
+          data-testid="orbit-motion"
+          aria-pressed={orbitOn && !orbitHeld}
+          onClick={() => {
+            if (orbitOn && !orbitHeld) {
+              setOrbitOn(false);
+              return;
+            }
+            // Resume hands the camera back, or a framed node would hold the drift.
+            setOrbitOn(true);
+            setCameraOwner("fit");
+          }}
+          title={orbitOn && !orbitHeld ? "Stop the rings turning" : "Turn the rings slowly"}
+          className="rounded-lg border border-control bg-surface-2 px-2 py-1 text-[11.5px] text-muted"
+        >
+          {orbitOn && !orbitHeld ? "Pause orbit" : "Resume orbit"}
+        </button>
+      )}
       {pinsApi.total > 0 && (
         <button
           type="button"
@@ -959,6 +1037,7 @@ export function CodeGraphCanvas({
       data-camera-x={cam.x}
       data-layout={layoutMode}
       data-tween={tween ? "1" : "0"}
+      data-drift={drifting ? "1" : "0"}
       role="application"
       aria-label={
         `Code graph canvas: ${shown} nodes, ${edgeClause}` +
