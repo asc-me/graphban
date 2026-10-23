@@ -13,13 +13,14 @@ export function hasOwnAside(pathname: string): boolean {
 }
 
 /**
- * The agent rail's open state. Open by default, except on a view with its own aside:
- * there it starts closed, and arriving at one closes it again. The toggle still opens it
- * there — only the arrival is not the user's choice.
+ * The agent rail's open state. Closed by default on every view: it takes ~340px from
+ * whatever the page draws, and the top-bar Agent toggle opens it. On a view with its own
+ * aside, arriving closes it again even after the toggle opened it elsewhere — only the
+ * arrival is not the user's choice.
  */
 export function useAgentRail(pathname: string) {
   const ownAside = hasOwnAside(pathname);
-  const [open, setOpen] = React.useState(!ownAside);
+  const [open, setOpen] = React.useState(false);
   React.useEffect(() => {
     if (ownAside) setOpen(false);
   }, [ownAside]);
