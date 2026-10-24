@@ -277,7 +277,7 @@ function HostedLeftNav() {
         )}
         {!hosted && <NavItem to="/organization" icon={<Building2 size={16} />} label="Organization" />}
         <NavItem to="/usage" icon={<BarChart3 size={16} />} label="Usage" />
-        {isPlatformAdmin && <NavItem href={consoleHref("/admin")} icon={<ShieldCheck size={16} />} label="Operator" />}
+        {isPlatformAdmin && <NavItem href={consoleHref("/operator")} icon={<ShieldCheck size={16} />} label="Operator" />}
         <NavItem to={viewPath("feedback-kit")} icon={<Sparkles size={16} />} label="Feedback Kit" />
         <NavItem to="/settings" icon={<Settings size={16} />} label="Settings" />
       </div>
@@ -472,7 +472,7 @@ function SelfHostLeftNav() {
         <OrgRailItem onOpenDialog={() => setOrgDialogOpen(true)} />
         <NavItem to="/usage" icon={<BarChart3 size={16} />} label="Usage" />
         <NavItem to="/feedback-kit" icon={<Sparkles size={16} />} label="Feedback Kit" />
-        {isPlatformAdmin && <NavItem href={consoleHref("/admin")} icon={<ShieldCheck size={16} />} label="Operator" />}
+        {isPlatformAdmin && <NavItem href={consoleHref("/operator")} icon={<ShieldCheck size={16} />} label="Operator" />}
         <NavItem to="/settings" icon={<Settings size={16} />} label="Settings" />
       </div>
       <CloudOrgLinkDialog open={orgDialogOpen} onOpenChange={setOrgDialogOpen} />

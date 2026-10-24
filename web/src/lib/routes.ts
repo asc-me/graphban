@@ -184,10 +184,24 @@ export function consoleOrigin(): string {
   return (raw || "http://localhost:5174").replace(/\/+$/, "");
 }
 
-/** Absolute URL for a path on the cloud console (`/org`, `/admin`, …). */
+/**
+ * The console path for a bookmark that still uses this app's URL shape.
+ *
+ * Operator bookmarks use `/admin` here; graphban-control serves them under `/operator`.
+ * Org-plane paths keep the same prefix on the console.
+ */
+export function consolePathFromProduct(pathname: string): string {
+  if (pathname === "/admin") return "/operator";
+  if (pathname.startsWith("/admin/")) {
+    return `/operator${pathname.slice("/admin".length)}`;
+  }
+  return pathname;
+}
+
+/** Absolute URL for a path on the cloud console (`/org`, `/operator`, …). */
 export function consoleHref(path: string): string {
   const p = path.startsWith("/") ? path : `/${path}`;
-  return `${consoleOrigin()}${p}`;
+  return `${consoleOrigin()}${consolePathFromProduct(p)}`;
 }
 
 /**
