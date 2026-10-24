@@ -532,7 +532,8 @@ function StackCanvas({
     [data, layoutOptions],
   );
   const { width: W, height: H } = layout;
-  const view = useGraphViewport(W, H);
+  // The ring frames are filled and cover the canvas, so a background-only pan never starts.
+  const view = useGraphViewport(W, H, { panAnywhere: true });
   const lod = view.viewport.k < LABEL_ZOOM;
   // Selecting a host highlights every node on it (design body line 50).
   const [hostSel, setHostSel] = React.useState<string | null>(null);
@@ -575,6 +576,8 @@ function StackCanvas({
         onPointerDown={view.svgHandlers.onPointerDown}
         onPointerMove={view.svgHandlers.onPointerMove}
         onPointerUp={view.svgHandlers.onPointerUp}
+        onPointerCancel={view.svgHandlers.onPointerUp}
+        onClickCapture={view.svgHandlers.onClickCapture}
         onDoubleClick={view.svgHandlers.onDoubleClick}
       >
         <defs>

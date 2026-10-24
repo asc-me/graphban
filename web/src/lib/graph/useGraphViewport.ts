@@ -23,6 +23,9 @@ export interface ZoomRange {
   max?: number;
 }
 
+/** A press under this many screen pixels of travel is a click, not a pan. */
+export const PAN_SLOP_PX = 4;
+
 export function clampZoom(k: number, min = MIN_ZOOM, max = MAX_ZOOM): number {
   return Math.max(min, Math.min(max, k));
 }
@@ -97,6 +100,8 @@ export interface GraphViewport {
     onPointerDown: (e: React.PointerEvent<SVGSVGElement>) => void;
     onPointerMove: (e: React.PointerEvent<SVGSVGElement>) => void;
     onPointerUp: (e: React.PointerEvent<SVGSVGElement>) => void;
+    /** Swallows the click that ends a pan, so letting go over a box does not select it. */
+    onClickCapture: (e: React.MouseEvent<SVGSVGElement>) => void;
     onDoubleClick: () => void;
   };
   /** Ease the view to frame these points — used by find (D2) to fit the matches. */
@@ -119,14 +124,33 @@ export interface GraphViewport {
 export function useGraphViewport(
   width: number,
   height: number,
-  opts?: { minZoom?: number; maxZoom?: number },
+  opts?: {
+    minZoom?: number;
+    maxZoom?: number;
+    /**
+     * Pan from a press on anything in the scene, not only the bare `<svg>`. For a view whose
+     * scene covers the canvas (Stack's ring frames are filled), where a background-only pan
+     * never starts. The pan begins past PAN_SLOP_PX, so a click still reaches what it hit.
+     */
+    panAnywhere?: boolean;
+  },
 ): GraphViewport {
   const [viewport, setViewport] = React.useState<Viewport>(IDENTITY);
   const [panning, setPanning] = React.useState(false);
   const svgRef = React.useRef<SVGSVGElement | null>(null);
-  const panFrom = React.useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
+  const panFrom = React.useRef<{
+    x: number;
+    y: number;
+    vx: number;
+    vy: number;
+    cx: number;
+    cy: number;
+    started: boolean;
+  } | null>(null);
+  const swallowClick = React.useRef(false);
   const rangeRef = React.useRef<ZoomRange | undefined>(undefined);
   rangeRef.current = opts ? { min: opts.minZoom, max: opts.maxZoom } : undefined;
+  const panAnywhere = opts?.panAnywhere ?? false;
 
   const toView = React.useCallback(
     (clientX: number, clientY: number): Pos => {
@@ -157,32 +181,67 @@ export function useGraphViewport(
 
   const onPointerDown = React.useCallback(
     (e: React.PointerEvent<SVGSVGElement>) => {
-      // Only the background pans; a node stops propagation and drags itself instead.
-      if (e.target !== e.currentTarget) return;
+      swallowClick.current = false;
+      if (panAnywhere) {
+        // Primary button only: a right-click opens a menu, it does not grab the map.
+        if (e.button !== 0) return;
+      } else if (e.target !== e.currentTarget) {
+        // Only the background pans; a node stops propagation and drags itself instead.
+        return;
+      }
       const p = toView(e.clientX, e.clientY);
-      panFrom.current = { x: p.x, y: p.y, vx: viewport.x, vy: viewport.y };
-      setPanning(true);
-      e.currentTarget.setPointerCapture(e.pointerId);
+      panFrom.current = {
+        x: p.x,
+        y: p.y,
+        vx: viewport.x,
+        vy: viewport.y,
+        cx: e.clientX,
+        cy: e.clientY,
+        // A background-only pan starts at once; a pan-anywhere press waits for the slop.
+        started: !panAnywhere,
+      };
+      if (!panAnywhere) {
+        setPanning(true);
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }
     },
-    [toView, viewport],
+    [toView, viewport, panAnywhere],
   );
 
   const onPointerMove = React.useCallback(
     (e: React.PointerEvent<SVGSVGElement>) => {
       const from = panFrom.current;
       if (!from) return;
+      if (!from.started) {
+        if (Math.hypot(e.clientX - from.cx, e.clientY - from.cy) < PAN_SLOP_PX) return;
+        from.started = true;
+        setPanning(true);
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+      }
       const p = toView(e.clientX, e.clientY);
       setViewport((v) => ({ ...v, x: from.vx + (p.x - from.x), y: from.vy + (p.y - from.y) }));
     },
     [toView],
   );
 
-  const onPointerUp = React.useCallback((e: React.PointerEvent<SVGSVGElement>) => {
-    panFrom.current = null;
-    setPanning(false);
-    if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
+  const onPointerUp = React.useCallback(
+    (e: React.PointerEvent<SVGSVGElement>) => {
+      // A pan-anywhere press that moved was a pan: the click it ends is not a selection.
+      if (panAnywhere && panFrom.current?.started) swallowClick.current = true;
+      panFrom.current = null;
+      setPanning(false);
+      if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    },
+    [panAnywhere],
+  );
+
+  const onClickCapture = React.useCallback((e: React.MouseEvent<SVGSVGElement>) => {
+    if (!swallowClick.current) return;
+    swallowClick.current = false;
+    e.stopPropagation();
+    e.preventDefault();
   }, []);
 
   const reset = React.useCallback(() => setViewport(IDENTITY), []);
@@ -197,7 +256,7 @@ export function useGraphViewport(
     viewport,
     transform: `translate(${viewport.x},${viewport.y}) scale(${viewport.k})`,
     panning,
-    svgHandlers: { onWheel, onPointerDown, onPointerMove, onPointerUp, onDoubleClick },
+    svgHandlers: { onWheel, onPointerDown, onPointerMove, onPointerUp, onClickCapture, onDoubleClick },
     fitTo,
     reset,
     setViewport,
