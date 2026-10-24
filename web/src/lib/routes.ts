@@ -176,6 +176,35 @@ export function lastProjectTag(): string | null {
 }
 
 /**
+ * Cloud console origin. The org plane and the operator UI render there.
+ * Set `VITE_CONSOLE_URL` when this app and the console are not on the dev defaults.
+ */
+export function consoleOrigin(): string {
+  const raw = (import.meta.env.VITE_CONSOLE_URL as string | undefined)?.trim();
+  return (raw || "http://localhost:5174").replace(/\/+$/, "");
+}
+
+/**
+ * The console path for a bookmark that still uses this app's URL shape.
+ *
+ * Operator bookmarks use `/admin` here; graphban-control serves them under `/operator`.
+ * Org-plane paths keep the same prefix on the console.
+ */
+export function consolePathFromProduct(pathname: string): string {
+  if (pathname === "/admin") return "/operator";
+  if (pathname.startsWith("/admin/")) {
+    return `/operator${pathname.slice("/admin".length)}`;
+  }
+  return pathname;
+}
+
+/** Absolute URL for a path on the cloud console (`/org`, `/operator`, …). */
+export function consoleHref(path: string): string {
+  const p = path.startsWith("/") ? path : `/${path}`;
+  return `${consoleOrigin()}${consolePathFromProduct(p)}`;
+}
+
+/**
  * Drop org-plane state on a self-host boot.
  *
  * A self-host build has no way to serve an org, so an org key left behind by a hosted

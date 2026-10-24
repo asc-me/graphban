@@ -23,7 +23,7 @@ import { api } from "@/lib/api";
 import { keys, usePrds } from "@/lib/queries";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { relTime } from "@/features/admin/parts";
+import { relTime } from "@/lib/relTime";
 
 import { prdStatusMeta } from "./meta";
 
