@@ -537,3 +537,64 @@ def test_ignored_and_untracked_files_are_not_mapped(tmp_path):
         (repo / stray / "Dockerfile").write_text("FROM python:3.12\n", encoding="utf-8")
     record, _ = stackmap.build_record(repo)
     assert [n["dir"] for n in record["components"]] == ["app"]
+
+
+def _root_template_repo(tmp_path, compose: str | None) -> Path:
+    repo = tmp_path / "rooted"
+    repo.mkdir()
+    for name in ("api", "web"):
+        (repo / name).mkdir()
+        (repo / name / "requirements.txt").write_text("stripe==8.0\n", encoding="utf-8")
+    if compose is not None:
+        (repo / "compose.yml").write_text(compose, encoding="utf-8")
+    (repo / ".env.example").write_text("OPENAI_API_KEY=\n", encoding="utf-8")
+    _commit(repo)
+    return repo
+
+
+def test_a_root_template_name_goes_to_the_service_that_declares_it(tmp_path):
+    """GRPH-1104: a root .env.example drew web -> openai when only api reads it."""
+    repo = _root_template_repo(tmp_path,
+        "services:\n"
+        "  api:\n"
+        "    build: ./api\n"
+        "    environment:\n"
+        "      - OPENAI_API_KEY\n"
+        "  web:\n"
+        "    build: ./web\n")
+    record, warnings = stackmap.build_record(repo)
+    to_openai = [(e["from"], e["to"]) for e in record["edges"] if e["to"] == "openai"]
+    assert to_openai == [("api", "openai")]
+    assert not [e for e in record["edges"] if e["from"] == "web" and e["to"] != "stripe"]
+    assert warnings == []
+    assert canonical(record) == canonical(stackmap.build_record(repo)[0])
+
+
+def test_a_root_template_with_no_compose_goes_to_every_component_and_says_so(tmp_path):
+    repo = _root_template_repo(tmp_path, None)
+    record, warnings = stackmap.build_record(repo)
+    assert sorted(n["id"] for n in record["components"]) == ["api", "web"]
+    assert sorted(e["from"] for e in record["edges"] if e["to"] == "openai") == ["api", "web"]
+    assert [w for w in warnings if ".env.example" in w]
+
+
+def test_a_root_template_read_through_env_file_goes_to_its_reader(tmp_path):
+    repo = _root_template_repo(tmp_path,
+        "services:\n"
+        "  api:\n"
+        "    build: ./api\n"
+        "  web:\n"
+        "    build: ./web\n"
+        "    env_file: .env.example\n")
+    record, warnings = stackmap.build_record(repo)
+    assert [e["from"] for e in record["edges"] if e["to"] == "openai"] == ["web"]
+    assert warnings == []
+
+
+def test_this_repo_root_template_draws_no_web_edge_to_a_model_provider():
+    record, _ = stackmap.build_record(ROOT)
+    providers = {"anthropic", "openai", stackmap.LOCAL_NODE}
+    assert not [e for e in record["edges"] if e["from"] == "web" and e["to"] in providers]
+    assert _edge(record, "web", "api", "depends_on")
+    ids = {n["id"] for n in record["external"] + record["infrastructure"]}
+    assert providers <= ids

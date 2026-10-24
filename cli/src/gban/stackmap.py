@@ -853,6 +853,12 @@ class _Builder:
         self.by_dir: dict[str, str] = {}
         self.kind_of: dict[str, str] = {}
         self.warnings: list[str] = []
+        # Which compose-built components name an env variable, and which read a
+        # template through `env_file:`. A repo-root template is attributed from these.
+        self.env_users: dict[str, set[str]] = {}
+        self.env_file_users: dict[str, set[str]] = {}
+        # Names each `.env.example` declares, keyed by its directory.
+        self.template_names: dict[str, set[str]] = {}
 
     def _ids(self) -> set[str]:
         return set(self.components) | set(self.infra) | set(self.external) | set(self.unresolved)
@@ -1109,6 +1115,32 @@ def _extends(service: Marked) -> tuple[str, str, int] | None:
     return None
 
 
+def _env_files(service: Marked, compose: Path, repo: Path) -> list[str]:
+    """Repo-relative paths a service's `env_file:` names."""
+    if not isinstance(service.value, dict):
+        return []
+    node = service.value.get("env_file")
+    if not isinstance(node, Marked):
+        return []
+    items = node.value if isinstance(node.value, list) else [node]
+    out: list[str] = []
+    for item in items:
+        if not isinstance(item, Marked):
+            continue
+        raw = item.value
+        if isinstance(raw, dict):
+            # The long form: `- path: ./x.env`.
+            raw = raw.get("path").value if isinstance(raw.get("path"), Marked) else None
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            target = (compose.parent / raw.strip().strip("'\"")).resolve()
+            out.append(target.relative_to(repo.resolve()).as_posix())
+        except ValueError:
+            continue
+    return out
+
+
 def _walk_compose(builder: _Builder, path: Path) -> None:
     text = _read_text(path)
     if text is None:
@@ -1184,8 +1216,17 @@ def _walk_compose(builder: _Builder, path: Path) -> None:
             protocol = kind if kind and kind != "unclassified image" else "depends_on"
             builder.add_edge(src, target, protocol, "depends_on", prov)
         env_node = service.value.get("environment")
+        component = src in builder.components
         for ename, raw, line in _as_env(env_node if isinstance(env_node, Marked) else None):
+            if component:
+                for mentioned in [ename] + _INTERP.findall(raw):
+                    mentioned = re.split(r"[:?+-]", mentioned, maxsplit=1)[0].strip()
+                    if mentioned:
+                        builder.env_users.setdefault(mentioned, set()).add(src)
             builder.apply_env_name(ename, raw, line, file, [src], "compose.env")
+        if component:
+            for template in _env_files(service, path, builder.repo):
+                builder.env_file_users.setdefault(template, set()).add(src)
 
 
 def _walk_dockerfile(builder: _Builder, path: Path) -> None:
@@ -1247,25 +1288,9 @@ def _walk_manifest(builder: _Builder, path: Path) -> None:
                          str(row.get("label") or ""), prov)
 
 
-def _walk_env_template(builder: _Builder, path: Path) -> None:
-    text = _read_text(path)
-    if text is None:
-        builder.warnings.append(f"skipped unreadable {_rel(path, builder.repo)}")
-        return
-    file = _rel(path, builder.repo)
-    directory = _rel(path.parent, builder.repo)
-    if directory == "":
-        sources = sorted(builder.components)
-    else:
-        owner = builder.owner(directory)
-        sources = [owner] if owner else []
-    if not sources and builder.components:
-        sources = sorted(builder.components)
-    if not sources:
-        # A template and no deployable yet: the repo root is the deployable
-        # the names belong to, so the edges have somewhere to start.
-        sources = [builder.add_component(
-            ".", "", ".", _provenance(file, "env.template", 1))]
+def _template_entries(text: str) -> list[tuple[str, str, int]]:
+    """`(name, raw_value, line)` for each assignment in an env template."""
+    entries: list[tuple[str, str, int]] = []
     for lineno, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -1278,7 +1303,74 @@ def _walk_env_template(builder: _Builder, path: Path) -> None:
         name = name.strip()
         if len(raw_value) >= 2 and raw_value[0] == raw_value[-1] and raw_value[0] in ("'", '"'):
             raw_value = raw_value[1:-1]
-        builder.apply_env_name(name, raw_value, lineno, file, sources, "env.template")
+        entries.append((name, raw_value, lineno))
+    return entries
+
+
+def _note_template(builder: _Builder, path: Path) -> None:
+    text = _read_text(path)
+    if text is None:
+        return
+    names = {name for name, _raw, _line in _template_entries(text)}
+    builder.template_names.setdefault(_rel(path.parent, builder.repo), set()).update(names)
+
+
+def _root_consumers(builder: _Builder, file: str,
+                    entries: list[tuple[str, str, int]]) -> dict[str, list[str]] | None:
+    """Per name, the components a repo-root template's variable belongs to.
+
+    None when compose says nothing about this template: the caller then falls
+    back to every component and says so. A name compose does not mention goes to
+    the components whose own directory template declares it, else to the
+    component at the repo root, else to nobody. The node is still drawn.
+    """
+    readers = builder.env_file_users.get(file, set())
+    names = [name for name, _raw, _line in entries if _interesting_env(name)]
+    if not readers and not any(name in builder.env_users for name in names):
+        return None
+    root = builder.by_dir.get("")
+    out: dict[str, list[str]] = {}
+    for name in names:
+        users = readers | builder.env_users.get(name, set())
+        if not users:
+            users = {builder.by_dir[folder]
+                     for folder, declared in builder.template_names.items()
+                     if folder and name in declared and folder in builder.by_dir}
+        if not users and root:
+            users = {root}
+        out[name] = sorted(users)
+    return out
+
+
+def _walk_env_template(builder: _Builder, path: Path) -> None:
+    text = _read_text(path)
+    if text is None:
+        builder.warnings.append(f"skipped unreadable {_rel(path, builder.repo)}")
+        return
+    file = _rel(path, builder.repo)
+    directory = _rel(path.parent, builder.repo)
+    entries = _template_entries(text)
+    consumers: dict[str, list[str]] | None = None
+    if directory == "":
+        consumers = _root_consumers(builder, file, entries)
+        sources = sorted(builder.components)
+        if consumers is None and len(sources) > 1:
+            builder.warnings.append(
+                f"{file}: no compose service names its variables or reads it; "
+                f"its names are attributed to every component")
+    else:
+        owner = builder.owner(directory)
+        sources = [owner] if owner else []
+    if not sources and builder.components:
+        sources = sorted(builder.components)
+    if not sources:
+        # A template and no deployable yet: the repo root is the deployable
+        # the names belong to, so the edges have somewhere to start.
+        sources = [builder.add_component(
+            ".", "", ".", _provenance(file, "env.template", 1))]
+    for name, raw_value, lineno in entries:
+        named = consumers.get(name, sources) if consumers is not None else sources
+        builder.apply_env_name(name, raw_value, lineno, file, named, "env.template")
 
 
 def _sha(repo: Path) -> str:
@@ -1333,9 +1425,11 @@ def build_record(start: Path, *, project_id: str = "") -> tuple[dict, list[str]]
     for path in files:
         if _is_manifest(path):
             _walk_manifest(builder, path)
-    for path in files:
-        if path.name == ".env.example":
-            _walk_env_template(builder, path)
+    templates = [path for path in files if path.name == ".env.example"]
+    for path in templates:
+        _note_template(builder, path)
+    for path in templates:
+        _walk_env_template(builder, path)
     if not (builder.components or builder.infra or builder.external or builder.unresolved):
         raise MapError("nothing to map: no compose service, Dockerfile or known dependency")
     return builder.finish(sha), builder.warnings
