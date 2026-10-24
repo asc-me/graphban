@@ -97,6 +97,39 @@ SKILL_DIRS = (".claude/skills", ".grok/skills", ".agents/skills")
 INSTRUCTIONS_CAP = 12_000
 
 
+_SKILL_NAME = re.compile(r"(?m)^name:\s*[\"']?([^\"'\n]+)")
+
+
+def _skill_name(path: Path) -> str:
+    """Frontmatter `name`, or "" when the file has none. Used only to drop a second copy."""
+    try:
+        head = path.read_text(encoding="utf-8", errors="replace")[:2000]
+    except OSError:
+        return ""
+    if not head.startswith("---"):
+        return ""
+    fence = head.find("\n---", 3)
+    block = head[3:fence] if fence != -1 else head[:500]
+    match = _SKILL_NAME.search(block)
+    return match.group(1).strip() if match else ""
+
+
+def _one_copy_per_skill(found: list[tuple[str, Path]]) -> list[tuple[str, Path]]:
+    """Keep the first SKILL.md for each frontmatter name. Other files pass through."""
+    seen: set[str] = set()
+    out = []
+    for rel, path in found:
+        if path.name != "SKILL.md":
+            out.append((rel, path))
+            continue
+        name = _skill_name(path) or rel
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append((rel, path))
+    return out
+
+
 def _instruction_sources(root: Path) -> list[tuple[str, Path]]:
     """Every instruction file in the worktree, in prompt order, each resolved inside it.
 
@@ -132,7 +165,9 @@ def _instruction_sources(root: Path) -> list[tuple[str, Path]]:
                 if path.is_file():
                     skills.append((candidate.relative_to(root.resolve()).as_posix(), path))
         found.extend(sorted(skills))
-    return found
+    # The same skill is installed under `.claude/skills` and `.agents/skills` so every
+    # harness has a directory it reads. This prompt would otherwise paste it twice.
+    return _one_copy_per_skill(found)
 
 
 def project_instructions(root: Path, cap: int = INSTRUCTIONS_CAP) -> str:

@@ -1,6 +1,6 @@
 ---
 name: graphban-delegation
-description: Hand a Graphban work item to a child agent running on a cheaper model, and enable delegation on a project that does not have it yet. Use when asked to delegate, fan out, spawn a worker, or run a wave.
+description: Hand a Graphban work item to a child agent running on a cheaper model, and enable delegation on a project that does not have it yet. Use when asked to delegate, fan out, spawn a worker, mint seats, retire a wave, or run a wave.
 ---
 
 # Delegating a Graphban item
@@ -185,6 +185,15 @@ chose the item, wrote the brief and picked the tier; review exists to be a secon
 
 So a delegated item needs a second agent to review it. Plan for that, or the work stops at
 `review` with nobody entitled to clear it.
+
+## Before a wave of seats
+
+`delegate(seat=true)` is one item. Several seats is `mint_enrolment`.
+
+- `propose_allocation` first. It names workers and which cluster each would take. Nothing is assigned until `assign_role`.
+- `collision_clusters(holds=true)` before claiming. `predicted: true` means the grouping used inferred areas.
+- `mint_enrolment(review_only=true)` when that seat may review and must not take build work. The child still registers as `worker`. One seat per agent: two agents on one seat cannot review each other.
+- `retire_wave` revokes the seats you minted and releases what they hold. It does not stop the processes. `agents_still_running` are still building against dead seats.
 
 ## When not to use this
 

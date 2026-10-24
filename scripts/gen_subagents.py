@@ -1003,9 +1003,14 @@ SKILLS_SRC = REPO / "cli" / "src" / "gban" / "skills"
 
 
 def render_skills() -> dict[str, str]:
+    """The package skill, copied to every harness directory. `.claude/skills` is what the
+    inventory scan records. `.agents/skills` is the same file for Qwen, agy, and dsh."""
     out = {}
     for skill in sorted(SKILLS_SRC.glob("*/SKILL.md")):
-        out[f".claude/skills/{skill.parent.name}/SKILL.md"] = skill.read_text(encoding="utf-8")
+        body = skill.read_text(encoding="utf-8")
+        slug = skill.parent.name
+        for dest in (".claude/skills", ".agents/skills"):
+            out[f"{dest}/{slug}/SKILL.md"] = body
     if not out:
         raise SystemExit(f"no skills found under {SKILLS_SRC} — the source moved")
     return out
