@@ -2092,14 +2092,58 @@ class BoundOnlySeat(Exception):
     """
 
 
-def bound_only_refusal(db: Session, agent_id: str | None) -> str | None:
+def _bound_only_item(db: Session, agent_id: str | None) -> tuple[Enrolment | None, Item | None]:
+    """The seat and its bound row for an agent on a `bound_only` seat, else (None, None).
+
+    The row may itself be None — a bound item that has been deleted — and the seat is still
+    returned so the caller can say which item it was.
+    """
+    if not agent_id:
+        return None, None
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return None, None
+    seat = db.get(Enrolment, agent.enrolment_id)
+    if seat is None or not seat.bound_only or not seat.item_id:
+        return None, None
+    return seat, db.get(Item, seat.item_id)
+
+
+def reclaimable_bound_item(db: Session, agent_id: str | None, *,
+                           lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item | None:
+    """The bound item, when a `bound_only` seat may take it back right now (GRPH-1101).
+
+    A lease lapse requeues the item to `next` with `claimed_by` empty — or leaves it
+    `in_progress` under a stale lease until something rewrites it. Either way the seat's
+    work is not delivered and nobody live holds it, so the seat may reclaim exactly this
+    row. Review and done are delivered; a live lease, a blocker or a bounce pin for somebody
+    else make it not this seat's to take.
+    """
+    _seat, bound = _bound_only_item(db, agent_id)
+    if bound is None or bound.status in ("review", "done"):
+        return None
+    if not claimable(bound, lease_seconds=lease_seconds) or pinned_elsewhere(bound, agent_id):
+        return None
+    return bound
+
+
+def bound_only_refusal(db: Session, agent_id: str | None, item: Item | None = None, *,
+                       lease_seconds: int = DEFAULT_LEASE_SECONDS) -> str | None:
     """Why this seat may not take another item or another review, or None when it may.
 
-    Refuses only when the seat was minted `bound_only` AND its bound item is no longer
-    `in_progress` — review, done, blocked, next, or a row that has gone. While the item is
-    still `in_progress` the seat is doing the work it was minted for, and reviewing someone
-    else's item is still allowed. An unbound seat, a seat without the flag, and an agent
-    with no enrolment all read None and behave exactly as they did.
+    Only a seat minted `bound_only` is ever refused. For one, keyed on its bound item:
+
+    - `in_progress` under this agent: None. The seat is doing the work it was minted for,
+      and reviewing someone else's item is still allowed.
+    - review or done: refused. The work is delivered; the run is over (GRPH-1089).
+    - held under a live lease by another agent: refused, naming the holder.
+    - reclaimable — requeued by a lease lapse, or a stale lease (GRPH-1101): refused for
+      everything EXCEPT `item` being the bound row itself. The seat reclaims its own item
+      and nothing else. `claim_next` resolves to it; see `reclaimable_bound_item`.
+    - anything else (blocked, pinned to another agent): refused.
+
+    An unbound seat, a seat without the flag, and an agent with no enrolment all read None
+    and behave exactly as they did.
 
     The sentence is one, and every door says it: `claim_review`, `claim_next`, `claim_item`
     (which is where `claim_cluster`'s members and `next_cluster`'s neighbours claim), and
@@ -2108,45 +2152,46 @@ def bound_only_refusal(db: Session, agent_id: str | None) -> str | None:
     `_holds_bound_item` only matches a live `claimed_by` and `open_bound_item` returns None
     for review and done.
     """
-    if not agent_id:
+    seat, bound = _bound_only_item(db, agent_id)
+    if seat is None:
         return None
-    agent = db.get(Agent, agent_id)
-    if agent is None or not agent.enrolment_id:
-        return None
-    seat = db.get(Enrolment, agent.enrolment_id)
-    if seat is None or not seat.bound_only or not seat.item_id:
-        return None
-    bound = db.get(Item, seat.item_id)
+    doors = ("claim_review, claim_next, claim_item, claim_cluster and next_cluster are "
+             "refused. ")
     if bound is None:
         return (
-            f"this seat is bound_only to {seat.item_id}, which is gone. "
-            "claim_review, claim_next, claim_item, claim_cluster and next_cluster are "
-            "refused. Exit — that is the normal end of a bound-only run, not a failure."
+            f"this seat is bound_only to {seat.item_id}, which is gone. " + doors
+            + "Exit — that is the normal end of a bound-only run, not a failure."
         )
-    if bound.status == "in_progress":
+    if bound.status == "in_progress" and bound.claimed_by == agent_id:
         return None
+    if bound.status in ("review", "done"):
+        return (
+            f"this seat is bound_only to {bound.key}, which has left in_progress "
+            f"(status {bound.status}). " + doors
+            + "Exit — that is the normal end of a bound-only run, not a failure."
+        )
+    # Not "left in_progress" (GRPH-1101). A lapsed lease is not a delivered item: before this
+    # the seat was refused its OWN item and exited having changed nothing.
+    if reclaimable_bound_item(db, agent_id, lease_seconds=lease_seconds) is not None:
+        if item is not None and item.id == bound.id:
+            return None
+        return (
+            f"this seat is bound_only to {bound.key}, which is back in {bound.status} with "
+            "no live claimant — its lease lapsed. Reclaim it: claim_item on "
+            f"{bound.key}, or claim_next, which resolves to it. Any other item, "
+            "claim_review, claim_cluster and next_cluster are refused until it is delivered."
+        )
+    if bound.claimed_by and bound.claimed_by != agent_id:
+        return (
+            f"this seat is bound_only to {bound.key}, which is now held by "
+            f"{bound.claimed_by}. " + doors
+            + "Exit — the item is somebody else's to deliver."
+        )
     return (
         f"this seat is bound_only to {bound.key}, which has left in_progress "
-        f"(status {bound.status}). claim_review, claim_next, claim_item, claim_cluster "
-        "and next_cluster are refused. "
-        "Exit — that is the normal end of a bound-only run, not a failure."
+        f"(status {bound.status}) and cannot be reclaimed. " + doors
+        + "Exit — that is the normal end of a bound-only run, not a failure."
     )
-
-
-def _is_bound_item(db: Session, agent_id: str | None, item: Item) -> bool:
-    """Is `item` the one this agent's seat is bound to, whatever status it is in?
-
-    `open_bound_item` hides a row that is in review or done, which is the opposite of the
-    question `claim_item` has to ask before it raises `BoundOnlySeat`: the bound row is
-    claimed through `claim_item` at registration, and that claim must still land.
-    """
-    if not agent_id:
-        return False
-    agent = db.get(Agent, agent_id)
-    if agent is None or not agent.enrolment_id:
-        return False
-    seat = db.get(Enrolment, agent.enrolment_id)
-    return bool(seat is not None and seat.item_id and seat.item_id == item.id)
 
 
 def bound_only_seat(db: Session, agent_id: str | None) -> bool:
@@ -2272,7 +2317,14 @@ def claim_next(
     # instead of the binding — and deleting this check would then leave the suite green,
     # because the lease refusal looks like a refusal. The binding is a property of the SEAT:
     # no release makes the answer different once the item has left in_progress.
-    if reason := bound_only_refusal(db, agent_id):
+    #
+    # GRPH-1101. Before the refusal: a seat whose lease lapsed and whose item was requeued
+    # asks for "whatever is next", and the only answer it may have is its own item. Unless
+    # it declined it this round — then the refusal says why there is nothing else.
+    own = reclaimable_bound_item(db, agent_id, lease_seconds=lease_seconds)
+    if own is not None and own.id not in declined and own.key not in declined:
+        return claim_item(db, own.id, agent_id, lease_seconds=lease_seconds)
+    if reason := bound_only_refusal(db, agent_id, lease_seconds=lease_seconds):
         raise BoundOnlySeat(reason)
     # ONE AT A TIME (GRPH-504). Checked before any candidate is considered, so a caller that
     # already holds something is refused rather than quietly given a second item to abandon.
@@ -2441,13 +2493,12 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
     # released, and `open_bound_item` below returns None for review and done. Raised rather
     # than returned as None, for the reason `ReviewOnlySeat` gives: None is "not claimable".
     #
-    # Not when the candidate IS the bound item. Registration claims that row through here
-    # while it is still `next`, and `bound_only_refusal` treats `next` as having left
-    # in_progress. Refusing that claim refuses the seat's only job. A different item is
-    # the hole the bounce reproduced.
-    if reason := bound_only_refusal(db, agent_id):
-        if not _is_bound_item(db, agent_id, it):
-            raise BoundOnlySeat(reason)
+    # Passed the candidate, because the bound item itself is the one claim that must land
+    # while it is `next`: registration claims it through here, and so does a seat taking it
+    # back after its lease lapsed (GRPH-1101). Refusing that refuses the seat's only job. A
+    # different item is the hole the bounce reproduced.
+    if reason := bound_only_refusal(db, agent_id, it, lease_seconds=lease_seconds):
+        raise BoundOnlySeat(reason)
     if (it.reach or "repo") == "deploy" and held_by_a_seat(db, agent_id):
         # GRPH-832. The reported escape was SELF-CLAIMED, not delegated: the ops item was the
         # highest-scored row in the project, so it sat at the top of every worker's queue and

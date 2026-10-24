@@ -286,6 +286,112 @@ def test_bound_only_still_reviews_while_its_item_is_in_progress(client, key, db,
     assert got is not None and got.id == other
 
 
+# ---- a lapsed lease is not a delivered item (GRPH-1101) ----------------------------------
+
+
+def _lapse(db, child, bound):
+    """What `requeue_offline_items` does when presence passes the TTL: `release_item` on the
+    holder, which puts the row back in `next` with `claimed_by` empty."""
+    db.expire_all()
+    released = items_svc.release_item(db, bound, child)
+    assert released is not None
+    assert released.status == "next" and released.claimed_by is None
+    return released
+
+
+def test_bound_only_reclaims_its_own_item_after_a_lease_lapse(client, key, db, proj):
+    """THE INCIDENT. The child's item was requeued while it was still reading, and every
+    door then refused it, so it exited having changed nothing.
+
+    Sabotage: restore the old gate (`if bound.status == "in_progress": return None`, refuse
+    otherwise, with `claim_item` excusing only the bound item). claim_next raises instead of
+    returning the bound item.
+    """
+    other = _in_review_by_somebody_else(client, key, db)
+    ready = _item(client, key, "still ready", ["backend/app/ready.py"])
+    child, bound, _out, _reg = _bound_child(client, key, db, bound_only=True)
+    held = _stored(db, bound)
+    _lapse(db, child, bound)
+
+    # claim_next resolves to the bound item, even though `ready` is also ready.
+    got = items_svc.claim_next(db, child, project_id=proj)
+    assert got is not None and got.id == bound
+    row = _stored(db, bound)
+    assert row.status == "in_progress" and row.claimed_by == child
+    assert _stored(db, ready).claimed_by is None
+
+    # And by name, through claim_item — after a second lapse.
+    _lapse(db, child, bound)
+    assert items_svc.claim_item(db, bound, child) is not None
+    assert _stored(db, bound).claimed_by == child
+
+    # Nothing else while the item is back in next: not another item, not a review.
+    _lapse(db, child, bound)
+    with pytest.raises(items_svc.BoundOnlySeat, match=held.key) as e:
+        items_svc.claim_item(db, ready, child)
+    assert "Reclaim" in str(e.value)
+    with pytest.raises(items_svc.BoundOnlySeat, match="Reclaim"):
+        fleet_svc.claim_review(db, agent_id=child, project_id=proj)
+    got = fleet_svc.claim_cluster(db, agent_id=child, project_id=proj)
+    assert got["claimed"] is False and held.key in got["reason"]
+    assert _stored(db, ready).claimed_by is None
+    assert _stored(db, other).review_claimed_by is None
+
+    # Over the wire: claim_next hands it back.
+    wire = _ok(_mcp(client, key, "claim_next", {"agent_id": child}))
+    assert held.key in str(wire)
+    assert _stored(db, bound).claimed_by == child
+
+
+def test_bound_only_reclaim_respects_a_skip(client, key, db, proj):
+    """A seat that declines its own item gets the refusal, not somebody else's item."""
+    ready = _item(client, key, "still ready", ["backend/app/ready.py"])
+    child, bound, _out, _reg = _bound_child(client, key, db, bound_only=True)
+    _lapse(db, child, bound)
+    with pytest.raises(items_svc.BoundOnlySeat, match="Reclaim"):
+        items_svc.claim_next(db, child, project_id=proj, skip=[bound])
+    assert _stored(db, ready).claimed_by is None
+
+
+def test_bound_only_refuses_and_names_the_holder_once_another_agent_has_it(
+        client, key, db, proj):
+    """After the lapse somebody else took the item. The seat may not take it, or anything
+    else, and the reason names who has it."""
+    other = _in_review_by_somebody_else(client, key, db)
+    ready = _item(client, key, "still ready", ["backend/app/ready.py"])
+    child, bound, _out, _reg = _bound_child(client, key, db, bound_only=True)
+    _lapse(db, child, bound)
+    thief = _agent(client, key, "thief", worktree="/w/thief", branch="gb/thief",
+                   capabilities={"instance": "thief"})
+    assert items_svc.claim_item(db, bound, thief) is not None
+
+    with pytest.raises(items_svc.BoundOnlySeat, match=thief):
+        items_svc.claim_next(db, child, project_id=proj)
+    with pytest.raises(items_svc.BoundOnlySeat, match=thief):
+        fleet_svc.claim_review(db, agent_id=child, project_id=proj)
+    with pytest.raises(items_svc.BoundOnlySeat, match=thief):
+        items_svc.claim_item(db, ready, child)
+    assert items_svc.claim_item(db, bound, child) is None
+    got = fleet_svc.claim_cluster(db, agent_id=child, project_id=proj)
+    assert got["claimed"] is False and thief in got["reason"]
+    wire = _err(_mcp(client, key, "claim_review", {"agent_id": child}))
+    assert wire["code"] == "conflict" and thief in wire["message"]
+
+    assert _stored(db, bound).claimed_by == thief
+    assert _stored(db, ready).claimed_by is None
+    assert _stored(db, other).review_claimed_by is None
+
+
+def test_bound_only_reclaim_is_not_offered_once_the_item_is_delivered(client, key, db, proj):
+    """Review is delivered work. claim_next does not hand the bound item back, it refuses."""
+    child, bound, _out, _reg = _bound_child(client, key, db, bound_only=True)
+    _to_review_and_release(client, key, db, child, bound)
+    assert items_svc.reclaimable_bound_item(db, child) is None
+    with pytest.raises(items_svc.BoundOnlySeat, match="left in_progress"):
+        items_svc.claim_next(db, child, project_id=proj)
+    assert _stored(db, bound).status == "review"
+
+
 # ---- mint, reissue, and the wires --------------------------------------------------------
 
 

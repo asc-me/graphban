@@ -4202,11 +4202,12 @@ async def mcp_endpoint(
         except items_svc.BoundOnlySeat as e:
             # CONFLICT, same reason as ReviewOnlySeat (GRPH-1089). `claim_review` returns None
             # for an empty queue; this must not become that, and it must not become `internal`
-            # ("safe to retry"). The bound item has left in_progress. The child exits.
+            # ("safe to retry"). The message says which: delivered or held elsewhere, the
+            # child exits; requeued by a lease lapse, it reclaims its own item (GRPH-1101).
             return _fail("conflict", str(e),
-                         "nothing is wrong with the call: this seat is bound to one item and "
-                         "that item has left in_progress. Exit — that is the normal end of a "
-                         "bound-only run")
+                         "nothing is wrong with the call: this seat is bound to one item. If "
+                         "the message says to reclaim it, claim_item on that item; otherwise "
+                         "exit — that is the normal end of a bound-only run")
         except errors.AppError as e:
             # Expected, agent-correctable failure: not_found | validation | conflict.
             return _fail(e.code, str(e), e.hint)
