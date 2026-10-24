@@ -442,6 +442,7 @@ def cmd_stack(args) -> int:
     text = stackmap.canonical(record)
     if args.dry_run:
         sys.stdout.write(text)
+        print(f"{PROG}: dry run, nothing posted", file=sys.stderr)
         return 0
     if not project:
         print(f"{PROG}: `{PROG} stack map` needs a project to post. Pass --project, set "
@@ -463,8 +464,31 @@ def cmd_stack(args) -> int:
               f"${config.API_KEY_ENV}, or run `{PROG} setup`. The login session is not a "
               f"key and is not sent.", file=sys.stderr)
         return EXIT_REFUSED
-    stackmap.post_record(url, key, record)
+    # The record goes to stdout only after the server took it: a refused post must not
+    # leave behind something that reads like a record that was sent (GRPH-1103).
+    try:
+        receipt = stackmap.post_record(url, key, record)
+    except Refused as exc:
+        try:
+            reasons = json.loads(exc.detail)
+        except ValueError:
+            reasons = None
+        if not isinstance(reasons, list):
+            raise
+        print(f"{PROG}: the server refused the app map (HTTP {exc.status}):", file=sys.stderr)
+        for reason in reasons:
+            if isinstance(reason, dict):
+                print(f"     {reason.get('path', '?')}: {reason.get('reason', '')}",
+                      file=sys.stderr)
+            else:
+                print(f"     {reason}", file=sys.stderr)
+        return EXIT_REFUSED
     sys.stdout.write(text)
+    receipt = receipt if isinstance(receipt, dict) else {}
+    sha = str(receipt.get("mapped_sha") or record.get("mapped_sha") or "")[:7]
+    said = [f"{k} {receipt[k]}" for k in ("mapped_at", "posted_by") if receipt.get(k)]
+    print(f"{PROG}: posted {receipt.get('project_id') or project} app map at {sha} to {url}"
+          + (f" ({', '.join(said)})" if said else ""), file=sys.stderr)
     return 0
 
 
