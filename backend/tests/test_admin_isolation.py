@@ -217,13 +217,6 @@ def test_invite_lifecycle_is_audited(client, operator):
     assert _events("revoke_platform_invite"), "revoking a platform invite was not audited"
 
 
-def test_plan_assignment_is_audited(client, operator):
-    org = client.post("/api/orgs", json={"name": "Acme"}, headers=operator).json()
-    client.put(f"/api/orgs/{org['id']}/plan", json={"plan": "team"}, headers=operator)
-    evs = _events("set_org_plan")
-    assert evs and evs[0]["actor_id"] == "u1"
-
-
 def test_org_request_decision_is_audited(client, operator):
     dana = _login(client, "dana@ascme-labs.com")
     client.post("/api/orgs", json={"name": "Dana Co"}, headers=dana)

@@ -1,16 +1,16 @@
-"""Plan limits + quota enforcement (hosted-only, AL-75).
+"""Plan tier table, usage math, and hosted per-org rate limiting (AL-75).
 
-BYOK means we don't meter token cost — a plan is a set of *counters*: how many
-projects, seats, memory shards, and metered MCP calls/month an org gets. This module
-owns the tier table, the usage math, and the enforcement helpers called at each
-create point. Everything is a no-op unless ``settings.hosted_mode`` is on, so
-self-host is unlimited and unchanged.
+The product no longer refuses work for plan limits — project/seat/shard/monthly-call
+caps and Stripe billing live on the control plane (GBC-35). ``enforce_project_quota``,
+``enforce_seat_quota``, ``enforce_shard_quota``, and ``meter_call`` are permanent no-ops
+here so every install serves the tracker without HTTP 402 plan gates.
 
-Enforcement raises :class:`errors.QuotaExceeded`, which the MCP dispatcher maps to a
-``quota_exceeded`` tool error and REST maps to HTTP 402 (see main.py handler).
+``PLANS`` and ``usage()`` remain for operator/galaxy metadata surfaces that still
+report limits vs counters. ``enforce_org_rate`` is unchanged: a short-window burst cap
+on MCP traffic when ``hosted_mode`` is on.
 
 Public / unauthenticated surfaces (feedback intake, public roadmap) are deliberately
-NOT metered or gated — they're available on every tier, including Free.
+NOT metered or gated.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.errors import QuotaExceeded, RateLimited
+from app.errors import RateLimited
 from app.services import ratelimit
 from app.models import (
     MemoryShard,
@@ -126,51 +126,17 @@ def org_id_for_project(db: Session, project_id: str | None) -> str | None:
     return p.org_id if p else None
 
 
-# ---- enforcement (all no-op when hosted_mode is off) --------------------------
-def _org(db: Session, org_id: str) -> Organization | None:
-    return db.get(Organization, org_id)
-
-
+# ---- plan quota enforcement (removed from product — control plane owns caps) -----
 def enforce_project_quota(db: Session, org_id: str | None) -> None:
-    if not settings.hosted_mode or not org_id:
-        return
-    org = _org(db, org_id)
-    if org is None:
-        return
-    limit = plan_of(org).max_projects
-    if project_count(db, org_id) >= limit:
-        raise QuotaExceeded(
-            f"project limit reached ({limit}) on the {org.plan} plan",
-            hint="delete a project or ask an operator to upgrade the plan",
-        )
+    return
 
 
 def enforce_seat_quota(db: Session, org_id: str | None) -> None:
-    if not settings.hosted_mode or not org_id:
-        return
-    org = _org(db, org_id)
-    if org is None:
-        return
-    limit = plan_of(org).max_seats
-    if seat_count(db, org_id) >= limit:
-        raise QuotaExceeded(
-            f"seat limit reached ({limit}) on the {org.plan} plan",
-            hint="revoke a pending invite or ask an operator to upgrade the plan",
-        )
+    return
 
 
 def enforce_shard_quota(db: Session, org_id: str | None) -> None:
-    if not settings.hosted_mode or not org_id:
-        return
-    org = _org(db, org_id)
-    if org is None:
-        return
-    limit = plan_of(org).max_shards
-    if shard_count(db, org_id) >= limit:
-        raise QuotaExceeded(
-            f"memory limit reached ({limit} shards) on the {org.plan} plan",
-            hint="prune old memory or ask an operator to upgrade the plan",
-        )
+    return
 
 
 def enforce_org_rate(org_id: str | None) -> None:
@@ -187,25 +153,5 @@ def enforce_org_rate(org_id: str | None) -> None:
 
 
 def meter_call(db: Session, org_id: str | None) -> None:
-    """Count one metered MCP call against the org's monthly allowance, raising BEFORE
-    incrementing if the cap is already hit. Commits its own tiny transaction so the
-    counter survives read-only tools that never commit. No-op off hosted mode."""
-    if not settings.hosted_mode or not org_id:
-        return
-    org = _org(db, org_id)
-    if org is None:
-        return
-    limit = plan_of(org).max_calls_per_month
-    period = _period()
-    row = db.scalar(select(OrgUsage).where(OrgUsage.org_id == org_id, OrgUsage.period == period))
-    used = row.mcp_calls if row else 0
-    if used >= limit:
-        raise QuotaExceeded(
-            f"monthly call limit reached ({limit}) on the {org.plan} plan",
-            hint="usage resets at the start of next month, or ask an operator to upgrade",
-        )
-    if row is None:
-        row = OrgUsage(org_id=org_id, period=period, mcp_calls=0)
-        db.add(row)
-    row.mcp_calls += 1
-    db.commit()
+    """Monthly MCP call caps left the product with plan billing (GBC-35)."""
+    return

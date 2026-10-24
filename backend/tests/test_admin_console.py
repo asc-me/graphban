@@ -16,6 +16,20 @@ def _login(client, email, password=SEED_PW):
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
+def _set_org_plan_db(org_id: str, plan: str) -> None:
+    from app.db import SessionLocal
+    from app.models import Organization
+
+    db = SessionLocal()
+    try:
+        org = db.get(Organization, org_id)
+        assert org is not None
+        org.plan = plan
+        db.commit()
+    finally:
+        db.close()
+
+
 @pytest.fixture()
 def operator(client, monkeypatch):
     from app.config import settings
@@ -103,7 +117,7 @@ def test_org_listing_exposes_no_tenant_content(client, operator):
 
 def test_plan_assignment_reflects_in_org_listing(client, operator):
     org = client.post("/api/orgs", json={"name": "Acme"}, headers=operator).json()
-    client.put(f"/api/orgs/{org['id']}/plan", json={"plan": "team"}, headers=operator)
+    _set_org_plan_db(org["id"], "team")
     rows = client.get("/api/admin/orgs", headers=operator).json()
     assert next(r for r in rows if r["id"] == org["id"])["plan"] == "team"
 
@@ -265,4 +279,4 @@ def test_activity_is_the_operator_ledger_not_a_tenant_feed(client, operator):
     r = client.get("/api/admin/activity", headers=operator)
     assert "ZZTENANTWORKZZ" not in r.text
     assert all(a["action"] in ("create_platform_invite", "revoke_platform_invite",
-                               "decide_org_request", "set_org_plan") for a in r.json())
+                               "decide_org_request") for a in r.json())

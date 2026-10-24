@@ -11,7 +11,6 @@ export const keys = {
   orgs: ["orgs"] as const,
   orgMembers: (id: string) => ["org-members", id] as const,
   invites: (id: string) => ["org-invites", id] as const,
-  billing: (id: string) => ["org-billing", id] as const,
   items: ["items"] as const,
   counts: (projectId?: string) => ["counts", projectId] as const,
   shards: ["shards"] as const,
@@ -151,18 +150,6 @@ export function useAdminDecideOrgRequest() {
   });
 }
 
-export function useSetOrgPlan() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (v: { orgId: string; plan: string }) => api.setOrgPlan(v.orgId, v.plan),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["admin-orgs"] });
-      qc.invalidateQueries({ queryKey: ["admin-activity"] });
-      qc.invalidateQueries({ queryKey: keys.orgs });
-    },
-  });
-}
-
 export function useOrgOverview(orgId?: string) {
   return useQuery({
     queryKey: ["org-overview", orgId],
@@ -267,14 +254,6 @@ export function useGalaxy(orgId?: string) {
   });
 }
 
-export function useBilling(orgId?: string) {
-  return useQuery({
-    queryKey: keys.billing(orgId ?? ""),
-    queryFn: () => api.orgBilling(orgId!),
-    enabled: !!orgId,
-  });
-}
-
 export function useCreateOrg() {
   const qc = useQueryClient();
   return useMutation({
@@ -283,16 +262,12 @@ export function useCreateOrg() {
   });
 }
 
-// PRD-21 D8. Each invalidates the roster AND billing: a seat freed by a removal changes
-// the seat count, and a stale meter beside a shorter table is the mismatch these screens
-// spend paragraphs explaining.
 function useMembershipMutation<T>(orgId: string, fn: (v: T) => Promise<unknown>) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: fn,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.orgMembers(orgId) });
-      qc.invalidateQueries({ queryKey: keys.billing(orgId) });
     },
   });
 }
@@ -318,10 +293,7 @@ export function useCreateInvite(orgId: string) {
   return useMutation({
     mutationFn: ({ email, role }: { email: string; role: string }) =>
       api.createInvite(orgId, email, role),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.invites(orgId) });
-      qc.invalidateQueries({ queryKey: keys.billing(orgId) }); // seat usage moved
-    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.invites(orgId) }),
   });
 }
 
@@ -329,10 +301,7 @@ export function useRevokeInvite(orgId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (inviteId: string) => api.revokeInvite(orgId, inviteId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.invites(orgId) });
-      qc.invalidateQueries({ queryKey: keys.billing(orgId) });
-    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.invites(orgId) }),
   });
 }
 
