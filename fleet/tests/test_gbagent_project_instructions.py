@@ -41,6 +41,21 @@ def test_agents_claude_and_every_project_skill_dir_are_read(tmp_path):
     assert prompt.index("run the one service layer") < prompt.index("claude skill body")
 
 
+def test_the_same_skill_installed_twice_is_read_once(tmp_path):
+    """Setup writes one skill to `.claude/skills` and `.agents/skills`. The prompt keeps
+    the first. The second directory exists so a harness that does not read `.claude` still
+    has the file."""
+    body = "---\nname: graphban-work\n---\nclaim once\n"
+    _write(tmp_path / ".claude/skills/graphban-work/SKILL.md", body)
+    _write(tmp_path / ".agents/skills/graphban-work/SKILL.md", body + "second copy\n")
+
+    text = cli.project_instructions(tmp_path)
+
+    assert text.count("claim once") == 1
+    assert "second copy" not in text
+    assert ".claude/skills/graphban-work/SKILL.md" in text
+
+
 def test_the_operators_home_skills_are_never_read(tmp_path, monkeypatch):
     home = tmp_path / "home"
     _write(home / ".claude/skills/private/SKILL.md", "PERSONAL SKILL")

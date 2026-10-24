@@ -115,7 +115,7 @@ project is not a mistake anybody notices quickly.
 `setup` mints a project-scoped credential, writes the `graphban` and `gbfleet` MCP entries
 into every parent harness that would actually read them, stores that key next to the login
 session (a `gb_sk_…`, never the refresh token), installs the supervisor if it is missing,
-drops the delegation skill into `.claude/skills/`, and then **verifies** rather than
+drops the shipped skills into `.claude/skills/` and `.agents/skills/`, and then **verifies** rather than
 asserting: it asks the new credential what it can actually see. Restart the session that will
 call `delegate`/`spawn` afterwards — MCP servers are read at startup.
 

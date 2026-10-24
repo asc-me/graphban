@@ -189,10 +189,27 @@ def _one(vendor: str, repo: Path, find, inspect) -> dict:
         _seat_only(row, "a claude child is launched with --strict-mcp-config. " + _SEAT_ONLY)
         return row
     if vendor == "qwen-code":
-        row["skills_status"] = UNKNOWN
-        row["skills_reason"] = (
-            "no skill listing was measured for qwen. That is not the same as a child with no skills"
+        # Measured on qwen 0.23.0: user skills live in ~/.qwen/skills; project skills are
+        # loaded from .qwen/skills and then .agents/skills (PROJECT_SKILL_DIRS).
+        items, unreadable, truncated = _dir_skills(
+            [
+                (repo / ".qwen" / "skills", "project"),
+                (repo / ".agents" / "skills", "project"),
+                (Path.home() / ".qwen" / "skills", "user"),
+            ]
         )
+        row["skills_status"] = PARTIAL
+        row["skills"] = items
+        reason = (
+            "read from <worktree>/.qwen/skills, <worktree>/.agents/skills and ~/.qwen/skills "
+            "(qwen 0.23.0). Extensions and bundled skills were not read, so a name "
+            "missing from this list is not proof the child lacks it"
+        )
+        if truncated:
+            reason += f". Stopped at {SKILL_CAP} skills; names past the cap were not compared"
+        if unreadable:
+            reason += ". Could not read: " + "; ".join(unreadable[:3])
+        row["skills_reason"] = reason
         _seat_only(
             row,
             "a qwen child is launched with --allowed-mcp-server-names limited to the seat. "

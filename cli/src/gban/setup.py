@@ -585,13 +585,19 @@ def supervisor(install: bool) -> list[dict]:
 # `backend/app/services/artifacts.py` maps the `skill` tier to `.claude/skills/{slug}/SKILL.md`,
 # `file_additive`, frontmatter with `name` and `description` followed by numbered steps. A skill
 # written here in a different shape would be one the inventory scan reports and the learning loop
-# cannot reason about.
+# cannot reason about. That copy is what Claude, Grok, Cursor, and gbagent read.
+#
+# Qwen 0.23, agy, and dsh do not read `.claude/skills`. They read `<repo>/.agents/skills`
+# (Qwen also reads `.qwen/skills`; one of the two is enough). The same bytes go there.
+# gbagent walks both trees and keeps one copy per `name`.
 #
 # Every directory under `skills/` that holds a SKILL.md is installed. Naming only
 # `graphban-delegation` here is how a second skill (`watch-wave`) would exist in the
 # wheel and never reach a checkout.
 
 SKILL_SLUG = "graphban-delegation"
+#: Inventory path first. The second is the directory the other harnesses share.
+SKILL_DEST_DIRS = (".claude/skills", ".agents/skills")
 
 
 def skills_root() -> Path:
@@ -613,20 +619,28 @@ def shipped_slugs() -> list[str]:
     )
 
 
-def install_skill(repo: Path, slug: str = SKILL_SLUG) -> tuple[str, Path]:
-    """`(status, path)`. Never overwrites: a person may have edited theirs, and a setup command
-    that silently replaced it would take that edit away without saying so."""
-    dest = repo / ".claude" / "skills" / slug / "SKILL.md"
+def skill_dests(repo: Path, slug: str) -> list[Path]:
+    return [repo / rel / slug / "SKILL.md" for rel in SKILL_DEST_DIRS]
+
+
+def install_skill(repo: Path, slug: str = SKILL_SLUG) -> list[tuple[str, Path]]:
+    """One `(status, path)` per harness directory. Never overwrites: a person may have edited
+    theirs, and a setup command that silently replaced it would take that edit away without
+    saying so. A dest that differs does not block the other directories."""
     body = skill_source(slug).read_text(encoding="utf-8")
-    if dest.exists():
-        return ("same" if dest.read_text(encoding="utf-8") == body else "differs"), dest
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(body, encoding="utf-8")
-    return "written", dest
+    out = []
+    for dest in skill_dests(repo, slug):
+        if dest.exists():
+            out.append(("same" if dest.read_text(encoding="utf-8") == body else "differs", dest))
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(body, encoding="utf-8")
+        out.append(("written", dest))
+    return out
 
 
 def skill(repo: Path) -> list[dict]:
-    """Teach the agent the two calls, once, in the place its harness looks."""
+    """Teach the agent the procedure, in every directory a fleet harness reads."""
     slugs = shipped_slugs()
     if not slugs:
         return [_line("local", UNKNOWN, "skill",
@@ -634,17 +648,20 @@ def skill(repo: Path) -> list[dict]:
     lines = []
     for slug in slugs:
         try:
-            status, dest = install_skill(repo, slug)
+            outcomes = install_skill(repo, slug)
         except OSError as exc:
             lines.append(_line("local", UNKNOWN, "skill",
                                f"could not write {slug}: {exc}"))
             continue
-        if status == "differs":
-            lines.append(_line("local", UNKNOWN, "skill",
-                               f"{dest} exists and differs from the one shipped here — left alone"))
-            continue
-        lines.append(_line("local", PASS, "skill",
-                           f"{dest}" + ("" if status == "written" else " (already current)")))
+        current = []
+        for status, dest in outcomes:
+            if status == "differs":
+                lines.append(_line("local", UNKNOWN, "skill",
+                                   f"{dest} exists and differs from the one shipped here — left alone"))
+            else:
+                current.append(f"{dest}" + ("" if status == "written" else " (already current)"))
+        if current:
+            lines.append(_line("local", PASS, "skill", "; ".join(current)))
     return lines
 
 

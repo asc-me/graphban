@@ -515,6 +515,8 @@ def test_setup_installs_the_skill_where_the_product_says_skills_live(tmp_path, w
     dest = repo / ".claude" / "skills" / "graphban-delegation" / "SKILL.md"
     assert dest.exists()
     assert dest.read_text().startswith("---\nname: graphban-delegation\n")
+    other = repo / ".agents" / "skills" / "graphban-delegation" / "SKILL.md"
+    assert other.read_text() == dest.read_text()
     # THE CALL: skipping `skill()` in run() would leave this dest missing the
     # watcher paragraph while skill_source() tests still passed.
     body = dest.read_text()
@@ -533,9 +535,11 @@ def test_setup_installs_every_shipped_skill(tmp_path, wired):
     assert "graphban-delegation" in slugs
     assert "watch-wave" in slugs
     for slug in slugs:
-        dest = repo / ".claude" / "skills" / slug / "SKILL.md"
-        assert dest.exists(), slug
-        assert dest.read_text() == setup_mod.skill_source(slug).read_text()
+        body = setup_mod.skill_source(slug).read_text()
+        for rel in setup_mod.SKILL_DEST_DIRS:
+            dest = repo / rel / slug / "SKILL.md"
+            assert dest.exists(), dest
+            assert dest.read_text() == body
     assert sum(1 for l in lines if l.get("name") == "skill" and l.get("status") == "PASS") == len(slugs)
 
 
@@ -552,6 +556,9 @@ def test_an_edited_skill_is_left_alone(tmp_path, wired):
 
     assert dest.read_text() == "mine\n"
     assert any("left alone" in l["detail"] for l in lines)
+    # The edited copy stays. The directory a different harness reads is still installed.
+    agents = repo / ".agents" / "skills" / "graphban-delegation" / "SKILL.md"
+    assert agents.read_text() == setup_mod.skill_source("graphban-delegation").read_text()
     # Editing one skill does not skip the others.
     other = repo / ".claude" / "skills" / "watch-wave" / "SKILL.md"
     assert other.exists()
