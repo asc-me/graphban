@@ -30,10 +30,6 @@ from app.models import (
     User,
 )
 from app.schemas import (
-    BillingOut,
-    BillingUrlOut,
-    CheckoutIn,
-    PortalIn,
     GitopsPatch,
     GitopsView,
     InviteAcceptIn,
@@ -54,14 +50,10 @@ from app.schemas import (
     OrgOut,
     OrgRequestCreate,
     OrgRequestOut,
-    PlanLimitsOut,
-    SetPlanIn,
-    UsageOut,
     UserOut,
 )
 from app.security import authz
 from app.security.deps import get_current_user
-from app.services import billing as billing_svc
 from app.services import events as events_svc
 from app.services import galaxy as galaxy_svc
 from app.services import gitops
@@ -145,90 +137,6 @@ def request_additional_org(
 def my_org_request(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """The caller's most recent additional-org request, so the UI can show its status."""
     return orgs_svc.latest_org_request(db, user)
-
-
-@router.get("/orgs/{org_id}/billing", response_model=BillingOut)
-def org_billing(org_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """The org's plan, its limits, and current usage — visible to any member so the
-    team can see how close they are to each cap."""
-    authz.require_org_member(db, user.id, org_id)
-    org = db.get(Organization, org_id)
-    if org is None:
-        raise HTTPException(404, "organization not found")
-    plan = quotas.plan_of(org)
-    return BillingOut(
-        plan=org.plan,
-        limits=PlanLimitsOut(
-            max_projects=plan.max_projects,
-            max_seats=plan.max_seats,
-            max_shards=plan.max_shards,
-            max_calls_per_month=plan.max_calls_per_month,
-        ),
-        usage=UsageOut(**quotas.usage(db, org_id)),
-        self_serve=billing_svc.configured(),
-        has_customer=bool(org.stripe_customer_id),
-    )
-
-
-@router.post("/orgs/{org_id}/billing/checkout", response_model=BillingUrlOut)
-def org_checkout(org_id: str, body: CheckoutIn, db: Session = Depends(get_db),
-                 user: User = Depends(get_current_user)):
-    """Start a Stripe Checkout session for Pro/Team (GRPH-82). Hidden (404) when
-    Stripe is unset, so self-serve does not look broken on a manual-assignment deploy."""
-    authz.require_org_admin(db, user.id, org_id)
-    org = db.get(Organization, org_id)
-    if org is None:
-        raise HTTPException(404, "organization not found")
-    try:
-        url = billing_svc.create_checkout_url(
-            org, plan=body.plan, success_url=body.success_url,
-            cancel_url=body.cancel_url, customer_email=user.email or "",
-        )
-    except billing_svc.BillingUnavailable:
-        raise HTTPException(404, "Not Found") from None
-    except ValueError as e:
-        raise HTTPException(422, str(e)) from None
-    return BillingUrlOut(url=url)
-
-
-@router.post("/orgs/{org_id}/billing/portal", response_model=BillingUrlOut)
-def org_portal(org_id: str, body: PortalIn, db: Session = Depends(get_db),
-               user: User = Depends(get_current_user)):
-    """Stripe billing portal (manage/cancel). Hidden when Stripe is unset."""
-    authz.require_org_admin(db, user.id, org_id)
-    org = db.get(Organization, org_id)
-    if org is None:
-        raise HTTPException(404, "organization not found")
-    try:
-        url = billing_svc.create_portal_url(org, return_url=body.return_url)
-    except billing_svc.BillingUnavailable:
-        raise HTTPException(404, "Not Found") from None
-    return BillingUrlOut(url=url)
-
-
-@router.put("/orgs/{org_id}/plan", response_model=OrgOut)
-def set_org_plan(
-    org_id: str,
-    body: SetPlanIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """Assign an org's plan. Private-beta billing is MANUAL (AL-75): only a platform
-    operator (config allowlist) may do this — an org owner can't upgrade themselves
-    for free. 404 (not 403) for non-admins so the endpoint's existence stays hidden."""
-    if not quotas.is_platform_admin(user):
-        raise HTTPException(404, "Not Found")
-    if body.plan not in quotas.PLANS:
-        raise HTTPException(422, f"unknown plan {body.plan!r}; expected one of {', '.join(quotas.PLANS)}")
-    org = db.get(Organization, org_id)
-    if org is None:
-        raise HTTPException(404, "organization not found")
-    org.plan = body.plan
-    db.commit()
-    events_svc.record_user(db, user, action="set_org_plan", target_type="org",
-                           target_id=org_id, meta={"plan": body.plan})
-    role = authz.org_role(db, user.id, org_id) or "admin"
-    return OrgOut(id=org.id, name=org.name, plan=org.plan, role=role)
 
 
 @router.get("/orgs/{org_id}/deployments")

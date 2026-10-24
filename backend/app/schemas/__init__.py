@@ -334,35 +334,6 @@ class UsageOut(BaseModel):
     calls_this_month: int
 
 
-class BillingOut(BaseModel):
-    plan: str
-    limits: PlanLimitsOut
-    usage: UsageOut
-    # True only when Stripe is fully configured. False is "manual assignment",
-    # not "billing is broken" — absence of keys is today's default.
-    self_serve: bool = False
-    # Portal needs a Stripe customer. False is "never checked out", not "portal broken".
-    has_customer: bool = False
-
-
-class CheckoutIn(BaseModel):
-    plan: str
-    success_url: str
-    cancel_url: str
-
-
-class PortalIn(BaseModel):
-    return_url: str
-
-
-class BillingUrlOut(BaseModel):
-    url: str
-
-
-class SetPlanIn(BaseModel):
-    plan: str  # free | pro | team
-
-
 # ---- Projects ----
 class ProjectOut(ORMModel):
     id: str

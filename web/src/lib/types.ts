@@ -398,16 +398,6 @@ export interface Usage {
   calls_this_month: number;
 }
 
-export interface Billing {
-  plan: string;
-  limits: PlanLimits;
-  usage: Usage;
-  /** Stripe checkout is live. False is manual assignment, not a broken billing page. */
-  self_serve?: boolean;
-  /** A Stripe customer id exists. False is never checked out, not a broken portal. */
-  has_customer?: boolean;
-}
-
 // ── Operator console (hosted + platform-admin only, AL-94) ────────────────
 // Metadata only by design — no tenant content ever crosses this boundary.
 export interface AdminOrgMember {

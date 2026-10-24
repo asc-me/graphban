@@ -51,7 +51,7 @@ def _body(**over):
         "external": [{
             "id": "stripe",
             "label": "Stripe",
-            "provenance": {"file": "backend/app/billing.py", "rule": "stripe_client", "line": 4},
+            "provenance": {"file": "backend/app/config.py", "rule": "stripe_client", "line": 4},
         }],
         "edges": [
             {
@@ -60,7 +60,7 @@ def _body(**over):
             },
             {
                 "from": "api", "to": "stripe", "protocol": "HTTPS", "label": "charges",
-                "provenance": {"file": "backend/app/billing.py", "rule": "stripe_client", "line": 9},
+                "provenance": {"file": "backend/app/config.py", "rule": "stripe_client", "line": 9},
             },
         ],
     }

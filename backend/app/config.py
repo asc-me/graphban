@@ -136,23 +136,14 @@ class Settings(BaseSettings):
 
     # Multi-tenant SaaS switch. OFF for self-hosted/OSS builds (flat User→Project,
     # cross-project "global" memory allowed). ON only for the hosted offering, where
-    # Organizations + billing + quotas mount and tenant boundaries tighten (e.g. no
-    # project-less global shards, so one tenant's memory can never reach another).
+    # Organizations mount and tenant boundaries tighten (e.g. no project-less global
+    # shards, so one tenant's memory can never reach another). Plan billing and
+    # Stripe live on the control plane, not on this product (GBC-35).
     hosted_mode: bool = False
 
-    # Plan/quota administration (AL-75). During private beta, org plans are assigned
-    # MANUALLY by an operator. Stripe self-serve (GRPH-82) lights up only when the
-    # four STRIPE_* keys below are set; unset keeps this path as the only writer.
-    # Only accounts whose email is in this comma-separated allowlist may change an
-    # org's plan by hand — an org owner can't upgrade their own org for free.
+    # Operator console (AL-94). Comma-separated emails that may use /api/admin/* on
+    # a hosted deploy. Plan assignment and Stripe are on the control plane.
     platform_admin_emails: str = ""
-
-    # Self-serve billing (GRPH-82). Empty = manual assignment only. All four must
-    # be set before checkout, the portal, or the webhook do anything.
-    stripe_api_key: str = ""
-    stripe_webhook_secret: str = ""
-    stripe_price_pro: str = ""
-    stripe_price_team: str = ""
 
     @property
     def platform_admin_email_set(self) -> set[str]:

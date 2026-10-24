@@ -305,7 +305,7 @@ def test_owner_can_reach_own_project(client, tenants):
     assert client.get(f"/api/items?project_id={pa}", headers=a).status_code == 200
     assert client.get(f"/api/dashboard?project_id={pa}", headers=a).status_code == 200
     assert client.get(f"/api/prds/{ia['prd']}", headers=a).status_code == 200
-    assert client.get(f"/api/orgs/{tenants['org_a']}/billing", headers=a).status_code == 200
+    assert client.get(f"/api/orgs/{tenants['org_a']}/members", headers=a).status_code == 200
     got = _mcp(client, tenants["alex_key"], "get_backlog", {"project_id": pa})["result"]
     assert got.get("isError") is not True
 
@@ -374,12 +374,9 @@ def test_hosted_e2e_loop(client, monkeypatch):
     assert created.get("isError") is not True
     assert _mcp(client, key, "get_backlog", {"project_id": pid})["result"].get("isError") is not True
 
-    # plan assignment (operator) → billing reflects it + usage
-    assert client.put(f"/api/orgs/{org}/plan", json={"plan": "team"}, headers=alex).status_code == 200
-    billing = client.get(f"/api/orgs/{org}/billing", headers=alex).json()
-    assert billing["plan"] == "team"
-    assert billing["usage"]["projects"] == 1
-    assert billing["usage"]["seats"] == 2  # alex + bob
+    # org roster still reflects membership after the full loop
+    members = client.get(f"/api/orgs/{org}/members", headers=alex).json()
+    assert len(members) == 2  # alex + bob
 
 
 # ---- Sync surface: a code-graph credential can't push/pull across orgs (AL-220) --

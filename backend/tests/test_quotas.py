@@ -1,8 +1,8 @@
-"""AL-75: plan limits + quota enforcement (hosted-only).
+"""Plan quotas removed from the product (GBC-35).
 
-Limits are monkeypatched to tiny values so the caps are easy to hit. All runs pin
-``settings.hosted_mode = True`` except the self-host test, which proves quotas are
-inert off hosted mode.
+Hosted installs no longer return HTTP 402 for plan limits; caps and Stripe billing
+live on the control plane. These tests keep the self-host regression and the
+acceptance criterion from GBC-P5.
 """
 import pytest
 
@@ -43,123 +43,55 @@ def _set_plan(monkeypatch, tier="free", **limits):
     )
 
 
-# ---- self-host: quotas inert ---------------------------------------------------
 def test_self_host_has_no_quotas(client, monkeypatch):
-    _set_plan(monkeypatch, max_projects=1)  # would bite in hosted mode
+    _set_plan(monkeypatch, max_projects=1)  # would bite if product still enforced caps
     auth = _login(client, "alex@ascme-labs.com")
     for i in range(3):
         assert client.post("/api/projects", json={"name": f"P{i}"}, headers=auth).status_code == 201
 
 
-# ---- project / seat / shard caps ----------------------------------------------
-def test_project_cap(client, hosted, monkeypatch):
-    _set_plan(monkeypatch, max_projects=1)
+def test_control_plane_product_install_without_stripe_serves_tracker_no_billing_surface(
+    client, hosted, monkeypatch,
+):
+    """A product install with no Stripe settings serves the tracker and does not expose
+    Checkout, the portal, the webhook, or a plan quota."""
+    _set_plan(monkeypatch, max_projects=1, max_seats=1, max_shards=1, max_calls_per_month=1)
     auth = _login(client, "alex@ascme-labs.com")
-    _make_org(client, auth)
+    org = _make_org(client, auth)
+    oid = org["id"]
+
+    assert client.get("/api/projects", headers=auth).status_code == 200
     assert client.post("/api/projects", json={"name": "One"}, headers=auth).status_code == 201
-    r = client.post("/api/projects", json={"name": "Two"}, headers=auth)
-    assert r.status_code == 402
-    assert "project limit" in r.json()["detail"]
-
-
-def test_seat_cap_counts_members_plus_pending(client, hosted, monkeypatch):
-    _set_plan(monkeypatch, max_seats=2)  # owner = 1 seat, so exactly 1 invite fits
-    auth = _login(client, "alex@ascme-labs.com")
-    org = _make_org(client, auth)
-    assert client.post(f"/api/orgs/{org['id']}/invites",
-                       json={"email": "a@example.com"}, headers=auth).status_code == 201
-    r = client.post(f"/api/orgs/{org['id']}/invites", json={"email": "b@example.com"}, headers=auth)
-    assert r.status_code == 402
-    assert "seat limit" in r.json()["detail"]
-
-
-def test_shard_cap(client, hosted, monkeypatch):
-    _set_plan(monkeypatch, max_shards=1)
-    auth = _login(client, "alex@ascme-labs.com")
-    _make_org(client, auth)
-    pid = client.post("/api/projects", json={"name": "Rocket"}, headers=auth).json()["id"]
-    assert client.post("/api/memory/shards",
-                       json={"text": "first", "project_id": pid}, headers=auth).status_code == 201
-    r = client.post("/api/memory/shards", json={"text": "second", "project_id": pid}, headers=auth)
-    assert r.status_code == 402
-    assert "memory limit" in r.json()["detail"]
-
-
-# ---- monthly MCP call cap ------------------------------------------------------
-def _mcp(client, key, tool, arguments=None):
-    return client.post(
-        "/api/mcp",
-        json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-              "params": {"name": tool, "arguments": arguments or {}}},
-        headers={"X-API-Key": key},
-    ).json()
-
-
-def test_monthly_call_cap(client, hosted, monkeypatch):
-    _set_plan(monkeypatch, max_calls_per_month=2)
-    auth = _login(client, "alex@ascme-labs.com")
-    _make_org(client, auth)
-    client.post("/api/projects", json={"name": "Rocket"}, headers=auth)  # org's sole reachable project
-    key = client.post("/api/api-keys", json={"name": "agent"}, headers=auth).json()["plaintext"]
-
-    # Two metered calls succeed; the third trips the cap with a typed tool error.
-    assert "error" not in _mcp(client, key, "get_backlog")["result"].get("structuredContent", {})
-    _mcp(client, key, "get_backlog")
-    third = _mcp(client, key, "get_backlog")["result"]
-    assert third.get("isError") is True
-    assert third["structuredContent"]["error"]["code"] == "quota_exceeded"
-
-
-# ---- billing status + manual plan assignment ----------------------------------
-def test_billing_status_shape(client, hosted, monkeypatch):
-    _set_plan(monkeypatch, max_projects=5, max_seats=5)
-    auth = _login(client, "alex@ascme-labs.com")
-    org = _make_org(client, auth)
-    client.post("/api/projects", json={"name": "Rocket"}, headers=auth)
-    r = client.get(f"/api/orgs/{org['id']}/billing", headers=auth)
-    assert r.status_code == 200
-    body = r.json()
-    assert body["plan"] == "free"
-    assert body["limits"]["max_projects"] == 5
-    assert body["usage"]["projects"] == 1
-    assert body["usage"]["seats"] == 1  # just the owner
-
-
-def test_plan_assignment_requires_platform_admin(client, hosted, monkeypatch):
-    auth = _login(client, "alex@ascme-labs.com")
-    org = _make_org(client, auth)
-    # Org owner is NOT a platform admin → endpoint hidden (404).
-    assert client.put(f"/api/orgs/{org['id']}/plan", json={"plan": "team"}, headers=auth).status_code == 404
-
-    # Operator allowlists alex → assignment works and takes effect.
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "platform_admin_emails", "alex@ascme-labs.com")
-    r = client.put(f"/api/orgs/{org['id']}/plan", json={"plan": "team"}, headers=auth)
-    assert r.status_code == 200
-    assert r.json()["plan"] == "team"
-    assert client.get(f"/api/orgs/{org['id']}/billing", headers=auth).json()["plan"] == "team"
-
-
-def test_plan_assignment_rejects_unknown_plan(client, hosted, monkeypatch):
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "platform_admin_emails", "alex@ascme-labs.com")
-    auth = _login(client, "alex@ascme-labs.com")
-    org = _make_org(client, auth)
-    assert client.put(f"/api/orgs/{org['id']}/plan", json={"plan": "unobtainium"}, headers=auth).status_code == 422
-
-
-def test_upgraded_plan_lifts_the_cap(client, hosted, monkeypatch):
-    """After a manual upgrade, a previously-blocked create succeeds."""
-    _set_plan(monkeypatch, tier="free", max_projects=1)
-    _set_plan(monkeypatch, tier="team", max_projects=10)
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "platform_admin_emails", "alex@ascme-labs.com")
-    auth = _login(client, "alex@ascme-labs.com")
-    org = _make_org(client, auth)
-    client.post("/api/projects", json={"name": "One"}, headers=auth)
-    assert client.post("/api/projects", json={"name": "Two"}, headers=auth).status_code == 402
-    client.put(f"/api/orgs/{org['id']}/plan", json={"plan": "team"}, headers=auth)
     assert client.post("/api/projects", json={"name": "Two"}, headers=auth).status_code == 201
+
+    assert client.get(f"/api/orgs/{oid}/billing", headers=auth).status_code == 404
+    assert client.post(
+        f"/api/orgs/{oid}/billing/checkout",
+        json={"plan": "pro", "success_url": "https://x/s", "cancel_url": "https://x/c"},
+        headers=auth,
+    ).status_code == 404
+    assert client.post(
+        f"/api/orgs/{oid}/billing/portal",
+        json={"return_url": "https://x"},
+        headers=auth,
+    ).status_code == 404
+    assert client.post(
+        "/api/public/stripe/webhook",
+        content=b"{}",
+        headers={"stripe-signature": "t=1,v1=x"},
+    ).status_code == 404
+
+    key = client.post("/api/api-keys", json={"name": "agent"}, headers=auth).json()["plaintext"]
+    for _ in range(3):
+        r = client.post(
+            "/api/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "get_backlog", "arguments": {}},
+            },
+            headers={"X-API-Key": key},
+        ).json()
+        result = r["result"]
+        assert result.get("isError") is not True
