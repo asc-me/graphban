@@ -137,23 +137,52 @@ def test_without_a_code_map_no_graphban_box_is_code_we_write(db, monkeypatch):
     assert any(e["id"] == "own_code" for e in body["empties"])
 
 
-def test_a_box_is_code_we_write_only_where_its_source_is_in_the_code_map(db, monkeypatch):
+def _source_fact(body, nid):
+    node = next(n for n in body["nodes"] if n["id"] == nid)
+    return next(f for f in node["facts"] if f["key"] == "source")["value"]
+
+
+def test_one_described_marker_makes_every_graphban_box_code_we_write(db, monkeypatch):
+    # The code map is partial. gbagent used to draw as "a tool this project runs" on
+    # Graphban's own project because no gbagent file had been described, while fleet —
+    # same package — drew as ours. Every box ships from one repository, so one marker is
+    # evidence for all of them.
+    monkeypatch.setattr("app.services.fleet.fleet_status", lambda *_a, **_k: _roster([]))
+    _clear_code_map(db)
+    _describe(db, "fleet/src/gbfleet/until.py")
+    body = stack_svc.topology(db, "core")
+    rings = {n["id"]: n["ring"] for n in body["nodes"]}
+    for nid in GRAPHBAN_BOXES:
+        assert rings[nid] == stack_svc.RING_CODE, nid
+    assert body["graphban_source"] == stack_svc.OWNED
+    assert not any(e["id"] == "own_code" for e in body["empties"])
+
+
+def test_an_inferred_box_says_which_marker_made_it_ours(db, monkeypatch):
     monkeypatch.setattr("app.services.fleet.fleet_status", lambda *_a, **_k: _roster([]))
     _clear_code_map(db)
     _describe(db, "fleet/src/gbfleet/until.py", "cli/src/gban/cli.py::main")
     body = stack_svc.topology(db, "core")
-    rings = {n["id"]: n["ring"] for n in body["nodes"]}
-    assert rings["fleet"] == stack_svc.RING_CODE
-    assert rings["cli"] == stack_svc.RING_CODE
-    assert rings["api"] == stack_svc.RING_INFRA
-    assert rings["web"] == stack_svc.RING_INFRA
-    assert rings["gbagent"] == stack_svc.RING_INFRA
-    cli = next(n for n in body["nodes"] if n["id"] == "cli")
-    source = next(f for f in cli["facts"] if f["key"] == "source")
-    assert "cli/src/gban" in source["value"]
-    api = next(n for n in body["nodes"] if n["id"] == "api")
-    assert "tool this project runs" in next(f for f in api["facts"] if f["key"] == "source")["value"]
-    assert not any(e["id"] == "own_code" for e in body["empties"])
+    # A direct hit names its own marker.
+    assert _source_fact(body, "cli") == (
+        "graphban-cli — this project writes it (cli/src/gban is in its code map)"
+    )
+    # An inferred one names the marker that matched elsewhere, and that its own is absent.
+    gbagent = _source_fact(body, "gbagent")
+    assert "this project writes it" in gbagent
+    assert "(fleet/src/gbfleet)" in gbagent
+    assert "none of gbagent's own files (fleet/src/gbagent) are described yet" in gbagent
+    assert "tool this project runs" not in gbagent
+    assert "none of" in _source_fact(body, "api")
+
+
+def test_graphbans_own_project_draws_no_package_dir_beside_an_inferred_box(db, monkeypatch):
+    monkeypatch.setattr("app.services.fleet.fleet_status", lambda *_a, **_k: _roster([]))
+    _clear_code_map(db)
+    # Only api's marker is described; fleet/ and cli/ are owned by inference, so their
+    # manifests are Graphban's packages, not app boxes of their own.
+    _describe(db, "backend/app/mcp_server.py", "fleet/pyproject.toml", "cli/pyproject.toml")
+    assert _own(stack_svc.topology(db, "core")) == {}
 
 
 def test_a_generic_fastapi_vite_layout_does_not_claim_graphban(db, monkeypatch):

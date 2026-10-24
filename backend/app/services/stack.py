@@ -179,6 +179,13 @@ OWNERSHIP_UNKNOWN = "unknown"
 def source_ownership(db: Session, project_id: str) -> dict[str, tuple[str, str]]:
     """`{node_id: (state, matched_marker)}` for each Graphban deployable.
 
+    Ownership belongs to the project, not to each box: every deployable here ships from
+    one repository, so one described marker makes the project Graphban's source and all
+    of them its code. Deciding per box read a partial code map's silence as "not ours" —
+    gbagent drew as a tool the project runs because nobody had described a gbagent file,
+    while fleet, from the same package, drew as ours. A box owned that way carries the
+    marker that matched for another box; `_ownership_fact` says so.
+
     A project with no code map at all is `unknown`, not `not_owned`: nothing was looked
     at. It still draws outside ring 1, because one project in an instance holds
     Graphban's source and every other one runs it.
@@ -192,11 +199,10 @@ def source_ownership(db: Session, project_id: str) -> dict[str, tuple[str, str]]
     except Exception:  # noqa: BLE001 — an unreadable map is unknown, not "not ours"
         logger.debug("code map unreadable for ownership", exc_info=True)
         has_map = False
-    out: dict[str, tuple[str, str]] = {}
+    if not has_map:
+        return {node_id: (OWNERSHIP_UNKNOWN, "") for node_id in GRAPHBAN_SOURCES}
+    hits: dict[str, str] = {}
     for node_id, src in GRAPHBAN_SOURCES.items():
-        if not has_map:
-            out[node_id] = (OWNERSHIP_UNKNOWN, "")
-            continue
         hit = ""
         for marker in src["markers"]:
             found = db.scalar(
@@ -212,8 +218,12 @@ def source_ownership(db: Session, project_id: str) -> dict[str, tuple[str, str]]
             if found is not None:
                 hit = marker
                 break
-        out[node_id] = (OWNED, hit) if hit else (NOT_OWNED, "")
-    return out
+        if hit:
+            hits[node_id] = hit
+    if not hits:
+        return {node_id: (NOT_OWNED, "") for node_id in GRAPHBAN_SOURCES}
+    evidence = next(iter(hits.values()))
+    return {node_id: (OWNED, hits.get(node_id, evidence)) for node_id in GRAPHBAN_SOURCES}
 
 
 # What makes a directory one of the project's OWN deployables, read from its code map.
@@ -322,8 +332,15 @@ def own_node_id(directory: str) -> str:
 def _ownership_fact(node_id: str, owner: tuple[str, str]) -> dict[str, str]:
     state, marker = owner
     package = GRAPHBAN_SOURCES[node_id]["package"]
-    if state == OWNED:
+    if state == OWNED and marker in GRAPHBAN_SOURCES[node_id]["markers"]:
         value = f"{package} — this project writes it ({marker} is in its code map)"
+    elif state == OWNED:
+        value = (
+            f"{package} — this project writes it: its code map holds Graphban's source "
+            f"({marker}), and every Graphban deployable ships from that one repository; "
+            f"none of {node_id}'s own files ({', '.join(GRAPHBAN_SOURCES[node_id]['markers'])}) "
+            f"are described yet"
+        )
     elif state == NOT_OWNED:
         value = f"{package} — a tool this project runs; its source is not in this project's code map"
     else:
