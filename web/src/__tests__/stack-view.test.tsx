@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -352,6 +352,67 @@ describe("StackView", () => {
     await user.click(within(inspector).getByTestId("stack-conn-db"));
     // The inspector now shows the db node.
     expect(await screen.findByTestId("stack-inspector")).toHaveTextContent("SQLite");
+  });
+
+  // The ring frames are filled and cover the canvas, so a press always lands on one of them,
+  // never on the bare <svg>. A background-only pan therefore never started: zoom worked,
+  // drag did nothing.
+  describe("drag to pan", () => {
+    function press(el: Element, type: string, x: number, y: number) {
+      el.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }),
+      );
+    }
+
+    async function canvas() {
+      const root = await screen.findByTestId("stack-canvas");
+      const svg = root.querySelector("svg") as SVGSVGElement;
+      svg.getBoundingClientRect = () =>
+        ({
+          x: 0, y: 0, left: 0, top: 0, right: 1000, bottom: 700, width: 1000, height: 700,
+          toJSON() { return {}; },
+        }) as DOMRect;
+      const scene = svg.querySelector(":scope > g[transform]") as SVGGElement;
+      return { svg, scene };
+    }
+
+    function drag(el: Element, svg: Element, from: [number, number], to: [number, number]) {
+      act(() => {
+        press(el, "pointerdown", ...from);
+        press(svg, "pointermove", (from[0] + to[0]) / 2, (from[1] + to[1]) / 2);
+        press(svg, "pointermove", ...to);
+        press(svg, "pointerup", ...to);
+        press(el, "click", ...to);
+      });
+    }
+
+    it("a drag that starts on a ring or host frame moves the map", async () => {
+      wrap(<StackView />);
+      const { svg, scene } = await canvas();
+      const ring = svg.querySelector(":scope > g[transform] rect") as SVGRectElement;
+      expect(ring).not.toBeNull();
+      const before = scene.getAttribute("transform");
+      drag(ring, svg, [500, 350], [620, 410]);
+      expect(scene.getAttribute("transform")).not.toBe(before);
+    });
+
+    it("a drag that starts on a box moves the map and does not select the box", async () => {
+      wrap(<StackView />);
+      const { svg, scene } = await canvas();
+      const before = scene.getAttribute("transform");
+      drag(screen.getByTestId("stack-node-api"), svg, [300, 200], [380, 260]);
+      expect(scene.getAttribute("transform")).not.toBe(before);
+      expect(screen.queryByTestId("stack-inspector")).not.toBeInTheDocument();
+    });
+
+    it("a click with a small wobble still selects the box and leaves the map where it was", async () => {
+      wrap(<StackView />);
+      const { svg, scene } = await canvas();
+      const before = scene.getAttribute("transform");
+      drag(screen.getByTestId("stack-node-api"), svg, [300, 200], [302, 201]);
+      expect(scene.getAttribute("transform")).toBe(before);
+      expect(await screen.findByTestId("stack-inspector")).toHaveTextContent("graphban-api");
+    });
   });
 
   it("selecting a host highlights its nodes and dims the rest", async () => {
