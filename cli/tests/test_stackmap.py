@@ -591,6 +591,37 @@ def test_a_root_template_read_through_env_file_goes_to_its_reader(tmp_path):
     assert warnings == []
 
 
+@pytest.mark.parametrize("worker_env", [
+    "    environment:\n      - OPENAI_API_KEY\n",
+    "    env_file: .env.example\n",
+])
+def test_a_root_template_named_only_by_an_image_service_is_not_every_component(
+        tmp_path, worker_env):
+    """GRPH-1104 bounce: a service that builds nothing still counts as compose naming it."""
+    repo = tmp_path / "imaged"
+    repo.mkdir()
+    for name in ("api", "web"):
+        (repo / name).mkdir()
+        (repo / name / "requirements.txt").write_text("stripe==8.0\n", encoding="utf-8")
+    (repo / "compose.yml").write_text(
+        "services:\n"
+        "  api:\n"
+        "    build: ./api\n"
+        "  web:\n"
+        "    build: ./web\n"
+        "  worker:\n"
+        "    image: alpine\n" + worker_env, encoding="utf-8")
+    (repo / ".env.example").write_text("OPENAI_API_KEY=\nANTHROPIC_API_KEY=\n",
+                                       encoding="utf-8")
+    _commit(repo)
+    record, warnings = stackmap.build_record(repo)
+    assert not [e for e in record["edges"]
+                if e["from"] in ("api", "web") and e["to"] in ("openai", "anthropic")]
+    assert [e["from"] for e in record["edges"] if e["to"] == "openai"] == ["worker"]
+    assert not [w for w in warnings if ".env.example" in w]
+    assert {"openai", "anthropic"} <= {n["id"] for n in record["external"]}
+
+
 def test_this_repo_root_template_draws_no_web_edge_to_a_model_provider():
     record, _ = stackmap.build_record(ROOT)
     providers = {"anthropic", "openai", stackmap.LOCAL_NODE}

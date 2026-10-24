@@ -853,8 +853,9 @@ class _Builder:
         self.by_dir: dict[str, str] = {}
         self.kind_of: dict[str, str] = {}
         self.warnings: list[str] = []
-        # Which compose-built components name an env variable, and which read a
-        # template through `env_file:`. A repo-root template is attributed from these.
+        # Which compose services name an env variable, and which read a template
+        # through `env_file:`. Every service counts, not only the ones that build a
+        # component: a repo-root template is attributed from these.
         self.env_users: dict[str, set[str]] = {}
         self.env_file_users: dict[str, set[str]] = {}
         # Names each `.env.example` declares, keyed by its directory.
@@ -1216,17 +1217,14 @@ def _walk_compose(builder: _Builder, path: Path) -> None:
             protocol = kind if kind and kind != "unclassified image" else "depends_on"
             builder.add_edge(src, target, protocol, "depends_on", prov)
         env_node = service.value.get("environment")
-        component = src in builder.components
         for ename, raw, line in _as_env(env_node if isinstance(env_node, Marked) else None):
-            if component:
-                for mentioned in [ename] + _INTERP.findall(raw):
-                    mentioned = re.split(r"[:?+-]", mentioned, maxsplit=1)[0].strip()
-                    if mentioned:
-                        builder.env_users.setdefault(mentioned, set()).add(src)
+            for mentioned in [ename] + _INTERP.findall(raw):
+                mentioned = re.split(r"[:?+-]", mentioned, maxsplit=1)[0].strip()
+                if mentioned:
+                    builder.env_users.setdefault(mentioned, set()).add(src)
             builder.apply_env_name(ename, raw, line, file, [src], "compose.env")
-        if component:
-            for template in _env_files(service, path, builder.repo):
-                builder.env_file_users.setdefault(template, set()).add(src)
+        for template in _env_files(service, path, builder.repo):
+            builder.env_file_users.setdefault(template, set()).add(src)
 
 
 def _walk_dockerfile(builder: _Builder, path: Path) -> None:
@@ -1317,10 +1315,11 @@ def _note_template(builder: _Builder, path: Path) -> None:
 
 def _root_consumers(builder: _Builder, file: str,
                     entries: list[tuple[str, str, int]]) -> dict[str, list[str]] | None:
-    """Per name, the components a repo-root template's variable belongs to.
+    """Per name, the compose services a repo-root template's variable belongs to.
 
-    None when compose says nothing about this template: the caller then falls
-    back to every component and says so. A name compose does not mention goes to
+    Any compose service counts, a plain `image:` one too. None only when no
+    service names any of the template's variables or reads it: the caller then
+    falls back to every component and says so. A name compose does not mention goes to
     the components whose own directory template declares it, else to the
     component at the repo root, else to nobody. The node is still drawn.
     """
