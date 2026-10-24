@@ -115,6 +115,10 @@ class Client:
             detail = payload.get("detail") or payload.get("message") or f"HTTP {status}"
             if isinstance(detail, dict):
                 detail, hint = (detail.get("message") or str(detail)), detail.get("hint", "")
+            elif isinstance(detail, list):
+                # A list of reasons (e.g. `{path, reason}` from a refused app map) stays JSON,
+                # so a caller can read it back rather than parse a Python repr.
+                detail, hint = json.dumps(detail), payload.get("hint", "")
             else:
                 hint = payload.get("hint", "")
             raise Refused(status, str(detail), str(hint))
