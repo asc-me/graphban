@@ -537,3 +537,92 @@ def test_ignored_and_untracked_files_are_not_mapped(tmp_path):
         (repo / stray / "Dockerfile").write_text("FROM python:3.12\n", encoding="utf-8")
     record, _ = stackmap.build_record(repo)
     assert [n["dir"] for n in record["components"]] == ["app"]
+
+
+# ---- what a post says it did (GRPH-1103) ----------------------------------------------------
+# A real HTTP server on loopback, so the confirmation and the refusal go through the same
+# transport and error parsing a person's post does.
+
+
+@pytest.fixture()
+def fake_server():
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    state = {"requests": [], "status": 200, "reply": {}}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            state["requests"].append((self.path, self.headers.get("X-API-Key"), json.loads(raw)))
+            reply = state["reply"](json.loads(raw)) if callable(state["reply"]) else state["reply"]
+            data = json.dumps(reply).encode()
+            self.send_response(state["status"])
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    state["url"] = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        yield state
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _mapped_app(isolated, monkeypatch) -> tuple[Path, str]:
+    repo = isolated / "app"
+    repo.mkdir()
+    _write_app(repo)
+    sha = _commit(repo)
+    monkeypatch.setenv("GBFLEET_API_KEY", "gb_sk_seat")
+    return repo, sha
+
+
+def test_a_real_post_says_it_posted_and_where(isolated, monkeypatch, capsys, fake_server):
+    repo, sha = _mapped_app(isolated, monkeypatch)
+    fake_server["reply"] = lambda body: {**body, "mapped_at": "2026-10-23T10:00:00Z",
+                                         "posted_by": "seat-1"}
+    assert main(["--server", fake_server["url"], "--project", "demo",
+                 "stack", "map", "--repo", str(repo)]) == 0
+    assert len(fake_server["requests"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == canonical(fake_server["requests"][0][2])
+    assert (f"gban: posted demo app map at {sha[:7]} to {fake_server['url']}"
+            in captured.err)
+    assert "posted_by seat-1" in captured.err
+    assert "dry run" not in captured.err
+
+
+def test_dry_run_says_nothing_was_posted(isolated, monkeypatch, capsys, fake_server):
+    repo, _ = _mapped_app(isolated, monkeypatch)
+    assert main(["--server", fake_server["url"], "--project", "demo",
+                 "stack", "map", "--dry-run", "--repo", str(repo)]) == 0
+    captured = capsys.readouterr()
+    assert fake_server["requests"] == []
+    assert "gban: dry run, nothing posted" in captured.err
+    assert "posted demo" not in captured.err
+    assert json.loads(captured.out)["project_id"] == "demo"
+
+
+def test_a_refused_post_prints_the_reasons_and_not_the_record(isolated, monkeypatch, capsys,
+                                                              fake_server):
+    repo, _ = _mapped_app(isolated, monkeypatch)
+    fake_server["status"] = 422
+    fake_server["reply"] = {"detail": [{"path": "edges[2].to", "reason": "unresolved node"},
+                                       {"path": "mapped_sha", "reason": "unknown is not a commit"}]}
+    assert main(["--server", fake_server["url"], "--project", "demo",
+                 "stack", "map", "--repo", str(repo)]) == EXIT_REFUSED
+    assert len(fake_server["requests"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "edges[2].to: unresolved node" in captured.err
+    assert "mapped_sha: unknown is not a commit" in captured.err
+    assert "posted demo" not in captured.err
