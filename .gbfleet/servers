@@ -2,5 +2,3 @@
 # (GRPH-998). Unions with --mcp-server. Names only: each must exist in ~/.claude.json, and
 # a name that does not refuses the wave before spawn.
 context7
-browser
-browser-use
