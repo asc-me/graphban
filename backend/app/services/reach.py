@@ -88,39 +88,71 @@ _NOT_SUBCOMMANDS = (
 #: EXEMPT list and this token are the same decision. Delete it and the exempt row fires.
 _EXEMPT_SUBCOMMANDS = "port-forward"
 
-#: A diagram legend glues the platform to the previous word (`compose/Railway stack`,
-#: `api.railway stack`). The base matcher sees a word boundary at the slash or the dot
-#: and reads `Railway stack` as a subcommand. A command is not written that way.
-#: `(?<![/.])` is the whole exemption. Delete it and the legend fires.
-_LEGEND_LOOKBEHIND = r"(?<![/.])"
-
-#: Sentence subject, not an invocation: "The Railway project will deploy next week",
-#: and the same shape for stack / dashboard / team / account / docs. The determiner
-#: is what makes it a subject. A global stop-list of those nouns would also swallow
-#: real commands the base matcher fires on — `gcloud projects delete`,
-#: `supabase projects delete`, `vercel project rm`, `heroku stack:set`,
-#: `heroku teams:remove` — because `project`, `stack` and `team` are subcommands.
-#: The noun list applies ONLY after a determiner.
-#:
-#: A possessive (`Railway's dashboard`) needs no span. The base matcher requires
-#: whitespace after the platform name, and `'` is not whitespace.
-#:
-#: Python `re` refuses a variable-width lookbehind, and the determiners are not one
-#: width, so this span is scrubbed out of the line before the matcher runs. Delete
-#: the scrub and the sentence fires. Drop the determiner from the span and the
-#: parity sweep goes red on the commands named above.
+#: Nouns a diagram uses for a platform (`Railway stack`, `Railway project`).
+#: They are also real subcommands (`vercel project rm`, `heroku stack:set`),
+#: so the list never applies on its own — only inside the two spans below.
 _DETERMINERS = r"the|a|an|our|their|this|that"
 _DESCRIPTIVE_NOUNS = (
     "stack|stacks|project|projects|dashboard|dashboards|team|teams"
     "|account|accounts|doc|docs|topology|diagram|legend"
 )
+
+#: A diagram legend glues the platform to the previous word (`compose/Railway
+#: stack`, `api.railway stack`). The base matcher sees a word boundary at the
+#: slash or the dot and reads `Railway stack` as a subcommand.
+#:
+#: The slash or the dot is not enough on its own. A binary invoked by its path
+#: has the same character in front of the name (`/usr/local/bin/kubectl delete`,
+#: `./bin/railway up`, `~/bin/fly deploy`, `infra/terraform destroy`). Those are
+#: commands. A legend is the glued name only when what follows is descriptive:
+#: the end of the line, sentence punctuation, or one descriptive noun that
+#: itself ends the clause (punctuation, an opening `(`, or the end of the line).
+#: `:` is not that punctuation — `stack:set` is a subcommand.
+#:
+#: Python `re` cannot say "preceded by `/` or `.` AND followed by a descriptive
+#: tail" as one lookaround, so this span is scrubbed before the matcher runs.
+#: Delete the span and `compose/Railway stack` fires. Put `(?<![/.])` back on
+#: the platform pattern and the four path-prefixed commands go quiet, which the
+#: parity sweep catches.
+_CLAUSE_END = r"(?:\s*$|\s*[,.;!?·—–)]|\s+\()"
+_LEGEND_SPAN = re.compile(
+    rf"[/.](?:{_PLATFORMS})(?:"
+    rf"\s+(?:{_DESCRIPTIVE_NOUNS})\b(?={_CLAUSE_END})"
+    rf"|{_CLAUSE_END})",
+    re.I,
+)
+
+#: Sentence subject, not an invocation: "The Railway project will deploy next
+#: week". Two things have to be true, and dropping either one swallows a
+#: command. The determiner is what makes it a subject — without it,
+#: `gcloud projects delete` and `vercel project rm` go quiet. The noun has to
+#: end the subject: a modal or copula (`will`, `is`, `was`, `has`, ...),
+#: sentence punctuation, or the end of the line. Without that tail, a
+#: determiner in front of a real subcommand is scrubbed too: `Run the heroku
+#: stack:set`, `Use the gcloud projects delete`, `Run the vercel project rm`,
+#: `Run our heroku teams:remove`, `run that flyctl stack update`. `:` is not
+#: sentence punctuation.
+#:
+#: A possessive (`Railway's dashboard`) needs no span. The matcher requires
+#: whitespace after the platform name, and `'` is not whitespace.
+#:
+#: The determiners are not one width, so this span is scrubbed rather than
+#: written as a lookbehind. Delete the scrub and the future-deploy sentence
+#: fires.
+_SUBJECT_TAIL = (
+    "will|would|shall|should|can|could|may|might|must"
+    "|is|are|was|were|be|been|being"
+    "|has|have|had|does|do|did"
+)
 _SUBJECT_SPAN = re.compile(
-    rf"\b(?:{_DETERMINERS})\s+(?:{_PLATFORMS})\s+(?:{_DESCRIPTIVE_NOUNS})\b",
+    rf"\b(?:{_DETERMINERS})\s+(?:{_PLATFORMS})\s+(?:{_DESCRIPTIVE_NOUNS})\b"
+    rf"(?=\s*(?:[,.;!?]|(?:{_SUBJECT_TAIL})\b)|\s*$)",
     re.I,
 )
 
 _FLAG = r"--?[\w.-]+"
-#: The base matcher, plus the legend lookbehind and the port-forward exemption.
+#: The base matcher, plus the port-forward exemption. Legend and sentence-subject
+#: are scrubbed before this runs; they are not lookarounds on this pattern.
 #: `vercel remove`, `fly postgres detach`, `heroku pg:reset` and
 #: `az network nsg rule delete` all fire on the first word after the platform.
 #: There is no verb list: a missing verb is a command the guard would not see.
@@ -137,7 +169,7 @@ _FLAG = r"--?[\w.-]+"
 #: item this fires on is already declared `repo`, and the incident was one of those
 #: whose prose was a real command. Weighting the declaration would delete the guard.
 _PLATFORM_COMMAND = (
-    rf"{_LEGEND_LOOKBEHIND}\b(?:{_PLATFORMS})\s+"
+    rf"\b(?:{_PLATFORMS})\s+"
     rf"(?!(?:{_NOT_SUBCOMMANDS}|{_EXEMPT_SUBCOMMANDS})\b)[a-z][\w-]+"
     rf"|\bdocker(?:\s+|-)compose(?:\s+{_FLAG}(?:\s+\S+)?)*\s+"
     rf"(?!(?:{_NOT_SUBCOMMANDS})\b)[a-z][\w-]+"
@@ -219,11 +251,13 @@ def signals(text: str | None) -> list[dict]:
                 # evidence printed three times, and they crowd out the second rule that
                 # fired — which is the one that would have changed the reader's mind.
                 continue
-            # The sentence-subject exemption is variable width, so it cannot be a
-            # lookbehind on the pattern. Scrub that one span, then search. The
-            # pattern itself still carries the legend lookbehind and port-forward.
-            # Other rules see the original line: scrubbing must not hide them.
-            haystack = _SUBJECT_SPAN.sub(" ", stripped) if name == "platform-command" else stripped
+            # Legend and sentence-subject are variable width, so they cannot be
+            # lookarounds on the pattern. Scrub those spans, then search. Other
+            # rules see the original line: scrubbing must not hide them.
+            if name == "platform-command":
+                haystack = _SUBJECT_SPAN.sub(" ", _LEGEND_SPAN.sub(" ", stripped))
+            else:
+                haystack = stripped
             if pattern.search(haystack):
                 seen.add(name)
                 found.append({"rule": name, "means": means, "quote": _quote(stripped)})

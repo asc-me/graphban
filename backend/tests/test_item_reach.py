@@ -401,11 +401,12 @@ MUST_NOT_FIRE = {
         "An unavailable counter should render an em dash rather than a zero."),
     # GRPH-1037. Naming a platform in a diagram is not invoking it. The base
     # matcher treats `Railway stack` as `railway` with the subcommand `stack`.
-    # Two exemptions keep that quiet, and each one owns a fixture. Delete the
-    # legend lookbehind (`(?<![/.])`) and the legend plus the symptom fail.
-    # Delete the subject scrub and the future-deploy sentence fails. A
-    # possessive needs neither: the base matcher requires whitespace after the
-    # platform name, and `'` is not whitespace.
+    # Two spans keep that quiet, and each one owns a fixture. Delete
+    # `_LEGEND_SPAN` and the legend plus the symptom fail. Delete the subject
+    # scrub and the future-deploy sentence fails. A possessive needs neither:
+    # the matcher requires whitespace after the platform name, and `'` is not
+    # whitespace. Widening either span (any slash, or a noun with no tail)
+    # is caught by the parity sweep, not by these fixtures.
     "a topology legend": (
         "compose/Railway stack (web+api+db) · agent hosts/outposts "
         "(fleet + spawned vendor agents) · user machines (cli)"),
@@ -532,9 +533,12 @@ _SWEEP_VERBS = (
 )
 # Real commands, including the shapes a widened noun exemption would swallow.
 # `projects`, `project`, `stack` and `teams` are descriptive nouns ONLY after a
-# determiner. Drop that determiner from `_SUBJECT_SPAN` and the five canaries
-# below go quiet: gcloud/supabase projects delete, vercel project rm,
-# heroku stack:set, heroku teams:remove.
+# determiner, and only when that noun ends the subject. Drop the determiner
+# from `_SUBJECT_SPAN` and the bare canaries go quiet: gcloud/supabase
+# projects delete, vercel project rm, heroku stack:set, heroku teams:remove.
+# Drop the tail (modal, sentence punctuation, or end of line) and the six
+# determiner-plus-subcommand lines go quiet. Put `(?<![/.])` back on the
+# platform pattern and the four path-prefixed lines go quiet.
 _SWEEP_SPECIFIC = (
     "railway up",
     "railway up --service api",
@@ -630,6 +634,21 @@ _SWEEP_SPECIFIC = (
     "wrangler delete",
     "wrangler kv:key delete",
     "cloudflare pages deploy",
+    # Bounce of 2c852417. A slash or a dot is a legend only when what follows
+    # the name is descriptive. A path-prefixed binary is still a command.
+    "/usr/local/bin/kubectl delete pod web-1",
+    "./bin/railway up",
+    "~/bin/fly deploy",
+    "infra/terraform destroy -auto-approve",
+    # A determiner plus a noun is a subject only when the noun is followed by
+    # a modal, sentence punctuation, or the end of the line. `:` and the next
+    # word are the subcommand.
+    "Run the heroku stack:set heroku-22 command on prod",
+    "Use the gcloud projects delete my-proj command",
+    "Execute the supabase projects delete abc command",
+    "Run the vercel project rm my-app command",
+    "Run our heroku teams:remove x",
+    "run that flyctl stack update",
 )
 
 
@@ -722,7 +741,7 @@ def test_descriptive_prose_delegates_without_an_acknowledgement(
         client, auth, key, db, proj, planner):
     """THE CALL. `signals()` can be right while `delegate` never asks it, and a suite that
     only calls the function stays green — the absence then reads as "this prose is fine to
-    hand to a shell". Sabotage: delete the legend lookbehind or the subject scrub and
+    hand to a shell". Sabotage: delete the legend span or the subject scrub and
     the legend or the sentence is refused."""
     for name in _DESCRIPTIVE:
         text = MUST_NOT_FIRE[name]
