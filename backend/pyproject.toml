@@ -60,3 +60,18 @@ packages = ["app"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+# Read by `scripts/scan_ci.py` (`bandit -c pyproject.toml -r .`, GRPH-1110). No rule is skipped
+# here: each finding in `app/` is fixed or carries a line-level `# nosec <id>` with its reason.
+[tool.bandit]
+exclude_dirs = [
+    # Test code asserts by design (B101) and builds fixtures with literal secrets and SQL. It
+    # never ships: `packages = ["app"]` above is the whole wheel.
+    "tests",
+    # Append-only migration history. Its B608s interpolate module-level table and column
+    # constants into DDL run once by the operator; no request reaches them, and rewriting
+    # applied revisions to carry markers is churn on history.
+    "alembic/versions",
+    # A local virtualenv is third-party code, audited by pip-audit, not ours to lint.
+    ".venv",
+]

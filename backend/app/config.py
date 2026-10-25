@@ -5,7 +5,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The insecure fallback secret. Anyone knowing it can mint tokens for any user, so
 # an internet-exposed deploy MUST override JWT_SECRET (see startup security check).
-DEFAULT_JWT_SECRET = "dev-secret-change-me-in-production-0123456789abcdef"
+# bandit B105: this IS a known value on purpose; the startup security check refuses it on
+# an exposed deploy.
+DEFAULT_JWT_SECRET = "dev-secret-change-me-in-production-0123456789abcdef"  # nosec B105
 
 
 class Settings(BaseSettings):

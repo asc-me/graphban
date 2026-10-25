@@ -102,7 +102,7 @@ FILED_TAG_PREFIX = "stack-filed:"
 def filed_key(*parts: str) -> str:
     """Stable tag for one overlay offer: same finding (or same gap) → same key."""
     raw = "|".join((p or "").strip() for p in parts)
-    return FILED_TAG_PREFIX + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return FILED_TAG_PREFIX + hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
 
 
 def _utcnow() -> datetime:

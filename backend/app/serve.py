@@ -31,7 +31,7 @@ def main() -> None:
         # whoever changes the bind changes that in the same commit. An env override here
         # would let the two drift with no commit to notice — an AAAA answer would point
         # nginx at an address nothing listens on.
-        host="0.0.0.0",  # noqa: S104 — a container binds all interfaces
+        host="0.0.0.0",  # noqa: S104 — a container binds all interfaces  # nosec B104
         port=int(os.environ.get("PORT", "8000")),
         log_config=None,
     )

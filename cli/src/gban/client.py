@@ -85,11 +85,15 @@ class Client:
 
     # ---- transport ---------------------------------------------------------------------
     def _open(self, method: str, path: str, body: dict | None, headers: dict) -> tuple[int, dict]:
+        if not self.url.startswith(("http://", "https://")):
+            # urlopen would read `file:` and friends too, and send the credential with it.
+            raise Unreachable(f"could not reach {self.url}: not an http(s) URL")
         data = json.dumps(body).encode() if body is not None else None
         request = urllib.request.Request(self.url + path, data=data, method=method,
                                          headers={"Content-Type": "application/json", **headers})
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            # bandit B310: the scheme is checked to be http(s) above.
+            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:  # nosec B310
                 raw = response.read().decode() or "{}"
                 return response.status, (json.loads(raw) if raw.strip() else {})
         except urllib.error.HTTPError as exc:

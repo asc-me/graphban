@@ -40,7 +40,7 @@ from .seat import codes_from_text, parse_seat_line
 from .state import NotARepository, UnsupportedPlatform, repo_root, state_root
 from .worktree import SEAT_FILES, _tracked_at
 
-PASS = "PASS"
+PASS = "PASS"  # nosec B105 — a check verdict, not a password
 FAIL = "FAIL"
 UNKNOWN = "UNKNOWN"
 

@@ -2043,7 +2043,7 @@ _CHECKBOX = re.compile(r"^\[(?:[xX]| )\]\s+")
 #: deliberately narrow: a clause that merely MENTIONS `gh` ("children are refused `gh`") is
 #: not declaring a need, and inferring one from the word would route that clause away from
 #: every child — the same stranding, pointed the other way.
-_NEEDS_TOKEN = r"[a-z0-9][a-z0-9_-]*"
+_NEEDS_TOKEN = r"[a-z0-9][a-z0-9_-]*"  # nosec B105 — a regex for a needs-token
 _NEEDS_LIST = rf"{_NEEDS_TOKEN}(?:\s*,\s*{_NEEDS_TOKEN})*"
 _NEEDS_PREFIX = re.compile(rf"^\[needs:\s*({_NEEDS_LIST})\]\s*", re.IGNORECASE)
 _NEEDS_SUFFIX = re.compile(rf"\s*\{{needs:\s*({_NEEDS_LIST})\}}\s*$", re.IGNORECASE)

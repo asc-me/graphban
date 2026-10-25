@@ -31,7 +31,7 @@ logger = logging.getLogger("graphban.linear")
 
 LINEAR_API_URL = "https://api.linear.app/graphql"
 LINEAR_AUTH_URL = "https://linear.app/oauth/approve"
-LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token"
+LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token"  # nosec B105 — an endpoint URL
 
 # Canonical status mapping: Linear workflow state type → AgentLedger status.
 # Linear states have a `type` field: backlog, unstarted, started, completed, canceled, triage.
@@ -295,7 +295,7 @@ def integration_status(db: Session, *, org_id: str | None = None) -> dict:
             "linked": False,
             "workspace_id": "",
             "workspace_name": "",
-            "token_set": False,
+            "token_set": False,  # nosec B105 — a flag, not a credential
             "webhook_set": False,
             "linked_at": None,
             "last_sync_at": None,

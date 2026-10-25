@@ -155,7 +155,7 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
     if integ is None:
         raise HTTPException(400, "no Linear integration linked")
 
-    stored_secret = ""
+    stored_secret = ""  # nosec B105 — empty until decrypted below, not a credential
     if integ.webhook_secret_enc:
         from app.security import secrets as sec
         stored_secret = sec.decrypt(integ.webhook_secret_enc)

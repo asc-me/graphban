@@ -81,7 +81,7 @@ def converge(bind, target: int) -> list[tuple[str, int, int]]:
 
         populated = (
             bind.execute(
-                sa.text(f"SELECT count(*) FROM {table} WHERE embedding IS NOT NULL")  # noqa: S608
+                sa.text(f"SELECT count(*) FROM {table} WHERE embedding IS NOT NULL")  # noqa: S608  # nosec B608
             ).scalar()
             or 0
         )
