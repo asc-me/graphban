@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
 from . import adopt as adopt_mod
+from .heartbeat import keep as keep_leases
 from . import worktree as wt_mod
 from . import adapters
 from .adapters import explain_exit
@@ -173,6 +174,11 @@ class Partition:
     """
 
     ceiling: float | None = None
+    #: How often to post `kind=lease` (GRPH-1116). The server's
+    #: `heartbeat_interval_seconds` from the last roster, or None until one has
+    #: answered. None is not "never": the keeper uses its own fallback, so the first
+    #: ticks are not silent for the whole time the server has not yet been asked.
+    heartbeat_interval: float | None = None
     #: Monotonic time contact was lost, or None while the server is answering.
     since: float | None = None
     longest: float = 0.0
@@ -443,6 +449,9 @@ def _roster(client: Graphban, partition: Partition) -> dict | None:
     ttl = payload.get("presence_ttl_seconds")
     if isinstance(ttl, (int, float)) and ttl > 0:
         partition.ceiling = float(ttl)
+    gap = payload.get("heartbeat_interval_seconds")
+    if isinstance(gap, (int, float)) and gap > 0:
+        partition.heartbeat_interval = float(gap)
 
     holdings = _holdings(payload)
     if partition.since is not None:
@@ -1119,13 +1128,20 @@ def watch_tick(
     persist: Callable[[], None] | None = None,
     base_branch: str = "",
 ) -> None:
-    """One pass of the watch loop: wall-clock, output pulse, lease, disowned.
+    """One pass of the watch loop: keep the lease, then wall-clock, output, disowned.
 
     Shared by `up`'s `_wait_out` and `gbfleet mcp` (P30 D6). Silence is a report, not
     a kill — a long `run_tests` is legitimate quiet. The kill conditions stay the
     PRD-22 four (wall-clock, never-registered, seat-gone, lease-lapsed), plus the
     planner's `stop`.
+
+    The keep-alive is first, before `_roster` (GRPH-1116). `fleet_status` requeues an
+    agent whose presence has lapsed, and a child blocked in a test suite does not
+    heartbeat itself. Posting `kind=lease` while the pid is alive is what keeps that
+    requeue from firing. Once the process has exited, nothing here posts, and the
+    server clock lapses the lease as before.
     """
+    keep_leases(wave, children, client)
     roster = _roster(client, wave.partition)
     _remember_holdings(children, wave.partition)
 

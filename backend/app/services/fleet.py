@@ -17,7 +17,7 @@ import time
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session, object_session
 
 from app.models import Agent, AreaReservation, Enrolment, Item, Project
@@ -4759,12 +4759,12 @@ def park(db: Session, attempt, *, agent_id: str | None = None,
 # ---- observations: facts only the supervisor knows (GRPH-975) ---------------------------------
 
 
-#: What this route records today. `pushed_head` (GRPH-973) and `lease` (GRPH-1116) extend
-#: THIS route later — a second path would be the widening the allowlist exists to prevent.
-#: They are named so a post of either is a 422 that says so, not a silent no-op and not a
-#: second route somebody adds beside this one.
+#: What this route records today. `lease` (GRPH-1116) is a keep-alive on this same
+#: route, not a new one: the supervisor's client may not call `heartbeat`. `pushed_head`
+#: (GRPH-973) is still later — named so a post of it is a 422 that says so, not a silent
+#: no-op and not a second route somebody adds beside this one.
 OBSERVATION_KINDS = ("cut_from", "pr_opened", "salvage", "withheld")
-OBSERVATION_LATER = ("pushed_head", "lease")
+OBSERVATION_LATER = ("pushed_head",)
 
 _CUT_BASE = re.compile(r"^[0-9a-f]{7,40}$")
 
@@ -4882,10 +4882,81 @@ def _observation_receipt(kind: str, *, branch: str, base: str | None, url: str |
     )
 
 
+def _record_lease(db: Session, item: Item, *, branch: str, agent_id: str | None,
+                  commit: str | None) -> dict:
+    """Keep `agent_id`'s lease alive while its process is, without becoming the author.
+
+    The supervisor posts this because the child cannot: a long test run makes no
+    server call, `fleet_status` then reads the agent offline, and `requeue_offline_items`
+    releases the item. Two clocks have to move. `last_seen_at` is what presence reads;
+    `claimed_at` is what `_is_claimable` reads. Moving either one through `items.heartbeat`
+    would be the worker tool this credential does not have, and it would also let
+    `onupdate` stamp `updated_at` a moment later, so a keep-alive would look like a write
+    and a child that never touched the item would keep `built_by` (GRPH-434).
+
+    The relative order is the authorship clock. A row whose `updated_at` was already
+    strictly after `claimed_at` stays strictly after; a row that was not stays not.
+    Both columns are set in one UPDATE so `onupdate` cannot reorder them.
+
+    A real commit — a sha that is not the recorded cut-from base — is written once.
+    Repeating it on every beat would fill the evidence the next reviewer reads. The
+    note does not itself move `updated_at`: `committed_by` is what `release_item` reads,
+    and moving the clock here would keep the author even with that check deleted.
+
+    Not a re-claim. When `claimed_by` is somebody else, or the item is no longer
+    `in_progress`, the answer is `extended: false` and nothing is written. Taking the
+    item back would be the supervisor doing the child's work.
+    """
+    who = (agent_id or "").strip()
+    if not who:
+        raise ObservationError(422, "lease names the agent whose pid is alive")
+    if not branch:
+        raise ObservationError(422, "an observation names the branch")
+    if item.claimed_by != who or item.status != "in_progress":
+        return {"item_id": item.key, "kind": "lease", "recorded": True, "extended": False}
+
+    now = datetime.now(timezone.utc)
+    claimed = _aware(item.claimed_at)
+    updated = _aware(item.updated_at)
+    wrote = claimed is not None and updated is not None and updated > claimed
+    if wrote:
+        kept = now + timedelta(microseconds=1)
+    elif item.updated_at is not None:
+        kept = item.updated_at
+    else:
+        kept = now
+
+    evidence = item.evidence
+    sha = (commit or "").strip().lower()
+    bases = items_svc.cut_from_commits(evidence)
+    if (_CUT_BASE.fullmatch(sha)
+            and not any(items_svc.same_commit(sha, base) for base in bases)
+            and not items_svc.committed_by(evidence, who)):
+        evidence = items_svc.append_evidence(evidence, [{
+            "kind": "note",
+            "detail": f"{items_svc.COMMITTED_MARKER}{sha} on `{branch}` by {who}",
+        }])
+
+    values: dict = {"claimed_at": now, "updated_at": kept}
+    if evidence is not item.evidence:
+        values["evidence"] = evidence
+    db.execute(update(Item).where(Item.id == item.id).values(**values))
+    db.expire(item)
+
+    agent = db.get(Agent, who)
+    if agent is not None:
+        # Presence only. `state` stays what it was: a quarantined agent is quarantined
+        # because `presence_state` reads that before the clock, and a keep-alive is not
+        # a phase change.
+        agent.last_seen_at = now
+    extend_reservations(db, agent_id=who, item_id=item.id, now=now)
+    return {"item_id": item.key, "kind": "lease", "recorded": True, "extended": True}
+
+
 def record_observation(db: Session, api_key, *, item_key: str, kind: str,
                        branch: str = "", base: str | None = None,
                        url: str | None = None, commit: str | None = None,
-                       reason: str | None = None) -> dict:
+                       reason: str | None = None, agent_id: str | None = None) -> dict:
     """Record one supervisor fact on an item this credential's wave cut.
 
     Does not commit — the route does, matching `post_attempt`. A non-supervisor
@@ -4910,6 +4981,9 @@ def record_observation(db: Session, api_key, *, item_key: str, kind: str,
     if not _wave_cut_item(db, api_key, item):
         raise ObservationError(404, "no such item")
     cleaned = (branch or "").strip()
+    if kind == "lease":
+        return _record_lease(
+            db, item, branch=cleaned, agent_id=agent_id, commit=commit)
     if kind in OBSERVATION_KINDS and not cleaned:
         raise ObservationError(422, "an observation names the branch")
     receipt = _observation_receipt(

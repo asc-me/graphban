@@ -15,6 +15,7 @@ Dropping only the project comparison fails
 `test_the_same_wave_label_in_another_project_is_not_this_wave` and leaves (b)'s test green.
 """
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -28,9 +29,11 @@ if str(SRC) not in sys.path:
 from gbfleet.client import ALLOWED_TOOLS, Graphban  # noqa: E402
 from gbfleet.supervisor import Wave, _record_cut_from  # noqa: E402
 
-from app.models import Item  # noqa: E402
+from app.models import Agent, Item  # noqa: E402
 from app.services import fleet as fleet_svc  # noqa: E402
-from app.services.items import CUT_FROM_MARKER  # noqa: E402
+from app.services.items import (  # noqa: E402
+    COMMITTED_MARKER, CUT_FROM_MARKER, DEFAULT_LEASE_SECONDS, _aware, claimable,
+)
 
 BASE = "7ea90ebebe2b88d263dcae8ca77f84b69cb00300"
 HEAD = "aaf6132e1d4c77b2c9a1e5f0b3d8a7c6e5f4d3c2"
@@ -228,7 +231,9 @@ def test_the_server_composes_each_receipt_and_refuses_a_kind_it_does_not_record_
         client, auth, db):
     """The caller sends facts. The bytes on the item are the ones the readers already know.
 
-    `pushed_head` and `lease` are named so they 422 instead of being stored or dropped.
+    `pushed_head` is named so it 422s instead of being stored or dropped. `lease` is
+    accepted now (GRPH-1116) and is tested below — a refusal that still names it would
+    mean the keep-alive never landed.
     """
     proj, hand, planner = _project(client, auth)
     _worker, item = _item(client, hand, title="compose")
@@ -236,7 +241,8 @@ def test_the_server_composes_each_receipt_and_refuses_a_kind_it_does_not_record_
 
     later = _post(client, planner, item_id=item, kind="pushed_head", branch="gb/obs")
     assert later.status_code == 422, later.text
-    assert "pushed_head" in later.text and "lease" in later.text
+    assert "pushed_head" in later.text
+    assert "lease" not in later.text
     assert "not accepted yet" in later.text
     assert _notes(client, hand, item) == []
 
@@ -319,3 +325,226 @@ def test_the_real_supervisor_client_records_the_base_and_sign_off_compares(clien
     pred = {p["name"]: p for p in signed[-1]["predicates"]}["commit_is_not_the_base"]
     assert pred["compared"] is True
     assert pred["passed"] is True
+
+
+# ---- lease keep-alive (GRPH-1116) -------------------------------------------------------------
+
+
+def _row(db, item) -> Item:
+    db.expire_all()
+    return db.get(Item, item)
+
+
+def _hold(client, auth, db, *, title="lease"):
+    """A bound item this wave cut, claimed by the worker the seat is for."""
+    proj, hand, planner = _project(client, auth)
+    worker, item = _item(client, hand, title=title)
+    _bind(db, proj, item, wave="wave-1")
+    claimed = _ok(client, hand, "claim_next", {"agent_id": worker["agent_id"]})
+    assert claimed["item"]["id"] == item
+    return proj, hand, planner, worker, item
+
+
+def _age(db, item, agent_id) -> None:
+    """Push both clocks past the point where the roster releases the hold."""
+    row = _row(db, item)
+    agent = db.get(Agent, agent_id)
+    assert agent is not None and row is not None
+    past = datetime.now(timezone.utc) - timedelta(
+        seconds=fleet_svc.presence_ttl_seconds() + 60)
+    agent.last_seen_at = past
+    row.claimed_at = datetime.now(timezone.utc) - timedelta(
+        seconds=DEFAULT_LEASE_SECONDS + 60)
+    db.commit()
+
+
+def test_a_lease_is_refused_to_the_same_callers_as_every_other_observation(client, auth, db):
+    """The keep-alive is not a second door. A worker key, a hand-minted key, a wave that
+    did not cut the item, and another project's `wave-1` are the refusals GRPH-975 already
+    pins for `cut_from`. Kind `lease` has to take the same path or the allowlist was widened
+    by a synonym."""
+    proj, hand, planner = _project(client, auth)
+    worker_key = client.post(
+        "/api/fleet/keys", json={"project_id": proj, "role": "worker", "wave": "wave-1"},
+        headers=auth).json()["plaintext"]
+    body = {"item_id": "GRPH-1", "kind": "lease", "branch": "gb/obs", "agent_id": "GRPH-A1"}
+    assert _post(client, worker_key, **body).status_code == 403
+    assert _post(client, hand, **body).status_code == 403
+
+    _worker, item = _item(client, hand, title="uncut")
+    missing = _post(client, planner, item_id=item, kind="lease", branch="gb/obs",
+                    agent_id=_worker["agent_id"])
+    assert missing.status_code == 404, missing.text
+
+    proj_b = client.post("/api/projects", json={"name": "Elsewhere"}, headers=auth).json()["id"]
+    hand_b = client.post("/api/api-keys", json={"name": "hand-b", "project_id": proj_b},
+                         headers=auth).json()["plaintext"]
+    foreign_worker, foreign = _item(client, hand_b, title="foreign-lease")
+    _bind(db, proj_b, foreign, wave="wave-1")
+    _ok(client, hand_b, "claim_next", {"agent_id": foreign_worker["agent_id"]})
+    crossed = _post(client, planner, item_id=foreign, kind="lease", branch="gb/obs",
+                    agent_id=foreign_worker["agent_id"])
+    assert crossed.status_code == 404, crossed.text
+
+
+def test_a_lease_names_the_agent_and_the_branch(client, auth, db):
+    _proj, hand, planner, worker, item = _hold(client, auth, db, title="needs-who")
+    no_agent = _post(client, planner, item_id=item, kind="lease", branch="gb/obs")
+    assert no_agent.status_code == 422, no_agent.text
+    assert "agent" in no_agent.text
+    no_branch = _post(client, planner, item_id=item, kind="lease", branch="",
+                      agent_id=worker["agent_id"])
+    assert no_branch.status_code == 422, no_branch.text
+    assert _notes(client, hand, item) == []
+
+
+def test_a_live_process_keeps_both_clocks_and_stopping_the_posts_lets_the_lease_lapse(
+        client, auth, db):
+    """The suite is one command longer than the presence TTL. While the posts arrive,
+    `requeue_offline_items` — what `fleet_status` runs before it returns the roster —
+    does not release the holder, and `claimable` stays false. With no further post, both
+    clocks age out and the release happens. That second half is the process having exited:
+    the supervisor posts nothing once `poll()` is not None."""
+    proj, _hand, planner, worker, item = _hold(client, auth, db, title="clocks")
+    who = worker["agent_id"]
+    _age(db, item, who)
+    assert claimable(_row(db, item)) is True
+
+    got = _post(client, planner, item_id=item, kind="lease", branch="gb/obs", agent_id=who)
+    assert got.status_code == 200, got.text
+    assert got.json() == {"item_id": item, "kind": "lease", "recorded": True, "extended": True}
+
+    row = _row(db, item)
+    assert row.claimed_by == who
+    assert claimable(row) is False
+    agent = db.get(Agent, who)
+    assert fleet_svc.presence_state(agent) != "offline"
+    assert fleet_svc.requeue_offline_items(db, project_id=proj) == []
+    assert _row(db, item).claimed_by == who
+
+    _age(db, item, who)
+    assert claimable(_row(db, item)) is True
+    released = fleet_svc.requeue_offline_items(db, project_id=proj)
+    assert item in released
+    lapsed = _row(db, item)
+    assert lapsed.claimed_by is None
+    assert lapsed.status == "next"
+
+
+def test_a_lease_does_not_extend_a_hold_that_has_moved(client, auth, db):
+    """`extended: false` is the answer, not a 404 and not a re-claim. Refreshing the
+    new holder's clocks would keep a replaced agent alive."""
+    _proj, _hand, planner, worker, item = _hold(client, auth, db, title="moved")
+    row = _row(db, item)
+    row.claimed_by = "GRPH-AOTHER"
+    db.commit()
+    before = _row(db, item).claimed_at
+
+    got = _post(client, planner, item_id=item, kind="lease", branch="gb/obs",
+                agent_id=worker["agent_id"])
+    assert got.status_code == 200, got.text
+    assert got.json()["extended"] is False
+    again = _row(db, item)
+    assert again.claimed_by == "GRPH-AOTHER"
+    assert again.claimed_at == before
+    assert _notes(client, _hand, item) == []
+
+
+def test_a_lease_does_not_extend_an_item_that_is_no_longer_in_progress(client, auth, db):
+    _proj, hand, planner, worker, item = _hold(client, auth, db, title="handed")
+    _ok(client, hand, "update_item",
+        {"id": item, "status": "review", "agent_id": worker["agent_id"]})
+    before = _row(db, item).claimed_at
+    got = _post(client, planner, item_id=item, kind="lease", branch="gb/obs",
+                agent_id=worker["agent_id"])
+    assert got.status_code == 200, got.text
+    assert got.json()["extended"] is False
+    assert _row(db, item).claimed_at == before
+
+
+def test_a_keep_alive_is_not_a_write_and_a_real_write_stays_one(client, auth, db):
+    """GRPH-434, through this route. The beat must not make `updated_at` strictly after
+    `claimed_at` — that is what a heartbeat-shaped UPDATE does if `onupdate` is left to
+    stamp the column, and it would keep `built_by` for an agent that never touched the
+    item. A touchpoints write from before the beat has to stay strictly after, or the
+    beat erases the evidence that work happened."""
+    _proj, hand, planner, worker, item = _hold(client, auth, db, title="clock-order")
+    who = worker["agent_id"]
+    bare = _post(client, planner, item_id=item, kind="lease", branch="gb/obs", agent_id=who)
+    assert bare.json()["extended"] is True
+    row = _row(db, item)
+    assert _aware(row.updated_at) <= _aware(row.claimed_at)
+    _ok(client, hand, "release_item", {"id": item, "agent_id": who})
+    assert _row(db, item).built_by is None
+
+    _ok(client, hand, "claim_next", {"agent_id": who})
+    _ok(client, hand, "update_item",
+        {"id": item, "touchpoints": ["backend/app/services/fleet.py"], "agent_id": who})
+    wrote = _post(client, planner, item_id=item, kind="lease", branch="gb/obs", agent_id=who)
+    assert wrote.json()["extended"] is True
+    kept = _row(db, item)
+    assert _aware(kept.updated_at) > _aware(kept.claimed_at)
+    _ok(client, hand, "release_item", {"id": item, "agent_id": who})
+    assert _row(db, item).built_by == who
+
+
+def test_a_commit_on_the_branch_keeps_the_author_a_planner_cannot_inherit(client, auth, db):
+    """The child committed and then went quiet. `updated_at` still says it wrote nothing —
+    the note is the only signal — so deleting `committed_by` from `release_item` clears
+    `built_by` and the planner's move to review becomes the author.
+
+    Sabotage: drop `and not committed_by(...)` from the clear in `release_item`. This
+    fails on `built_by == who` after the release.
+    """
+    _proj, hand, planner, worker, item = _hold(client, auth, db, title="committed")
+    who = worker["agent_id"]
+    first = _post(client, planner, item_id=item, kind="lease", branch="gb/obs",
+                  agent_id=who, commit=HEAD)
+    assert first.status_code == 200, first.text
+    again = _post(client, planner, item_id=item, kind="lease", branch="gb/obs",
+                  agent_id=who, commit=HEAD)
+    assert again.json()["extended"] is True
+    committed = [n for n in _notes(client, hand, item) if COMMITTED_MARKER in n["detail"]]
+    assert [n["detail"] for n in committed] == [
+        f"{COMMITTED_MARKER}{HEAD} on `gb/obs` by {who}",
+    ]
+    row = _row(db, item)
+    assert _aware(row.updated_at) <= _aware(row.claimed_at), (
+        "the note moved the authorship clock, so dropping committed_by would still pass")
+
+    _ok(client, hand, "release_item", {"id": item, "agent_id": who})
+    assert _row(db, item).built_by == who
+
+    planner_agent = _ok(client, planner, "register_agent",
+                        {"label": "planner", "branch": "gb/plan"})
+    _ok(client, planner, "update_item",
+        {"id": item, "status": "review", "agent_id": planner_agent["agent_id"]})
+    finished = _row(db, item)
+    assert finished.status == "review"
+    assert finished.built_by == who
+
+
+def test_the_cut_from_base_is_not_a_commit_and_a_keep_alive_adds_no_note(client, auth, db):
+    """HEAD == the recorded base is the tree before this item. Counting it would keep
+    `built_by` for a child that never wrote. A beat with no commit, repeated, adds nothing."""
+    _proj, hand, planner, worker, item = _hold(client, auth, db, title="base-sha")
+    who = worker["agent_id"]
+    cut = _post(client, planner, item_id=item, kind="cut_from", branch="gb/obs", base=BASE)
+    assert cut.status_code == 200, cut.text
+    # `cut_from` itself appends evidence, which moves `updated_at`. Pin the clock back
+    # to the claim so this test is about the sha, not about that earlier write. A core
+    # UPDATE names the column, so `onupdate` cannot stamp it a moment later.
+    from sqlalchemy import update as sql_update
+    pinned = _row(db, item)
+    db.execute(sql_update(Item).where(Item.id == pinned.id).values(
+        updated_at=pinned.claimed_at))
+    db.commit()
+    for _ in range(2):
+        beat = _post(client, planner, item_id=item, kind="lease", branch="gb/obs",
+                     agent_id=who, commit=BASE)
+        assert beat.json()["extended"] is True
+    details = [n["detail"] for n in _notes(client, hand, item)]
+    assert not any(COMMITTED_MARKER in d for d in details)
+    assert any(CUT_FROM_MARKER in d for d in details)
+    _ok(client, hand, "release_item", {"id": item, "agent_id": who})
+    assert _row(db, item).built_by is None

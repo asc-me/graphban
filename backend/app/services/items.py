@@ -701,6 +701,41 @@ def cut_from_commits(evidence) -> list[str]:
     return out
 
 
+#: How a supervisor says a child committed on the branch it cut (GRPH-1116).
+#:
+#: A git commit does not touch the item row, so `updated_at <= claimed_at` still
+#: reads "wrote nothing" after the sha landed. `release_item` would then clear
+#: `built_by`, and the next agent to move the item to review — often the planner —
+#: would be stamped as the author. The supervisor may not call `update_item`, so the
+#: fact rides this note, written by `fleet.record_observation` and read only here.
+COMMITTED_MARKER = "gbfleet: committed "
+
+
+def committed_by(evidence, agent_id: str) -> bool:
+    """Whether `agent_id` is the agent named on a supervisor commit note (GRPH-1116).
+
+    The sentence is "gbfleet: committed <sha> on `<branch>` by <agent>". A note that
+    names somebody else does not keep this holder's authorship: the agent who is
+    leaving is the one the sentence has to name. A marker with no sha is not a commit.
+    """
+    who = (agent_id or "").strip()
+    if not who:
+        return False
+    for e in (evidence or []):
+        if not isinstance(e, dict):
+            continue
+        detail = str(e.get("detail") or "")
+        if COMMITTED_MARKER not in detail:
+            continue
+        named = detail.rsplit(" by ", 1)[-1].strip() if " by " in detail else ""
+        if named != who:
+            continue
+        tail = detail[detail.index(COMMITTED_MARKER) + len(COMMITTED_MARKER):]
+        if _SHA.search(tail):
+            return True
+    return False
+
+
 def same_commit(a: str | None, b: str | None) -> bool:
     """Do two revisions name the same commit, allowing for abbreviation?
 
@@ -2740,8 +2775,15 @@ def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "nex
     # counted. A heartbeat is about the agent's liveness rather than the item, and linking two
     # items is work but not necessarily work on this one. The reservation is different in
     # kind: the row names this agent and this item and nothing else.
+    #
+    # A git commit is the third place work hides (GRPH-1116). It does not touch this row, so
+    # the clock still says "wrote nothing" after the sha landed, and clearing `built_by` here
+    # is what lets the planner who next moves the item to review become the author. The
+    # supervisor records the sha once — it may not call `update_item` — and `committed_by`
+    # is that note. A note naming a different agent does not save the holder who is leaving.
     if (item.built_by == agent_id and item.claimed_at
-            and item.updated_at <= item.claimed_at and not reserved):
+            and item.updated_at <= item.claimed_at and not reserved
+            and not committed_by(item.evidence, agent_id)):
         item.built_by = None
     # AFTER the authorship decision, never before: a handback note is a write to `evidence`, so
     # it moves `updated_at`, and the test above reads `updated_at` to decide whether this agent
