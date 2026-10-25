@@ -137,7 +137,7 @@ def matched_by(*texts: str) -> str:
 
 
 def attestation(*, commit: str, branch: str, run_url: str = "",
-                matched: str = "") -> dict:
+                matched: str = "", run_attempt: str = "") -> dict:
     """The receipt. One predicate, because CI checks exactly one thing: the suite passed.
 
     Naming it `suite_green` rather than something broader matters — the gate records WHICH
@@ -146,6 +146,7 @@ def attestation(*, commit: str, branch: str, run_url: str = "",
     accepting less than it appears to.
     """
     return receipt(commit=commit, branch=branch, run_url=run_url, matched=matched,
+                   run_attempt=run_attempt,
                    predicate={
                        "name": "suite_green",
                        "passed": True,
@@ -153,8 +154,23 @@ def attestation(*, commit: str, branch: str, run_url: str = "",
                    })
 
 
+def run_ref(run_url: str, run_attempt: str = "") -> str:
+    """The run AND the attempt, e.g. `…/actions/runs/<id>/attempts/<n>` (GRPH-1113).
+
+    `github.run_id` is the same for every re-run of a run, so a receipt naming only the run
+    is identical across attempts — and `items.append_evidence` drops an identical receipt as
+    a retry. For one head, pass → fail (re-run) → pass (manual re-run) then stores pass, fail:
+    the third receipt equals the first and vanishes, and the latest verdict a reader sees is
+    the fail. With the attempt in the ref, every attempt is a distinct receipt, in order.
+    """
+    attempt = (run_attempt or "").strip()
+    if not run_url or not attempt:
+        return run_url
+    return f"{run_url.rstrip('/')}/attempts/{attempt}"
+
+
 def receipt(*, commit: str, branch: str, run_url: str = "", matched: str = "",
-            predicate: dict) -> dict:
+            predicate: dict, run_attempt: str = "") -> dict:
     """One attestation carrying exactly ONE predicate (GRPH-1110).
 
     One, never several, because `valid_attestations` admits a receipt only when every
@@ -175,7 +191,7 @@ def receipt(*, commit: str, branch: str, run_url: str = "", matched: str = "",
         # GRPH-992: how the item was matched — `explicit` or `branch`. Provenance on the
         # receipt, so a reader weighing an attestation does not have to reconstruct it.
         "matched": matched,
-        "run_ref": run_url,
+        "run_ref": run_ref(run_url, run_attempt),
         "predicates": [predicate],
     }
 
@@ -240,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--branch", default="")
     ap.add_argument("--text", default="", help="PR title/body/branch to scan for item keys")
     ap.add_argument("--run-url", default="")
+    ap.add_argument("--run-attempt", default=os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+                    help="github.run_attempt; defaults to $GITHUB_RUN_ATTEMPT (GRPH-1113)")
     ap.add_argument("--mode", choices=("attest", "head"), default="attest",
                     help="`head` records the observed commit and runs even when CI failed; "
                          "`attest` writes the receipt and must not.")
@@ -264,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     receipt = attestation(commit=args.commit, branch=args.branch, run_url=args.run_url,
-                          matched=matched_by(args.text))
+                          run_attempt=args.run_attempt, matched=matched_by(args.text))
     failures = []
     #: Ids this key was refused. Held rather than reported immediately, because whether they
     #: are FOREIGN or evidence of a broken key is decided by whether anything else worked.
