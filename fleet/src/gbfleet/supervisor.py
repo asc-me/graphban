@@ -2433,12 +2433,20 @@ class Merger:
         # GRPH-880: discover candidates from the attestation, not from observing departures.
         self._discover_candidates()
         merged_any = False
+        release: str | None = None
         for item_id in list(self.watching):
             stamp = now()
             if stamp - self.asked_at.get(item_id, -1e9) < MERGE_RECHECK_S:
                 continue
+            if release is None:
+                # GRPH-P57 D1: read per tick, so unsetting the ref (the manual override) or
+                # setting it takes effect on the next tick. Unreadable is not "unset" — an
+                # unread rule must not read as an absent one — so nothing is asked.
+                release = self._release()
+                if release is None:
+                    break
             self.asked_at[item_id] = stamp
-            got = self._attempt(wave, item_id)
+            got = self._attempt(wave, item_id, release)
             if got is None:
                 continue
             wave.merged[item_id] = got
@@ -2499,7 +2507,20 @@ class Merger:
             self._seen.add(item_id)
             self.watching.setdefault(item_id, str(row.get("branch") or ""))
 
-    def _attempt(self, wave: Wave, item_id: str) -> "propose_mod.Merged | None":
+    def _release(self) -> str | None:
+        """The project's release ref ("" when unset), or None when it could not be read."""
+        try:
+            roster = self.client.call("fleet_status")
+        except NotPermitted as exc:
+            self._disable(f"cannot read the release ref: {exc}")
+            return None
+        except (ToolFailed, ServerUnreachable) as exc:
+            observe.emit("merge_unread", item="", detail=f"release ref: {exc}")
+            return None
+        return propose_mod.release_ref(roster if isinstance(roster, dict) else None)
+
+    def _attempt(self, wave: Wave, item_id: str,
+                 release: str = "") -> "propose_mod.Merged | None":
         try:
             item = self.client.call("get_item_details", id=item_id) or {}
         except NotPermitted as exc:
@@ -2520,6 +2541,8 @@ class Merger:
             reviewed=propose_mod.reviewed_commit(item),
             green=propose_mod.green_commits(item),
             paths=item.get("touchpoints") or [],
+            release=release,
+            scans=propose_mod.scans_clean_verdicts(item),
         )
         if got.ok and got.commit:
             got = self._record(wave, got)
@@ -2553,13 +2576,13 @@ class Merger:
         return got
 
     def _say(self, item_id: str, got: "propose_mod.Merged") -> None:
-        key = f"{got.ok}|{got.pending}|{got.skipped}|{got.reason}"
+        key = f"{got.ok}|{got.pending}|{got.skipped}|{got.reason}|{got.release}"
         if self.said.get(item_id) == key:
             return
         self.said[item_id] = key
         observe.emit("merge", item=item_id, ok=got.ok, pending=got.pending,
                      skipped=got.skipped, commit=got.commit, url=got.url,
-                     checked=list(got.checked), detail=got.reason)
+                     checked=list(got.checked), release=got.release, detail=got.reason)
 
     def _disable(self, why: str) -> None:
         self.disabled_because = why
