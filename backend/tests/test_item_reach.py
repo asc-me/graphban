@@ -27,6 +27,8 @@ fires on everything is worse than none, because the acknowledgement becomes refl
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 from sqlalchemy import select
 
@@ -362,6 +364,14 @@ MUST_FIRE = {
     "aws s3 rb with the bucket before the flag": "aws s3 rb s3://bucket --force",
     # Group, subgroup, resource, verb — one past `gcloud compute instances delete`.
     "az network nsg rule delete": "az network nsg rule delete --name r",
+    # Bounce of 1ee5735b. `remove` and `detach` were missing from the verb
+    # allowlist, so these went quiet while the base matcher fired. The matcher
+    # is the base again: the first word after the platform is enough.
+    "vercel remove": "vercel remove my-app",
+    "vercel remove, in a sentence": "Run vercel remove my-app on the prod team",
+    "fly postgres detach": "fly postgres detach",
+    "fly apps remove": "fly apps remove x",
+    "railway service remove": "railway service remove",
 }
 
 MUST_NOT_FIRE = {
@@ -389,11 +399,13 @@ MUST_NOT_FIRE = {
         "and an empty project look the same."),
     "an em dash instead of a number": (
         "An unavailable counter should render an em dash rather than a zero."),
-    # GRPH-1037. Naming a platform in a diagram is not invoking it. The grammar-blind
-    # matcher treated `Railway stack` as `railway` with the subcommand `stack`, and the
-    # Symptom paragraph quotes that legend, so the item that reports the bug tripped the
-    # guard too. Sabotage: restore `\b(platform)\s+(?!function-word)[a-z][\w-]+` and
-    # these three fail.
+    # GRPH-1037. Naming a platform in a diagram is not invoking it. The base
+    # matcher treats `Railway stack` as `railway` with the subcommand `stack`.
+    # Two exemptions keep that quiet, and each one owns a fixture. Delete the
+    # legend lookbehind (`(?<![/.])`) and the legend plus the symptom fail.
+    # Delete the subject scrub and the future-deploy sentence fails. A
+    # possessive needs neither: the base matcher requires whitespace after the
+    # platform name, and `'` is not whitespace.
     "a topology legend": (
         "compose/Railway stack (web+api+db) · agent hosts/outposts "
         "(fleet + spawned vendor agents) · user machines (cli)"),
@@ -407,10 +419,11 @@ MUST_NOT_FIRE = {
     "a view that renders a deploy topology": "the view renders the deploy topology",
     "a migration that adds a column": "a migration adds a column",
     "migrate, said as prose": "we migrate the rows before the page renders",
-    # The grammar-blind matcher fired on the noun `project`. A sentence about a
-    # future deploy is not an invocation; `will` is a function word.
+    # Determiner + descriptive noun. Not a global noun stop-list: `project` is
+    # also a real subcommand (`vercel project rm`), and that one must still fire.
     "a future deploy, said as a sentence": (
         "The Railway project will deploy next week once the page renders"),
+    "a possessive, not an invocation": "Railway's dashboard shows the stack",
 }
 
 
@@ -476,6 +489,200 @@ def test_each_rule_is_quoted_at_most_once():
     assert {s["rule"] for s in found} == {"platform-command", "secret-rotation"}
 
 
+# ---- 3b. base parity: a later narrowing has to go red (GRPH-1037) ------------------------
+#
+# The oracle is the grammar-blind matcher on origin/main at 386b62de, the base this
+# item started from. Head fires platform-command on every command that oracle fires
+# on, except EXEMPT. One command per test, so dropping a single verb is a red row
+# rather than a quieter suite. A sweep entry that the oracle does not fire on fails
+# too: a command that was never a base hit cannot count as parity.
+
+_BASE_PLATFORMS = (
+    "railway|vercel|fly|flyctl|heroku|aws|gcloud|az|doctl|kubectl|helm|terraform|tofu"
+    "|netlify|render|supabase|cloudflare|wrangler"
+)
+_BASE_NOT_SUBCOMMANDS = (
+    "logs|get|status|version|--help"
+    "|a|an|the|as|at|by|for|from|in|into|of|off|on|onto|out|over|to|up-to|with|within"
+    "|and|or|but|if|so|than|then|that|this|these|those|which|while|when|whether"
+    "|is|are|was|were|be|been|being|it|its|them|their|there|they"
+    "|not|no|never|only|also|just|still|already|rather|instead"
+)
+_BASE_PLATFORM_ORACLE = re.compile(
+    rf"\b(?:{_BASE_PLATFORMS})\s+(?!(?:{_BASE_NOT_SUBCOMMANDS})\b)[a-z][\w-]+",
+    re.I,
+)
+
+#: Commands the base matcher fires on and head may stay quiet on. One line each,
+#: and the reason is the decision. `kubectl port-forward` is the only one.
+EXEMPT = {
+    "kubectl port-forward": "a tunnel, not a mutation of the cluster",
+    "kubectl port-forward svc/api 8080:80": "a tunnel, not a mutation of the cluster",
+}
+
+_SWEEP_PLATFORMS = (
+    "railway", "vercel", "fly", "flyctl", "heroku", "aws", "gcloud", "az", "doctl",
+    "kubectl", "helm", "terraform", "tofu", "netlify", "render", "supabase",
+    "cloudflare", "wrangler",
+)
+# The second bounce's verbs, one per platform, bare and behind a noun subcommand.
+_SWEEP_VERBS = (
+    "remove", "detach", "disable", "stop", "suspend", "revert", "replace",
+    "unpublish", "release",
+)
+# Real commands, including the shapes a widened noun exemption would swallow.
+# `projects`, `project`, `stack` and `teams` are descriptive nouns ONLY after a
+# determiner. Drop that determiner from `_SUBJECT_SPAN` and the five canaries
+# below go quiet: gcloud/supabase projects delete, vercel project rm,
+# heroku stack:set, heroku teams:remove.
+_SWEEP_SPECIFIC = (
+    "railway up",
+    "railway up --service api",
+    "railway down",
+    "railway redeploy",
+    "railway variables set X=1",
+    "railway service remove",
+    "railway volume delete",
+    "Run railway up",
+    "vercel deploy",
+    "vercel remove my-app",
+    "vercel rm my-app",
+    "vercel promote",
+    "vercel rollback",
+    "vercel env rm NAME",
+    "vercel project rm my-app",
+    "Run vercel remove my-app on the prod team",
+    "vercel remove my-app --yes",
+    "fly deploy",
+    "fly launch",
+    "fly apps remove x",
+    "fly postgres detach",
+    "fly postgres destroy",
+    "fly scale count 2",
+    "fly machine destroy",
+    "fly secrets set K=v",
+    "flyctl deploy",
+    "flyctl apps destroy x",
+    "heroku pg:reset",
+    "heroku config:set FOO=1",
+    "heroku maintenance:on",
+    "heroku ps:restart",
+    "heroku apps:destroy",
+    "heroku addons:destroy",
+    "heroku restart",
+    "heroku stack:set heroku-22",
+    "heroku teams:remove user@example.com",
+    "aws s3 rb s3://bucket --force",
+    "aws s3 rm s3://bucket/key",
+    "aws ec2 terminate-instances --instance-ids i-1",
+    "aws iam delete-user --user-name x",
+    "aws cloudformation delete-stack --stack-name s",
+    "aws eks delete-cluster --name c",
+    "gcloud projects delete my-proj",
+    "gcloud compute instances delete vm",
+    "gcloud run services delete svc",
+    "gcloud container clusters delete c",
+    "gcloud sql instances delete db",
+    "az group delete --name g",
+    "az network nsg rule delete --name r",
+    "az vm delete --name v",
+    "az webapp delete --name w",
+    "doctl compute droplet delete 1",
+    "doctl kubernetes cluster delete c",
+    "doctl apps delete 1",
+    "kubectl apply -f k8s/api.yaml",
+    "kubectl delete pod x",
+    "kubectl rollout restart deployment/api",
+    "kubectl scale deployment/api --replicas=3",
+    "kubectl drain node1",
+    "kubectl cordon node1",
+    "kubectl edit deployment/api",
+    "kubectl autoscale deployment/api --min=1 --max=5",
+    "kubectl create secret generic s",
+    "kubectl replace -f k8s/api.yaml",
+    "kubectl patch deployment/api -p {}",
+    "kubectl rollout undo deployment/api",
+    "helm install rel chart",
+    "helm uninstall rel",
+    "helm upgrade rel chart",
+    "helm rollback rel 1",
+    "helm delete rel",
+    "terraform apply",
+    "terraform destroy",
+    "terraform force-unlock LOCKID",
+    "terraform import addr id",
+    "tofu apply",
+    "tofu destroy",
+    "netlify deploy --prod",
+    "netlify env:set KEY 1",
+    "netlify sites:delete",
+    "netlify unlink",
+    "render deploys create",
+    "render services delete srv",
+    "supabase db reset",
+    "supabase db reset --linked",
+    "supabase db dump --linked",
+    "supabase link",
+    "supabase migration repair 20240101000000 --status reverted",
+    "supabase projects delete ref",
+    "wrangler deploy",
+    "wrangler publish",
+    "wrangler delete",
+    "wrangler kv:key delete",
+    "cloudflare pages deploy",
+)
+
+
+def _sweep() -> list[str]:
+    commands = list(_SWEEP_SPECIFIC)
+    for platform in _SWEEP_PLATFORMS:
+        for verb in _SWEEP_VERBS:
+            commands.append(f"{platform} {verb}")
+            commands.append(f"{platform} apps {verb} x")
+    seen: set[str] = set()
+    unique: list[str] = []
+    for command in commands:
+        if command in seen or command in EXEMPT:
+            continue
+        seen.add(command)
+        unique.append(command)
+    return unique
+
+
+SWEEP = _sweep()
+
+
+def _base_platform_fires(text: str) -> bool:
+    return any(
+        _BASE_PLATFORM_ORACLE.search(line) for line in text.splitlines() if line.strip()
+    )
+
+
+def _platform_command(text: str) -> bool:
+    return any(s["rule"] == "platform-command" for s in reach_svc.signals(text))
+
+
+@pytest.mark.parametrize("command", SWEEP)
+def test_head_fires_wherever_the_base_matcher_fires(command):
+    """Fail closed. A command the base matcher flags stays flagged, unless it is
+    named in EXEMPT. Widening a descriptive exemption until it swallows one of
+    these is a red row."""
+    assert _base_platform_fires(command), (
+        f"sweep entry is not a base hit, so a quiet head would pass: {command}"
+    )
+    assert _platform_command(command), command
+
+
+@pytest.mark.parametrize("command", sorted(EXEMPT))
+def test_exempt_commands_stay_quiet_and_say_why(command):
+    """The exemption is a decision with a reason, not a hole. The base matcher
+    fires here; head does not. Delete `port-forward` from the exempt token and
+    this fails."""
+    assert EXEMPT[command].strip(), command
+    assert _base_platform_fires(command), command
+    assert not reach_svc.signals(command), command
+
+
 # ---- 4. the call: delegate consults the same reading the unit tests do (GRPH-1037) ------
 
 _DESCRIPTIVE = (
@@ -484,6 +691,8 @@ _DESCRIPTIVE = (
     "a view that renders a deploy topology",
     "a migration that adds a column",
     "migrate, said as prose",
+    "a future deploy, said as a sentence",
+    "a possessive, not an invocation",
 )
 _COMMANDS = (
     "railway up with a flag",
@@ -495,11 +704,17 @@ _COMMANDS = (
     "railway up, fenced",
     "docker compose down, fenced",
     "a kubectl rollout, fenced",
-    # The four the bounce named. Delegate has to refuse them, not only signals().
+    # The four the first bounce named, and the five the second bounce named.
+    # Delegate has to refuse them, not only signals().
     "supabase db reset",
     "supabase db reset --linked",
     "heroku pg:reset",
     "heroku config:set",
+    "vercel remove",
+    "vercel remove, in a sentence",
+    "fly postgres detach",
+    "fly apps remove",
+    "railway service remove",
 )
 
 
@@ -507,8 +722,8 @@ def test_descriptive_prose_delegates_without_an_acknowledgement(
         client, auth, key, db, proj, planner):
     """THE CALL. `signals()` can be right while `delegate` never asks it, and a suite that
     only calls the function stays green — the absence then reads as "this prose is fine to
-    hand to a shell". Sabotage: restore the grammar-blind platform matcher and the legend
-    is refused."""
+    hand to a shell". Sabotage: delete the legend lookbehind or the subject scrub and
+    the legend or the sentence is refused."""
     for name in _DESCRIPTIVE:
         text = MUST_NOT_FIRE[name]
         assert not reach_svc.signals(text), name

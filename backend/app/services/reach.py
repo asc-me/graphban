@@ -68,9 +68,11 @@ _PLATFORMS = (
 #: description had to quote the phrase to report it.
 #:
 #: A function word after the platform name means the sentence is using the word as English
-#: (`render as`, `render the`). That exclusion is necessary and not sufficient — `Railway
-#: stack` is not a function word either. The command shape below is what separates a name
-#: from an invocation.
+#: (`render as`, `render the`). This is the base matcher's list, from before GRPH-1037
+#: narrowed it to a verb allowlist. That allowlist fails open: every verb it lacks
+#: (`reset`, then `remove` and `detach`) is a destructive command the guard goes quiet on.
+#: The default below is the base matcher again. It fires on a platform name followed by
+#: any other word. The only things that stay quiet are the named shapes under it.
 _NOT_SUBCOMMANDS = (
     # reading, not changing
     "logs|get|status|version|--help"
@@ -79,92 +81,66 @@ _NOT_SUBCOMMANDS = (
     "|and|or|but|if|so|than|then|that|this|these|those|which|while|when|whether"
     "|is|are|was|were|be|been|being|it|its|them|their|there|they"
     "|not|no|never|only|also|just|still|already|rather|instead"
-    # auxiliaries — "the Railway project will deploy" is a sentence, not a subcommand
-    "|will|would|should|could|can|may|might|must|shall"
 )
 
-#: Verbs an infrastructure CLI is actually invoked with (GRPH-1037).
+#: The one base hit that is not a mutation. `kubectl port-forward` opens a tunnel.
+#: It stays its own token, rather than joining `_NOT_SUBCOMMANDS`, so the test's
+#: EXEMPT list and this token are the same decision. Delete it and the exempt row fires.
+_EXEMPT_SUBCOMMANDS = "port-forward"
+
+#: A diagram legend glues the platform to the previous word (`compose/Railway stack`,
+#: `api.railway stack`). The base matcher sees a word boundary at the slash or the dot
+#: and reads `Railway stack` as a subcommand. A command is not written that way.
+#: `(?<![/.])` is the whole exemption. Delete it and the legend fires.
+_LEGEND_LOOKBEHIND = r"(?<![/.])"
+
+#: Sentence subject, not an invocation: "The Railway project will deploy next week",
+#: and the same shape for stack / dashboard / team / account / docs. The determiner
+#: is what makes it a subject. A global stop-list of those nouns would also swallow
+#: real commands the base matcher fires on — `gcloud projects delete`,
+#: `supabase projects delete`, `vercel project rm`, `heroku stack:set`,
+#: `heroku teams:remove` — because `project`, `stack` and `team` are subcommands.
+#: The noun list applies ONLY after a determiner.
 #:
-#: GRPH-989 stopped the rule on function words, and that was not enough. The matcher was
-#: still "a platform name, then any other word", so `Railway stack` — a diagram legend —
-#: read as `railway` with the subcommand `stack`. The same shape refused a Settings panel
-#: for `render` and a pile of topology prose for naming Railway at all. A stop-list of
-#: nouns cannot close that: the next legend says `project` or `service` or `topology`.
+#: A possessive (`Railway's dashboard`) needs no span. The base matcher requires
+#: whitespace after the platform name, and `'` is not whitespace.
 #:
-#: A command is shaped like one. The platform name is followed by a verb (`up`, `deploy`,
-#: `apply`, `reset`), or by a noun subcommand and then a verb within three nouns
-#: (`variables set`, `compute instances delete`, `network nsg rule delete`), or by a
-#: flag in that window, or by a colon subcommand (`pg:reset`, `config:set`,
-#: `maintenance:on`).
-#: `Railway stack (web+api+db)` is a name. `railway up --service api` is an invocation.
-#: `supabase db reset` is an invocation too: `reset` is the verb that wipes a database,
-#: and leaving it off the list made the guard go quiet on the command it exists to catch.
-#:
-#: A colon is one token. `_WORD` cannot cross `:`, so `heroku pg:reset` never reached a
-#: verb that had to be a separate word. The tail is not always a listed verb — `on` in
-#: `maintenance:on` is a function word when it stands alone, and it must stay one, or
-#: `render on` becomes a command. Prose puts a space after the colon (`stack: the legend`);
-#: the glued form is how the CLI writes a subcommand.
-#:
-#: A flag is accepted after one noun or after two, and one resource argument may sit
-#: between the second noun and the flag. `supabase db dump --linked` has to fire even
-#: though `dump` is not a verb: the flag is what makes the line an invocation, and a
-#: window of one noun misses `<platform> <noun> <word> --flag`. `aws s3 rb s3://bucket
-#: --force` is the same shape with the bucket uri in front of `--force`. `rb` stays off
-#: the verb list — two letters that mean "remove bucket" only in that one CLI.
-#:
-#: A verb is accepted within three nouns, not two. `gcloud compute instances delete` is
-#: two. `az network nsg rule delete` is three (group, subgroup, resource, verb), and the
-#: grammar-blind matcher fired on `az network`. A fourth noun stays quiet: that is where
-#: the window stops being a command and starts being a sentence.
-#:
-#: Two things this deliberately does NOT do. It does not ignore backticks or fenced blocks:
-#: the commands that caused the original incident are written that way (`railway up`), and
-#: stripping them would blind the guard to the case it exists for. It does not treat a
-#: declared `reach=repo` as a reason to stay quiet: every item this fires on is already
-#: declared `repo`, and the incident was one of those whose prose was a real command.
-#: Weighting the declaration would delete the guard.
-#:
-#: `docker compose` is not in `_PLATFORMS` — `compose` alone is how a legend says
-#: `compose/Railway stack`, and a slash is not a subcommand. The two-word CLI is matched
-#: on its own. Flags may sit between `compose` and the verb (`--profile prod down`);
-#: they must not hide it.
-_COMMAND_VERBS = (
-    "add|annotate|apply|autoscale|build|connect|cordon|cp|create|delete|deploy|destroy"
-    "|down|drain|drop|edit|exec|export|expose|force-unlock|import|init|install|kill|label"
-    "|launch|link|login|logout|mv|open|patch|plan|promote|provision|publish|pull|purge"
-    "|push|put|redeploy|repair|reset|restart|revoke|rm|rollback|rollout|rotate|run|scale"
-    "|set|ssh|start|stop|sync|taint|terminate|truncate|uncordon|undo|uninstall|unlink"
-    "|unset|up|update|upgrade|wipe"
+#: Python `re` refuses a variable-width lookbehind, and the determiners are not one
+#: width, so this span is scrubbed out of the line before the matcher runs. Delete
+#: the scrub and the sentence fires. Drop the determiner from the span and the
+#: parity sweep goes red on the commands named above.
+_DETERMINERS = r"the|a|an|our|their|this|that"
+_DESCRIPTIVE_NOUNS = (
+    "stack|stacks|project|projects|dashboard|dashboards|team|teams"
+    "|account|accounts|doc|docs|topology|diagram|legend"
 )
-_WORD = r"[a-z][\w-]*"
+_SUBJECT_SPAN = re.compile(
+    rf"\b(?:{_DETERMINERS})\s+(?:{_PLATFORMS})\s+(?:{_DESCRIPTIVE_NOUNS})\b",
+    re.I,
+)
+
 _FLAG = r"--?[\w.-]+"
-#: A noun subcommand: not a function word, not a reading verb. `db` in `supabase db reset`.
-_NOUN = rf"(?!(?:{_NOT_SUBCOMMANDS})\b){_WORD}"
-#: `pg:reset`, `config:set`, `env:set`, `maintenance:on`. One token, no space around `:`.
-_COLON = rf"{_WORD}:{_WORD}"
+#: The base matcher, plus the legend lookbehind and the port-forward exemption.
+#: `vercel remove`, `fly postgres detach`, `heroku pg:reset` and
+#: `az network nsg rule delete` all fire on the first word after the platform.
+#: There is no verb list: a missing verb is a command the guard would not see.
+#:
+#: `docker compose` is not in `_PLATFORMS`. `compose` alone is how a legend says
+#: `compose/Railway`, and a slash is not a subcommand. The two-word CLI is matched
+#: on its own, fail-closed the same way: any word that is not grammar, not a verb
+#: list. Flags may sit between `compose` and that word (`--profile prod down`).
+#:
+#: Two things this deliberately does NOT do. It does not ignore backticks or fenced
+#: blocks: the commands that caused the original incident are written that way
+#: (`railway up`), and stripping them would blind the guard to the case it exists
+#: for. It does not treat a declared `reach=repo` as a reason to stay quiet: every
+#: item this fires on is already declared `repo`, and the incident was one of those
+#: whose prose was a real command. Weighting the declaration would delete the guard.
 _PLATFORM_COMMAND = (
-    rf"\b(?:{_PLATFORMS})\s+(?:"
-    # platform, then a verb (`railway up`, `helm install`, `terraform force-unlock`)
-    rf"(?:{_COMMAND_VERBS})\b"
-    # or a colon subcommand (`heroku pg:reset`)
-    rf"|{_COLON}\b"
-    # or a noun and a verb (`railway variables set`)
-    rf"|{_NOUN}\s+(?:{_COMMAND_VERBS})\b"
-    # or one more noun, then a verb (`gcloud compute instances delete`)
-    rf"|{_NOUN}\s+{_NOUN}\s+(?:{_COMMAND_VERBS})\b"
-    # or a third (`az network nsg rule delete`)
-    rf"|{_NOUN}\s+{_NOUN}\s+{_NOUN}\s+(?:{_COMMAND_VERBS})\b"
-    # or a flag. One noun, two nouns, or two nouns and one resource argument
-    # (`aws s3 rb s3://bucket --force`). The argument must not itself be a flag,
-    # or the optional group swallows the flag it was meant to leave for the next piece.
-    rf"|{_NOUN}\s+{_FLAG}"
-    rf"|{_NOUN}\s+{_NOUN}\s+{_FLAG}"
-    rf"|{_NOUN}\s+{_NOUN}\s+(?!{_FLAG})\S+\s+{_FLAG}"
-    rf")"
-    # `docker compose down` / `docker compose --profile prod down` / `docker-compose down`.
-    # Not `compose/Railway`.
-    rf"|\bdocker(?:\s+|-)compose(?:\s+{_FLAG}(?:\s+\S+)?)*\s+(?:{_COMMAND_VERBS})\b"
+    rf"{_LEGEND_LOOKBEHIND}\b(?:{_PLATFORMS})\s+"
+    rf"(?!(?:{_NOT_SUBCOMMANDS}|{_EXEMPT_SUBCOMMANDS})\b)[a-z][\w-]+"
+    rf"|\bdocker(?:\s+|-)compose(?:\s+{_FLAG}(?:\s+\S+)?)*\s+"
+    rf"(?!(?:{_NOT_SUBCOMMANDS})\b)[a-z][\w-]+"
 )
 
 #: Verbs that CHANGE a running system. Reading verbs are absent on purpose: `vercel logs` and
@@ -243,7 +219,12 @@ def signals(text: str | None) -> list[dict]:
                 # evidence printed three times, and they crowd out the second rule that
                 # fired — which is the one that would have changed the reader's mind.
                 continue
-            if pattern.search(stripped):
+            # The sentence-subject exemption is variable width, so it cannot be a
+            # lookbehind on the pattern. Scrub that one span, then search. The
+            # pattern itself still carries the legend lookbehind and port-forward.
+            # Other rules see the original line: scrubbing must not hide them.
+            haystack = _SUBJECT_SPAN.sub(" ", stripped) if name == "platform-command" else stripped
+            if pattern.search(haystack):
                 seen.add(name)
                 found.append({"rule": name, "means": means, "quote": _quote(stripped)})
                 if len(found) >= MAX_SIGNALS:
