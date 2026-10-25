@@ -11,6 +11,8 @@ Sabotage (a): put the receipt back on `client.call("update_item", ...)` inside
 
 Sabotage (b): `return True` at the top of `fleet._wave_cut_item`. The route then accepts
 an item the wave did not cut, and `test_a_wave_that_did_not_cut_the_item_is_refused` fails.
+Dropping only the project comparison fails
+`test_the_same_wave_label_in_another_project_is_not_this_wave` and leaves (b)'s test green.
 """
 import sys
 from pathlib import Path
@@ -150,6 +152,26 @@ def test_a_wave_that_did_not_cut_the_item_is_refused(client, auth, db):
     missing = _post(client, planner, item_id="NO-SUCH", kind="cut_from",
                     branch="gb/obs", base=BASE)
     assert missing.status_code == 404
+
+
+def test_the_same_wave_label_in_another_project_is_not_this_wave(client, auth, db):
+    """`next_wave` restarts at `wave-1` in every project. `can_write` is the user's
+    membership, so one operator owning both projects is not a scope check.
+
+    Project A's planner key (`fleet_wave` `wave-1`) posting `cut_from` about an item
+    in project B that has a `wave-1` seat must be 404. Drop the project comparison in
+    `_wave_cut_item` and this is 200 with a note, which plants the base
+    `commit_is_not_the_base` trusts on an item this wave did not cut.
+    """
+    _proj_a, _hand_a, planner_a = _project(client, auth)
+    proj_b = client.post("/api/projects", json={"name": "Elsewhere"}, headers=auth).json()["id"]
+    hand_b = client.post("/api/api-keys", json={"name": "hand-b", "project_id": proj_b},
+                         headers=auth).json()["plaintext"]
+    _worker, item = _item(client, hand_b, title="foreign")
+    _bind(db, proj_b, item, wave="wave-1")
+    refused = _post(client, planner_a, item_id=item, kind="cut_from", branch="gb/obs", base=BASE)
+    assert refused.status_code == 404, refused.text
+    assert _notes(client, hand_b, item) == []
 
 
 def test_a_seat_from_another_key_or_another_wave_does_not_count(client, auth, db):

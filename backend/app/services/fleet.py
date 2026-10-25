@@ -4803,7 +4803,16 @@ def _wave_cut_item(db: Session, api_key, item: Item) -> bool:
     has claimed — AND either its wave string is the key's, or the agent that minted it
     authenticated with this key. Revoked seats still count: a late receipt is the case
     the route is for, and a revoke must not erase the base.
+
+    A project-scoped key only matches a seat in its own project. `next_wave` restarts
+    at `wave-1` in every project, and `can_write` is the user's membership, so the wave
+    string alone would let project A's planner plant a base on an item project B's
+    first wave cut. An unscoped key has no project to compare and stays on the checks
+    below.
     """
+    key_project = getattr(api_key, "project_id", None)
+    if key_project and key_project != item.project_id:
+        return False
     holders = [h for h in (item.claimed_by, item.built_by) if h]
     bound = [Enrolment.item_id == item.id]
     if holders:
