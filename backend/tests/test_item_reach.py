@@ -372,6 +372,16 @@ MUST_FIRE = {
     "fly postgres detach": "fly postgres detach",
     "fly apps remove": "fly apps remove x",
     "railway service remove": "railway service remove",
+    # Bounce of 3efc3177. Punctuation after determiner+noun is an imperative's
+    # object, not a subject. A passive after the modal is the instruction.
+    # A path-prefixed binary before "(" is not a legend.
+    "delete the vercel project": "Delete the vercel project.",
+    "wipe the supabase project": "Wipe the supabase project.",
+    "drop the supabase projects": "Drop the supabase projects!",
+    "remove the heroku teams": "Remove the heroku teams.",
+    "tear down the kubectl projects": "Tear down the kubectl projects, now",
+    "the vercel project will be removed": "THE VERCEL PROJECT WILL BE REMOVED",
+    "path-prefixed railway projects": "Run ./bin/railway projects (prod)",
 }
 
 MUST_NOT_FIRE = {
@@ -405,8 +415,8 @@ MUST_NOT_FIRE = {
     # `_LEGEND_SPAN` and the legend plus the symptom fail. Delete the subject
     # scrub and the future-deploy sentence fails. A possessive needs neither:
     # the matcher requires whitespace after the platform name, and `'` is not
-    # whitespace. Widening either span (any slash, or a noun with no tail)
-    # is caught by the parity sweep, not by these fixtures.
+    # whitespace. Widening either span (any slash, a punctuation tail, or a
+    # passive participle) is caught by the parity sweep, not by these fixtures.
     "a topology legend": (
         "compose/Railway stack (web+api+db) · agent hosts/outposts "
         "(fleet + spawned vendor agents) · user machines (cli)"),
@@ -424,6 +434,15 @@ MUST_NOT_FIRE = {
     # also a real subcommand (`vercel project rm`), and that one must still fire.
     "a future deploy, said as a sentence": (
         "The Railway project will deploy next week once the page renders"),
+    # The same subject after sentence punctuation, with at most one
+    # conjunction between the punctuation and the determiner. A verb in
+    # that position is an imperative and is a parity row, not one of these.
+    "a subject after a sentence": (
+        "Ship the page. The Railway project will deploy next week"),
+    "a subject after a conjunction": (
+        "Done. But the Railway project will deploy next week"),
+    "a subject that opens on a conjunction": (
+        "And the Railway project will deploy next week"),
     "a possessive, not an invocation": "Railway's dashboard shows the stack",
 }
 
@@ -533,12 +552,15 @@ _SWEEP_VERBS = (
 )
 # Real commands, including the shapes a widened noun exemption would swallow.
 # `projects`, `project`, `stack` and `teams` are descriptive nouns ONLY after a
-# determiner, and only when that noun ends the subject. Drop the determiner
-# from `_SUBJECT_SPAN` and the bare canaries go quiet: gcloud/supabase
-# projects delete, vercel project rm, heroku stack:set, heroku teams:remove.
-# Drop the tail (modal, sentence punctuation, or end of line) and the six
-# determiner-plus-subcommand lines go quiet. Put `(?<![/.])` back on the
-# platform pattern and the four path-prefixed lines go quiet.
+# determiner, and only when that determiner starts the clause and a modal
+# follows. Drop the determiner from `_SUBJECT_SPAN` and the bare canaries go
+# quiet: gcloud/supabase projects delete, vercel project rm, heroku stack:set,
+# heroku teams:remove. Put the punctuation or end-of-line tail back and the
+# imperative rows go quiet (`Delete the vercel project.`). Drop the passive
+# exclusion and `THE VERCEL PROJECT WILL BE REMOVED` goes quiet. Match any
+# slash as legend glue and `Run ./bin/railway projects (prod)` goes quiet.
+# Put `(?<![/.])` back on the platform pattern and the path-prefixed lines
+# go quiet.
 _SWEEP_SPECIFIC = (
     "railway up",
     "railway up --service api",
@@ -640,15 +662,60 @@ _SWEEP_SPECIFIC = (
     "./bin/railway up",
     "~/bin/fly deploy",
     "infra/terraform destroy -auto-approve",
-    # A determiner plus a noun is a subject only when the noun is followed by
-    # a modal, sentence punctuation, or the end of the line. `:` and the next
-    # word are the subcommand.
+    # A determiner plus a noun is a subject only when it starts the clause
+    # and a modal follows. `:` and the next word are the subcommand. A verb
+    # before the determiner is an imperative, including when the noun is
+    # followed by punctuation. A modal plus `be` plus a destructive
+    # participle is the instruction.
     "Run the heroku stack:set heroku-22 command on prod",
     "Use the gcloud projects delete my-proj command",
     "Execute the supabase projects delete abc command",
     "Run the vercel project rm my-app command",
     "Run our heroku teams:remove x",
     "run that flyctl stack update",
+    "Delete the vercel project.",
+    "Wipe the supabase project.",
+    "Drop the supabase projects!",
+    "Remove the heroku teams.",
+    "Tear down the kubectl projects, now",
+    "THE VERCEL PROJECT WILL BE REMOVED",
+    "Run ./bin/railway projects (prod)",
+    # Adversarial pass over the same hole: a determiner, a platform, and a
+    # destructive imperative or passive. Varied verb, case, punctuation, and
+    # conjunction. Each one is a base hit; head has to fire on it too.
+    "Destroy the aws account.",
+    "Purge the gcloud project!",
+    "Terminate the heroku apps, immediately",
+    "Please erase the terraform stack.",
+    "And then delete the fly apps.",
+    "NOW REMOVE THE RAILWAY SERVICE.",
+    "Kindly drop the supabase database;",
+    "Go and wipe the vercel deployment.",
+    "We should destroy the netlify site.",
+    "Don't keep it: delete the render service.",
+    "After the window, remove the cloudflare zone.",
+    "Shut down the fly apps.",
+    "Also, kill the wrangler namespace.",
+    "Remove the heroku teams, and the vercel project.",
+    "Please, Delete the doctl droplet.",
+    "(delete the tofu state)",
+    "Tear down the helm release!",
+    "Once it is quiet. Destroy the az group.",
+    "Yes! Remove the netlify site.",
+    "Now delete the vercel project",
+    "Still, remove the fly apps",
+    "So drop the supabase projects",
+    "But wipe the render account.",
+    "~/bin/fly projects (prod)",
+    "/usr/local/bin/kubectl projects (ns)",
+    "The supabase project will be wiped tonight",
+    "The railway stack will be destroyed.",
+    "The gcloud project will be dropped",
+    "The vercel project will be torn down",
+    "The heroku teams will be reset",
+    "The aws account will be deleted",
+    "Ship it. And the netlify account will be wiped",
+    "But the render account will be deleted",
 )
 
 
@@ -734,6 +801,13 @@ _COMMANDS = (
     "fly postgres detach",
     "fly apps remove",
     "railway service remove",
+    "delete the vercel project",
+    "wipe the supabase project",
+    "drop the supabase projects",
+    "remove the heroku teams",
+    "tear down the kubectl projects",
+    "the vercel project will be removed",
+    "path-prefixed railway projects",
 )
 
 
