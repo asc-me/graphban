@@ -321,6 +321,20 @@ MUST_FIRE = {
         "Set TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET on Vercel production and redeploy."),
     "a platform command": "Run `railway variables set SENTRY_DSN=...`, then `railway up`.",
     "a cluster rollout": "kubectl apply -f k8s/api.yaml and scale the deployment to 3 replicas.",
+    # GRPH-1037. Command-shaped, including the forms people actually write. Ignoring
+    # backticks or fences would make every one of these quiet, which is the guard
+    # declining the case it exists for. `docker compose` is not a platform name plus a
+    # word — `compose/Railway` is a legend — so it is matched as the two-word CLI.
+    # Sabotage: drop the platform-command rule and these fail.
+    "railway up with a flag": "railway up --service api",
+    "docker compose down": "docker compose down",
+    "a kubectl rollout restart": "kubectl rollout restart deployment/api",
+    "railway up, backticked": "`railway up --service api`",
+    "docker compose down, backticked": "`docker compose down`",
+    "a kubectl rollout, backticked": "`kubectl rollout restart deployment/api`",
+    "railway up, fenced": "```\nrailway up --service api\n```",
+    "docker compose down, fenced": "```\ndocker compose down\n```",
+    "a kubectl rollout, fenced": "```\nkubectl rollout restart deployment/api\n```",
 }
 
 MUST_NOT_FIRE = {
@@ -348,6 +362,24 @@ MUST_NOT_FIRE = {
         "and an empty project look the same."),
     "an em dash instead of a number": (
         "An unavailable counter should render an em dash rather than a zero."),
+    # GRPH-1037. Naming a platform in a diagram is not invoking it. The grammar-blind
+    # matcher treated `Railway stack` as `railway` with the subcommand `stack`, and the
+    # Symptom paragraph quotes that legend, so the item that reports the bug tripped the
+    # guard too. Sabotage: restore `\b(platform)\s+(?!function-word)[a-z][\w-]+` and
+    # these three fail.
+    "a topology legend": (
+        "compose/Railway stack (web+api+db) · agent hosts/outposts "
+        "(fleet + spawned vendor agents) · user machines (cli)"),
+    "the symptom that quotes the legend": (
+        "**Symptom.** The reach classifier's `platform-command` rule (\"names an "
+        "infrastructure CLI with a subcommand\") fires on *descriptive* prose, not "
+        "invoked commands. GRPH-1034 is declared `reach=repo` (it builds a read-only UI "
+        "view) but was flagged on the quoted phrase `compose/Railway stack (web+api+db) "
+        "· agent hosts/outposts (fleet + spawned vendor agents) · user machines (cli)` "
+        "— which is a diagram legend, not a command to run."),
+    "a view that renders a deploy topology": "the view renders the deploy topology",
+    "a migration that adds a column": "a migration adds a column",
+    "migrate, said as prose": "we migrate the rows before the page renders",
 }
 
 
@@ -411,3 +443,57 @@ def test_each_rule_is_quoted_at_most_once():
 
     assert len(found) == 2
     assert {s["rule"] for s in found} == {"platform-command", "secret-rotation"}
+
+
+# ---- 4. the call: delegate consults the same reading the unit tests do (GRPH-1037) ------
+
+_DESCRIPTIVE = (
+    "a topology legend",
+    "the symptom that quotes the legend",
+    "a view that renders a deploy topology",
+    "a migration that adds a column",
+    "migrate, said as prose",
+)
+_COMMANDS = (
+    "railway up with a flag",
+    "docker compose down",
+    "a kubectl rollout restart",
+    "railway up, backticked",
+    "docker compose down, backticked",
+    "a kubectl rollout, backticked",
+    "railway up, fenced",
+    "docker compose down, fenced",
+    "a kubectl rollout, fenced",
+)
+
+
+def test_descriptive_prose_delegates_without_an_acknowledgement(
+        client, auth, key, db, proj, planner):
+    """THE CALL. `signals()` can be right while `delegate` never asks it, and a suite that
+    only calls the function stays green — the absence then reads as "this prose is fine to
+    hand to a shell". Sabotage: restore the grammar-blind platform matcher and the legend
+    is refused."""
+    for name in _DESCRIPTIVE:
+        text = MUST_NOT_FIRE[name]
+        assert not reach_svc.signals(text), name
+        item = _item(client, key, name, description=text)
+        _ok(_mcp(client, key, "delegate", {
+            "id": item, "lane": "backend", "tier": "cheap",
+            "agent_id": planner, "seat": True}))
+
+
+def test_command_shaped_prose_is_refused_without_an_acknowledgement(
+        client, auth, key, db, proj, planner):
+    """The other half of the call. A command in backticks or a fence is still a command —
+    that is where the incident's own checklist was written. Sabotage: drop the
+    platform-command rule and these delegate."""
+    for name in _COMMANDS:
+        text = MUST_FIRE[name]
+        found = reach_svc.signals(text)
+        assert found and any(s["rule"] == "platform-command" for s in found), name
+        item = _item(client, key, name, description=text)
+        e = _err(_mcp(client, key, "delegate", {
+            "id": item, "lane": "backend", "tier": "cheap",
+            "agent_id": planner, "seat": True}))
+        assert "acknowledge_reach=true" in e["message"], name
+        assert "platform-command" in e["message"], name

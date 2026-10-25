@@ -67,10 +67,10 @@ _PLATFORMS = (
 #: being built, once on a note explaining the trap, and once on GRPH-989 itself, whose
 #: description had to quote the phrase to report it.
 #:
-#: An infrastructure subcommand is a verb or a noun (`deploy`, `up`, `apply`, `variables`); it
-#: is never `as`, `the` or `it`. A function word after the platform name means the sentence is
-#: using the word as English. That is why this is the discriminator rather than a longer
-#: platform list or a hand-maintained exception per item.
+#: A function word after the platform name means the sentence is using the word as English
+#: (`render as`, `render the`). That exclusion is necessary and not sufficient — `Railway
+#: stack` is not a function word either. The command shape below is what separates a name
+#: from an invocation.
 _NOT_SUBCOMMANDS = (
     # reading, not changing
     "logs|get|status|version|--help"
@@ -79,6 +79,53 @@ _NOT_SUBCOMMANDS = (
     "|and|or|but|if|so|than|then|that|this|these|those|which|while|when|whether"
     "|is|are|was|were|be|been|being|it|its|them|their|there|they"
     "|not|no|never|only|also|just|still|already|rather|instead"
+    # auxiliaries — "the Railway project will deploy" is a sentence, not a subcommand
+    "|will|would|should|could|can|may|might|must|shall"
+)
+
+#: Verbs an infrastructure CLI is actually invoked with (GRPH-1037).
+#:
+#: GRPH-989 stopped the rule on function words, and that was not enough. The matcher was
+#: still "a platform name, then any other word", so `Railway stack` — a diagram legend —
+#: read as `railway` with the subcommand `stack`. The same shape refused a Settings panel
+#: for `render` and a pile of topology prose for naming Railway at all. A stop-list of
+#: nouns cannot close that: the next legend says `project` or `service` or `topology`.
+#:
+#: A command is shaped like one. The platform name is followed by a verb (`up`, `deploy`,
+#: `apply`), or by a noun subcommand and then a verb within two words (`variables set`,
+#: `rollout restart`, `compute instances delete`), or by a flag. `Railway stack (web+api+db)`
+#: is a name. `railway up --service api` is an invocation.
+#:
+#: Two things this deliberately does NOT do. It does not ignore backticks or fenced blocks:
+#: the commands that caused the original incident are written that way (`railway up`), and
+#: stripping them would blind the guard to the case it exists for. It does not treat a
+#: declared `reach=repo` as a reason to stay quiet: every item this fires on is already
+#: declared `repo`, and the incident was one of those whose prose was a real command.
+#: Weighting the declaration would delete the guard.
+#:
+#: `docker compose` is not in `_PLATFORMS` — `compose` alone is how a legend says
+#: `compose/Railway stack`, and a slash is not a subcommand. The two-word CLI is matched
+#: on its own, same rule, same reason.
+_COMMAND_VERBS = (
+    "add|annotate|apply|build|connect|cordon|cp|create|delete|deploy|destroy|down|drain"
+    "|drop|exec|export|expose|import|init|kill|label|launch|link|login|logout|mv|open"
+    "|patch|plan|promote|provision|publish|pull|purge|push|put|redeploy|restart|revoke|rm"
+    "|rollback|rollout|rotate|run|scale|set|ssh|start|stop|sync|taint|truncate|uncordon"
+    "|undo|unlink|unset|up|update|upgrade|wipe"
+)
+_WORD = r"[a-z][\w-]*"
+_PLATFORM_COMMAND = (
+    # platform, then a verb
+    rf"\b(?:{_PLATFORMS})\s+(?:(?:{_COMMAND_VERBS})\b"
+    # or a noun subcommand and a verb (`railway variables set`)
+    rf"|(?!(?:{_NOT_SUBCOMMANDS})\b){_WORD}\s+(?:{_COMMAND_VERBS})\b"
+    # or one more word, then a verb (`gcloud compute instances delete`)
+    rf"|(?!(?:{_NOT_SUBCOMMANDS})\b){_WORD}\s+(?!(?:{_NOT_SUBCOMMANDS})\b)"
+    rf"{_WORD}\s+(?:{_COMMAND_VERBS})\b"
+    # or a flag, which is how an invocation looks when the verb list missed a noun
+    rf"|(?!(?:{_NOT_SUBCOMMANDS})\b){_WORD}\s+--?[\w.-]+)"
+    # `docker compose down` / `docker-compose down`. Not `compose/Railway`.
+    rf"|\bdocker(?:\s+|-)compose\s+(?:{_COMMAND_VERBS})\b"
 )
 
 #: Verbs that CHANGE a running system. Reading verbs are absent on purpose: `vercel logs` and
@@ -97,8 +144,7 @@ _SECRETS = r"key|keys|secret|secrets|token|tokens|credential|credentials|passwor
 _RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
         "platform-command",
-        re.compile(rf"\b({_PLATFORMS})\s+(?!(?:{_NOT_SUBCOMMANDS})\b)[a-z][\w-]+",
-                   re.I),
+        re.compile(_PLATFORM_COMMAND, re.I),
         "names an infrastructure CLI with a subcommand",
     ),
     (
