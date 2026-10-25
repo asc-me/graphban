@@ -100,8 +100,16 @@ def update_project(
     if project is None:
         raise HTTPException(404, "project not found")
     changed = body.model_dump(exclude_unset=True)
+    if "release_ref" in changed:
+        # Null clears, so it cannot ride the skip-None loop below. Not gated on the box
+        # being linked: that refusal belongs to the gitops PATCH, not to this field.
+        try:
+            projects_svc.set_release_ref(db, project, changed.pop("release_ref"))
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        changed["release_ref"] = project.release_ref
     for k, v in changed.items():
-        if v is not None:
+        if v is not None and k != "release_ref":
             setattr(project, k, v)
     db.commit()
     db.refresh(project)

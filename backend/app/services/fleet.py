@@ -895,6 +895,7 @@ def fleet_status(db: Session, project_id: str | None = None, *,
     from app.services import delegation as delegation_svc
     from app.services import fleet_matrix
     from app.services import fleet_profiles
+    from app.services import projects as projects_svc
 
     # GRPH-850: release items held by offline agents BEFORE building the roster, so the
     # supervisor sees the freed rows on the same tick it detects the absence. Idempotent —
@@ -949,6 +950,10 @@ def fleet_status(db: Session, project_id: str | None = None, *,
         # different claim from "the server could not be reached", which never gets this far
         # (`gbfleet.mcp.read_status` catches that and spells it out instead).
         "tier_map": fleet_matrix.overrides_for(db, project_id),
+        # GRPH-1109 (PRD-P57 S2): the branch the supervisor's merge rule watches, on the call
+        # it already makes. `{ref, source}`, never a bare null: `unmeasured` means no rule is
+        # installed, and nothing here infers `main`.
+        "release_ref": projects_svc.release_ref_view(db, project_id),
     }
 
 

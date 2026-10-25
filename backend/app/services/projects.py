@@ -305,3 +305,54 @@ def shell_counts(db: Session, project_id: str | None) -> dict:
         "triage_new": req_svc.untriaged_count(db, project_id),
         "lessons_published": mem_svc.count_published_lessons(db, project_id),
     }
+
+
+# ---- release ref (GRPH-1109 / PRD-P57 S2) ----------------------------------------------------
+
+RELEASE_REF_LITERAL = "release_ref stores one literal ref, not a pattern"
+
+
+def normalize_release_ref(raw: str | None) -> str | None:
+    """`None` or blank clears; anything else must be ONE literal branch name.
+
+    Globs are refused with the same metacharacters gitops refuses on its branch literals
+    (`gitops.GLOB_METACHARS`), and so are naming tokens and whitespace: this column stores
+    the one ref the merge rule watches, so `release/*` has no single answer to give.
+    """
+    from app.services.gitops import GLOB_METACHARS
+
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if any(ch in value for ch in GLOB_METACHARS) or "{" in value or "}" in value:
+        raise ValueError(f"{RELEASE_REF_LITERAL}: {value!r} is a pattern")
+    if any(ch.isspace() for ch in value):
+        raise ValueError(f"{RELEASE_REF_LITERAL}: {value!r} contains whitespace")
+    return value
+
+
+def set_release_ref(db: Session, project: Project, raw: str | None) -> str | None:
+    """Store (or clear) the project's release ref. Caller commits.
+
+    No linked-box check, on purpose: the gitops PATCH refusal on a linked box guards the
+    org's delivery contract, and this is a fact about this box's own repository.
+    """
+    project.release_ref = normalize_release_ref(raw)
+    return project.release_ref
+
+
+def release_ref_view(db: Session, project_id: str | None) -> dict:
+    """`{ref, source}` for a reader that must not mistake unset for `main`.
+
+    `source` is `project` when set and `unmeasured` when not — the gitops word for the
+    same state, so a supervisor never has to treat a bare null as an answer. A missing
+    project is `unknown`: nobody could look, which is not the same as nothing set.
+    """
+    project = db.get(Project, project_id) if project_id else None
+    if project is None:
+        return {"ref": None, "source": "unknown"}
+    if project.release_ref:
+        return {"ref": project.release_ref, "source": "project"}
+    return {"ref": None, "source": "unmeasured"}

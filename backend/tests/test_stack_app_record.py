@@ -400,7 +400,7 @@ def _migration():
     return mod
 
 
-def test_alembic_stays_single_head_at_0140():
+def test_alembic_stays_single_head_with_0140_in_the_chain():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
@@ -408,7 +408,9 @@ def test_alembic_stays_single_head_at_0140():
     cfg.set_main_option("script_location", str(_BACKEND / "alembic"))
     cfg.set_main_option("path_separator", "os")
     script = ScriptDirectory.from_config(cfg)
-    assert script.get_heads() == ["0140"]
+    # 0141 (GRPH-1109, release_ref) landed on top; the chain stays linear through 0140.
+    assert script.get_heads() == ["0141"]
+    assert script.get_revision("0141").down_revision == "0140"
     rev = script.get_revision("0140")
     assert rev.down_revision == "0139"
 
