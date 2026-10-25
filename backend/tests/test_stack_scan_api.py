@@ -65,6 +65,23 @@ def test_a_summary_less_finding_is_422_and_nothing_is_stored(client, auth):
     assert web["categories"]["security"]["state"] == "never_scanned"
 
 
+def test_an_unknown_scanner_without_category_is_422_and_nothing_is_stored(client, auth):
+    # GRPH-1108: no fallback category — a default would let one empty row paint it clean.
+    key = _key(client, auth)
+    r = client.post("/api/platform/stack/scans", json={
+        "project_id": "core", "scanner_id": "coderabbit", "path": "web/",
+        "scanned_sha": "cafe1234", "findings": [],
+    }, headers={"X-API-Key": key})
+    assert r.status_code == 422, r.text
+    assert "pip-audit" in r.text and "refactor" in r.text
+
+    h = client.get(
+        "/api/platform/stack/health?project_id=core&head_sha=cafe1234", headers=auth,
+    ).json()
+    web = next(c for c in h["components"] if c["id"] == "web")
+    assert web["categories"]["security"]["state"] == "never_scanned"
+
+
 def test_no_key_is_401(client):
     r = client.post("/api/platform/stack/scans", json={
         "project_id": "core", "scanner_id": "bandit", "path": "web/",

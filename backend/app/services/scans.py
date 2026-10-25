@@ -75,6 +75,21 @@ _SECURITY_SCANNERS = frozenset({
 _DEADCODE_SCANNERS = frozenset({"deadcode", "vulture", "knip", "ts-prune"})
 # Test runners that roll into the tests category when `category` is omitted.
 _TEST_SCANNERS = frozenset({"pytest", "vitest", "jest", "junit", "tests"})
+_REFACTOR_SCANNERS = frozenset({"radon", "complexity", "eslint-complexity", "refactor"})
+_STUB_SCANNERS = frozenset({"stubscan", "stub", "partial"})
+_COVERAGE_SCANNERS = frozenset({"graphcheck", "coverage", "code-graph"})
+
+# scanner_id → category when `category` is omitted. There is no fallback: an unknown
+# scanner with no category is refused, because any default category lets one empty row
+# paint that cell clean at head (GRPH-1108).
+_INFERRED_CATEGORY: tuple[tuple[str, frozenset[str]], ...] = (
+    ("security", _SECURITY_SCANNERS),
+    ("refactor", _REFACTOR_SCANNERS),
+    ("stub", _STUB_SCANNERS),
+    ("deadcode", _DEADCODE_SCANNERS),
+    ("coverage", _COVERAGE_SCANNERS),
+    ("tests", _TEST_SCANNERS),
+)
 _TEST_COUNTS = ("passed", "failed", "skipped")
 
 
@@ -115,20 +130,15 @@ def _infer_category(scanner_id: str, category: str | None) -> str:
             raise ValueError(f"category must be one of {list(CATEGORIES)}")
         return c
     sid = (scanner_id or "").strip().lower()
-    if sid in _SECURITY_SCANNERS:
-        return "security"
-    if sid in ("radon", "complexity", "eslint-complexity", "refactor"):
-        return "refactor"
-    if sid in ("stubscan", "stub", "partial"):
-        return "stub"
-    if sid in _DEADCODE_SCANNERS:
-        return "deadcode"
-    if sid in ("graphcheck", "coverage", "code-graph"):
-        return "coverage"
-    if sid in _TEST_SCANNERS:
-        return "tests"
-    # Default the first shipped producer.
-    return "security"
+    for cat, scanners in _INFERRED_CATEGORY:
+        if sid in scanners:
+            return cat
+    known = "; ".join(f"{cat}: {', '.join(sorted(ids))}" for cat, ids in _INFERRED_CATEGORY)
+    raise ValueError(
+        f"category is required for scanner_id {scanner_id!r} — it is not a known scanner, "
+        f"so its category cannot be inferred. Pass category, one of {list(CATEGORIES)}. "
+        f"Known scanners ({known})."
+    )
 
 
 def _under(prefix: str, path: str) -> bool:

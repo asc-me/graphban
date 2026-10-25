@@ -546,3 +546,64 @@ def test_dead_code_finding_files_once(db):
         tags=["defrag", "tech-debt", f["filed_key"]],
     )
     assert _api(db)["categories"]["deadcode"]["findings"][0]["filed_item"] == it.key
+
+
+# ── GRPH-1108 · an unknown scanner with no category is refused, never defaulted ──
+
+
+def _web(db, head_sha="h1"):
+    h = scans_svc.component_health(db, "core", head_sha=head_sha)
+    return next(c for c in h["components"] if c["id"] == "web")
+
+
+def test_unknown_scanner_without_category_is_refused_and_stores_nothing(db):
+    with pytest.raises(ValueError) as e:
+        scans_svc.record_scan(
+            db, project_id="core", scanner_id="coderabbit", path="web/",
+            scanned_sha="h1", findings=[],
+        )
+    msg = str(e.value)
+    # A repair hint: the valid categories and the known security scanners.
+    for cat in scans_svc.CATEGORIES:
+        assert cat in msg
+    for sid in ("pip-audit", "bandit", "semgrep", "npm-audit"):
+        assert sid in msg
+    # One empty unknown row at head must not paint security clean_at_sha.
+    assert _web(db)["categories"]["security"]["state"] == "never_scanned"
+    assert scans_svc.scan_status(db, "core", path="web/", head_sha="h1")["scans"] == []
+
+
+def test_unknown_scanner_with_an_explicit_category_is_stored_as_given(db):
+    row = scans_svc.record_scan(
+        db, project_id="core", scanner_id="coderabbit", path="web/",
+        scanned_sha="h1", findings=[], category="refactor",
+    )
+    assert row["category"] == "refactor"
+    assert _web(db)["categories"]["security"]["state"] == "never_scanned"
+
+
+def test_a_known_security_scanner_is_still_inferred_as_security(db):
+    row = scans_svc.record_scan(
+        db, project_id="core", scanner_id="pip-audit", path="web/",
+        scanned_sha="h1", findings=[],
+    )
+    assert row["category"] == "security"
+
+
+def test_mcp_record_scan_refuses_an_unknown_scanner_without_category(client, auth):
+    key = client.post("/api/api-keys", json={"name": "scan-unknown"}, headers=auth).json()["plaintext"]
+    headers = {"X-API-Key": key}
+    r = _mcp(client, headers, "record_scan", {
+        "scanner_id": "coderabbit", "path": "web/", "scanned_sha": "h1",
+        "findings": [], "project_id": "core",
+    })
+    assert r.status_code == 200, r.text
+    result = r.json()["result"]
+    assert result["isError"] is True
+    err = result["structuredContent"]["error"]
+    assert err["code"] == "validation"
+    assert "security" in err["message"] and "pip-audit" in err["message"]
+
+    h = client.get("/api/platform/stack/health?project_id=core&head_sha=h1", headers=auth).json()
+    web = next(c for c in h["components"] if c["id"] == "web")
+    assert web["categories"]["security"]["state"] == "never_scanned"
