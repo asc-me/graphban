@@ -4882,18 +4882,29 @@ class ObservationError(Exception):
 
 
 def _supervisor_wave_key(api_key) -> bool:
-    """A fleet credential that runs a wave, not a worker and not a hand-minted project key.
+    """A credential that cuts trees: a fleet wave key, or the project key `gban setup` mints.
 
-    `fleet_wave` empty is a hand-minted key: it is never swept with a wave and it is not
-    the process that cut the tree. `planner` in `eligible_roles` is the supervisor's
-    ceiling — a worker-only fleet key fails it, and an empty roles list resolves to every
-    role, so an all-in-one fleet key passes. The children hold the same key material; the
-    scope check below is what stops one of them writing about an item the wave did not cut.
+    `planner` in `eligible_roles` is the ceiling. A worker-only key fails it. An empty
+    roles list resolves to every role, and that is what `gban setup` stores — the mint
+    posts `project_id`, `expires_in_days=None` and the fleet and prd tiers, and never
+    writes `roles`. Requiring a stored `["planner", "worker"]` would refuse the caller
+    this route exists for. An all-in-one fleet key passes the same way.
+
+    `fleet_wave` empty used to mean "hand-minted, refuse". That tag is how End wave finds
+    keys it issued. The setup key is hand-minted on purpose: project-scoped, non-expiring,
+    never swept, and the process that minted the seats. An unscoped key still fails here.
+    It has no project to bind the minted-by check to, and a wave label is not a project
+    boundary (GRPH-975). Which item the key may write about is `_wave_cut_item`. A setup
+    key has no wave string, so it matches only through the minted-by branch.
+
+    The children hold the same key material. The scope check below is what stops one of
+    them writing about an item this key's seats did not cut.
     """
-    wave = (getattr(api_key, "fleet_wave", None) or "").strip()
-    if not wave:
+    if "planner" not in eligible_roles(api_key):
         return False
-    return "planner" in eligible_roles(api_key)
+    if (getattr(api_key, "fleet_wave", None) or "").strip():
+        return True
+    return bool(getattr(api_key, "project_id", None))
 
 
 def _wave_cut_item(db: Session, api_key, item: Item) -> bool:
@@ -5063,17 +5074,20 @@ def record_observation(db: Session, api_key, *, item_key: str, kind: str,
                        reason: str | None = None, agent_id: str | None = None) -> dict:
     """Record one supervisor fact on an item this credential's wave cut.
 
-    Does not commit — the route does, matching `post_attempt`. A non-supervisor
-    credential is 403. An item this wave did not cut, or one the key cannot write, is
-    404 with the same message a missing item gets, so the refusal is not a probe.
+    Does not commit — the route does, matching `post_attempt`. A credential with no
+    planner in its ceiling, or an unscoped key with no wave, is 403. An item this
+    key's seats did not cut, or one the key cannot write, is 404 with the same
+    message a missing item gets, so the refusal is not a probe.
     """
     from app.security import authz
 
     if not _supervisor_wave_key(api_key):
         raise ObservationError(
             403,
-            "this credential is not a supervisor wave key: recording a cut needs a "
-            "fleet key with a wave and planner among its roles",
+            "this credential is not a supervisor key: recording a cut needs planner "
+            "among its roles, and either a fleet wave or a project-scoped key (the "
+            "credential gban setup mints). A worker-only key and an unscoped key are "
+            "refused here",
         )
     named = (item_key or "").strip()
     if not named:
