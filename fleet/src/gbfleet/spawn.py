@@ -294,6 +294,11 @@ class Child:
     #: PRD-41 S1. Set by the on-exit reap so the exit post can carry the diff; None
     #: until then, which the server stores as null rather than as a zero-file shape.
     diff_shape: dict | None = None
+    #: Monotonic time this process last posted `kind=lease` (GRPH-1116). 0 means it
+    #: has not, so the next watch tick posts immediately. Not persisted: an adopted
+    #: child starts at 0 and posts on the first tick, which is the right gap to close
+    #: after a supervisor restart.
+    lease_kept_at: float = 0.0
 
     @property
     def pid(self) -> int:

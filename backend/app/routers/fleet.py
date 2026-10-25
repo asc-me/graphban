@@ -557,9 +557,9 @@ class ObservationIn(BaseModel):
 
     The server composes the note or the url receipt. Accepting `evidence` here would let
     a child that holds the wave key post an attestation, which is the write this route
-    exists to avoid making. `pushed_head` (GRPH-973) and `lease` (GRPH-1116) are later
-    kinds of THIS route — they are refused until those items land, not stored and not
-    given a second path.
+    exists to avoid making. `lease` (GRPH-1116) is the keep-alive on this route: the
+    agent whose pid is alive, the branch, and an optional commit. `pushed_head`
+    (GRPH-973) is still refused — not stored, and not given a second path.
     """
 
     item_id: str
@@ -569,6 +569,7 @@ class ObservationIn(BaseModel):
     url: str | None = None
     commit: str | None = None
     reason: str | None = None
+    agent_id: str | None = None
 
 
 @router.post("/observations")
@@ -585,6 +586,7 @@ def post_observation(body: ObservationIn, db: Session = Depends(get_db),
         out = fleet_svc.record_observation(
             db, key, item_key=body.item_id, kind=body.kind, branch=body.branch,
             base=body.base, url=body.url, commit=body.commit, reason=body.reason,
+            agent_id=body.agent_id,
         )
     except fleet_svc.ObservationError as exc:
         raise HTTPException(exc.status, str(exc)) from exc
