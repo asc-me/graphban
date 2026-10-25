@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 
 import { HarnessView } from "@/features/harness/HarnessView";
 import { ProjectProvider } from "@/features/ProjectContext";
@@ -44,7 +44,7 @@ const probeCandidates = vi.fn(async () => ({
   floor: 5,
   estimated_tokens: { comparable: false, reported: 0, finished: 0, reason: "no probe history reported tokens" },
   suggestions: [],
-})) as ReturnType<typeof vi.fn>;
+})) as Mock<(...args: unknown[]) => Promise<unknown>>;
 const startProbeRun = vi.fn(async () => ({ run_id: "run-1" }));
 const harnessRecommendations = vi.fn(async () => ({
   project_id: "core", cards: [] as import("@/lib/types").HarnessCard[], rules: ["R1", "R2", "R3", "R4", "R5", "R6"],
