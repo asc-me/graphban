@@ -409,6 +409,210 @@ function routePorts(
   };
 }
 
+type Pt = { x: number; y: number };
+interface Span {
+  lo: number;
+  hi: number;
+}
+
+/**
+ * Interior hit, matching the geometric test (2px inside the border). A segment that
+ * only rides the border is not a crossing; a diagonal is, because a channel route is
+ * orthogonal and a diagonal would hide a miss from the axis-aligned check.
+ */
+function segmentHitsBox(a: Pt, b: Pt, bx: Box): boolean {
+  const x0 = bx.x + 2;
+  const x1 = bx.x + bx.w - 2;
+  const y0 = bx.y + 2;
+  const y1 = bx.y + bx.h - 2;
+  if (x1 <= x0 || y1 <= y0) return false;
+  if (Math.abs(a.y - b.y) < 0.5) {
+    return a.y > y0 && a.y < y1 && Math.max(a.x, b.x) > x0 && Math.min(a.x, b.x) < x1;
+  }
+  if (Math.abs(a.x - b.x) < 0.5) {
+    return a.x > x0 && a.x < x1 && Math.max(a.y, b.y) > y0 && Math.min(a.y, b.y) < y1;
+  }
+  return true;
+}
+
+function polylineClear(points: Pt[], boxes: Box[]): boolean {
+  for (let i = 0; i < points.length - 1; i++) {
+    for (const bx of boxes) {
+      if (segmentHitsBox(points[i], points[i + 1], bx)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Open intervals where no box occupies that axis: the inter-column gaps and
+ * inter-row bands, plus a pad outside the outermost boxes. Touching boxes share
+ * an edge and do not invent a gap (an open is applied before a close at the same
+ * coordinate).
+ */
+function freeSpans(intervals: Array<{ lo: number; hi: number }>, pad: number): Span[] {
+  if (!intervals.length) return [];
+  const events: { at: number; d: number }[] = [];
+  let min = Infinity;
+  let max = -Infinity;
+  for (const iv of intervals) {
+    events.push({ at: iv.lo, d: 1 }, { at: iv.hi, d: -1 });
+    min = Math.min(min, iv.lo);
+    max = Math.max(max, iv.hi);
+  }
+  events.sort((a, b) => a.at - b.at || b.d - a.d);
+  const gaps: Span[] = [];
+  let cov = 0;
+  let openAt: number | null = null;
+  for (const e of events) {
+    const before = cov;
+    cov += e.d;
+    if (before > 0 && cov === 0) openAt = e.at;
+    else if (before === 0 && cov > 0 && openAt !== null && e.at > openAt) {
+      gaps.push({ lo: openAt, hi: e.at });
+      openAt = null;
+    }
+  }
+  return [{ lo: min - pad, hi: min }, ...gaps, { lo: max, hi: max + pad }].filter(
+    (g) => g.hi - g.lo > 1,
+  );
+}
+
+const CHANNEL_INSET = 8;
+
+function placeIn(span: Span, shift: number): number {
+  const lo = span.lo + CHANNEL_INSET;
+  const hi = span.hi - CHANNEL_INSET;
+  if (!(hi > lo)) return (span.lo + span.hi) / 2;
+  return Math.max(lo, Math.min(hi, (span.lo + span.hi) / 2 + shift));
+}
+
+/** Gaps that sit strictly outward of a face, nearest first. */
+function outwardSpans(spans: Span[], at: number, side: Side): Span[] {
+  const positive = side === "right" || side === "bottom";
+  return spans
+    .filter((s) =>
+      positive ? s.lo >= at - 0.5 && s.hi > at + 0.5 : s.hi <= at + 0.5 && s.lo < at - 0.5,
+    )
+    .sort(
+      (a, b) =>
+        Math.abs((a.lo + a.hi) / 2 - at) - Math.abs((b.lo + b.hi) / 2 - at) || a.lo - b.lo,
+    );
+}
+
+function simplify(pts: Pt[]): Pt[] {
+  const out: Pt[] = [];
+  for (const p of pts) {
+    const prev = out[out.length - 1];
+    if (prev && prev.x === p.x && prev.y === p.y) continue;
+    const a = out[out.length - 2];
+    if (
+      a &&
+      prev &&
+      ((a.x === prev.x && prev.x === p.x) || (a.y === prev.y && prev.y === p.y))
+    ) {
+      out[out.length - 1] = p;
+      continue;
+    }
+    out.push(p);
+  }
+  return out;
+}
+
+function labelAnchor(points: Pt[]): Pt {
+  let best = -1;
+  let mid = points[0];
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const len = Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+    if (len > best) {
+      best = len;
+      mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    }
+  }
+  return mid;
+}
+
+function byTravel(from: number, to: number) {
+  return (a: number, b: number) =>
+    Math.abs(a - from) + Math.abs(a - to) - (Math.abs(b - from) + Math.abs(b - to)) || a - b;
+}
+
+/**
+ * Orthogonal route that stays out of every box. Adjacent faces still take the
+ * two-bend elbow: its bend already sits in the one gap between them, and that
+ * gap is box-free. A non-adjacent edge (cli → api across the agent-host column)
+ * has no such gap — the elbow's midpoint lands inside the column it crosses — so
+ * it leaves into the gutter beside its own face, crosses on a free band, and
+ * enters from the gutter beside the target.
+ */
+function routeAvoiding(
+  p0: Pt,
+  p3: Pt,
+  sSide: Side,
+  tSide: Side,
+  shift: number,
+  boxes: Box[],
+): { points: Pt[]; mid: Pt } {
+  const direct = routePorts(p0, p3, isHoriz(sSide), shift);
+  if (polylineClear(direct.points, boxes)) return direct;
+
+  const vCh = freeSpans(
+    boxes.map((b) => ({ lo: b.x, hi: b.x + b.w })),
+    80,
+  );
+  const hCh = freeSpans(
+    boxes.map((b) => ({ lo: b.y, hi: b.y + b.h })),
+    80,
+  );
+  const finish = (pts: Pt[]) => {
+    const points = simplify(pts);
+    return { points, mid: labelAnchor(points) };
+  };
+
+  if (isHoriz(sSide)) {
+    const bands = hCh.map((ch) => placeIn(ch, shift)).sort(byTravel(p0.y, p3.y));
+    for (const sg of outwardSpans(vCh, p0.x, sSide)) {
+      for (const tg of outwardSpans(vCh, p3.x, tSide)) {
+        const sx = placeIn(sg, shift);
+        const tx = placeIn(tg, -shift);
+        for (const y of bands) {
+          const routed = finish([
+            p0,
+            { x: sx, y: p0.y },
+            { x: sx, y },
+            { x: tx, y },
+            { x: tx, y: p3.y },
+            p3,
+          ]);
+          if (polylineClear(routed.points, boxes)) return routed;
+        }
+      }
+    }
+  } else {
+    const lanes = vCh.map((ch) => placeIn(ch, shift)).sort(byTravel(p0.x, p3.x));
+    for (const sb of outwardSpans(hCh, p0.y, sSide)) {
+      for (const tb of outwardSpans(hCh, p3.y, tSide)) {
+        const sy = placeIn(sb, shift);
+        const ty = placeIn(tb, -shift);
+        for (const x of lanes) {
+          const routed = finish([
+            p0,
+            { x: p0.x, y: sy },
+            { x, y: sy },
+            { x, y: ty },
+            { x: p3.x, y: ty },
+            p3,
+          ]);
+          if (polylineClear(routed.points, boxes)) return routed;
+        }
+      }
+    }
+  }
+  return direct;
+}
+
 export interface StackLayoutOptions {
   /** Put Graphban's own hosts in a lane at the left edge, framed "Built with Graphban". */
   graphbanLeft?: boolean;
@@ -664,7 +868,14 @@ export function buildStackLayout(topo: StackTopology, opts: StackLayoutOptions =
     const p3 = facePoint(p.t, p.tSide, tT);
     // Spread each edge's channel a little by its exit-port fraction, so a fan
     // from one box doesn't collapse its vertical runs onto a single line.
-    const { points, mid } = routePorts(p0, p3, isHoriz(p.sSide), (sT - 0.5) * 44);
+    const { points, mid } = routeAvoiding(
+      p0,
+      p3,
+      p.sSide,
+      p.tSide,
+      (sT - 0.5) * 44,
+      Object.values(boxes),
+    );
     return {
       from: p.e.from,
       to: p.e.to,

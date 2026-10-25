@@ -5,6 +5,13 @@ The unit tests that post the cut-from note themselves, with a wave-grade key, st
 because the supervisor client refuses `update_item`. The test at the bottom drives the
 real `gbfleet` client — its real `ALLOWED_TOOLS` and `ALLOWED_PATHS` — against this app.
 
+GRPH-1121: the wave-grade key is not the key a wave runs on. `gban setup` mints a
+project-scoped key with no `fleet_wave` and no stored roles (the ceiling resolves to
+planner and worker). Requiring `fleet_wave` refused that caller, so the base and the
+lease keep-alive never landed. The credential gate now admits that shape. `_wave_cut_item`
+still decides the item: a setup key matches only because the agent that minted the seat
+authenticated with this key, and only inside the key's project.
+
 Sabotage (a): put the receipt back on `client.call("update_item", ...)` inside
 `_record_cut_from`. The real client raises `NotPermitted`, the note is absent, and
 `test_the_real_supervisor_client_records_the_base_and_sign_off_compares` fails.
@@ -12,11 +19,18 @@ Sabotage (a): put the receipt back on `client.call("update_item", ...)` inside
 Sabotage (b): `return True` at the top of `fleet._wave_cut_item`. The route then accepts
 an item the wave did not cut, and `test_a_wave_that_did_not_cut_the_item_is_refused` fails.
 Dropping only the project comparison fails
-`test_the_same_wave_label_in_another_project_is_not_this_wave` and leaves (b)'s test green.
+`test_the_same_wave_label_in_another_project_is_not_this_wave` and
+`test_a_setup_key_from_another_project_cannot_plant_a_base`, and leaves (b)'s test green.
+
+Sabotage (c): restore the `fleet_wave`-required gate (`return False` when the tag is
+empty) and `test_a_setup_key_records_the_base_and_the_lease_and_sign_off_compares` fails.
+Drop the minted-by requirement (any seat in the project counts) and
+`test_a_setup_key_that_did_not_mint_the_seat_is_refused` fails.
 """
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -27,9 +41,10 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from gbfleet.client import ALLOWED_TOOLS, Graphban  # noqa: E402
+from gbfleet.heartbeat import keep  # noqa: E402
 from gbfleet.supervisor import Wave, _record_cut_from  # noqa: E402
 
-from app.models import Agent, Item  # noqa: E402
+from app.models import Agent, ApiKey, Item  # noqa: E402
 from app.services import fleet as fleet_svc  # noqa: E402
 from app.services.items import (  # noqa: E402
     COMMITTED_MARKER, CUT_FROM_MARKER, DEFAULT_LEASE_SECONDS, _aware, claimable,
@@ -103,6 +118,39 @@ def _project(client, auth):
     return proj, hand, minted.json()["plaintext"]
 
 
+def _setup_key(client, auth, proj) -> tuple[str, str]:
+    """The POST `gban setup` actually makes (`cli/src/gban/setup.py` `mint`).
+
+    Stored `roles` stay empty. `eligible_roles` resolves that to every role, which is
+    planner and worker — the ceiling the item names. Writing `["planner", "worker"]`
+    onto the row, or borrowing the wave-grade planner key, would leave this test green
+    while the credential a wave runs on still got 403. That is the miss GRPH-1121 is.
+    """
+    minted = client.post(
+        "/api/api-keys",
+        json={"name": f"{proj} delegation", "project_id": proj,
+              "expires_in_days": None, "tool_tiers": ["fleet", "prd"]},
+        headers=auth,
+    )
+    assert minted.status_code == 201, minted.text
+    body = minted.json()
+    assert body["project_id"] == proj
+    assert body["fleet_wave"] is None
+    assert body["expires_at"] is None
+    assert body["tool_tiers"] == ["fleet", "prd"]
+    return body["plaintext"], body["id"]
+
+
+def _assert_setup_shape(db, key_id: str) -> None:
+    row = db.get(ApiKey, key_id)
+    assert row is not None
+    assert row.roles in (None, [])
+    assert not (row.fleet_wave or "").strip()
+    assert row.project_id
+    ceiling = fleet_svc.eligible_roles(row)
+    assert "planner" in ceiling and "worker" in ceiling
+
+
 def _item(client, hand, *, title="a slice"):
     worker = _ok(client, hand, "register_agent",
                  {"label": title, "branch": "gb/obs", "capabilities": {"instance": title}})
@@ -131,15 +179,30 @@ def _notes(client, hand, item):
 
 
 def test_a_worker_fleet_key_and_a_hand_minted_key_are_refused(client, auth, db):
-    """The route is a supervisor wave credential. Widening it to every key that can write
-    would put the receipt on the same door `update_item` already is."""
+    """A worker-only key and an unscoped key are 403 at the credential gate.
+
+    A project-scoped hand key is the shape `gban setup` mints, so the credential gate
+    admits it (GRPH-1121). Posting about an item it did not cut is 404, the same answer
+    as a missing item. Widening the credential gate must not become a write: there is
+    no seat this key minted, and the note is absent.
+    """
     proj, hand, _planner = _project(client, auth)
     worker_key = client.post(
         "/api/fleet/keys", json={"project_id": proj, "role": "worker", "wave": "wave-1"},
         headers=auth).json()["plaintext"]
+    unscoped = client.post(
+        "/api/api-keys",
+        json={"name": "global", "tool_tiers": ["fleet", "prd"]},
+        headers=auth).json()
+    assert unscoped["project_id"] is None
+    assert unscoped["fleet_wave"] is None
     body = {"item_id": "GRPH-1", "kind": "cut_from", "branch": "gb/x", "base": BASE}
     assert _post(client, worker_key, **body).status_code == 403
-    assert _post(client, hand, **body).status_code == 403
+    assert _post(client, unscoped["plaintext"], **body).status_code == 403
+    # The hand key passes the credential gate and then fails the item gate.
+    missed = _post(client, hand, **body)
+    assert missed.status_code == 404, missed.text
+    assert "no such item" in missed.text
 
 
 def test_a_wave_that_did_not_cut_the_item_is_refused(client, auth, db):
@@ -359,17 +422,19 @@ def _age(db, item, agent_id) -> None:
 
 
 def test_a_lease_is_refused_to_the_same_callers_as_every_other_observation(client, auth, db):
-    """The keep-alive is not a second door. A worker key, a hand-minted key, a wave that
-    did not cut the item, and another project's `wave-1` are the refusals GRPH-975 already
-    pins for `cut_from`. Kind `lease` has to take the same path or the allowlist was widened
-    by a synonym."""
+    """The keep-alive is not a second door. A worker key is 403. A project-scoped hand
+    key — the setup shape — is admitted and then 404, because it cut nothing. A wave
+    that did not cut the item, and another project's `wave-1`, are the same 404
+    `cut_from` already gets. Kind `lease` has to take that path or the allowlist was
+    widened by a synonym."""
     proj, hand, planner = _project(client, auth)
     worker_key = client.post(
         "/api/fleet/keys", json={"project_id": proj, "role": "worker", "wave": "wave-1"},
         headers=auth).json()["plaintext"]
     body = {"item_id": "GRPH-1", "kind": "lease", "branch": "gb/obs", "agent_id": "GRPH-A1"}
     assert _post(client, worker_key, **body).status_code == 403
-    assert _post(client, hand, **body).status_code == 403
+    missed = _post(client, hand, **body)
+    assert missed.status_code == 404, missed.text
 
     _worker, item = _item(client, hand, title="uncut")
     missing = _post(client, planner, item_id=item, kind="lease", branch="gb/obs",
@@ -548,3 +613,133 @@ def test_the_cut_from_base_is_not_a_commit_and_a_keep_alive_adds_no_note(client,
     assert any(CUT_FROM_MARKER in d for d in details)
     _ok(client, hand, "release_item", {"id": item, "agent_id": who})
     assert _row(db, item).built_by is None
+
+
+# ---- the setup key real waves run on (GRPH-1121) ----------------------------------------------
+
+
+def test_a_worker_only_project_key_is_refused_without_a_wave(client, auth, db):
+    """The new branch is `project_id` set and `fleet_wave` empty. Forgetting the planner
+    ceiling on that branch would let a worker-only project key post. It is 403, the same
+    answer as a worker fleet key."""
+    proj, _hand, _planner = _project(client, auth)
+    created = client.post(
+        "/api/api-keys", json={"name": "worker-only", "project_id": proj}, headers=auth,
+    ).json()
+    row = db.get(ApiKey, created["id"])
+    assert row is not None
+    row.roles = ["worker"]
+    db.commit()
+    refused = _post(client, created["plaintext"], item_id="GRPH-1", kind="cut_from",
+                    branch="gb/obs", base=BASE)
+    assert refused.status_code == 403, refused.text
+
+
+def test_a_setup_key_records_the_base_and_the_lease_and_sign_off_compares(client, auth, db):
+    """THE criterion for GRPH-1121. The key is the one `gban setup` mints: project-scoped,
+    no `fleet_wave`, stored roles empty so the ceiling is planner and worker. The seat's
+    wave is `wave` and the key has no wave string, so the wave-string match cannot be what
+    lets this through. The minter authenticated with this key.
+
+    Both posts go through the real gbfleet client: `_record_cut_from` for the base, and
+    `heartbeat.keep` for the lease — the two callers a wave actually uses. `sign_off` then
+    reports `commit_is_not_the_base` with `compared: true`.
+
+    Sabotage: `return False` when `fleet_wave` is empty, at the top of the empty-wave
+    branch in `_supervisor_wave_key`. Both posts 403, `wave.failures` names them, and
+    `compared` stays absent.
+    """
+    proj, hand, _planner = _project(client, auth)
+    setup, key_id = _setup_key(client, auth, proj)
+    _assert_setup_shape(db, key_id)
+    worker, item = _item(client, hand, title="setup-key")
+    claimed = _ok(client, hand, "claim_next", {"agent_id": worker["agent_id"]})
+    assert claimed["item"]["id"] == item
+    supervisor = _ok(client, setup, "register_agent", {"label": "sup", "branch": "gb/obs"})
+    _bind(db, proj, item, wave="wave", minted_by=supervisor["agent_id"])
+    who = worker["agent_id"]
+    _age(db, item, who)
+    assert claimable(_row(db, item)) is True
+
+    paths: list[str] = []
+    gb = Graphban(base_url="http://testserver", api_key=setup, transport=_Bridge(client, paths))
+    assert "update_item" not in gb.allowed
+    wave = Wave()
+    _record_cut_from(wave, gb, item, "gb/obs", BASE)
+    child = SimpleNamespace(
+        running=True, agent_id=who, held_items=[item], branch="gb/obs",
+        lease_kept_at=0.0, worktree=None,
+    )
+    keep(wave, [child], gb, now=1_000.0)
+
+    assert wave.failures == [], wave.failures
+    assert paths == ["/api/fleet/observations", "/api/fleet/observations"]
+    notes = _notes(client, hand, item)
+    assert notes[0]["detail"] == (
+        f"{CUT_FROM_MARKER}{BASE} (`gb/obs`) — the base, which carries none of this item's work"
+    )
+    row = _row(db, item)
+    assert row.claimed_by == who
+    assert claimable(row) is False
+
+    _ok(client, hand, "update_item",
+        {"id": item, "status": "review", "agent_id": who})
+    reviewer = _ok(client, hand, "register_agent",
+                   {"label": "reviewer", "branch": "gb/obs",
+                    "capabilities": {"instance": "setup-reviewer"}})
+    out = _ok(client, hand, "sign_off",
+              {"id": item, "agent_id": reviewer["agent_id"], "commit": HEAD})
+    assert out["status"] == "done"
+    got = _ok(client, hand, "get_item_details", {"id": item})
+    signed = [e for e in got["evidence"]
+              if e.get("kind") == "attestation" and e.get("adapter") == "fleet.sign_off"]
+    pred = {p["name"]: p for p in signed[-1]["predicates"]}["commit_is_not_the_base"]
+    assert pred["compared"] is True
+    assert pred["passed"] is True
+
+
+def test_a_setup_key_that_did_not_mint_the_seat_is_refused(client, auth, db):
+    """A project-scoped planner key is not a write on every bound item. The seat is bound
+    to the item and carries a wave string; the key's agent is not the minter, and the key
+    has no `fleet_wave` for that string to match. Both kinds are 404.
+
+    Sabotage: drop the minted-by requirement so any seat in the project counts
+    (`return True` once `seats` is non-empty, or match `seat.minted_by` without comparing
+    it to this key). This becomes 200 and a note lands.
+    """
+    proj, hand, _planner = _project(client, auth)
+    setup, key_id = _setup_key(client, auth, proj)
+    _assert_setup_shape(db, key_id)
+    worker, item = _item(client, hand, title="not-my-seat")
+    other = _ok(client, hand, "register_agent", {"label": "other", "branch": "gb/obs"})
+    _bind(db, proj, item, wave="wave", minted_by=other["agent_id"])
+    cut = _post(client, setup, item_id=item, kind="cut_from", branch="gb/obs", base=BASE)
+    assert cut.status_code == 404, cut.text
+    lease = _post(client, setup, item_id=item, kind="lease", branch="gb/obs",
+                  agent_id=worker["agent_id"])
+    assert lease.status_code == 404, lease.text
+    assert _notes(client, hand, item) == []
+
+
+def test_a_setup_key_from_another_project_cannot_plant_a_base(client, auth, db):
+    """The project check GRPH-975's bounce added, on the branch a setup key actually uses.
+
+    Project A's setup key minted the seat, and the seat is bound to an item in project B.
+    The minted-by branch would match. The project comparison has to refuse first, or a
+    planner who can write both projects plants a base `commit_is_not_the_base` trusts.
+    Narrowing that comparison to keys that carry `fleet_wave` leaves this test the one
+    that goes red: A's key has no wave tag, so the wave-string cross-project test stays
+    green.
+    """
+    proj_a, _hand_a, _planner_a = _project(client, auth)
+    setup, key_id = _setup_key(client, auth, proj_a)
+    _assert_setup_shape(db, key_id)
+    supervisor = _ok(client, setup, "register_agent", {"label": "sup-a", "branch": "gb/obs"})
+    proj_b = client.post("/api/projects", json={"name": "Elsewhere"}, headers=auth).json()["id"]
+    hand_b = client.post("/api/api-keys", json={"name": "hand-b", "project_id": proj_b},
+                         headers=auth).json()["plaintext"]
+    _worker, item = _item(client, hand_b, title="foreign-setup")
+    _bind(db, proj_b, item, wave="wave", minted_by=supervisor["agent_id"])
+    refused = _post(client, setup, item_id=item, kind="cut_from", branch="gb/obs", base=BASE)
+    assert refused.status_code == 404, refused.text
+    assert _notes(client, hand_b, item) == []

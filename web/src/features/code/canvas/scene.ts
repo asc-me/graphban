@@ -201,7 +201,9 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
       color: layout.colors[i],
       kind: layout.kinds[i],
       alpha: (opts.alpha[i] ?? 255) / 255,
-      square: screenR < SQUARE_PX || layout.kinds[i] === "doc" || layout.kinds[i] === "config",
+      // LOD only. Doc's square and config's hexagon come from kindShape; forcing
+      // both kinds square here made that pair colour-only at every zoom (GRPH-1027).
+      square: screenR < SQUARE_PX,
     });
   }
 

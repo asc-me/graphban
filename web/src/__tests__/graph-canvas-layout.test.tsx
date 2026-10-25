@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { drawNodes } from "@/features/code/canvas/nodes";
-import type { DrawScene } from "@/features/code/canvas/scene";
+import { buildScene, type DrawScene } from "@/features/code/canvas/scene";
 import { areaColor } from "@/lib/graph/areas";
 import { clustersLayout } from "@/lib/graph/bigLayout";
 import type { CodeEdge, CodeMap, CodeNode, FleetPresence, HeldArea } from "@/lib/types";
@@ -228,6 +228,83 @@ describe("the design's bottom row", () => {
     drawNodes(ctx, scene("file"));
     expect(calls.some((c) => c.fn === "arc")).toBe(true);
     expect(calls.some((c) => c.fn === "lineTo")).toBe(false);
+  });
+
+  it("gives every kind the server serves its own shape (GRPH-1027)", async () => {
+    // Doc and config used to share a square, so the legend could name five kinds
+    // while two of the marks were the same. The set of shapes has to be five,
+    // on the legend AND on the canvas rasteriser — a correct kindShape that
+    // drawOne never asks is the GRPH-360 hole.
+    mapBox.current = {
+      ...MAP,
+      nodes: [
+        node("web", "module"),
+        node("a.py", "file"),
+        node("b.py", "symbol"),
+        node("README.md", "doc"),
+        node("package.json", "config"),
+      ],
+      edges: [edge("web", "a.py", "owns")],
+      node_count: 5,
+      edge_count: 1,
+    };
+    await mount();
+    const bar = within(bottomBar());
+    const shapes = ["module", "file", "symbol", "doc", "config"].map((k) =>
+      bar.getByTestId(`kind-legend-${k}`).querySelector("[data-shape]")?.getAttribute("data-shape"),
+    );
+    expect(shapes).toEqual(["ring", "circle", "diamond", "square", "hexagon"]);
+
+    const sig = (kind: string) => {
+      const calls: string[] = [];
+      const ctx = new Proxy({} as CanvasRenderingContext2D, {
+        get: (_t, fn: string) =>
+          fn === "canvas" ? { width: 900, height: 560 } : () => calls.push(fn),
+        set: () => true,
+      });
+      const one = {
+        nodes: [{ id: kind, index: 0, x: 0, y: 0, r: 6, color: "#fff", kind, alpha: 1, square: false }],
+        camera: { x: 0, y: 0, k: 1 },
+        dpr: 1,
+      } as unknown as DrawScene;
+      drawNodes(ctx, one);
+      return calls.filter((fn) => fn === "arc" || fn === "lineTo" || fn === "fillRect").join(",");
+    };
+    const drawn = ["module", "file", "symbol", "doc", "config"].map(sig);
+    expect(new Set(drawn).size).toBe(drawn.length);
+
+    // A readable config node must not be flagged square before the rasteriser
+    // sees it. That flag is what made doc and config the same mark at every zoom.
+    const layout = clustersLayout({
+      nodes: mapBox.current.nodes.map((n) => ({ id: n.id, path: n.path, kind: n.kind })),
+      edges: mapBox.current.edges,
+    });
+    const scene = buildScene(layout, {
+      camera: { x: 50_000, y: 50_000, k: 1 },
+      width: 100_000,
+      height: 100_000,
+      dpr: 1,
+      alpha: new Uint8Array(layout.ids.length),
+      types: null,
+      isolate: null,
+      selectedId: null,
+      hoverId: null,
+    });
+    const config = scene.nodes.find((n) => n.kind === "config");
+    const doc = scene.nodes.find((n) => n.kind === "doc");
+    expect(config, "config node was culled from the scene").toBeTruthy();
+    expect(doc, "doc node was culled from the scene").toBeTruthy();
+    expect(config!.square).toBe(false);
+    expect(doc!.square).toBe(false);
+  });
+
+  it("draws the node's shape in the inspector chip, not only its colour (GRPH-1027)", async () => {
+    const user = await mount();
+    await pick(user, "b.py");
+    const chip = within(aside()).getByTestId("inspector-kind");
+    expect(chip).toHaveTextContent("Symbol");
+    expect(chip.querySelector("[data-shape]")).toHaveAttribute("data-shape", "diamond");
+    expect(chip.querySelector("polygon")).toHaveAttribute("fill", "#a78bfa");
   });
 
   it("leaves the five moved panels with no positioning of their own", () => {

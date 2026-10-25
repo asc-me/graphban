@@ -2085,6 +2085,20 @@ _HEADING = re.compile(r"^(#{2,3})\s+(.*?)\s*#*$")
 # An `Acceptance:` label as prose — `Acceptance: the gate names…`, `**Acceptance:** …`.
 _ACCEPTANCE_LABEL = re.compile(
     r"^[\W_]*acceptance(?:\s+criteria)?[*_]*\s*:[*_]*\s*(.*)$", re.IGNORECASE)
+# A bold or underscore label with nothing after it — `**Acceptance**`,
+# `**Acceptance criteria**`, `__Acceptance__`. The colon form is already
+# `_ACCEPTANCE_LABEL` (`**Acceptance:**`). Without this branch a planner's
+# `**Acceptance**` plus a checklist parses to nothing, and the gate records a
+# pass (GRPH-1062).
+_ACCEPTANCE_BOLD = re.compile(
+    r"^[*_]+acceptance(?:\s+criteria)?[*_]*\s*:?\s*$", re.IGNORECASE)
+# A label-shaped line neither pattern opened. `Acceptance` alone, `# Acceptance`,
+# `Acceptance criteria` — the word first, a few words, optional colon and wrapping
+# marks. A sentence that merely contains the word does not match: "The acceptance
+# of this is obvious." is the control that must stay "no clauses written".
+_UNOPENED_ACCEPTANCE = re.compile(
+    r"^(?:[#>*_~\s`]+)?acceptance\b(?:\s+[A-Za-z][A-Za-z-]*){0,4}\s*:?\s*[*_`]*\s*$",
+    re.IGNORECASE)
 _LIST_ITEM = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
 #: Task-list prefix on a list item (`- [x] the gate names the clause`). Stripped so the
 #: stored clause is the words a reviewer will quote, not the checkbox markup.
@@ -2124,6 +2138,22 @@ def split_clause_needs(text: str) -> tuple[str, frozenset[str]]:
     return rest, frozenset(needs)
 
 
+def _checklist_follows(lines: list[str], index: int) -> bool:
+    """True when a checklist is the next thing after `lines[index]`.
+
+    Blank lines do not count — a label and its list are often separated by one.
+    A heading or a line of prose in between means the list belongs to something else.
+    """
+    for nxt in lines[index + 1:]:
+        stripped = nxt.strip()
+        if not stripped:
+            continue
+        if _HEADING.match(stripped):
+            return False
+        return _LIST_ITEM.match(stripped) is not None
+    return False
+
+
 def _walk_acceptance(description: str) -> tuple[list[tuple[str, frozenset[str]]], list[str]]:
     """The clauses under an acceptance heading, each with the capabilities it declared."""
     rows: list[tuple[str, frozenset[str]]] = []
@@ -2131,13 +2161,14 @@ def _walk_acceptance(description: str) -> tuple[list[tuple[str, frozenset[str]]]
     in_section = False
     section_label = ""
     section_count = 0
+    lines = (description or "").splitlines()
 
     def close() -> None:
         nonlocal section_count
         if in_section and section_count == 0:
             unreadable.append(f"{section_label} has no list items under it")
 
-    for line in (description or "").splitlines():
+    for index, line in enumerate(lines):
         stripped = line.strip()
         heading = _HEADING.match(stripped)
         if heading:
@@ -2161,6 +2192,19 @@ def _walk_acceptance(description: str) -> tuple[list[tuple[str, frozenset[str]]]
             else:
                 in_section, section_label, section_count = True, "`Acceptance:`", 0
             continue
+        # GRPH-1062. A bold label is not a heading and has no colon, so neither branch
+        # above opens it. Checked before the unopened scan: this shape IS readable.
+        if _ACCEPTANCE_BOLD.match(stripped) and not _LIST_ITEM.match(stripped):
+            close()
+            in_section, section_label, section_count = True, f"`{stripped}`", 0
+            continue
+        # Acceptance text that opened nothing, with a checklist under it. Leaving it
+        # out is how "no clauses found" becomes "no clauses written" again.
+        if (not in_section and stripped and not _LIST_ITEM.match(stripped)
+                and _UNOPENED_ACCEPTANCE.match(stripped)
+                and _checklist_follows(lines, index)):
+            unreadable.append(f'unopened "{stripped[:80]}"')
+            continue
         if not in_section or not stripped:
             continue
         item = _LIST_ITEM.match(stripped)
@@ -2177,10 +2221,12 @@ def parse_acceptance(description: str) -> tuple[list[str], list[str]]:
     """Read the acceptance clauses in an item description, and what could not be read.
 
     Returns `(clauses, unreadable)`. A clause is a markdown list item under a `## Tests`,
-    `## Acceptance` or `## Acceptance criteria` heading (`###` too), or under a bare
-    `Acceptance:` label line. `unreadable` names acceptance text that is there but is not in
-    that shape: an `Acceptance:` label with prose after it, or an acceptance heading with no
-    list under it.
+    `## Acceptance` or `## Acceptance criteria` heading (`###` too), under a bare
+    `Acceptance:` label line, or under a bold/underscore label (`**Acceptance**`,
+    `**Acceptance:**`, `**Acceptance criteria**`, `__Acceptance__`). `unreadable` names
+    acceptance text that is there but is not in that shape: an `Acceptance:` label with
+    prose after it, an acceptance heading with no list under it, or a label-shaped line
+    (`Acceptance`, `# Acceptance`) that a checklist follows and that opened no section.
 
     `unreadable` is the half GRPH-893 added, and it is why this returns two things rather than
     one. The first parser read only `## Tests`, so SA-476 (`Acceptance: …` inline) and SA-498
@@ -4836,18 +4882,29 @@ class ObservationError(Exception):
 
 
 def _supervisor_wave_key(api_key) -> bool:
-    """A fleet credential that runs a wave, not a worker and not a hand-minted project key.
+    """A credential that cuts trees: a fleet wave key, or the project key `gban setup` mints.
 
-    `fleet_wave` empty is a hand-minted key: it is never swept with a wave and it is not
-    the process that cut the tree. `planner` in `eligible_roles` is the supervisor's
-    ceiling — a worker-only fleet key fails it, and an empty roles list resolves to every
-    role, so an all-in-one fleet key passes. The children hold the same key material; the
-    scope check below is what stops one of them writing about an item the wave did not cut.
+    `planner` in `eligible_roles` is the ceiling. A worker-only key fails it. An empty
+    roles list resolves to every role, and that is what `gban setup` stores — the mint
+    posts `project_id`, `expires_in_days=None` and the fleet and prd tiers, and never
+    writes `roles`. Requiring a stored `["planner", "worker"]` would refuse the caller
+    this route exists for. An all-in-one fleet key passes the same way.
+
+    `fleet_wave` empty used to mean "hand-minted, refuse". That tag is how End wave finds
+    keys it issued. The setup key is hand-minted on purpose: project-scoped, non-expiring,
+    never swept, and the process that minted the seats. An unscoped key still fails here.
+    It has no project to bind the minted-by check to, and a wave label is not a project
+    boundary (GRPH-975). Which item the key may write about is `_wave_cut_item`. A setup
+    key has no wave string, so it matches only through the minted-by branch.
+
+    The children hold the same key material. The scope check below is what stops one of
+    them writing about an item this key's seats did not cut.
     """
-    wave = (getattr(api_key, "fleet_wave", None) or "").strip()
-    if not wave:
+    if "planner" not in eligible_roles(api_key):
         return False
-    return "planner" in eligible_roles(api_key)
+    if (getattr(api_key, "fleet_wave", None) or "").strip():
+        return True
+    return bool(getattr(api_key, "project_id", None))
 
 
 def _wave_cut_item(db: Session, api_key, item: Item) -> bool:
@@ -5017,17 +5074,20 @@ def record_observation(db: Session, api_key, *, item_key: str, kind: str,
                        reason: str | None = None, agent_id: str | None = None) -> dict:
     """Record one supervisor fact on an item this credential's wave cut.
 
-    Does not commit — the route does, matching `post_attempt`. A non-supervisor
-    credential is 403. An item this wave did not cut, or one the key cannot write, is
-    404 with the same message a missing item gets, so the refusal is not a probe.
+    Does not commit — the route does, matching `post_attempt`. A credential with no
+    planner in its ceiling, or an unscoped key with no wave, is 403. An item this
+    key's seats did not cut, or one the key cannot write, is 404 with the same
+    message a missing item gets, so the refusal is not a probe.
     """
     from app.security import authz
 
     if not _supervisor_wave_key(api_key):
         raise ObservationError(
             403,
-            "this credential is not a supervisor wave key: recording a cut needs a "
-            "fleet key with a wave and planner among its roles",
+            "this credential is not a supervisor key: recording a cut needs planner "
+            "among its roles, and either a fleet wave or a project-scoped key (the "
+            "credential gban setup mints). A worker-only key and an unscoped key are "
+            "refused here",
         )
     named = (item_key or "").strip()
     if not named:

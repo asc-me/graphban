@@ -1,5 +1,6 @@
 import { describe, expect, it, afterEach } from "vitest";
 
+import webglSrc from "./webgl.ts?raw";
 import type { DrawNode, DrawScene } from "./scene";
 import type { Stroke } from "./edges";
 import {
@@ -70,6 +71,15 @@ describe("webgl raster inputs", () => {
     expect(shapeKind(node({ kind: "module" }))).toBe(2);
     expect(shapeKind(node({ kind: "file", square: true }))).toBe(3);
     expect(shapeKind(node({ kind: "doc" }))).toBe(3);
+    expect(shapeKind(node({ kind: "config" }))).toBe(7);
+    // shapeKind 7 falls through to the file circle unless the shader has the
+    // branch. The fragment shader is not compiled in jsdom.
+    expect(webglSrc).toContain("kind == 7");
+    expect(webglSrc).toContain("sdHexagon");
+    expect(shapeKind(node({ kind: "config", square: true }))).toBe(3);
+    const hex = nodeExtent(node({ kind: "config", r: 4 }), 1, 1);
+    const square = nodeExtent(node({ kind: "doc", r: 4 }), 1, 1);
+    expect(hex).toBeGreaterThan(square);
     expect(nodeExtent(node({ square: true, r: 4 }), 1, 1)).toBeGreaterThan(4);
   });
 

@@ -3,6 +3,7 @@
  * Below 2.2px screen radius every node is a filled square.
  */
 
+import { hexagonPoints, kindShape } from "../kindShape";
 import type { DrawNode, DrawRing, DrawScene } from "./scene";
 
 /**
@@ -32,9 +33,10 @@ function drawOne(ctx: CanvasRenderingContext2D, node: DrawNode, k: number) {
   ctx.strokeStyle = "#0a0c0e";
   ctx.lineWidth = 1.25 / Math.max(k, 0.05);
   const r = node.r;
-  if (node.square || node.kind === "doc" || node.kind === "config") {
+  const shape = kindShape(node.kind, node.square);
+  if (shape === "square") {
     ctx.fillRect(-r, -r, r * 2, r * 2);
-  } else if (node.kind === "symbol") {
+  } else if (shape === "diamond") {
     ctx.beginPath();
     ctx.moveTo(0, -r);
     ctx.lineTo(r, 0);
@@ -43,7 +45,15 @@ function drawOne(ctx: CanvasRenderingContext2D, node: DrawNode, k: number) {
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
-  } else if (node.kind === "module") {
+  } else if (shape === "hexagon") {
+    const pts = hexagonPoints(r);
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  } else if (shape === "ring") {
     ctx.beginPath();
     ctx.arc(0, 0, r, 0, Math.PI * 2);
     ctx.strokeStyle = node.color;
