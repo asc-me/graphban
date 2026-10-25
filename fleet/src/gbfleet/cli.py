@@ -623,16 +623,18 @@ def report(wave: Wave, out=None) -> None:
     # WHAT BECAME OF EACH MERGE (GRPH-846). Four lines for four outcomes, because a merge
     # the forge refused, a merge that is armed and waiting, and an item left alone because
     # its head moved are different facts a person acts on differently.
+    # GRPH-P57 D1: every line names the release ref it used, so drift between boxes shows.
     for item_id, got in sorted(wave.merged.items()):
+        ref = f" [{got.release}]" if got.release else ""
         if got.ok:
-            print(f"MERGED {item_id}: {got.commit[:12]} {got.url}".rstrip(), file=out)
+            print(f"MERGED {item_id}: {got.commit[:12]} {got.url}".rstrip() + ref, file=out)
         elif got.pending:
-            print(f"MERGE PENDING {item_id}: {got.reason}", file=out)
+            print(f"MERGE PENDING {item_id}: {got.reason}{ref}", file=out)
         elif got.skipped:
-            print(f"MERGE SKIPPED {item_id}: {got.reason}", file=out)
+            print(f"MERGE SKIPPED {item_id}: {got.reason}{ref}", file=out)
         else:
             print(f"MERGE HELD {item_id}: {got.reason}"
-                  + (f" (checked: {', '.join(got.checked)})" if got.checked else ""),
+                  + (f" (checked: {', '.join(got.checked)})" if got.checked else "") + ref,
                   file=out)
 
 

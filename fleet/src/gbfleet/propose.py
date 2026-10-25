@@ -25,7 +25,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 INSTALL = "brew install gh   # or see https://cli.github.com"
@@ -339,9 +339,12 @@ SIGN_OFF_ADAPTER = "fleet.sign_off"
 #: The predicate CI attests (`scripts/attest_ci.py`). Named exactly: an adapter claiming
 #: more than it checked is how a gate quietly starts accepting less than it appears to.
 CI_PREDICATE = "suite_green"
+#: The predicate CI attests after running the named security tools at a PR head (GRPH-P57
+#: D2). Required only on a merge into the release ref, and only against the ACTUAL head.
+SCANS_PREDICATE = "scans_clean"
 #: What `gh pr view --json` is asked for. `mergeCommit` is null until the PR is merged.
 _PR_FIELDS = ("number,url,state,isDraft,mergeable,mergeStateStatus,headRefOid,headRefName,"
-              "isCrossRepository,mergeCommit")
+              "baseRefName,isCrossRepository,mergeCommit")
 
 
 @dataclass(frozen=True)
@@ -368,6 +371,10 @@ class Merged:
     #: The preconditions that HELD, in the order they were asked. Reported beside the miss
     #: so "head moved" cannot be mistaken for "nothing was checked".
     checked: tuple[str, ...] = ()
+    #: Which release ref this attempt used, as a phrase for the MERGE line (GRPH-P57 D1):
+    #: "release ref main (project setting)" or "release ref unset, scans_clean not
+    #: required". Every line names it, so drift between boxes shows in the log.
+    release: str = ""
 
     @property
     def final(self) -> bool:
@@ -416,6 +423,82 @@ def green_commits(item: dict) -> set[str]:
         if any(str(p.get("name") or "") == CI_PREDICATE for p in rows):
             out.add(commit)
     return out
+
+
+@dataclass(frozen=True)
+class ScanVerdict:
+    """One `scans_clean` predicate as the ledger recorded it: the commit its attestation
+    names, whether it passed, and the predicate's detail (kind, tool, prefix on a failure)."""
+
+    commit: str
+    passed: bool
+    detail: str = ""
+
+
+def scans_clean_verdicts(item: dict) -> list[ScanVerdict]:
+    """Every `scans_clean` predicate on the item, in the order the ledger returns evidence.
+
+    That order is the server's insertion order — evidence is an append-only list
+    (`items.append_evidence`) — and it is the only order this trusts: the latest verdict
+    for a head wins, so a rerun's pass unblocks a merge and a later failure blocks it. A
+    runner timestamp is never consulted. Deliberately NOT `green_commits`' shape: a union of
+    passes would read pass-then-fail on one head as passed (GRPH-P57 D6).
+
+    Only the `scans_clean` predicate is read, not the receipt's other predicates: whether
+    the scan passed is that predicate's answer alone.
+    """
+    out: list[ScanVerdict] = []
+    for e in item.get("evidence") or []:
+        if not isinstance(e, dict) or e.get("kind") != "attestation":
+            continue
+        commit = str(e.get("commit") or "").strip()
+        preds = e.get("predicates") or []
+        if not commit or not isinstance(preds, list):
+            continue
+        for p in preds:
+            if isinstance(p, dict) and str(p.get("name") or "") == SCANS_PREDICATE:
+                out.append(ScanVerdict(commit=commit, passed=p.get("passed") is True,
+                                       detail=str(p.get("detail") or "").strip()))
+    return out
+
+
+def release_ref(roster: dict | None) -> str:
+    """The project's release ref from a `fleet_status` payload, or "" when it is unset.
+
+    Only `source == "project"` names a ref (GRPH-1109). `unmeasured`, `unknown`, and a
+    server that predates the field are all "unset": nothing here infers `main`, the remote's
+    default, or `gitops.base_branch` — an unset ref means the rule does not exist.
+    """
+    got = (roster or {}).get("release_ref") if isinstance(roster, dict) else None
+    if not isinstance(got, dict) or got.get("source") != "project":
+        return ""
+    return str(got.get("ref") or "").strip()
+
+
+def release_phrase(ref: str) -> str:
+    """How every MERGE line names the release ref it used (GRPH-P57 D1)."""
+    if not ref:
+        return f"release ref unset, {SCANS_PREDICATE} not required"
+    return f"release ref {ref} (project setting)"
+
+
+def _scans_refusal(head: str, ref: str, scans) -> str:
+    """Why `head` may not merge into the release ref, or "" when it may.
+
+    Keyed strictly by commit, and the LATEST verdict for the head wins. An attestation on
+    an older commit neither passes nor blocks this head; the latest older pass is named
+    only so the reader knows CI has run, just not here.
+    """
+    mine = [v for v in scans or () if same_commit(head, v.commit)]
+    if mine:
+        last = mine[-1]
+        if last.passed:
+            return ""
+        return (f"{SCANS_PREDICATE} failed on {head[:12]} (release ref {ref}): "
+                f"{last.detail or 'the predicate recorded no detail'}")
+    older = [v for v in scans or () if v.passed]
+    tail = f"; latest pass names {older[-1].commit[:12]}" if older else ""
+    return f"CI has not attested {SCANS_PREDICATE} on {head[:12] or '?'} (release ref {ref}){tail}"
 
 
 def pr_selector(item: dict) -> str:
@@ -509,7 +592,9 @@ def same_commit(a: str, b: str) -> bool:
 
 
 def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
-          green: set[str], paths: list[str] | tuple[str, ...] | None = None) -> Merged:
+          green: set[str], paths: list[str] | tuple[str, ...] | None = None,
+          release: str = "", scans: list[ScanVerdict] | tuple[ScanVerdict, ...] = ()
+          ) -> Merged:
     """Finish one item's merge, or say exactly which precondition stopped it.
 
     `reviewed` is the commit the sign-off attestation names; `green` is every commit CI has
@@ -520,8 +605,23 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
     those paths byte-identical to `reviewed` — is not a new review (GRPH-1032). Empty `paths`
     cannot prove that, so the head must still match.
 
-    Never raises and never fails a wave. Every path returns a `Merged` that says what it did.
+    `release` is the project's release ref ("" when unset) and `scans` the item's
+    `scans_clean` verdicts in ledger order, both read by the caller (GRPH-P57 D6). A PR
+    whose base is the release ref also needs the latest verdict on the ACTUAL head to pass —
+    never the reviewed commit, and with no GRPH-1032 exemption: merging main brings in the
+    code the scan exists to check. Any other base, or an unset ref, skips it. Nothing here
+    calls `scan_status` or reads Stack.
+
+    Never raises and never fails a wave. Every path returns a `Merged` that says what it did,
+    and names the release ref it used.
     """
+    got = _merge(repo, item_id, selector, reviewed=reviewed, green=green, paths=paths,
+                 release=release, scans=scans)
+    return replace(got, release=release_phrase(release))
+
+
+def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set[str],
+           paths, release: str, scans) -> Merged:
     checked: list[str] = []
     if not find():
         return Merged(item=item_id, selector=selector, skipped=True,
@@ -581,6 +681,18 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                       reason=f"CI has not attested {CI_PREDICATE} on {reviewed[:12]}")
     checked.append(f"ci={CI_PREDICATE}")
+
+    # GRPH-P57 D6. Against `head`, not `reviewed`: the paths-unchanged pass above vouches
+    # for the item's own files, and says nothing about what main brought in with it. A PR
+    # whose base the forge did not report is treated as into the release ref — not knowing
+    # is not an exemption.
+    base_ref = str(pr.get("baseRefName") or "").strip()
+    if release and (not base_ref or base_ref == release):
+        refused = _scans_refusal(head, release, scans)
+        if refused:
+            return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                          reason=refused)
+        checked.append(f"{SCANS_PREDICATE}=head")
 
     if pr.get("isDraft"):
         try:

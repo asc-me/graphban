@@ -23,7 +23,7 @@ import pytest
 
 from gbfleet import propose as propose_mod
 from gbfleet import supervisor as sup
-from gbfleet.client import ALLOWED_TOOLS, Graphban, NotPermitted
+from gbfleet.client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreachable
 from gbfleet.supervisor import MERGE_RECHECK_S, Merger, Wave
 from gbfleet.until import PLANNER_TOOLS, run
 
@@ -66,9 +66,11 @@ def _stored(rows) -> list[dict]:
 class _Ledger:
     """A fake Graphban `call`: hands out items and records every write."""
 
-    def __init__(self, items: dict[str, dict], *, allowed=None):
+    def __init__(self, items: dict[str, dict], *, allowed=None, release=None):
         self.items = items
         self.allowed = allowed
+        # GRPH-1109's shape on `fleet_status`. Unset by default, as on a new box.
+        self.release = release if release is not None else {"ref": None, "source": "unmeasured"}
         self.calls: list[tuple[str, dict]] = []
 
     def call(self, tool, **kw):
@@ -85,6 +87,10 @@ class _Ledger:
         if tool == "update_item":
             self.items[kw["id"]].setdefault("evidence", []).extend(_stored(kw.get("evidence")))
             return {"id": kw["id"]}
+        if tool == "fleet_status":
+            if isinstance(self.release, Exception):
+                raise self.release
+            return {"agents": [], "release_ref": self.release}
         raise AssertionError(f"unexpected call {tool}")
 
     def wrote(self, tool: str) -> list[dict]:
@@ -761,3 +767,98 @@ def test_the_report_names_each_outcome(capsys):
     assert "MERGE PENDING SA-2: auto-merge enabled" in out
     assert "MERGE SKIPPED SA-3: branch protection" in out
     assert "MERGE HELD SA-4: PR head moved (checked: open, same-repo)" in out
+
+
+# ---- the release ref, read from the ledger each tick (GRPH-P57 D1, D6) ------------------------
+
+_MAIN = {"ref": "main", "source": "project"}
+
+
+def _scanned(item: dict, commit: str, passed: bool, detail: str = "") -> dict:
+    item["evidence"].append({"kind": "attestation", "adapter": "github-actions", "commit": commit,
+                             "detail": "", "predicates": [{"name": "scans_clean", "passed": passed,
+                                                           "detail": detail}]})
+    return item
+
+
+def test_the_merger_passes_the_release_ref_and_the_scans_from_the_ledger(forge):
+    """`merge` derives nothing: the ref comes from `fleet_status`, the verdicts from the
+    item. A set ref and a passing scan on the head merges; the line names the ref."""
+    forge(_Forge(draft=False))
+    ledger = _Ledger({"SA-417": _scanned(_done_item("SA-417"), REVIEWED, True)}, release=_MAIN)
+    wave = Wave()
+
+    assert Merger(REPO, ledger, enabled=True).tick(wave) is True
+    got = wave.merged["SA-417"]
+    assert got.ok and got.release == "release ref main (project setting)"
+    assert "fleet_status" in [t for t, _ in ledger.calls]
+
+
+def test_the_merger_holds_a_release_merge_without_a_scan_and_asks_again(forge):
+    """No PR comment, no wave failure: the next tick asks again, and a rerun's pass lands."""
+    gh = forge(_Forge(draft=False))
+    item = _done_item("SA-417")
+    ledger = _Ledger({"SA-417": item}, release=_MAIN)
+    merger = Merger(REPO, ledger, enabled=True)
+    wave = Wave()
+    clock = iter([0.0, MERGE_RECHECK_S + 1])
+
+    assert merger.tick(wave, now=lambda: next(clock)) is False
+    held = wave.merged["SA-417"]
+    assert not held.final and "CI has not attested scans_clean" in held.reason
+    assert wave.failures == [] and "pr merge" not in gh.verbs()
+    assert "SA-417" in merger.watching
+
+    _scanned(item, REVIEWED, False, "never-run pip-audit backend/")
+    _scanned(item, REVIEWED, True)
+    assert merger.tick(wave, now=lambda: next(clock)) is True
+    assert wave.merged["SA-417"].ok
+
+
+def test_an_unset_ref_on_the_ledger_merges_without_scans(forge):
+    """AC 12 through the merger: a box with no setting does not start refusing."""
+    forge(_Forge(draft=False))
+    ledger = _Ledger({"SA-417": _done_item("SA-417")})
+    wave = Wave()
+
+    assert Merger(REPO, ledger, enabled=True).tick(wave) is True
+    assert wave.merged["SA-417"].release == "release ref unset, scans_clean not required"
+
+
+def test_an_unreadable_release_ref_is_not_an_unset_one(forge):
+    """Could not read the rule is not "the rule is off": nothing is merged and the item is
+    asked again once the ledger answers."""
+    gh = forge(_Forge(draft=False))
+    ledger = _Ledger({"SA-417": _done_item("SA-417")},
+                     release=ServerUnreachable("connection refused"))
+    merger = Merger(REPO, ledger, enabled=True)
+    wave = Wave()
+
+    assert merger.tick(wave) is False
+    assert gh.calls == [] and wave.merged == {}
+    assert "SA-417" in merger.watching and not merger.disabled_because
+
+    ledger.release = _MAIN
+    _scanned(ledger.items["SA-417"], REVIEWED, True)
+    assert merger.tick(wave) is True and wave.merged["SA-417"].ok
+
+
+def test_every_merge_line_names_the_release_ref(capsys):
+    from gbfleet.cli import report
+    from gbfleet.propose import Merged
+
+    on, off = "release ref main (project setting)", "release ref unset, scans_clean not required"
+    wave = Wave()
+    wave.merged = {
+        "SA-1": Merged(item="SA-1", ok=True, commit=MERGE_OID, url="https://x/pull/1", release=on),
+        "SA-2": Merged(item="SA-2", pending=True, reason="auto-merge enabled", release=off),
+        "SA-3": Merged(item="SA-3", skipped=True, reason="branch protection blocks it", release=on),
+        "SA-4": Merged(item="SA-4", reason="CI has not attested scans_clean on abc",
+                       checked=("open",), release=on),
+    }
+    report(wave)
+    out = capsys.readouterr().out
+    assert f"MERGED SA-1: {MERGE_OID[:12]} https://x/pull/1 [{on}]" in out
+    assert f"MERGE PENDING SA-2: auto-merge enabled [{off}]" in out
+    assert f"MERGE SKIPPED SA-3: branch protection blocks it [{on}]" in out
+    assert f"MERGE HELD SA-4: CI has not attested scans_clean on abc (checked: open) [{on}]" in out
