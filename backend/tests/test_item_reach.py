@@ -335,6 +335,33 @@ MUST_FIRE = {
     "railway up, fenced": "```\nrailway up --service api\n```",
     "docker compose down, fenced": "```\ndocker compose down\n```",
     "a kubectl rollout, fenced": "```\nkubectl rollout restart deployment/api\n```",
+    # Bounce of 4f38bde1. The command-shaped matcher went quiet on commands that
+    # wipe a database. `reset` is a verb. `pg:reset` and `config:set` are one
+    # colon token — `_WORD` cannot cross `:`. `maintenance:on` is the pin that
+    # the tail need not be a listed verb (`on` is a function word when it stands
+    # alone). `dump` is intentionally not a verb, so `db dump --linked` pins the
+    # two-word flag window and nothing else.
+    "supabase db reset": "supabase db reset",
+    "supabase db reset --linked": "supabase db reset --linked",
+    "heroku pg:reset": "heroku pg:reset",
+    "heroku config:set": "heroku config:set FOO=1",
+    "a colon tail that is not a verb": "heroku maintenance:on",
+    "a flag within two words": "supabase db dump --linked",
+    "helm install": "helm install rel chart",
+    "helm uninstall": "helm uninstall rel",
+    "kubectl edit": "kubectl edit deployment/api",
+    "kubectl autoscale": "kubectl autoscale deployment/api --min=1 --max=5",
+    "terraform force-unlock": "terraform force-unlock LOCKID",
+    "aws terminate-instances": "aws ec2 terminate-instances --instance-ids i-1",
+    "supabase migration repair": (
+        "supabase migration repair 20240101000000 --status reverted"),
+    "netlify env:set": "netlify env:set KEY 1",
+    "docker compose with a flag before the verb": "docker compose --profile prod down",
+    # `rb` is not a verb. The bucket uri sits between it and `--force`, so a flag
+    # that has to be the next token misses a bucket delete.
+    "aws s3 rb with the bucket before the flag": "aws s3 rb s3://bucket --force",
+    # Group, subgroup, resource, verb — one past `gcloud compute instances delete`.
+    "az network nsg rule delete": "az network nsg rule delete --name r",
 }
 
 MUST_NOT_FIRE = {
@@ -380,6 +407,10 @@ MUST_NOT_FIRE = {
     "a view that renders a deploy topology": "the view renders the deploy topology",
     "a migration that adds a column": "a migration adds a column",
     "migrate, said as prose": "we migrate the rows before the page renders",
+    # The grammar-blind matcher fired on the noun `project`. A sentence about a
+    # future deploy is not an invocation; `will` is a function word.
+    "a future deploy, said as a sentence": (
+        "The Railway project will deploy next week once the page renders"),
 }
 
 
@@ -464,6 +495,11 @@ _COMMANDS = (
     "railway up, fenced",
     "docker compose down, fenced",
     "a kubectl rollout, fenced",
+    # The four the bounce named. Delegate has to refuse them, not only signals().
+    "supabase db reset",
+    "supabase db reset --linked",
+    "heroku pg:reset",
+    "heroku config:set",
 )
 
 

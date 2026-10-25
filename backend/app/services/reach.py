@@ -92,9 +92,31 @@ _NOT_SUBCOMMANDS = (
 #: nouns cannot close that: the next legend says `project` or `service` or `topology`.
 #:
 #: A command is shaped like one. The platform name is followed by a verb (`up`, `deploy`,
-#: `apply`), or by a noun subcommand and then a verb within two words (`variables set`,
-#: `rollout restart`, `compute instances delete`), or by a flag. `Railway stack (web+api+db)`
-#: is a name. `railway up --service api` is an invocation.
+#: `apply`, `reset`), or by a noun subcommand and then a verb within three nouns
+#: (`variables set`, `compute instances delete`, `network nsg rule delete`), or by a
+#: flag in that window, or by a colon subcommand (`pg:reset`, `config:set`,
+#: `maintenance:on`).
+#: `Railway stack (web+api+db)` is a name. `railway up --service api` is an invocation.
+#: `supabase db reset` is an invocation too: `reset` is the verb that wipes a database,
+#: and leaving it off the list made the guard go quiet on the command it exists to catch.
+#:
+#: A colon is one token. `_WORD` cannot cross `:`, so `heroku pg:reset` never reached a
+#: verb that had to be a separate word. The tail is not always a listed verb — `on` in
+#: `maintenance:on` is a function word when it stands alone, and it must stay one, or
+#: `render on` becomes a command. Prose puts a space after the colon (`stack: the legend`);
+#: the glued form is how the CLI writes a subcommand.
+#:
+#: A flag is accepted after one noun or after two, and one resource argument may sit
+#: between the second noun and the flag. `supabase db dump --linked` has to fire even
+#: though `dump` is not a verb: the flag is what makes the line an invocation, and a
+#: window of one noun misses `<platform> <noun> <word> --flag`. `aws s3 rb s3://bucket
+#: --force` is the same shape with the bucket uri in front of `--force`. `rb` stays off
+#: the verb list — two letters that mean "remove bucket" only in that one CLI.
+#:
+#: A verb is accepted within three nouns, not two. `gcloud compute instances delete` is
+#: two. `az network nsg rule delete` is three (group, subgroup, resource, verb), and the
+#: grammar-blind matcher fired on `az network`. A fourth noun stays quiet: that is where
+#: the window stops being a command and starts being a sentence.
 #:
 #: Two things this deliberately does NOT do. It does not ignore backticks or fenced blocks:
 #: the commands that caused the original incident are written that way (`railway up`), and
@@ -105,27 +127,44 @@ _NOT_SUBCOMMANDS = (
 #:
 #: `docker compose` is not in `_PLATFORMS` — `compose` alone is how a legend says
 #: `compose/Railway stack`, and a slash is not a subcommand. The two-word CLI is matched
-#: on its own, same rule, same reason.
+#: on its own. Flags may sit between `compose` and the verb (`--profile prod down`);
+#: they must not hide it.
 _COMMAND_VERBS = (
-    "add|annotate|apply|build|connect|cordon|cp|create|delete|deploy|destroy|down|drain"
-    "|drop|exec|export|expose|import|init|kill|label|launch|link|login|logout|mv|open"
-    "|patch|plan|promote|provision|publish|pull|purge|push|put|redeploy|restart|revoke|rm"
-    "|rollback|rollout|rotate|run|scale|set|ssh|start|stop|sync|taint|truncate|uncordon"
-    "|undo|unlink|unset|up|update|upgrade|wipe"
+    "add|annotate|apply|autoscale|build|connect|cordon|cp|create|delete|deploy|destroy"
+    "|down|drain|drop|edit|exec|export|expose|force-unlock|import|init|install|kill|label"
+    "|launch|link|login|logout|mv|open|patch|plan|promote|provision|publish|pull|purge"
+    "|push|put|redeploy|repair|reset|restart|revoke|rm|rollback|rollout|rotate|run|scale"
+    "|set|ssh|start|stop|sync|taint|terminate|truncate|uncordon|undo|uninstall|unlink"
+    "|unset|up|update|upgrade|wipe"
 )
 _WORD = r"[a-z][\w-]*"
+_FLAG = r"--?[\w.-]+"
+#: A noun subcommand: not a function word, not a reading verb. `db` in `supabase db reset`.
+_NOUN = rf"(?!(?:{_NOT_SUBCOMMANDS})\b){_WORD}"
+#: `pg:reset`, `config:set`, `env:set`, `maintenance:on`. One token, no space around `:`.
+_COLON = rf"{_WORD}:{_WORD}"
 _PLATFORM_COMMAND = (
-    # platform, then a verb
-    rf"\b(?:{_PLATFORMS})\s+(?:(?:{_COMMAND_VERBS})\b"
-    # or a noun subcommand and a verb (`railway variables set`)
-    rf"|(?!(?:{_NOT_SUBCOMMANDS})\b){_WORD}\s+(?:{_COMMAND_VERBS})\b"
-    # or one more word, then a verb (`gcloud compute instances delete`)
-    rf"|(?!(?:{_NOT_SUBCOMMANDS})\b){_WORD}\s+(?!(?:{_NOT_SUBCOMMANDS})\b)"
-    rf"{_WORD}\s+(?:{_COMMAND_VERBS})\b"
-    # or a flag, which is how an invocation looks when the verb list missed a noun
-    rf"|(?!(?:{_NOT_SUBCOMMANDS})\b){_WORD}\s+--?[\w.-]+)"
-    # `docker compose down` / `docker-compose down`. Not `compose/Railway`.
-    rf"|\bdocker(?:\s+|-)compose\s+(?:{_COMMAND_VERBS})\b"
+    rf"\b(?:{_PLATFORMS})\s+(?:"
+    # platform, then a verb (`railway up`, `helm install`, `terraform force-unlock`)
+    rf"(?:{_COMMAND_VERBS})\b"
+    # or a colon subcommand (`heroku pg:reset`)
+    rf"|{_COLON}\b"
+    # or a noun and a verb (`railway variables set`)
+    rf"|{_NOUN}\s+(?:{_COMMAND_VERBS})\b"
+    # or one more noun, then a verb (`gcloud compute instances delete`)
+    rf"|{_NOUN}\s+{_NOUN}\s+(?:{_COMMAND_VERBS})\b"
+    # or a third (`az network nsg rule delete`)
+    rf"|{_NOUN}\s+{_NOUN}\s+{_NOUN}\s+(?:{_COMMAND_VERBS})\b"
+    # or a flag. One noun, two nouns, or two nouns and one resource argument
+    # (`aws s3 rb s3://bucket --force`). The argument must not itself be a flag,
+    # or the optional group swallows the flag it was meant to leave for the next piece.
+    rf"|{_NOUN}\s+{_FLAG}"
+    rf"|{_NOUN}\s+{_NOUN}\s+{_FLAG}"
+    rf"|{_NOUN}\s+{_NOUN}\s+(?!{_FLAG})\S+\s+{_FLAG}"
+    rf")"
+    # `docker compose down` / `docker compose --profile prod down` / `docker-compose down`.
+    # Not `compose/Railway`.
+    rf"|\bdocker(?:\s+|-)compose(?:\s+{_FLAG}(?:\s+\S+)?)*\s+(?:{_COMMAND_VERBS})\b"
 )
 
 #: Verbs that CHANGE a running system. Reading verbs are absent on purpose: `vercel logs` and
