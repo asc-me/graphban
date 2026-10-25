@@ -15,6 +15,7 @@
  * Z-order matches Canvas 2D: clouds, edges, glow, markers, nodes, rings.
  */
 
+import { kindShape, shapeCode } from "../kindShape";
 import type { Renderer } from "./renderer";
 import { GLOW_CORE_ALPHA, GLOW_WASH_ALPHA, GLOW_WASH_PX, type DrawNode, type DrawScene } from "./scene";
 import type { Stroke } from "./edges";
@@ -38,12 +39,9 @@ export function parseHex(color: string): [number, number, number] {
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
-/** 0 file circle, 1 symbol diamond, 2 module ring, 3 square. */
+/** 0 file circle, 1 symbol diamond, 2 module ring, 3 square, 7 config hexagon. */
 export function shapeKind(node: DrawNode): number {
-  if (node.square || node.kind === "doc" || node.kind === "config") return 3;
-  if (node.kind === "symbol") return 1;
-  if (node.kind === "module") return 2;
-  return 0;
+  return shapeCode(kindShape(node.kind, node.square));
 }
 
 /** Quad half-extent in world units, including the stroke and one pixel of AA. */
@@ -292,6 +290,16 @@ float strokeMask(float dist, float halfW, float aa) {
   float w = max(halfW, aa);
   return 1.0 - smoothstep(w - aa, w + aa, dist);
 }
+// Flat-top hexagon. r is the apothem (center to a flat), so the caller
+// passes circumradius * sqrt(3)/2 and the vertices land on the same circle
+// as hexagonPoints in kindShape.ts.
+float sdHexagon(vec2 p, float r) {
+  vec3 k = vec3(-0.866025404, 0.5, 0.577350269);
+  p = abs(p);
+  p -= 2.0 * min(dot(k.xy, p), 0.0) * k.xy;
+  p -= vec2(clamp(p.x, -k.z * r, k.z * r), r);
+  return length(p) * sign(p.y);
+}
 void main() {
   float aa = 1.0 / max(abs(u_k) * max(u_dpr, 1.0), 0.0001);
   float swFile = 1.25 / max(abs(u_k), 0.05);
@@ -322,6 +330,12 @@ void main() {
   } else if (kind == 6) {
     float t = d / max(v_r, 0.0001);
     cov = clamp(1.0 - t, 0.0, 1.0);
+  } else if (kind == 7) {
+    float sd = sdHexagon(v_local, v_r * 0.866025404);
+    float inside = 1.0 - smoothstep(-aa, aa, sd);
+    float strokeA = strokeMask(abs(sd), swFile * 0.5, aa);
+    col = mix(v_color, strokeCol, clamp(strokeA, 0.0, 1.0));
+    cov = max(inside, strokeA);
   } else {
     float inside = 1.0 - smoothstep(v_r - aa, v_r + aa, d);
     float strokeA = strokeMask(abs(d - v_r), swFile * 0.5, aa);
