@@ -343,6 +343,42 @@ class Verdict:
     touched: Touched | None
 
 
+def _scan_touched(repo: pathlib.Path, t: Touched, head: str, timeout: float,
+                  what: str) -> list[Result]:
+    """Every required tool on every component in `t`, or stale if HEAD is not `head`."""
+    results: list[Result] = []
+    try:
+        actual = _git(repo, "rev-parse", "HEAD").strip()
+    except DiffError as e:
+        actual = f"unknown ({e})"
+    for prefix in COMPONENTS:
+        if prefix not in t.components:
+            continue
+        for tool in TOOLS[prefix]:
+            if actual != head:
+                results.append(Result(tool, prefix, STALE,
+                                      f"checked out {actual[:12]}, {what} is {head[:12]}"))
+            else:
+                results.append(scan(tool, prefix, repo, timeout=timeout))
+    if actual != head and not any(r.state == STALE for r in results):
+        # Nothing touched needed a tool, but this run still did not look at the head.
+        results.append(Result("", "", STALE, f"checked out {actual[:12]}, {what} is "
+                                             f"{head[:12]}"))
+    return results
+
+
+def _verdict(results: list[Result], t: Touched | None, head: str) -> Verdict:
+    failures = [r for r in results if r.state != CLEAN]
+    passed = not failures
+    ran = [f"{r.tool} {r.prefix} {r.state}" for r in results if r.tool and r.state != STALE]
+    parts = [f"scans_clean {'passed' if passed else 'FAILED'} at {head[:12] or '?'}",
+             f"touched: {t.describe() if t else 'unknown'}",
+             f"ran: {', '.join(ran) or 'nothing'}"]
+    if failures:
+        parts.append("failures: " + "; ".join(r.line() for r in failures))
+    return Verdict(passed, ". ".join(parts), results, t)
+
+
 def evaluate(repo: pathlib.Path, *, base: str, head: str,
              timeout: float = TOOL_TIMEOUT) -> Verdict:
     """Everything this run checked, at `head`. Reads nothing but git and its own tools."""
@@ -357,34 +393,21 @@ def evaluate(repo: pathlib.Path, *, base: str, head: str,
     if t is not None:
         for path in t.uncovered:
             results.append(Result("", "", NEVER_RUN, f"no component covers {path}"))
-        try:
-            actual = _git(repo, "rev-parse", "HEAD").strip()
-        except DiffError as e:
-            actual = f"unknown ({e})"
-        for prefix in COMPONENTS:
-            if prefix not in t.components:
-                continue
-            for tool in TOOLS[prefix]:
-                if actual != head:
-                    results.append(Result(tool, prefix, STALE,
-                                          f"checked out {actual[:12]}, pull request head is "
-                                          f"{head[:12]}"))
-                else:
-                    results.append(scan(tool, prefix, repo, timeout=timeout))
-        if actual != head and not any(r.state == STALE for r in results):
-            # Nothing touched needed a tool, but this run still did not look at the head.
-            results.append(Result("", "", STALE, f"checked out {actual[:12]}, pull request "
-                                                 f"head is {head[:12]}"))
+        results.extend(_scan_touched(repo, t, head, timeout, "pull request head"))
+    return _verdict(results, t, head)
 
-    failures = [r for r in results if r.state != CLEAN]
-    passed = not failures
-    ran = [f"{r.tool} {r.prefix} {r.state}" for r in results if r.tool and r.state != STALE]
-    parts = [f"scans_clean {'passed' if passed else 'FAILED'} at {head[:12] or '?'}",
-             f"touched: {t.describe() if t else 'unknown'}",
-             f"ran: {', '.join(ran) or 'nothing'}"]
-    if failures:
-        parts.append("failures: " + "; ".join(r.line() for r in failures))
-    return Verdict(passed, ". ".join(parts), results, t)
+
+def evaluate_tree(repo: pathlib.Path, *, head: str,
+                  timeout: float = TOOL_TIMEOUT) -> Verdict:
+    """`scans_clean` for a whole tree at `head`: every component, no diff (GRPH-1114).
+
+    A release ships every component, so the touched set is all of them rather than a diff
+    against some base. `repo` must be checked out at `head` — the release script hands this a
+    detached worktree of the exact commit it packs — and anything else is stale, as in
+    `evaluate`.
+    """
+    t = Touched(components={p: [p] for p in COMPONENTS}, considered=list(COMPONENTS))
+    return _verdict(_scan_touched(repo, t, head, timeout, "release commit"), t, head)
 
 
 def _scan_rows(verdict: Verdict, head: str) -> list[dict]:

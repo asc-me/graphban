@@ -93,6 +93,41 @@ clicking Install.
 
 Does not merge, does not push `main`, does not apply to a box.
 
+### Rule: `release.requires_scans_clean` (optional, off by default)
+
+`publish` (and `publish --dry-run`) prints the rule's state on every run:
+
+```
+rule release.requires_scans_clean: off (scripts/release_rules.json at 1a2b3c4d5e6f)
+```
+
+Turn it on in `scripts/release_rules.json` — through a PR, like anything else:
+
+```json
+{ "release.requires_scans_clean": true }
+```
+
+The file is read **at the commit being cut**, not from cwd, for the same reason the
+version is: the rule a release obeys is part of what was reviewed and merged, and a local
+edit before `publish` cannot switch it off. It is a checked-in file rather than a flag so the
+rules view (GRPH-1115) has one place to read and change it. No file means every rule at its
+default (off), and the line says so. A file that does not parse, names an unknown rule or
+gives a non-boolean refuses the publish — that is somebody trying to set a rule, not "off".
+
+When on, `publish` checks out the exact commit it is about to pack into a detached worktree
+and runs the S3 scanner on it (`scan_ci.evaluate_tree`): every required tool on **every**
+component — `backend/`, `fleet/`, `cli/` (pip-audit + bandit) and `web/` (`pnpm audit`) —
+not a diff. It does not look up an attestation: the squash-merged stamp commit is no PR's
+head, so no PR receipt names it. A fresh worktree is enough — pip-audit reads `uv.lock` and
+`pnpm audit` reads `package.json` + `pnpm-lock.yaml`; no `node_modules` or `.venv` is needed.
+The tools must be on `PATH` (`uv`, `pip-audit`, `bandit`, `pnpm`), and the audits need network.
+
+Any tool that is a failed check, never-run (missing from `PATH`, crashed, timed out,
+unparseable) or stale refuses the cut, printing the same `scans_clean` detail CI does —
+state, tool and prefix per failure. The refusal comes before the pack and before
+`gh release create`, which is what makes the tag, so nothing is pushed. `--dry-run` runs the
+scan too and exits 1 with *publish would refuse*.
+
 `/releases/latest` can lag a few seconds after create. Check → Install
 seeing the previous tag is that race, not a missed publish. Wait and Check
 again.
