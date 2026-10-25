@@ -1,6 +1,7 @@
 """The optional release rule `release.requires_scans_clean` (GRPH-1114).
 
-Off by default, and says so. When on, `publish` runs the S3 scanner on the exact commit it is
+Off when the file is absent or false, and says so. This repo's checked-in file is on
+(GRPH-1119). When on, `publish` runs the S3 scanner on the exact commit it is
 about to pack — every component, not a diff — and refuses before pack and before
 `gh release create` (which is what makes the tag) unless every required tool is clean.
 
@@ -188,10 +189,10 @@ def test_off_dry_run_says_the_rule_is_off_and_packs_nothing(tmp_path, capsys):
     assert "would pack" in out
 
 
-def test_the_checked_in_rule_is_off():
-    """Off by default means the file this repo ships says false."""
+def test_this_repo_ships_the_rule_on():
+    """GRPH-1119 turned the checked-in file on. Absent file is still the code default, off."""
     data = json.loads((REPO / rel.RULES_FILE).read_text(encoding="utf-8"))
-    assert data == {RULE: False}
+    assert data == {RULE: True}
     assert rel.RULE_DEFAULTS[RULE] is False
 
 

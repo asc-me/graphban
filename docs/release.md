@@ -93,25 +93,26 @@ clicking Install.
 
 Does not merge, does not push `main`, does not apply to a box.
 
-### Rule: `release.requires_scans_clean` (optional, off by default)
+### Rule: `release.requires_scans_clean` (on for this repo)
 
-`publish` (and `publish --dry-run`) prints the rule's state on every run:
-
-```
-rule release.requires_scans_clean: off (scripts/release_rules.json at 1a2b3c4d5e6f)
-```
-
-Turn it on in `scripts/release_rules.json` — through a PR, like anything else:
+This repo ships the rule **on**. `scripts/release_rules.json` is:
 
 ```json
 { "release.requires_scans_clean": true }
 ```
 
-The file is read **at the commit being cut**, not from cwd, for the same reason the
-version is: the rule a release obeys is part of what was reviewed and merged, and a local
-edit before `publish` cannot switch it off. It is a checked-in file rather than a flag so the
-rules view (GRPH-1115) has one place to read and change it. No file means every rule at its
-default (off), and the line says so. A file that does not parse, names an unknown rule or
+`publish` and `publish --dry-run` print that on every run:
+
+```
+rule release.requires_scans_clean: on (scripts/release_rules.json at 1a2b3c4d5e6f) — scanning 1a2b3c4d5e6f
+```
+
+Turning it **off** is a reviewed PR to `scripts/release_rules.json` that sets the value to
+`false`. A local edit before `publish` cannot switch it off. The file is read **at the
+commit being cut**, not from cwd, for the same reason the version is: the rule a release
+obeys is part of what was reviewed and merged. It is a checked-in file rather than a flag so
+the rules view (GRPH-1115) has one place to read and change it. No file means every rule at
+its default (off), and the line says so. A file that does not parse, names an unknown rule or
 gives a non-boolean refuses the publish — that is somebody trying to set a rule, not "off".
 
 When on, `publish` checks out the exact commit it is about to pack into a detached worktree
@@ -126,7 +127,15 @@ Any tool that is a failed check, never-run (missing from `PATH`, crashed, timed 
 unparseable) or stale refuses the cut, printing the same `scans_clean` detail CI does —
 state, tool and prefix per failure. The refusal comes before the pack and before
 `gh release create`, which is what makes the tag, so nothing is pushed. `--dry-run` runs the
-scan too and exits 1 with *publish would refuse*.
+scan too and exits 1. A refusal looks like this (the scan detail on stdout, then stderr):
+
+```
+scans_clean FAILED at 1a2b3c4d5e6f. touched: backend/, fleet/, cli/, web/. ran: pip-audit backend/ clean, bandit backend/ failed check, … failures: failed check bandit backend/: 1 finding(s): B602 shell=True
+release: rule release.requires_scans_clean: 1a2b3c4d5e6f does not pass scans_clean — publish would refuse
+```
+
+A real `publish` (no `--dry-run`) uses the same sentence with *not tagging, not creating the
+GitHub Release*. Do not cut a release to see it.
 
 `/releases/latest` can lag a few seconds after create. Check → Install
 seeing the previous tag is that race, not a missed publish. Wait and Check
