@@ -172,6 +172,68 @@ def test_no_built_by_says_nothing_was_compared():
     assert "SAME vendor" not in detail
 
 
+def test_grok_and_xai_are_one_vendor_either_way(client, key):
+    """GRPH-1120. The receipt on GRPH-1118 said `xai:grok-4.7` reviewed `grok:grok-4.7`
+    and called them different vendors. Same model, same harness, two spellings.
+    Removing the fold makes this assert the gate's old lie: "different vendors"."""
+    forward = _signed(
+        client, key,
+        builder_caps={"instance": "w", "vendor": "grok", "model": "grok-4.7", "tier": "frontier"},
+        reviewer_caps={"instance": "r", "vendor": "xai", "model": "grok-4.7", "tier": "frontier"},
+    )
+    assert "SAME vendor" in forward["detail"]
+    assert "different vendors" not in forward["detail"]
+    assert "same model" in forward["detail"]
+    # New rows store one spelling, so the receipt does not keep the alias.
+    assert forward["detail"].count("xai:grok-4.7") == 2
+
+    reverse = _signed(
+        client, key,
+        builder_caps={"instance": "w2", "vendor": "xai", "model": "grok-4.7", "tier": "frontier"},
+        reviewer_caps={"instance": "r2", "vendor": "grok", "model": "grok-4.7", "tier": "frontier"},
+    )
+    assert "SAME vendor" in reverse["detail"]
+    assert "different vendors" not in reverse["detail"]
+    assert reverse["detail"].count("xai:grok-4.7") == 2
+
+
+def test_an_old_grok_row_still_compares_equal_to_xai():
+    """Rows written before the fold keep the spelling they were stored with.
+    The comparison has to fold them, or the receipt on those rows stays the bug."""
+    builder = {"vendor": "grok", "model": "grok-4.7", "tier": "frontier"}
+    reviewer = {"vendor": "xai", "model": "grok-4.7", "tier": "frontier"}
+
+    differs, detail = fleet_svc.review_diversity(reviewer, builder, built_by="GRPH-A1")
+    assert differs is False
+    assert "SAME vendor" in detail
+    assert "xai and grok are one vendor" in detail
+    assert "different vendors" not in detail
+
+    differs, detail = fleet_svc.review_diversity(builder, reviewer, built_by="GRPH-A1")
+    assert differs is False
+    assert "grok and xai are one vendor" in detail
+
+
+def test_a_model_id_used_as_the_vendor_is_the_same_company():
+    """The other spelling's origin: the model id itself (`grok-4.7`) written into
+    `vendor`. It is xAI, not a third vendor next to `grok` and `xai`."""
+    builder = {"vendor": "grok-4.7", "model": "grok-4.7", "tier": "frontier"}
+    reviewer = {"vendor": "xai", "model": "grok-4.7", "tier": "frontier"}
+    differs, detail = fleet_svc.review_diversity(reviewer, builder, built_by="GRPH-A1")
+    assert differs is False
+    assert "SAME vendor" in detail
+
+
+def test_anthropic_and_xai_are_still_different_vendors(client, key):
+    pred = _signed(
+        client, key,
+        builder_caps={"instance": "w", "vendor": "anthropic", "model": "opus", "tier": "frontier"},
+        reviewer_caps={"instance": "r", "vendor": "xai", "model": "grok-4.7", "tier": "frontier"},
+    )
+    assert "different vendors" in pred["detail"]
+    assert "anthropic:opus" in pred["detail"] and "xai:grok-4.7" in pred["detail"]
+
+
 def test_differs_is_true_only_when_both_are_declared_and_differ():
     """The return value a future policy would gate on, so its polarity is pinned now rather
     than when something depends on it."""
