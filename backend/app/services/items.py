@@ -656,8 +656,10 @@ _COMMIT = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
 #: Prose is a worse carrier than a field and is used anyway, because `normalize_evidence`
 #: keeps only `kind`/`detail`/`url` on a note and inventing a field for this would change
 #: the evidence schema for one caller. It is written in exactly one place
-#: (`gbfleet.supervisor._record_cut_from`) and read in exactly one place (below), and the
-#: pair is pinned by test_fleet_base_commit_gate.
+#: (`fleet.record_observation`, the supervisor observations route — GRPH-975) and read in
+#: exactly one place (below), and the pair is pinned by test_fleet_base_commit_gate.
+#: The supervisor posts the facts; it does not compose this sentence, because its client
+#: may not call `update_item`.
 CUT_FROM_MARKER = "gbfleet: branch cut from "
 
 _SHA = re.compile(r"\b([0-9a-f]{7,40})\b")

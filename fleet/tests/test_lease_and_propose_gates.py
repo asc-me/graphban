@@ -138,11 +138,12 @@ def test_a_withheld_proposal_is_reported_on_the_item(no_forge):
     wave.undeclared["wave/1"] = ["web/src/App.tsx"]
     client = _client({"update_item"})
     propose_branch(wave, Path("."), "wave/1", ["GRPH-1"], client=client)
-    notes = [c.kwargs for c in client.call.call_args_list if c.args[0] == "update_item"]
-    assert len(notes) == 1 and notes[0]["id"] == "GRPH-1"
-    detail = notes[0]["evidence"][0]["detail"]
-    assert "not proposed as a PR" in detail and "web/src/App.tsx" in detail
-    assert "wave/1" in detail
+    client.post_observation.assert_called_once()
+    posted = client.post_observation.call_args.kwargs
+    assert posted["item_id"] == "GRPH-1" and posted["kind"] == "withheld"
+    assert posted["branch"] == "wave/1"
+    assert "web/src/App.tsx" in posted["reason"]
+    assert not any(c.args and c.args[0] == "update_item" for c in client.call.call_args_list)
 
 
 def test_behind_branch_is_refused(no_forge):

@@ -567,20 +567,21 @@ def test_the_pr_selector_prefers_the_item_pr_then_the_receipt_then_the_branch():
 
 
 class _RecordingClient:
-    """A client that records `update_item` calls. Stands in for the planner."""
+    """A client that records observation posts. The supervisor may not call `update_item`."""
 
     def __init__(self, refuse=False):
         self.refuse = refuse
-        self.calls: list[dict] = []
+        self.observations: list[dict] = []
 
     def call(self, tool, **kwargs):
-        if tool == "update_item":
-            if self.refuse:
-                from gbfleet.client import NotPermitted
-                raise NotPermitted("update_item not allowed")
-            self.calls.append(kwargs)
-            return {"id": kwargs.get("id")}
         return {}
+
+    def post_observation(self, **kwargs):
+        if self.refuse:
+            from gbfleet.client import ObservationRefused
+            raise ObservationRefused("refused")
+        self.observations.append(kwargs)
+        return {"recorded": True, "item_id": kwargs.get("item_id"), "kind": kwargs.get("kind")}
 
 
 def test_propose_branch_does_not_open_a_pr_for_a_salvage_subject(
@@ -608,18 +609,18 @@ def test_propose_branch_does_not_open_a_pr_for_a_salvage_subject(
     propose_branch(wave, git_repo, "gb/w-1", ["GRPH-1"], client=client)
     assert proposed == [], "gh pr create ran for a salvage subject"
     assert wave.proposed["gb/w-1"].skipped
-    assert client.calls, "item was not named"
-    ev = client.calls[0]["evidence"][0]
-    assert ev["kind"] == "note" and "not proposed as a PR" in ev["detail"]
-    assert "/pull/" not in ev.get("url", "") + ev.get("detail", "")
+    assert client.observations, "item was not named"
+    obs = client.observations[0]
+    assert obs["kind"] == "salvage" and obs["item_id"] == "GRPH-1"
+    assert obs["branch"] == "gb/w-1"
+    assert "url" not in obs
 
 
 def test_propose_branch_records_the_pr_url_on_the_item(gh, git_repo, monkeypatch):
-    """A successful draft PR produces a `url` receipt on the item via `update_item`.
+    """A successful draft PR posts `pr_opened` with the url. The server composes the receipt.
 
-    The CALL is `client.call("update_item", id=..., evidence=[{url: ...}])`. Sabotage:
-    pass `client=None` → no receipt lands. Pass a client that raises `NotPermitted` →
-    the failure is recorded in `wave.failures`.
+    Sabotage: pass `client=None` → no receipt lands. Pass a client whose
+    `post_observation` raises → the failure is recorded in `wave.failures`.
     """
     from gbfleet.supervisor import Wave, propose_branch
     from gbfleet import propose as propose_mod
@@ -632,10 +633,11 @@ def test_propose_branch_records_the_pr_url_on_the_item(gh, git_repo, monkeypatch
     wave = Wave()
     client = _RecordingClient()
     propose_branch(wave, git_repo, "gb/wave-1", ["GRPH-1"], client=client)
-    assert len(client.calls) == 1, f"expected one update_item call, got {client.calls}"
-    assert client.calls[0]["id"] == "GRPH-1"
-    evidence = client.calls[0]["evidence"]
-    assert any(e.get("kind") == "url" and "/pull/42" in e.get("url", "") for e in evidence)
+    assert len(client.observations) == 1, client.observations
+    assert client.observations[0]["item_id"] == "GRPH-1"
+    assert client.observations[0]["kind"] == "pr_opened"
+    assert client.observations[0]["branch"] == "gb/wave-1"
+    assert client.observations[0]["url"] == "https://github.com/o/r/pull/42"
 
 
 def test_propose_branch_with_no_client_opens_the_pr_but_records_nothing(gh, git_repo, monkeypatch):

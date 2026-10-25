@@ -1988,6 +1988,25 @@ def _branch_head(repo: Path, branch: str) -> str:
         return ""
 
 
+def _observe(wave: Wave, client: Graphban | None, item_id: str, failure: str,
+             **payload) -> None:
+    """Post one fact to the observations route (GRPH-975). Never fatal.
+
+    The supervisor client may not call `update_item` (PRD-22 §4). These receipts used to,
+    and every wave logged `not recorded` while `sign_off` reported the base uncompared.
+    `post_observation` raises on a refusal — telemetry's post swallows one, and a swallowed
+    base is the defect — so this except is what puts the reason on the wave. There is no
+    fallback call: a fallback would be the forbidden tool, and the test that drives the
+    real client would stay green while production kept failing.
+    """
+    if client is None or not item_id:
+        return
+    try:
+        client.post_observation(item_id=item_id, **payload)
+    except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
+        wave.failures.append(f"{item_id}: {failure} ({exc})")
+
+
 def _record_salvage_receipt(wave: Wave, client: Graphban | None, items: list[str],
                             branch: str, commit: str, *, reason: str = "") -> None:
     """Name the salvage on the item without opening a PR (GRPH-926).
@@ -1995,22 +2014,15 @@ def _record_salvage_receipt(wave: Wave, client: Graphban | None, items: list[str
     GRPH-830 still holds: the work must be findable from the item. A `/pull/` URL was
     the wrong receipt — those drafts were mergeable and titled `WIP: salvaged by gbfleet`.
     `reason` is set when the push went to a side branch so the original ref was not moved.
+
+    The server composes the note. This sends the branch, the commit and the reason.
     """
     if client is None or not items:
         return
-    short = (commit or "")[:12]
-    detail = f"salvaged onto `{branch}`" + (f" `{short}`" if short else "")
-    if reason:
-        detail += f" ({reason})"
-    detail += "; not proposed as a PR"
     for item_id in items:
-        try:
-            client.call("update_item", id=item_id, evidence=[{
-                "kind": "note",
-                "detail": detail,
-            }])
-        except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
-            wave.failures.append(f"{item_id}: salvage not recorded ({exc})")
+        _observe(wave, client, item_id, "salvage not recorded",
+                 kind="salvage", branch=branch, commit=commit or None,
+                 reason=reason or None)
 
 
 def _record_cut_from(wave: Wave, client, item_id: str | None, branch: str, base: str) -> None:
@@ -2025,10 +2037,10 @@ def _record_cut_from(wave: Wave, client, item_id: str | None, branch: str, base:
 
     A NOTE, and not the attestation it wants to be. Writing `kind: attestation` needs the
     `gate` scope, and a supervisor runs on whatever `GBFLEET_API_KEY` holds — `["read",
-    "write"]` on every wave measured here. The attestation would have been refused, this
-    `except` would have logged a wave failure nobody reads, and the gate would have found no
-    base and reported "not compared" for ever. A guard that does nothing is the defect being
-    fixed, so the carrier is the one a wave's own key can actually write.
+    "write"]` on every wave measured here. The attestation would have been refused, the
+    wave would have logged a failure nobody reads, and the gate would have found no base
+    and reported "not compared" for ever. The server writes the note from the facts posted
+    here (`fleet.record_observation`); this client still may not call `update_item`.
     `items.CUT_FROM_MARKER` is the other half of the pair.
 
     Never fatal. A wave is not broken by a missing receipt — but unlike the salvage note, the
@@ -2037,14 +2049,8 @@ def _record_cut_from(wave: Wave, client, item_id: str | None, branch: str, base:
     """
     if client is None or not item_id or not base:
         return
-    try:
-        client.call("update_item", id=item_id, evidence=[{
-            "kind": "note",
-            "detail": f"gbfleet: branch cut from {base} (`{branch}`) — the base, which "
-                      "carries none of this item's work",
-        }])
-    except Exception as exc:  # noqa: BLE001 — see the docstring: never fatal
-        wave.failures.append(f"{item_id}: base not recorded ({exc})")
+    _observe(wave, client, item_id, "base not recorded",
+             kind="cut_from", branch=branch, base=base)
 
 
 def _refuse_proposal(wave: Wave, branch: str) -> str:
@@ -2151,14 +2157,10 @@ def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, s
     # PR-cooldown reads from (`items.pr_linked_at`). Starting that clock is the intended
     # effect: `done` should not be claimable the same minute the PR appeared.
     for item_id in items:
-        try:
-            client.call("update_item", id=item_id, evidence=[{
-                "kind": "url",
-                "detail": f"draft PR opened by gbfleet for {branch}",
-                "url": got.url,
-            }])
-        except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
-            wave.failures.append(f"{item_id}: PR opened but not recorded ({exc})")
+        # The server writes the url receipt and starts `pr_linked_at`. Sending the URL as
+        # an evidence array would be `update_item`, which this client may not call.
+        _observe(wave, client, item_id, "PR opened but not recorded",
+                 kind="pr_opened", branch=branch, url=got.url)
 
 
 def _record_withheld(wave: Wave, client: Graphban | None, items: list[str], branch: str,
@@ -2171,12 +2173,9 @@ def _record_withheld(wave: Wave, client: Graphban | None, items: list[str], bran
     """
     if client is None or not items:
         return
-    detail = f"pushed `{branch}`; not proposed as a PR — {reason}"
     for item_id in items:
-        try:
-            client.call("update_item", id=item_id, evidence=[{"kind": "note", "detail": detail}])
-        except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
-            wave.failures.append(f"{item_id}: withheld PR not recorded ({exc})")
+        _observe(wave, client, item_id, "withheld PR not recorded",
+                 kind="withheld", branch=branch, reason=reason)
 
 
 def _publish_item_branch(wave: Wave, repo: Path, name: str, base: str) -> bool:
@@ -2939,8 +2938,10 @@ def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = No
     credentials BEST is the one that leaves one behind.
 
     **`client` is the one that records PR receipts on the item** (GRPH-869). The planner
-    in `until`, the single client in `up`. A supervisor-allowlist client raises
-    `NotPermitted` on `update_item`; passing it here is the bug this parameter fixes.
+    in `until`, the single client in `up`. Those receipts are an observations post
+    (GRPH-975), which a supervisor-allowlist client may make — they are not `update_item`.
+    The merge receipt further down still calls `update_item`, and that call stays on a
+    client whose tool allowlist includes it.
     """
     for child in children:
         if child.reaped:

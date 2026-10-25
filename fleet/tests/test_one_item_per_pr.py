@@ -74,13 +74,14 @@ def forge(monkeypatch):
 
 class _Ledger:
     def __init__(self):
-        self.evidence: list[tuple[str, dict]] = []
+        self.observations: list[dict] = []
 
     def call(self, tool, **kw):
-        if tool == "update_item":
-            for e in kw.get("evidence") or []:
-                self.evidence.append((kw["id"], e))
         return {}
+
+    def post_observation(self, **kw):
+        self.observations.append(kw)
+        return {"recorded": True}
 
 
 # ---- describe ---------------------------------------------------------------------------------
@@ -124,7 +125,7 @@ def test_a_child_holding_several_items_proposes_one_pr_per_item(published, forge
     assert _git(repo, "diff", "--name-only", "main", "gb/w-1--SA-580").split() == ["web/a.tsx"]
     assert _git(repo, "diff", "--name-only", "main", "gb/w-1--SA-581").split() == ["web/b.tsx"]
     # The receipt lands on its own item and names its own PR.
-    urls = {(i, e["url"]) for i, e in ledger.evidence if e.get("kind") == "url"}
+    urls = {(o["item_id"], o["url"]) for o in ledger.observations if o["kind"] == "pr_opened"}
     assert urls == {("SA-580", "https://x/pull/1"), ("SA-581", "https://x/pull/2")}
     assert not wave.failures, wave.failures
 
@@ -266,7 +267,7 @@ def test_salvaged_work_for_several_items_names_each_items_own_branch(published, 
     propose_branch(wave, repo, "gb/w-8", ["GRPH-1", "GRPH-2"], client=ledger)
 
     assert forge == [], "a salvage is never proposed"
-    notes = {i: e["detail"] for i, e in ledger.evidence}
-    assert "`gb/w-8`" in notes["GRPH-1"]
-    assert "`gb/w-8--GRPH-2`" in notes["GRPH-2"]
+    notes = {o["item_id"]: o["branch"] for o in ledger.observations if o["kind"] == "salvage"}
+    assert notes["GRPH-1"] == "gb/w-8"
+    assert notes["GRPH-2"] == "gb/w-8--GRPH-2"
     assert wave.published["gb/w-8--GRPH-2"].ok, "the sibling is pushed so it can be found"
