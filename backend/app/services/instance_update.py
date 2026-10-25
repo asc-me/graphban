@@ -18,7 +18,7 @@ import pathlib
 import re
 import socket
 import stat
-import subprocess
+import subprocess  # nosec B404 — argv lists only, never shell=True
 import sys
 import tarfile
 import tempfile

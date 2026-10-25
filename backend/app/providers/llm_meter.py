@@ -289,7 +289,7 @@ def _emit(meta: dict, kind: str, sink: dict, started: float, *,
         logger.info("llm %s %s %s %s %.1fms", row["provider"], row["model"], kind,
                     "ok" if row["ok"] else f"ERR {row['error_class']}", latency_ms,
                     extra={"llm": {k: v for k, v in row.items() if v is not None}})
-    except Exception:  # noqa: BLE001 — logging must not break the feature either
+    except Exception:  # noqa: BLE001 — logging must not break the feature either  # nosec B110
         pass
     try:
         from sqlalchemy import text
@@ -318,7 +318,8 @@ def _emit(meta: dict, kind: str, sink: dict, started: float, *,
                 # engine ships with (no explicit timeout in app/db.py).
                 try:
                     db.execute(text("PRAGMA busy_timeout=5000"))
-                except Exception:  # noqa: BLE001
+                # A pragma the engine refuses leaves the default timeout; telemetry goes on.
+                except Exception:  # noqa: BLE001  # nosec B110
                     pass
             db.close()
     except Exception:  # noqa: BLE001 — THE invariant: telemetry never breaks the feature

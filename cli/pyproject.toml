@@ -43,3 +43,24 @@ packages = ["src/gban"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
+
+# Read by `scripts/scan_ci.py` (`bandit -c pyproject.toml -r .`, GRPH-1110). Any other finding
+# is fixed or carries a line-level `# nosec <id>` with its reason.
+[tool.bandit]
+exclude_dirs = [
+    # Test code asserts by design (B101) and fakes credentials. It is not in the wheel.
+    "tests",
+    # A local virtualenv is third-party code, audited by pip-audit, not ours to lint.
+    ".venv",
+]
+skips = [
+    # B404 (import subprocess): this is a developer CLI whose job is driving git, gh and the
+    # user's own tools. Importing subprocess is the feature, not a smell.
+    "B404",
+    # B603 (subprocess without shell=True): fires on EVERY argv-list call, which is the safe
+    # form. B602 (shell=True) stays on, and that is the injection check that matters.
+    "B603",
+    # B607 (partial executable path): `git`/`gh` are resolved from the user's own PATH on
+    # their own machine on purpose; hardcoding /usr/bin/git breaks every Homebrew install.
+    "B607",
+]

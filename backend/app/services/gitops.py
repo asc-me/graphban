@@ -44,7 +44,7 @@ OBSERVE_ANSWERS = ("remote", "none", "unknown")
 OBSERVE_WAITING = "waiting on Observe: remote / none / unknown"
 OBSERVE_UNKNOWN_BLOCK = "Observe answered unknown — look again before the rest"
 ALREADY_TAG = "gitops-already"
-ALREADY_TOKEN = "already"
+ALREADY_TOKEN = "already"  # nosec B105 — an evidence keyword, not a credential
 ALREADY_HINT = (
     "If this is already true, evidence `already` plus what you saw — do not create "
     "a second remote. Graphban will not mark this done from that receipt."

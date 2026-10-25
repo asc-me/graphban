@@ -955,7 +955,7 @@ class TopologyRefused(Exception):
 
 
 _NO_HEAD = frozenset({"", "unknown"})
-_SECRET_REASON = "env values are never stored, only variable names"
+_SECRET_REASON = "env values are never stored, only variable names"  # nosec B105 — a message
 _DANGLING = (
     "references a node the post does not define; declare it as an unresolved node"
 )

@@ -42,7 +42,9 @@ import shutil
 import subprocess
 import sys
 import time
-import xml.etree.ElementTree as ET
+# bandit B405/B314: ET only parses back the unit THIS process rendered (`secrets_in`), never
+# input from anyone else, so there is no untrusted XML for an entity attack to ride in on.
+import xml.etree.ElementTree as ET  # nosec B405
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -193,7 +195,7 @@ def _xml_secrets(rendered: bytes) -> list[str]:
     """Element local-names that look like a credential, at any depth."""
     text = rendered.decode("utf-16" if rendered[:2] in (b"\xff\xfe", b"\xfe\xff")
                            else "utf-8", "replace")
-    root = ET.fromstring(text)
+    root = ET.fromstring(text)  # nosec B314
     found: list[str] = []
 
     def walk(node: ET.Element, path: str) -> None:

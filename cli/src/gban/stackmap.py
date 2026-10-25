@@ -42,7 +42,8 @@ _SKIP_DIRS = frozenset({
     ".next", "coverage", "vendor", ".gbfleet", ".hg", ".svn",
 })
 _MAX_BYTES = 1_000_000
-_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"})
+# bandit B104: hostnames to recognise in a URL, nothing binds to them.
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"})  # nosec B104
 #: Where a local host lands when no table row or single infra node of its kind claims it.
 #: One node for "this machine", whatever spelling the URL used: `host.docker.internal` is
 #: Docker's name for the same host `localhost` names, not a service the app calls.

@@ -387,7 +387,8 @@ def instruction_for(seat: Seat, worktree: Path, branch: str) -> str:
         # vendor's child has delivered correctly — rather than a template placeholder, so the
         # templates stay byte-identical for a seat that declares nothing (GRPH-732).
         anchor = f"and branch={branch!r}."
-        assert anchor in text, "the register sentence moved; the declaration has nowhere to go"
+        if anchor not in text:
+            raise RuntimeError("the register sentence moved; the declaration has nowhere to go")
         clause = (f" and capabilities={json.dumps(seat.declare, sort_keys=True)} — declare exactly "
                   "this; it names what you are so the ledger can attribute your outcome")
         text = text.replace(anchor, f"and branch={branch!r}{clause}.", 1)

@@ -1654,6 +1654,8 @@ def search_memory(
         status_names = [f":st{i}" for i in range(len(allowed))]
         for i, st in enumerate(allowed):
             params[f"st{i}"] = st
+        # bandit B608: only bind-parameter NAMES and _project_match_sql's fixed clause are
+        # interpolated; every value travels as a bound parameter.
         sql = text(
             f"""
             SELECT id, (embedding <=> (:qv)::vector) AS distance
@@ -1663,7 +1665,7 @@ def search_memory(
               {project_clause}
             ORDER BY distance ASC
             LIMIT :k
-            """
+            """  # nosec B608
         )
         if expanding:
             sql = sql.bindparams(bindparam("sibling_ids", expanding=True))
