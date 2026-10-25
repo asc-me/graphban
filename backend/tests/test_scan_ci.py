@@ -525,6 +525,61 @@ def test_a_failing_scans_clean_does_not_void_suite_green(repo, fakes, ledger, mo
     assert len(scans["predicates"]) == 1
 
 
+def _latest_scans_clean(stored, head):
+    """The reading GRPH-1111's merge gate makes: the LAST `scans_clean` verdict for `head`,
+    in ledger (insertion) order."""
+    verdicts = [p["passed"] for r in stored
+                if r.get("kind") == "attestation" and r.get("commit") == head
+                for p in r.get("predicates") or [] if p.get("name") == "scans_clean"]
+    return verdicts[-1] if verdicts else None
+
+
+def test_every_run_attempt_is_a_distinct_receipt_kept_in_order(repo, fakes, ledger,
+                                                                 monkeypatch):
+    """GRPH-1113. Every re-run shares `github.run_id`, and `append_evidence` drops a receipt
+    identical to one already stored. Sabotage: drop the attempt from `run_ref`, and pass →
+    fail (re-run) → pass (manual re-run) for one head stores pass, fail — the third receipt
+    equals the first — so the latest verdict is a fail and the merge stays refused."""
+    from app.services import items as items_svc
+
+    calls, _ = ledger
+    head = _pr(repo, {"backend/app/x.py": "x = 2\n"})
+    run = "https://github.com/o/r/actions/runs/42"
+    for attempt, bandit in (("1", "clean"), ("2", "findings"), ("3", "clean")):
+        monkeypatch.setenv("FAKE_BANDIT", bandit)
+        _main(repo, head, "--run-url", run, "--run-attempt", attempt)
+
+    stored: list[dict] = []
+    for upd in _receipts(calls):
+        stored = items_svc.append_evidence(stored, upd["evidence"])
+
+    assert _latest_scans_clean(stored, head) is True
+    assert [r["predicates"][0]["passed"] for r in stored] == [True, False, True]
+    assert [r["run_ref"] for r in stored] == [f"{run}/attempts/{n}" for n in "123"]
+
+
+def test_the_attempt_defaults_from_the_actions_environment(repo, fakes, ledger, monkeypatch):
+    """The workflow passes only `--run-url`; Actions sets GITHUB_RUN_ATTEMPT on every step."""
+    calls, _ = ledger
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "4")
+    head = _pr(repo, {"backend/app/x.py": "x = 2\n"})
+    _main(repo, head, "--run-url", "https://ci/runs/9")
+    assert _receipts(calls)[0]["evidence"][0]["run_ref"] == "https://ci/runs/9/attempts/4"
+
+
+def test_suite_green_carries_the_attempt_too():
+    """Same exposure: `suite_green` is built by the same `receipt`, so re-runs of one run at
+    one head must not collapse into a single receipt there either."""
+    a = attest_ci.attestation(commit="c" * 40, branch="gb/x", run_url="https://ci/runs/9",
+                              run_attempt="1")
+    b = attest_ci.attestation(commit="c" * 40, branch="gb/x", run_url="https://ci/runs/9",
+                              run_attempt="2")
+    assert a["run_ref"] == "https://ci/runs/9/attempts/1"
+    assert a != b
+    assert attest_ci.attestation(commit="c" * 40, branch="gb/x",
+                                 run_url="https://ci/runs/9")["run_ref"] == "https://ci/runs/9"
+
+
 # ---- AC 11: the job --------------------------------------------------------------------
 
 def _jobs():

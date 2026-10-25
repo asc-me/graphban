@@ -403,6 +403,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--branch", default="")
     ap.add_argument("--text", default="", help="PR title/body/branch to scan for item keys")
     ap.add_argument("--run-url", default="")
+    # Every re-run of a run shares its run_id; the attempt is what keeps a manual re-run's
+    # receipt from being dropped as identical to an earlier one (GRPH-1113).
+    ap.add_argument("--run-attempt", default=os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+                    help="github.run_attempt; defaults to $GITHUB_RUN_ATTEMPT")
     ap.add_argument("--repo", default=".")
     ap.add_argument("--timeout", type=float, default=TOOL_TIMEOUT)
     args = ap.parse_args(argv)
@@ -438,7 +442,7 @@ def main(argv: list[str] | None = None) -> int:
                       f"{row['path']}: {e}")
         receipt = attest_ci.receipt(
             commit=args.head, branch=args.branch, run_url=args.run_url,
-            matched=attest_ci.matched_by(args.text),
+            run_attempt=args.run_attempt, matched=attest_ci.matched_by(args.text),
             predicate={"name": PREDICATE, "passed": verdict.passed,
                        "detail": verdict.detail})
         errors = []
