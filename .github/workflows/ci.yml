@@ -297,6 +297,62 @@ jobs:
           uv pip install -e ".[dev]"
           .venv/Scripts/python -m pytest -q </dev/null
 
+  # GRPH-P57 D2: the security scans that a fleet merge into the RELEASE ref requires, attested
+  # as `scans_clean` on the pull request's head. Deliberately NOT in `ci.needs` and never a
+  # required check: a blocking job would gate every feature PR on scans at the forge, and the
+  # gate is the fleet merge into the release ref, nowhere else. `test_ci_shape` names this the
+  # one job the gate does not cover, and `test_scan_ci` fails if it ever becomes required.
+  security-scans:
+    name: Security scans
+    # Pull requests only (the attestation names `pull_request.head.sha`), and not from forks:
+    # this job holds the gate key and talks to the LAN ledger, like `ci`.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, graphban-ledger]
+    # A force-push cancels the older run. One that is not cancelled can still only attest the
+    # commit it checked out.
+    concurrency:
+      group: security-scans-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The HEAD, not GitHub's default PR checkout (the merge commit). A scan of the merge
+          # commit is not a scan of the head, and the script reports it stale if it differs.
+          ref: ${{ github.event.pull_request.head.sha }}
+          # The script diffs merge-base..head itself.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+      - name: Install the Python scanners
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/scanners"
+          VIRTUAL_ENV="$RUNNER_TEMP/scanners" uv pip install pip-audit bandit
+          echo "$RUNNER_TEMP/scanners/bin" >> "$GITHUB_PATH"
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Scan the pull request head and attest scans_clean
+        # Every value through `env`, never `${{ }}` inside `run` — see the gate job's attest
+        # step for why. The detail lands in the job summary via GITHUB_STEP_SUMMARY.
+        env:
+          GRAPHBAN_URL: ${{ vars.GRAPHBAN_URL }}
+          GRAPHBAN_GATE_KEY: ${{ secrets.GRAPHBAN_GATE_KEY }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 scripts/scan_ci.py \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --branch "$HEAD_REF" \
+            --run-url "$RUN_URL" \
+            --text "$PR_TITLE $PR_BODY"
+
   # A single required check, so branch protection has one name to point at whatever the
   # filters decided to run. Without it a skipped job reads as "pending" forever on a
   # protected branch — the filter would look like it had wedged CI rather than saved time.
