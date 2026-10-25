@@ -571,3 +571,191 @@ describe("prepareStackMap — Graphban's own project", () => {
     expect(prepareStackMap(old as StackTopology).collapsible).toBe(false);
   });
 });
+
+/**
+ * Axis-aligned segment through a box interior (2px inside the border — the same
+ * predicate the router uses). A diagonal is reported as a hit: the route is
+ * required to be orthogonal, and a diagonal would otherwise slip past this check.
+ */
+function segmentHitsInterior(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  bx: { x: number; y: number; w: number; h: number },
+): boolean {
+  const x0 = bx.x + 2;
+  const x1 = bx.x + bx.w - 2;
+  const y0 = bx.y + 2;
+  const y1 = bx.y + bx.h - 2;
+  if (Math.abs(a.y - b.y) < 0.5) {
+    return a.y > y0 && a.y < y1 && Math.max(a.x, b.x) > x0 && Math.min(a.x, b.x) < x1;
+  }
+  if (Math.abs(a.x - b.x) < 0.5) {
+    return a.x > x0 && a.x < x1 && Math.max(a.y, b.y) > y0 && Math.min(a.y, b.y) < y1;
+  }
+  return true;
+}
+
+function assertRoutesMissOtherBoxes(layout: ReturnType<typeof buildStackLayout>) {
+  for (const e of layout.edges) {
+    expect(e.points.length).toBeGreaterThanOrEqual(2);
+    for (let i = 0; i < e.points.length - 1; i++) {
+      const a = e.points[i];
+      const b = e.points[i + 1];
+      expect(
+        Math.abs(a.x - b.x) < 0.5 || Math.abs(a.y - b.y) < 0.5,
+        `edge ${e.from}->${e.to} segment ${i} is not orthogonal`,
+      ).toBe(true);
+      for (const [id, bx] of Object.entries(layout.boxes)) {
+        if (id === e.from || id === e.to) continue;
+        expect(
+          segmentHitsInterior(a, b, bx),
+          `edge ${e.from}->${e.to} segment ${i} crosses ${id}`,
+        ).toBe(false);
+      }
+    }
+  }
+}
+
+/** Boxes strictly between two horizontally separated boxes. Empty means adjacent columns. */
+function boxesBetweenColumns(
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number },
+  all: { x: number; y: number; w: number; h: number }[],
+) {
+  const left = a.x + a.w <= b.x + 0.5 ? a : b.x + b.w <= a.x + 0.5 ? b : null;
+  if (!left) return null;
+  const right = left === a ? b : a;
+  return all.filter(
+    (bx) => bx !== a && bx !== b && bx.x + bx.w > left.x + left.w + 1 && bx.x < right.x - 1,
+  );
+}
+
+describe("buildStackLayout — obstacle-aware routes miss every other box", () => {
+  // cli and api are one column apart, with fleet filling the column between them
+  // at the same height. The two-bend elbow's midpoint lands inside fleet.
+  const cross: StackTopology = {
+    ...topo,
+    hosts: [
+      { id: "user_machines", label: "User machines", nodes: ["cli"] },
+      { id: "agent_hosts", label: "Agent hosts", nodes: ["fleet"] },
+      { id: "compose", label: "Compose", nodes: ["api", "web"] },
+    ],
+    nodes: [
+      node({ id: "cli", ring: 1, host: "user_machines" }),
+      node({ id: "fleet", ring: 1, host: "agent_hosts" }),
+      node({ id: "api", ring: 1, host: "compose", surfaces: ["REST", "MCP"] }),
+      node({ id: "web", ring: 1, host: "compose" }),
+    ],
+    edges: [
+      { from: "cli", to: "api", protocol: "HTTP/JWT", label: "HTTP/JWT" },
+      { from: "cli", to: "web", protocol: "HTTP", label: "HTTP" },
+      { from: "fleet", to: "api", protocol: "HTTP", label: "HTTP" },
+      { from: "web", to: "api", protocol: "HTTP", label: "HTTP" },
+    ],
+  };
+  const layout = buildStackLayout(cross);
+
+  it("lays cli, fleet and api out as three columns, fleet between the other two", () => {
+    const { cli, fleet, api } = layout.boxes;
+    expect(cli.x + cli.w).toBeLessThan(fleet.x);
+    expect(fleet.x + fleet.w).toBeLessThan(api.x);
+    // Same band, so a straight elbow cannot thread the gap — it has to cross fleet.
+    expect(cli.y).toBeLessThan(fleet.y + fleet.h);
+    expect(fleet.y).toBeLessThan(cli.y + cli.h);
+  });
+
+  it("routes cli→api, and every other edge, clear of every box it does not end on", () => {
+    expect(layout.edges.map((e) => `${e.from}->${e.to}`)).toContain("cli->api");
+    assertRoutesMissOtherBoxes(layout);
+    const cliApi = layout.edges.find((e) => e.from === "cli" && e.to === "api")!;
+    // The protocol label sits on the route, so it must not land on the box the line avoids.
+    expect(segmentHitsInterior(cliApi.mid, cliApi.mid, layout.boxes.fleet)).toBe(false);
+  });
+
+  it("keeps an adjacent-column edge on the two-bend elbow", () => {
+    const fleetApi = layout.edges.find((e) => e.from === "fleet" && e.to === "api")!;
+    const between = boxesBetweenColumns(layout.boxes.fleet, layout.boxes.api, Object.values(layout.boxes));
+    expect(between).toEqual([]);
+    // Four points is the elbow: exit, one bend, the other bend, entry.
+    expect(fleetApi.points.length).toBeLessThanOrEqual(4);
+  });
+
+  it("is deterministic", () => {
+    const again = buildStackLayout(cross);
+    expect(again.edges.map((e) => e.points)).toEqual(layout.edges.map((e) => e.points));
+  });
+});
+
+describe("buildStackLayout — generated topologies keep every edge off other boxes", () => {
+  const cols = 4;
+  const rows = 3;
+  const hosts: StackTopology["hosts"] = [];
+  const nodes: StackNode[] = [];
+  const edges: StackTopology["edges"] = [];
+  for (let c = 0; c < cols; c++) {
+    const ids: string[] = [];
+    for (let r = 0; r < rows; r++) {
+      const id = `c${c}r${r}`;
+      ids.push(id);
+      nodes.push(node({ id, ring: 1, host: `h${c}` }));
+    }
+    hosts.push({ id: `h${c}`, label: `Column ${c}`, nodes: ids });
+  }
+  for (let a = 0; a < cols; a++) {
+    for (let b = 0; b < cols; b++) {
+      if (a === b) continue;
+      for (let ra = 0; ra < rows; ra++) {
+        for (let rb = 0; rb < rows; rb++) {
+          edges.push({
+            from: `c${a}r${ra}`,
+            to: `c${b}r${rb}`,
+            protocol: "http",
+            label: "http",
+          });
+        }
+      }
+    }
+  }
+  // A box between two others in the same column — the vertical form of the same miss.
+  for (let c = 0; c < cols; c++) {
+    edges.push({ from: `c${c}r0`, to: `c${c}r2`, protocol: "http", label: "http" });
+  }
+  const generated: StackTopology = { ...topo, hosts, nodes, edges };
+  const layout = buildStackLayout(generated);
+
+  it("has several columns and several boxes in each, and an edge for every column pair", () => {
+    const byHost = new Map<string, number>();
+    for (const n of nodes) byHost.set(n.host, (byHost.get(n.host) ?? 0) + 1);
+    expect(byHost.size).toBe(cols);
+    for (const count of byHost.values()) expect(count).toBe(rows);
+    const pairs = new Set<string>();
+    for (const e of edges) {
+      const ha = nodes.find((n) => n.id === e.from)!.host;
+      const hb = nodes.find((n) => n.id === e.to)!.host;
+      if (ha !== hb) pairs.add([ha, hb].sort().join("|"));
+    }
+    expect(pairs.size).toBe((cols * (cols - 1)) / 2);
+  });
+
+  it("lets no routed segment enter a box that is not its own endpoint", () => {
+    expect(layout.edges.length).toBe(edges.length);
+    assertRoutesMissOtherBoxes(layout);
+  });
+
+  it("keeps adjacent-column edges to at most the two-bend elbow", () => {
+    const values = Object.values(layout.boxes);
+    let seen = 0;
+    for (const e of layout.edges) {
+      const between = boxesBetweenColumns(layout.boxes[e.from], layout.boxes[e.to], values);
+      if (between === null || between.length > 0) continue;
+      seen += 1;
+      expect(e.points.length, `${e.from}->${e.to}`).toBeLessThanOrEqual(4);
+    }
+    expect(seen).toBeGreaterThan(0);
+  });
+
+  it("is deterministic", () => {
+    const again = buildStackLayout(generated);
+    expect(again.edges.map((e) => e.points)).toEqual(layout.edges.map((e) => e.points));
+  });
+});
