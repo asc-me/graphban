@@ -54,6 +54,7 @@ import { useCanvasPath } from "./canvas/overlay";
 import { CodeChat } from "./CodeChat";
 import { CodeGraphCanvas, type CanvasControlApi } from "./CodeGraphCanvas";
 import { FleetLegend } from "./FleetLegend";
+import { hexagonPoints, kindShape } from "./kindShape";
 
 const KIND_META: Record<string, { label: string; color: string }> = {
   module: { label: "Module", color: "#c6f24e" },
@@ -72,19 +73,14 @@ const kindMeta = (kind: string) => KIND_META[kind] ?? { label: kind || "node", c
  * Build.dc.html encodes kind as SHAPE and area as COLOUR. Shape landed in GRPH-1033; fill
  * now follows `areaOf` (the owning module, else the path prefix) hashed onto the existing
  * token set. Presence stays on clouds/rings (PRD-20 D5) — a held node must still say what
- * kind it is, and that is now the glyph, not the fill.
+ * kind it is, and that is now the glyph, not the fill. GRPH-1027: doc and config no longer
+ * share a square — config is a hexagon, from `kindShape`, so the pair is not colour alone.
  *
  * The legend is grey shapes: once fill names area, a coloured key would re-teach kind as
- * colour, which is the channel we just freed.
+ * colour, which is the channel we just freed. The hues in `KIND_META` stay, and the
+ * inspector chip draws them on the same glyph.
  */
 const KIND_LEGEND_COLOR = "#9aa3ab"; // --color-muted-2
-type KindShape = "ring" | "circle" | "diamond" | "square";
-function kindShape(kind: string): KindShape {
-  if (kind === "module") return "ring";
-  if (kind === "symbol" || kind === "request") return "diamond";
-  if (kind === "doc" || kind === "config") return "square";
-  return "circle";
-}
 
 /** Radii from Build.dc.html, scaled to this viewBox. File size still grows with degree. */
 function kindRadius(kind: string, degree = 0): number {
@@ -113,49 +109,27 @@ function KindGlyph({
   const fill = described ? (shape === "ring" ? "#0a0c0e" : color) : "#0d1114";
   const stroke = described && shape !== "ring" ? "#0a0c0e" : color;
   const opacity = described ? 1 : 0.7;
+  const mark = { fill, stroke, strokeWidth: 2, strokeDasharray: dash, opacity };
+  let body: React.ReactNode;
   if (shape === "diamond") {
-    return (
-      <polygon
-        points={`0,${-r} ${r},0 0,${r} ${-r},0`}
-        fill={fill}
-        stroke={stroke}
-        strokeWidth={2}
-        strokeDasharray={dash}
-        opacity={opacity}
-      />
+    body = <polygon points={`0,${-r} ${r},0 0,${r} ${-r},0`} {...mark} />;
+  } else if (shape === "square") {
+    body = <rect x={-r} y={-r} width={r * 2} height={r * 2} rx={1.5} {...mark} />;
+  } else if (shape === "hexagon") {
+    body = (
+      <polygon points={hexagonPoints(r).map(([x, y]) => `${x},${y}`).join(" ")} {...mark} />
+    );
+  } else {
+    body = (
+      <>
+        <circle r={r} {...mark} />
+        {shape === "ring" && described && (
+          <circle r={Math.max(2.2, r * 0.36)} fill={color} />
+        )}
+      </>
     );
   }
-  if (shape === "square") {
-    return (
-      <rect
-        x={-r}
-        y={-r}
-        width={r * 2}
-        height={r * 2}
-        rx={1.5}
-        fill={fill}
-        stroke={stroke}
-        strokeWidth={2}
-        strokeDasharray={dash}
-        opacity={opacity}
-      />
-    );
-  }
-  return (
-    <>
-      <circle
-        r={r}
-        fill={fill}
-        stroke={stroke}
-        strokeWidth={2}
-        strokeDasharray={dash}
-        opacity={opacity}
-      />
-      {shape === "ring" && described && (
-        <circle r={Math.max(2.2, r * 0.36)} fill={color} />
-      )}
-    </>
-  );
+  return <g data-shape={shape}>{body}</g>;
 }
 
 const EDGE_META: Record<CodeEdgeType, { label: string; color: string }> = {
@@ -1621,9 +1595,21 @@ function NodeInspector({
   return (
     <div className="animate-fade">
       <div className="mb-1.5 flex items-center gap-2">
+        {/* Kind is the glyph, in the kind's own hue. A text chip named the kind and
+            left the shape on the canvas, so the aside could not say what the mark was. */}
         <span
-          className="rounded border border-line px-1.5 py-px font-mono text-meta tracking-wide text-muted"
+          data-testid="inspector-kind"
+          className="inline-flex items-center gap-1.5 rounded border border-line px-1.5 py-px font-mono text-meta tracking-wide text-muted"
         >
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+            <g transform="translate(6,6)">
+              <KindGlyph
+                kind={node?.kind || kind}
+                color={meta.color}
+                r={kindShape(node?.kind || kind) === "ring" ? 4.2 : 3.4}
+              />
+            </g>
+          </svg>
           {meta.label}
         </span>
         <span className="inline-flex items-center gap-1.5 font-mono text-[10px]" style={{ color: areaCol }}>
@@ -1981,9 +1967,9 @@ function StubEvidence({ stub }: { stub: ProjectStub }) {
 const ZOOM_STEP = 1.3;
 
 // ── Kind legend ───────────────────────────────────────────────────────────────
-// The design's bottom-left slot. Kind is SHAPE (ring / circle / diamond / square); colour
-// still names the kind because the server has no cluster axis to colour by. The legend
-// draws the same KindGlyph the canvas uses — a key of circles would explain nothing.
+// The design's bottom-left slot. Kind is SHAPE (ring / circle / diamond / square /
+// hexagon). Fill on the canvas names area, so the key is grey — a coloured key would
+// teach kind as colour again. The legend draws the same KindGlyph the canvas uses.
 //
 // Only the kinds actually drawn are listed. A fixed five-row key over a graph of nothing but
 // files is a glossary, and it teaches the reader to ignore it.
