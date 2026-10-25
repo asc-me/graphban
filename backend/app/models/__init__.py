@@ -207,6 +207,12 @@ class Project(Base):
         Boolean, default=False, server_default=false(), nullable=False
     )
     embed_model: Mapped[str] = mapped_column(String, default="stub-384")
+    # The branch a release is cut from (PRD-P57 D1/D7): ONE literal ref, set on this box.
+    # NULL is unmeasured, and unmeasured means the merge rule is not installed — nothing
+    # infers `main`, the remote's default, or `gitops_base_branch`. Deliberately not a
+    # gitops column: a linked box can still set it locally, and the gitops contract is
+    # untouched. Written only through services/projects.set_release_ref.
+    release_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     # Hosted SaaS only (AL-74): the owning organization. NULL on self-host, where
     # the org layer is inert. In hosted mode authz additionally requires the caller
     # to belong to this org, so a project never leaks outside its tenant.

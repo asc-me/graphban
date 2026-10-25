@@ -364,6 +364,8 @@ class ProjectOut(ORMModel):
     agent_adjudication: bool = False
     # Danger mode (GRPH-380): may an agent sign off its own work when nobody else can?
     allow_self_review: bool = False
+    # The release branch, set on this box (PRD-P57 S2). Null is unmeasured, never `main`.
+    release_ref: str | None = None
 
 
 class ProjectCreate(BaseModel):
@@ -977,6 +979,9 @@ class ProjectUpdate(BaseModel):
     memory_llm_judge: bool | None = None
     agent_adjudication: bool | None = None
     allow_self_review: bool | None = None
+    # Unlike the fields above, an explicit null here CLEARS (back to unmeasured); omit the
+    # key for no change. Validated in services/projects.normalize_release_ref.
+    release_ref: str | None = None
 
     @field_validator("memory_write_mode")
     @classmethod
