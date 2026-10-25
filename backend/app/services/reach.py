@@ -150,9 +150,26 @@ _LEGEND_SPAN = re.compile(
 #: scrubbed too: `Run the heroku stack:set`, `Use the gcloud projects delete`.
 #: `:` is not a modal.
 #:
-#: A modal followed by a passive destructive participle is the instruction,
-#: not the subject: `THE VERCEL PROJECT WILL BE REMOVED`, `will be torn down`.
-#: Dropping that exclusion scrubs the passive, which the parity sweep catches.
+#: A passive in the rest of the clause is the instruction, not a subject:
+#: `THE VERCEL PROJECT WILL BE REMOVED`, `will be purged`, `will get wiped`,
+#: `is removed`, `was deleted, so delete it again`. The shape is the auxiliary,
+#: not a list of participles. A list fails open: every participle it lacks
+#: (`purged`, `nuked`, `decommissioned`) is a destructive sentence the guard
+#: goes quiet on. Putting the seven-word list back is what the parity rows
+#: for those sentences catch.
+#:
+#: The shape, anywhere in the clause up to sentence punctuation: `be`, `been`,
+#: `being`, `get`, `got`, `gets` or `getting`, then at most two words, then a
+#: word ending in `-ed` or `-en`, or `down` / `off` / `out`. Or a copula
+#: (`is`, `are`, `was`, `were`) followed straight away by such a word. An
+#: adverb may sit between the modal and `be` (`should now be deleted`,
+#: `will soon be deleted`); `to be` and `going to be` are the same shape.
+#:
+#: A destructive verb from `_MUTATIONS` later in that same clause is also the
+#: instruction (`will ship next week, so drop the database`). The word
+#: immediately after the modal is not "later": `will deploy` is the
+#: descriptive future this span exists to keep quiet. Drop the later check
+#: and that compound row goes quiet, which the parity sweep catches.
 #:
 #: A possessive (`Railway's dashboard`) needs no span. The matcher requires
 #: whitespace after the platform name, and `'` is not whitespace.
@@ -167,14 +184,30 @@ _SUBJECT_TAIL = (
 _SUBJECT_CONJUNCTION = (
     "and|but|or|nor|so|yet|then|also|now|still|thus|however"
 )
-_PASSIVE_PARTICIPLE = (
-    "removed|deleted|destroyed|wiped|dropped|reset|torn(?:\\s+down)?"
+#: The passive shape. Not a participle list.
+#:
+#: `be` / `get` (and been/being/got/gets/getting), then at most two words,
+#: then a word ending `-ed` or `-en`, or `down` / `off` / `out`. A copula
+#: (`is` / `are` / `was` / `were`) followed straight away by such a word is
+#: the same shape: `is removed`, `was deleted`.
+#:
+#: `reset` is the one unchanged participle the sweep already requires
+#: (`will be reset`). It has no `-ed` / `-en` ending, and `down` / `off` /
+#: `out` do not follow it. That one word is not a list to grow: the next
+#: unchanged participle is a red parity row until the ending names it.
+#: `will deploy` has no auxiliary and stays a subject. `will be ready`
+#: does not match this shape and stays quiet too.
+_PASSIVE_AUX = r"be|been|being|get|got|gets|getting"
+_PASSIVE_ENDING = r"(?:\w*(?:ed|en)|down|off|out|reset)"
+_PASSIVE_SHAPE = re.compile(
+    rf"\b(?:{_PASSIVE_AUX})\b(?:\s+\w+){{0,2}}\s+{_PASSIVE_ENDING}\b"
+    rf"|\b(?:is|are|was|were)\s+{_PASSIVE_ENDING}\b",
+    re.I,
 )
 _SUBJECT_SPAN = re.compile(
     rf"(?:^|[.!?]\s+)(?:(?:{_SUBJECT_CONJUNCTION})\s+)?"
     rf"(?:{_DETERMINERS})\s+(?:{_PLATFORMS})\s+(?:{_DESCRIPTIVE_NOUNS})\b"
-    rf"(?=\s+(?:{_SUBJECT_TAIL})\b"
-    rf"(?!\s+be\s+(?:{_PASSIVE_PARTICIPLE})\b))",
+    rf"(?=\s+(?:{_SUBJECT_TAIL})\b)",
     re.I | re.M,
 )
 
@@ -251,6 +284,37 @@ MAX_SIGNALS = 3
 QUOTE_MAX = 160
 
 
+def _destructive_later(clause: str) -> bool:
+    """A `_MUTATIONS` verb after the modal and its immediate complement.
+
+    `will deploy` is the complement. That word is why the subject span exists,
+    and counting it would fire on `The Railway project will deploy next week`.
+    `so drop the database` is later in the same clause. Drop this check and
+    that compound row goes quiet.
+    """
+    words = clause.split()
+    if len(words) < 3:
+        return False
+    return re.search(rf"\b(?:{_MUTATIONS})\b", " ".join(words[2:]), re.I) is not None
+
+
+def _scrub_subject(line: str) -> str:
+    """Blank a determiner-plus-noun subject. Keep it when the clause is an order.
+
+    The span is only the subject. The decision reads the rest of the clause,
+    up to sentence punctuation, and refuses to scrub a passive shape or a
+    later destructive verb. Both are instructions. A participle list is not
+    how either is recognised.
+    """
+    def keep(match: re.Match[str]) -> str:
+        clause = re.split(r"[.!?]", line[match.end():], maxsplit=1)[0]
+        if _PASSIVE_SHAPE.search(clause) or _destructive_later(clause):
+            return match.group(0)
+        return " "
+
+    return _SUBJECT_SPAN.sub(keep, line)
+
+
 def signals(text: str | None) -> list[dict]:
     """Lines in `text` that read as work on something outside this repository.
 
@@ -283,7 +347,7 @@ def signals(text: str | None) -> list[dict]:
             # lookarounds on the pattern. Scrub those spans, then search. Other
             # rules see the original line: scrubbing must not hide them.
             if name == "platform-command":
-                haystack = _SUBJECT_SPAN.sub(" ", _LEGEND_SPAN.sub(" ", stripped))
+                haystack = _scrub_subject(_LEGEND_SPAN.sub(" ", stripped))
             else:
                 haystack = stripped
             if pattern.search(haystack):

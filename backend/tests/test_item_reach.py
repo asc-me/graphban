@@ -382,6 +382,28 @@ MUST_FIRE = {
     "tear down the kubectl projects": "Tear down the kubectl projects, now",
     "the vercel project will be removed": "THE VERCEL PROJECT WILL BE REMOVED",
     "path-prefixed railway projects": "Run ./bin/railway projects (prod)",
+    # Bounce of 2f9a974b. A seven-word participle list goes quiet on every
+    # other passive. The shape is the auxiliary, an adverb, `to be`, a
+    # get-passive, a copula, or a destructive verb later in the clause.
+    "will be purged": "The supabase project will be purged.",
+    "will be decommissioned": "The railway project will be decommissioned.",
+    "must be truncated": "The supabase project must be truncated.",
+    "will be nuked": "The vercel project will be nuked.",
+    "will be shut down": "The railway project will be shut down.",
+    "adverb before be": "The vercel project should now be deleted.",
+    "adverb before be, soon": "The heroku project will soon be deleted.",
+    "has to be deleted": "The heroku teams has to be deleted.",
+    "is to be removed": "The vercel project is to be removed.",
+    "is going to be deleted": "The supabase project is going to be deleted.",
+    "will get wiped": "The supabase project will get wiped tonight.",
+    "copula plus participle": "This vercel project is removed on Friday.",
+    "imperative later in the clause": (
+        "The heroku project was deleted, so delete it again."),
+    # The compound the later-verb check owns. No passive shape. Drop
+    # `_destructive_later` and this goes quiet; `will deploy` stays quiet
+    # because deploy is the modal's complement, not a later word.
+    "destructive verb later in the clause": (
+        "The railway project will ship next week, so drop the database."),
 }
 
 MUST_NOT_FIRE = {
@@ -416,7 +438,9 @@ MUST_NOT_FIRE = {
     # scrub and the future-deploy sentence fails. A possessive needs neither:
     # the matcher requires whitespace after the platform name, and `'` is not
     # whitespace. Widening either span (any slash, a punctuation tail, or a
-    # passive participle) is caught by the parity sweep, not by these fixtures.
+    # passive shape, or a later `_MUTATIONS` verb) is caught by the parity
+    # sweep, not by these fixtures. `will deploy` stays quiet: deploy is the
+    # complement of the modal. `so drop the database` is later, and fires.
     "a topology legend": (
         "compose/Railway stack (web+api+db) · agent hosts/outposts "
         "(fleet + spawned vendor agents) · user machines (cli)"),
@@ -434,6 +458,10 @@ MUST_NOT_FIRE = {
     # also a real subcommand (`vercel project rm`), and that one must still fire.
     "a future deploy, said as a sentence": (
         "The Railway project will deploy next week once the page renders"),
+    # `be` plus an ordinary adjective is still a subject. `reset` is the one
+    # unchanged participle the shape names; `ready` is not one.
+    "a future state, said as a sentence": (
+        "The Railway project will be ready next week"),
     # The same subject after sentence punctuation, with at most one
     # conjunction between the punctuation and the determiner. A verb in
     # that position is an imperative and is a parity row, not one of these.
@@ -556,11 +584,14 @@ _SWEEP_VERBS = (
 # follows. Drop the determiner from `_SUBJECT_SPAN` and the bare canaries go
 # quiet: gcloud/supabase projects delete, vercel project rm, heroku stack:set,
 # heroku teams:remove. Put the punctuation or end-of-line tail back and the
-# imperative rows go quiet (`Delete the vercel project.`). Drop the passive
-# exclusion and `THE VERCEL PROJECT WILL BE REMOVED` goes quiet. Match any
-# slash as legend glue and `Run ./bin/railway projects (prod)` goes quiet.
-# Put `(?<![/.])` back on the platform pattern and the path-prefixed lines
-# go quiet.
+# imperative rows go quiet (`Delete the vercel project.`). Replace the passive
+# shape with the seven-word participle list and the bounce-of-2f9a974b rows
+# go quiet (`will be purged`, `should now be deleted`, `is removed`,
+# `was deleted, so delete it again`). Drop `_destructive_later` and
+# `The railway project will ship next week, so drop the database.` goes quiet.
+# Match any slash as legend glue and `Run ./bin/railway projects (prod)` goes
+# quiet. Put `(?<![/.])` back on the platform pattern and the path-prefixed
+# lines go quiet.
 _SWEEP_SPECIFIC = (
     "railway up",
     "railway up --service api",
@@ -716,6 +747,53 @@ _SWEEP_SPECIFIC = (
     "The aws account will be deleted",
     "Ship it. And the netlify account will be wiped",
     "But the render account will be deleted",
+    # Bounce of 2f9a974b. A participle list misses every passive it does not
+    # name. The shape covers an unseen participle, an adverb before `be`,
+    # `to be`, a get-passive, a copula, and a destructive verb later on.
+    "The supabase project will be purged.",
+    "The railway project will be decommissioned.",
+    "The supabase project must be truncated.",
+    "The vercel project will be nuked.",
+    "The railway project will be shut down.",
+    "The vercel project should now be deleted.",
+    "The heroku project will soon be deleted.",
+    "The heroku teams has to be deleted.",
+    "The vercel project is to be removed.",
+    "The supabase project is going to be deleted.",
+    "The supabase project will get wiped tonight.",
+    "This vercel project is removed on Friday.",
+    "The heroku project was deleted, so delete it again.",
+    # No passive shape. Only the later `_MUTATIONS` word (`drop`) keeps it.
+    "The railway project will ship next week, so drop the database.",
+    # Adversarial pass: more passives, modals, get-passives, and compounds.
+    # Varied adverb, case, punctuation, and conjunction. Each is a base hit.
+    "The aws account will be completely purged.",
+    "The gcloud project must soon be truncated!",
+    "THE FLY PROJECTS WILL BE NUKED",
+    "The netlify account will be shut off.",
+    "The render stack will get destroyed tonight.",
+    "The terraform stack is to be wiped.",
+    "Our cloudflare account is going to be purged.",
+    "The doctl project will be decommissioned.",
+    "The wrangler account should later be nuked.",
+    "The az account was purged, so purge it again.",
+    "The tofu stack will be taken down.",
+    "The helm stack has to be shut down.",
+    "The supabase project will be fully decommissioned.",
+    "A railway project will get wiped.",
+    "The vercel project is deleted.",
+    "The heroku teams were removed yesterday.",
+    "The gcloud project might be truncated at dawn.",
+    "The fly projects could be nuked!",
+    "The netlify account shall be decommissioned.",
+    "That render account will be shut out.",
+    "The kubectl projects will be torn down.",
+    "The railway project will be very quickly purged.",
+    "The railway project will be completely shut down.",
+    "But the vercel project will be purged.",
+    "Done. The railway project will be nuked.",
+    "The supabase project is being decommissioned.",
+    "The aws account will deploy next week, so wipe the volume",
 )
 
 
@@ -778,6 +856,7 @@ _DESCRIPTIVE = (
     "a migration that adds a column",
     "migrate, said as prose",
     "a future deploy, said as a sentence",
+    "a future state, said as a sentence",
     "a possessive, not an invocation",
 )
 _COMMANDS = (
@@ -808,6 +887,20 @@ _COMMANDS = (
     "tear down the kubectl projects",
     "the vercel project will be removed",
     "path-prefixed railway projects",
+    "will be purged",
+    "will be decommissioned",
+    "must be truncated",
+    "will be nuked",
+    "will be shut down",
+    "adverb before be",
+    "adverb before be, soon",
+    "has to be deleted",
+    "is to be removed",
+    "is going to be deleted",
+    "will get wiped",
+    "copula plus participle",
+    "imperative later in the clause",
+    "destructive verb later in the clause",
 )
 
 
