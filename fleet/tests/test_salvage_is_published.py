@@ -133,6 +133,9 @@ def test_publishing_pushes_and_does_not_propose_a_pr(monkeypatch, tmp_path: Path
         def call(self, tool, **kwargs):
             self.calls.append((tool, kwargs))
             return {}
+        def post_observation(self, **kwargs):
+            self.calls.append(("post_observation", kwargs))
+            return {"recorded": True}
 
     wave = Wave()
     client = _Client()
@@ -141,14 +144,12 @@ def test_publishing_pushes_and_does_not_propose_a_pr(monkeypatch, tmp_path: Path
 
     assert calls == [("push", "gb/w-1")], calls
     assert "propose_branch" not in inspect.getsource(sup.publish_salvaged)
-    updates = [c for c in client.calls if c[0] == "update_item"]
+    updates = [c for c in client.calls if c[0] == "post_observation"]
     assert updates, "the item was not named"
     tool, kwargs = updates[0]
-    assert tool == "update_item" and kwargs["id"] == "SA-412"
-    ev = kwargs["evidence"][0]
-    assert ev["kind"] == "note"
-    assert "gb/w-1" in ev["detail"] and "not proposed as a PR" in ev["detail"]
-    assert "/pull/" not in ev["detail"]
+    assert tool == "post_observation" and kwargs["item_id"] == "SA-412"
+    assert kwargs["kind"] == "salvage" and kwargs["branch"] == "gb/w-1"
+    assert "url" not in kwargs
 
 
 def test_a_failed_push_is_reported_and_never_fatal(monkeypatch, tmp_path: Path):

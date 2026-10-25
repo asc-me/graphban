@@ -54,7 +54,12 @@ ATTEMPTS_PATH = "/api/fleet/attempts"
 #: The same rule as attempts: a REST route on this credential is a deliberate widening,
 #: and the body is names only — the scanner drops URLs, headers and paths before posting.
 SURFACE_PATH = "/api/harness/surface"
-ALLOWED_PATHS: frozenset[str] = frozenset({ATTEMPTS_PATH, SURFACE_PATH})
+#: Facts only the supervisor knows about a tree it cut (GRPH-975): the base, the draft PR,
+#: a salvage, a withheld proposal. One route, so a later kind extends it rather than adding
+#: a path. The body is those facts; the server composes the note. Not a tool — widening
+#: `ALLOWED_TOOLS` for this is the thing PRD-22 §4 forbids.
+OBSERVATIONS_PATH = "/api/fleet/observations"
+ALLOWED_PATHS: frozenset[str] = frozenset({ATTEMPTS_PATH, SURFACE_PATH, OBSERVATIONS_PATH})
 
 #: Short on purpose. This is a measurement posted beside real work; a supervisor waiting on it
 #: is a supervisor not starting a child.
@@ -63,6 +68,17 @@ ATTEMPT_TIMEOUT = 2.0
 
 class NotPermitted(RuntimeError):
     """The supervisor tried to make a call PRD-22 §4 says it may not make."""
+
+
+class ObservationRefused(RuntimeError):
+    """The observations route refused, or never answered (GRPH-975).
+
+    Telemetry swallows a failure and returns None, because a measurement that could fail a
+    spawn is worse than no measurement. A base or a PR receipt is the opposite: None would
+    read as landed, `sign_off` would report the commit uncompared, and the wave log — the
+    only place the refusal used to be visible — would say nothing. The caller records the
+    reason on the wave and carries on. It does not raise out of the wave.
+    """
 
 
 class ServerUnreachable(RuntimeError):
@@ -196,7 +212,25 @@ class Graphban:
         """
         return self._post(SURFACE_PATH, payload, timeout=10.0)
 
-    def _post(self, path: str, payload: dict, *, timeout: float) -> dict | None:
+    def post_observation(self, **payload: Any) -> dict:
+        """One fact about a tree this supervisor cut (GRPH-975).
+
+        Raises on a refusal. `post_attempt` returns None because a lost measurement must
+        not stop a child; a lost base is the defect that made `sign_off` waive every item
+        by hand. The wave catches this and logs the reason. It does not fall back to a
+        tool call — that tool is not in `ALLOWED_TOOLS`, and a fallback would hide the
+        refusal the route exists to make visible.
+
+        Goes through `_post` (strict). A second method that called `.post` itself would
+        be a third door, which `test_client.py` pins shut.
+        """
+        got = self._post(OBSERVATIONS_PATH, payload, timeout=10.0, strict=True)
+        if not isinstance(got, dict):
+            raise ObservationRefused(f"{OBSERVATIONS_PATH}: empty reply")
+        return got
+
+    def _post(self, path: str, payload: dict, *, timeout: float,
+              strict: bool = False) -> dict | None:
         if path not in ALLOWED_PATHS:
             raise NotPermitted(
                 f"this client may not POST {path!r}. Permitted: {sorted(ALLOWED_PATHS)}. "
@@ -207,14 +241,27 @@ class Graphban:
         body = {k: v for k, v in payload.items() if v is not None}
         try:
             reply = self._client().post(url, json=body, timeout=timeout)
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            if strict:
+                raise ObservationRefused(f"{path}: {exc}") from exc
             return None
         if reply.status_code >= 400:
+            if strict:
+                raise ObservationRefused(
+                    f"{path}: HTTP {reply.status_code}: {reply.text[:300]}"
+                )
             return None
         try:
-            return reply.json()
+            parsed = reply.json()
         except ValueError:
+            if strict:
+                raise ObservationRefused(f"{path}: reply was not JSON")
             return None
+        if not isinstance(parsed, dict):
+            if strict:
+                raise ObservationRefused(f"{path}: reply was not an object")
+            return None
+        return parsed
 
     def list_tools(self) -> list[dict]:
         """The server's own tool manifest — name, description and input schema.

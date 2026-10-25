@@ -19,6 +19,7 @@ from gbfleet.client import (
     ALLOWED_TOOLS,
     Graphban,
     NotPermitted,
+    ObservationRefused,
     ProtocolError,
     ServerUnreachable,
     ToolFailed,
@@ -180,10 +181,13 @@ def test_the_model_door_cannot_reach_graphban():
 #: pseudo-tool name in every allowlist to permit reading a public document.
 #: `post_attempt` (PRD-38 D3) posts telemetry to a REST route, which is not a tool and has no
 #: entry in any tool allowlist to route through. `post_surface` posts skill and MCP *names*
-#: to the Harness page, on the same terms. Both are exempt from THIS check and governed by
-#: `ALLOWED_PATHS`, pinned below, and the `_post` helper that refuses anything else.
-#: An exemption with no replacement gate would be the second door this file exists to prevent.
-NOT_TOOL_CALLS = {"list_tools", "post_attempt", "post_surface"}
+#: to the Harness page, on the same terms. `post_observation` (GRPH-975) posts a fact about
+#: a tree the supervisor cut — a base, a PR, a salvage, a withheld proposal — and raises
+#: when that post is refused, which telemetry must not. All three are exempt from THIS
+#: check and governed by `ALLOWED_PATHS`, pinned below, and the `_post` helper that refuses
+#: anything else. An exemption with no replacement gate would be the second door this file
+#: exists to prevent.
+NOT_TOOL_CALLS = {"list_tools", "post_attempt", "post_surface", "post_observation"}
 
 
 def test_every_named_helper_goes_through_the_checked_call():
@@ -215,22 +219,25 @@ def test_every_named_helper_goes_through_the_checked_call():
 def test_the_exemptions_from_the_allowlist_are_pinned():
     """`not in NOT_TOOL_CALLS` passes for every widening of NOT_TOOL_CALLS, so the set is
     pinned. The next method that skips the check should be an edit with a reason attached."""
-    assert NOT_TOOL_CALLS == {"list_tools", "post_attempt", "post_surface"}
+    assert NOT_TOOL_CALLS == {"list_tools", "post_attempt", "post_surface", "post_observation"}
 
 
 def test_the_rest_surface_is_pinned_and_every_post_is_checked_against_it():
     """The replacement gate for the REST exemptions.
 
-    A credential with authority reaches `/api/mcp` and two REST paths on one connection
+    A credential with authority reaches `/api/mcp` and the REST paths on one connection
     pool. The tool allowlist governs `/api/mcp` and says nothing about anything else, so
     the paths get an allowlist of their own — pinned by exact equality here for the same
     reason the tool set is, and enforced in `_post` rather than trusted to callers.
     """
-    from gbfleet.client import ALLOWED_PATHS, ATTEMPTS_PATH, SURFACE_PATH
+    from gbfleet.client import ALLOWED_PATHS, ATTEMPTS_PATH, OBSERVATIONS_PATH, SURFACE_PATH
 
-    assert ALLOWED_PATHS == {"/api/fleet/attempts", "/api/harness/surface"}
+    assert ALLOWED_PATHS == {
+        "/api/fleet/attempts", "/api/fleet/observations", "/api/harness/surface",
+    }
     assert ATTEMPTS_PATH in ALLOWED_PATHS
     assert SURFACE_PATH in ALLOWED_PATHS
+    assert OBSERVATIONS_PATH in ALLOWED_PATHS
 
     source = (FLEET_SRC / "gbfleet" / "client.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -260,6 +267,39 @@ def test_a_telemetry_post_that_cannot_land_returns_none_rather_than_raising():
         raise httpx.ConnectError("no route to host")
 
     assert _server(unreachable).post_attempt(enrolment_code="ENR-1") is None
+
+
+def test_an_observation_posts_to_its_route_and_a_refusal_raises():
+    """GRPH-975. Telemetry returns None. A base that did not land must not look like one
+    that did — the wave logs the status, and the test that drives the real client fails
+    if this method swallows it.
+
+    Sabotage: drop `strict=True` on `post_observation` and this raises nothing.
+    """
+    seen: dict = {}
+
+    def ok(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"item_id": "GRPH-1", "kind": "cut_from", "recorded": True})
+
+    got = _server(ok).post_observation(
+        item_id="GRPH-1", kind="cut_from", branch="gb/x", base="a" * 40, url=None)
+    assert seen["path"] == "/api/fleet/observations"
+    assert seen["body"]["kind"] == "cut_from" and "url" not in seen["body"]
+    assert got["recorded"] is True
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, text="not a supervisor wave key")
+
+    with pytest.raises(ObservationRefused, match="403"):
+        _server(refuse).post_observation(item_id="GRPH-1", kind="cut_from", branch="gb/x")
+
+    def down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route to host")
+
+    with pytest.raises(ObservationRefused, match="no route"):
+        _server(down).post_observation(item_id="GRPH-1", kind="cut_from")
 
 
 def test_a_telemetry_post_sends_only_what_it_knows():

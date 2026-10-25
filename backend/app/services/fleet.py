@@ -4754,3 +4754,164 @@ def park(db: Session, attempt, *, agent_id: str | None = None,
         interval = min(POLL_INTERVAL_SECONDS, remaining)
         slept += interval
         sleep(interval)
+
+
+# ---- observations: facts only the supervisor knows (GRPH-975) ---------------------------------
+
+
+#: What this route records today. `pushed_head` (GRPH-973) and `lease` (GRPH-1116) extend
+#: THIS route later — a second path would be the widening the allowlist exists to prevent.
+#: They are named so a post of either is a 422 that says so, not a silent no-op and not a
+#: second route somebody adds beside this one.
+OBSERVATION_KINDS = ("cut_from", "pr_opened", "salvage", "withheld")
+OBSERVATION_LATER = ("pushed_head", "lease")
+
+_CUT_BASE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+class ObservationError(Exception):
+    """A refused observation. `status` is the HTTP status the route returns."""
+
+    def __init__(self, status: int, message: str):
+        self.status = status
+        super().__init__(message)
+
+
+def _supervisor_wave_key(api_key) -> bool:
+    """A fleet credential that runs a wave, not a worker and not a hand-minted project key.
+
+    `fleet_wave` empty is a hand-minted key: it is never swept with a wave and it is not
+    the process that cut the tree. `planner` in `eligible_roles` is the supervisor's
+    ceiling — a worker-only fleet key fails it, and an empty roles list resolves to every
+    role, so an all-in-one fleet key passes. The children hold the same key material; the
+    scope check below is what stops one of them writing about an item the wave did not cut.
+    """
+    wave = (getattr(api_key, "fleet_wave", None) or "").strip()
+    if not wave:
+        return False
+    return "planner" in eligible_roles(api_key)
+
+
+def _wave_cut_item(db: Session, api_key, item: Item) -> bool:
+    """Whether a seat from this credential's wave is how this item got a tree.
+
+    The CLI's `--wave` and `ApiKey.fleet_wave` are different strings in production (the
+    flag defaults to `wave`, the minted key stores `wave-1`). Matching only those two
+    would leave the route refusing the one caller it exists for. A seat counts when it
+    is bound to the item, or its `consumed_by` is the item's claimer or author — the
+    second is how a cluster sibling is covered at PR and salvage time, after the child
+    has claimed — AND either its wave string is the key's, or the agent that minted it
+    authenticated with this key. Revoked seats still count: a late receipt is the case
+    the route is for, and a revoke must not erase the base.
+    """
+    holders = [h for h in (item.claimed_by, item.built_by) if h]
+    bound = [Enrolment.item_id == item.id]
+    if holders:
+        bound.append(Enrolment.consumed_by.in_(holders))
+    seats = list(db.scalars(
+        select(Enrolment).where(Enrolment.project_id == item.project_id, or_(*bound))
+    ).all())
+    if not seats:
+        return False
+    key_id = getattr(api_key, "id", None)
+    fleet_wave = (api_key.fleet_wave or "").strip()
+    minters: dict[str, str | None] = {}
+    minter_ids = {s.minted_by for s in seats if s.minted_by}
+    if minter_ids and key_id:
+        for agent in db.scalars(select(Agent).where(Agent.id.in_(minter_ids))).all():
+            minters[agent.id] = agent.api_key_id
+    for seat in seats:
+        if seat.wave and seat.wave == fleet_wave:
+            return True
+        if seat.minted_by and minters.get(seat.minted_by) == key_id:
+            return True
+    return False
+
+
+def _observation_receipt(kind: str, *, branch: str, base: str | None, url: str | None,
+                         commit: str | None, reason: str | None) -> dict:
+    """The note or url receipt, composed here so the caller cannot supply one.
+
+    A child holding the wave key could otherwise post an attestation-shaped receipt.
+    The bytes of the cut-from note match what `_record_cut_from` used to send, because
+    `cut_from_commits` reads that prose and nothing else.
+    """
+    if kind == "cut_from":
+        sha = (base or "").strip()
+        if not _CUT_BASE.fullmatch(sha):
+            raise ObservationError(
+                422, "cut_from base must be 7–40 lowercase hex characters")
+        return {"kind": "note", "detail": (
+            f"{items_svc.CUT_FROM_MARKER}{sha} (`{branch}`) — the base, which "
+            "carries none of this item's work"
+        )}
+    if kind == "pr_opened":
+        link = (url or "").strip()
+        if not (link.startswith("https://") or link.startswith("http://")):
+            raise ObservationError(422, "pr_opened url must be an http(s) URL")
+        return {"kind": "url",
+                "detail": f"draft PR opened by gbfleet for {branch}",
+                "url": link}
+    if kind == "salvage":
+        short = (commit or "").strip()[:12]
+        detail = f"salvaged onto `{branch}`" + (f" `{short}`" if short else "")
+        if reason and reason.strip():
+            detail += f" ({reason.strip()})"
+        detail += "; not proposed as a PR"
+        return {"kind": "note", "detail": detail}
+    if kind == "withheld":
+        why = (reason or "").strip()
+        if not why:
+            raise ObservationError(422, "withheld names why the PR was not proposed")
+        return {"kind": "note",
+                "detail": f"pushed `{branch}`; not proposed as a PR — {why}"}
+    raise ObservationError(
+        422,
+        f"unknown observation kind {kind!r}; this route records "
+        f"{', '.join(OBSERVATION_KINDS)}. {', '.join(OBSERVATION_LATER)} extend this "
+        "same route later and are not accepted yet",
+    )
+
+
+def record_observation(db: Session, api_key, *, item_key: str, kind: str,
+                       branch: str = "", base: str | None = None,
+                       url: str | None = None, commit: str | None = None,
+                       reason: str | None = None) -> dict:
+    """Record one supervisor fact on an item this credential's wave cut.
+
+    Does not commit — the route does, matching `post_attempt`. A non-supervisor
+    credential is 403. An item this wave did not cut, or one the key cannot write, is
+    404 with the same message a missing item gets, so the refusal is not a probe.
+    """
+    from app.security import authz
+
+    if not _supervisor_wave_key(api_key):
+        raise ObservationError(
+            403,
+            "this credential is not a supervisor wave key: recording a cut needs a "
+            "fleet key with a wave and planner among its roles",
+        )
+    named = (item_key or "").strip()
+    if not named:
+        raise ObservationError(422, "an observation names an item")
+    stored = keys_svc.resolve_item(db, named)
+    item = db.get(Item, stored) if stored else None
+    if item is None or not authz.can_write(db, api_key.user_id, item.project_id):
+        raise ObservationError(404, "no such item")
+    if not _wave_cut_item(db, api_key, item):
+        raise ObservationError(404, "no such item")
+    cleaned = (branch or "").strip()
+    if kind in OBSERVATION_KINDS and not cleaned:
+        raise ObservationError(422, "an observation names the branch")
+    receipt = _observation_receipt(
+        kind, branch=cleaned, base=base, url=url, commit=commit, reason=reason)
+    item.evidence = items_svc.append_evidence(item.evidence, [receipt])
+    if receipt.get("kind") == "url":
+        # The cooldown clock. `update_item` starts it from a url receipt; this route is
+        # now the writer of that receipt, so the clock has to start here or a draft PR
+        # the supervisor opened would not count.
+        item.pr_linked_at = items_svc.pr_linked_at([receipt], item.pr_linked_at)
+    from app.services import gitops as gitops_svc
+    gitops_svc.apply_observe_answer(db, item)
+    gitops_svc.apply_already_evidence(item)
+    return {"item_id": item.key, "kind": kind, "recorded": True}

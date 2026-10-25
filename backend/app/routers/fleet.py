@@ -550,3 +550,43 @@ def post_attempt(body: AttemptIn, db: Session = Depends(get_db),
     if row.derived_at is None:
         return JSONResponse(status_code=202, content=harness_svc.row_dict(row))
     return harness_svc.row_dict(row)
+
+
+class ObservationIn(BaseModel):
+    """Facts about a tree the supervisor cut (GRPH-975). Not an evidence array.
+
+    The server composes the note or the url receipt. Accepting `evidence` here would let
+    a child that holds the wave key post an attestation, which is the write this route
+    exists to avoid making. `pushed_head` (GRPH-973) and `lease` (GRPH-1116) are later
+    kinds of THIS route — they are refused until those items land, not stored and not
+    given a second path.
+    """
+
+    item_id: str
+    kind: str
+    branch: str = ""
+    base: str | None = None
+    url: str | None = None
+    commit: str | None = None
+    reason: str | None = None
+
+
+@router.post("/observations")
+def post_observation(body: ObservationIn, db: Session = Depends(get_db),
+                     key: ApiKey = Depends(get_agent_key)):
+    """A base, a draft PR, a salvage or a withheld proposal, posted by the wave key.
+
+    **Authenticated by the key, not by a session**, same as `POST /attempts`. A credential
+    that is not a supervisor wave key is 403. A write about an item that key's wave did
+    not cut is 404, the same answer as an item the key cannot see — the refusal must not
+    say which.
+    """
+    try:
+        out = fleet_svc.record_observation(
+            db, key, item_key=body.item_id, kind=body.kind, branch=body.branch,
+            base=body.base, url=body.url, commit=body.commit, reason=body.reason,
+        )
+    except fleet_svc.ObservationError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    db.commit()
+    return out
