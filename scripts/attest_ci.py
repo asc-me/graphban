@@ -145,6 +145,24 @@ def attestation(*, commit: str, branch: str, run_url: str = "",
     nothing else. An adapter claiming more than it checked is how a gate quietly starts
     accepting less than it appears to.
     """
+    return receipt(commit=commit, branch=branch, run_url=run_url, matched=matched,
+                   predicate={
+                       "name": "suite_green",
+                       "passed": True,
+                       "detail": f"CI passed on {branch or 'an unnamed ref'} at {commit[:12]}",
+                   })
+
+
+def receipt(*, commit: str, branch: str, run_url: str = "", matched: str = "",
+            predicate: dict) -> dict:
+    """One attestation carrying exactly ONE predicate (GRPH-1110).
+
+    One, never several, because `valid_attestations` admits a receipt only when every
+    predicate on it passed. `scans_clean` (scripts/scan_ci.py) is written by the same gate key
+    as `suite_green`, and a failing scan riding on the suite's receipt would void the suite's
+    pass too — every feature PR with a findings-bearing dependency would lose `suite_green`.
+    Separate receipts keep each predicate answering only for what its own run checked.
+    """
     return {
         "kind": "attestation",
         "adapter": "github-actions",
@@ -158,11 +176,7 @@ def attestation(*, commit: str, branch: str, run_url: str = "",
         # receipt, so a reader weighing an attestation does not have to reconstruct it.
         "matched": matched,
         "run_ref": run_url,
-        "predicates": [{
-            "name": "suite_green",
-            "passed": True,
-            "detail": f"CI passed on {branch or 'an unnamed ref'} at {commit[:12]}",
-        }],
+        "predicates": [predicate],
     }
 
 
@@ -189,9 +203,15 @@ def post(url: str, key: str, item_key: str, receipt: dict, *, timeout: float = 1
 
 def _call(url: str, key: str, arguments: dict, *, timeout: float = 15.0) -> None:
     """One `update_item` call. Raises on anything that is not a success."""
-    item_key = arguments.get("id", "?")
+    call_tool(url, key, "update_item", arguments, timeout=timeout)
+
+
+def call_tool(url: str, key: str, name: str, arguments: dict, *,
+              timeout: float = 15.0) -> None:
+    """One MCP tool call. Raises on anything that is not a success."""
+    item_key = arguments.get("id", name)
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-        "name": "update_item", "arguments": arguments,
+        "name": name, "arguments": arguments,
     }}).encode()
     req = urllib.request.Request(
         url.rstrip("/") + "/api/mcp", data=body,

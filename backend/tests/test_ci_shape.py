@@ -23,6 +23,12 @@ WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
 # defined in the workflow is a suite whose result has to reach the gate.
 GATE = "ci"
 
+# Jobs the gate must NOT cover, each for a stated reason. `security-scans` (GRPH-P57 D2) gates
+# only the fleet merge into the release ref through its `scans_clean` attestation; in
+# `ci.needs` it would block every feature PR at the forge. Named, so adding to this set is a
+# visible decision rather than a quiet widening of the guard below.
+NOT_GATED = {"security-scans"}
+
 
 def _workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
@@ -35,11 +41,15 @@ def test_ci_gate_covers_every_job():
     assert len(jobs) > 1
 
     needs = set(jobs[GATE]["needs"])
-    ungated = set(jobs) - {GATE} - needs
+    ungated = set(jobs) - {GATE} - needs - NOT_GATED
     assert not ungated, (
         f"job(s) {sorted(ungated)} run in CI but are not in `{GATE}`.needs, so their "
         "result never reaches the required check. Add them."
     )
+    assert not (needs & NOT_GATED), (
+        f"{sorted(needs & NOT_GATED)} must stay out of `{GATE}`.needs (see NOT_GATED)")
+    # Every exemption names a job that exists, or it exempts nothing and hides a rename.
+    assert NOT_GATED <= set(jobs), f"NOT_GATED names missing job(s): {NOT_GATED - set(jobs)}"
 
 
 def test_the_gate_job_runs_where_the_ledger_is():
