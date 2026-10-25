@@ -575,12 +575,13 @@ class ObservationIn(BaseModel):
 @router.post("/observations")
 def post_observation(body: ObservationIn, db: Session = Depends(get_db),
                      key: ApiKey = Depends(get_agent_key)):
-    """A base, a draft PR, a salvage or a withheld proposal, posted by the wave key.
+    """A base, a draft PR, a salvage, a withheld proposal, or a lease keep-alive.
 
     **Authenticated by the key, not by a session**, same as `POST /attempts`. A credential
-    that is not a supervisor wave key is 403. A write about an item that key's wave did
-    not cut is 404, the same answer as an item the key cannot see — the refusal must not
-    say which.
+    that is not a supervisor key is 403: planner must be in its ceiling, and it must carry
+    a fleet wave or be the project-scoped key `gban setup` mints. A write about an item
+    that key's seats did not cut is 404, the same answer as an item the key cannot see —
+    the refusal must not say which.
     """
     try:
         out = fleet_svc.record_observation(
