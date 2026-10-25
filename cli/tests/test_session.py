@@ -154,6 +154,47 @@ def test_an_unreachable_server_is_a_different_exit_code_from_an_expired_session(
     assert "could not reach" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("url", ["file:///etc/passwd", "gb.example.com", "ftp://gb.example.com"])
+def test_a_url_that_is_not_http_is_refused_before_anything_is_opened(url, monkeypatch):
+    """GRPH-1112. urlopen reads `file:` too, and would send the credential along. Sabotage:
+    delete the scheme check and urlopen is reached, so this fails."""
+    from gban.client import Client
+
+    def opened(*_args, **_kwargs):
+        raise AssertionError("urlopen was reached")
+
+    monkeypatch.setattr("gban.client.urllib.request.urlopen", opened)
+    with pytest.raises(Unreachable, match="not an http\\(s\\) URL"):
+        Client(url, api_key="KEY").call("GET", "/api/whoami")
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8000", "https://gb.example.com/"])
+def test_an_http_or_https_server_url_still_reaches_urlopen(url, monkeypatch):
+    """GRPH-1112. The check must not refuse a configured server URL gban is meant to use."""
+    from gban.client import Client
+    seen = []
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def opened(request, timeout):
+        seen.append(request.full_url)
+        return _Response()
+
+    monkeypatch.setattr("gban.client.urllib.request.urlopen", opened)
+    assert Client(url, api_key="KEY").call("GET", "/api/whoami") == {"ok": True}
+    assert seen == [url.rstrip("/") + "/api/whoami"]
+
+
 def test_a_refusal_is_printed_in_the_servers_own_words_with_its_hint(home, monkeypatch, capsys):
     """4 / D8. Sabotage: re-word the refusal and this fails — the client would then hold a
     second copy of a rule the server already enforces."""
