@@ -115,6 +115,34 @@ def test_registration_records_the_capabilities_that_drive_review_diversity(db, p
     assert a.capabilities["vendor"] == "anthropic"
 
 
+def test_a_grok_registration_is_stored_as_xai(db, proj, key):
+    """GRPH-1120. New capability rows from the grok adapter carry one vendor spelling.
+    The adapter name and the model id both arrive as `grok`; the matrix says `xai`."""
+    from_name = fleet.register_agent(
+        db, project_id=proj, api_key=key,
+        capabilities={"vendor": "grok", "model": "grok-4.7", "tier": "frontier"})
+    from_model = fleet.register_agent(
+        db, project_id=proj, api_key=key,
+        capabilities={"vendor": "grok-4.7", "model": "grok-4.7", "tier": "frontier"})
+    already = fleet.register_agent(
+        db, project_id=proj, api_key=key,
+        capabilities={"vendor": "xai", "model": "grok-4.7", "tier": "frontier"})
+
+    assert from_name.capabilities["vendor"] == "xai"
+    assert from_model.capabilities["vendor"] == "xai"
+    assert already.capabilities["vendor"] == "xai"
+    assert from_name.capabilities["model"] == "grok-4.7"
+
+
+def test_a_missing_vendor_is_not_filled_in_from_the_model_id(db, proj, key):
+    """A model id of `grok-4.7` with no vendor is an absence, not xAI. Inferring one
+    would make two silent agents the same vendor."""
+    a = fleet.register_agent(db, project_id=proj, api_key=key,
+                             capabilities={"model": "grok-4.7", "tier": "frontier"})
+
+    assert "vendor" not in a.capabilities
+
+
 # ---- presence ------------------------------------------------------------------------------
 
 def test_an_agent_goes_offline_without_anything_reporting_it(db, proj, key):

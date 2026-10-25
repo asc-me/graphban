@@ -70,6 +70,15 @@ from . import Adapter, Support, Tuning
 
 class Grok(Adapter):
     name = "grok"
+    #: The company, not the binary (GRPH-1120). `name` is what the supervisor
+    #: launches and what a child copies into `capabilities.vendor` when it does
+    #: not follow the seat clause. The model ids this binary enumerates
+    #: (`grok-4.5`, `grok-4.7`) share that prefix, so the same child writes
+    #: `grok` from the model id. The matrix rows and the launch post already
+    #: say `xai`, and measured cells are keyed by it — folding toward `grok`
+    #: would split those rows. `adapters.canonical_vendor` and the backend's
+    #: `fleet.canonical_vendor` both read this spelling.
+    vendor = "xai"
     binary = "grok"
     support = Support(minimum=(1, 0), maximum=(2, 0), verified_against="1.0.25")
     notes = (

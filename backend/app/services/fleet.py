@@ -32,6 +32,44 @@ from app.services.items import DEFAULT_LEASE_SECONDS
 ROLES = ("planner", "worker")
 DEFAULT_ROLE = "worker"
 
+#: One company, one spelling (GRPH-1120). The grok adapter's matrix row and the
+#: seat's `capabilities=` clause say `xai`. A child that copies the adapter name
+#: (`grok`), or the model id (`grok-4.7`), writes `grok`. The predicate used to
+#: compare those strings raw, so grok-4.7 reviewing grok-4.7 read as "different
+#: vendors". `xai` is the spelling measured cells and launch posts are already
+#: keyed by; folding the other way would split every existing `xai` row.
+#: The fleet package holds the same map on `Grok.vendor` /
+#: `adapters.canonical_vendor` and this service cannot import it (PRD-22 D-e).
+#: A third spelling is an entry in both, or the seat and the gate disagree again.
+_XAI = "xai"
+
+
+def canonical_vendor(vendor: str) -> str:
+    """The company spelling of `vendor`, or `vendor` itself when it is not an alias.
+
+    `grok`, `xai`, and a model id used as a vendor (`grok-4.7`) are xAI. An empty
+    string and `undeclared` stay as they are: two unknowns are not one vendor, and
+    a missing field must not become a company. Any other spelling is returned
+    unchanged — this is not a guess about vendors the ledger has not seen twice.
+    """
+    if not isinstance(vendor, str):
+        return vendor
+    key = vendor.strip().lower()
+    if not key or key == "undeclared":
+        return vendor
+    if key == "grok" or key == _XAI or key.startswith("grok-"):
+        return _XAI
+    return vendor
+
+
+def _canonicalize_recorded_capabilities(capabilities: dict | None) -> dict:
+    """The capabilities a registration stores. Vendor aliases collapse; nothing else moves."""
+    caps = dict(capabilities or {})
+    vendor = caps.get("vendor")
+    if isinstance(vendor, str) and vendor.strip():
+        caps["vendor"] = canonical_vendor(vendor)
+    return caps
+
 
 def _resolve_stored_role(role: str) -> str:
     """Map a stored `"reviewer"` to `"worker"` on read (S3 / PRD-39 D-b).
@@ -442,11 +480,16 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
         role = ALL_IN_ONE
     else:
         role = DEFAULT_ROLE if DEFAULT_ROLE in allowed else allowed[0]
+    # Before the row is written (GRPH-1120). A child that says `grok` and a child
+    # that says `xai` are the same adapter; storing both spellings is how the
+    # diversity receipt later calls them different vendors. Old rows are not
+    # rewritten — `review_diversity` folds them on read.
+    capabilities = _canonicalize_recorded_capabilities(capabilities)
     now = datetime.now(timezone.utc)
     agent = Agent(
         id=stored_id, number=number, project_id=project_id,
         api_key_id=getattr(api_key, "id", None),
-        label=label or "", capabilities=capabilities or {},
+        label=label or "", capabilities=capabilities,
         parent_agent_id=parent_agent_id or None,
         worktree=worktree or "", branch=branch or "",
         enrolment_id=seat.id if seat is not None else None,
@@ -1895,10 +1938,18 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
         return None
 
     my_vendor = ((me.capabilities or {}).get("vendor") if me else None)
-    if my_vendor:
-        authors = {a.id: (a.capabilities or {}).get("vendor")
-                   for a in db.scalars(select(Agent)).all()}
-        cross = [it for it in candidates if authors.get(it.built_by) != my_vendor]
+    if isinstance(my_vendor, str) and my_vendor.strip():
+        # Same folding as the receipt (GRPH-1120). Preferring a `grok` reviewer
+        # for an `xai` author would hand same-model review out as the cross-vendor
+        # case this sort exists to find.
+        mine = canonical_vendor(my_vendor)
+        authors = {}
+        for author in db.scalars(select(Agent)).all():
+            declared = (author.capabilities or {}).get("vendor")
+            authors[author.id] = (canonical_vendor(declared)
+                                  if isinstance(declared, str) and declared.strip()
+                                  else declared)
+        cross = [it for it in candidates if authors.get(it.built_by) != mine]
         candidates = cross or candidates
 
     item = candidates[0]
@@ -2526,6 +2577,10 @@ def review_diversity(reviewer: dict, builder: dict, *, built_by: str | None) -> 
     differ; every other case is False with a sentence saying why. The caller RECORDS this and
     does not gate on it: a default refusal of same-vendor review would leave a single-vendor
     shop unable to review anything, which is how a gate earns being routed around (GRPH-321).
+
+    Compared through `canonical_vendor` (GRPH-1120). The sentence still quotes the spellings
+    that were stored, so an old `grok` row beside a new `xai` row stays legible — and says
+    they are one vendor, which a raw string compare reported as two.
     """
     who = f"{reviewer['vendor']}:{reviewer['model']} (tier {reviewer['tier']})"
     if not built_by:
@@ -2538,9 +2593,12 @@ def review_diversity(reviewer: dict, builder: dict, *, built_by: str | None) -> 
         return False, (f"reviewer {who} against builder {by}; not comparable — "
                        f"{' and '.join(missing)} declared no vendor, and two undeclared "
                        "vendors are two unknowns rather than one vendor")
-    if reviewer["vendor"] != builder["vendor"]:
+    if canonical_vendor(reviewer["vendor"]) != canonical_vendor(builder["vendor"]):
         return True, f"reviewer {who} reviewed builder {by} — different vendors"
-    return False, (f"reviewer {who} reviewed builder {by} — the SAME vendor"
+    alias = ""
+    if reviewer["vendor"] != builder["vendor"]:
+        alias = f" ({reviewer['vendor']} and {builder['vendor']} are one vendor)"
+    return False, (f"reviewer {who} reviewed builder {by} — the SAME vendor{alias}"
                    + (" and the same model"
                       if reviewer["model"] == builder["model"]
                       else " on a different model"))
