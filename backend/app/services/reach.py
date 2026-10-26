@@ -88,10 +88,12 @@ _NOT_SUBCOMMANDS = (
 #: EXEMPT list and this token are the same decision. Delete it and the exempt row fires.
 _EXEMPT_SUBCOMMANDS = "port-forward"
 
-#: Nouns a diagram uses for a platform (`Railway stack`, `Railway project`).
+#: Nouns a diagram uses after a glued platform name (`compose/Railway stack`).
 #: They are also real subcommands (`vercel project rm`, `heroku stack:set`),
-#: so the list never applies on its own — only inside the two spans below.
-_DETERMINERS = r"the|a|an|our|their|this|that"
+#: so the list applies only inside the legend span. A determiner in front of
+#: one of these nouns is not an exemption. "The Railway project will be ready"
+#: is a platform name followed by a word, and it fires. Every narrowing of
+#: that sentence went quiet on a real command.
 _DESCRIPTIVE_NOUNS = (
     "stack|stacks|project|projects|dashboard|dashboards|team|teams"
     "|account|accounts|doc|docs|topology|diagram|legend"
@@ -131,93 +133,17 @@ _LEGEND_SPAN = re.compile(
     re.I | re.M,
 )
 
-#: Sentence subject, not an invocation: "The Railway project will deploy next
-#: week". Three things have to be true, and dropping any one swallows a
-#: command.
-#:
-#: The determiner is what makes it a subject — without it, `gcloud projects
-#: delete` and `vercel project rm` go quiet. It has to START the clause: the
-#: line, or the words right after sentence punctuation (`.!?`), with at most
-#: one conjunction or adverb in between (`Done. But the Railway project
-#: will`). A word before the determiner is the verb of an imperative, and
-#: punctuation after the noun does not make that an object into a subject:
-#: `Delete the vercel project.`, `Wipe the supabase project.`, `Tear down the
-#: kubectl projects, now`. Putting the punctuation or end-of-line tail back
-#: scrubs those, which the parity sweep catches.
-#:
-#: The noun has to be followed by a modal or copula (`will`, `is`, `was`,
-#: `has`, ...). Without that, a determiner in front of a real subcommand is
-#: scrubbed too: `Run the heroku stack:set`, `Use the gcloud projects delete`.
-#: `:` is not a modal.
-#:
-#: A passive in the rest of the clause is the instruction, not a subject:
-#: `THE VERCEL PROJECT WILL BE REMOVED`, `will be purged`, `will get wiped`,
-#: `is removed`, `was deleted, so delete it again`. The shape is the auxiliary,
-#: not a list of participles. A list fails open: every participle it lacks
-#: (`purged`, `nuked`, `decommissioned`) is a destructive sentence the guard
-#: goes quiet on. Putting the seven-word list back is what the parity rows
-#: for those sentences catch.
-#:
-#: The shape, anywhere in the clause up to sentence punctuation: `be`, `been`,
-#: `being`, `get`, `got`, `gets` or `getting`, then at most two words, then a
-#: word ending in `-ed` or `-en`, or `down` / `off` / `out`. Or a copula
-#: (`is`, `are`, `was`, `were`) followed straight away by such a word. An
-#: adverb may sit between the modal and `be` (`should now be deleted`,
-#: `will soon be deleted`); `to be` and `going to be` are the same shape.
-#:
-#: A command-shaped word in the modal's complement is the instruction, and so
-#: is a `_MUTATIONS` verb anywhere after the modal (`will destroy the volume`,
-#: `should drop its database`, `must reset now`, `shall apply -auto-approve`,
-#: `will deploy next week`). Skipping that first word kept every one of those
-#: quiet, including `deploy`. The skip is gone. `will be ready` stays a
-#: subject because `be` is grammar, not a command. A `_MUTATIONS` verb later
-#: in the same clause (`will be ready next week, so drop the database`,
-#: `is going to destroy`) is still the instruction. Restore the skip and the
-#: complement-slot rows go quiet, which the parity sweep catches.
-#:
-#: A possessive (`Railway's dashboard`) needs no span. The matcher requires
-#: whitespace after the platform name, and `'` is not whitespace.
-#:
-#: The prefix is not one width, so this span is scrubbed rather than written
-#: as a lookbehind. Delete the scrub and `will be ready` fires.
-_SUBJECT_TAIL = (
-    "will|would|shall|should|can|could|may|might|must"
-    "|is|are|was|were|be|been|being"
-    "|has|have|had|does|do|did"
-)
-_SUBJECT_CONJUNCTION = (
-    "and|but|or|nor|so|yet|then|also|now|still|thus|however"
-)
-#: The passive shape. Not a participle list.
-#:
-#: `be` / `get` (and been/being/got/gets/getting), then at most two words,
-#: then a word ending `-ed` or `-en`, or `down` / `off` / `out`. A copula
-#: (`is` / `are` / `was` / `were`) followed straight away by such a word is
-#: the same shape: `is removed`, `was deleted`.
-#:
-#: `reset` is the one unchanged participle the sweep already requires
-#: (`will be reset`). It has no `-ed` / `-en` ending, and `down` / `off` /
-#: `out` do not follow it. That one word is not a list to grow: the next
-#: unchanged participle is a red parity row until the ending names it.
-#: `will deploy` is not this shape. It fires because the complement is a
-#: command. `will be ready` does not match this shape and stays quiet.
-_PASSIVE_AUX = r"be|been|being|get|got|gets|getting"
-_PASSIVE_ENDING = r"(?:\w*(?:ed|en)|down|off|out|reset)"
-_PASSIVE_SHAPE = re.compile(
-    rf"\b(?:{_PASSIVE_AUX})\b(?:\s+\w+){{0,2}}\s+{_PASSIVE_ENDING}\b"
-    rf"|\b(?:is|are|was|were)\s+{_PASSIVE_ENDING}\b",
-    re.I,
-)
-_SUBJECT_SPAN = re.compile(
-    rf"(?:^|[.!?]\s+)(?:(?:{_SUBJECT_CONJUNCTION})\s+)?"
-    rf"(?:{_DETERMINERS})\s+(?:{_PLATFORMS})\s+(?:{_DESCRIPTIVE_NOUNS})\b"
-    rf"(?=\s+(?:{_SUBJECT_TAIL})\b)",
-    re.I | re.M,
-)
-
+#: There is no sentence-subject exemption. "The Railway project will deploy"
+#: and "The Railway project will be ready" are a platform name followed by a
+#: word, which is the base matcher. Seven rounds of scrubbing that shape went
+#: quiet on a real command each time (`reset`, then `remove`, then a path, a
+#: passive, a complement, a grammar word in the complement). The exemption is
+#: gone. A possessive (`Railway's dashboard`) still needs nothing: the matcher
+#: requires whitespace after the platform name, and `'` is not whitespace.
 _FLAG = r"--?[\w.-]+"
-#: The base matcher, plus the port-forward exemption. Legend and sentence-subject
-#: are scrubbed before this runs; they are not lookarounds on this pattern.
+#: The base matcher, plus the port-forward exemption. The legend span is
+#: scrubbed before this runs; it is not a lookaround on this pattern. There
+#: is no subject scrub in front of it.
 #: `vercel remove`, `fly postgres detach`, `heroku pg:reset` and
 #: `az network nsg rule delete` all fire on the first word after the platform.
 #: There is no verb list: a missing verb is a command the guard would not see.
@@ -288,62 +214,6 @@ MAX_SIGNALS = 3
 QUOTE_MAX = 160
 
 
-def _command_complement(word: str) -> bool:
-    """The word after the modal is an order, unless it is grammar.
-
-    `will destroy`, `must reset`, `shall apply` and `will deploy` are orders.
-    `will be` is grammar, so `will be ready` stays a subject. A verb list
-    fails open here: `delete`, `remove`, `reset` and `apply` are not in
-    `_MUTATIONS`, and the next verb a list lacks would go quiet the same way.
-    Grammar is the closed check. `going` is the auxiliary in `is going to`,
-    not a command.
-    """
-    token = word.strip(".,;:!?\"'`()[]")
-    if not re.fullmatch(r"[A-Za-z][\w-]*", token):
-        return False
-    grammar = rf"(?:{_NOT_SUBCOMMANDS}|{_SUBJECT_TAIL}|going|got|gets|getting)"
-    return re.fullmatch(grammar, token, re.I) is None
-
-
-def _destructive_later(clause: str) -> bool:
-    """A command-shaped complement, or a `_MUTATIONS` verb anywhere after the modal.
-
-    The complement is the first word. The previous cut skipped it
-    (`words[2:]`), so a mutation verb in that slot never fired: `will
-    destroy`, `should drop`, `will deploy next week`. The skip is gone.
-    Every word after the modal is checked, including that first one.
-    `so drop the database` and `is going to destroy` are later in the same
-    clause and still fire. Restore the skip — do not read the complement,
-    search only `words[2:]` for `_MUTATIONS` — and the complement-slot rows
-    go quiet.
-    """
-    words = clause.split()
-    if len(words) < 2:
-        return False
-    if _command_complement(words[1]):
-        return True
-    if len(words) < 3:
-        return False
-    return re.search(rf"\b(?:{_MUTATIONS})\b", " ".join(words[2:]), re.I) is not None
-
-
-def _scrub_subject(line: str) -> str:
-    """Blank a determiner-plus-noun subject. Keep it when the clause is an order.
-
-    The span is only the subject. The decision reads the rest of the clause,
-    up to sentence punctuation, and refuses to scrub a passive shape or a
-    later destructive verb. Both are instructions. A participle list is not
-    how either is recognised.
-    """
-    def keep(match: re.Match[str]) -> str:
-        clause = re.split(r"[.!?]", line[match.end():], maxsplit=1)[0]
-        if _PASSIVE_SHAPE.search(clause) or _destructive_later(clause):
-            return match.group(0)
-        return " "
-
-    return _SUBJECT_SPAN.sub(keep, line)
-
-
 def signals(text: str | None) -> list[dict]:
     """Lines in `text` that read as work on something outside this repository.
 
@@ -372,11 +242,11 @@ def signals(text: str | None) -> list[dict]:
                 # evidence printed three times, and they crowd out the second rule that
                 # fired — which is the one that would have changed the reader's mind.
                 continue
-            # Legend and sentence-subject are variable width, so they cannot be
-            # lookarounds on the pattern. Scrub those spans, then search. Other
-            # rules see the original line: scrubbing must not hide them.
+            # The legend span is variable width, so it cannot be a lookaround
+            # on the pattern. Scrub it, then search. Other rules see the
+            # original line: scrubbing must not hide them.
             if name == "platform-command":
-                haystack = _scrub_subject(_LEGEND_SPAN.sub(" ", stripped))
+                haystack = _LEGEND_SPAN.sub(" ", stripped)
             else:
                 haystack = stripped
             if pattern.search(haystack):

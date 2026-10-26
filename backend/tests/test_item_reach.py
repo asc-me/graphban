@@ -399,17 +399,13 @@ MUST_FIRE = {
     "copula plus participle": "This vercel project is removed on Friday.",
     "imperative later in the clause": (
         "The heroku project was deleted, so delete it again."),
-    # The compound the later-verb check owns. No passive shape. `be` is
-    # grammar, so the complement does not keep it. Only the later
-    # `_MUTATIONS` word (`drop`) does. Drop that later search and this
-    # goes quiet. `will ship` would not isolate the check: `ship` is a
-    # command-shaped complement and fires on its own.
+    # The subject exemption is gone, so this fires on `railway project`.
+    # It used to depend on the later `_MUTATIONS` word (`drop`).
     "destructive verb later in the clause": (
         "The railway project will be ready next week, so drop the database."),
     # Bounce of 1f038f5b. The complement used to be skipped, so a mutation
-    # verb in that slot went quiet, including `deploy`. The complement is
-    # read. `will be ready` stays quiet because `be` is grammar. Restore
-    # the skip and these go quiet.
+    # verb in that slot went quiet, including `deploy`. There is no subject
+    # exemption left, so these fire on the platform word.
     "should drop its database": "The heroku project should drop its database.",
     "will destroy the volume": "The railway project will destroy the volume.",
     "must wipe everything": "The supabase project must wipe everything.",
@@ -434,11 +430,8 @@ MUST_FIRE = {
     "a subject that opens on a conjunction": (
         "And the Railway project will deploy next week"),
     # Adversarial pass: modal or auxiliary, then a mutation verb. Varied
-    # modal, case, punctuation, and conjunction. The verb sits in the
-    # complement except `is going to` / `has to` / `needs to`, where it is
-    # later in the clause. Restore the complement skip and the complement
-    # rows go quiet. `needs` is not a subject-tail modal, so that line
-    # fires on the platform word even with the skip restored.
+    # modal, case, punctuation, and conjunction. The subject exemption is
+    # gone, so each line fires on the platform word.
     "can destroy the volume": "The railway project can destroy the volume.",
     "could wipe the deployment": "The vercel project could wipe the deployment.",
     "may drop the database": "The supabase project may drop its database.",
@@ -464,6 +457,20 @@ MUST_FIRE = {
     "is going to destroy the state": "The terraform stack is going to destroy the state.",
     "has to drop the database": "The tofu stack has to drop the database.",
     "needs to wipe the release": "The helm stack needs to wipe the release.",
+    # Bounce of 99a31bc7. A grammar word in the complement (`just`, `only`,
+    # `no`) used to send the search to `words[2:]` and `_MUTATIONS` only, so
+    # `delete`, `rm` and `remove` went quiet. There is no subject exemption
+    # left. These fire because the platform name is followed by a word.
+    # Putting the scrub back, with that fallback, makes them quiet.
+    "could just delete everything": "The fly project could just delete everything",
+    "will just delete": "The heroku teams will just delete",
+    "will only rm the volume": "The railway project will only rm the volume",
+    "will no longer exist after we remove it": (
+        "The railway project will no longer exist after we remove it"),
+    # The subject exemption is gone, so a grammar complement fires too.
+    # This used to be the quiet fixture. It is named on the item.
+    "a future state, said as a sentence": (
+        "The Railway project will be ready next week"),
 }
 
 MUST_NOT_FIRE = {
@@ -493,14 +500,12 @@ MUST_NOT_FIRE = {
         "An unavailable counter should render an em dash rather than a zero."),
     # GRPH-1037. Naming a platform in a diagram is not invoking it. The base
     # matcher treats `Railway stack` as `railway` with the subcommand `stack`.
-    # Two spans keep that quiet, and each one owns a fixture. Delete
-    # `_LEGEND_SPAN` and the legend plus the symptom fail. Delete the subject
-    # scrub and `will be ready` fails. A possessive needs neither: the matcher
-    # requires whitespace after the platform name, and `'` is not whitespace.
-    # Widening either span (any slash, or a passive shape, or a command-shaped
-    # complement) is caught by the parity sweep, not by these fixtures.
-    # `will deploy next week` fires: the complement is a command. `will be
-    # ready` stays quiet because `be` is grammar.
+    # The legend span is the only exemption that keeps that quiet. Delete
+    # `_LEGEND_SPAN` and the legend plus the symptom fail. Widen it to any
+    # slash and the path-prefixed parity rows fail. A possessive needs no
+    # span: the matcher requires whitespace after the platform name, and `'`
+    # is not whitespace. A determiner plus a noun fires. "The Railway project
+    # will be ready" is a must-fire row, named on the item.
     "a topology legend": (
         "compose/Railway stack (web+api+db) · agent hosts/outposts "
         "(fleet + spawned vendor agents) · user machines (cli)"),
@@ -514,12 +519,8 @@ MUST_NOT_FIRE = {
     "a view that renders a deploy topology": "the view renders the deploy topology",
     "a migration that adds a column": "a migration adds a column",
     "migrate, said as prose": "we migrate the rows before the page renders",
-    # Determiner + descriptive noun + a grammar complement. Not a global noun
-    # stop-list: `project` is also a real subcommand (`vercel project rm`),
-    # and that one must still fire. `be` plus an ordinary adjective is still
-    # a subject. A command-shaped complement (`will deploy`) is a parity row.
-    "a future state, said as a sentence": (
-        "The Railway project will be ready next week"),
+    # A possessive is not an invocation. The matcher wants whitespace after
+    # the platform name, and `'` is not whitespace.
     "a possessive, not an invocation": "Railway's dashboard shows the stack",
 }
 
@@ -627,21 +628,11 @@ _SWEEP_VERBS = (
     "remove", "detach", "disable", "stop", "suspend", "revert", "replace",
     "unpublish", "release",
 )
-# Real commands, including the shapes a widened noun exemption would swallow.
-# `projects`, `project`, `stack` and `teams` are descriptive nouns ONLY after a
-# determiner, and only when that determiner starts the clause and a modal
-# follows. Drop the determiner from `_SUBJECT_SPAN` and the bare canaries go
-# quiet: gcloud/supabase projects delete, vercel project rm, heroku stack:set,
-# heroku teams:remove. Put the punctuation or end-of-line tail back and the
-# imperative rows go quiet (`Delete the vercel project.`). Replace the passive
-# shape with the seven-word participle list and the bounce-of-2f9a974b rows
-# go quiet (`will be purged`, `should now be deleted`, `is removed`,
-# `was deleted, so delete it again`). Drop the later `_MUTATIONS` search and
-# `The railway project will be ready next week, so drop the database.`
-# goes quiet.
-# Restore the complement skip (`words[2:]` only, no complement read) and
-# `will destroy the volume`, `must reset now`, `will deploy next week` go
-# quiet. `will be ready` stays quiet either way.
+# Real commands. The subject exemption is gone, so a determiner plus a noun
+# fires, including "The Railway project will be ready". Putting that scrub
+# back, and searching only `words[2:]` for `_MUTATIONS` after a grammar word,
+# makes the bounce-of-99a31bc7 rows quiet (`could just delete`, `will just
+# delete`, `will only rm`, `will no longer exist after we remove it`).
 # Match any slash as legend glue and `Run ./bin/railway projects (prod)` goes
 # quiet. Put `(?<![/.])` back on the platform pattern and the path-prefixed
 # lines go quiet.
@@ -746,11 +737,9 @@ _SWEEP_SPECIFIC = (
     "./bin/railway up",
     "~/bin/fly deploy",
     "infra/terraform destroy -auto-approve",
-    # A determiner plus a noun is a subject only when it starts the clause
-    # and a modal follows. `:` and the next word are the subcommand. A verb
-    # before the determiner is an imperative, including when the noun is
-    # followed by punctuation. A modal plus `be` plus a destructive
-    # participle is the instruction.
+    # A determiner in front of a noun is not an exemption. These stay
+    # must-fire: a verb before the determiner, a colon subcommand, and a
+    # passive after the modal.
     "Run the heroku stack:set heroku-22 command on prod",
     "Use the gcloud projects delete my-proj command",
     "Execute the supabase projects delete abc command",
@@ -893,6 +882,14 @@ _SWEEP_SPECIFIC = (
     "The terraform stack is going to destroy the state.",
     "The tofu stack has to drop the database.",
     "The helm stack needs to wipe the release.",
+    # Bounce of 99a31bc7. A grammar word after the modal is not a reason to
+    # go quiet. The subject exemption is gone, so each of these is a base hit
+    # the head must keep. "will be ready" used to be the quiet fixture.
+    "The fly project could just delete everything",
+    "The heroku teams will just delete",
+    "The railway project will only rm the volume",
+    "The railway project will no longer exist after we remove it",
+    "The Railway project will be ready next week",
 )
 
 
@@ -954,7 +951,6 @@ _DESCRIPTIVE = (
     "a view that renders a deploy topology",
     "a migration that adds a column",
     "migrate, said as prose",
-    "a future state, said as a sentence",
     "a possessive, not an invocation",
 )
 _COMMANDS = (
@@ -1043,6 +1039,11 @@ _COMMANDS = (
     "is going to destroy the state",
     "has to drop the database",
     "needs to wipe the release",
+    "could just delete everything",
+    "will just delete",
+    "will only rm the volume",
+    "will no longer exist after we remove it",
+    "a future state, said as a sentence",
 )
 
 
@@ -1050,8 +1051,8 @@ def test_descriptive_prose_delegates_without_an_acknowledgement(
         client, auth, key, db, proj, planner):
     """THE CALL. `signals()` can be right while `delegate` never asks it, and a suite that
     only calls the function stays green — the absence then reads as "this prose is fine to
-    hand to a shell". Sabotage: delete the legend span or the subject scrub and
-    the legend or the sentence is refused."""
+    hand to a shell". Sabotage: delete the legend span and the legend plus
+    the symptom are refused."""
     for name in _DESCRIPTIVE:
         text = MUST_NOT_FIRE[name]
         assert not reach_svc.signals(text), name
