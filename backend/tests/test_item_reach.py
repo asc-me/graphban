@@ -399,11 +399,71 @@ MUST_FIRE = {
     "copula plus participle": "This vercel project is removed on Friday.",
     "imperative later in the clause": (
         "The heroku project was deleted, so delete it again."),
-    # The compound the later-verb check owns. No passive shape. Drop
-    # `_destructive_later` and this goes quiet; `will deploy` stays quiet
-    # because deploy is the modal's complement, not a later word.
+    # The compound the later-verb check owns. No passive shape. `be` is
+    # grammar, so the complement does not keep it. Only the later
+    # `_MUTATIONS` word (`drop`) does. Drop that later search and this
+    # goes quiet. `will ship` would not isolate the check: `ship` is a
+    # command-shaped complement and fires on its own.
     "destructive verb later in the clause": (
-        "The railway project will ship next week, so drop the database."),
+        "The railway project will be ready next week, so drop the database."),
+    # Bounce of 1f038f5b. The complement used to be skipped, so a mutation
+    # verb in that slot went quiet, including `deploy`. The complement is
+    # read. `will be ready` stays quiet because `be` is grammar. Restore
+    # the skip and these go quiet.
+    "should drop its database": "The heroku project should drop its database.",
+    "will destroy the volume": "The railway project will destroy the volume.",
+    "must wipe everything": "The supabase project must wipe everything.",
+    "will truncate the logs table": "The vercel project will truncate the logs table.",
+    "should rotate its secrets": "The fly project should rotate its secrets.",
+    "must revoke every key": "The heroku teams must revoke every key.",
+    "can redeploy at any time": "The railway project can redeploy at any time.",
+    "will scale to zero": "Our railway project will scale to zero",
+    "will destroy everything": "The terraform stack will destroy everything",
+    "will delete themselves": "The kubectl projects will delete themselves",
+    "must remove all deployments": "The vercel project must remove all deployments.",
+    "must reset now": "The supabase project must reset now.",
+    "shall apply -auto-approve": "The terraform stack shall apply -auto-approve",
+    "will deploy --prod": "The railway project will deploy --prod",
+    "a future deploy, said as a sentence": (
+        "The Railway project will deploy next week once the page renders"),
+    "will deploy next week": "The Railway project will deploy next week",
+    "a subject after a sentence": (
+        "Ship the page. The Railway project will deploy next week"),
+    "a subject after a conjunction": (
+        "Done. But the Railway project will deploy next week"),
+    "a subject that opens on a conjunction": (
+        "And the Railway project will deploy next week"),
+    # Adversarial pass: modal or auxiliary, then a mutation verb. Varied
+    # modal, case, punctuation, and conjunction. The verb sits in the
+    # complement except `is going to` / `has to` / `needs to`, where it is
+    # later in the clause. Restore the complement skip and the complement
+    # rows go quiet. `needs` is not a subject-tail modal, so that line
+    # fires on the platform word even with the skip restored.
+    "can destroy the volume": "The railway project can destroy the volume.",
+    "could wipe the deployment": "The vercel project could wipe the deployment.",
+    "may drop the database": "The supabase project may drop its database.",
+    "might truncate the table": "The heroku project might truncate the table.",
+    "shall rotate its token": "The fly project shall rotate its token.",
+    "would revoke the key": "The aws account would revoke the key.",
+    "must scale the service": "The gcloud project must scale the service.",
+    "will purge the cache": "THE NETLIFY ACCOUNT WILL PURGE THE CACHE",
+    "should redeploy tonight": "The render stack should redeploy tonight!",
+    "can delete the cluster": "The kubectl projects can delete the cluster!",
+    "could remove the app": "The heroku teams could remove the app.",
+    "may reset the database": "The supabase project may reset the database",
+    "might apply the plan": "The terraform stack might apply the plan.",
+    "shall destroy the droplet": "Our doctl project shall destroy the droplet.",
+    "would wipe the namespace": "The wrangler account would wipe the namespace.",
+    "must drop the state": "The tofu stack must drop the state.",
+    "will restart the app": "But the railway project will restart the app.",
+    "should promote the build": "Done. The vercel project should promote the build.",
+    "can provision the cluster": "And the gcloud project can provision the cluster",
+    "could rollback the release": "The helm stack could rollback the release!",
+    "may revoke every token": "The fly project may revoke every token.",
+    "might deploy --prod": "The railway project might deploy --prod",
+    "is going to destroy the state": "The terraform stack is going to destroy the state.",
+    "has to drop the database": "The tofu stack has to drop the database.",
+    "needs to wipe the release": "The helm stack needs to wipe the release.",
 }
 
 MUST_NOT_FIRE = {
@@ -435,12 +495,12 @@ MUST_NOT_FIRE = {
     # matcher treats `Railway stack` as `railway` with the subcommand `stack`.
     # Two spans keep that quiet, and each one owns a fixture. Delete
     # `_LEGEND_SPAN` and the legend plus the symptom fail. Delete the subject
-    # scrub and the future-deploy sentence fails. A possessive needs neither:
-    # the matcher requires whitespace after the platform name, and `'` is not
-    # whitespace. Widening either span (any slash, a punctuation tail, or a
-    # passive shape, or a later `_MUTATIONS` verb) is caught by the parity
-    # sweep, not by these fixtures. `will deploy` stays quiet: deploy is the
-    # complement of the modal. `so drop the database` is later, and fires.
+    # scrub and `will be ready` fails. A possessive needs neither: the matcher
+    # requires whitespace after the platform name, and `'` is not whitespace.
+    # Widening either span (any slash, or a passive shape, or a command-shaped
+    # complement) is caught by the parity sweep, not by these fixtures.
+    # `will deploy next week` fires: the complement is a command. `will be
+    # ready` stays quiet because `be` is grammar.
     "a topology legend": (
         "compose/Railway stack (web+api+db) · agent hosts/outposts "
         "(fleet + spawned vendor agents) · user machines (cli)"),
@@ -454,23 +514,12 @@ MUST_NOT_FIRE = {
     "a view that renders a deploy topology": "the view renders the deploy topology",
     "a migration that adds a column": "a migration adds a column",
     "migrate, said as prose": "we migrate the rows before the page renders",
-    # Determiner + descriptive noun. Not a global noun stop-list: `project` is
-    # also a real subcommand (`vercel project rm`), and that one must still fire.
-    "a future deploy, said as a sentence": (
-        "The Railway project will deploy next week once the page renders"),
-    # `be` plus an ordinary adjective is still a subject. `reset` is the one
-    # unchanged participle the shape names; `ready` is not one.
+    # Determiner + descriptive noun + a grammar complement. Not a global noun
+    # stop-list: `project` is also a real subcommand (`vercel project rm`),
+    # and that one must still fire. `be` plus an ordinary adjective is still
+    # a subject. A command-shaped complement (`will deploy`) is a parity row.
     "a future state, said as a sentence": (
         "The Railway project will be ready next week"),
-    # The same subject after sentence punctuation, with at most one
-    # conjunction between the punctuation and the determiner. A verb in
-    # that position is an imperative and is a parity row, not one of these.
-    "a subject after a sentence": (
-        "Ship the page. The Railway project will deploy next week"),
-    "a subject after a conjunction": (
-        "Done. But the Railway project will deploy next week"),
-    "a subject that opens on a conjunction": (
-        "And the Railway project will deploy next week"),
     "a possessive, not an invocation": "Railway's dashboard shows the stack",
 }
 
@@ -587,8 +636,12 @@ _SWEEP_VERBS = (
 # imperative rows go quiet (`Delete the vercel project.`). Replace the passive
 # shape with the seven-word participle list and the bounce-of-2f9a974b rows
 # go quiet (`will be purged`, `should now be deleted`, `is removed`,
-# `was deleted, so delete it again`). Drop `_destructive_later` and
-# `The railway project will ship next week, so drop the database.` goes quiet.
+# `was deleted, so delete it again`). Drop the later `_MUTATIONS` search and
+# `The railway project will be ready next week, so drop the database.`
+# goes quiet.
+# Restore the complement skip (`words[2:]` only, no complement read) and
+# `will destroy the volume`, `must reset now`, `will deploy next week` go
+# quiet. `will be ready` stays quiet either way.
 # Match any slash as legend glue and `Run ./bin/railway projects (prod)` goes
 # quiet. Put `(?<![/.])` back on the platform pattern and the path-prefixed
 # lines go quiet.
@@ -764,7 +817,7 @@ _SWEEP_SPECIFIC = (
     "This vercel project is removed on Friday.",
     "The heroku project was deleted, so delete it again.",
     # No passive shape. Only the later `_MUTATIONS` word (`drop`) keeps it.
-    "The railway project will ship next week, so drop the database.",
+    "The railway project will be ready next week, so drop the database.",
     # Adversarial pass: more passives, modals, get-passives, and compounds.
     # Varied adverb, case, punctuation, and conjunction. Each is a base hit.
     "The aws account will be completely purged.",
@@ -794,6 +847,52 @@ _SWEEP_SPECIFIC = (
     "Done. The railway project will be nuked.",
     "The supabase project is being decommissioned.",
     "The aws account will deploy next week, so wipe the volume",
+    # Bounce of 1f038f5b. A mutation verb in the complement slot is an order.
+    # `will deploy next week` is one of these, not a descriptive exemption.
+    "The heroku project should drop its database.",
+    "The railway project will destroy the volume.",
+    "The supabase project must wipe everything.",
+    "The vercel project will truncate the logs table.",
+    "The fly project should rotate its secrets.",
+    "The heroku teams must revoke every key.",
+    "The railway project can redeploy at any time.",
+    "Our railway project will scale to zero",
+    "The terraform stack will destroy everything",
+    "The kubectl projects will delete themselves",
+    "The vercel project must remove all deployments.",
+    "The supabase project must reset now.",
+    "The terraform stack shall apply -auto-approve",
+    "The railway project will deploy --prod",
+    "The Railway project will deploy next week once the page renders",
+    "The Railway project will deploy next week",
+    "Ship the page. The Railway project will deploy next week",
+    "Done. But the Railway project will deploy next week",
+    "And the Railway project will deploy next week",
+    "The railway project can destroy the volume.",
+    "The vercel project could wipe the deployment.",
+    "The supabase project may drop its database.",
+    "The heroku project might truncate the table.",
+    "The fly project shall rotate its token.",
+    "The aws account would revoke the key.",
+    "The gcloud project must scale the service.",
+    "THE NETLIFY ACCOUNT WILL PURGE THE CACHE",
+    "The render stack should redeploy tonight!",
+    "The kubectl projects can delete the cluster!",
+    "The heroku teams could remove the app.",
+    "The supabase project may reset the database",
+    "The terraform stack might apply the plan.",
+    "Our doctl project shall destroy the droplet.",
+    "The wrangler account would wipe the namespace.",
+    "The tofu stack must drop the state.",
+    "But the railway project will restart the app.",
+    "Done. The vercel project should promote the build.",
+    "And the gcloud project can provision the cluster",
+    "The helm stack could rollback the release!",
+    "The fly project may revoke every token.",
+    "The railway project might deploy --prod",
+    "The terraform stack is going to destroy the state.",
+    "The tofu stack has to drop the database.",
+    "The helm stack needs to wipe the release.",
 )
 
 
@@ -855,7 +954,6 @@ _DESCRIPTIVE = (
     "a view that renders a deploy topology",
     "a migration that adds a column",
     "migrate, said as prose",
-    "a future deploy, said as a sentence",
     "a future state, said as a sentence",
     "a possessive, not an invocation",
 )
@@ -901,6 +999,50 @@ _COMMANDS = (
     "copula plus participle",
     "imperative later in the clause",
     "destructive verb later in the clause",
+    "should drop its database",
+    "will destroy the volume",
+    "must wipe everything",
+    "will truncate the logs table",
+    "should rotate its secrets",
+    "must revoke every key",
+    "can redeploy at any time",
+    "will scale to zero",
+    "will destroy everything",
+    "will delete themselves",
+    "must remove all deployments",
+    "must reset now",
+    "shall apply -auto-approve",
+    "will deploy --prod",
+    "a future deploy, said as a sentence",
+    "will deploy next week",
+    "a subject after a sentence",
+    "a subject after a conjunction",
+    "a subject that opens on a conjunction",
+    "can destroy the volume",
+    "could wipe the deployment",
+    "may drop the database",
+    "might truncate the table",
+    "shall rotate its token",
+    "would revoke the key",
+    "must scale the service",
+    "will purge the cache",
+    "should redeploy tonight",
+    "can delete the cluster",
+    "could remove the app",
+    "may reset the database",
+    "might apply the plan",
+    "shall destroy the droplet",
+    "would wipe the namespace",
+    "must drop the state",
+    "will restart the app",
+    "should promote the build",
+    "can provision the cluster",
+    "could rollback the release",
+    "may revoke every token",
+    "might deploy --prod",
+    "is going to destroy the state",
+    "has to drop the database",
+    "needs to wipe the release",
 )
 
 

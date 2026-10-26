@@ -165,17 +165,21 @@ _LEGEND_SPAN = re.compile(
 #: adverb may sit between the modal and `be` (`should now be deleted`,
 #: `will soon be deleted`); `to be` and `going to be` are the same shape.
 #:
-#: A destructive verb from `_MUTATIONS` later in that same clause is also the
-#: instruction (`will ship next week, so drop the database`). The word
-#: immediately after the modal is not "later": `will deploy` is the
-#: descriptive future this span exists to keep quiet. Drop the later check
-#: and that compound row goes quiet, which the parity sweep catches.
+#: A command-shaped word in the modal's complement is the instruction, and so
+#: is a `_MUTATIONS` verb anywhere after the modal (`will destroy the volume`,
+#: `should drop its database`, `must reset now`, `shall apply -auto-approve`,
+#: `will deploy next week`). Skipping that first word kept every one of those
+#: quiet, including `deploy`. The skip is gone. `will be ready` stays a
+#: subject because `be` is grammar, not a command. A `_MUTATIONS` verb later
+#: in the same clause (`will be ready next week, so drop the database`,
+#: `is going to destroy`) is still the instruction. Restore the skip and the
+#: complement-slot rows go quiet, which the parity sweep catches.
 #:
 #: A possessive (`Railway's dashboard`) needs no span. The matcher requires
 #: whitespace after the platform name, and `'` is not whitespace.
 #:
 #: The prefix is not one width, so this span is scrubbed rather than written
-#: as a lookbehind. Delete the scrub and the future-deploy sentence fires.
+#: as a lookbehind. Delete the scrub and `will be ready` fires.
 _SUBJECT_TAIL = (
     "will|would|shall|should|can|could|may|might|must"
     "|is|are|was|were|be|been|being"
@@ -195,8 +199,8 @@ _SUBJECT_CONJUNCTION = (
 #: (`will be reset`). It has no `-ed` / `-en` ending, and `down` / `off` /
 #: `out` do not follow it. That one word is not a list to grow: the next
 #: unchanged participle is a red parity row until the ending names it.
-#: `will deploy` has no auxiliary and stays a subject. `will be ready`
-#: does not match this shape and stays quiet too.
+#: `will deploy` is not this shape. It fires because the complement is a
+#: command. `will be ready` does not match this shape and stays quiet.
 _PASSIVE_AUX = r"be|been|being|get|got|gets|getting"
 _PASSIVE_ENDING = r"(?:\w*(?:ed|en)|down|off|out|reset)"
 _PASSIVE_SHAPE = re.compile(
@@ -284,15 +288,40 @@ MAX_SIGNALS = 3
 QUOTE_MAX = 160
 
 
-def _destructive_later(clause: str) -> bool:
-    """A `_MUTATIONS` verb after the modal and its immediate complement.
+def _command_complement(word: str) -> bool:
+    """The word after the modal is an order, unless it is grammar.
 
-    `will deploy` is the complement. That word is why the subject span exists,
-    and counting it would fire on `The Railway project will deploy next week`.
-    `so drop the database` is later in the same clause. Drop this check and
-    that compound row goes quiet.
+    `will destroy`, `must reset`, `shall apply` and `will deploy` are orders.
+    `will be` is grammar, so `will be ready` stays a subject. A verb list
+    fails open here: `delete`, `remove`, `reset` and `apply` are not in
+    `_MUTATIONS`, and the next verb a list lacks would go quiet the same way.
+    Grammar is the closed check. `going` is the auxiliary in `is going to`,
+    not a command.
+    """
+    token = word.strip(".,;:!?\"'`()[]")
+    if not re.fullmatch(r"[A-Za-z][\w-]*", token):
+        return False
+    grammar = rf"(?:{_NOT_SUBCOMMANDS}|{_SUBJECT_TAIL}|going|got|gets|getting)"
+    return re.fullmatch(grammar, token, re.I) is None
+
+
+def _destructive_later(clause: str) -> bool:
+    """A command-shaped complement, or a `_MUTATIONS` verb anywhere after the modal.
+
+    The complement is the first word. The previous cut skipped it
+    (`words[2:]`), so a mutation verb in that slot never fired: `will
+    destroy`, `should drop`, `will deploy next week`. The skip is gone.
+    Every word after the modal is checked, including that first one.
+    `so drop the database` and `is going to destroy` are later in the same
+    clause and still fire. Restore the skip — do not read the complement,
+    search only `words[2:]` for `_MUTATIONS` — and the complement-slot rows
+    go quiet.
     """
     words = clause.split()
+    if len(words) < 2:
+        return False
+    if _command_complement(words[1]):
+        return True
     if len(words) < 3:
         return False
     return re.search(rf"\b(?:{_MUTATIONS})\b", " ".join(words[2:]), re.I) is not None
