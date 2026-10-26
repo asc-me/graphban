@@ -153,9 +153,9 @@ def test_the_fixture_record_names_services_hosts_and_no_secrets(tmp_path):
     repo.mkdir()
     _write_app(repo)
     sha = _commit(repo)
-    record, warnings = stackmap.build_record(repo)
+    record, warnings, _coverage = stackmap.build_record(repo)
     text = canonical(record)
-    again, _ = stackmap.build_record(repo)
+    again, _, _coverage_again = stackmap.build_record(repo)
 
     assert warnings == []
     assert canonical(again) == text
@@ -236,7 +236,7 @@ def test_two_services_building_one_directory_keep_both_edges(tmp_path):
         encoding="utf-8",
     )
     _commit(repo)
-    record, _ = stackmap.build_record(repo)
+    record, _, _coverage = stackmap.build_record(repo)
     assert [node["id"] for node in record["components"]] == ["a"]
     assert _edge(record, "a", "db", "postgres")
     assert _edge(record, "a", "cache", "redis")
@@ -259,7 +259,7 @@ def test_a_project_overlay_row_is_used(tmp_path):
     )
     (repo / "requirements.txt").write_text("posthog==1\n", encoding="utf-8")
     _commit(repo)
-    record, _ = stackmap.build_record(repo)
+    record, _, _coverage = stackmap.build_record(repo)
     assert _node(record, "external", "posthog")["label"] == "PostHog"
     assert match_sdk("posthog", load_table(None)["sdk"]) is None
 
@@ -441,7 +441,7 @@ def test_stack_without_map_refuses(isolated, capsys):
 
 def test_this_repo_compose_maps_without_leaking_defaults():
     """The checkout this command will actually be run against."""
-    record, _warnings = stackmap.build_record(ROOT)
+    record, _warnings, _coverage = stackmap.build_record(ROOT)
     text = canonical(record)
     assert _node(record, "infrastructure", "db")["kind"] == "postgres"
     assert _node(record, "components", "api")["dir"] == "backend"
@@ -460,7 +460,10 @@ def test_this_repo_compose_maps_without_leaking_defaults():
     assert _node(record, "infrastructure", stackmap.LOCAL_NODE)["kind"] == "local"
     assert _edge(record, "api", stackmap.LOCAL_NODE, "https")["env"] == "OLLAMA_BASE_URL"
     # Only tracked files: ignored build output (dist-release/, …) never draws a deployable.
-    assert sorted(n["dir"] for n in record["components"]) == ["backend", "web"]
+    # package.json is a component even with no known SDK, so the capture tool is here too.
+    assert sorted(n["dir"] for n in record["components"]) == [
+        "backend", "scripts/design-capture", "web",
+    ]
     for secret in (
         "dev-secret-change-me",
         "POSTGRES_PASSWORD",
@@ -492,7 +495,7 @@ def test_every_local_host_is_this_machine_not_a_service(tmp_path):
         "API_URL=http://localhost:8000\n"
         "LOOP_URL=http://127.0.0.1:9000\n"
         "BIND_URL=http://0.0.0.0:7000\n")
-    record, _ = stackmap.build_record(repo)
+    record, _, _coverage = stackmap.build_record(repo)
     assert record["external"] == []
     assert record["unresolved"] == []
     assert [n["id"] for n in record["infrastructure"]] == [stackmap.LOCAL_NODE]
@@ -502,7 +505,7 @@ def test_every_local_host_is_this_machine_not_a_service(tmp_path):
 
 def test_a_local_host_still_names_the_row_its_variable_belongs_to(tmp_path):
     repo = _local_repo(tmp_path, "DATABASE_URL=postgres://localhost/app\n")
-    record, _ = stackmap.build_record(repo)
+    record, _, _coverage = stackmap.build_record(repo)
     assert [(n["id"], n["kind"]) for n in record["infrastructure"]] == [("postgres", "postgres")]
 
 
@@ -535,7 +538,7 @@ def test_ignored_and_untracked_files_are_not_mapped(tmp_path):
     for stray in ("dist-release/pkg-1/backend", "scratch"):
         (repo / stray).mkdir(parents=True)
         (repo / stray / "Dockerfile").write_text("FROM python:3.12\n", encoding="utf-8")
-    record, _ = stackmap.build_record(repo)
+    record, _, _coverage = stackmap.build_record(repo)
     assert [n["dir"] for n in record["components"]] == ["app"]
 
 
@@ -562,7 +565,7 @@ def test_a_root_template_name_goes_to_the_service_that_declares_it(tmp_path):
         "      - OPENAI_API_KEY\n"
         "  web:\n"
         "    build: ./web\n")
-    record, warnings = stackmap.build_record(repo)
+    record, warnings, _coverage = stackmap.build_record(repo)
     to_openai = [(e["from"], e["to"]) for e in record["edges"] if e["to"] == "openai"]
     assert to_openai == [("api", "openai")]
     assert not [e for e in record["edges"] if e["from"] == "web" and e["to"] != "stripe"]
@@ -572,7 +575,7 @@ def test_a_root_template_name_goes_to_the_service_that_declares_it(tmp_path):
 
 def test_a_root_template_with_no_compose_goes_to_every_component_and_says_so(tmp_path):
     repo = _root_template_repo(tmp_path, None)
-    record, warnings = stackmap.build_record(repo)
+    record, warnings, _coverage = stackmap.build_record(repo)
     assert sorted(n["id"] for n in record["components"]) == ["api", "web"]
     assert sorted(e["from"] for e in record["edges"] if e["to"] == "openai") == ["api", "web"]
     assert [w for w in warnings if ".env.example" in w]
@@ -586,7 +589,7 @@ def test_a_root_template_read_through_env_file_goes_to_its_reader(tmp_path):
         "  web:\n"
         "    build: ./web\n"
         "    env_file: .env.example\n")
-    record, warnings = stackmap.build_record(repo)
+    record, warnings, _coverage = stackmap.build_record(repo)
     assert [e["from"] for e in record["edges"] if e["to"] == "openai"] == ["web"]
     assert warnings == []
 
@@ -614,7 +617,7 @@ def test_a_root_template_named_only_by_an_image_service_is_not_every_component(
     (repo / ".env.example").write_text("OPENAI_API_KEY=\nANTHROPIC_API_KEY=\n",
                                        encoding="utf-8")
     _commit(repo)
-    record, warnings = stackmap.build_record(repo)
+    record, warnings, _coverage = stackmap.build_record(repo)
     assert not [e for e in record["edges"]
                 if e["from"] in ("api", "web") and e["to"] in ("openai", "anthropic")]
     assert [e["from"] for e in record["edges"] if e["to"] == "openai"] == ["worker"]
@@ -623,12 +626,135 @@ def test_a_root_template_named_only_by_an_image_service_is_not_every_component(
 
 
 def test_this_repo_root_template_draws_no_web_edge_to_a_model_provider():
-    record, _ = stackmap.build_record(ROOT)
+    record, _, _coverage = stackmap.build_record(ROOT)
     providers = {"anthropic", "openai", stackmap.LOCAL_NODE}
     assert not [e for e in record["edges"] if e["from"] == "web" and e["to"] in providers]
     assert _edge(record, "web", "api", "depends_on")
     ids = {n["id"] for n in record["external"] + record["infrastructure"]}
     assert providers <= ids
+
+
+def test_a_monorepo_keeps_packages_comments_and_every_provenance(tmp_path):
+    """A package with no shipped SDK is still a component, and a comment is not silence.
+
+    The root template is attributed to the root package, not to every crate. A
+    URL that exists only in source stays out. Two rules for one edge both stay.
+    """
+    repo = tmp_path / "super"
+    repo.mkdir()
+    (repo / "compose.yml").write_text(
+        "services:\n  db:\n    image: pgvector/pgvector:pg16\n", encoding="utf-8")
+    (repo / "package.json").write_text(json.dumps({
+        "name": "super-arc",
+        "dependencies": {
+            "pg": "8.0.0",
+            "@anthropic-ai/sdk": "0.1.0",
+            "resend": "1.0.0",
+            "@vercel/functions": "1.0.0",
+        },
+    }), encoding="utf-8")
+    scribe = repo / "apps" / "scribe"
+    scribe.mkdir(parents=True)
+    (scribe / "package.json").write_text(json.dumps({
+        "name": "@super-arc/scribe-desktop",
+        "dependencies": {"@super-arc/desktop-updater": "file:../../packages/updater"},
+    }), encoding="utf-8")
+    updater = repo / "packages" / "updater"
+    updater.mkdir(parents=True)
+    (updater / "package.json").write_text(
+        json.dumps({"name": "@super-arc/desktop-updater"}), encoding="utf-8")
+    crate = scribe / "src-tauri"
+    crate.mkdir()
+    (crate / "Cargo.toml").write_text(
+        "[package]\nname = \"super-arc-scribe\"\nversion = \"0.1.0\"\n"
+        "[dependencies]\nsuperarc-build-info = { path = \"../../../packages/build-info\" }\n",
+        encoding="utf-8")
+    info = repo / "packages" / "build-info"
+    info.mkdir()
+    (info / "Cargo.toml").write_text(
+        "[package]\nname = \"superarc-build-info\"\nversion = \"0.1.0\"\n",
+        encoding="utf-8")
+    (repo / "vercel.json").write_text("{}\n", encoding="utf-8")
+    (repo / "notes").mkdir()
+    (repo / "notes" / "requirements.txt").write_text("requests==2.0\n", encoding="utf-8")
+    (repo / "src").mkdir()
+    (repo / "src" / "chat.py").write_text(
+        "URL = 'wss://irc-ws.chat.twitch.tv'\n"
+        "YT = 'rtmp://a.rtmp.youtube.com/live2'\n",
+        encoding="utf-8")
+    (repo / ".env.example").write_text(
+        "DATABASE_URL=postgresql://sagaforge:sagaforge-password@localhost:5434/app\n"
+        "AUTH_SECRET=generate-with-openssl-rand-base64-32\n"
+        "# ENCRYPTION_KEY=generate-with-openssl-rand-base64-32\n"
+        "# XAI_API_KEY=\n"
+        "# XAI_MODEL=grok-4\n"
+        "# OLLAMA_BASE_URL=http://localhost:11434/v1\n"
+        "# VOYAGE_API_KEY=\n"
+        "# GOOGLE_CLIENT_ID=\n"
+        "# GOOGLE_CLIENT_SECRET=\n"
+        "# DESKTOP_GITHUB_TOKEN=\n"
+        "# talks to https://test-api.creem.io and https://api.creem.io\n"
+        "# CREEM_API_KEY=\n"
+        "# CREEM_WEBHOOK_SECRET=\n"
+        "# CREEM_API_BASE=\n"
+        "# SSO_ISSUER=\n"
+        "# RESEND_API_KEY=\n",
+        encoding="utf-8")
+    _commit(repo)
+    record, warnings, coverage = stackmap.build_record(repo)
+    text = canonical(record)
+
+    by_dir = {node["dir"]: node for node in record["components"]}
+    assert by_dir[""]["label"] == "super-arc"
+    assert by_dir[""]["id"] == "super-arc"
+    assert by_dir["apps/scribe"]["label"] == "@super-arc/scribe-desktop"
+    assert by_dir["packages/updater"]["id"] == "@super-arc/desktop-updater"
+    assert by_dir["apps/scribe/src-tauri"]["label"] == "super-arc-scribe"
+    assert by_dir["packages/build-info"]["label"] == "superarc-build-info"
+    assert "notes" not in by_dir
+
+    updater_edge = _edge(record, "@super-arc/scribe-desktop", "@super-arc/desktop-updater", "internal")
+    assert updater_edge["provenance"]["rule"] == "manifest.file"
+    crate_edge = _edge(record, "super-arc-scribe", "superarc-build-info", "internal")
+    assert crate_edge["provenance"]["rule"] == "manifest.file"
+    assert _node(record, "external", "resend")["label"] == "Resend"
+    assert _node(record, "external", "vercel")["label"] == "Vercel"
+    vercel = _edge(record, "super-arc", "vercel", "https")
+    assert {item["file"] for item in vercel["provenances"]} == {"package.json", "vercel.json"}
+    assert vercel["state"] == "set"
+
+    db = _edge(record, "super-arc", "db", "postgres")
+    assert {item["file"] for item in db["provenances"]} == {"package.json", ".env.example"}
+    assert db["provenance"]["file"] == "package.json"
+    assert db["state"] == "set"
+
+    xai = _edge(record, "super-arc", "xai", "https")
+    assert xai["state"] == "documented"
+    assert xai["provenance"]["file"] == ".env.example"
+    assert _node(record, "external", "xai")["label"] == "xAI"
+    assert _node(record, "external", "github")["label"] == "GitHub"
+    assert _edge(record, "super-arc", "google", "https")["state"] == "documented"
+    ollama = _edge(record, "super-arc", stackmap.LOCAL_NODE, "https")
+    assert ollama["state"] == "documented"
+    assert ollama["env"] == "OLLAMA_BASE_URL"
+    creem = _node(record, "external", "creem")
+    assert creem["label"] == "Creem"
+    assert not [n for n in record["external"] if "creem.io" in n["id"]]
+    creem_edge = _edge(record, "super-arc", "creem", "https")
+    assert creem_edge["state"] == "documented"
+    assert any(item["rule"] == "env.comment" for item in creem_edge["provenances"])
+
+    assert not [e for e in record["edges"] if e["from"] != "super-arc" and e["protocol"] != "internal"]
+    assert any("root component" in warning for warning in warnings)
+    assert "1 produced nothing" in coverage
+    assert "5 commented template keys skipped" in coverage
+    assert "source was not scanned" in coverage
+    for secret in (
+        "sagaforge-password", "://", "generate-with-openssl", "AUTH_SECRET",
+        "ENCRYPTION_KEY", "CREEM_WEBHOOK_SECRET", "XAI_MODEL", "SSO_ISSUER",
+        "irc-ws.chat.twitch.tv", "rtmp.youtube.com", "only-in-source",
+    ):
+        assert secret not in text
 
 
 # ---- what a post says it did (GRPH-1103) ----------------------------------------------------
@@ -700,6 +826,8 @@ def test_dry_run_says_nothing_was_posted(isolated, monkeypatch, capsys, fake_ser
     captured = capsys.readouterr()
     assert fake_server["requests"] == []
     assert "gban: dry run, nothing posted" in captured.err
+    assert "source was not scanned" in captured.err
+    assert "files read" in captured.err
     assert "posted demo" not in captured.err
     assert json.loads(captured.out)["project_id"] == "demo"
 

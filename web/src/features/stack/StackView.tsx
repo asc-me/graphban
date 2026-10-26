@@ -1349,6 +1349,10 @@ function Inspector({
               {connections.map((e, i) => {
                 const peer = e.from === node.id ? e.to : e.from;
                 const outbound = e.from === node.id;
+                const files = (e.provenances ?? [])
+                  .map((p) => (p.line ? `${p.file}:${p.line}` : p.file))
+                  .filter((p): p is string => Boolean(p));
+                const where = files.length > 1 ? files.join(", ") : "";
                 return (
                   <li key={`${e.from}-${e.to}-${i}`}>
                     <button
@@ -1356,11 +1360,14 @@ function Inspector({
                       onClick={() => onSelect(peer)}
                       data-testid={`stack-conn-${peer}`}
                       className="flex w-full items-baseline gap-2 rounded border border-control bg-surface-2 px-2 py-1 text-left font-mono text-small text-fg-2 transition-colors hover:border-control-hover"
-                      title={`Select ${peer}`}
+                      title={where || `Select ${peer}`}
                     >
                       <span className="text-accent">{outbound ? "→" : "←"}</span>
                       <span className="flex-1 truncate text-fg-2">{peer}</span>
-                      <span className="text-muted-2">{e.protocol || e.label}</span>
+                      <span className="text-muted-2">
+                        {e.protocol || e.label}
+                        {e.state === "documented" ? " · documented" : ""}
+                      </span>
                     </button>
                   </li>
                 );
