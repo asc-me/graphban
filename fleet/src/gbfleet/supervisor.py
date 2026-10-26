@@ -733,14 +733,29 @@ def up(
         _declared_into(wave, items)
 
         def refill() -> bool:
-            """Start the next batch that fits. False when nothing more will start.
+            """Start the next seats that fit. False when nothing more will start.
 
             `--max-workers` is how many run at once. `--max-children` is how many
             this wave may spawn in total, adopted leftovers included. A launch
-            failure or a full machine stops the wave: the same refusal would meet
-            every seat still waiting, and naming them is the result.
+            failure, a full machine, or a server this wave can no longer reach
+            stops the rest: the same refusal would meet every seat still waiting,
+            and naming them is the result.
+
+            A cap that is merely full — workers still running, and
+            `--max-children` not spent — is not that refusal. Those seats stay
+            pending and start when one child exits. Parking them on a full cap
+            would be the old drop, one tick later.
             """
             if not pending:
+                return False
+            # D-i. The check before the first batch only sees `wave.offline`,
+            # which is the allocation read. A partition that opens later sets
+            # `partition.offline` and stops the running children at the ceiling;
+            # the next refill used to start a batch that cannot register
+            # (GRPH-929 bounce). Each of those children costs a worktree and a
+            # vendor process to record never-registered.
+            if wave.offline or wave.partition.offline:
+                _park(wave, pending, "server unreachable; no child was started")
                 return False
             for child in children:
                 if child.branch:
@@ -749,6 +764,10 @@ def up(
                 occupied.add(branch)
             slots = _free_slots(limits, children)
             if slots <= 0:
+                still_running = any(child.running for child in children)
+                child_cap_open = limits.max_children - len(children) > 0
+                if still_running and child_cap_open:
+                    return False
                 _park(wave, pending, _no_slot_reason(limits, children))
                 return False
             batch = pending[:slots]
@@ -1290,12 +1309,12 @@ def watch_tick(
     # publish still has to land before that exit: the flag changes what the child does next,
     # not whether its branch is on the remote when a reviewer arrives.
     #
-    # The order is not cosmetic. `_reap_exited` owns a child that has EXITED and does the fuller
-    # job — salvage, touchpoints, receipts — while `_reap_all` at the end of a wave writes the
-    # give-up line and the observe record only for children it reaped itself. Giving this the
-    # first turn put three local git calls ahead of the reap, which was enough wall time for a
-    # child to die mid-tick and be taken by the wrong one of the two: fifteen tests lost their
-    # records. A child that exits during this tick belongs to the reap, exactly as it did before.
+    # The order is not cosmetic. `_reap_exited` owns a child that has EXITED and does the
+    # fuller job — salvage, touchpoints, receipts, and the same exit line and observe record
+    # `_reap_all` writes. `_reap_all` skips a child already reaped. Giving the publish the
+    # first turn put three local git calls ahead of the reap, which was enough wall time for
+    # a child to die mid-tick and be taken by the wrong one of the two. A child that exits
+    # during this tick belongs to the reap.
     _publish_in_review(wave, children, client)
     _report_exits(children, client, wave)
     if persist is not None:
@@ -1428,6 +1447,7 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
             target, why = wave.diverted.get(tree.branch, (tree.branch, ""))
             _note_salvage(wave, client, tree.repo, target, held, reaped.siblings,
                           commit or "", base=tree.base, reason=why)
+        _record_reaped(wave, child, reaped)
 
 
 def _declared_into(wave: Wave, items: dict) -> dict:
@@ -2859,12 +2879,16 @@ def _wait_out(
     that is not optimism, it is what the lease promises. Past it, the server has given
     the item to somebody else and a second agent is already working it.
 
-    `refill` starts the next seats once a slot is free (GRPH-929). It runs only when
-    nothing is still running, and only after `_reap_all`. `watch_tick` reaps through
-    `_reap_exited`, which salvages and then marks the child reaped. `_reap_all` skips
-    a child already reaped, and it is the one that writes the exit line and the
-    observe record. Calling `watch_tick` on a batch that has already exited steals
-    that reap: a one-child wave loses both, and every test that reads them goes red.
+    `refill` starts the next seat as soon as one slot is free (GRPH-929), including
+    while a sibling is still running. `--max-workers` is concurrent; one long child
+    must not hold the other slots idle.
+
+    Once NOTHING is running, `_reap_all` runs before any `watch_tick`. Calling
+    `watch_tick` on a batch that has already exited spends the publish's git calls
+    before the end-of-wave reap, and a child that dies in that gap is taken by the
+    wrong reaper. A child that exits while a sibling is still in the loop is reaped
+    by `watch_tick`'s `_reap_exited`, which writes the same exit line and observe
+    record `_reap_all` does, so that path is not a silent drop either.
     """
     while True:
         while any(child.running for child in children):
@@ -2876,9 +2900,14 @@ def _wait_out(
                        base_branch=base_branch)
             if merger is not None:
                 merger.tick(wave)
+            # A child may have exited inside that tick. Take the free slot now,
+            # while any sibling is still running. `refill` leaves seats pending
+            # when the cap is merely full, and parks them when the server is gone.
+            if refill is not None:
+                refill()
             if any(child.running for child in children):
                 sleep(poll)
-        # Nothing is running. Reap before refill, and do not watch_tick first.
+        # Nothing is running. Reap before the next refill, and do not watch_tick.
         if not any(child.running for child in children):
             _reap_all(wave, children, client=client, base_branch=base_branch)
         if refill is None or not refill():
@@ -3132,48 +3161,61 @@ def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = No
         if not _inside(child.seat_path, child.worktree):
             seat_mod.remove(child.seat_path)
 
-        code = child.process.returncode
-        # gbagent.loop: 70 = handoff could not be written (item still claimed);
-        # 75 = stuck, evidence written, item released. P30 D6: 70 is a supervisor
-        # failure; 75 is a completed give-up, visible, not a failure by itself.
-        if code == 70:
-            wave.failures.append(
-                f"{child.adapter} pid {child.pid}: handoff-failed (exit 70); "
-                "the item is still claimed"
-            )
-        elif code == 75:
-            wave.give_ups.append(
-                f"{child.adapter} pid {child.pid}: stuck (exit 75); item released, "
-                "worktree salvaged"
-            )
+        _record_reaped(wave, child, reaped)
 
-        observe.child(ChildRecord(
-            adapter=child.adapter,
-            binary_version=child.binary_version,
-            worktree=str(child.worktree),
-            branch=child.branch,
-            pid=child.pid,
-            seat_id=child.seat_id,
-            agent_id=child.agent_id,
-            # None means it never registered, and that is the whole point of the field:
-            # a process that ran, spent money and produced nothing, while the roster
-            # showed one agent fewer. Omitting it would read as nothing to report;
-            # zeroing it would read as instant.
-            registration_latency=(
-                child.registration_latency
-                if child.registration_latency is not None
-                else NEVER_REGISTERED
-            ),
-            exit_code=child.process.returncode,
-            exit_meaning=explain_exit(child.adapter, child.process.returncode),
-            stopped_because=child.stopped_because.value if child.stopped_because else None,
-            reap=reaped.disposition.value,
-            salvage_commit=reaped.salvage.commit if reaped.salvage else None,
-            credential_in_history=(
-                list(reaped.salvage.credential_in_history) if reaped.salvage else []
-            ),
-            touched=wave.touched.get(child.branch, []),
-        ))
+
+def _record_reaped(wave: Wave, child: Child, reaped: Reaped) -> None:
+    """The exit line and the observe record for a child this wave just reaped.
+
+    Both reapers call this. `_reap_exited` takes a child the moment it exits,
+    which is while a sibling may still be running. `_reap_all` takes whoever is
+    left once nothing is running, and it skips a child already marked reaped.
+    These two writes used to live only in `_reap_all`, so the watch loop's reap
+    was a silent drop: a fast child lost its record, and so did a one-child wave
+    whose last tick ran `watch_tick` first.
+    """
+    code = child.process.returncode
+    # gbagent.loop: 70 = handoff could not be written (item still claimed);
+    # 75 = stuck, evidence written, item released. P30 D6: 70 is a supervisor
+    # failure; 75 is a completed give-up, visible, not a failure by itself.
+    if code == 70:
+        wave.failures.append(
+            f"{child.adapter} pid {child.pid}: handoff-failed (exit 70); "
+            "the item is still claimed"
+        )
+    elif code == 75:
+        wave.give_ups.append(
+            f"{child.adapter} pid {child.pid}: stuck (exit 75); item released, "
+            "worktree salvaged"
+        )
+
+    observe.child(ChildRecord(
+        adapter=child.adapter,
+        binary_version=child.binary_version,
+        worktree=str(child.worktree),
+        branch=child.branch,
+        pid=child.pid,
+        seat_id=child.seat_id,
+        agent_id=child.agent_id,
+        # None means it never registered, and that is the whole point of the field:
+        # a process that ran, spent money and produced nothing, while the roster
+        # showed one agent fewer. Omitting it would read as nothing to report;
+        # zeroing it would read as instant.
+        registration_latency=(
+            child.registration_latency
+            if child.registration_latency is not None
+            else NEVER_REGISTERED
+        ),
+        exit_code=child.process.returncode,
+        exit_meaning=explain_exit(child.adapter, child.process.returncode),
+        stopped_because=child.stopped_because.value if child.stopped_because else None,
+        reap=reaped.disposition.value,
+        salvage_commit=reaped.salvage.commit if reaped.salvage else None,
+        credential_in_history=(
+            list(reaped.salvage.credential_in_history) if reaped.salvage else []
+        ),
+        touched=wave.touched.get(child.branch, []),
+    ))
 
 
 def _inside(path: Path, root: Path) -> bool:
