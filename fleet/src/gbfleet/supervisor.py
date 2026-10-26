@@ -246,10 +246,16 @@ class Wave:
     spawned: list[Child] = field(default_factory=list)
     reaped: list[Reaped] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
-    #: Seats handed in but never redeemed, because the wave stopped early. Named so a
-    #: caller does not have to infer it from len(spawned) < len(seats) — an inference
-    #: that reads as "nothing went wrong" when the list is short for a bad reason.
+    #: Seats handed in but never redeemed, because the wave stopped, the machine was
+    #: full, the server was unreachable, or `--max-children` was already spent. Not a
+    #: seat that was merely past `--max-workers`: those run when a slot frees
+    #: (GRPH-929). A count alone cannot say which seat. `unredeemed` names each one.
     unused_seats: int = 0
+    #: "<enrolment code>: <why>", one line per seat in `unused_seats`. The code is the
+    #: name in the seats file, which is the only name the operator has for a seat that
+    #: never became a child. Printed on the wave report and kept out of the observe
+    #: log: a log outlives the seat.
+    unredeemed: list[str] = field(default_factory=list)
     #: What `hostos.available_memory` read when the launch loop began (GRPH-842), or
     #: None where the host cannot be asked. Reported beside `gated` because an empty
     #: `gated` has two meanings and they are opposites: nothing was refused, or nothing
@@ -350,8 +356,9 @@ class Wave:
     debug_gaps: list[str] = field(default_factory=list)
     #: Why this wave ended. `ok` is true only for the two idle reasons (P30 D6).
     #: Empty until something decides: `up` writes `idle` when the children left and
-    #: nothing failed; `until` (D1) writes `idle-with-waits` when only typed human
-    #: waits remain.
+    #: nothing failed; `seats-unredeemed` when children left cleanly and seats were
+    #: still never started; `until` (D1) writes `idle-with-waits` when only typed
+    #: human waits remain.
     reason: str = ""
     #: Child exit 75 — stuck, evidence written, item released. Visible, not a
     #: supervisor failure (P30 D6). Exit 70 is a failure and lives in `failures`.
@@ -579,6 +586,54 @@ def _rooted(repo: Path | str, workspace: Path | str | None) -> tuple[Path, Path]
                          else root.parent / f"{root.name}-gbfleet")
 
 
+def _note_unredeemed(wave: Wave, seat: Seat, reason: str) -> None:
+    """One seat that never got a child, and why.
+
+    The count in `unused_seats` cannot say which seat. A wave that prints only
+    the count reads as a bug in the fleet, which is the report an operator
+    chased when the machine was full. The enrolment code is the name in the
+    seats file. It stays on the wave, for the report, and is not emitted: the
+    observe log outlives the seat.
+    """
+    text = reason.splitlines()[0].strip() if reason else "unspecified"
+    line = f"{seat.code}: {text[:240]}"
+    if line in wave.unredeemed:
+        return
+    wave.unredeemed.append(line)
+    wave.unused_seats += 1
+
+
+def _park(wave: Wave, pending: list[Seat], reason: str) -> None:
+    """Name every seat still waiting, then forget them so a later pass cannot."""
+    for seat in pending:
+        _note_unredeemed(wave, seat, reason)
+    pending.clear()
+
+
+def _free_slots(limits: Limits, children: Sequence[Child]) -> int:
+    """How many more children may start right now.
+
+    `--max-workers` is concurrent. `--max-children` is the total this `up` may
+    spawn, including children adopted from a supervisor that died. The old `up`
+    took the minimum once, as the size of its only batch, and dropped the rest.
+    """
+    live = sum(1 for child in children if child.running)
+    return max(0, min(limits.max_workers - live, limits.max_children - len(children)))
+
+
+def _no_slot_reason(limits: Limits, children: Sequence[Child]) -> str:
+    live = sum(1 for child in children if child.running)
+    if limits.max_workers - live <= 0:
+        return (
+            f"--max-workers {limits.max_workers} leaves no free slot "
+            f"({live} still running)"
+        )
+    return (
+        f"--max-children {limits.max_children} reached "
+        f"({len(children)} child process(es) already in this wave)"
+    )
+
+
 def up(
     repo: Path,
     seats: Sequence[Seat],
@@ -650,15 +705,15 @@ def up(
             # D-i: no new spawns while the server is unreachable. A child that cannot
             # register has no identity, no consumed seat and no claim — spawning one
             # spends money to produce a process nobody can account for.
-            wave.unused_seats = len(seats)
+            _park(wave, list(seats), "server unreachable; no child was started")
             return wave
-
-        cap = max(0, min(limits.max_workers, limits.max_children) - len(leftover))
-        wanted = min(len(seats), cap)
-        wave.unused_seats = len(seats) - wanted
 
         children: list[Child] = list(leftover)
         roster_path = adopt_mod.children_path(repo, state)
+        # Seats past the concurrent cap stay here and start when a child exits
+        # (GRPH-929). Dropping them at the cap was `up --max-workers 1` finishing
+        # after the first child and reporting the rest as never redeemed.
+        pending: list[Seat] = list(seats)
 
         def persist() -> None:
             adopt_mod.persist(roster_path, children)
@@ -676,15 +731,59 @@ def up(
             items = item_status(client)
         # The declaration snapshot the divvy used: the reap-time fallback (GRPH-1025).
         _declared_into(wave, items)
-        _start(
-            wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client,
-            limits, debug=debug, occupied=occupied, items=items,
-            into=children, persist=persist,
-            room=room, base=base,
-        )
-        persist()
+
+        def refill() -> bool:
+            """Start the next batch that fits. False when nothing more will start.
+
+            `--max-workers` is how many run at once. `--max-children` is how many
+            this wave may spawn in total, adopted leftovers included. A launch
+            failure or a full machine stops the wave: the same refusal would meet
+            every seat still waiting, and naming them is the result.
+            """
+            if not pending:
+                return False
+            for child in children:
+                if child.branch:
+                    occupied.add(child.branch)
+            for branch in wave.resumed:
+                occupied.add(branch)
+            slots = _free_slots(limits, children)
+            if slots <= 0:
+                _park(wave, pending, _no_slot_reason(limits, children))
+                return False
+            batch = pending[:slots]
+            del pending[:slots]
+            fail_before = len(wave.failures)
+            gated_before = len(wave.gated)
+            spawned_before = len(wave.spawned)
+            try:
+                _start(
+                    wave, batch, launch_factory, repo, workspace, wave_name, client,
+                    limits, debug=debug, occupied=occupied, items=items,
+                    into=children, persist=persist,
+                    room=room, base=base,
+                )
+            except VendorLimit:
+                _park(wave, pending, "vendor account is out of quota; the wave stopped")
+                raise
+            if len(wave.failures) > fail_before or len(wave.gated) > gated_before:
+                if len(wave.gated) > gated_before:
+                    reason = wave.gated[-1]
+                else:
+                    reason = "wave stopped: the launch failure is the same for every later seat"
+                _park(wave, pending, reason)
+                return False
+            persist()
+            return len(wave.spawned) > spawned_before
+
+        refill()
         _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
-                  persist=persist, merger=merger, base_branch=base)
+                  persist=persist, merger=merger, base_branch=base, refill=refill)
+        # A seat still in `pending` was neither started nor named. Leaving it
+        # there reports a clean wave — unused stays 0 — which is the silent
+        # drop this command exists to make loud.
+        if pending:
+            _park(wave, pending, "the wave ended before this seat was started")
         _reap_all(wave, children, client=client, base_branch=base)
         persist()
         if merger is not None:
@@ -695,7 +794,10 @@ def up(
 
         wave.after = _read_allocation(client, wave)
         if not wave.failures and not wave.offline:
-            wave.reason = "idle"
+            # A clean exit that still dropped seats is the failure this command
+            # exists to not look like. `ok` is false for any reason but the two
+            # idle ones, so the process exits non-zero and the report names them.
+            wave.reason = "seats-unredeemed" if wave.unused_seats else "idle"
 
     return wave
 
@@ -942,7 +1044,8 @@ def _start(
             verdict = room.allow(len(started))
             if not verdict.allowed:
                 wave.gated.append(verdict.reason)
-                wave.unused_seats += planned - index
+                for skipped in seats[index:]:
+                    _note_unredeemed(wave, skipped, verdict.reason)
                 observe.emit(
                     "memory_gated",
                     running=len(started),
@@ -1074,8 +1177,14 @@ def _start(
             # The one that failed AND every one after it. Counting only the failure
             # leaves the caller to work the rest out from len(spawned), which is the
             # inference this field exists to remove — and a short list reads as
-            # "nothing went wrong".
-            wave.unused_seats += planned - index
+            # "nothing went wrong". The seats after this one never launched; saying
+            # so with this seat's stderr would read as each of them having crashed.
+            first = str(exc).splitlines()[0][:240]
+            for offset, skipped in enumerate(seats[index:]):
+                why = first if offset == 0 else (
+                    f"wave stopped after {seat.code} failed to launch"
+                )
+                _note_unredeemed(wave, skipped, why)
             if vendor_limit:
                 # GRPH-829. Not this slot's problem: the account is out of quota, so the next
                 # child would fail identically in under a second and the one after that too.
@@ -2736,6 +2845,7 @@ def _wait_out(
     persist: Callable[[], None] | None = None,
     merger: "Merger | None" = None,
     base_branch: str = "",
+    refill: Callable[[], bool] | None = None,
 ) -> None:
     """Wait for children to exit on their own, stopping any that overrun or outlive their claim.
 
@@ -2748,18 +2858,31 @@ def _wait_out(
     cannot reach the server may keep building until its own deadline and not past it:
     that is not optimism, it is what the lease promises. Past it, the server has given
     the item to somebody else and a second agent is already working it.
+
+    `refill` starts the next seats once a slot is free (GRPH-929). It runs only when
+    nothing is still running, and only after `_reap_all`. `watch_tick` reaps through
+    `_reap_exited`, which salvages and then marks the child reaped. `_reap_all` skips
+    a child already reaped, and it is the one that writes the exit line and the
+    observe record. Calling `watch_tick` on a batch that has already exited steals
+    that reap: a one-child wave loses both, and every test that reads them goes red.
     """
-    while any(child.running for child in children):
-        # GRPH-1056. Waiting on children is the work. Without this, a wave longer
-        # than the idle threshold is reclaimed out from under its own children.
-        if wave.lock is not None:
-            wave.lock.touch()
-        watch_tick(wave, children, limits, client, debug=debug, persist=persist,
-                   base_branch=base_branch)
-        if merger is not None:
-            merger.tick(wave)
-        if any(child.running for child in children):
-            sleep(poll)
+    while True:
+        while any(child.running for child in children):
+            # GRPH-1056. Waiting on children is the work. Without this, a wave longer
+            # than the idle threshold is reclaimed out from under its own children.
+            if wave.lock is not None:
+                wave.lock.touch()
+            watch_tick(wave, children, limits, client, debug=debug, persist=persist,
+                       base_branch=base_branch)
+            if merger is not None:
+                merger.tick(wave)
+            if any(child.running for child in children):
+                sleep(poll)
+        # Nothing is running. Reap before refill, and do not watch_tick first.
+        if not any(child.running for child in children):
+            _reap_all(wave, children, client=client, base_branch=base_branch)
+        if refill is None or not refill():
+            break
 
     # One last read, so a partition that ended just as the children did is still
     # reconciled rather than left as the last thing that happened.

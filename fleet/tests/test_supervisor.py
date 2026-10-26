@@ -569,9 +569,15 @@ def test_a_proposal_of_zero_over_a_live_roster_is_a_real_answer():
     assert real.uninformative is False
 
 
-def test_seats_beyond_the_cap_are_reported_not_silently_dropped(
+def test_seats_beyond_the_cap_run_when_a_slot_frees(
     git_repo: Path, tmp_path: Path, scripts, state: Path
 ):
+    """GRPH-929. `--max-workers` is how many run at once, not how many seats get a turn.
+
+    This used to assert `len(spawned) == 2` and `unused_seats == 3` for five seats at
+    `--max-workers 2`. That assertion was the bug: the other three were dropped and the
+    wave still looked finished. All five run, two at a time, and nothing is left over.
+    """
     workspace = tmp_path / "ws"
     wave = up(
         git_repo,
@@ -582,11 +588,96 @@ def test_seats_beyond_the_cap_are_reported_not_silently_dropped(
         state=state,
         workspace=workspace,
     )
-    assert len(wave.spawned) == 2
-    assert wave.unused_seats == 3, (
-        "a caller would have to infer this from len(spawned), and a short list reads as "
-        "'nothing went wrong'"
+    assert len(wave.spawned) == 5
+    assert len({c.branch for c in wave.spawned}) == 5
+    assert wave.unused_seats == 0
+    assert wave.unredeemed == []
+    assert wave.ok, (wave.reason, wave.failures)
+
+
+def test_seats_beyond_the_cap_run_serially_rather_than_being_dropped(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """The reported failure: six bound seats, `--max-workers 1`, and the supervisor
+    exited after the first child. Three seats and an adapter that exits at once is
+    the same shape. Break the refill — return before starting the seats still
+    waiting — and one child is spawned.
+    """
+    workspace = tmp_path / "ws"
+    wave = up(
+        git_repo,
+        _seats(3),
+        _factory(scripts, "works_then_exits"),
+        _server(workspace),
+        limits=Limits(max_workers=1),
+        state=state,
+        workspace=workspace,
     )
+    assert len(wave.spawned) == 3, (
+        f"spawned {len(wave.spawned)}; unused {wave.unused_seats} {wave.unredeemed}"
+    )
+    assert len({c.branch for c in wave.spawned}) == 3
+    assert wave.unused_seats == 0
+    assert wave.ok, (wave.reason, wave.failures)
+
+
+def test_seats_a_stopped_wave_cannot_redeem_are_named_with_a_reason(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """A missing adapter fails the same way for every seat. Each one is named, and
+    the wave does not exit as though it had finished. A count with no names is the
+    report that reads as a bug in the fleet.
+    """
+    workspace = tmp_path / "ws"
+    seats = _seats(3)
+    missing = tmp_path / "not-a-binary"
+    wave = up(
+        git_repo,
+        seats,
+        make_launch_factory("codex", [str(missing)]),
+        _server(workspace),
+        state=state,
+        workspace=workspace,
+    )
+    assert wave.ok is False
+    assert wave.reason != "idle"
+    assert wave.unused_seats == 3
+    assert [line.split(":", 1)[0] for line in wave.unredeemed] == [s.code for s in seats]
+    assert any("wave stopped after" in line for line in wave.unredeemed[1:])
+    out = io.StringIO()
+    report(wave, out=out)
+    printed = out.getvalue()
+    assert "3 seat(s) never redeemed" in printed
+    for seat in seats:
+        assert f"UNREDEEMED {seat.code}:" in printed
+
+
+def test_seats_past_max_children_are_named_and_the_wave_is_not_idle(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """`--max-children` is still the total, not a second concurrent cap. The seats
+    past it are the ones that genuinely cannot run, and a wave that drops them
+    exits non-zero with each one named.
+    """
+    workspace = tmp_path / "ws"
+    seats = _seats(3)
+    wave = up(
+        git_repo,
+        seats,
+        _factory(scripts, "works_then_exits"),
+        _server(workspace),
+        limits=Limits(max_workers=4, max_children=1),
+        state=state,
+        workspace=workspace,
+    )
+    assert len(wave.spawned) == 1
+    assert wave.unused_seats == 2
+    assert wave.reason == "seats-unredeemed"
+    assert wave.ok is False
+    assert [line.split(":", 1)[0] for line in wave.unredeemed] == [
+        seats[1].code, seats[2].code
+    ]
+    assert all("max-children" in line for line in wave.unredeemed)
 
 
 # --- the ways a wave goes wrong ---------------------------------------------------
