@@ -748,19 +748,26 @@ def test_a_free_slot_refills_while_a_sibling_is_still_running(
     `watch_tick` used to lose its exit line and its observe record, because
     only `_reap_all` wrote them and it skips a child already reaped.
 
-    The third seat's start has to fall inside the sleeper's run, and every
-    child — including the one that exited while a sibling was still running —
-    keeps an observe record and, for the 75s, the give-up line.
+    The third seat must have started before the sleeper exited. `Child` records
+    no exit time, so the bound is the sleeper's own duration (`started_at +
+    SLEEP`), not a fixed host-speed gap: a slow Windows runner can take more
+    than 1.5s to cut the next worktree and still be refilling correctly
+    (GRPH-1122). Every child — including the one that exited while a sibling
+    was still running — keeps an observe record and, for the 75s, the give-up
+    line.
     """
     from gbfleet.observe import LOG_FILE
 
+    # Shared with the assertion. A second copy of this number is how the bound
+    # drifts back into a host-speed gap.
+    SLEEP = 8.0
     workspace = tmp_path / "ws"
     script = tmp_path / "stagger.py"
     script.write_text(
         "import time\n"
         "from pathlib import Path\n"
         "if Path.cwd().name.endswith('-1'):\n"
-        "    time.sleep(2.5)\n"
+        f"    time.sleep({SLEEP})\n"
         "else:\n"
         "    raise SystemExit(75)\n",
         encoding="utf-8",
@@ -780,7 +787,7 @@ def test_a_free_slot_refills_while_a_sibling_is_still_running(
     )
     by_slot = {c.worktree.name.rsplit("-", 1)[-1]: c for c in wave.spawned}
     slow, third = by_slot["1"], by_slot["3"]
-    assert third.started_at - slow.started_at < 1.5, (
+    assert third.started_at < slow.started_at + SLEEP, (
         "the third seat waited for the whole batch; a free slot stayed idle"
     )
     fast = [by_slot["2"], by_slot["3"]]
