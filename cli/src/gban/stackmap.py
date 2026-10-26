@@ -98,6 +98,9 @@ _DEPLOY = {
     "render.yaml": ("render", "Render"),
 }
 _ASSIGNMENTS = re.compile(r"(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)\s*=")
+# A comment is an assignment only when it starts as one. `version=2024` later
+# in a sentence is prose, and treating it as KEY= would drop the URL beside it.
+_COMMENT_ASSIGNMENT = re.compile(r"^(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=")
 
 
 class MapError(Exception):
@@ -878,7 +881,11 @@ def _cargo_internal(text: str) -> list[tuple[str, str, str, int]]:
             if isinstance(path, str) and path.strip():
                 out.append((str(dep), "file", path.strip(), _line_of(text, str(dep))))
             elif spec.get("workspace") is True:
-                out.append((str(dep), "workspace", "", _line_of(text, str(dep))))
+                # `renamed = { package = "crate-b", workspace = true }` resolves
+                # to crate-b. The edge label stays the key the manifest wrote.
+                renamed = spec.get("package")
+                pkg = renamed.strip() if isinstance(renamed, str) else ""
+                out.append((str(dep), "workspace", pkg, _line_of(text, str(dep))))
     return out
 
 
@@ -1252,16 +1259,20 @@ class _Builder:
         return self.add_external(node, label, prov, name)
 
     def resolve_internal(self, manifest: Path, dep: str, kind: str, target: str,
-                         prov: dict) -> str:
-        directory: str | None = None
+                         prov: dict) -> str | None:
         if kind == "file" or (kind == "workspace" and target.startswith(".")):
             directory = _inside(self.repo, manifest, target)
-        if directory is not None:
+            if directory is None:
+                # Outside the repo is not an in-repo crate that failed to resolve.
+                self.warnings.append(f"{prov.get('file')}: {dep} points outside the repo")
+                return None
             found = self.by_dir.get(directory)
             if found:
                 return found
-        elif kind == "workspace":
-            found = self.by_package.get(dep)
+            return self.add_unresolved(dep, prov)
+        if kind == "workspace":
+            key = target if target and target not in {"*"} else dep
+            found = self.by_package.get(key)
             if found:
                 return found
         return self.add_unresolved(dep, prov)
@@ -1450,12 +1461,18 @@ def _walk_dockerfile(builder: _Builder, path: Path) -> None:
         return
     file = _rel(path, builder.repo)
     directory = _rel(path.parent, builder.repo)
-    comp = builder.owner(directory)
+    comp = builder.by_dir.get(directory)
     if comp is None:
+        owner = builder.owner(directory)
+        # The root component is a prefix of every path. A Dockerfile in its own
+        # directory is that directory's deployable, not another edge of the root app.
+        root_only = bool(directory) and builder.by_dir.get("") == owner
+        if owner and not root_only:
+            comp = owner
+    if comp is None:
+        label = directory.rsplit("/", 1)[-1] if directory else "."
         comp = builder.add_component(
-            directory.rsplit("/", 1)[-1] if directory else ".", directory,
-            directory.rsplit("/", 1)[-1] if directory else ".",
-            _provenance(file, "dockerfile", 1))
+            label, directory, label, _provenance(file, "dockerfile", 1))
     for lineno, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if line.upper().startswith("FROM "):
@@ -1540,9 +1557,9 @@ def _template_entries(text: str) -> tuple[
             continue
         if line.startswith("#"):
             body = line[1:].strip()
-            assigned = _assignments_in(body)
-            if assigned:
-                for name, raw_value in assigned:
+            if _COMMENT_ASSIGNMENT.match(body):
+                body = body[len("export "):].strip() if body.startswith("export ") else body
+                for name, raw_value in _assignments_in(body):
                     entries.append((name, raw_value, lineno, True))
                 continue
             for protocol, host in literal_hosts(body):
@@ -1641,8 +1658,16 @@ def _walk_env_template(builder: _Builder, path: Path) -> None:
         if documented and not drew:
             builder.commented_skipped += 1
     if directory == "":
-        prose_sources = [builder.by_dir[""]] if "" in builder.by_dir else (
-            sources if consumers is None else [])
+        if consumers is not None:
+            # The services that read the template own a host written in a comment.
+            # The root package is the fallback when none of them do.
+            prose_sources = sorted({cid for ids in consumers.values() for cid in ids})
+            if not prose_sources and "" in builder.by_dir:
+                prose_sources = [builder.by_dir[""]]
+        elif "" in builder.by_dir:
+            prose_sources = [builder.by_dir[""]]
+        else:
+            prose_sources = sources
     else:
         prose_sources = sources
     for protocol, host, lineno in prose:
@@ -1687,7 +1712,8 @@ def _walk_internal(builder: _Builder, path: Path) -> None:
     for dep, kind, target, line in _internal_deps(path, text):
         prov = _provenance(file, f"manifest.{kind}", line)
         dest = builder.resolve_internal(path, dep, kind, target, prov)
-        builder.add_edge(comp, dest, "internal", dep, prov)
+        if dest:
+            builder.add_edge(comp, dest, "internal", dep, prov)
 
 
 def _walk_deploy(builder: _Builder, path: Path) -> None:
@@ -1784,14 +1810,16 @@ def build_record(start: Path, *, project_id: str = "") -> tuple[dict, list[str],
         elif _is_deploy(path):
             builder.files_read.append(rel)
             deploys.append(path)
-    # Compose before Dockerfiles before manifests, so a service keeps the id it
-    # was given and a later manifest folds into that directory instead of a second node.
+    # Compose first, so a service keeps the id it was given. Named manifests
+    # next, so a Dockerfile in that directory attaches to the package instead
+    # of naming the directory and blocking the manifest. A Dockerfile with no
+    # package still becomes its own component.
     for path in compose:
         _walk_compose(builder, path)
-    for path in dockerfiles:
-        _walk_dockerfile(builder, path)
     for path in named:
         _declare_manifest_component(builder, path)
+    for path in dockerfiles:
+        _walk_dockerfile(builder, path)
     for path in manifests:
         _walk_manifest(builder, path)
     for path in named:

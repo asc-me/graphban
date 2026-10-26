@@ -680,7 +680,8 @@ def test_a_monorepo_keeps_packages_comments_and_every_provenance(tmp_path):
     (repo / "src").mkdir()
     (repo / "src" / "chat.py").write_text(
         "URL = 'wss://irc-ws.chat.twitch.tv'\n"
-        "YT = 'rtmp://a.rtmp.youtube.com/live2'\n",
+        "YT = 'rtmp://a.rtmp.youtube.com/live2'\n"
+        "MARKER = 'only-in-source'\n",
         encoding="utf-8")
     (repo / ".env.example").write_text(
         "DATABASE_URL=postgresql://sagaforge:sagaforge-password@localhost:5434/app\n"
@@ -755,6 +756,99 @@ def test_a_monorepo_keeps_packages_comments_and_every_provenance(tmp_path):
         "irc-ws.chat.twitch.tv", "rtmp.youtube.com", "only-in-source",
     ):
         assert secret not in text
+
+
+def test_a_dockerfile_uses_the_package_name_and_keeps_its_image(tmp_path):
+    """A Dockerfile must not name the component, and must not hang FROM on the parent."""
+    repo = tmp_path / "pkg"
+    repo.mkdir()
+    (repo / "package.json").write_text(json.dumps({"name": "rootpkg"}), encoding="utf-8")
+    web = repo / "web"
+    web.mkdir()
+    (web / "package.json").write_text(json.dumps({"name": "@acme/web"}), encoding="utf-8")
+    (web / "Dockerfile").write_text("FROM postgres:16\n", encoding="utf-8")
+    (repo / "ops").mkdir()
+    (repo / "ops" / "Dockerfile").write_text("FROM redis:7\n", encoding="utf-8")
+    api = repo / "api"
+    api.mkdir()
+    (api / "package.json").write_text(json.dumps({"name": "@acme/api"}), encoding="utf-8")
+    (api / "Dockerfile").write_text("FROM nginx:alpine\n", encoding="utf-8")
+    (repo / "compose.yml").write_text(
+        "services:\n"
+        "  app:\n"
+        "    build: .\n"
+        "  api:\n"
+        "    image: nginx:alpine\n",
+        encoding="utf-8")
+    _commit(repo)
+    record, _, _coverage = stackmap.build_record(repo)
+    by_dir = {node["dir"]: node["id"] for node in record["components"]}
+    assert by_dir["web"] == "@acme/web"
+    assert by_dir["api"] == "@acme/api"
+    assert by_dir["ops"] == "ops"
+    assert "unresolved-api" not in by_dir.values()
+    assert _edge(record, "@acme/web", "postgres", "postgres")["provenance"]["file"] == "web/Dockerfile"
+    assert not [e for e in record["edges"] if e["from"] == "app" and e["to"] == "postgres"]
+    assert _edge(record, "ops", "redis", "redis")
+
+
+def test_a_comment_url_survives_a_later_equals_and_reaches_the_reader(tmp_path):
+    repo = tmp_path / "commented"
+    repo.mkdir()
+    (repo / "package.json").write_text(json.dumps({"name": "rootpkg"}), encoding="utf-8")
+    (repo / "api").mkdir()
+    (repo / "compose.yml").write_text(
+        "services:\n"
+        "  api:\n"
+        "    build: ./api\n"
+        "    env_file: .env.example\n",
+        encoding="utf-8")
+    (repo / ".env.example").write_text(
+        "OPENAI_API_KEY=\n"
+        "# Stripe dashboard https://dashboard.stripe.com/test (api version=2024)\n",
+        encoding="utf-8")
+    _commit(repo)
+    record, _, _coverage = stackmap.build_record(repo)
+    edge = _edge(record, "api", "stripe", "https")
+    assert edge["state"] == "documented"
+    assert edge["provenance"]["rule"] == "env.comment"
+    assert not [e for e in record["edges"] if e["from"] == "rootpkg" and e["to"] == "stripe"]
+
+
+def test_a_path_outside_the_repo_is_not_an_internal_edge(tmp_path):
+    repo = tmp_path / "links"
+    repo.mkdir()
+    (repo / "package.json").write_text(json.dumps({
+        "name": "app",
+        "dependencies": {
+            "up": "file:../outside",
+            "abs": "file:/etc/passwd",
+            "url": "file:https://evil.example/pkg.tgz",
+            "missing": "file:./missing",
+        },
+    }), encoding="utf-8")
+    crate = repo / "crate"
+    crate.mkdir()
+    (crate / "Cargo.toml").write_text(
+        "[package]\nname = \"crate-a\"\nversion = \"0.1.0\"\n"
+        "[dependencies]\n"
+        "up = { path = \"../../outside\" }\n"
+        "renamed = { package = \"crate-b\", workspace = true }\n",
+        encoding="utf-8")
+    other = repo / "crate-b"
+    other.mkdir()
+    (other / "Cargo.toml").write_text(
+        "[package]\nname = \"crate-b\"\nversion = \"0.1.0\"\n", encoding="utf-8")
+    _commit(repo)
+    record, warnings, _coverage = stackmap.build_record(repo)
+    internal = [e for e in record["edges"] if e["protocol"] == "internal"]
+    renamed = _edge(record, "crate-a", "crate-b", "internal")
+    assert renamed["label"] == "renamed"
+    assert {e["label"] for e in internal} == {"renamed", "missing"}
+    labels = {n["label"] for n in record["unresolved"]}
+    assert "up" not in labels and "abs" not in labels and "url" not in labels
+    assert "missing" in labels
+    assert any("points outside the repo" in warning for warning in warnings)
 
 
 # ---- what a post says it did (GRPH-1103) ----------------------------------------------------
