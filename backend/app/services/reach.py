@@ -67,10 +67,12 @@ _PLATFORMS = (
 #: being built, once on a note explaining the trap, and once on GRPH-989 itself, whose
 #: description had to quote the phrase to report it.
 #:
-#: An infrastructure subcommand is a verb or a noun (`deploy`, `up`, `apply`, `variables`); it
-#: is never `as`, `the` or `it`. A function word after the platform name means the sentence is
-#: using the word as English. That is why this is the discriminator rather than a longer
-#: platform list or a hand-maintained exception per item.
+#: A function word after the platform name means the sentence is using the word as English
+#: (`render as`, `render the`). This is the base matcher's list, from before GRPH-1037
+#: narrowed it to a verb allowlist. That allowlist fails open: every verb it lacks
+#: (`reset`, then `remove` and `detach`) is a destructive command the guard goes quiet on.
+#: The default below is the base matcher again. It fires on a platform name followed by
+#: any other word. The only things that stay quiet are the named shapes under it.
 _NOT_SUBCOMMANDS = (
     # reading, not changing
     "logs|get|status|version|--help"
@@ -79,6 +81,89 @@ _NOT_SUBCOMMANDS = (
     "|and|or|but|if|so|than|then|that|this|these|those|which|while|when|whether"
     "|is|are|was|were|be|been|being|it|its|them|their|there|they"
     "|not|no|never|only|also|just|still|already|rather|instead"
+)
+
+#: The one base hit that is not a mutation. `kubectl port-forward` opens a tunnel.
+#: It stays its own token, rather than joining `_NOT_SUBCOMMANDS`, so the test's
+#: EXEMPT list and this token are the same decision. Delete it and the exempt row fires.
+_EXEMPT_SUBCOMMANDS = "port-forward"
+
+#: Nouns a diagram uses after a glued platform name (`compose/Railway stack`).
+#: They are also real subcommands (`vercel project rm`, `heroku stack:set`),
+#: so the list applies only inside the legend span. A determiner in front of
+#: one of these nouns is not an exemption. "The Railway project will be ready"
+#: is a platform name followed by a word, and it fires. Every narrowing of
+#: that sentence went quiet on a real command.
+_DESCRIPTIVE_NOUNS = (
+    "stack|stacks|project|projects|dashboard|dashboards|team|teams"
+    "|account|accounts|doc|docs|topology|diagram|legend"
+)
+
+#: A diagram legend glues ONE word to the platform (`compose/Railway stack`,
+#: `api.railway stack`). The base matcher sees a word boundary at the slash or
+#: the dot and reads `Railway stack` as a subcommand.
+#:
+#: The character in front of the name is not enough. A binary invoked by its
+#: path has a slash there too (`/usr/local/bin/kubectl delete`, `./bin/railway
+#: up`, `~/bin/fly deploy`). Those are commands. The glue is one word whose
+#: own previous character is a boundary — start, whitespace, or an opening
+#: quote — not another path separator. `./bin/railway` fails that, because
+#: `bin` is preceded by `/`. `infra/terraform` is one word and a slash, the
+#: same shape as `compose/Railway`; it stays a legend only when the tail below
+#: is descriptive, and `terraform destroy` is not that tail.
+#:
+#: A legend's tail is descriptive: the end of the line, sentence punctuation,
+#: or one descriptive noun that itself ends the clause (punctuation, an opening
+#: `(`, or the end of the line). `:` is not that punctuation — `stack:set` is
+#: a subcommand. The `(` tail belongs to the legend glue only. A path-prefixed
+#: binary before `(` is still a command (`Run ./bin/railway projects (prod)`).
+#: Treating every slash as glue swallows that line, which the parity sweep
+#: catches. Put `(?<![/.])` back on the platform pattern and the path-prefixed
+#: commands go quiet too.
+#:
+#: Python `re` cannot say both lookarounds in one assertion, so this span is
+#: scrubbed before the matcher runs. Delete the span and `compose/Railway
+#: stack` fires.
+_CLAUSE_END = r"(?:\s*$|\s*[,.;!?·—–)]|\s+\()"
+_LEGEND_GLUE = r"(?:^|(?<=[\s(\[{}\"\'`]))[\w-]+[/.]"
+_LEGEND_SPAN = re.compile(
+    rf"{_LEGEND_GLUE}(?:{_PLATFORMS})(?:"
+    rf"\s+(?:{_DESCRIPTIVE_NOUNS})\b(?={_CLAUSE_END})"
+    rf"|{_CLAUSE_END})",
+    re.I | re.M,
+)
+
+#: There is no sentence-subject exemption. "The Railway project will deploy"
+#: and "The Railway project will be ready" are a platform name followed by a
+#: word, which is the base matcher. Seven rounds of scrubbing that shape went
+#: quiet on a real command each time (`reset`, then `remove`, then a path, a
+#: passive, a complement, a grammar word in the complement). The exemption is
+#: gone. A possessive (`Railway's dashboard`) still needs nothing: the matcher
+#: requires whitespace after the platform name, and `'` is not whitespace.
+_FLAG = r"--?[\w.-]+"
+#: The base matcher, plus the port-forward exemption. The legend span is
+#: scrubbed before this runs; it is not a lookaround on this pattern. There
+#: is no subject scrub in front of it.
+#: `vercel remove`, `fly postgres detach`, `heroku pg:reset` and
+#: `az network nsg rule delete` all fire on the first word after the platform.
+#: There is no verb list: a missing verb is a command the guard would not see.
+#:
+#: `docker compose` is not in `_PLATFORMS`. `compose` alone is how a legend says
+#: `compose/Railway`, and a slash is not a subcommand. The two-word CLI is matched
+#: on its own, fail-closed the same way: any word that is not grammar, not a verb
+#: list. Flags may sit between `compose` and that word (`--profile prod down`).
+#:
+#: Two things this deliberately does NOT do. It does not ignore backticks or fenced
+#: blocks: the commands that caused the original incident are written that way
+#: (`railway up`), and stripping them would blind the guard to the case it exists
+#: for. It does not treat a declared `reach=repo` as a reason to stay quiet: every
+#: item this fires on is already declared `repo`, and the incident was one of those
+#: whose prose was a real command. Weighting the declaration would delete the guard.
+_PLATFORM_COMMAND = (
+    rf"\b(?:{_PLATFORMS})\s+"
+    rf"(?!(?:{_NOT_SUBCOMMANDS}|{_EXEMPT_SUBCOMMANDS})\b)[a-z][\w-]+"
+    rf"|\bdocker(?:\s+|-)compose(?:\s+{_FLAG}(?:\s+\S+)?)*\s+"
+    rf"(?!(?:{_NOT_SUBCOMMANDS})\b)[a-z][\w-]+"
 )
 
 #: Verbs that CHANGE a running system. Reading verbs are absent on purpose: `vercel logs` and
@@ -97,8 +182,7 @@ _SECRETS = r"key|keys|secret|secrets|token|tokens|credential|credentials|passwor
 _RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
         "platform-command",
-        re.compile(rf"\b({_PLATFORMS})\s+(?!(?:{_NOT_SUBCOMMANDS})\b)[a-z][\w-]+",
-                   re.I),
+        re.compile(_PLATFORM_COMMAND, re.I),
         "names an infrastructure CLI with a subcommand",
     ),
     (
@@ -158,7 +242,14 @@ def signals(text: str | None) -> list[dict]:
                 # evidence printed three times, and they crowd out the second rule that
                 # fired — which is the one that would have changed the reader's mind.
                 continue
-            if pattern.search(stripped):
+            # The legend span is variable width, so it cannot be a lookaround
+            # on the pattern. Scrub it, then search. Other rules see the
+            # original line: scrubbing must not hide them.
+            if name == "platform-command":
+                haystack = _LEGEND_SPAN.sub(" ", stripped)
+            else:
+                haystack = stripped
+            if pattern.search(haystack):
                 seen.add(name)
                 found.append({"rule": name, "means": means, "quote": _quote(stripped)})
                 if len(found) >= MAX_SIGNALS:
