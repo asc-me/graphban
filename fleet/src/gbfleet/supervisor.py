@@ -3174,7 +3174,12 @@ def _record_reaped(wave: Wave, child: Child, reaped: Reaped) -> None:
     was a silent drop: a fast child lost its record, and so did a one-child wave
     whose last tick ran `watch_tick` first.
     """
-    code = child.process.returncode
+    # `returncode` is what Popen stores after `poll`. The watch-loop tests hand
+    # in a process double that only implements `poll`, and reading the missing
+    # attribute here used to crash the tick after a successful salvage.
+    code = getattr(child.process, "returncode", None)
+    if code is None:
+        code = child.process.poll()
     # gbagent.loop: 70 = handoff could not be written (item still claimed);
     # 75 = stuck, evidence written, item released. P30 D6: 70 is a supervisor
     # failure; 75 is a completed give-up, visible, not a failure by itself.
@@ -3206,8 +3211,8 @@ def _record_reaped(wave: Wave, child: Child, reaped: Reaped) -> None:
             if child.registration_latency is not None
             else NEVER_REGISTERED
         ),
-        exit_code=child.process.returncode,
-        exit_meaning=explain_exit(child.adapter, child.process.returncode),
+        exit_code=code,
+        exit_meaning=explain_exit(child.adapter, code),
         stopped_because=child.stopped_because.value if child.stopped_because else None,
         reap=reaped.disposition.value,
         salvage_commit=reaped.salvage.commit if reaped.salvage else None,
