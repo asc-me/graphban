@@ -1152,6 +1152,11 @@ export interface StackEdge {
   to: string;
   protocol: string;
   label: string;
+  /** `set` is a live assignment. `documented` is a commented template key. */
+  state?: "set" | "documented" | string;
+  provenance?: { file?: string; rule?: string; line?: number };
+  /** Every source of this edge. The first is also `provenance`. */
+  provenances?: { file?: string; rule?: string; line?: number }[];
 }
 
 export interface StackTopology {

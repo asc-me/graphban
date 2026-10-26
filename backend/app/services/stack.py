@@ -981,8 +981,11 @@ _NODE_KEYS = {
     "external": frozenset({"id", "label", "provenance", "env"}),
     "unresolved": frozenset({"id", "label", "provenance", "env"}),
 }
-_EDGE_KEYS = frozenset({"from", "to", "protocol", "label", "provenance", "env"})
+_EDGE_KEYS = frozenset({
+    "from", "to", "protocol", "label", "provenance", "provenances", "env", "state",
+})
 _PROV_KEYS = frozenset({"file", "rule", "line"})
+_EDGE_STATES = frozenset({"set", "documented"})
 _FORBIDDEN_KEYS = frozenset({
     "value", "env_value", "secret", "password", "token", "api_key", "credential",
 })
@@ -1197,13 +1200,23 @@ def _fold_app_record(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
         if not src or not dst:
             logger.debug("app topology edge dropped; endpoint not in the record")
             continue
-        edges.append({
+        folded: dict[str, Any] = {
             "from": src,
             "to": dst,
             "protocol": str(edge.get("protocol") or ""),
             "label": str(edge.get("label") or ""),
             "provenance": _prov_dict(edge.get("provenance")),
-        })
+        }
+        # A second source of the same edge is part of the map. Dropping it here
+        # would make the posted record look like the first file was the only one.
+        extra_provs = edge.get("provenances")
+        if isinstance(extra_provs, list) and extra_provs:
+            folded["provenances"] = [
+                _prov_dict(item) for item in extra_provs if isinstance(item, dict)
+            ]
+        if edge.get("state") in _EDGE_STATES:
+            folded["state"] = edge["state"]
+        edges.append(folded)
 
 
 def _err(errors: list[dict[str, str]], path: str, reason: str) -> None:
@@ -1253,6 +1266,10 @@ def _provenance(item: dict, prefix: str, errors: list[dict[str, str]]) -> dict |
     if not isinstance(prov, dict):
         _err(errors, path, "must be an object")
         return None
+    return _one_provenance(prov, path, errors)
+
+
+def _one_provenance(prov: dict, path: str, errors: list[dict[str, str]]) -> dict | None:
     for key in prov:
         if key in _FORBIDDEN_KEYS:
             _err(errors, f"{path}.{key}", _SECRET_REASON)
@@ -1287,6 +1304,37 @@ def _provenance(item: dict, prefix: str, errors: list[dict[str, str]]) -> dict |
     if line is not None:
         out["line"] = line
     return out
+
+
+def _provenances(item: dict, prefix: str, errors: list[dict[str, str]]) -> list[dict] | None:
+    """Every source of one edge. Absent is fine; a present value must be a list of provenance objects."""
+    if "provenances" not in item or item["provenances"] is None:
+        return None
+    raw = item["provenances"]
+    path = f"{prefix}.provenances"
+    if not isinstance(raw, list):
+        _err(errors, path, "must be a list")
+        return None
+    out: list[dict] = []
+    for index, prov in enumerate(raw):
+        item_path = f"{path}[{index}]"
+        if not isinstance(prov, dict):
+            _err(errors, item_path, "must be an object")
+            continue
+        parsed = _one_provenance(prov, item_path, errors)
+        if parsed is not None:
+            out.append(parsed)
+    return out
+
+
+def _edge_state(item: dict, prefix: str, errors: list[dict[str, str]]) -> str:
+    if "state" not in item or item["state"] is None or item["state"] == "":
+        return ""
+    state = item["state"]
+    if not isinstance(state, str) or state not in _EDGE_STATES:
+        _err(errors, f"{prefix}.state", "must be set or documented")
+        return ""
+    return state
 
 
 def _optional_env(item: dict, prefix: str, errors: list[dict[str, str]]) -> str:
@@ -1461,6 +1509,8 @@ def _validate_app_post(body: Any) -> tuple[list[dict[str, str]], dict | None]:
                         _err(errors, f"{prefix}.label", _SECRET_REASON)
                 prov = _provenance(item, prefix, errors)
                 env = _optional_env(item, prefix, errors)
+                provenances = _provenances(item, prefix, errors)
+                state = _edge_state(item, prefix, errors)
                 if src and src not in id_owner:
                     _err(errors, f"{prefix}.from", _DANGLING)
                 if dst and dst not in id_owner:
@@ -1478,6 +1528,10 @@ def _validate_app_post(body: Any) -> tuple[list[dict[str, str]], dict | None]:
                     }
                     if env:
                         edge["env"] = env
+                    if provenances:
+                        edge["provenances"] = provenances
+                    if state:
+                        edge["state"] = state
                     edges_norm.append(edge)
 
     seen: set[tuple[str, str]] = set()

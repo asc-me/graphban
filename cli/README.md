@@ -187,8 +187,10 @@ What it reads:
 
 - Compose files (`compose.yml`, `docker-compose.yml`, and the `compose.*` / `docker-compose.*` variants): a service with `build` is a deployable, a service with only `image` is infrastructure, and `depends_on` is an edge. `environment` contributes variable **names** and, when a value is a literal URL, the bare host.
 - Dockerfiles (`Dockerfile`, `Dockerfile.*`, `*.Dockerfile`), for the deployable they sit in and for a `FROM` image the table knows.
-- Dependency manifests (`package.json`, `pyproject.toml`, `requirements*.txt`, `go.mod`, `Cargo.toml`, `Gemfile`), matched against the known-SDK table and attributed to the deployable whose directory contains them.
-- `.env.example` only. A real `.env` is not a template and is not opened. Source files are not scanned.
+- Dependency manifests (`package.json`, `pyproject.toml`, `requirements*.txt`, `go.mod`, `Cargo.toml`, `Gemfile`). Every `package.json` and `Cargo.toml` is a component named from the manifest's `name`. The known-SDK table adds edges; it is not what decides whether the component exists. `file:` and `workspace:` dependencies (and a Cargo `path` or `workspace = true`) are internal edges. Other manifests still become a component only when a dependency hits the table, and that edge is attributed to the component whose directory contains the file.
+- Deploy manifests (`vercel.json`, `railway.json`, `railway.toml`, `fly.toml`, `netlify.toml`, `render.yaml`) are a platform node. The file body is not stored.
+- `.env.example` only. A real `.env` is not a template and is not opened. A commented `KEY=` is read and the edge is `state: documented` rather than `set`. `*_TOKEN`, `*_CLIENT_ID`, and `*_CLIENT_SECRET` count, and so do `*_BASE` and `*_ISSUER` when the value is a URL. A passphrase (`AUTH_SECRET`, `ENCRYPTION_KEY`) is not an edge unless a table row names it. Values stay out of the record.
+- Source files are not scanned. There is no source-HTTP pass in this command. stderr always prints a coverage line: files read, files that produced nothing, commented template keys skipped, and that source was not scanned. Exit 0 means the record was built.
 
 The known-SDK table ships at `cli/src/gban/data/stack_sdks.toml` and is versioned with `gban`. A checkout may add rows in `.graphban/stack-sdks.toml` (same shape); those rows are consulted first.
 

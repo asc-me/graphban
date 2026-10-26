@@ -149,6 +149,27 @@ protocol = "https"
 domains = ["sendgrid.com", "sendgrid.net"]
 
 [[sdk]]
+id = "resend"
+packages = ["resend"]
+node = "resend"
+group = "external"
+kind = ""
+label = "Resend"
+protocol = "https"
+domains = ["resend.com"]
+
+[[sdk]]
+id = "vercel"
+packages = ["@vercel/functions"]
+prefix = "@vercel/"
+node = "vercel"
+group = "external"
+kind = ""
+label = "Vercel"
+protocol = "https"
+domains = ["vercel.com", "vercel.app"]
+
+[[sdk]]
 id = "supabase"
 packages = ["supabase", "@supabase/supabase-js"]
 node = "supabase"
@@ -175,3 +196,13 @@ group = "infrastructure"
 kind = "redis"
 label = "Redis"
 protocol = "redis"
+
+[[env]]
+id = "creem"
+names = ["CREEM_API_KEY"]
+node = "creem"
+group = "external"
+kind = ""
+label = "Creem"
+protocol = "https"
+domains = ["creem.io"]

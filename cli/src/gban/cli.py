@@ -433,12 +433,14 @@ def cmd_stack(args) -> int:
     start = Path(args.repo).expanduser() if args.repo else Path.cwd()
     project = (config.resolve(args.project, config.PROJECT_ENV, "project") or "").strip()
     try:
-        record, warnings = stackmap.build_record(start, project_id=project)
+        record, warnings, coverage = stackmap.build_record(start, project_id=project)
     except stackmap.MapError as exc:
         print(f"{PROG}: {exc}", file=sys.stderr)
         return EXIT_REFUSED
     for warning in warnings:
         print(f"{PROG}: {warning}", file=sys.stderr)
+    # Always. A three-node map that exits 0 is not a finished topology.
+    print(f"{PROG}: {coverage}", file=sys.stderr)
     text = stackmap.canonical(record)
     if args.dry_run:
         sys.stdout.write(text)

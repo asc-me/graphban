@@ -199,6 +199,34 @@ def test_missing_provenance_is_422_and_the_previous_record_stays(client, auth, m
     assert not any(n["id"] == "app:worker" for n in body["nodes"])
 
 
+def test_an_edge_keeps_every_provenance_and_a_documented_state(client, auth, monkeypatch):
+    _head(monkeypatch, SHA)
+    key = _key(client, auth)
+    body = _body()
+    body["edges"][0]["state"] = "documented"
+    body["edges"][0]["provenances"] = [
+        {"file": "compose.yml", "rule": "services.api.depends_on", "line": 18},
+        {"file": ".env.example", "rule": "env.template", "line": 4},
+    ]
+    r = _post(client, key, body)
+    assert r.status_code == 200, r.text
+    stored = r.json()["edges"][0]
+    assert stored["state"] == "documented"
+    assert [item["file"] for item in stored["provenances"]] == ["compose.yml", ".env.example"]
+
+    got = _get(client, auth)
+    edge = next(e for e in got["edges"] if e["to"] == "infra:db")
+    assert edge["state"] == "documented"
+    assert [item["file"] for item in edge["provenances"]] == ["compose.yml", ".env.example"]
+
+    refused = _body(mapped_sha=SHA2)
+    refused["edges"][0]["state"] = "guessed"
+    bad = _post(client, key, refused)
+    assert bad.status_code == 422, bad.text
+    assert {"path": "edges[0].state", "reason": "must be set or documented"} in bad.json()["detail"]
+    assert _get(client, auth)["mapping"]["mapped_sha"] == SHA
+
+
 def test_a_dangling_edge_writes_nothing(client, auth, monkeypatch):
     _head(monkeypatch, SHA)
     key = _key(client, auth)

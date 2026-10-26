@@ -11,12 +11,17 @@ half-parsed into a map that looks complete.
 
 What this refuses to do, on purpose:
 
-- Source code is not scanned. Raw HTTP calls are the later agent pass.
+- Source code is not scanned. This command has no source-HTTP pass. A URL that
+  appears only in application code is absent, and the coverage line says so.
+  Exit 0 means the record was built, not that the topology is complete.
 - Env **values** never enter the record. A host is taken only from a literal
   URL in a template, and stored as the bare host (`api.stripe.com`). The posted
   shape rejects any string containing `://`, so a URL with a scheme would 422
   the whole post.
 - `.env` is not a template. Only `.env.example` and compose `environment:` keys.
+  In `.env.example`, a commented `KEY=` is read and the edge is `documented`
+  rather than `set`. A passphrase (`AUTH_SECRET`, `ENCRYPTION_KEY`) is not an
+  edge unless a table row names it.
 - A `depends_on`, `external: true`, or `extends.file` that names something this
   file does not define becomes an `unresolved` node. It is not a failure and it
   is not dropped.
@@ -77,6 +82,25 @@ _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _INTERP = re.compile(r"\$\{([^}]*)\}")
 _URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'`<>]+")
 _PKG_SPLIT = re.compile(r"[\s<>=~!;,\[]")
+# Words that do not name a vendor. `DESKTOP_GITHUB_TOKEN` is GitHub; `NEXT_PUBLIC_GOOGLE_API_KEY` is Google.
+_ENV_NOISE = frozenset({
+    "API", "KEY", "TOKEN", "CLIENT", "SECRET", "ID", "URL", "BASE", "URI", "URIS",
+    "NEXT", "PUBLIC", "DESKTOP", "MODEL", "ISSUER", "WEBHOOK", "APP",
+})
+_VENDOR_LABEL = {"github": "GitHub", "xai": "xAI", "openai": "OpenAI"}
+# A filename that is the platform. The file body is not stored.
+_DEPLOY = {
+    "vercel.json": ("vercel", "Vercel"),
+    "railway.json": ("railway", "Railway"),
+    "railway.toml": ("railway", "Railway"),
+    "fly.toml": ("fly", "Fly"),
+    "netlify.toml": ("netlify", "Netlify"),
+    "render.yaml": ("render", "Render"),
+}
+_ASSIGNMENTS = re.compile(r"(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)\s*=")
+# A comment is an assignment only when it starts as one. `version=2024` later
+# in a sentence is prose, and treating it as KEY= would drop the URL beside it.
+_COMMENT_ASSIGNMENT = re.compile(r"^(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=")
 
 
 class MapError(Exception):
@@ -734,9 +758,148 @@ def literal_hosts(value: str) -> list[tuple[str, str]]:
     return found
 
 
-def _interesting_env(name: str) -> bool:
-    return bool(_IDENT.fullmatch(name)) and (
-        name.endswith("_API_KEY") or name.endswith("_URL"))
+def _interesting_env(name: str, raw: str = "") -> bool:
+    """A variable name that is an integration, not a passphrase or a plain setting.
+
+    `*_BASE` and `*_ISSUER` count only when the value is a URL. `AUTH_SECRET`
+    and `CREEM_WEBHOOK_SECRET` do not. A table row can still name either one.
+    """
+    if not _IDENT.fullmatch(name):
+        return False
+    if name.endswith("_CLIENT_SECRET"):
+        return True
+    if name.endswith(("_API_KEY", "_URL", "_TOKEN", "_CLIENT_ID")):
+        return True
+    if name.endswith(("_BASE", "_ISSUER")) and literal_hosts(raw):
+        return True
+    return False
+
+
+def _vendor_from_env(name: str) -> tuple[str, str]:
+    parts = [part for part in name.split("_") if part and part not in _ENV_NOISE]
+    token = parts[0] if parts else name
+    node = token.lower()
+    label = _VENDOR_LABEL.get(node)
+    if label is None:
+        label = token if token.isupper() and len(token) <= 4 else token.title()
+    return node, label
+
+
+def _is_named_manifest(path: Path) -> bool:
+    """package.json and Cargo.toml are components even when no dependency is known."""
+    return path.name.lower() in ("package.json", "cargo.toml")
+
+
+def _is_deploy(path: Path) -> bool:
+    return path.name.lower() in _DEPLOY
+
+
+def _manifest_name(path: Path, text: str) -> str | None:
+    name = path.name.lower()
+    try:
+        if name == "package.json":
+            data = json.loads(text)
+            if isinstance(data, dict) and isinstance(data.get("name"), str):
+                got = data["name"].strip()
+                return got or None
+        if name == "cargo.toml":
+            data = tomllib.loads(text)
+            if isinstance(data, dict):
+                package = data.get("package")
+                if isinstance(package, dict) and isinstance(package.get("name"), str):
+                    got = package["name"].strip()
+                    if got:
+                        return got
+                workspace = data.get("workspace")
+                if isinstance(workspace, dict):
+                    meta = workspace.get("package")
+                    if isinstance(meta, dict) and isinstance(meta.get("name"), str):
+                        got = meta["name"].strip()
+                        return got or None
+    except (ValueError, tomllib.TOMLDecodeError):
+        return None
+    return None
+
+
+def _internal_deps(path: Path, text: str) -> list[tuple[str, str, str, int]]:
+    """`(dependency, kind, target, line)` for `file:` / path and workspace links.
+
+    `kind` is `file` or `workspace`. `target` is a relative path or, for a
+    workspace link with no path, the text after `workspace:` (`*` counts).
+    Version ranges are not edges.
+    """
+    name = path.name.lower()
+    if name == "package.json":
+        return _json_internal(text)
+    if name == "cargo.toml":
+        return _cargo_internal(text)
+    return []
+
+
+def _json_internal(text: str) -> list[tuple[str, str, str, int]]:
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    out: list[tuple[str, str, str, int]] = []
+    for key in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
+        block = data.get(key)
+        if not isinstance(block, dict):
+            continue
+        for dep, spec in block.items():
+            if not isinstance(spec, str):
+                continue
+            kind = ""
+            target = ""
+            if spec.startswith(("file:", "link:")):
+                kind, target = "file", spec.split(":", 1)[1].strip()
+            elif spec.startswith("workspace:"):
+                kind, target = "workspace", spec.split(":", 1)[1].strip()
+            if kind:
+                out.append((str(dep), kind, target, _line_of(text, str(dep))))
+    return out
+
+
+def _cargo_internal(text: str) -> list[tuple[str, str, str, int]]:
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    out: list[tuple[str, str, str, int]] = []
+    for key in ("dependencies", "dev-dependencies", "build-dependencies"):
+        block = data.get(key)
+        if not isinstance(block, dict):
+            continue
+        for dep, spec in block.items():
+            if not isinstance(spec, dict):
+                continue
+            path = spec.get("path")
+            if isinstance(path, str) and path.strip():
+                out.append((str(dep), "file", path.strip(), _line_of(text, str(dep))))
+            elif spec.get("workspace") is True:
+                # `renamed = { package = "crate-b", workspace = true }` resolves
+                # to crate-b. The edge label stays the key the manifest wrote.
+                renamed = spec.get("package")
+                pkg = renamed.strip() if isinstance(renamed, str) else ""
+                out.append((str(dep), "workspace", pkg, _line_of(text, str(dep))))
+    return out
+
+
+def _inside(repo: Path, manifest: Path, rel: str) -> str | None:
+    raw = rel.strip().strip("'\"")
+    if not raw or "://" in raw:
+        return None
+    try:
+        target = (manifest.parent / raw).resolve()
+        got = target.relative_to(repo.resolve())
+    except (OSError, ValueError):
+        return None
+    text = got.as_posix()
+    return "" if text == "." else text
 
 
 # ── record ───────────────────────────────────────────────────────────────────
@@ -854,6 +1017,11 @@ class _Builder:
         self.by_dir: dict[str, str] = {}
         self.kind_of: dict[str, str] = {}
         self.warnings: list[str] = []
+        self.files_read: list[str] = []
+        self.produced: set[str] = set()
+        self.commented_skipped = 0
+        # Manifest `name` → component id, for workspace: links that name a package.
+        self.by_package: dict[str, str] = {}
         # Which compose services name an env variable, and which read a template
         # through `env_file:`. Every service counts, not only the ones that build a
         # component: a repo-root template is attributed from these.
@@ -889,6 +1057,7 @@ class _Builder:
             node["env"] = env
         self.components[id_] = node
         self.by_dir[directory] = id_
+        self._produced(prov)
         return id_
 
     def add_infra(self, id_: str, label: str, kind: str, prov: dict, env: str = "") -> str:
@@ -898,6 +1067,7 @@ class _Builder:
         if node is None:
             node = {"id": id_, "label": label or id_, "kind": kind, "provenance": prov}
             self.infra[id_] = node
+            self._produced(prov)
         self.kind_of[id_] = node.get("kind") or kind
         self._note_env(node, env)
         return id_
@@ -909,6 +1079,7 @@ class _Builder:
         if node is None:
             node = {"id": id_, "label": label or id_, "provenance": prov}
             self.external[id_] = node
+            self._produced(prov)
         self._note_env(node, env)
         return id_
 
@@ -920,19 +1091,52 @@ class _Builder:
                 return node["id"]
         id_ = self._fresh(name)
         self.unresolved[id_] = {"id": id_, "label": name, "provenance": prov}
+        self._produced(prov)
         return id_
 
     def add_edge(self, src: str, dst: str, protocol: str, label: str,
-                 prov: dict, env: str = "") -> None:
+                 prov: dict, env: str = "", state: str = "set") -> None:
         if not src or not dst or src == dst or not protocol:
             return
+        if state not in ("set", "documented"):
+            state = "set"
         key = (src, dst, protocol)
         edge = self.edges.get(key)
         if edge is None:
             edge = {"from": src, "to": dst, "protocol": protocol, "label": label,
-                    "provenance": prov}
+                    "provenance": prov, "provenances": [dict(prov)], "state": state}
             self.edges[key] = edge
+        else:
+            # The first label and provenance stay. A later rule is still in the record.
+            self._remember(edge, prov)
+            if state == "set":
+                edge["state"] = "set"
         self._note_env(edge, env)
+        self._produced(prov)
+
+    def _remember(self, edge: dict, prov: dict) -> None:
+        have = edge.setdefault("provenances", [dict(edge["provenance"])])
+        if not any(
+            item.get("file") == prov.get("file")
+            and item.get("rule") == prov.get("rule")
+            and item.get("line") == prov.get("line")
+            for item in have
+        ):
+            have.append(dict(prov))
+
+    def _produced(self, prov: dict) -> None:
+        file = prov.get("file") if isinstance(prov, dict) else None
+        if isinstance(file, str) and file:
+            self.produced.add(file)
+
+    def coverage_line(self) -> str:
+        empty = len([name for name in self.files_read if name not in self.produced])
+        return (
+            f"coverage: {len(self.files_read)} files read, "
+            f"{empty} produced nothing, "
+            f"{self.commented_skipped} commented template keys skipped; "
+            f"source was not scanned"
+        )
 
     def _note_env(self, node: dict, env: str) -> None:
         if not env or not _IDENT.fullmatch(env):
@@ -1003,7 +1207,7 @@ class _Builder:
             if found:
                 return found
             return self.add_infra(LOCAL_NODE, "this machine", "local", prov, env)
-        row = match_domain(host, self.table["sdk"])
+        row = match_domain(host, self.table["sdk"]) or match_domain(host, self.table["env"])
         if row is not None:
             return self.ensure_row_node(row, prov, env)
         if "." in host:
@@ -1011,45 +1215,67 @@ class _Builder:
         return self.add_unresolved(host, prov)
 
     def apply_env_name(self, name: str, raw: str, line: int, file: str,
-                       sources: list[str], rule: str) -> None:
-        if not _interesting_env(name):
-            return
-        # `raw` is read for hosts and then dropped. It is not stored.
-        hosts = literal_hosts(raw) if name.endswith("_URL") else []
+                       sources: list[str], rule: str, state: str = "set") -> bool:
         exact = match_env(name, self.table["env"])
+        if not _interesting_env(name, raw) and exact is None:
+            return False
+        # `raw` is read for hosts and then dropped. It is not stored.
+        # The node is opened even when no component can own the edge: a name
+        # the template declares and compose never mentions is not "absent".
+        hosts = literal_hosts(raw) if (
+            name.endswith(("_URL", "_BASE", "_ISSUER")) or "://" in raw
+        ) else []
         prov = _provenance(file, rule, line)
+        targets: list[tuple[str, str]] = []
         if hosts:
-            for protocol, host in hosts:
-                target = self.node_for_host(host, protocol, prov, name, exact)
-                for src in sources:
-                    self.add_edge(src, target, protocol, name, prov, name)
-            return
-        if exact is not None:
-            target = self.ensure_row_node(exact, prov, name)
-            protocol = str(exact.get("protocol") or "tcp")
+            targets = [
+                (protocol, self.node_for_host(host, protocol, prov, name, exact))
+                for protocol, host in hosts
+            ]
+        elif exact is not None:
+            targets = [(str(exact.get("protocol") or "tcp"),
+                        self.ensure_row_node(exact, prov, name))]
+        elif name.endswith(("_API_KEY", "_TOKEN", "_CLIENT_ID", "_CLIENT_SECRET")):
+            targets = [("https", self._from_api_key(name, prov))]
+        if not targets or not sources:
+            return False
+        for protocol, target in targets:
             for src in sources:
-                self.add_edge(src, target, protocol, name, prov, name)
-            return
-        if name.endswith("_API_KEY"):
-            target = self._from_api_key(name, prov)
-            for src in sources:
-                self.add_edge(src, target, "https", name, prov, name)
+                self.add_edge(src, target, protocol, name, prov, name, state)
+        return True
 
     def _from_api_key(self, name: str, prov: dict) -> str:
-        tokens = [part.lower() for part in name.split("_") if part and part.upper() != "API"]
-        tokens = [part for part in tokens if part != "key"]
-        known = {}
-        for row in self.table["sdk"]:
+        tokens = [part for part in name.split("_") if part and part not in _ENV_NOISE]
+        known: dict[str, dict] = {}
+        for row in self.table["sdk"] + self.table["env"]:
             node = str(row.get("node") or "")
             if node:
-                known[node.lower()] = row
+                known.setdefault(node.lower(), row)
         for token in tokens:
-            row = known.get(token)
+            row = known.get(token.lower())
             if row is not None:
                 return self.ensure_row_node(row, prov, name)
-        prefix = tokens[0] if tokens else name.lower()
-        label = prefix.replace("-", " ").title()
-        return self.add_external(prefix, label, prov, name)
+        node, label = _vendor_from_env(name)
+        return self.add_external(node, label, prov, name)
+
+    def resolve_internal(self, manifest: Path, dep: str, kind: str, target: str,
+                         prov: dict) -> str | None:
+        if kind == "file" or (kind == "workspace" and target.startswith(".")):
+            directory = _inside(self.repo, manifest, target)
+            if directory is None:
+                # Outside the repo is not an in-repo crate that failed to resolve.
+                self.warnings.append(f"{prov.get('file')}: {dep} points outside the repo")
+                return None
+            found = self.by_dir.get(directory)
+            if found:
+                return found
+            return self.add_unresolved(dep, prov)
+        if kind == "workspace":
+            key = target if target and target not in {"*"} else dep
+            found = self.by_package.get(key)
+            if found:
+                return found
+        return self.add_unresolved(dep, prov)
 
     def finish(self, sha: str) -> dict:
         def nodes(pool: dict[str, dict]) -> list[dict]:
@@ -1235,12 +1461,18 @@ def _walk_dockerfile(builder: _Builder, path: Path) -> None:
         return
     file = _rel(path, builder.repo)
     directory = _rel(path.parent, builder.repo)
-    comp = builder.owner(directory)
+    comp = builder.by_dir.get(directory)
     if comp is None:
+        owner = builder.owner(directory)
+        # The root component is a prefix of every path. A Dockerfile in its own
+        # directory is that directory's deployable, not another edge of the root app.
+        root_only = bool(directory) and builder.by_dir.get("") == owner
+        if owner and not root_only:
+            comp = owner
+    if comp is None:
+        label = directory.rsplit("/", 1)[-1] if directory else "."
         comp = builder.add_component(
-            directory.rsplit("/", 1)[-1] if directory else ".", directory,
-            directory.rsplit("/", 1)[-1] if directory else ".",
-            _provenance(file, "dockerfile", 1))
+            label, directory, label, _provenance(file, "dockerfile", 1))
     for lineno, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if line.upper().startswith("FROM "):
@@ -1264,7 +1496,10 @@ def _walk_manifest(builder: _Builder, path: Path) -> None:
         return
     file = _rel(path, builder.repo)
     directory = _rel(path.parent, builder.repo)
-    comp = builder.owner(directory)
+    # Exact directory first. owner() would hand a nested crate to the app that contains it.
+    comp = builder.by_dir.get(directory)
+    if comp is None:
+        comp = builder.owner(directory)
     matched: list[tuple[dict, int]] = []
     for package, line in found:
         # A go module path (`github.com/foo/stripe`) matches on the full path
@@ -1287,35 +1522,72 @@ def _walk_manifest(builder: _Builder, path: Path) -> None:
                          str(row.get("label") or ""), prov)
 
 
-def _template_entries(text: str) -> list[tuple[str, str, int]]:
-    """`(name, raw_value, line)` for each assignment in an env template."""
-    entries: list[tuple[str, str, int]] = []
+def _unquote_value(raw_value: str) -> str:
+    raw_value = raw_value.strip()
+    if len(raw_value) >= 2 and raw_value[0] == raw_value[-1] and raw_value[0] in ("'", '"'):
+        return raw_value[1:-1]
+    return raw_value
+
+
+def _assignments_in(body: str) -> list[tuple[str, str]]:
+    found = list(_ASSIGNMENTS.finditer(body))
+    if not found:
+        return []
+    out: list[tuple[str, str]] = []
+    for index, match in enumerate(found):
+        start = match.end()
+        end = found[index + 1].start() if index + 1 < len(found) else len(body)
+        out.append((match.group(1), _unquote_value(body[start:end])))
+    return out
+
+
+def _template_entries(text: str) -> tuple[
+        list[tuple[str, str, int, bool]], list[tuple[str, str, int]]]:
+    """Assignments and, from comments only, hosts written in prose.
+
+    Each assignment is `(name, raw_value, line, documented)`. A `# KEY=` line
+    is documented. A comment that is not an assignment contributes
+    `(protocol, host, line)` and nothing else — the value is not returned.
+    """
+    entries: list[tuple[str, str, int, bool]] = []
+    prose: list[tuple[str, str, int]] = []
     for lineno, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
-        if not line or line.startswith("#"):
+        if not line:
+            continue
+        if line.startswith("#"):
+            body = line[1:].strip()
+            if _COMMENT_ASSIGNMENT.match(body):
+                body = body[len("export "):].strip() if body.startswith("export ") else body
+                for name, raw_value in _assignments_in(body):
+                    entries.append((name, raw_value, lineno, True))
+                continue
+            for protocol, host in literal_hosts(body):
+                prose.append((protocol, host, lineno))
             continue
         if line.startswith("export "):
             line = line[len("export "):].strip()
-        if "=" not in line:
-            continue
-        name, _, raw_value = line.partition("=")
-        name = name.strip()
-        if len(raw_value) >= 2 and raw_value[0] == raw_value[-1] and raw_value[0] in ("'", '"'):
-            raw_value = raw_value[1:-1]
-        entries.append((name, raw_value, lineno))
-    return entries
+        assigned = _assignments_in(line)
+        if not assigned and "=" in line:
+            name, _, raw_value = line.partition("=")
+            assigned = [(name.strip(), _unquote_value(raw_value))]
+        for name, raw_value in assigned[:1]:
+            if name:
+                entries.append((name, raw_value, lineno, False))
+    return entries, prose
 
 
 def _note_template(builder: _Builder, path: Path) -> None:
     text = _read_text(path)
     if text is None:
         return
-    names = {name for name, _raw, _line in _template_entries(text)}
+    entries, _prose = _template_entries(text)
+    names = {name for name, _raw, _line, _documented in entries}
     builder.template_names.setdefault(_rel(path.parent, builder.repo), set()).update(names)
 
 
 def _root_consumers(builder: _Builder, file: str,
-                    entries: list[tuple[str, str, int]]) -> dict[str, list[str]] | None:
+                    entries: list[tuple[str, str, int, bool]]) -> dict[str, list[str]] | None:
     """Per name, the compose services a repo-root template's variable belongs to.
 
     Any compose service counts, a plain `image:` one too. None only when no
@@ -1325,7 +1597,8 @@ def _root_consumers(builder: _Builder, file: str,
     component at the repo root, else to nobody. The node is still drawn.
     """
     readers = builder.env_file_users.get(file, set())
-    names = [name for name, _raw, _line in entries if _interesting_env(name)]
+    names = [name for name, raw, _line, _documented in entries
+             if _interesting_env(name, raw) or match_env(name, builder.table["env"])]
     if not readers and not any(name in builder.env_users for name in names):
         return None
     root = builder.by_dir.get("")
@@ -1349,15 +1622,24 @@ def _walk_env_template(builder: _Builder, path: Path) -> None:
         return
     file = _rel(path, builder.repo)
     directory = _rel(path.parent, builder.repo)
-    entries = _template_entries(text)
+    entries, prose = _template_entries(text)
     consumers: dict[str, list[str]] | None = None
     if directory == "":
         consumers = _root_consumers(builder, file, entries)
         sources = sorted(builder.components)
         if consumers is None and len(sources) > 1:
-            builder.warnings.append(
-                f"{file}: no compose service names its variables or reads it; "
-                f"its names are attributed to every component")
+            root = builder.by_dir.get("")
+            if root:
+                # A monorepo's root template documents the root package. Spreading
+                # it onto every crate makes one env file look like thirteen apps.
+                sources = [root]
+                builder.warnings.append(
+                    f"{file}: no compose service names its variables or reads it; "
+                    f"its names are attributed to the root component")
+            else:
+                builder.warnings.append(
+                    f"{file}: no compose service names its variables or reads it; "
+                    f"its names are attributed to every component")
     else:
         owner = builder.owner(directory)
         sources = [owner] if owner else []
@@ -1368,9 +1650,92 @@ def _walk_env_template(builder: _Builder, path: Path) -> None:
         # the names belong to, so the edges have somewhere to start.
         sources = [builder.add_component(
             ".", "", ".", _provenance(file, "env.template", 1))]
-    for name, raw_value, lineno in entries:
+    for name, raw_value, lineno, documented in entries:
         named = consumers.get(name, sources) if consumers is not None else sources
-        builder.apply_env_name(name, raw_value, lineno, file, named, "env.template")
+        drew = builder.apply_env_name(
+            name, raw_value, lineno, file, named, "env.template",
+            "documented" if documented else "set")
+        if documented and not drew:
+            builder.commented_skipped += 1
+    if directory == "":
+        if consumers is not None:
+            # The services that read the template own a host written in a comment.
+            # The root package is the fallback when none of them do.
+            prose_sources = sorted({cid for ids in consumers.values() for cid in ids})
+            if not prose_sources and "" in builder.by_dir:
+                prose_sources = [builder.by_dir[""]]
+        elif "" in builder.by_dir:
+            prose_sources = [builder.by_dir[""]]
+        else:
+            prose_sources = sources
+    else:
+        prose_sources = sources
+    for protocol, host, lineno in prose:
+        prov = _provenance(file, "env.comment", lineno)
+        target = builder.node_for_host(host, protocol, prov, "", None)
+        for src in prose_sources:
+            builder.add_edge(src, target, protocol, host, prov, state="documented")
+
+
+def _declare_manifest_component(builder: _Builder, path: Path) -> None:
+    """Every package.json and Cargo.toml is a component, named from its manifest."""
+    text = _read_text(path)
+    if text is None:
+        builder.warnings.append(f"skipped unreadable {_rel(path, builder.repo)}")
+        return
+    file = _rel(path, builder.repo)
+    directory = _rel(path.parent, builder.repo)
+    name = _manifest_name(path, text)
+    fallback = directory.rsplit("/", 1)[-1] if directory else "."
+    label = name or fallback
+    line = _line_of(text, name) if name else 1
+    existing = builder.by_dir.get(directory)
+    if existing:
+        # Compose already named this directory. The manifest still counts as read.
+        builder.produced.add(file)
+    else:
+        existing = builder.add_component(
+            label, directory, label, _provenance(file, "manifest", line))
+    if name:
+        builder.by_package.setdefault(name, existing)
+
+
+def _walk_internal(builder: _Builder, path: Path) -> None:
+    text = _read_text(path)
+    if text is None:
+        return
+    directory = _rel(path.parent, builder.repo)
+    comp = builder.by_dir.get(directory)
+    if comp is None:
+        return
+    file = _rel(path, builder.repo)
+    for dep, kind, target, line in _internal_deps(path, text):
+        prov = _provenance(file, f"manifest.{kind}", line)
+        dest = builder.resolve_internal(path, dep, kind, target, prov)
+        if dest:
+            builder.add_edge(comp, dest, "internal", dep, prov)
+
+
+def _walk_deploy(builder: _Builder, path: Path) -> None:
+    spec = _DEPLOY.get(path.name.lower())
+    if spec is None:
+        return
+    text = _read_text(path)
+    if text is None:
+        builder.warnings.append(f"skipped unreadable {_rel(path, builder.repo)}")
+        return
+    node_id, label = spec
+    file = _rel(path, builder.repo)
+    directory = _rel(path.parent, builder.repo)
+    prov = _provenance(file, f"deploy.{node_id}", 1)
+    target = builder.add_external(node_id, label, prov)
+    comp = builder.by_dir.get(directory)
+    if comp is None:
+        comp = builder.owner(directory)
+    if comp is None:
+        fallback = directory.rsplit("/", 1)[-1] if directory else "."
+        comp = builder.add_component(fallback, directory, fallback, prov)
+    builder.add_edge(comp, target, "https", label, prov)
 
 
 def _sha(repo: Path) -> str:
@@ -1403,11 +1768,13 @@ def find_root(start: Path) -> Path:
     return start
 
 
-def build_record(start: Path, *, project_id: str = "") -> tuple[dict, list[str]]:
-    """The record, and warnings for files that were skipped.
+def build_record(start: Path, *, project_id: str = "") -> tuple[dict, list[str], str]:
+    """The record, warnings, and a coverage line.
 
     Two calls on the same tree return equal records. The record carries no
-    timestamp and no env value.
+    timestamp and no env value. The coverage line is not part of the record:
+    exit 0 with a short map is not a complete topology, and the line says what
+    was read and what produced nothing. Source files are not in that count.
     """
     repo = find_root(start)
     # HEAD first: the files read are HEAD's tracked files, so a repo with no commit
@@ -1416,23 +1783,57 @@ def build_record(start: Path, *, project_id: str = "") -> tuple[dict, list[str]]
     table = load_table(repo)
     builder = _Builder(repo, project_id.strip(), table)
     files = sorted(_iter_files(repo), key=lambda path: _rel(path, repo))
+    compose: list[Path] = []
+    dockerfiles: list[Path] = []
+    named: list[Path] = []
+    manifests: list[Path] = []
+    templates: list[Path] = []
+    deploys: list[Path] = []
     for path in files:
+        rel = _rel(path, repo)
         if _is_compose(path):
-            _walk_compose(builder, path)
-    for path in files:
-        if _is_dockerfile(path):
-            _walk_dockerfile(builder, path)
-    for path in files:
-        if _is_manifest(path):
-            _walk_manifest(builder, path)
-    templates = [path for path in files if path.name == ".env.example"]
+            builder.files_read.append(rel)
+            compose.append(path)
+        elif _is_dockerfile(path):
+            builder.files_read.append(rel)
+            dockerfiles.append(path)
+        elif _is_named_manifest(path):
+            builder.files_read.append(rel)
+            named.append(path)
+            manifests.append(path)
+        elif _is_manifest(path):
+            builder.files_read.append(rel)
+            manifests.append(path)
+        elif path.name == ".env.example":
+            builder.files_read.append(rel)
+            templates.append(path)
+        elif _is_deploy(path):
+            builder.files_read.append(rel)
+            deploys.append(path)
+    # Compose first, so a service keeps the id it was given. Named manifests
+    # next, so a Dockerfile in that directory attaches to the package instead
+    # of naming the directory and blocking the manifest. A Dockerfile with no
+    # package still becomes its own component.
+    for path in compose:
+        _walk_compose(builder, path)
+    for path in named:
+        _declare_manifest_component(builder, path)
+    for path in dockerfiles:
+        _walk_dockerfile(builder, path)
+    for path in manifests:
+        _walk_manifest(builder, path)
+    for path in named:
+        _walk_internal(builder, path)
     for path in templates:
         _note_template(builder, path)
     for path in templates:
         _walk_env_template(builder, path)
+    for path in deploys:
+        _walk_deploy(builder, path)
     if not (builder.components or builder.infra or builder.external or builder.unresolved):
-        raise MapError("nothing to map: no compose service, Dockerfile or known dependency")
-    return builder.finish(sha), builder.warnings
+        raise MapError(
+            "nothing to map: no compose service, Dockerfile, package, or known dependency")
+    return builder.finish(sha), builder.warnings, builder.coverage_line()
 
 
 def canonical(record: dict) -> str:
