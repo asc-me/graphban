@@ -569,9 +569,15 @@ def test_a_proposal_of_zero_over_a_live_roster_is_a_real_answer():
     assert real.uninformative is False
 
 
-def test_seats_beyond_the_cap_are_reported_not_silently_dropped(
+def test_seats_beyond_the_cap_run_when_a_slot_frees(
     git_repo: Path, tmp_path: Path, scripts, state: Path
 ):
+    """GRPH-929. `--max-workers` is how many run at once, not how many seats get a turn.
+
+    This used to assert `len(spawned) == 2` and `unused_seats == 3` for five seats at
+    `--max-workers 2`. That assertion was the bug: the other three were dropped and the
+    wave still looked finished. All five run, two at a time, and nothing is left over.
+    """
     workspace = tmp_path / "ws"
     wave = up(
         git_repo,
@@ -582,11 +588,306 @@ def test_seats_beyond_the_cap_are_reported_not_silently_dropped(
         state=state,
         workspace=workspace,
     )
-    assert len(wave.spawned) == 2
-    assert wave.unused_seats == 3, (
-        "a caller would have to infer this from len(spawned), and a short list reads as "
-        "'nothing went wrong'"
+    assert len(wave.spawned) == 5
+    assert len({c.branch for c in wave.spawned}) == 5
+    assert wave.unused_seats == 0
+    assert wave.unredeemed == []
+    assert wave.ok, (wave.reason, wave.failures)
+
+
+def test_seats_beyond_the_cap_run_serially_rather_than_being_dropped(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """The reported failure: six bound seats, `--max-workers 1`, and the supervisor
+    exited after the first child. Three seats and an adapter that exits at once is
+    the same shape. Break the refill — return before starting the seats still
+    waiting — and one child is spawned.
+    """
+    workspace = tmp_path / "ws"
+    wave = up(
+        git_repo,
+        _seats(3),
+        _factory(scripts, "works_then_exits"),
+        _server(workspace),
+        limits=Limits(max_workers=1),
+        state=state,
+        workspace=workspace,
     )
+    assert len(wave.spawned) == 3, (
+        f"spawned {len(wave.spawned)}; unused {wave.unused_seats} {wave.unredeemed}"
+    )
+    assert len({c.branch for c in wave.spawned}) == 3
+    assert wave.unused_seats == 0
+    assert wave.ok, (wave.reason, wave.failures)
+
+
+def test_seats_a_stopped_wave_cannot_redeem_are_named_with_a_reason(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """A missing adapter fails the same way for every seat. Each one is named, and
+    the wave does not exit as though it had finished. A count with no names is the
+    report that reads as a bug in the fleet.
+    """
+    workspace = tmp_path / "ws"
+    seats = _seats(3)
+    missing = tmp_path / "not-a-binary"
+    wave = up(
+        git_repo,
+        seats,
+        make_launch_factory("codex", [str(missing)]),
+        _server(workspace),
+        state=state,
+        workspace=workspace,
+    )
+    assert wave.ok is False
+    assert wave.reason != "idle"
+    assert wave.unused_seats == 3
+    assert [line.split(":", 1)[0] for line in wave.unredeemed] == [s.code for s in seats]
+    assert any("wave stopped after" in line for line in wave.unredeemed[1:])
+    out = io.StringIO()
+    report(wave, out=out)
+    printed = out.getvalue()
+    assert "3 seat(s) never redeemed" in printed
+    for seat in seats:
+        assert f"UNREDEEMED {seat.code}:" in printed
+
+
+def test_seats_past_max_children_are_named_and_the_wave_is_not_idle(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """`--max-children` is still the total, not a second concurrent cap. The seats
+    past it are the ones that genuinely cannot run, and a wave that drops them
+    exits non-zero with each one named.
+    """
+    workspace = tmp_path / "ws"
+    seats = _seats(3)
+    wave = up(
+        git_repo,
+        seats,
+        _factory(scripts, "works_then_exits"),
+        _server(workspace),
+        limits=Limits(max_workers=4, max_children=1),
+        state=state,
+        workspace=workspace,
+    )
+    assert len(wave.spawned) == 1
+    assert wave.unused_seats == 2
+    assert wave.reason == "seats-unredeemed"
+    assert wave.ok is False
+    assert [line.split(":", 1)[0] for line in wave.unredeemed] == [
+        seats[1].code, seats[2].code
+    ]
+    assert all("max-children" in line for line in wave.unredeemed)
+
+
+def test_a_partition_does_not_start_the_seats_still_waiting(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """GRPH-929 bounce. D-i: no new spawns while the server is unreachable.
+
+    The check before the first batch only sees `wave.offline`, the allocation
+    read. Once a child is running, a partition sets `partition.offline`, the
+    lease stops that child, and refill used to start the next seat anyway.
+    That child cannot register, so the wave pays for a worktree and a vendor
+    process to record never-registered.
+
+    Drop the guard at the top of `refill` and a second seat is spawned.
+    """
+    workspace = tmp_path / "ws"
+    seats = _seats(3)
+    server = _PartitionAfter(workspace, ttl=0.3, rosters=2)
+    polls = {"n": 0}
+
+    def bounded(seconds: float) -> None:
+        polls["n"] += 1
+        if polls["n"] > 40:
+            raise AssertionError(
+                "the wait loop polled 40 times without ending — the lease did not "
+                "stop the child, or refill started another one that cannot exit"
+            )
+        time.sleep(seconds)
+
+    wave = up(
+        git_repo,
+        seats,
+        _factory(scripts, "sleeper"),
+        server.client(),
+        limits=Limits(max_workers=1, registration_window=5.0),
+        state=state,
+        workspace=workspace,
+        poll=0.05,
+        sleep=bounded,
+    )
+    assert len(wave.spawned) == 1, (
+        f"spawned {len(wave.spawned)}; unused {wave.unused_seats} {wave.unredeemed}"
+    )
+    assert wave.spawned[0].stopped_because is Reason.LEASE_LAPSED
+    assert wave.partition.reached_ceiling is True
+    assert wave.unused_seats == 2
+    assert [line.split(":", 1)[0] for line in wave.unredeemed] == [
+        seats[1].code, seats[2].code
+    ]
+    assert all(
+        "server unreachable; no child was started" in line for line in wave.unredeemed
+    )
+    out = io.StringIO()
+    report(wave, out=out)
+    printed = out.getvalue()
+    assert "2 seat(s) never redeemed" in printed
+    for seat in seats[1:]:
+        assert f"UNREDEEMED {seat.code}:" in printed
+
+
+def test_a_free_slot_refills_while_a_sibling_is_still_running(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """GRPH-929. One long child must not hold the other slots until it exits.
+
+    Slot 1 sleeps. The other two exit 75 at once. A batch barrier starts the
+    third seat only after the sleeper exits, and a fast child reaped by
+    `watch_tick` used to lose its exit line and its observe record, because
+    only `_reap_all` wrote them and it skips a child already reaped.
+
+    The third seat's start has to fall inside the sleeper's run, and every
+    child — including the one that exited while a sibling was still running —
+    keeps an observe record and, for the 75s, the give-up line.
+    """
+    from gbfleet.observe import LOG_FILE
+
+    workspace = tmp_path / "ws"
+    script = tmp_path / "stagger.py"
+    script.write_text(
+        "import time\n"
+        "from pathlib import Path\n"
+        "if Path.cwd().name.endswith('-1'):\n"
+        "    time.sleep(2.5)\n"
+        "else:\n"
+        "    raise SystemExit(75)\n",
+        encoding="utf-8",
+    )
+    wave = up(
+        git_repo,
+        _seats(3),
+        make_launch_factory("fake", [str(scripts["python"]), str(script)]),
+        _server(workspace),
+        limits=Limits(max_workers=2),
+        state=state,
+        workspace=workspace,
+        poll=0.05,
+    )
+    assert len(wave.spawned) == 3, (
+        f"spawned {len(wave.spawned)}; unused {wave.unused_seats} {wave.unredeemed}"
+    )
+    by_slot = {c.worktree.name.rsplit("-", 1)[-1]: c for c in wave.spawned}
+    slow, third = by_slot["1"], by_slot["3"]
+    assert third.started_at - slow.started_at < 1.5, (
+        "the third seat waited for the whole batch; a free slot stayed idle"
+    )
+    fast = [by_slot["2"], by_slot["3"]]
+    for child in fast:
+        assert any(
+            str(child.pid) in line and "75" in line for line in wave.give_ups
+        ), wave.give_ups
+    records = [
+        json.loads(line)
+        for line in (state / LOG_FILE).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    observed = [r for r in records if r.get("event") == "child"]
+    assert len(observed) == 3, observed
+    by_pid = {r["pid"]: r for r in observed}
+    for child in wave.spawned:
+        assert child.pid in by_pid, observed
+    for child in fast:
+        assert by_pid[child.pid]["exit_code"] == 75
+
+
+def test_nothing_running_is_reaped_before_any_further_watch():
+    """The nothing-running path stays `_reap_all` before any `watch_tick`.
+
+    Rolling refill calls `watch_tick` only while some child is still running.
+    Putting `watch_tick` on the path where the batch has already exited is the
+    reap-steal: the publish ahead of the reap takes the child that dies in
+    that gap. Sabotage: call `watch_tick` after `sleep(poll)` and this fails.
+    """
+    import inspect
+
+    from gbfleet.supervisor import _wait_out
+
+    tail = inspect.getsource(_wait_out).rsplit("sleep(poll)", 1)[1]
+    assert "_reap_all(" in tail
+    assert "watch_tick(" not in tail, tail
+
+
+class _PartitionAfter:
+    """Answers until `rosters` fleet_status calls have succeeded, then drops the link.
+
+    The allocation read stays up, so the wave gets past the first-batch offline
+    check and starts a child. The partition opens in the watch loop, which is
+    the hole the up-front check does not cover.
+    """
+
+    def __init__(self, workspace: Path, ttl: float, rosters: int):
+        self.workspace = workspace
+        self.ttl = ttl
+        self.rosters_before_drop = rosters
+        self.reachable = True
+        self.rosters = 0
+
+    def client(self) -> Graphban:
+        return Graphban(
+            "http://gb.invalid", KEY, transport=httpx.MockTransport(self._handle),
+        )
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
+        body = json.loads(request.content)
+        tool = body["params"]["name"]
+        if tool == "fleet_status":
+            self.rosters += 1
+            if self.rosters > self.rosters_before_drop:
+                self.reachable = False
+        if not self.reachable:
+            raise httpx.ConnectError("no route to host")
+        if tool == "propose_allocation":
+            payload = {
+                "workers": 0,
+                "reviewers": 0,
+                "mapping": [],
+                "rationale": "no agents online — nothing to allocate",
+            }
+        else:
+            trees = sorted(
+                p for p in self.workspace.glob("*") if p.is_dir() and p.name != "logs"
+            )
+            payload = {
+                "agents": [
+                    {
+                        "id": f"GRPH-A{i + 1}",
+                        "worktree": str(p),
+                        "state": "working",
+                        "enrolled": True,
+                        "enrolment_id": f"seat-{i + 1}",
+                        "holdings": [],
+                    }
+                    for i, p in enumerate(trees)
+                ],
+                "presence_ttl_seconds": self.ttl,
+                "heartbeat_interval_seconds": self.ttl / 3,
+            }
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(payload)}],
+                    "structuredContent": payload,
+                },
+            },
+        )
 
 
 # --- the ways a wave goes wrong ---------------------------------------------------
