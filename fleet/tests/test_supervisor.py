@@ -22,7 +22,7 @@ from gbfleet.lock import RepoLocked, hold
 from gbfleet.seat import Seat
 from gbfleet.spawn import Child, Launch, Reason
 from gbfleet.supervisor import (
-    AllocationRead, Limits, Wave, WaveBase, resolve_wave_base, up,
+    AllocationRead, Limits, Wave, WaveBase, _start, resolve_wave_base, up,
 )
 from gbfleet.worktree import BaseBranchNotFound, Disposition, SEAT_FILES, Worktree, create, is_seat_file, orphans, reap, salvage_message
 from gbfleet.hostos import is_owner_only  # noqa: E402
@@ -306,6 +306,78 @@ def test_a_first_spawn_still_cuts_from_the_base(
     assert wave.resumed == [], wave.resumed
     assert wave.spawned[0].branch != leftover.branch
     assert wave.spawned[0].branch.startswith("gb/wave-")
+
+
+def test_a_later_seat_does_not_resume_a_sibling_branch_this_wave_took(
+    git_repo: Path, tmp_path: Path, scripts
+):
+    """GRPH-935. until reaps a child, then starts the next seat. The reaped branch
+    is an orphan by then, and it is still in `occupied`. Checking it out would put
+    the next child on a sibling's salvage.
+
+    An unbound seat may take any other salvage. It may not take one this wave
+    already spawned. The occupied branch sorts first, so `pop(0)` would resume it
+    if the skip were gone.
+
+    Sabotage: drop the `candidate.branch in taken` skip in `_start`. This child
+    starts on the sibling branch and `sibling.py` is in its tree.
+    """
+    import inspect
+    import subprocess
+
+    from gbfleet import supervisor as sup
+    from gbfleet import until as until_mod
+    from gbfleet.worktree import Worktree, choose_resume
+
+    # The skip is useless if the wave never passes the branches it already spawned.
+    # `up` does it for a takeover; `until` does it for the next seat after a reap.
+    assert "occupied=occupied" in inspect.getsource(sup.up)
+    assert "occupied=occupied" in inspect.getsource(until_mod._spawn_one)
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sibling = create(git_repo, workspace / "dead-a", "aaa", "1")
+    (sibling.path / "sibling.py").write_text("not-yours\n", encoding="utf-8")
+    reap(sibling, message=salvage_message("fake", ["GRPH-1"]))
+    other = create(git_repo, workspace / "dead-z", "zzz", "2")
+    (other.path / "other.py").write_text("take-this\n", encoding="utf-8")
+    reap(other, message=salvage_message("fake", ["GRPH-2"]))
+
+    rows = {
+        "GRPH-1": {"status": "next", "claimed_by": ""},
+        "GRPH-2": {"status": "next", "claimed_by": ""},
+    }
+    picked = [o.branch for o in choose_resume(orphans(git_repo), rows)]
+    assert picked[0] == sibling.branch, picked
+
+    wave = Wave()
+    client = _server(workspace, items=[
+        {"id": "GRPH-1", "status": "next", "claimed_by": ""},
+        {"id": "GRPH-2", "status": "next", "claimed_by": ""},
+    ])
+    started: list = []
+    try:
+        started = list(_start(
+            wave, _seats(1), _factory(scripts, "works_then_exits"),
+            git_repo, workspace, "wave", client, Limits(max_workers=1),
+            occupied={sibling.branch}, items=rows,
+        ))
+        assert wave.resumed == [other.branch], (wave.resumed, wave.resume_misses, wave.failures)
+        assert started and started[0].branch == other.branch
+        assert (started[0].worktree / "other.py").read_text(encoding="utf-8") == "take-this\n"
+        assert not (started[0].worktree / "sibling.py").exists()
+    finally:
+        for child in started:
+            if child.process.poll() is None:
+                child.process.terminate()
+                try:
+                    child.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.process.kill()
+            if child.worktree.exists():
+                reap(Worktree(
+                    path=child.worktree, branch=child.branch, repo=git_repo, base=child.base,
+                ))
 
 
 def test_remember_holdings_keeps_the_last_non_empty():
