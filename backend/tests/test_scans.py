@@ -697,3 +697,77 @@ def test_mcp_empty_findings_without_result_is_validation_error(client, auth):
     assert err["isError"] is True
     assert err["structuredContent"]["error"]["code"] == "validation"
     assert "complete" in err["structuredContent"]["error"]["message"]
+
+
+# ── GRPH-1126 · first-time due ───────────────────────────────────────────────
+
+
+def test_never_scanned_stub_and_deadcode_are_due_before_any_report(db):
+    due = scans_svc.scans_due(db, "core", head_sha="h1")
+    pairs = {(d["component"], d["category"]) for d in due["due"]}
+    assert ("api", "stub") in pairs
+    assert ("api", "deadcode") in pairs
+    assert ("web", "refactor") in pairs
+    assert ("web", "tests") in pairs
+
+
+def test_has_findings_at_head_is_not_due(db):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="pip-audit", path="web/", scanned_sha="h1",
+        findings=[{"severity": "high", "summary": "advisory", "path": "web/package.json"}],
+        result="complete",
+    )
+    due = scans_svc.scans_due(db, "core", head_sha="h1")["due"]
+    assert not any(d["component"] == "web" and d["category"] == "security" for d in due)
+
+
+def test_incomplete_stays_due(db):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="knip", path="web/", scanned_sha="h1",
+        findings=[{"severity": "low", "summary": "unused export", "path": "web/x.ts"}],
+        result="incomplete",
+    )
+    due = scans_svc.scans_due(db, "core", head_sha="h1")["due"]
+    assert any(d["component"] == "web" and d["category"] == "deadcode" for d in due)
+
+
+def _clean_all_scannable_at_head(db, project_id="core", head_sha="h1"):
+    """Every producer category clean or not_applicable on every default component."""
+    counts = {"passed": 1, "failed": 0, "skipped": 0}
+    for prefix, scanners in (
+        ("web/", ("pip-audit", "radon", "stubscan", "knip", "vitest")),
+        ("backend/", ("pip-audit", "radon", "stubscan", "vulture", "pytest")),
+        ("fleet/", ("pip-audit", "radon", "stubscan", "vulture", "pytest")),
+        ("cli/", ("pip-audit", "radon", "stubscan", "vulture", "pytest")),
+    ):
+        for sid in scanners:
+            kw = {"tests": counts} if sid in ("vitest", "pytest") else {}
+            scans_svc.record_scan(
+                db, project_id=project_id, scanner_id=sid, path=prefix, scanned_sha=head_sha,
+                findings=[], result="complete", **kw,
+            )
+
+
+def test_empty_due_names_why_not_all_clean(db):
+    _clean_all_scannable_at_head(db)
+    out = scans_svc.scans_due(db, "core", head_sha="h1")
+    assert out["due_count"] == 0
+    assert out["empty_reason"] in ("all_clean_or_not_applicable", "coverage_not_computable")
+
+
+def test_no_graph_project_empty_due_is_coverage_not_computable(db):
+    from app.db import SessionLocal
+    from app.models import Project
+
+    s = SessionLocal()
+    try:
+        pid = "no-graph-due-p58"
+        if not s.get(Project, pid):
+            s.add(Project(id=pid, name="No graph due", tag="NGDP"))
+            s.commit()
+        _clean_all_scannable_at_head(s, project_id=pid, head_sha="h1")
+        out = scans_svc.scans_due(s, pid, head_sha="h1")
+        assert out["due_count"] == 0
+        assert out["empty_reason"] == "coverage_not_computable"
+    finally:
+        s.close()

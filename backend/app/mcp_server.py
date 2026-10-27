@@ -1041,8 +1041,12 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "scans_due",
         "description": (
-            "Component×category pairs due for a (re)scan — never_scanned or stale "
-            "(GRPH-1035). Empty due is not all-clean; never_scanned security rows stay listed."
+            "Component×category pairs due for a (re)scan — never_scanned, stale, "
+            "tool_missing, or incomplete for security, coverage, stub, deadcode, refactor, "
+            "and tests (GRPH-1126). First-time never_scanned on stub/deadcode/refactor/tests "
+            "is listed. not_applicable, clean_at_sha, has_findings, and not_computable "
+            "coverage are not due. Empty due carries empty_reason (unmapped, "
+            "coverage_not_computable, or all_clean_or_not_applicable), not all-clean."
         ),
         "inputSchema": {
             "type": "object",
@@ -1728,6 +1732,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "properties": {
             "due": {"type": "array"},
             "due_count": {"type": "integer"},
+            "empty_reason": _NULLABLE_STR,
         },
     },
     "report_graphban_issue": {
