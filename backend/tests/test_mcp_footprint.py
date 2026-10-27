@@ -154,7 +154,8 @@ CEILING = 15060
 # 15050 -> 15049 (GRPH-1108). record_scan's "First category: security (...)" becomes the
 # refusal of an unknown scanner_id with no category; codegraph 1791 -> 1790. Headroom 11.
 # 15049 -> 15048 (GRPH-1125). `result` is fleet-only on record_scan; base prose trimmed.
-MEASURED_TOKENS = 15048
+# 15048 -> 15053 (GRPH-1126). scans_due gains empty_reason in its output schema.
+MEASURED_TOKENS = 15053
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

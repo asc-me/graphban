@@ -771,3 +771,44 @@ def test_no_graph_project_empty_due_is_coverage_not_computable(db):
         assert out["empty_reason"] == "coverage_not_computable"
     finally:
         s.close()
+
+
+def _describe_every_default_component(db, project_id="core", revision="h1"):
+    """Make coverage computable: code-graph nodes under each default prefix at head."""
+    from app.services import code_graph as code_svc
+
+    code_svc.describe_code(
+        db, project_id=project_id, revision=revision,
+        nodes=[
+            {"path": f"{prefix}m.py", "kind": "module", "summary": "m"}
+            for prefix in ("web/", "backend/", "fleet/", "cli/")
+        ],
+    )
+
+
+def test_findings_everywhere_empty_due_is_has_findings_not_all_clean(db):
+    """Bounce: has_findings cells fell through to all_clean_or_not_applicable."""
+    _describe_every_default_component(db)
+    for prefix in ("web/", "backend/", "fleet/", "cli/"):
+        for sid in ("pip-audit", "radon", "stubscan", "vulture", "pytest"):
+            kw = {"tests": {"passed": 1, "failed": 1, "skipped": 0}} if sid == "pytest" else {}
+            scans_svc.record_scan(
+                db, project_id="core", scanner_id=sid, path=prefix, scanned_sha="h1",
+                findings=[{"severity": "crit", "summary": "bad", "path": f"{prefix}m.py"}],
+                result="complete", **kw,
+            )
+    out = scans_svc.scans_due(db, "core", head_sha="h1")
+    assert out["due_count"] == 0, out["due"]
+    assert out["empty_reason"] == "has_findings"
+
+
+def test_all_clean_with_computable_coverage_is_all_clean(db):
+    _describe_every_default_component(db)
+    _clean_all_scannable_at_head(db)
+    health = scans_svc.component_health(db, "core", head_sha="h1")
+    assert all(
+        c["categories"]["coverage"]["state"] != "not_computable" for c in health["components"]
+    )
+    out = scans_svc.scans_due(db, "core", head_sha="h1")
+    assert out["due_count"] == 0, out["due"]
+    assert out["empty_reason"] == "all_clean_or_not_applicable"

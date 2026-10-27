@@ -734,6 +734,7 @@ def _scans_due_empty_reason(health: dict) -> str | None:
     if not components:
         return "unmapped"
     saw_not_computable_coverage = False
+    saw_findings = False
     for comp in components:
         for cat_key, cat in (comp.get("categories") or {}).items():
             if cat_key not in _SCANS_DUE_CATEGORIES:
@@ -743,6 +744,11 @@ def _scans_due_empty_reason(health: dict) -> str | None:
                 return None
             if cat_key == "coverage" and st == "not_computable":
                 saw_not_computable_coverage = True
+            if st == "has_findings":
+                saw_findings = True
+    # Findings at head are not due, but they are not clean either: name them first.
+    if saw_findings:
+        return "has_findings"
     if saw_not_computable_coverage:
         return "coverage_not_computable"
     return "all_clean_or_not_applicable"

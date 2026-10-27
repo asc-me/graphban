@@ -1041,12 +1041,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "scans_due",
         "description": (
-            "Component×category pairs due for a (re)scan — never_scanned, stale, "
-            "tool_missing, or incomplete for security, coverage, stub, deadcode, refactor, "
-            "and tests (GRPH-1126). First-time never_scanned on stub/deadcode/refactor/tests "
-            "is listed. not_applicable, clean_at_sha, has_findings, and not_computable "
-            "coverage are not due. Empty due carries empty_reason (unmapped, "
-            "coverage_not_computable, or all_clean_or_not_applicable), not all-clean."
+            "Cells due a scan: never_scanned (first-time too), stale, tool_missing, "
+            "incomplete. Empty due is not all-clean; empty_reason says why."
         ),
         "inputSchema": {
             "type": "object",
