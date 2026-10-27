@@ -18,6 +18,10 @@ counts an empty findings list cannot be told apart from a suite that collected n
 failing test is a finding; a run that executed zero tests is stored WITH a finding, never as
 clean; skips are written into the note rather than folded into the passes. The counts live
 in the note, not a column — a reader sees them where the scan's other context already is.
+
+History (GRPH-1128): a report never deletes an earlier one. Every report is a row; a cell
+reads the newest row per (scanner, path), and `scan_status` for a path returns every row
+newest first, each naming what cleared and what is new against the row before it.
 """
 from __future__ import annotations
 
@@ -26,7 +30,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import CodeRef, CodeScan, Item, ScanFinding
@@ -200,10 +204,11 @@ def record_scan(
     reported_by: str = "",
     tests: dict | None = None,
 ) -> dict:
-    """Upsert a scanner's report for `path` at `scanned_sha`.
+    """Record a scanner's report for `path` at `scanned_sha`.
 
     Empty `findings` is a deliberate clean result at that sha — not the same as never
-    having scanned. Replaces any prior row for the same (project, scanner_id, path).
+    having scanned. Prior rows for the same (project, scanner_id, path) are kept: the
+    newest is the cell, the older ones are its history (GRPH-1128).
     A tests-category scan also needs `tests` counts (see the module docstring).
     """
     sid = (scanner_id or "").strip()
@@ -265,18 +270,6 @@ def record_scan(
     elif tests is not None:
         raise ValueError(f"tests counts are only for the tests category, not {cat}")
 
-    # Replace prior result for this scanner+path (one live answer).
-    prior = list(db.scalars(
-        select(CodeScan).where(
-            CodeScan.project_id == project_id,
-            CodeScan.scanner_id == sid,
-            CodeScan.path == path_n,
-        )
-    ).all())
-    for old in prior:
-        db.execute(delete(ScanFinding).where(ScanFinding.scan_id == old.id))
-        db.delete(old)
-
     scan = CodeScan(
         id="cs_" + uuid.uuid4().hex[:12],
         project_id=project_id,
@@ -337,6 +330,45 @@ def _findings_for(db: Session, scan_id: str) -> list[dict]:
     ]
 
 
+def _same_finding(a: dict, b: dict) -> bool:
+    """Is `b` the same finding as `a`? The advisory id when BOTH carry one, else the exact
+    summary and the exact path. One-sided ids are not an advisory match, and the missing id
+    is never treated as a wildcard. No fuzzy match: a reworded summary is another finding."""
+    aa = str(a.get("advisory_id") or "").strip()
+    ba = str(b.get("advisory_id") or "").strip()
+    if aa and ba:
+        return aa == ba
+    return a.get("summary") == b.get("summary") and a.get("path") == b.get("path")
+
+
+def finding_diff(earlier: list[dict], later: list[dict]) -> dict:
+    """What cleared between two rows of one scanner+path, and what is new.
+
+    One-to-one: two identical findings on the earlier row and one on the later leaves one
+    cleared, not zero."""
+    remaining = list(earlier)
+    new: list[dict] = []
+    for f in later:
+        idx = next((i for i, e in enumerate(remaining) if _same_finding(e, f)), None)
+        if idx is None:
+            new.append(f)
+        else:
+            remaining.pop(idx)
+    return {"cleared": remaining, "new": new}
+
+
+def _newest_per_scanner_path(scans: list[CodeScan]) -> list[CodeScan]:
+    """The newest row per (scanner_id, path) — the cell. `scans` must be newest first."""
+    seen: set[tuple[str, str]] = set()
+    out: list[CodeScan] = []
+    for s in scans:
+        k = (s.scanner_id, s.path)
+        if k not in seen:
+            seen.add(k)
+            out.append(s)
+    return out
+
+
 def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) -> dict:
     """Three-state (+ stale) answer. Never defaults to clean."""
     if scan is None:
@@ -389,15 +421,16 @@ def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) 
 
 
 def _scans_for_prefix(db: Session, project_id: str, prefix: str) -> list[CodeScan]:
-    """Every live scan row whose path is under or equal to the component prefix.
+    """The newest row per (scanner_id, path) whose path is under or equal to the prefix.
 
-    Upsert already keeps one row per (scanner_id, path). Do not collapse to the latest
-    per scanner: a clean nested-path scan must not hide findings recorded on a parent.
+    Older rows of the same scanner+path are history, not the cell (GRPH-1128). Do not
+    collapse further to the latest per scanner: a clean nested-path scan must not hide
+    findings recorded on a parent.
     """
-    all_scans = list(db.scalars(
+    all_scans = _newest_per_scanner_path(list(db.scalars(
         select(CodeScan).where(CodeScan.project_id == project_id)
         .order_by(CodeScan.scanned_at.desc())
-    ).all())
+    ).all()))
     pref = prefix.rstrip("/")
     out: list[CodeScan] = []
     for s in all_scans:
@@ -593,6 +626,9 @@ def scan_status(
     """Read scan state for one path or the whole project.
 
     When `path` is a component prefix (or omitted), returns the overlay-shaped payload.
+    With `path`, every row for it is returned newest first — older rows of a scanner are
+    `current: false` history — and each row with an earlier one of the same scanner names
+    what `cleared` and what is `new` against that earlier row (GRPH-1128).
     """
     head = (head_sha or "").strip()
     if path:
@@ -604,13 +640,22 @@ def scan_status(
         if scanner_id:
             q = q.where(CodeScan.scanner_id == scanner_id.strip())
         scans = list(db.scalars(q.order_by(CodeScan.scanned_at.desc())).all())
+        found = {s.id: _findings_for(db, s.id) for s in scans}
+        current = {s.id for s in _newest_per_scanner_path(scans)}
         out = []
-        for s in scans:
-            out.append(_state_for_scan(s, _findings_for(db, s.id), head) | {
+        for i, s in enumerate(scans):
+            prev = next((o for o in scans[i + 1:] if o.scanner_id == s.scanner_id), None)
+            history = None
+            if prev is not None:
+                history = {"compared_to": prev.id, "compared_sha": prev.scanned_sha}
+                history |= finding_diff(found[prev.id], found[s.id])
+            out.append(_state_for_scan(s, found[s.id], head) | {
                 "path": s.path,
                 "category": s.category,
                 "scanner_id": s.scanner_id,
                 "scan_id": s.id,
+                "current": s.id in current,
+                "history": history,
             })
         if scanner_id and not out:
             return {
