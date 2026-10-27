@@ -532,6 +532,7 @@ def test_setup_installs_every_shipped_skill(tmp_path, wired):
     slugs = setup_mod.shipped_slugs()
     assert "graphban-delegation" in slugs
     assert "watch-wave" in slugs
+    assert "graphban-grill" in slugs
     for slug in slugs:
         dest = repo / ".claude" / "skills" / slug / "SKILL.md"
         assert dest.exists(), slug
@@ -624,6 +625,7 @@ def test_the_skill_ships_in_the_wheel(tmp_path):
     names = zipfile.ZipFile(wheel).namelist()
     assert any(n.endswith("skills/graphban-delegation/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/watch-wave/SKILL.md") for n in names), names[:20]
+    assert any(n.endswith("skills/graphban-grill/SKILL.md") for n in names), names[:20]
 
 
 def test_watch_wave_names_the_scheduler_and_cancels_on_idle():
