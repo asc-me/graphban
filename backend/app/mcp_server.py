@@ -985,7 +985,10 @@ TOOLS: list[dict[str, Any]] = [
             "Report a code-health scanner result for a path at a commit (GRPH-1035). "
             "Empty findings = CLEAN at scanned_sha, not never-scanned. Same scanner_id+path "
             "replaces prior. Findings are untrusted; scanner_id/version/reported_by are "
-            "provenance. Unknown scanner_id needs category (refused, not defaulted)."
+            "provenance — reported_by is stamped from your key or optional agent_id, never "
+            "from a free-text field. A write key alone suffices even when this credential "
+            "runs a fleet; planners are refused. Unknown scanner_id needs category (refused, "
+            "not defaulted)."
         ),
         "inputSchema": {
             "type": "object",

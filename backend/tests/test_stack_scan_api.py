@@ -1,9 +1,8 @@
 """GRPH-1047 — REST producer path for Stack code-health scans.
 
-`record_scan` shipped as an MCP tool (GRPH-1035) reachable only on a fleet-worker
-connection, so an operator or CI could not populate the Stack overlay. These cover the
-key-authed REST ingest that fixes that: it records exactly like the MCP tool, refuses a
-read-only caller, and never lets absence read as clean.
+`record_scan` shipped as an MCP tool (GRPH-1035) before REST ingest (GRPH-1047). MCP now
+accepts a write key without a fleet seat (GRPH-1129); these cover the key-authed REST
+path that matches it: refuses a read-only caller and never lets absence read as clean.
 """
 from __future__ import annotations
 

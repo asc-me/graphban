@@ -391,7 +391,8 @@ CORE_TOKENS = 8918
 # which is the argument for not funding it out of prose every key pays for.
 # GRPH-1089: bound_only is fleet-only args, not base TOOLS, so fleet stays 1100.
 # codegraph 1791 → 1790: record_scan refuses an unknown scanner with no category (GRPH-1108).
-TIER_TOKENS = {"prd": 1998, "codegraph": 1790, "fleet": 1100, "misc": 1238}
+# codegraph 1790 -> 1836 (GRPH-1129): record_scan description names key-only ingest.
+TIER_TOKENS = {"prd": 1998, "codegraph": 1836, "fleet": 1100, "misc": 1238}
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.

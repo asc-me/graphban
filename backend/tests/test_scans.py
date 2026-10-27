@@ -298,6 +298,61 @@ def test_mcp_record_scan_with_agent_id_stamps_the_agent(client, auth):
     assert r.json()["result"]["structuredContent"]["reported_by"] == "GRPH-A9"
 
 
+@pytest.fixture()
+def fleet_scan_key(client, auth):
+    return client.post(
+        "/api/api-keys", json={"name": "scan-fleet", "scopes": ["read", "write"]},
+        headers=auth,
+    ).json()["plaintext"]
+
+
+def _live_worker_on_key(client, key):
+    r = _mcp(client, {"X-API-Key": key}, "register_agent", {"label": "w", "role_hint": "worker"})
+    sc = r.json()["result"]["structuredContent"]
+    assert sc["active_role"] == "worker"
+    return sc["agent_id"]
+
+
+def test_mcp_record_scan_key_only_on_a_live_fleet_credential(client, fleet_scan_key):
+    """THE CALL. Sabotage: drop the unidentified bypass for record_scan — this fails."""
+    _live_worker_on_key(client, fleet_scan_key)
+    r = _mcp(client, {"X-API-Key": fleet_scan_key}, "record_scan", {
+        "scanner_id": "bandit", "path": "backend/", "scanned_sha": "f00d",
+        "findings": [], "project_id": "core",
+    })
+    assert r.status_code == 200, r.text
+    sc = r.json()["result"]["structuredContent"]
+    assert "error" not in sc, sc
+    assert sc["reported_by"] == "key:scan-fleet"
+
+
+def test_mcp_record_scan_refuses_a_registered_planner(client, fleet_scan_key):
+    _live_worker_on_key(client, fleet_scan_key)
+    pr = _mcp(client, {"X-API-Key": fleet_scan_key}, "register_agent",
+              {"label": "p", "role_hint": "planner"})
+    agent_id = pr.json()["result"]["structuredContent"]["agent_id"]
+    r = _mcp(client, {"X-API-Key": fleet_scan_key}, "record_scan", {
+        "scanner_id": "bandit", "path": "backend/", "scanned_sha": "f00d",
+        "findings": [], "project_id": "core", "agent_id": agent_id,
+    })
+    err = r.json()["result"]["structuredContent"]["error"]
+    assert err["code"] == "unauthorized", err
+    assert "planners do not record scans" in err["message"]
+    assert "planner" in err["message"]
+
+
+def test_mcp_record_scan_allows_a_registered_worker(client, fleet_scan_key):
+    agent_id = _live_worker_on_key(client, fleet_scan_key)
+    r = _mcp(client, {"X-API-Key": fleet_scan_key}, "record_scan", {
+        "scanner_id": "bandit", "path": "backend/", "scanned_sha": "f00d",
+        "findings": [], "project_id": "core", "agent_id": agent_id,
+    })
+    assert r.status_code == 200, r.text
+    sc = r.json()["result"]["structuredContent"]
+    assert "error" not in sc, sc
+    assert sc["reported_by"] == agent_id
+
+
 def _api(db):
     return next(c for c in scans_svc.component_health(db, "core", head_sha="h1")["components"]
                 if c["id"] == "api")
