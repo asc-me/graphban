@@ -3,10 +3,14 @@
 Producer = agent-with-repo (MCP `record_scan`), same shape as `describe_code`. The server
 stores + serves; it never runs the scanner. A health badge NEVER defaults to green:
 
-  clean_at_sha  — a scan exists, zero findings, scanned_sha matches head
+  clean_at_sha  — a scan exists, zero findings, scanned_sha matches head, result complete
   has_findings  — a scan exists with findings (at head, or head unknown)
   never_scanned — no scan for this category × component
   stale         — a scan exists but scanned_sha ≠ head (result does not cover what's running)
+  tool_missing  — scanner not on the machine (producer result, not never_scanned)
+  not_applicable — scanner does not apply at this path
+  incomplete    — scanner ran but did not finish (findings may be present)
+  not_computable — coverage when the project has no code-graph nodes (server-derived)
 
 Ship security end-to-end first. Coverage and open-work are derived from the code graph /
 tracker (built-in, no agent producer required). Refactor, stub and tests stay never_scanned
@@ -91,6 +95,16 @@ _INFERRED_CATEGORY: tuple[tuple[str, frozenset[str]], ...] = (
     ("tests", _TEST_SCANNERS),
 )
 _TEST_COUNTS = ("passed", "failed", "skipped")
+
+# Producer `result` values stored on CodeScan (GRPH-1125). `not_computable` is server-only.
+PRODUCER_RESULTS = frozenset({"complete", "tool_missing", "not_applicable", "incomplete"})
+_EMPTY_FINDINGS_REFUSAL = (
+    "result is required when findings is empty — use 'complete' for a clean scan, or "
+    "'tool_missing' / 'not_applicable' when the scanner did not run; nothing was stored"
+)
+_EMPTY_INCOMPLETE = (
+    "result 'incomplete' requires findings; nothing was stored"
+)
 
 
 # Tag prefix on an item filed from the overlay (a finding's Defrag, a stale/never-run CTA).
@@ -199,11 +213,13 @@ def record_scan(
     note: str = "",
     reported_by: str = "",
     tests: dict | None = None,
+    result: str | None = None,
 ) -> dict:
     """Upsert a scanner's report for `path` at `scanned_sha`.
 
-    Empty `findings` is a deliberate clean result at that sha — not the same as never
-    having scanned. Replaces any prior row for the same (project, scanner_id, path).
+    Empty `findings` requires `result='complete'` — nothing else is stored. Other producer
+    results (`tool_missing`, `not_applicable`, `incomplete`) name blocked or partial runs.
+    Replaces any prior row for the same (project, scanner_id, path).
     A tests-category scan also needs `tests` counts (see the module docstring).
     """
     sid = (scanner_id or "").strip()
@@ -265,6 +281,28 @@ def record_scan(
     elif tests is not None:
         raise ValueError(f"tests counts are only for the tests category, not {cat}")
 
+    outcome = (result or "").strip()
+    if not rows:
+        if not outcome:
+            raise ValueError(_EMPTY_FINDINGS_REFUSAL)
+        if outcome == "incomplete":
+            raise ValueError(_EMPTY_INCOMPLETE)
+        if outcome not in PRODUCER_RESULTS:
+            raise ValueError(
+                f"result must be one of {sorted(PRODUCER_RESULTS)} (got {outcome!r}); "
+                "nothing was stored"
+            )
+    elif not outcome:
+        outcome = "complete"
+    elif outcome not in PRODUCER_RESULTS:
+        raise ValueError(
+            f"result must be one of {sorted(PRODUCER_RESULTS)} (got {outcome!r})"
+        )
+    elif outcome in ("tool_missing", "not_applicable") and rows:
+        raise ValueError(
+            f"result '{outcome}' cannot be stored with findings; nothing was stored"
+        )
+
     # Replace prior result for this scanner+path (one live answer).
     prior = list(db.scalars(
         select(CodeScan).where(
@@ -288,6 +326,7 @@ def record_scan(
         scanned_at=_utcnow(),
         reported_by=(reported_by or "").strip(),
         note=(note or "").strip(),
+        result=outcome,
     )
     db.add(scan)
     stored = 0
@@ -313,7 +352,8 @@ def record_scan(
         "path": scan.path,
         "scanned_sha": scan.scanned_sha,
         "findings_recorded": stored,
-        "clean": stored == 0,
+        "clean": stored == 0 and outcome == "complete",
+        "result": outcome,
         "tests": counts,
         "reported_by": scan.reported_by,
         "scanned_at": scan.scanned_at.isoformat(),
@@ -337,8 +377,22 @@ def _findings_for(db: Session, scan_id: str) -> list[dict]:
     ]
 
 
+def _stored_result(scan: CodeScan) -> str:
+    r = (getattr(scan, "result", None) or "").strip()
+    return r if r in PRODUCER_RESULTS else "complete"
+
+
+def _stale_note(scan: CodeScan, head: str, prefix: str = "") -> str:
+    if not head or scan.scanned_sha == head:
+        return ""
+    return (
+        f"Recorded at {scan.scanned_sha[:12]}; head is {head[:12]}, so that "
+        "result does not cover what is running."
+    )
+
+
 def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) -> dict:
-    """Three-state (+ stale) answer. Never defaults to clean."""
+    """Overlay cell state. Never defaults to clean."""
     if scan is None:
         return {
             "state": "never_scanned",
@@ -348,8 +402,10 @@ def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) 
             "scanned_at": None,
             "findings": [],
             "note": "Nothing has scanned this path. Until something does, its state is unknown.",
+            "result": None,
         }
     label = scan.scanner_id + (f" {scan.scanner_version}" if scan.scanner_version else "")
+    outcome = _stored_result(scan)
     base = {
         "scanner": label,
         "scanner_version": scan.scanner_version or None,
@@ -358,14 +414,33 @@ def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) 
         "reported_by": scan.reported_by or None,
         "findings": findings,
         "note": scan.note or None,
+        "result": outcome,
     }
     head = (head_sha or "").strip()
-    if findings:
-        # Findings still matter even if the sha drifted — show them, flag stale in note.
-        stale = bool(head and scan.scanned_sha != head)
+    stale = bool(head and scan.scanned_sha != head)
+
+    if outcome == "not_applicable":
+        if stale:
+            return {**base, "state": "stale", "note": _stale_note(scan, head) or base["note"]}
+        return {**base, "state": "not_applicable"}
+
+    if outcome == "tool_missing":
+        if stale:
+            return {**base, "state": "stale", "note": _stale_note(scan, head)}
+        return {**base, "state": "tool_missing"}
+
+    if outcome == "incomplete":
         note = base["note"]
         if stale:
-            extra = f"Scanned at {scan.scanned_sha[:12]}; head is {head[:12]}."
+            extra = _stale_note(scan, head)
+            note = f"{note} {extra}".strip() if note else extra
+            return {**base, "state": "stale", "note": note}
+        return {**base, "state": "incomplete"}
+
+    if findings:
+        note = base["note"]
+        if stale:
+            extra = _stale_note(scan, head)
             note = f"{note} {extra}".strip() if note else extra
         return {**base, "state": "has_findings", "note": note}
     if not head:
@@ -376,7 +451,7 @@ def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) 
                 " Head revision unknown — a clean result cannot be confirmed at head."
             ).strip(),
         }
-    if scan.scanned_sha != head:
+    if stale:
         return {
             **base,
             "state": "stale",
@@ -413,6 +488,17 @@ def _scans_for_prefix(db: Session, project_id: str, prefix: str) -> list[CodeSca
 
 def _coverage_category(db: Session, project_id: str, prefix: str, head_sha: str) -> dict:
     """Built-in: code-graph health rolled to this component path."""
+    if not code_svc.list_nodes(db, project_id):
+        return {
+            "state": "not_computable",
+            "scanner": "code-graph health",
+            "scanner_version": None,
+            "scanned_sha": None,
+            "scanned_at": None,
+            "findings": [],
+            "note": "No code-graph nodes in this project — coverage cannot be computed.",
+            "result": None,
+        }
     h = code_svc.health(db, project_id, limit=80)
     findings: list[dict] = []
     if not h.get("ever_described"):
@@ -643,11 +729,12 @@ def scans_due(db: Session, project_id: str, *, head_sha: str = "") -> dict:
     for comp in health["components"]:
         for cat_key, cat in (comp.get("categories") or {}).items():
             st = cat.get("state")
-            if st in ("never_scanned", "stale"):
-                # Nag security/coverage whenever unscanned or stale; refactor/stub/deadcode only
-                # once stale (a scanner has reported before).
+            if st in ("never_scanned", "stale", "tool_missing", "incomplete"):
+                # Nag security/coverage whenever unscanned, blocked, partial, or stale;
+                # refactor/stub/deadcode/tests only once a scanner has reported before.
                 if cat_key in ("security", "coverage") or (
-                    cat_key in ("refactor", "stub", "deadcode", "tests") and st == "stale"
+                    cat_key in ("refactor", "stub", "deadcode", "tests")
+                    and st != "never_scanned"
                 ):
                     due.append({
                         "component": comp["id"],
@@ -685,6 +772,8 @@ def _merge_category_scans(
     shas: set[str] = set()
     latest = max(mine, key=lambda s: s.scanned_at or datetime.min.replace(tzinfo=timezone.utc))
     any_stale = False
+    any_blocked = False
+    any_incomplete = False
     root_clean_at_head = False
     for s in mine:
         labels.append(s.scanner_id + (f" {s.scanner_version}" if s.scanner_version else ""))
@@ -692,16 +781,44 @@ def _merge_category_scans(
         fs = _findings_for(db, s.id)
         findings.extend(fs)
         st = _state_for_scan(s, fs, head_sha)
-        if st["state"] == "stale":
+        cell_st = st["state"]
+        if cell_st == "stale":
             any_stale = True
+        if cell_st == "tool_missing":
+            any_blocked = True
+        if cell_st == "incomplete":
+            any_incomplete = True
         if (
             not fs
+            and _stored_result(s) == "complete"
             and head_sha
             and s.scanned_sha == head_sha
             and _covers_component_root(s.path, prefix)
         ):
             root_clean_at_head = True
     label = " · ".join(dict.fromkeys(labels))
+    if any_incomplete and not findings:
+        return _state_for_scan(
+            next(s for s in mine if _stored_result(s) == "incomplete"), [], head_sha,
+        ) | {"scanner": label}
+    if any_incomplete:
+        return {
+            "state": "incomplete",
+            "scanner": label,
+            "scanner_version": None,
+            "scanned_sha": latest.scanned_sha,
+            "scanned_at": latest.scanned_at.isoformat() if latest.scanned_at else None,
+            "reported_by": latest.reported_by or None,
+            "findings": findings,
+            "note": latest.note or None,
+            "result": "incomplete",
+        }
+    if any_blocked:
+        blocked = next(
+            s for s in mine if _state_for_scan(s, _findings_for(db, s.id), head_sha)["state"]
+            in ("tool_missing", "stale") and _stored_result(s) == "tool_missing"
+        )
+        return _state_for_scan(blocked, [], head_sha) | {"scanner": label, "findings": findings}
     if findings:
         return {
             "state": "has_findings",
@@ -715,6 +832,13 @@ def _merge_category_scans(
         }
     if any_stale or (head_sha and any(s.scanned_sha != head_sha for s in mine)):
         return _state_for_scan(latest, [], head_sha) | {"scanner": label}
+    if (
+        not findings
+        and not any_blocked
+        and not any_incomplete
+        and all(_stored_result(s) == "not_applicable" for s in mine)
+    ):
+        return _state_for_scan(mine[0], [], head_sha) | {"scanner": label}
     if not root_clean_at_head:
         # Nested cleans at head without a root-covering scan: partial coverage ≠ CLEAN.
         note = (
@@ -750,9 +874,11 @@ def _roll_component(categories: dict[str, dict], path: str, head_sha: str) -> di
     ]
     stale_n = sum(1 for s in states.values() if s == "stale")
     nr_n = sum(1 for s in states.values() if s == "never_scanned")
+    blocked_n = sum(1 for s in states.values() if s in ("tool_missing", "incomplete"))
     gaps = " · ".join(filter(None, [
         f"{stale_n} stale" if stale_n else "",
         f"{nr_n} not run" if nr_n else "",
+        f"{blocked_n} blocked" if blocked_n else "",
     ]))
     if findings:
         worst = next(s for s in _SEV_ORDER if sev_counts.get(s))
@@ -820,10 +946,10 @@ def _attach_offers(
                 f["filed_key"] = k
                 f["filed_item"] = filed.get(k)
         st = cell.get("state")
-        if cell.get("live") or st not in ("stale", "never_scanned"):
+        if cell.get("live") or st not in ("stale", "never_scanned", "tool_missing", "incomplete"):
             cell["cta"] = None
             continue
-        kind = "rerun" if st == "stale" else "add_scanner"
+        kind = "rerun" if st in ("stale", "tool_missing", "incomplete") else "add_scanner"
         k = filed_key(component, cat, kind, cell.get("scanned_sha") or "")
         cell["cta"] = {"kind": kind, "path": prefix, "filed_key": k, "filed_item": filed.get(k)}
 
