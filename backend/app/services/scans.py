@@ -101,6 +101,14 @@ _INFERRED_CATEGORY: tuple[tuple[str, frozenset[str]], ...] = (
 )
 _TEST_COUNTS = ("passed", "failed", "skipped")
 
+# Categories `scans_due` may name. `work` is live tracker state, not a scan to schedule.
+_SCANS_DUE_CATEGORIES = frozenset({
+    "security", "coverage", "refactor", "stub", "deadcode", "tests",
+})
+# States that mean someone should run or finish a scan (GRPH-1126 / PRD-P58 First-time due).
+_SCANS_DUE_STATES = frozenset({
+    "never_scanned", "stale", "tool_missing", "incomplete",
+})
 # Producer `result` values stored on CodeScan (GRPH-1125). `not_computable` is server-only.
 PRODUCER_RESULTS = frozenset({"complete", "tool_missing", "not_applicable", "incomplete"})
 _EMPTY_FINDINGS_REFUSAL = (
@@ -781,47 +789,74 @@ def scan_status(
     return component_health(db, project_id, head_sha=head)
 
 
+def _scans_due_empty_reason(health: dict) -> str | None:
+    """Why `due` is empty — not interchangeable with all-clean (GRPH-1126)."""
+    mapping = health.get("mapping") or {}
+    if mapping.get("state") == "unmapped":
+        return "unmapped"
+    components = health.get("components") or []
+    if not components:
+        return "unmapped"
+    saw_not_computable_coverage = False
+    saw_findings = False
+    for comp in components:
+        for cat_key, cat in (comp.get("categories") or {}).items():
+            if cat_key not in _SCANS_DUE_CATEGORIES:
+                continue
+            st = cat.get("state") or "never_scanned"
+            if st in _SCANS_DUE_STATES:
+                return None
+            if cat_key == "coverage" and st == "not_computable":
+                saw_not_computable_coverage = True
+            if st == "has_findings":
+                saw_findings = True
+    # Findings at head are not due, but they are not clean either: name them first.
+    if saw_findings:
+        return "has_findings"
+    if saw_not_computable_coverage:
+        return "coverage_not_computable"
+    return "all_clean_or_not_applicable"
+
+
 def scans_due(db: Session, project_id: str, *, head_sha: str = "") -> dict:
     """Which component × category pairs need a (re)scan.
 
-    Due = never_scanned or stale for the security category (the one we ship producers for),
-    plus coverage when the graph says something is wrong. Refactor/stub/deadcode/tests due only once a
-    scanner has ever reported (otherwise they stay never_scanned without nagging).
+    Names every real cell in ``never_scanned``, ``stale``, ``tool_missing``, or ``incomplete``
+    for security, coverage, stub, dead code, refactor, and tests — including first-time
+    never_scanned on stub/deadcode/refactor/tests. ``not_applicable``, ``clean_at_sha``,
+    ``has_findings``, and ``not_computable`` coverage are not due.
     """
     health = component_health(db, project_id, head_sha=head_sha)
-    if health.get("mapping", {}).get("state") == "unmapped":
+    mapping = health.get("mapping") or {}
+    if mapping.get("state") == "unmapped":
         return {
             "head_sha": health.get("head_sha"),
-            "mapping": health.get("mapping"),
+            "mapping": mapping,
             "due": [],
             "due_count": 0,
+            "empty_reason": "unmapped",
         }
     due = []
     for comp in health["components"]:
         for cat_key, cat in (comp.get("categories") or {}).items():
-            st = cat.get("state")
-            if st in ("never_scanned", "stale", "tool_missing", "incomplete"):
-                # Nag security/coverage whenever unscanned, blocked, partial, or stale;
-                # refactor/stub/deadcode/tests only once a scanner has reported before.
-                if cat_key in ("security", "coverage") or (
-                    cat_key in ("refactor", "stub", "deadcode", "tests")
-                    and st != "never_scanned"
-                ):
-                    due.append({
-                        "component": comp["id"],
-                        "path": comp["path"],
-                        "category": cat_key,
-                        "state": st,
-                        "scanned_sha": cat.get("scanned_sha"),
-                        "head_sha": health.get("head_sha"),
-                    })
+            if cat_key not in _SCANS_DUE_CATEGORIES:
+                continue
+            st = cat.get("state") or "never_scanned"
+            if st in _SCANS_DUE_STATES:
+                due.append({
+                    "component": comp["id"],
+                    "path": comp["path"],
+                    "category": cat_key,
+                    "state": st,
+                    "scanned_sha": cat.get("scanned_sha"),
+                    "head_sha": health.get("head_sha"),
+                })
+    empty_reason = _scans_due_empty_reason(health) if not due else None
     return {
         "head_sha": health.get("head_sha"),
         "due": due,
         "due_count": len(due),
-        # Absence of due work is not "all clean" — components with never_scanned
-        # security still appear above. An empty list with every security never_scanned
-        # would be a bug; the filter includes never_scanned for security.
+        "empty_reason": empty_reason,
     }
 
 

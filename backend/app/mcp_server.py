@@ -1041,8 +1041,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "scans_due",
         "description": (
-            "Component×category pairs due for a (re)scan — never_scanned or stale "
-            "(GRPH-1035). Empty due is not all-clean; never_scanned security rows stay listed."
+            "Cells due a scan: never_scanned (first-time too), stale, tool_missing, "
+            "incomplete. Empty due is not all-clean; empty_reason says why."
         ),
         "inputSchema": {
             "type": "object",
@@ -1728,6 +1728,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "properties": {
             "due": {"type": "array"},
             "due_count": {"type": "integer"},
+            "empty_reason": _NULLABLE_STR,
         },
     },
     "report_graphban_issue": {
