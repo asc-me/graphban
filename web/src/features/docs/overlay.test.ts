@@ -24,12 +24,8 @@ const PAGES: [string, string][] = [
   ["/p/CORE/code", "Code graph"],
   ["/links", "Links graph"],
   ["/p/CORE/links", "Links graph"],
-  ["/fleet", "Fleet.v2"],
-  ["/p/CORE/fleet", "Fleet.v2"],
-  ["/fleet.v1", "Fleet.v1"],
-  ["/p/CORE/fleet.v1", "Fleet.v1"],
-  ["/fleet.v2", "Fleet.v2"],
-  ["/p/CORE/fleet.v2", "Fleet.v2"],
+  ["/fleet", "Fleet"],
+  ["/p/CORE/fleet", "Fleet"],
   ["/outposts", "Outposts"],
   ["/p/CORE/outposts", "Outposts"],
   ["/harness", "Harness"],
@@ -38,8 +34,8 @@ const PAGES: [string, string][] = [
   ["/p/CORE/activity", "Activity"],
   ["/live", "Live"],
   ["/p/CORE/live", "Live"],
-  ["/memory-review", "Memory review"],
-  ["/p/CORE/memory-review", "Memory review"],
+  ["/memory", "Memory review"],
+  ["/p/CORE/memory", "Memory review"],
   ["/lessons", "Lessons"],
   ["/lessons/sh_1", "Lessons"],
   ["/p/CORE/lessons", "Lessons"],
@@ -320,29 +316,23 @@ describe("docs overlay routes", () => {
   });
 
   it("Memory review overlay names list judging and that a missing score is not clean", () => {
-    const ask = docFor("/memory-review").sections.find((s) => /llm judge/i.test(s.h));
+    const ask = docFor("/memory").sections.find((s) => /llm judge/i.test(s.h));
     expect(ask?.b).toMatch(/capped/);
     expect(ask?.b).toMatch(/never that the note is fine/);
     expect(ask?.b).toMatch(/keep\/quality/);
     expect(ask?.b).not.toMatch(/nobody asked/);
   });
 
-  it("Fleet.v1 overlay talks seats, not gate keys", () => {
-    // Gate keys are minted on API keys. Naming them on Fleet.v1 is the two-pages
+  it("Fleet overlay covers seats and the catalog, not gate keys", () => {
+    // Gate keys are minted on API keys. Naming them on Fleet is the two-pages
     // mix that sends an operator to mint the wrong object.
-    const fleet = docFor("/fleet.v1");
+    const fleet = docFor("/fleet");
     const body = fleet.sections.map((s) => `${s.h} ${s.b}`).join(" ");
     expect(body).toMatch(/seat/i);
-    expect(body).not.toMatch(/gate key/i);
-    expect(fleet.related?.some((r) => r.label === "API keys")).toBe(true);
-  });
-
-  it("Fleet.v2 overlay is catalog and mix, not the roster", () => {
-    const fleet = docFor("/fleet.v2");
-    const body = fleet.sections.map((s) => `${s.h} ${s.b}`).join(" ");
     expect(body).toMatch(/catalog/i);
     expect(body).toMatch(/mix/i);
-    expect(body).not.toMatch(/paste it into the prompt/);
+    expect(body).not.toMatch(/gate key/i);
+    expect(fleet.related?.some((r) => r.label === "API keys")).toBe(true);
     expect(fleet.related?.some((r) => r.label === "Harness")).toBe(true);
   });
 
@@ -360,7 +350,7 @@ describe("docs overlay routes", () => {
     const keys = docFor(settingsPath("project/api-keys"));
     const body = keys.sections.map((s) => `${s.h} ${s.b}`).join(" ");
     expect(body).toMatch(/seat/i);
-    expect(keys.related?.some((r) => r.label === "Fleet.v1")).toBe(true);
+    expect(keys.related?.some((r) => r.label === "Fleet")).toBe(true);
     expect(keys.related?.some((r) => r.label === "AI providers")).toBe(true);
   });
 

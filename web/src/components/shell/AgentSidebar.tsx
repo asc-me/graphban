@@ -74,7 +74,7 @@ export function AgentSidebar({
 function MemoryPanel() {
   const { activeId } = useProjectCtx();
   const { pathname } = useLocation();
-  const onMemoryReview = /memory-review/.test(pathname);
+  const onMemoryReview = /\/memory\/?$/.test(pathname);
   // A page, not the corpus. This panel renders a scrolling list and has its own search, and
   // it mounts OPEN by default (AppFrame) — so it was pulling every shard in the project on
   // every page load, 740 KB of it (GRPH-431). Search reaches everything the page does not.

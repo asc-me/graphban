@@ -455,10 +455,10 @@ function JumpTo({
         ? <span className="text-st-review">not pushed</span>
         : metaText(nodes ?? null, (n) => `${n} nodes`),
     },
-    { sub: "memory-review", label: "Memory", meta: metaText(review ?? null, (n) => `${n} to review`) },
+    { sub: "memory", label: "Memory", meta: metaText(review ?? null, (n) => `${n} to review`) },
     { sub: "lessons", label: "Lessons", meta: metaText(lessons ?? null, (n) => `${n} published`) },
     // One server integer. Filtering `agents` here would be a list length (GRPH-431).
-    { sub: "fleet.v1", label: "Fleet", meta: metaText(online ?? null, (n) => `${n} online`) },
+    { sub: "fleet", label: "Fleet", meta: metaText(online ?? null, (n) => `${n} online`) },
     { sub: "live", label: "Live", meta: metaText(online ?? null, (n) => `${n} on now`) },
   ];
   return (

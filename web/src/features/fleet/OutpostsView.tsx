@@ -38,11 +38,11 @@ export function OutpostsView() {
   const { data, isLoading } = fleetQ;
   const [tab, setTab] = useState<"hosts" | "setup">("hosts");
   const fleetHref = config?.hosted_mode && active?.tag
-    ? projectPath(active.tag, "fleet.v1")
-    : "/fleet.v1";
+    ? projectPath(active.tag, "fleet")
+    : "/fleet";
   const catalogHref = config?.hosted_mode && active?.tag
-    ? projectPath(active.tag, "fleet.v2")
-    : "/fleet.v2";
+    ? projectPath(active.tag, "fleet?tab=harness")
+    : "/fleet?tab=harness";
 
   const outposts = groupOutposts(data?.agents ?? []);
   const hasHosts = outposts.length > 0;

@@ -1,9 +1,10 @@
-import { AlertTriangle, Check, Layers, RotateCcw, Sparkles, X } from "lucide-react";
+import { AlertTriangle, Check, Eye, Layers, RotateCcw, Sparkles, X } from "lucide-react";
 import * as React from "react";
 import { Link } from "react-router-dom";
 
 import { MemoryReviewSkeleton, PlannerError } from "@/components/planner/PlannerStates";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { settingsPath } from "@/lib/routes";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -20,6 +21,33 @@ import {
   useUndoAutoShard,
 } from "@/lib/queries";
 import type { CandidateJudge, JudgeStatus, ReviewSuggestion, ScoredCandidate, Shard, ShardCluster } from "@/lib/types";
+
+const SWEEP_THRESHOLD = 0.3;
+const STALE_DAYS = 7;
+
+/** Unreviewed for over a week (folded in from the retired Memory triage page). */
+function isStale(dateStr: string): boolean {
+  if (!dateStr) return false;
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return false;
+  return Date.now() - d.getTime() > STALE_DAYS * 86_400_000;
+}
+
+function StaleFlag() {
+  return (
+    <span
+      title={`Still unreviewed after ${STALE_DAYS} days`}
+      className="rounded border border-line-2 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-faint"
+    >
+      stale
+    </span>
+  );
+}
+
+interface ToastState {
+  message: string;
+  undoableIds: string[];
+}
 
 /** AL-49: the review queue. Agent-written memory enters as a candidate and only
  *  reaches the trusted retrieval path once a human publishes it here.
@@ -46,6 +74,32 @@ export function MemoryReviewView() {
   const promoteCluster = usePromoteCluster();
   const undoAuto = useUndoAutoShard();
   const [unvettedOnly, setUnvettedOnly] = React.useState(false);
+  const [sweepOpen, setSweepOpen] = React.useState(false);
+  const [toast, setToast] = React.useState<ToastState | null>(null);
+  const toastTimer = React.useRef<ReturnType<typeof setTimeout>>(null);
+
+  function showToast(message: string, undoableIds: string[]) {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ message, undoableIds });
+    toastTimer.current = setTimeout(() => setToast(null), 5000);
+  }
+
+  async function handleSweep(ids: string[]) {
+    const results = await Promise.allSettled(ids.map((id) => reject.mutateAsync(id)));
+    const ok = results.filter((r) => r.status === "fulfilled").length;
+    const failedCount = ids.length - ok;
+    showToast(
+      failedCount > 0 ? `Swept ${ok}, ${failedCount} failed` : `Swept ${ok} low-confidence shards`,
+      ids,
+    );
+    setSweepOpen(false);
+  }
+
+  async function handleUndo(ids: string[]) {
+    const results = await Promise.allSettled(ids.map((id) => undoAuto.mutateAsync(id)));
+    const ok = results.filter((r) => r.status === "fulfilled").length;
+    showToast(`Undid ${ok} of ${ids.length}`, []);
+  }
 
   const awaitingFirstPayload = isPending || (isFetching && candidates === undefined);
   const queueCount = counts?.review;
@@ -113,6 +167,11 @@ export function MemoryReviewView() {
     .filter((s) => !clustered.has(s.id))
     .sort((a, b) => (scoreById.get(b.id)?.confidence ?? 0) - (scoreById.get(a.id)?.confidence ?? 0));
 
+  const sweepTargets = [...candidates, ...(autoActions ?? [])].filter((s) => {
+    const c = scoreById.get(s.id)?.confidence;
+    return c != null && c < SWEEP_THRESHOLD;
+  });
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-4">
@@ -124,6 +183,14 @@ export function MemoryReviewView() {
           </p>
         </div>
         <div className="ml-auto flex items-center gap-3 font-mono text-[10.5px] text-faint">
+          {sweepTargets.length > 0 && (
+            <button
+              onClick={() => setSweepOpen(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-control px-2 py-1 font-sans text-[11.5px] text-muted transition-colors hover:border-control-hover hover:text-ink"
+            >
+              <Eye size={12} /> Sweep {sweepTargets.length} low-confidence
+            </button>
+          )}
           <span>{candidates.length} PENDING</span>
           {queueCount != null && queueCount !== candidates.length + unvettedTotal && (
             <span className="text-st-review" title="Nav badge includes auto-published shards nobody reviewed yet">
@@ -187,6 +254,81 @@ export function MemoryReviewView() {
               onToggleUnvetted={() => setUnvettedOnly((v) => !v)}
             />
           )}
+        </div>
+      </div>
+
+      {sweepOpen && (
+        <SweepPreviewModal
+          targets={sweepTargets}
+          scoreById={scoreById}
+          onConfirm={() => handleSweep(sweepTargets.map((t) => t.id))}
+          onCancel={() => setSweepOpen(false)}
+          busy={reject.isPending}
+        />
+      )}
+
+      {toast && (
+        <div className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-line bg-surface px-4 py-2 shadow-lg">
+          <span className="text-body text-ink">{toast.message}</span>
+          {toast.undoableIds.length > 0 && (
+            <button
+              onClick={() => handleUndo(toast.undoableIds)}
+              className="inline-flex items-center gap-1 rounded-md border border-control px-2 py-0.5 text-small text-muted hover:border-control-hover hover:text-ink"
+            >
+              <RotateCcw size={11} /> Undo
+            </button>
+          )}
+          <button onClick={() => setToast(null)} aria-label="Dismiss" className="text-faint hover:text-ink">
+            <X size={14} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SweepPreviewModal({
+  targets,
+  scoreById,
+  onConfirm,
+  onCancel,
+  busy,
+}: {
+  targets: Shard[];
+  scoreById: Map<string, ScoredCandidate>;
+  onConfirm: () => void;
+  onCancel: () => void;
+  busy: boolean;
+}) {
+  React.useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onCancel();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-fg/20">
+      <div role="dialog" aria-modal="true" aria-labelledby="sweep-title"
+           className="mx-4 w-full max-w-lg rounded-xl border border-line bg-surface p-5 shadow-lg">
+        <h2 id="sweep-title" className="mb-1 text-[15px] font-semibold text-fg">Sweep low-confidence shards</h2>
+        <p className="mb-3 text-body text-muted">
+          This will reject {targets.length} shard{targets.length === 1 ? "" : "s"} with confidence below {Math.round(SWEEP_THRESHOLD * 100)}%.
+          You can undo each one from the toast.
+        </p>
+        <div className="mb-4 max-h-48 overflow-y-auto rounded-lg border border-line-2">
+          {targets.map((t) => (
+            <div key={t.id} className="flex items-center gap-2 border-b border-line-2 px-3 py-1.5 last:border-b-0">
+              <span className="text-small text-faint">{Math.round((scoreById.get(t.id)?.confidence ?? 0) * 100)}%</span>
+              <span className="flex-1 truncate text-[12px] text-ink">{t.text}</span>
+            </div>
+          ))}
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+          <Button type="button" variant="outline" size="sm" onClick={onConfirm} disabled={busy}>
+            {busy ? "Sweeping…" : `Reject ${targets.length}`}
+          </Button>
         </div>
       </div>
     </div>
@@ -316,6 +458,7 @@ function AutoActionsLane({
                   {SOURCE_LABEL[s.scoring_source] ?? s.scoring_source}
                 </span>
               )}
+              {isStale(s.created_at) && !unvetted && <StaleFlag />}
               <p className="min-w-0 flex-1 truncate text-body text-fg-2" title={s.text}>
                 {s.text}
               </p>
@@ -371,6 +514,7 @@ function CandidateCard({
         <Sparkles size={13} className="text-[#a78bfa]" />
         <span className="font-mono text-[10.5px] text-faint">{shard.origin || "agent"}</span>
         {shard.source && <span className="font-mono text-[10.5px] text-faint">· {shard.source}</span>}
+        {isStale(shard.created_at) && <StaleFlag />}
         {meta && (
           <span
             title={score ? `${Math.round(score.confidence * 100)}% confidence` : undefined}
@@ -441,7 +585,7 @@ function CandidateCard({
             <React.Fragment key={id}>
               {i > 0 ? " · " : null}
               <a
-                href="/memory-triage"
+                href="/memory"
                 className="font-mono underline decoration-dotted underline-offset-2 hover:text-ink"
               >
                 {id}

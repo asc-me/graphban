@@ -86,7 +86,7 @@ function renderView() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/memory-review"]}>
+      <MemoryRouter initialEntries={["/memory"]}>
         <ProjectProvider>
         <MemoryReviewView />
         </ProjectProvider>
@@ -246,7 +246,7 @@ describe("review judge signals (GRPH-79)", () => {
       },
     ]);
     renderView();
-    expect(await screen.findByRole("link", { name: "m_abc123" })).toHaveAttribute("href", "/memory-triage");
+    expect(await screen.findByRole("link", { name: "m_abc123" })).toHaveAttribute("href", "/memory");
     const card = screen.getByText(/Agent guess: batch writes/).closest("div")!;
     expect(within(card).getByText("decider")).toBeInTheDocument();
     expect(within(card).getByText("grounded")).toBeInTheDocument();

@@ -104,8 +104,8 @@ function Header({ live }: { live?: React.ReactNode }) {
   const { active } = useProjectCtx();
   const { data: config } = useConfig();
   const fleetHref = config?.hosted_mode && active?.tag
-    ? projectPath(active.tag, "fleet.v1")
-    : "/fleet.v1";
+    ? projectPath(active.tag, "fleet")
+    : "/fleet";
   return (
     <PlaceHeader
       viewName="MCP Tools"

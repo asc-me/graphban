@@ -1020,7 +1020,7 @@ export function ApiKeysPanel() {
             Looking for LLM credentials?
           </Link>
           {/* Fleet's "Looking for MCP?" is the other direction of the same question. */}
-          <Link to="/fleet.v1" className="text-[12px] font-normal text-muted transition-colors hover:text-fg-2">
+          <Link to="/fleet" className="text-[12px] font-normal text-muted transition-colors hover:text-fg-2">
             Looking for seats?
           </Link>
         </div>
@@ -1028,8 +1028,8 @@ export function ApiKeysPanel() {
       desc={
         <>
           An API key is who the process is — put it in MCP config once. Roles for a wave are{" "}
-          <Link to="/fleet.v1" className="text-fg-2 underline-offset-2 hover:underline">
-            seats on Fleet.v1
+          <Link to="/fleet" className="text-fg-2 underline-offset-2 hover:underline">
+            seats on Fleet
           </Link>
           , not a new key.
         </>

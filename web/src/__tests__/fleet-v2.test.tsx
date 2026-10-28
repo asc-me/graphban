@@ -71,15 +71,15 @@ describe("Fleet.v2 catalog and allocation", () => {
     api.saveFleetProfile.mockReset();
   });
 
-  it("names itself Fleet.v2 and does not mix in the roster", () => {
+  it("names itself Fleet and does not mix in the roster", () => {
     fleet.data = { ...BASE, matrix: { rows } };
     renderView();
     expect(screen.getByTestId("fleet-v2")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toMatch(/Fleet\.v2\s*core/);
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toMatch(/Fleet\s*core/);
     expect(screen.queryByRole("button", { name: /^Work/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Wave/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Fleet.v1" })).toHaveAttribute("href", "/fleet.v1");
-    expect(screen.getByRole("tab", { name: /Fleet management/ })).toHaveAttribute("href", "/fleet.v1");
+    expect(screen.getByRole("tab", { name: /Fleet management/ })).toHaveAttribute("aria-selected", "false");
+    expect(screen.getByRole("tab", { name: /Harness config/ })).toHaveAttribute("aria-selected", "true");
   });
 
   it("draws unique matrix rows and links to Observe Harness", () => {

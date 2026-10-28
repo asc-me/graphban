@@ -10,7 +10,7 @@ from app.db import get_db
 from app.models import Membership, Project, User
 from app.schemas import (
     GitopsPatch, GitopsView, MemberOut, ProjectCreate, ProjectOut, ProjectRetagIn,
-    ProjectUpdate, UserOut,
+    ProjectSummaryOut, ProjectUpdate, UserOut,
 )
 from app.security import authz
 from app.security.deps import get_current_user
@@ -66,6 +66,13 @@ def list_projects(db: Session = Depends(get_db), user: User = Depends(get_curren
     readable = set(authz.readable_project_ids(db, user.id))
     rows = db.scalars(select(Project).order_by(Project.name)).all()
     return [p for p in rows if p.id in readable]
+
+
+@router.get("/summaries", response_model=list[ProjectSummaryOut])
+def project_summaries(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The project switcher's rows — counts, branch, presence and last activity for every
+    project this user can read, in one request of fixed cost (GRPH-1131)."""
+    return projects_svc.project_summaries(db, authz.readable_project_ids(db, user.id))
 
 
 @router.post("", response_model=ProjectOut, status_code=201)
@@ -147,7 +154,8 @@ def project_counts(project_id: str, db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):
     """The badge numbers the app shell renders — a few integers instead of the four full
     collections it used to fetch on every route (GRPH-431). `triage_new` and
-    `lessons_published` are the Project Home Jump-to populations (GRPH-1064)."""
+    `lessons_published` are the Project Home Jump-to populations (GRPH-1064); the rest of
+    the sidebar's badges ride along as `projects.BADGE_FIELDS` (GRPH-1132)."""
     authz.require_readable(db, user.id, project_id)
     return projects_svc.shell_counts(db, project_id)
 

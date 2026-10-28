@@ -48,15 +48,13 @@ const SECTIONS: { key: Section; label: string; icon: React.ReactNode; pages: Pag
       { view: "stack", icon: <Boxes size={16} />, label: "Stack" },
       { view: "links", icon: <GitFork size={16} />, label: "Links" },
       { view: "mcp-tools", icon: <Plug size={16} />, label: "MCP Tools", hostedOnly: true },
-      { view: "fleet.v2", icon: <Users size={16} />, label: "Fleet.v2" },
-      { view: "fleet.v1", icon: <Users size={16} />, label: "Fleet.v1" },
+      { view: "fleet", icon: <Users size={16} />, label: "Fleet" },
       { view: "outposts", icon: <Server size={16} />, label: "Outposts" },
     ],
   },
   {
     key: "observe", label: "Observe", icon: <Activity size={16} />, pages: [
-      { view: "memory-review", icon: <Inbox size={16} />, label: "Memory review", count: "review" },
-      { view: "memory-triage", icon: <Inbox size={16} />, label: "Memory triage" },
+      { view: "memory", icon: <Inbox size={16} />, label: "Memory", count: "review" },
       { view: "lessons", icon: <BookMarked size={16} />, label: "Lessons" },
       { view: "activity", icon: <ScrollText size={16} />, label: "Activity" },
       { view: "live", icon: <Activity size={16} />, label: "Live" },

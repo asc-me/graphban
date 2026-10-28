@@ -15,15 +15,13 @@ import { PublicFeedbackPage } from "@/features/public/PublicFeedbackPage";
 import { PublicRoadmapPage } from "@/features/public/PublicRoadmapPage";
 import { PublicTrackingPage } from "@/features/public/PublicTrackingPage";
 import { LinksGraphView } from "@/features/links/LinksGraphView";
-import { FleetView } from "@/features/fleet/FleetView";
-import { FleetV2View } from "@/features/fleet/FleetV2View";
+import { FleetPage } from "@/features/fleet/FleetPage";
 import { OutpostsView } from "@/features/fleet/OutpostsView";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { LessonsView } from "@/features/lessons/LessonsView";
 import { HarnessView } from "@/features/harness/HarnessView";
 import { LiveView } from "@/features/live/LiveView";
 import { MemoryReviewView } from "@/features/memory/MemoryReviewView";
-import { MemoryTriageView } from "@/features/memory/MemoryTriageView";
 import { InviteAcceptPage } from "@/features/onboarding/InviteAcceptPage";
 import { PrdEditorView } from "@/features/prds/PrdEditorView";
 import { PrdListView } from "@/features/prds/PrdListView";
@@ -82,14 +80,12 @@ const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["stack", <StackView />],
   ["roadmap", <RoadmapView />],
   ["mcp-tools", <McpToolsView />],
-  ["fleet.v1", <FleetView />],
-  ["fleet.v2", <FleetV2View />],
+  ["fleet", <FleetPage />],
   ["outposts", <OutpostsView />],
   ["harness", <HarnessView />],
   ["activity", <ActivityView />],
   ["live", <LiveView />],
-  ["memory-review", <MemoryReviewView />],
-  ["memory-triage", <MemoryTriageView />],
+  ["memory", <MemoryReviewView />],
   ["lessons", <LessonsView />],
   ["lessons/:id", <LessonsView />],
   ["prds", <PrdListView />],
@@ -122,10 +118,26 @@ function AuthedApp() {
           : PROJECT_VIEWS.filter(([path]) => path !== "mcp-tools").map(
               ([path, el]) => <Route key={path} path={`/${path}`} element={el} />,
             )}
-        {/* /fleet is the old URL. The named pages are fleet.v1 (roster) and fleet.v2 (catalog). */}
+        {/* fleet.v1 / fleet.v2 are old bookmarks for the two Fleet tabs. */}
         {hosted
-          ? <Route path="/p/:tag/fleet" element={<FleetAliasRedirect />} />
-          : <Route path="/fleet" element={<FleetAliasRedirect />} />}
+          ? <>
+              <Route path="/p/:tag/fleet.v1" element={<FleetTabRedirect tab="manage" />} />
+              <Route path="/p/:tag/fleet.v2" element={<FleetTabRedirect tab="harness" />} />
+            </>
+          : <>
+              <Route path="/fleet.v1" element={<FleetTabRedirect tab="manage" />} />
+              <Route path="/fleet.v2" element={<FleetTabRedirect tab="harness" />} />
+            </>}
+        {/* memory-review / memory-triage are old bookmarks for the one Memory page. */}
+        {hosted
+          ? <>
+              <Route path="/p/:tag/memory-review" element={<MemoryRedirect />} />
+              <Route path="/p/:tag/memory-triage" element={<MemoryRedirect />} />
+            </>
+          : <>
+              <Route path="/memory-review" element={<MemoryRedirect />} />
+              <Route path="/memory-triage" element={<MemoryRedirect />} />
+            </>}
         {hosted && <Route path="/p/:tag" element={<ProjectHome />} />}
         {hosted && <Route path="/p/:tag/dashboard" element={<DashboardRedirect />} />}
         {!hosted && (
@@ -147,7 +159,10 @@ function AuthedApp() {
             ))}
             {/* Retired page. FlatRedirect lands on /p/:tag/dashboard, which then goes home. */}
             <Route path="/dashboard" element={<FlatRedirect />} />
-            <Route path="/fleet" element={<FlatRedirect />} />
+            <Route path="/fleet.v1" element={<FleetTabRedirect tab="manage" />} />
+            <Route path="/fleet.v2" element={<FleetTabRedirect tab="harness" />} />
+            <Route path="/memory-review" element={<FlatRedirect to="memory" />} />
+            <Route path="/memory-triage" element={<FlatRedirect to="memory" />} />
             <Route path="/organization" element={<Navigate to={ORG_BASE} replace />} />
           </>
         )}
@@ -172,11 +187,18 @@ function DashboardRedirect() {
   return <Navigate to={projectPath(tag)} replace />;
 }
 
-/** Old `/fleet` bookmark — the redesign is Fleet.v2, roster is Fleet.v1. */
-function FleetAliasRedirect() {
+/** Old `fleet.v1` / `fleet.v2` bookmark: the one Fleet page with the matching tab. */
+function FleetTabRedirect({ tab }: { tab: "manage" | "harness" }) {
   const { pathname } = useLocation();
-  const dest = pathname.replace(/\/fleet\/?$/, "/fleet.v2");
-  return <Navigate to={dest || "/fleet.v2"} replace />;
+  const dest = pathname.replace(/\/fleet\.v[12]\/?$/, "/fleet");
+  return <Navigate to={`${dest}?tab=${tab}`} replace />;
+}
+
+/** Old `memory-review` / `memory-triage` bookmark: the one Memory page. */
+function MemoryRedirect() {
+  const { pathname, search } = useLocation();
+  const dest = pathname.replace(/\/memory-(review|triage)\/?$/, "/memory");
+  return <Navigate to={`${dest}${search}`} replace />;
 }
 
 /**
@@ -187,17 +209,17 @@ function FleetAliasRedirect() {
  * project to show, so the org plane is the honest destination rather than a project
  * page for a project that does not exist.
  */
-function FlatRedirect() {
-  const { pathname } = useLocation();
+function FlatRedirect({ to }: { to?: string }) {
+  const { pathname, search } = useLocation();
   const { projects, loading } = useProjectCtx();
   if (loading) return null;
 
-  const view = pathname.replace(/^\/+/, "");
+  const view = to ?? pathname.replace(/^\/+/, "");
   const remembered = lastProjectTag();
   const target =
     projects.find((p) => p.tag === remembered) ?? projects[0] ?? null;
   if (!target?.tag) return <Navigate to={ORG_BASE} replace />;
-  return <Navigate to={projectPath(target.tag, view)} replace />;
+  return <Navigate to={`${projectPath(target.tag, view)}${search}`} replace />;
 }
 
 function HomeRedirect({ hosted }: { hosted: boolean }) {

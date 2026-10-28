@@ -67,9 +67,9 @@ describe("MCP Tools", () => {
     expect(screen.queryByRole("link", { name: /looking for a key\?/i })).not.toBeInTheDocument();
   });
 
-  it("links seats to Fleet.v1, not a mint on this page", () => {
+  it("links seats to Fleet, not a mint on this page", () => {
     show();
-    expect(screen.getByRole("link", { name: /seats on fleet/i })).toHaveAttribute("href", "/fleet.v1");
+    expect(screen.getByRole("link", { name: /seats on fleet/i })).toHaveAttribute("href", "/fleet");
   });
 
   it("walks connect-an-agent as three steps over verified client snippets", () => {

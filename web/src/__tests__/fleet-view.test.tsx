@@ -952,7 +952,7 @@ describe("Fleet view", () => {
     // declaring it once above them is not.
     fleet.data = { ...BASE };
     renderView();
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toMatch(/Fleet\.v1\s*core/);
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toMatch(/Fleet\s*core/);
   });
 });
 
@@ -1138,7 +1138,7 @@ describe("Fleet.v1 stays the roster", () => {
     renderView();
     expect(screen.getByTestId("fleet-v1")).toBeInTheDocument();
     expect(screen.queryByTestId("fleet-matrix")).not.toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /Harness config/ })).toHaveAttribute("href", "/fleet.v2");
+    expect(screen.getByRole("tab", { name: /Harness config/ })).toHaveAttribute("aria-selected", "false");
     expect(screen.getByRole("link", { name: "Outposts" })).toHaveAttribute("href", "/outposts");
   });
 });
