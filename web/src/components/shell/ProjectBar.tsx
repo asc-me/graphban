@@ -1,9 +1,11 @@
-import { Check, ChevronDown, Layers } from "lucide-react";
-import * as React from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { ChevronDown } from "lucide-react";
+import { useLocation } from "react-router-dom";
 
+import { ProjectSwitcher } from "@/components/shell/ProjectSwitcher";
 import { useProjectCtx } from "@/features/ProjectContext";
-import { consoleHref, orgPath, placeFromPath, projectPath, viewFromPath } from "@/lib/routes";
+import { cn } from "@/lib/cn";
+import { useOrgs } from "@/lib/queries";
+import { consoleHref, orgPath, placeFromPath } from "@/lib/routes";
 
 /**
  * The project bar: which project you are in, and the way out of it.
@@ -18,13 +20,12 @@ import { consoleHref, orgPath, placeFromPath, projectPath, viewFromPath } from "
  * change that some component might read a render too early.
  */
 export function ProjectBar() {
-  const { active, projects } = useProjectCtx();
+  const { active } = useProjectCtx();
   const { pathname } = useLocation();
-  const navigate = useNavigate();
-  const [open, setOpen] = React.useState(false);
+  // The bar only renders on a hosted deployment, where the org list is the org.
+  const { data: orgs = [] } = useOrgs();
 
   if (!active) return null;
-  const view = viewFromPath(pathname);
   const place = placeFromPath(pathname);
 
   return (
@@ -38,25 +39,36 @@ export function ProjectBar() {
           org
         </a>
         <span className="font-mono text-[10px] text-faint-2">/</span>
-        <button
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-          aria-label="Switch project"
-          className="flex items-center gap-2.5 rounded-lg border border-control px-2.5 py-1 hover:border-control-hover"
-        >
-          <span
-            className="h-[7px] w-[7px] shrink-0 rounded-sm"
-            style={{ background: active.accent }}
-          />
-          <span className="text-[13.5px] font-semibold tracking-[-0.15px]">{active.name}</span>
-          <span className="rounded border border-line-2 px-1.5 py-px font-mono text-meta text-muted">
-            {active.tag}
-          </span>
-          <ChevronDown
-            size={11}
-            className={`shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`}
-          />
-        </button>
+        <ProjectSwitcher
+          placement="below"
+          orgName={orgs[0]?.name}
+          hosted
+          trigger={({ ref, ...t }) => (
+            <button
+              ref={ref}
+              type="button"
+              aria-label="Switch project"
+              {...t}
+              className={cn(
+                "flex items-center gap-2.5 rounded-lg border px-2.5 py-1 hover:border-control-hover",
+                t["aria-expanded"] ? "border-control-hover bg-surface-2" : "border-control",
+              )}
+            >
+              <span
+                className="h-[7px] w-[7px] shrink-0 rounded-sm"
+                style={{ background: active.accent }}
+              />
+              <span className="text-[13.5px] font-semibold tracking-[-0.15px]">{active.name}</span>
+              <span className="rounded border border-line-2 px-1.5 py-px font-mono text-meta text-muted">
+                {active.tag}
+              </span>
+              <ChevronDown
+                size={11}
+                className={cn("shrink-0 text-muted", t["aria-expanded"] && "rotate-180")}
+              />
+            </button>
+          )}
+        />
       </div>
 
       {place && (
@@ -71,46 +83,6 @@ export function ProjectBar() {
       )}
 
       <div className="min-w-0 flex-1" />
-
-      {open && (
-        <>
-          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
-          <div className="absolute left-14 top-full z-30 mt-1 w-[296px] overflow-hidden rounded-[11px] border border-line-2 bg-surface-2 shadow-xl">
-            <div className="border-b border-line px-3 py-2 font-mono text-[9px] uppercase tracking-[0.07em] text-faint-2">
-              SWITCH PROJECT · {projects.length}
-            </div>
-            <div className="max-h-[290px] overflow-auto">
-              {projects.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => {
-                    setOpen(false);
-                    navigate(projectPath(p.tag, view));
-                  }}
-                  className="flex w-full items-center gap-2.5 border-b border-control px-3 py-2 text-left hover:bg-surface-3"
-                >
-                  <span
-                    className="h-[7px] w-[7px] shrink-0 rounded-sm"
-                    style={{ background: p.accent }}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-mono text-[12px] text-fg-2">{p.name}</span>
-                    <span className="mt-0.5 block font-mono text-meta text-faint-2">{p.tag}</span>
-                  </span>
-                  {p.id === active.id && <Check size={12} style={{ color: p.accent }} />}
-                </button>
-              ))}
-            </div>
-            <a
-              href={consoleHref(orgPath())}
-              onClick={() => setOpen(false)}
-              className="flex w-full items-center gap-2 px-3 py-2 text-[12px] text-muted hover:bg-surface-3 hover:text-fg"
-            >
-              <Layers size={12} /> All projects
-            </a>
-          </div>
-        </>
-      )}
     </div>
   );
 }

@@ -8,6 +8,7 @@ export const keys = {
   me: ["me"] as const,
   config: ["config"] as const,
   projects: ["projects"] as const,
+  projectSummaries: ["projects", "summaries"] as const,
   orgs: ["orgs"] as const,
   orgMembers: (id: string) => ["org-members", id] as const,
   invites: (id: string) => ["org-invites", id] as const,
@@ -603,6 +604,11 @@ export function useMe() {
 
 export function useProjects() {
   return useQuery({ queryKey: keys.projects, queryFn: () => api.projects() });
+}
+
+/** Switcher rows for every readable project (GRPH-1131). One aggregate read, not N collections. */
+export function useProjectSummaries(enabled = true) {
+  return useQuery({ queryKey: keys.projectSummaries, queryFn: () => api.projectSummaries(), enabled });
 }
 
 export function useItems(projectId?: string) {

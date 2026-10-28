@@ -46,6 +46,21 @@ export interface Project {
   decider_credential_id?: string | null;
 }
 
+/** One project switcher row (GRPH-1131), counted server-side so the switcher never fetches collections. */
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  tag: string;
+  accent: string;
+  item_count: number;
+  agent_count: number;
+  live_agents: number;
+  /** Gitops base branch. Null when unset — never a guessed `main`. */
+  default_branch: string | null;
+  /** Null when nothing has ever happened, not an epoch. */
+  last_activity_at: string | null;
+}
+
 // ── Deploy config + Organizations (hosted-only, AL-74b) ────────────────────
 export type SignupMode = "open" | "invite_only" | "closed";
 
