@@ -30,8 +30,8 @@ export function FleetV2View() {
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="fleet-v2">
       <PlaceHeader
-        viewName={`Fleet.v2 ${scope}`}
-        purpose="What can run, which model each harness runs, and how you allocate it. Roster and waves are Fleet.v1."
+        viewName={`Fleet ${scope}`}
+        purpose="What can run, which model each harness runs, and how you allocate it. Roster and waves are on the Fleet management tab."
         action={
           <div className="flex items-center gap-3 text-[12px]">
             <Link to={viewHref("harness")} className="text-muted transition-colors hover:text-fg-2">
@@ -39,9 +39,6 @@ export function FleetV2View() {
             </Link>
             <Link to={viewHref("outposts")} className="text-muted transition-colors hover:text-fg-2">
               Outposts
-            </Link>
-            <Link to={viewHref("fleet.v1")} className="text-muted transition-colors hover:text-fg-2">
-              Fleet.v1
             </Link>
           </div>
         }

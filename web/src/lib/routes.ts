@@ -100,8 +100,6 @@ const VIEW_PLACE: Record<string, Place> = {
   links: { section: "Build", page: "Links" },
   code: { section: "Build", page: "Code graph" },
   "mcp-tools": { section: "Build", page: "MCP Tools" },
-  "fleet.v2": { section: "Build", page: "Fleet.v2" },
-  "fleet.v1": { section: "Build", page: "Fleet.v1" },
   fleet: { section: "Build", page: "Fleet" },
   outposts: { section: "Build", page: "Outposts" },
   "memory-review": { section: "Observe", page: "Memory review" },

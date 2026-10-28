@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 169 of the 249 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 170 of the 250 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -33,6 +33,8 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | POST | `/api/auth/logout` | JWT | Bump `token_version`, so every access AND refresh token issued so far — on any device — stops validating immediately. What `gb logout` calls, which is why criterion 3 of PRD-40 checks the token against the server rather than checking that a file was deleted |
 | GET | `/api/auth/me` | JWT | Current user |
 | GET | `/api/auth/me/memberships` | JWT | Current user's project access |
+| GET | `/api/auth/me/preferences` | JWT | This user's UI preference document (PRD-60 D1): `{saved, preferences}`. `saved: false` means the server has never held one — **not** the same answer as `saved: true` with `{}`, which means an empty document was written on purpose. The document comes back exactly as stored, with no server-side defaults filled in |
+| PUT | `/api/auth/me/preferences` | JWT | Replace the whole document; last write wins across devices. Keys: `nav.collapsed`, `plan.condensed`, `tracker.layout` (`board`\|`list`), `tracker.board.columns` (`{status: shown\|collapsed\|hidden}`, keyed by real item statuses), `views.{tracker,prds}.saved[]` (`{id,label,status,window,hide}`) and `views.{tracker,prds}.default`. An unknown key — at any depth — or a value outside its vocabulary is 422 naming the field. A key not sent stays absent rather than materialising as a default. **Migration contract for clients:** the server copy wins. If `saved` is false, upload your localStorage values once and then stop writing them locally; if it is true, upload nothing and read the server copy — which is what stops a second device flattening the first one's layout. Not reachable with an agent API key: these are a human's UI settings |
 
 ## Projects
 
@@ -40,6 +42,7 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | --- | --- | --- | --- |
 | GET | `/api/projects` | JWT | List projects (each carries its `tag`) |
 | POST | `/api/projects` | JWT | Create a project. `tag` is optional — derived from `name` when omitted, refused with 422 when taken or malformed |
+| GET | `/api/projects/summaries` | JWT | Project switcher rows for every project the caller can read: `item_count`, `agent_count` (roster, dismissed excluded), `live_agents` (heartbeat inside the presence TTL, not quarantined), `default_branch` (gitops `base_branch`; `null` is unset, never `main`) and `last_activity_at` (latest item change or audit event; `null` when there is none). Fixed statement count, whatever the item count |
 | GET | `/api/projects/tag-suggestion?name=` | JWT | A free tag derived from a project name (prefills the creation form) |
 | GET | `/api/projects/tag-check?tag=` | JWT | `{tag, available, reason}` for live form feedback |
 | POST | `/api/projects/{id}/retag` | JWT (write) | Move the project's tag. One UPDATE + one tag-history row + one audit event; **no other row in the database changes**. Retired tags are never reusable |

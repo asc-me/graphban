@@ -312,6 +312,27 @@ def fetch_cloud_gitops(db: Session) -> GitopsView | None:
         return None
 
 
+def base_branches(db: Session, projects: list[Project]) -> dict[str, str | None]:
+    """`base_branch` for many projects at once, for the project switcher (GRPH-1131).
+
+    The same source `resolve` reads, without its per-project cost: on a linked box ONE cloud
+    fetch serves every project (the cloud view carries no per-project overlay, so `resolve`
+    would hand each of them the same fields), and an unreachable cloud is null for all of
+    them rather than the local `was` columns. Unlinked, the project overlay beats the org,
+    with the orgs loaded in one query. Null is unset — never `main`.
+    """
+    if not projects:
+        return {}
+    if code_sync.link_status(db)["linked"]:
+        live = fetch_cloud_gitops(db)
+        value = live.fields.base_branch.value if live is not None else None
+        return {p.id: value for p in projects}
+    org_ids = {p.org_id for p in projects if p.org_id}
+    orgs = ({o.id: o for o in db.scalars(select(Organization).where(Organization.id.in_(org_ids)))}
+            if org_ids else {})
+    return {p.id: _pick(p, orgs.get(p.org_id), "base_branch").value for p in projects}
+
+
 def resolve(db: Session, project_id: str | None) -> GitopsView:
     """Live contract for a box: cloud when linked, else this DB. Unreachable is
     unmeasured, never the local row."""

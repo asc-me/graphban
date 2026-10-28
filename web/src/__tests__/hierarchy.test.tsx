@@ -132,7 +132,7 @@ describe("path helpers", () => {
       page: "Harness",
     });
     expect(placeFromPath("/tracker")).toEqual({ section: "Plan", page: "Tracker" });
-    expect(placeFromPath("/fleet.v1")).toEqual({ section: "Build", page: "Fleet.v1" });
+    expect(placeFromPath("/fleet")).toEqual({ section: "Build", page: "Fleet" });
     // Project home is the Dashboard, including the retired URL before it redirects.
     expect(placeFromPath("/p/CORE")).toEqual({ section: "Dashboard", page: "Dashboard" });
     expect(placeFromPath("/p/CORE/")).toEqual({ section: "Dashboard", page: "Dashboard" });
