@@ -140,6 +140,12 @@ So the payload now carries `records_answers: false`, `turns_recorded` and
 `answer_grill` — the manifest is trimmed by scope — so an agent may have no other way to find
 out that its answers are not counting.
 
+The questions come from the current interrogation (GRPH-1123): `grill_history` since
+`grill_window`, packed by `grill_context`, asked under `GRILL_CHAT_SYSTEM`. That is the prompt
+that stops once the four dimensions are answered or deferred. The tool still writes no turn.
+The one-shot editor command (`POST /api/prds/{id}/ai` with `command=grill`) stays on the
+body-only prompt, which has no transcript and cannot know when to stop.
+
 **Every tool argues its role gate** (GRPH-516). 15 of the 60 tools are role-gated; the other
 40 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
 completeness guard forcing each new tool to be classified as a quality gate or an authority
