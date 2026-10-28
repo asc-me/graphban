@@ -147,7 +147,8 @@ def project_counts(project_id: str, db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):
     """The badge numbers the app shell renders — a few integers instead of the four full
     collections it used to fetch on every route (GRPH-431). `triage_new` and
-    `lessons_published` are the Project Home Jump-to populations (GRPH-1064)."""
+    `lessons_published` are the Project Home Jump-to populations (GRPH-1064); the rest of
+    the sidebar's badges ride along as `projects.BADGE_FIELDS` (GRPH-1132)."""
     authz.require_readable(db, user.id, project_id)
     return projects_svc.shell_counts(db, project_id)
 
