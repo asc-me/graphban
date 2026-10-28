@@ -157,6 +157,7 @@ describe("planner surfaces (GRPH-913)", () => {
     servedPrds = [];
     itemsLoading = false;
     itemsError = false;
+    localStorage.removeItem("gb_tracker_layout");
     Element.prototype.scrollTo = Element.prototype.scrollTo ?? (() => {});
   });
 
@@ -168,6 +169,8 @@ describe("planner surfaces (GRPH-913)", () => {
   });
 
   it("shows filtered-empty copy with clear control when a filter hides all rows", async () => {
+    // Status filters belong to the List layout; Board shows every status as a column.
+    localStorage.setItem("gb_tracker_layout", "list");
     const user = userEvent.setup();
     renderTracker();
     await screen.findByText("First item");

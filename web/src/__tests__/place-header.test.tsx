@@ -57,7 +57,8 @@ describe("PlaceHeader", () => {
     renderTracker();
 
     const header = await screen.findByTestId("place-header");
-    expect(within(header).getByText(/One linear stream/)).toBeInTheDocument();
+    // Board is the default layout (GRPH-1144); its purpose line names the column drop.
+    expect(within(header).getByText(/Drag a card to another column/)).toBeInTheDocument();
   });
 
   it("renders the primary action when provided", async () => {
