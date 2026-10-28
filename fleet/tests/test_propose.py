@@ -371,11 +371,44 @@ def test_a_main_only_head_move_still_merges(gh, git_repo: Path):
     forge = _Forge(draft=False, head=head)
     gh(_only_gh(forge))
     got = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=reviewed,
-                            green={reviewed}, paths=["item.py"])
+                            green={head}, paths=["item.py"])
 
     assert got.ok and got.commit == MERGE_OID
     assert "paths-unchanged" in got.checked
+    assert "ci=suite_green" in got.checked
     assert "pr merge" in forge.verbs()
+
+
+def test_a_paths_unchanged_head_is_green_on_that_head_not_the_old_one(gh, git_repo: Path):
+    """The follow-up commit is what CI ran. `suite_green` on the signed-off commit does
+    not cover a later head, and a later head's pass does not need the old red commit.
+
+    Sabotage: keep comparing `green` to `reviewed` after `paths-unchanged`. The first
+    call merges a head CI never saw; the second refuses the head CI did attest.
+    """
+    (git_repo / "item.py").write_text("mine\n", encoding="utf-8")
+    subprocess.run(["git", "add", "item.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "item"], cwd=git_repo, check=True)
+    reviewed = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo,
+                              capture_output=True, text=True, check=True).stdout.strip()
+    (git_repo / "other.py").write_text("lockfile\n", encoding="utf-8")
+    subprocess.run(["git", "add", "other.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "ci fix outside the item"], cwd=git_repo, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo,
+                          capture_output=True, text=True, check=True).stdout.strip()
+    forge = _Forge(draft=False, head=head)
+    gh(_only_gh(forge))
+
+    stale = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=reviewed,
+                              green={reviewed}, paths=["item.py"])
+    assert not stale.ok and not stale.skipped
+    assert head[:12] in stale.reason
+    assert "pr merge" not in forge.verbs()
+
+    fresh = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=reviewed,
+                              green={head}, paths=["item.py"])
+    assert fresh.ok and "paths-unchanged" in fresh.checked
+    assert "ci=suite_green" in fresh.checked
 
 
 def test_a_real_edit_of_the_item_still_needs_review(gh, git_repo: Path):
@@ -804,8 +837,8 @@ def test_a_base_the_forge_did_not_name_is_not_an_exemption(gh):
 
 
 def test_a_main_merged_head_still_needs_scans_clean_on_the_new_head(gh, git_repo: Path):
-    """AC 14. GRPH-1032 lets suite_green ride on the reviewed commit when only main moved;
-    scans_clean gets no such exemption — main brought in the code the scan checks.
+    """AC 14. A paths-unchanged head still needs scans_clean on that head. suite_green
+    is on the same head: the reviewed commit is not the tree being merged.
 
     Sabotage: check scans_clean against `reviewed`, and the old pass merges this head."""
     (git_repo / "item.py").write_text("mine\n", encoding="utf-8")
@@ -822,7 +855,7 @@ def test_a_main_merged_head_still_needs_scans_clean_on_the_new_head(gh, git_repo
     forge = _Forge(draft=False, head=head, base="main")
     gh(_only_gh(forge))
     held = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=reviewed,
-                             green={reviewed}, paths=["item.py"], release="main",
+                             green={head}, paths=["item.py"], release="main",
                              scans=[_scan(reviewed, True)])
 
     assert not held.ok and "paths-unchanged" in held.checked
@@ -833,7 +866,7 @@ def test_a_main_merged_head_still_needs_scans_clean_on_the_new_head(gh, git_repo
     forge = _Forge(draft=False, head=head, base="main")
     gh(_only_gh(forge))
     got = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=reviewed,
-                            green={reviewed}, paths=["item.py"], release="main",
+                            green={head}, paths=["item.py"], release="main",
                             scans=[_scan(reviewed, True), _scan(head, True)])
 
     assert got.ok and "scans_clean=head" in got.checked
