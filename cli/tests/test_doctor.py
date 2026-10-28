@@ -181,6 +181,36 @@ def test_an_explicit_server_is_not_overridden(home, monkeypatch):
     assert "http://gb.invalid" not in seen["argv"]
 
 
+def test_a_separator_inside_the_gbfleet_args_reaches_gbfleet(home, monkeypatch):
+    """`service install --name X -- <until args>` splits on that `--`. Stripping it made
+    gbfleet read `--repo` as its own flag and refuse. Sabotage: drop every `--` again and
+    this fails."""
+    seen = {}
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr("gban.cli.shutil.which", lambda name: "/usr/bin/gbfleet")
+    monkeypatch.setattr("gban.cli.subprocess.run",
+                        lambda argv, **kw: (seen.update(argv=argv), Done())[1])
+    main(["fleet", "service", "install", "--name", "P1", "--", "--repo", "/r", "--prd", "P1"])
+    assert seen["argv"][:8] == ["/usr/bin/gbfleet", "service", "install", "--name", "P1",
+                                "--", "--repo", "/r"]
+
+
+def test_a_leading_separator_is_still_dropped(home, monkeypatch):
+    seen = {}
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr("gban.cli.shutil.which", lambda name: "/usr/bin/gbfleet")
+    monkeypatch.setattr("gban.cli.subprocess.run",
+                        lambda argv, **kw: (seen.update(argv=argv), Done())[1])
+    main(["fleet", "--", "ps"])
+    assert seen["argv"][:2] == ["/usr/bin/gbfleet", "ps"]
+
+
 def test_a_missing_supervisor_says_how_to_install_it(home, monkeypatch, capsys):
     """7. Exit 4, its own code, so it cannot be confused with something gbfleet said.
 
