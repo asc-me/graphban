@@ -782,3 +782,123 @@ def test_mcp_empty_findings_without_result_is_validation_error(client, auth):
     assert err["isError"] is True
     assert err["structuredContent"]["error"]["code"] == "validation"
     assert "complete" in err["structuredContent"]["error"]["message"]
+
+
+# ── GRPH-1126 · first-time due ───────────────────────────────────────────────
+
+
+def test_has_findings_at_head_is_not_due(db):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="npm-audit", category="security",
+        path="web/package-lock.json", scanned_sha="h1",
+        findings=[{"severity": "high", "summary": "advisory", "path": "web/package-lock.json"}],
+        result="complete",
+    )
+    assert _web_sec(db)["categories"]["security"]["state"] == "has_findings"
+    due = scans_svc.scans_due(db, "core", head_sha="h1")["due"]
+    assert not any(d["path"] == "web/package-lock.json" for d in due)
+    assert any(d["path"] == "backend/pyproject.toml" for d in due)
+
+
+def test_incomplete_stays_due(db):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="knip", path="web/", scanned_sha="h1",
+        findings=[{"severity": "low", "summary": "unused export", "path": "web/x.ts"}],
+        result="incomplete",
+    )
+    due = scans_svc.scans_due(db, "core", head_sha="h1")["due"]
+    assert any(d["component"] == "web" and d["category"] == "deadcode" for d in due)
+
+
+_SOURCE_DIRS = ("web/", "backend/", "fleet/", "cli/")
+_MANIFESTS = (("pip-audit", "backend/pyproject.toml"), ("npm-audit", "web/package-lock.json"))
+
+
+def _report_every_topology_cell(db, *, findings, head_sha="h1"):
+    """One complete report on every scanner cell the seeded topology names.
+
+    Security sits on the manifest cells; refactor/stub/deadcode/tests on the source dirs.
+    """
+    counts = {"passed": 1, "failed": 1 if findings else 0, "skipped": 0}
+    for sid, path in _MANIFESTS:
+        scans_svc.record_scan(
+            db, project_id="core", scanner_id=sid, category="security", path=path,
+            scanned_sha=head_sha, result="complete",
+            findings=[{"severity": "crit", "summary": "bad", "path": path}] if findings else [],
+        )
+    for prefix in _SOURCE_DIRS:
+        for sid in ("radon", "stubscan", "vulture", "pytest"):
+            kw = {"tests": counts} if sid == "pytest" else {}
+            scans_svc.record_scan(
+                db, project_id="core", scanner_id=sid, path=prefix, scanned_sha=head_sha,
+                findings=(
+                    [{"severity": "crit", "summary": "bad", "path": f"{prefix}m.py"}]
+                    if findings else []
+                ),
+                result="complete", **kw,
+            )
+
+
+def _describe_every_source_dir(db, revision="h1"):
+    """Make coverage computable: code-graph nodes under each source dir at head."""
+    from app.services import code_graph as code_svc
+
+    code_svc.describe_code(
+        db, project_id="core", revision=revision,
+        nodes=[{"path": f"{prefix}m.py", "kind": "module", "summary": "m"} for prefix in _SOURCE_DIRS],
+    )
+
+
+def test_first_time_cells_are_due_in_every_scanner_category(db):
+    """Stub, dead code, refactor and tests are due before any report exists."""
+    out = scans_svc.scans_due(db, "core", head_sha="h1")
+    pairs = {(d["path"], d["category"]) for d in out["due"]}
+    for prefix in _SOURCE_DIRS:
+        for cat in ("refactor", "stub", "deadcode", "tests"):
+            assert (prefix, cat) in pairs, (prefix, cat)
+    for _, path in _MANIFESTS:
+        assert (path, "security") in pairs
+    assert all(d["state"] == "never_scanned" for d in out["due"])
+    # No graph → one not_computable coverage cell, never a demand to scan a phantom path.
+    assert not any(d["category"] == "coverage" for d in out["due"])
+    assert out["empty_reason"] is None
+
+
+def test_no_graph_project_empty_due_is_coverage_not_computable(db):
+    _report_every_topology_cell(db, findings=False)
+    out = scans_svc.scans_due(db, "core", head_sha="h1")
+    assert out["due_count"] == 0, out["due"]
+    assert out["empty_reason"] == "coverage_not_computable"
+
+
+def test_unmapped_project_empty_due_is_unmapped(db):
+    from app.models import Project
+
+    pid = "unmapped-due-p58"
+    if not db.get(Project, pid):
+        db.add(Project(id=pid, name="Unmapped due", tag="UMDP"))
+        db.commit()
+    out = scans_svc.scans_due(db, pid, head_sha="h1")
+    assert out["due_count"] == 0
+    assert out["empty_reason"] == "unmapped"
+
+
+def test_findings_everywhere_empty_due_is_has_findings_not_all_clean(db):
+    """Bounce: has_findings cells fell through to all_clean_or_not_applicable."""
+    _describe_every_source_dir(db)
+    _report_every_topology_cell(db, findings=True)
+    out = scans_svc.scans_due(db, "core", head_sha="h1")
+    assert out["due_count"] == 0, out["due"]
+    assert out["empty_reason"] == "has_findings"
+
+
+def test_all_clean_with_computable_coverage_is_all_clean(db):
+    _describe_every_source_dir(db)
+    _report_every_topology_cell(db, findings=False)
+    health = scans_svc.component_health(db, "core", head_sha="h1")
+    cov = [c["categories"]["coverage"]["state"] for c in health["components"]
+           if "coverage" in c["categories"]]
+    assert cov and "not_computable" not in cov, cov
+    out = scans_svc.scans_due(db, "core", head_sha="h1")
+    assert out["due_count"] == 0, out["due"]
+    assert out["empty_reason"] == "all_clean_or_not_applicable"

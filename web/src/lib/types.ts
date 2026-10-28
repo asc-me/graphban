@@ -1198,6 +1198,11 @@ export interface StackScanFinding {
   path: string;
   link_kind?: string | null;
   link_ref?: string | null;
+  advisory_id?: string;
+  dependency?: "direct" | "transitive";
+  fixed_version?: string;
+  kind?: string;
+  count?: number;
   /** Tag an item filed from this finding carries; absent on open-work findings. */
   filed_key?: string | null;
   /** The item already filed for it, if any. */

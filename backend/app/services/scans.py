@@ -62,9 +62,10 @@ _SEV_NORM = {
     "high": "high",
     "med": "med", "medium": "med",
     "low": "low",
-    "info": "low",
+    "info": "info",
 }
-_SEV_ORDER = ("crit", "high", "med", "low")
+_SEV_ORDER = ("crit", "high", "med", "low", "info")
+_DEPENDENCY_VALUES = frozenset({"direct", "transitive"})
 
 # Stack deployable id → repo path prefix (ticket paths; api owns backend/, not "api/").
 COMPONENT_PATHS: dict[str, str] = {
@@ -101,6 +102,14 @@ _INFERRED_CATEGORY: tuple[tuple[str, frozenset[str]], ...] = (
 )
 _TEST_COUNTS = ("passed", "failed", "skipped")
 
+# Categories `scans_due` may name. `work` is live tracker state, not a scan to schedule.
+_SCANS_DUE_CATEGORIES = frozenset({
+    "security", "coverage", "refactor", "stub", "deadcode", "tests",
+})
+# States that mean someone should run or finish a scan (GRPH-1126 / PRD-P58 First-time due).
+_SCANS_DUE_STATES = frozenset({
+    "never_scanned", "stale", "tool_missing", "incomplete",
+})
 # Producer `result` values stored on CodeScan (GRPH-1125). `not_computable` is server-only.
 PRODUCER_RESULTS = frozenset({"complete", "tool_missing", "not_applicable", "incomplete"})
 _EMPTY_FINDINGS_REFUSAL = (
@@ -140,6 +149,83 @@ def _norm_path(path: str) -> str:
 def _norm_sev(raw: str) -> str:
     key = (raw or "medium").strip().lower()
     return _SEV_NORM.get(key, "med")
+
+
+def _optional_str(raw: object) -> str:
+    return str(raw or "").strip()
+
+
+def _optional_count(raw: object) -> int | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise ValueError("count must be a non-negative integer")
+    return raw
+
+
+def _validate_finding_extra(i: int, raw: dict) -> None:
+    dep = _optional_str(raw.get("dependency"))
+    if dep and dep not in _DEPENDENCY_VALUES:
+        raise ValueError(
+            f"findings[{i}].dependency must be direct or transitive (got {dep!r})"
+        )
+    _optional_count(raw.get("count"))
+
+
+def _finding_row(
+    *,
+    scan_id: str,
+    project_id: str,
+    path_n: str,
+    raw: dict,
+    default_sev: str,
+) -> ScanFinding:
+    summary = _optional_str(raw.get("summary"))
+    dep = _optional_str(raw.get("dependency"))
+    fixed = _optional_str(raw.get("fixed_version"))
+    kind = _optional_str(raw.get("kind"))
+    advisory = _optional_str(raw.get("advisory_id"))
+    count = _optional_count(raw.get("count"))
+    return ScanFinding(
+        scan_id=scan_id,
+        project_id=project_id,
+        path=_optional_str(raw.get("path")) or path_n,
+        severity=_norm_sev(str(raw.get("severity") or default_sev)),
+        summary=summary,
+        link_kind=_optional_str(raw.get("link_kind")),
+        link_ref=_optional_str(raw.get("link_ref")),
+        advisory_id=advisory,
+        dependency=dep,
+        fixed_version=fixed,
+        kind=kind,
+        count=count,
+    )
+
+
+def _finding_dict(f: ScanFinding) -> dict:
+    out = {
+        "severity": f.severity,
+        "summary": f.summary,
+        "path": f.path,
+        "link_kind": f.link_kind or None,
+        "link_ref": f.link_ref or None,
+    }
+    if f.advisory_id:
+        out["advisory_id"] = f.advisory_id
+    if f.dependency:
+        out["dependency"] = f.dependency
+    if f.fixed_version:
+        out["fixed_version"] = f.fixed_version
+    if f.kind:
+        out["kind"] = f.kind
+    if f.count is not None:
+        out["count"] = f.count
+    return out
+
+
+def _informational_rollup(finding: dict) -> bool:
+    """Knip-style rollups (kind + count) are not offered as tracker items."""
+    return bool(_optional_str(finding.get("kind"))) and finding.get("count") is not None
 
 
 def _infer_category(scanner_id: str, category: str | None) -> str:
@@ -256,6 +342,7 @@ def record_scan(
                 f"findings[{i}] requires a non-empty summary "
                 f"(got keys {sorted(raw.keys())})"
             )
+        _validate_finding_extra(i, raw)
 
     counts: dict[str, int] | None = None
     default_sev = "medium"
@@ -325,15 +412,12 @@ def record_scan(
     db.add(scan)
     stored = 0
     for raw in rows:
-        summary = str(raw.get("summary") or "").strip()
-        db.add(ScanFinding(
+        db.add(_finding_row(
             scan_id=scan.id,
             project_id=project_id,
-            path=str(raw.get("path") or path_n).strip() or path_n,
-            severity=_norm_sev(str(raw.get("severity") or default_sev)),
-            summary=summary,
-            link_kind=str(raw.get("link_kind") or "").strip(),
-            link_ref=str(raw.get("link_ref") or "").strip(),
+            path_n=path_n,
+            raw=raw,
+            default_sev=default_sev,
         ))
         stored += 1
     db.commit()
@@ -359,16 +443,7 @@ def _findings_for(db: Session, scan_id: str) -> list[dict]:
         select(ScanFinding).where(ScanFinding.scan_id == scan_id)
         .order_by(ScanFinding.id.asc())
     ).all())
-    return [
-        {
-            "severity": f.severity,
-            "summary": f.summary,
-            "path": f.path,
-            "link_kind": f.link_kind or None,
-            "link_ref": f.link_ref or None,
-        }
-        for f in rows
-    ]
+    return [_finding_dict(f) for f in rows]
 
 
 def _stored_result(scan: CodeScan) -> str:
@@ -781,47 +856,74 @@ def scan_status(
     return component_health(db, project_id, head_sha=head)
 
 
+def _scans_due_empty_reason(health: dict) -> str | None:
+    """Why `due` is empty — not interchangeable with all-clean (GRPH-1126)."""
+    mapping = health.get("mapping") or {}
+    if mapping.get("state") == "unmapped":
+        return "unmapped"
+    components = health.get("components") or []
+    if not components:
+        return "unmapped"
+    saw_not_computable_coverage = False
+    saw_findings = False
+    for comp in components:
+        for cat_key, cat in (comp.get("categories") or {}).items():
+            if cat_key not in _SCANS_DUE_CATEGORIES:
+                continue
+            st = cat.get("state") or "never_scanned"
+            if st in _SCANS_DUE_STATES:
+                return None
+            if cat_key == "coverage" and st == "not_computable":
+                saw_not_computable_coverage = True
+            if st == "has_findings":
+                saw_findings = True
+    # Findings at head are not due, but they are not clean either: name them first.
+    if saw_findings:
+        return "has_findings"
+    if saw_not_computable_coverage:
+        return "coverage_not_computable"
+    return "all_clean_or_not_applicable"
+
+
 def scans_due(db: Session, project_id: str, *, head_sha: str = "") -> dict:
     """Which component × category pairs need a (re)scan.
 
-    Due = never_scanned or stale for the security category (the one we ship producers for),
-    plus coverage when the graph says something is wrong. Refactor/stub/deadcode/tests due only once a
-    scanner has ever reported (otherwise they stay never_scanned without nagging).
+    Names every real cell in ``never_scanned``, ``stale``, ``tool_missing``, or ``incomplete``
+    for security, coverage, stub, dead code, refactor, and tests — including first-time
+    never_scanned on stub/deadcode/refactor/tests. ``not_applicable``, ``clean_at_sha``,
+    ``has_findings``, and ``not_computable`` coverage are not due.
     """
     health = component_health(db, project_id, head_sha=head_sha)
-    if health.get("mapping", {}).get("state") == "unmapped":
+    mapping = health.get("mapping") or {}
+    if mapping.get("state") == "unmapped":
         return {
             "head_sha": health.get("head_sha"),
-            "mapping": health.get("mapping"),
+            "mapping": mapping,
             "due": [],
             "due_count": 0,
+            "empty_reason": "unmapped",
         }
     due = []
     for comp in health["components"]:
         for cat_key, cat in (comp.get("categories") or {}).items():
-            st = cat.get("state")
-            if st in ("never_scanned", "stale", "tool_missing", "incomplete"):
-                # Nag security/coverage whenever unscanned, blocked, partial, or stale;
-                # refactor/stub/deadcode/tests only once a scanner has reported before.
-                if cat_key in ("security", "coverage") or (
-                    cat_key in ("refactor", "stub", "deadcode", "tests")
-                    and st != "never_scanned"
-                ):
-                    due.append({
-                        "component": comp["id"],
-                        "path": comp["path"],
-                        "category": cat_key,
-                        "state": st,
-                        "scanned_sha": cat.get("scanned_sha"),
-                        "head_sha": health.get("head_sha"),
-                    })
+            if cat_key not in _SCANS_DUE_CATEGORIES:
+                continue
+            st = cat.get("state") or "never_scanned"
+            if st in _SCANS_DUE_STATES:
+                due.append({
+                    "component": comp["id"],
+                    "path": comp["path"],
+                    "category": cat_key,
+                    "state": st,
+                    "scanned_sha": cat.get("scanned_sha"),
+                    "head_sha": health.get("head_sha"),
+                })
+    empty_reason = _scans_due_empty_reason(health) if not due else None
     return {
         "head_sha": health.get("head_sha"),
         "due": due,
         "due_count": len(due),
-        # Absence of due work is not "all clean" — components with never_scanned
-        # security still appear above. An empty list with every security never_scanned
-        # would be a bug; the filter includes never_scanned for security.
+        "empty_reason": empty_reason,
     }
 
 
@@ -1018,6 +1120,8 @@ def _attach_offers(
     for cat, cell in categories.items():
         if cat != "work":
             for f in cell.get("findings") or []:
+                if _informational_rollup(f):
+                    continue
                 k = filed_key(component, cat, f.get("path") or "", f.get("summary") or "")
                 f["filed_key"] = k
                 f["filed_item"] = filed.get(k)
