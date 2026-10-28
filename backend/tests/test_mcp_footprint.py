@@ -157,6 +157,8 @@ CEILING = 15060
 # 15048 -> 15053 (GRPH-1126). scans_due gains empty_reason in its output schema.
 # GRPH-1127: record_scan's finding grain (advisory_id, kind, count, …) is named in a fleet-only
 # findings description, so MEASURED_TOKENS stays 15053.
+# GRPH-1129: record_scan says a write key suffices and planners are refused; paid by dropping
+# the base findings description's repeat of "clean with result=complete", so it stays 15053.
 MEASURED_TOKENS = 15053
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming

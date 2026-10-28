@@ -1312,6 +1312,19 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
 
     who = resolved or f"key {getattr(api_key, 'name', '') or getattr(api_key, 'id', '?')}"
 
+    # GRPH-1129. A project write key is enough to file a scan — CI and operators do not
+    # register fleet seats. Key-only MCP calls stamp the credential (`caller_identity`);
+    # `agent_id` is optional provenance when a worker ran the scan. Planners still do not
+    # record scans; missing or invalid keys fail auth before this runs.
+    if tool == "record_scan":
+        if role == "unidentified":
+            return
+        if role == "planner":
+            raise authz.Forbidden(
+                f"planners do not record scans; {who} is registered as 'planner'",
+                hint="register as a worker or call without agent_id to attribute the credential",
+            )
+
     required = TOOL_ROLES.get(tool)
     if role == "unidentified" and (required or (tool == "update_item"
                                                 and (args or {}).get("status") in _BEYOND_WORKER)

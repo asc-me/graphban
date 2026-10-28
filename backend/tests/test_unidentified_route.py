@@ -95,9 +95,6 @@ _WORKER_CALLS = [
     ("sign_off", lambda item: {"id": item}),
     ("bounce", lambda item: {"id": item, "reason": "not this"}),
     ("release_item", lambda item: {"id": item}),
-    ("record_scan", lambda item: {
-        "scanner_id": "bandit", "path": "backend/app/services/fleet.py", "scanned_sha": "abc",
-    }),
 ]
 
 

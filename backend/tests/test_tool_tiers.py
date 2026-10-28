@@ -395,7 +395,8 @@ CORE_TOKENS = 8918
 # codegraph 1790 → 1789: GRPH-1125 met GRPH-1128's "keeps prior rows" on main.
 # codegraph 1789 → 1794: scans_due output names empty_reason (GRPH-1126).
 # GRPH-1127: record_scan's finding grain is a fleet-only findings description; codegraph stays 1794.
-TIER_TOKENS = {"prd": 1998, "codegraph": 1794, "fleet": 1100, "misc": 1238}
+# codegraph 1794 -> 1795 (GRPH-1129): write key suffices, planners refused; findings' repeat cut.
+TIER_TOKENS = {"prd": 1998, "codegraph": 1795, "fleet": 1100, "misc": 1238}
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.
