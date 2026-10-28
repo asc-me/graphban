@@ -151,3 +151,20 @@ def test_invalid_dependency_is_refused(db):
                 "dependency": "optional",
             }],
         )
+
+
+
+def test_finding_grain_is_advertised_on_the_fleet_manifest_only():
+    """The grain rides `_FLEET_ONLY_ARGS` (the ceiling has no room for it in base TOOLS);
+    the base findings schema must stay untouched, since TOOLS is shared module state."""
+    from app import mcp_server
+
+    def findings(tools):
+        t = next(t for t in tools if t["name"] == "record_scan")
+        return t["inputSchema"]["properties"]["findings"]
+
+    fleet = findings(mcp_server._with_fleet_args(mcp_server.TOOLS))
+    assert all(f in fleet["description"] for f in mcp_server._FINDING_GRAIN)
+    assert fleet["items"]["required"] == ["summary"]
+    base = findings(mcp_server.TOOLS)
+    assert "advisory_id" not in base["description"]

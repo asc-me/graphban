@@ -391,8 +391,11 @@ CORE_TOKENS = 8918
 # which is the argument for not funding it out of prose every key pays for.
 # GRPH-1089: bound_only is fleet-only args, not base TOOLS, so fleet stays 1100.
 # codegraph 1791 → 1790: record_scan refuses an unknown scanner with no category (GRPH-1108).
-# codegraph 1790 → 1799 (GRPH-1127): record_scan finding grain properties; prose trimmed.
-TIER_TOKENS = {"prd": 1998, "codegraph": 1799, "fleet": 1100, "misc": 1238}
+# GRPH-1125: `result` is fleet-only on record_scan; base prose trimmed, tier unchanged.
+# codegraph 1790 → 1789: GRPH-1125 met GRPH-1128's "keeps prior rows" on main.
+# codegraph 1789 → 1794: scans_due output names empty_reason (GRPH-1126).
+# GRPH-1127: record_scan's finding grain is a fleet-only findings description; codegraph stays 1794.
+TIER_TOKENS = {"prd": 1998, "codegraph": 1794, "fleet": 1100, "misc": 1238}
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.

@@ -414,7 +414,7 @@ def _scan_rows(verdict: Verdict, head: str) -> list[dict]:
     """`record_scan` arguments for what this run actually measured. Never-run and stale
     results record nothing — absence is the honest row for a scan that did not happen."""
     return [{"scanner_id": r.tool, "path": r.prefix, "scanned_sha": head,
-             "category": "security", "findings": r.findings,
+             "category": "security", "findings": r.findings, "result": "complete",
              "note": f"Security scans job ({r.state})"}
             for r in verdict.results if r.tool and r.state in (CLEAN, FAILED)]
 

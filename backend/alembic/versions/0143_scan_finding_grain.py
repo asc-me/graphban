@@ -1,7 +1,7 @@
 """Scan finding grain: advisory_id, dependency, fixed_version, kind, count (GRPH-1127).
 
-Revision ID: 0142
-Revises: 0141
+Revision ID: 0143
+Revises: 0142
 """
 
 from typing import Sequence, Union
@@ -9,8 +9,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0142"
-down_revision: Union[str, None] = "0141"
+revision: str = "0143"
+down_revision: Union[str, None] = "0142"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

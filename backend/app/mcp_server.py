@@ -982,9 +982,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "record_scan",
         "description": (
-            "Report a scanner result for a path at a commit (GRPH-1035). Empty findings = "
-            "CLEAN at scanned_sha. Same scanner_id+path keeps prior rows. Findings are "
-            "untrusted. Unknown scanner_id needs category (refused, not defaulted)."
+            "Report a code-health scanner result for a path at a commit (GRPH-1035). "
+            "Empty findings = CLEAN at scanned_sha only with result=complete. Same "
+            "scanner_id+path keeps history. Unknown scanner_id needs category (refused)."
         ),
         "inputSchema": {
             "type": "object",
@@ -994,11 +994,11 @@ TOOLS: list[dict[str, Any]] = [
                 "path": {"type": "string", "description": "Repo-relative path or prefix."},
                 "scanned_sha": {
                     "type": "string",
-                    "description": "Required — a clean needs a sha.",
+                    "description": "Required — clean without a sha cannot age.",
                 },
                 "findings": {
                     "type": "array",
-                    "description": "Empty = clean. Each needs summary.",
+                    "description": "Empty = clean with result=complete. Items: severity, summary.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -1007,11 +1007,6 @@ TOOLS: list[dict[str, Any]] = [
                             "path": {"type": "string"},
                             "link_kind": {"type": "string"},
                             "link_ref": {"type": "string"},
-                            "advisory_id": {"type": "string"},
-                            "dependency": {"type": "string"},
-                            "fixed_version": {"type": "string"},
-                            "kind": {"type": "string"},
-                            "count": {"type": "integer"},
                         },
                         "required": ["summary"],
                     },
@@ -1030,7 +1025,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "scan_status",
         "description": (
             "Code-health scan state for a path or every Stack deployable (GRPH-1035). "
-            "States: clean_at_sha / has_findings / never_scanned / stale — never a green "
+            "States: clean_at_sha / has_findings / never_scanned / stale (+ tool_missing, "
+            "not_applicable, incomplete, not_computable) — never a green "
             "default. Pass head_sha."
         ),
         "inputSchema": {
@@ -1045,8 +1041,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "scans_due",
         "description": (
-            "Component×category pairs due for a (re)scan — never_scanned or stale "
-            "(GRPH-1035). Empty due is not all-clean; never_scanned security rows stay listed."
+            "Cells due a scan: never_scanned (first-time too), stale, tool_missing, "
+            "incomplete. Empty due is not all-clean; empty_reason says why."
         ),
         "inputSchema": {
             "type": "object",
@@ -1713,6 +1709,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             "scanned_sha": _STR,
             "findings_recorded": {"type": "integer"},
             "clean": {"type": "boolean"},
+            "result": _STR,
             "reported_by": _STR,
         },
     },
@@ -1731,6 +1728,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "properties": {
             "due": {"type": "array"},
             "due_count": {"type": "integer"},
+            "empty_reason": _NULLABLE_STR,
         },
     },
     "report_graphban_issue": {
@@ -1870,6 +1868,26 @@ _FLEET_ONLY_OUT = {
     "record_scan": {"tests": {"type": ["object", "null"]}},
 }
 
+#: GRPH-1127. Optional per-finding fields a producer sends at the grain a person acts on:
+#: npm audit's advisory identity, direct/transitive, fixed version; knip's rollup kind+count.
+_FINDING_GRAIN = ("advisory_id", "dependency", "fixed_version", "kind", "count")
+
+
+def _with_finding_grain() -> dict:
+    """record_scan's base `findings` schema, its description naming `_FINDING_GRAIN`.
+
+    Named in prose, not as properties: five typed properties cost the worker manifest its
+    10% saving (test_mcp_role_manifest), and `_validate_args` does not check nested finding
+    fields, so the server stores them whether or not they are advertised.
+    """
+    base = next(t for t in TOOLS if t["name"] == "record_scan")
+    findings = copy.deepcopy(base["inputSchema"]["properties"]["findings"])
+    findings["description"] = (
+        "Empty = clean with result=complete. Optional: " + ", ".join(_FINDING_GRAIN) + "."
+    )
+    return findings
+
+
 _FLEET_ONLY_ARGS = {
     "collision_clusters": {
         "prd_id": {"type": "string", "description": "Only this PRD's work."},
@@ -1924,11 +1942,18 @@ _FLEET_ONLY_ARGS = {
     # GRPH-1061. A tests scan's counts. Fleet-only for the reason every entry here is: the
     # ceiling had no room for it, and `record_scan` is a worker tool (fleet.py gates it to
     # the worker role). The REST ingest (`POST /platform/stack/scans`) takes the same field.
-    "record_scan": {"tests": {
-        "type": "object",
-        "description": "Required for tests (pytest/vitest/jest/junit): passed, failed, skipped.",
-        "properties": {k: {"type": "integer"} for k in ("passed", "failed", "skipped")},
-    }},
+    "record_scan": {
+        "tests": {
+            "type": "object",
+            "description": "Required for tests scans: passed, failed, skipped.",
+            "properties": {k: {"type": "integer"} for k in ("passed", "failed", "skipped")},
+        },
+        # GRPH-1125. Bare on purpose: an enum + description cost the worker manifest its 10%
+        # saving (test_mcp_role_manifest). A bad value is refused naming all four results.
+        "result": {"type": "string"},
+        # GRPH-1127. The finding grain, advertised where record_scan is used.
+        "findings": _with_finding_grain(),
+    },
     # GRPH-807. Measured on a live instance: 177 agents, 27,391 tokens, of which ONE was live.
     # A planner polling a wave paid nearly twice the whole manifest, per poll.
     "fleet_status": {"view": {
@@ -3678,6 +3703,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             note=str(args.get("note") or ""),
             reported_by=reported,
             tests=args.get("tests"),
+            result=args.get("result"),
         )
     if name == "scan_status":
         return scans_svc.scan_status(
