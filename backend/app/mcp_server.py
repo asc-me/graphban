@@ -984,7 +984,8 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Report a code-health scanner result for a path at a commit (GRPH-1035). "
             "Empty findings = CLEAN at scanned_sha only with result=complete. Same "
-            "scanner_id+path keeps history. Unknown scanner_id needs category (refused)."
+            "scanner_id+path keeps history. Write key suffices; planners refused. "
+            "Unknown scanner_id needs category (refused)."
         ),
         "inputSchema": {
             "type": "object",
@@ -998,7 +999,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "findings": {
                     "type": "array",
-                    "description": "Empty = clean with result=complete. Items: severity, summary.",
+                    "description": "Items: severity, summary.",
                     "items": {
                         "type": "object",
                         "properties": {
