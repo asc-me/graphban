@@ -11,7 +11,7 @@ import { adminPath, consoleHref } from "@/lib/routes";
 
 /**
  * The org gitops editor moved to graphban-control. What stays here is the rail:
- * an admin's Gitops entry leaves for the console, and a member does not see it.
+ * an admin's Admin row leaves for the console, and a member does not see it.
  */
 
 const project = {
@@ -66,7 +66,7 @@ function renderNav(ui: ReactNode, path = "/p/APP/tracker") {
   );
 }
 
-describe("Gitops nav is admin-only", () => {
+describe("Admin row is admin-only", () => {
   beforeEach(() => {
     spies.projects.mockReset();
     spies.orgs.mockReset();
@@ -74,23 +74,28 @@ describe("Gitops nav is admin-only", () => {
     spies.orgs.mockResolvedValue([{ id: "org_1", name: "Acme", plan: "team", role: "owner" }]);
   });
 
-  it("shows Gitops for an admin as a link to the console", async () => {
+  it("shows the Admin row for an owner as a link to the console", async () => {
     renderNav(<LeftNav hosted />);
-    const gitops = await screen.findByRole("link", { name: "Gitops" });
-    expect(gitops).toHaveAttribute("href", consoleHref(adminPath("gitops")));
-    expect(screen.getByRole("link", { name: "Users & access" })).toHaveAttribute(
-      "href",
-      consoleHref(adminPath("users")),
-    );
+    // Gitops, Users & access and the rest live in the console's admin section (GRPH-1141).
+    const admin = await screen.findByRole("link", { name: "Admin" });
+    expect(admin).toHaveAttribute("href", consoleHref(adminPath()));
   });
 
-  it("hides Gitops and the Admin group from a member", async () => {
+  it("shows the Admin row for an admin", async () => {
+    spies.orgs.mockResolvedValue([{ id: "org_1", name: "Acme", plan: "team", role: "admin" }]);
+    renderNav(<LeftNav hosted />);
+    expect(await screen.findByRole("link", { name: "Admin" })).toBeInTheDocument();
+  });
+
+  it("leaves the Admin row out of the DOM for a member", async () => {
     spies.orgs.mockResolvedValue([{ id: "org_1", name: "Acme", plan: "team", role: "member" }]);
     renderNav(<LeftNav hosted />);
     expect(await screen.findByText("Tracker")).toBeInTheDocument();
-    expect(screen.queryByText("Gitops")).not.toBeInTheDocument();
-    expect(screen.queryByText("Users & access")).not.toBeInTheDocument();
-    expect(screen.getByText("no admin group")).toBeInTheDocument();
+    await screen.findByText(/Acme/);
+    // Absent, not hidden: the rail copy is aria-hidden, so query the whole document.
+    expect(document.querySelector(`a[href="${consoleHref(adminPath())}"]`)).toBeNull();
+    expect(document.querySelector('[aria-label="Admin"]')).toBeNull();
+    expect(screen.queryByText("Admin")).not.toBeInTheDocument();
   });
 
   it("matches docs via adminPath, not a literal org prefix", () => {

@@ -960,14 +960,13 @@ describe("StackView app-first map (GRPH-1099)", () => {
 });
 
 describe("LeftNav Build lists Stack", () => {
-  it("includes Stack after Code graph in both BUILD lists", () => {
+  it("includes Stack after Code graph in Build", () => {
     const src = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), "../components/shell/LeftNav.tsx"),
       "utf8",
     );
     expect(src).toMatch(/label: "Stack"/);
-    expect(src).toMatch(/to: "\/stack"/);
-    expect(src).toMatch(/to: "stack"/); // hosted relative view
+    expect(src).toMatch(/view: "stack"/); // one list for hosted and self-host
     // PRD: Stack sits between Code graph and MCP Tools / Links.
     const code = src.indexOf('label: "Code graph"');
     const stack = src.indexOf('label: "Stack"');
