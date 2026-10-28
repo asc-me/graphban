@@ -1,10 +1,12 @@
-import { GitPullRequest } from "lucide-react";
+import { ChevronsLeftRight, EyeOff, GitPullRequest } from "lucide-react";
 import * as React from "react";
 
 import { Avatar } from "@/components/ui/avatar";
 import { cn } from "@/lib/cn";
 import { BOARD_COLUMNS, CHECK_COLOR, PR_STATE_COLOR, STATUS_META } from "@/lib/meta";
 import type { Item, Status } from "@/lib/types";
+
+import type { ColumnPrefsApi } from "./columnPrefs";
 
 function initials(name: string | undefined): string {
   return (name ?? "?").split(" ").map((p) => p[0]).slice(0, 2).join("");
@@ -16,11 +18,13 @@ export function TrackerBoard({
   selectedId,
   onSelect,
   onStatus,
+  columns,
 }: {
   items: Item[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   onStatus: (item: Item, status: Status) => void;
+  columns: ColumnPrefsApi;
 }) {
   const [dragId, setDragId] = React.useState<string | null>(null);
   const [overCol, setOverCol] = React.useState<Status | null>(null);
@@ -35,8 +39,26 @@ export function TrackerBoard({
   return (
     <div className="flex min-h-0 flex-1 items-stretch gap-3 overflow-x-auto px-5 py-4">
       {BOARD_COLUMNS.map((status) => {
+        const mode = columns.modeOf(status);
+        if (mode === "hide") return null;
         const meta = STATUS_META[status];
         const cards = items.filter((i) => i.status === status);
+        if (mode === "collapse") {
+          return (
+            <button
+              key={status}
+              type="button"
+              aria-label={`Expand ${meta.label} (${cards.length})`}
+              title={`Expand ${meta.label}`}
+              onClick={() => columns.setMode(status, "show")}
+              className="flex min-h-[320px] w-11 flex-none flex-col items-center gap-2 rounded-[12px] border border-line-2 bg-surface/40 py-3 hover:border-control-hover"
+            >
+              <span className="h-2 w-2 rounded-full" style={{ background: meta.color }} />
+              <span className="font-mono text-[10.5px] text-faint">{cards.length}</span>
+              <span className="text-body font-semibold text-fg-2 [writing-mode:vertical-rl]">{meta.label}</span>
+            </button>
+          );
+        }
         return (
           <section
             key={status}
@@ -61,6 +83,25 @@ export function TrackerBoard({
               <span className="h-2 w-2 rounded-full" style={{ background: meta.color }} />
               <span className="text-body font-semibold text-fg-2">{meta.label}</span>
               <span className="font-mono text-[10.5px] text-faint">{cards.length}</span>
+              <span className="flex-1" />
+              <button
+                type="button"
+                aria-label={`Collapse ${meta.label}`}
+                title="Collapse"
+                onClick={() => columns.setMode(status, "collapse")}
+                className="text-faint hover:text-fg"
+              >
+                <ChevronsLeftRight size={12} />
+              </button>
+              <button
+                type="button"
+                aria-label={`Hide ${meta.label}`}
+                title="Hide"
+                onClick={() => columns.setMode(status, "hide")}
+                className="text-faint hover:text-fg"
+              >
+                <EyeOff size={12} />
+              </button>
             </div>
             {cards.map((item) => (
               <BoardCard

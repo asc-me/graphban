@@ -5,6 +5,7 @@ import { MemoryRouter, Outlet, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectProvider } from "@/features/ProjectContext";
+import { TRACKER_COLUMNS_KEY } from "@/features/tracker/columnPrefs";
 import { TRACKER_LAYOUT_KEY, TrackerView } from "@/features/tracker/TrackerView";
 import { CHECK_COLOR, PR_STATE_COLOR } from "@/lib/meta";
 import type { GraphLink, Item } from "@/lib/types";
@@ -38,6 +39,7 @@ vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
   api: {
     projects: vi.fn(async () => [project]),
+    me: vi.fn(async () => ({ name: "Alex Cain" })),
     items: vi.fn(async () => served),
     shards: vi.fn(async () => []),
     links: vi.fn(async () => servedLinks),
@@ -482,5 +484,57 @@ describe("the tracker board (GRPH-1144)", () => {
     expect(await screen.findByText("Items unavailable")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(screen.queryByText("No items yet")).not.toBeInTheDocument();
+  });
+});
+
+describe("board columns (GRPH-1145)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.removeItem(TRACKER_LAYOUT_KEY);
+    localStorage.removeItem(TRACKER_COLUMNS_KEY);
+  });
+
+  it("hides a column from the board but not from the list counts", async () => {
+    const user = userEvent.setup();
+    renderTracker();
+    await screen.findByText("In progress thing");
+    await user.click(screen.getByRole("button", { name: "Hide Done" }));
+    expect(screen.queryByRole("region", { name: "Done" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Columns|hidden/ })).toHaveTextContent("1 hidden");
+
+    await user.click(screen.getByRole("button", { name: /List/ }));
+    expect(screen.getByRole("button", { name: /^Done/ })).toHaveTextContent("1");
+  });
+
+  it("collapses to a strip with the count, and clicking expands it", async () => {
+    const user = userEvent.setup();
+    renderTracker();
+    await screen.findByText("In progress thing");
+    await user.click(screen.getByRole("button", { name: "Collapse Done" }));
+    expect(screen.queryByRole("region", { name: "Done" })).not.toBeInTheDocument();
+    const strip = screen.getByRole("button", { name: "Expand Done (1)" });
+    expect(strip).toHaveTextContent("1");
+    await user.click(strip);
+    expect(screen.getByRole("region", { name: "Done" })).toBeInTheDocument();
+  });
+
+  it("persists across a reload, summarises in the popover, and Reset restores all", async () => {
+    const user = userEvent.setup();
+    const first = renderTracker();
+    await screen.findByText("In progress thing");
+    await user.click(screen.getByRole("button", { name: "Hide Done" }));
+    await user.click(screen.getByRole("button", { name: "Collapse Backlog" }));
+    first.unmount();
+
+    renderTracker();
+    await screen.findByText("In progress thing");
+    expect(screen.queryByRole("region", { name: "Done" })).not.toBeInTheDocument();
+    const trigger = screen.getByRole("button", { name: "1 hidden · 1 collapsed" });
+    await user.click(trigger);
+    expect(await screen.findByText(/Board columns · only you · Alex Cain/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Reset" }));
+    expect(screen.getByRole("region", { name: "Done" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Backlog" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Columns" })).toBeInTheDocument();
   });
 });
