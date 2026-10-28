@@ -2,6 +2,7 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { BOARD_COLUMNS } from "@/lib/meta";
 
 /** Named fetch failure with retry — Home's counts-unavailable pattern. */
 export function PlannerError({
@@ -73,6 +74,22 @@ export function TrackerListSkeleton({ rows = 8 }: { rows?: number }) {
           <Pulse className="h-3 w-[52px]" />
           <Pulse className="h-3.5 flex-1" />
           <Pulse className="h-3 w-10" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Board skeleton: six column shells with card placeholders. */
+export function TrackerBoardSkeleton() {
+  return (
+    <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-5 py-4" aria-busy="true" aria-label="Loading tracker">
+      {BOARD_COLUMNS.map((s) => (
+        <div key={s} className="flex min-h-[320px] min-w-[232px] flex-1 flex-col gap-2 rounded-[12px] border border-line-2 bg-surface/40 px-2 py-2.5">
+          <Pulse className="h-3 w-20" />
+          {[0, 1].map((i) => (
+            <Pulse key={i} className="h-[84px] rounded-[10px]" />
+          ))}
         </div>
       ))}
     </div>

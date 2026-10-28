@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectProvider } from "@/features/ProjectContext";
-import { TrackerView } from "@/features/tracker/TrackerView";
+import { TRACKER_LAYOUT_KEY, TrackerView } from "@/features/tracker/TrackerView";
 import { CHECK_COLOR, PR_STATE_COLOR } from "@/lib/meta";
 import type { GraphLink, Item } from "@/lib/types";
 
@@ -49,6 +49,9 @@ vi.mock("@/lib/api", () => ({
     assistantThreads: vi.fn(async () => []),
   },
 }));
+
+// The suites below exercise the List layout; Board is the default and has its own suite.
+beforeEach(() => localStorage.setItem(TRACKER_LAYOUT_KEY, "list"));
 
 function renderTracker() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -339,5 +342,145 @@ describe("the tracker row (PRD-47 S3)", () => {
     // A claim dot asserts somebody is on it right now. An assignment does not.
     expect(owner.querySelector(".blink")).not.toBeInTheDocument();
     expect(screen.queryByTitle(/^Claimed by/)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * PRD GRPH-P60 §D3: Board is the default layout, a column drop sets status through the same
+ * mutation StatusMenu uses, and a refused move snaps back with the server's reason.
+ */
+describe("the tracker board (GRPH-1144)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.removeItem(TRACKER_LAYOUT_KEY);
+  });
+  afterEach(() => {
+    served = items;
+  });
+
+  function column(name: string) {
+    return screen.getByRole("region", { name });
+  }
+
+  function dragTo(card: HTMLElement, target: HTMLElement) {
+    fireEvent.dragStart(card);
+    fireEvent.dragOver(target);
+    fireEvent.drop(target);
+    fireEvent.dragEnd(card);
+  }
+
+  it("lands a fresh user on Board, with every column and done items in place", async () => {
+    renderTracker();
+    await screen.findByText("In progress thing");
+    expect(screen.getByRole("button", { name: /Board/ })).toHaveAttribute("aria-pressed", "true");
+    for (const label of ["Backlog", "Next", "In Progress", "Review", "Blocked", "Done"]) {
+      expect(column(label)).toBeInTheDocument();
+    }
+    expect(within(column("Done")).getByText("Finished thing")).toBeInTheDocument();
+    expect(within(column("Backlog")).getByText("Drop here")).toBeInTheDocument();
+    expect(within(column("In Progress")).queryByText("Drop here")).not.toBeInTheDocument();
+  });
+
+  it("persists a switch to List across a reload", async () => {
+    const user = userEvent.setup();
+    const first = renderTracker();
+    await screen.findByText("In progress thing");
+    await user.click(screen.getByRole("button", { name: /List/ }));
+    expect(screen.queryByRole("region", { name: "Backlog" })).not.toBeInTheDocument();
+    first.unmount();
+
+    renderTracker();
+    await screen.findByText("In progress thing");
+    expect(screen.getByRole("button", { name: /List/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("region", { name: "Backlog" })).not.toBeInTheDocument();
+  });
+
+  it("sets status when a card is dropped on another column", async () => {
+    const { api } = await import("@/lib/api");
+    renderTracker();
+    await screen.findByText("In progress thing");
+    dragTo(screen.getByTestId("card-AL-01"), column("Review"));
+    await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith("AL-01", { status: "review" }));
+  });
+
+  it("returns a refused card to its column and shows the reason (409)", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.updateItem).mockRejectedValueOnce(
+      new Error(JSON.stringify({ detail: "GRPH-7 is still waiting on a dependency" })),
+    );
+    renderTracker();
+    await screen.findByText("In progress thing");
+    dragTo(screen.getByTestId("card-AL-01"), column("Review"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("GRPH-7 is still waiting on a dependency");
+    await waitFor(() =>
+      expect(within(column("In Progress")).getByText("In progress thing")).toBeInTheDocument(),
+    );
+    expect(within(column("Review")).queryByText("In progress thing")).not.toBeInTheDocument();
+  });
+
+  it("routes a drop on Done for an unattested item through owner-close", async () => {
+    const { api } = await import("@/lib/api");
+    renderTracker();
+    await screen.findByText("In progress thing");
+    dragTo(screen.getByTestId("card-AL-01"), column("Done"));
+    expect(await screen.findByRole("heading", { name: /Close as merged/ })).toBeInTheDocument();
+    expect(api.updateItem).not.toHaveBeenCalled();
+  });
+
+  it("dresses a card from the item: PROTO only when high fidelity, PR from item.pr", async () => {
+    const pr = {
+      number: 42, title: "", branch: "", state: "merged", additions: 0, deletions: 0,
+      checks: "failing", ago: "",
+    };
+    served = [
+      { ...items[0], id: "AL-09", fidelity: "high", claimed_by: "GRPH-A77", pr },
+      { ...items[1], id: "AL-10", status: "next", fidelity: "low", assignee: "" },
+    ];
+    renderTracker();
+    await screen.findByTestId("card-AL-09");
+
+    const hi = screen.getByTestId("card-AL-09");
+    const lo = screen.getByTestId("card-AL-10");
+    expect(within(hi).getByText("PROTO")).toBeInTheDocument();
+    expect(within(lo).queryByText("PROTO")).not.toBeInTheDocument();
+
+    const chip = within(hi).getByTitle("PR #42 · merged · checks failing");
+    expect(chip).toHaveTextContent("#42");
+    expect(chip).toHaveStyle({ color: PR_STATE_COLOR.merged });
+    expect(chip.querySelector(".rounded-full")).toHaveStyle({ background: CHECK_COLOR.failing });
+    expect(within(lo).queryByTitle(/^PR #/)).not.toBeInTheDocument();
+
+    expect(within(hi).getByTitle("Claimed by GRPH-A77").querySelector(".blink")).toBeInTheDocument();
+    expect(within(lo).getByText("unassigned")).toBeInTheDocument();
+  });
+
+  it("shows the skeleton while loading and never the empty state", async () => {
+    const { api } = await import("@/lib/api");
+    let release: (v: Item[]) => void = () => {};
+    vi.mocked(api.items).mockImplementationOnce(() => new Promise<Item[]>((r) => (release = r)));
+    renderTracker();
+    expect(await screen.findByLabelText("Loading tracker")).toBeInTheDocument();
+    expect(screen.queryByText("No items yet")).not.toBeInTheDocument();
+    release([]);
+    expect(await screen.findByText("No items yet")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Loading tracker")).not.toBeInTheDocument();
+  });
+
+  it("shows the empty state with New item when there are no items", async () => {
+    served = [];
+    renderTracker();
+    expect(await screen.findByText("No items yet")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /New item/i }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("region", { name: "Backlog" })).not.toBeInTheDocument();
+  });
+
+  it("shows the error state when items fail to load", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.items).mockRejectedValueOnce(new Error("boom"));
+    renderTracker();
+    expect(await screen.findByText("Items unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByText("No items yet")).not.toBeInTheDocument();
   });
 });

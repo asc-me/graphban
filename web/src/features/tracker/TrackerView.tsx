@@ -1,3 +1,4 @@
+import { Columns3, List } from "lucide-react";
 import * as React from "react";
 import { useSearchParams } from "react-router-dom";
 
@@ -5,12 +6,14 @@ import {
   PlannerEmpty,
   PlannerError,
   PlannerFilteredEmpty,
+  TrackerBoardSkeleton,
   TrackerListSkeleton,
 } from "@/components/planner/PlannerStates";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Dot } from "@/components/ui/badge";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
+import { errorDetail } from "@/lib/errors";
 import { STATUS_META, STATUS_ORDER } from "@/lib/meta";
 import { PALETTE_ITEM_PARAM } from "@/lib/palette-nav";
 import { useItems, useReorderItems, useUpdateItem } from "@/lib/queries";
@@ -20,6 +23,7 @@ import { ItemDetailPanel } from "./ItemDetailPanel";
 import { ItemRow } from "./ItemRow";
 import { NewItemDialog } from "./NewItemDialog";
 import { OwnerCloseDialog } from "./OwnerCloseDialog";
+import { TrackerBoard } from "./TrackerBoard";
 
 /** Typed waits can PATCH `done` without an attestation — a human emptied them. */
 const WAIT_TAGS = new Set(["wait:merge", "wait:decision", "wait:secret", "wait:access", "wait:deploy"]);
@@ -44,6 +48,19 @@ const ACTIVE_STATUSES: Status[] = ["in_progress", "review", "blocked"];
 
 type TrackerFilter = Status | "all" | "active";
 
+type TrackerLayout = "board" | "list";
+
+/** Per-user layout choice; localStorage until the GRPH-1133 prefs store exists. */
+export const TRACKER_LAYOUT_KEY = "gb_tracker_layout";
+
+function readLayout(): TrackerLayout {
+  try {
+    return localStorage.getItem(TRACKER_LAYOUT_KEY) === "list" ? "list" : "board";
+  } catch {
+    return "board";
+  }
+}
+
 export function TrackerView() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { activeId } = useProjectCtx();
@@ -56,6 +73,17 @@ export function TrackerView() {
   const [dragId, setDragId] = React.useState<string | null>(null);
   const [overId, setOverId] = React.useState<string | null>(null);
   const [closing, setClosing] = React.useState<Item | null>(null);
+  const [layout, setLayoutState] = React.useState<TrackerLayout>(readLayout);
+  const [refusal, setRefusal] = React.useState<string | null>(null);
+
+  function setLayout(next: TrackerLayout) {
+    setLayoutState(next);
+    try {
+      localStorage.setItem(TRACKER_LAYOUT_KEY, next);
+    } catch {
+      /* storage unavailable — the choice lasts this session */
+    }
+  }
 
   React.useEffect(() => {
     const id = searchParams.get(PALETTE_ITEM_PARAM);
@@ -97,7 +125,12 @@ export function TrackerView() {
       setClosing(item);
       return;
     }
-    update.mutate({ id: item.id, body: { status } });
+    setRefusal(null);
+    // A refused move (wait-dep, review gate) rolls back in useUpdateItem; say why here.
+    update.mutate(
+      { id: item.id, body: { status } },
+      { onError: (err) => setRefusal(errorDetail(err, `Could not move ${item.id}`)) },
+    );
   }
 
   function reorderIds(ids: string[]) {
@@ -144,77 +177,119 @@ export function TrackerView() {
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedId, ordered]);
 
+  const emptyState = (
+    <PlannerEmpty
+      title="No items yet"
+      description="The tracker is your project's linear stream — one ordered list of work. Create the first item to start grooming."
+      action={<NewItemDialog />}
+    />
+  );
+
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <PlaceHeader
         viewName="Tracker"
-        purpose="One linear stream. Priority + recency. Drag to reorder, click a status to advance it."
+        purpose={
+          layout === "board"
+            ? "Work by status. Drag a card to another column to move it."
+            : "One linear stream. Priority + recency. Drag to reorder, click a status to advance it."
+        }
         action={<NewItemDialog />}
       />
 
       <div className="flex flex-none flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
-        <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={ordered.length} />
-        <FilterChip
-          active={filter === "active"}
-          onClick={() => setFilter("active")}
-          label="Active"
-          count={activeCount}
-        />
-        {STATUS_ORDER.map((s) => (
-          <FilterChip
-            key={s}
-            active={filter === s}
-            onClick={() => setFilter(s)}
-            label={STATUS_META[s].label}
-            count={counts[s] ?? 0}
-            color={STATUS_META[s].color}
-          />
-        ))}
+        <LayoutToggle layout={layout} onChange={setLayout} />
+        {layout === "list" && (
+          <>
+            <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={ordered.length} />
+            <FilterChip
+              active={filter === "active"}
+              onClick={() => setFilter("active")}
+              label="Active"
+              count={activeCount}
+            />
+            {STATUS_ORDER.map((s) => (
+              <FilterChip
+                key={s}
+                active={filter === s}
+                onClick={() => setFilter(s)}
+                label={STATUS_META[s].label}
+                count={counts[s] ?? 0}
+                color={STATUS_META[s].color}
+              />
+            ))}
+          </>
+        )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {isLoading ? (
-          <TrackerListSkeleton rows={items.length > 0 ? items.length : 8} />
+      {refusal && (
+        <div
+          role="alert"
+          className="flex flex-none items-center gap-3 border-b border-line bg-[rgba(255,107,107,0.06)] px-5 py-2 text-body text-st-blocked"
+        >
+          <span className="min-w-0 flex-1">{refusal}</span>
+          <button type="button" onClick={() => setRefusal(null)} className="text-faint hover:text-fg">
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {layout === "board" ? (
+        isLoading ? (
+          <TrackerBoardSkeleton />
         ) : isError ? (
           <PlannerError message="Items unavailable" onRetry={() => refetch()} />
         ) : isEmpty ? (
-          <PlannerEmpty
-            title="No items yet"
-            description="The tracker is your project's linear stream — one ordered list of work. Create the first item to start grooming."
-            action={<NewItemDialog />}
-          />
-        ) : isFilteredEmpty ? (
-          <PlannerFilteredEmpty
-            message={`No items match this filter${filterLabel(filter)}.`}
-            onClear={() => setFilter("all")}
-          />
+          emptyState
         ) : (
-          visible.map((item) => {
-            const globalIndex = ordered.findIndex((i) => i.id === item.id);
-            return (
-              <ItemRow
-                key={item.id}
-                item={item}
-                selected={item.id === selectedId}
-                onSelect={() => setSelectedId(item.id)}
-                onStatus={(s) => setStatus(item, s)}
-                onMoveUp={() => moveItem(item.id, -1)}
-                onMoveDown={() => moveItem(item.id, 1)}
-                canMoveUp={globalIndex > 0}
-                canMoveDown={globalIndex >= 0 && globalIndex < ordered.length - 1}
-                dragging={dragId === item.id}
-                dragOver={overId === item.id && dragId !== item.id}
-                dragHandlers={{
-                  onDragStart: () => setDragId(item.id),
-                  onDragEnter: () => setOverId(item.id),
-                  onDragOver: (e) => e.preventDefault(),
-                  onDragEnd: onDrop,
-                }}
-              />
-            );
-          })
-        )}
-      </div>
+          <TrackerBoard
+            items={ordered}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onStatus={setStatus}
+          />
+        )
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {isLoading ? (
+            <TrackerListSkeleton rows={items.length > 0 ? items.length : 8} />
+          ) : isError ? (
+            <PlannerError message="Items unavailable" onRetry={() => refetch()} />
+          ) : isEmpty ? (
+            emptyState
+          ) : isFilteredEmpty ? (
+            <PlannerFilteredEmpty
+              message={`No items match this filter${filterLabel(filter)}.`}
+              onClear={() => setFilter("all")}
+            />
+          ) : (
+            visible.map((item) => {
+              const globalIndex = ordered.findIndex((i) => i.id === item.id);
+              return (
+                <ItemRow
+                  key={item.id}
+                  item={item}
+                  selected={item.id === selectedId}
+                  onSelect={() => setSelectedId(item.id)}
+                  onStatus={(s) => setStatus(item, s)}
+                  onMoveUp={() => moveItem(item.id, -1)}
+                  onMoveDown={() => moveItem(item.id, 1)}
+                  canMoveUp={globalIndex > 0}
+                  canMoveDown={globalIndex >= 0 && globalIndex < ordered.length - 1}
+                  dragging={dragId === item.id}
+                  dragOver={overId === item.id && dragId !== item.id}
+                  dragHandlers={{
+                    onDragStart: () => setDragId(item.id),
+                    onDragEnter: () => setOverId(item.id),
+                    onDragOver: (e) => e.preventDefault(),
+                    onDragEnd: onDrop,
+                  }}
+                />
+              );
+            })
+          )}
+        </div>
+      )}
 
       {selected && (
         <ItemDetailPanel
@@ -234,6 +309,34 @@ function filterLabel(filter: TrackerFilter): string {
   if (filter === "all") return "";
   if (filter === "active") return " (Active)";
   return ` (${STATUS_META[filter].label})`;
+}
+
+function LayoutToggle({
+  layout,
+  onChange,
+}: {
+  layout: TrackerLayout;
+  onChange: (l: TrackerLayout) => void;
+}) {
+  return (
+    <div role="group" aria-label="Layout" className="mr-2 inline-flex rounded-lg border border-control bg-surface-2 p-0.5">
+      {(["board", "list"] as const).map((l) => (
+        <button
+          key={l}
+          type="button"
+          aria-pressed={layout === l}
+          onClick={() => onChange(l)}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-md px-2.5 py-0.5 text-[12px] transition-colors",
+            layout === l ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
+          )}
+        >
+          {l === "board" ? <Columns3 size={12} /> : <List size={12} />}
+          {l === "board" ? "Board" : "List"}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function FilterChip({

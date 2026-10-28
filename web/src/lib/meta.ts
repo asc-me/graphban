@@ -40,3 +40,13 @@ export const CHECK_COLOR: Record<string, string> = {
   pending: "#e0b34a",
   failing: "#ff6b6b",
 };
+
+/** Tracker board column order (PRD-P60 §D3) — Blocked sits beside Review, Done last. */
+export const BOARD_COLUMNS: Status[] = [
+  "backlog",
+  "next",
+  "in_progress",
+  "review",
+  "blocked",
+  "done",
+];
