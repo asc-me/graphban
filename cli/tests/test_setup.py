@@ -535,6 +535,7 @@ def test_setup_installs_every_shipped_skill(tmp_path, wired):
     assert "graphban-delegation" in slugs
     assert "watch-wave" in slugs
     assert "graphban-grill" in slugs
+    assert "graphban-wave" in slugs
     for slug in slugs:
         body = setup_mod.skill_source(slug).read_text()
         for rel in setup_mod.SKILL_DEST_DIRS:
@@ -633,6 +634,19 @@ def test_the_skill_ships_in_the_wheel(tmp_path):
     assert any(n.endswith("skills/graphban-delegation/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/watch-wave/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/graphban-grill/SKILL.md") for n in names), names[:20]
+    assert any(n.endswith("skills/graphban-wave/SKILL.md") for n in names), names[:20]
+
+
+def test_graphban_wave_drains_one_prd_and_does_not_file_tasks():
+    """The drain skill scopes `until` to one PRD and sends filing back to graphban-prd.
+    A skill that decomposes, or that omits --prd, is the prompt this exists to retire."""
+    body = setup_mod.skill_source("graphban-wave").read_text(encoding="utf-8")
+    assert "Do not `decompose_prd` here" in body
+    assert "--prd" in body
+    assert "--merge" in body
+    assert "--dry-run" in body
+    assert "gbfleet service install" in body
+    assert "graphban-prd" in body
 
 
 def test_watch_wave_names_the_scheduler_and_cancels_on_idle():
