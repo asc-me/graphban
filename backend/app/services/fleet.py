@@ -3736,7 +3736,9 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     taken = active_reservations(db, project_id, now=now)
     # Somebody else's areas. An agent's own reservations do not block it: a worker asking for
     # more work should not be refused because of the cluster it is already holding.
-    blocked = [r.area for r in taken if r.agent_id != agent_id]
+    # GRPH-1138: an `override` decision lets members of that one cluster overlap each other, so
+    # a reservation held for an item in an overridden cluster does not block that cluster.
+    overrides = collision_svc.override_item_sets(db, project_id)
     # GRPH-827: the seat's scope filters the POOL, before clustering, for the reason
     # `clusters_for_project` gives — a cluster is a promise that its members do not collide,
     # and dropping members afterwards hands out a promise computed over items no longer in it.
@@ -3747,6 +3749,9 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     for cluster in collision_svc.clusters_for_project(db, project_id,
                                                        lease_seconds=lease_seconds,
                                                        prd_id=scope or None):
+        members = set(cluster.get("items") or [])
+        free = set().union(*[o for o in overrides if members <= o]) if overrides else set()
+        blocked = [r.area for r in taken if r.agent_id != agent_id and r.item_id not in free]
         overlap = areas_collide(cluster.get("areas") or [], blocked)
         if overlap:
             continue
