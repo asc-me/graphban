@@ -1283,6 +1283,8 @@ export interface PrdSummary {
   version: string;
   linked: string[];
   updated_at: string;
+  /** When the PRD closed; the list falls back to updated_at while the API omits it. */
+  closed_at?: string | null;
 }
 
 export interface Prd extends PrdSummary {

@@ -53,7 +53,13 @@ vi.mock("@/lib/api", () => ({
 }));
 
 // The suites below exercise the List layout; Board is the default and has its own suite.
-beforeEach(() => localStorage.setItem(TRACKER_LAYOUT_KEY, "list"));
+// A saved default of "In flight" keeps the GRPH-918 first paint; the Current preset would
+// also hide these fixtures' long-finished done item.
+const setDefaultView = (id: string) => localStorage.setItem("gb_views_tracker", JSON.stringify({ saved: [], defaultId: id }));
+beforeEach(() => {
+  localStorage.setItem(TRACKER_LAYOUT_KEY, "list");
+  setDefaultView("active");
+});
 
 function renderTracker() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -85,7 +91,7 @@ describe("TrackerView", () => {
     const user = userEvent.setup();
     renderTracker();
     await screen.findByText("In progress thing");
-    await user.click(screen.getByRole("button", { name: /^All/ }));
+    await user.click(screen.getByRole("button", { name: /^All\s*\d+$/ }));
     expect(screen.getByText("Finished thing")).toBeInTheDocument();
   });
 
@@ -355,6 +361,7 @@ describe("the tracker board (GRPH-1144)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.removeItem(TRACKER_LAYOUT_KEY);
+    setDefaultView("all");
   });
   afterEach(() => {
     served = items;
@@ -492,6 +499,7 @@ describe("board columns (GRPH-1145)", () => {
     vi.clearAllMocks();
     localStorage.removeItem(TRACKER_LAYOUT_KEY);
     localStorage.removeItem(TRACKER_COLUMNS_KEY);
+    setDefaultView("all");
   });
 
   it("hides a column from the board but not from the list counts", async () => {
@@ -536,5 +544,75 @@ describe("board columns (GRPH-1145)", () => {
     expect(screen.getByRole("region", { name: "Done" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Backlog" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Columns" })).toBeInTheDocument();
+  });
+});
+
+describe("saved views, window and auto-hide (GRPH-1146)", () => {
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
+  const mk = (id: string, status: Item["status"], updated: string, doneAt: string | null): Item => ({
+    ...items[0], id, title: `Thing ${id}`, status, updated_at: updated, created_at: updated, done_at: doneAt, sort_order: 0,
+  });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.removeItem("gb_views_tracker");
+    localStorage.setItem(TRACKER_LAYOUT_KEY, "list");
+    served = [
+      mk("V-1", "in_progress", daysAgo(1), null),
+      mk("V-2", "done", daysAgo(15), daysAgo(15)),
+      mk("V-3", "done", daysAgo(2), daysAgo(2)),
+    ];
+  });
+  afterEach(() => {
+    served = items;
+  });
+
+  it("hides an item done 15 days ago, counts it in the footer, and shows it when back in review", async () => {
+    renderTracker();
+    expect(await screen.findByText("Thing V-1")).toBeInTheDocument();
+    expect(screen.getByText("Thing V-3")).toBeInTheDocument();
+    expect(screen.queryByText("Thing V-2")).not.toBeInTheDocument();
+    expect(screen.getByText(/hidden by view: 1 done more than 14d ago/)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Current/ })).toHaveTextContent("2");
+
+    served = [served[0], { ...served[1], status: "review", done_at: null }, served[2]];
+    renderTracker();
+    expect(await screen.findAllByText("Thing V-2")).not.toHaveLength(0);
+  });
+
+  it("tab counts equal the rows each view shows", async () => {
+    renderTracker();
+    await screen.findByText("Thing V-1");
+    expect(screen.getByRole("tab", { name: /Current/ })).toHaveTextContent("2");
+    expect(screen.getByRole("tab", { name: /Everything/ })).toHaveTextContent("3");
+    expect(screen.getByRole("tab", { name: /In flight/ })).toHaveTextContent("1");
+  });
+
+  it("saves an edited view as a tab and keeps it and the default across a reload", async () => {
+    const user = userEvent.setup();
+    const first = renderTracker();
+    await screen.findByText("Thing V-1");
+    await user.click(screen.getByTitle("Time window and auto-hide"));
+    await user.click(within(screen.getByRole("group", { name: "Auto-hide" })).getByRole("button", { name: "Never" }));
+    expect(screen.getByText("EDITED")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save as view" }));
+    const saved = screen.getByRole("tab", { name: /My view 1/ });
+    expect(saved).toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("button", { name: /Set as default/ }));
+    first.unmount();
+
+    renderTracker();
+    const tab = await screen.findByRole("tab", { name: /My view 1/ });
+    expect(tab).toHaveAttribute("aria-selected", "true");
+    expect(tab).toHaveTextContent("★");
+  });
+
+  it("shows the filtered-empty message, not the empty state, when the view hides everything", async () => {
+    const user = userEvent.setup();
+    served = [mk("V-2", "done", daysAgo(15), daysAgo(15))];
+    renderTracker();
+    expect(await screen.findByText(/No items in this view/)).toBeInTheDocument();
+    expect(screen.queryByText("No items yet")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Clear filter" }));
+    expect(await screen.findByText("Thing V-2")).toBeInTheDocument();
   });
 });
