@@ -327,6 +327,7 @@ def tracking_page(track_token: str, request: FastAPIRequest, db: Session = Depen
         item = db.get(Item, req.linked_to)
         if item:
             data["linked_status"] = item.status
+    data["merged_into"] = req_svc.merged_target_key(db, req)
     return data
 
 
@@ -354,6 +355,7 @@ def public_issues_board(
             item = db.get(Item, r.linked_to)
             if item:
                 row["linked_status"] = item.status
+        row["merged_into"] = req_svc.merged_target_key(db, r)
         rows.append(row)
     return rows
 
@@ -380,6 +382,7 @@ def public_requests_board(
             item = db.get(Item, r.linked_to)
             if item:
                 row["linked_status"] = item.status
+        row["merged_into"] = req_svc.merged_target_key(db, r)
         rows.append(row)
     return rows
 
@@ -704,6 +707,7 @@ def host_issues(
             item = db.get(Item, r.linked_to)
             if item:
                 row["linked_status"] = item.status
+        row["merged_into"] = req_svc.merged_target_key(db, r)
         rows.append(row)
     return rows
 
@@ -737,6 +741,7 @@ def host_requests(
             item = db.get(Item, r.linked_to)
             if item:
                 row["linked_status"] = item.status
+        row["merged_into"] = req_svc.merged_target_key(db, r)
         rows.append(row)
     return rows
 
@@ -768,5 +773,6 @@ def host_tracking(
         item = db.get(Item, req.linked_to)
         if item:
             data["linked_status"] = item.status
+    data["merged_into"] = req_svc.merged_target_key(db, req)
     return data
 

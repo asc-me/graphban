@@ -4,10 +4,14 @@ from __future__ import annotations
 import hashlib
 from secrets import token_urlsafe
 
-from sqlalchemy import func, select
+from datetime import datetime, timezone
+
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Item, Request, RequestComment
+from app.models import Item, Request, RequestAction, RequestComment, RequestVote, User, utcnow
+from app.services import email as email_svc
+from app.services import events as events_svc
 from app.services import items as items_svc
 from app.services import keys
 
@@ -18,13 +22,24 @@ REQUEST_TYPES = ["bug", "feature", "enhancement", "feedback"]
 # counts this same status — do not copy the string into a second predicate.
 UNTRIAGED_STATUS = "new"
 
+# Where `accept` may land the new item (PRD-60 D6).
+ACCEPT_STATUSES = ("backlog", "next")
+
 
 def untriaged_clause():
-    """SQL form of the triage queue. `is_untriaged` is the same rule on a row."""
-    return Request.status == UNTRIAGED_STATUS
+    """SQL form of the triage queue. `is_untriaged` is the same rule on a row.
+
+    A snoozed request is hidden only until its date: once `snoozed_until` has passed it is
+    back in the queue without anything having to wake it."""
+    return or_(
+        Request.status == UNTRIAGED_STATUS,
+        and_(Request.status == "snoozed", Request.snoozed_until <= utcnow()),
+    )
 
 
 def is_untriaged(req: Request) -> bool:
+    if req.status == "snoozed" and req.snoozed_until is not None:
+        return _aware(req.snoozed_until) <= utcnow()
     return req.status == UNTRIAGED_STATUS
 
 
@@ -169,7 +184,15 @@ def link_request(db: Session, request_id: str, item_id: str | None) -> Request |
     return req
 
 
-def accept_request(db: Session, request_id: str, *, reporter: dict | None = None) -> tuple[Request, Item] | None:
+def accept_request(
+    db: Session,
+    request_id: str,
+    *,
+    reporter: dict | None = None,
+    status: str = "backlog",
+    prd_id: str | None = None,
+    actor: User | None = None,
+) -> tuple[Request, Item] | None:
     """Triage a request into tracked work: create the item and link it, atomically.
 
     Doing this as two calls from the client leaves a window where the item exists and the
@@ -178,7 +201,12 @@ def accept_request(db: Session, request_id: str, *, reporter: dict | None = None
 
     Idempotent: a request already linked returns its existing item rather than minting a
     second one, so a double-click cannot fork the same report into two pieces of work.
+
+    `status` is where the item lands (`backlog` or `next`); `prd_id`, when given, links the
+    item to that PRD.
     """
+    if status not in ACCEPT_STATUSES:
+        raise ValueError(f"accept status must be one of {', '.join(ACCEPT_STATUSES)}")
     req = db.get(Request, keys.resolve_request(db, request_id) or request_id)
     if req is None:
         return None
@@ -195,10 +223,17 @@ def accept_request(db: Session, request_id: str, *, reporter: dict | None = None
         tags=[req.type] if req.type else [],
         project_id=req.project_id,
         reporter=reporter,
+        status=status,
+        prd_id=prd_id,
         commit=False,
     )
+    prior = _state(req)
     req.linked_to = item.id
     req.status = "linked"
+    db.flush()
+    db.refresh(item)
+    _log(db, req, "accept", prior, actor, data={"item_id": item.id, "item_updated_at": _iso(item.updated_at)},
+         meta={"item": item.id, "status": status, "prd_id": prd_id})
     db.commit()
     db.refresh(req)
     db.refresh(item)
@@ -342,3 +377,252 @@ def serialize_tracking(req: Request, comments: list[RequestComment] | None = Non
             for c in pub_comments
         ],
     ).model_dump()
+
+
+# ---- PRD-60 D6: triage actions (accept / merge / decline / snooze) and undo ----
+
+class ActionRefused(ValueError):
+    """An action or undo that cannot proceed; the message is the reason shown to the user."""
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _iso(dt: datetime | None) -> str | None:
+    return _aware(dt).isoformat() if dt is not None else None
+
+
+def _state(req: Request) -> dict:
+    """The request fields a triage action can change, JSON-safe."""
+    return {
+        "status": req.status,
+        "linked_to": req.linked_to,
+        "votes": req.votes,
+        "snoozed_until": _iso(req.snoozed_until),
+        "merged_into": req.merged_into,
+    }
+
+
+def _apply_state(req: Request, state: dict) -> None:
+    req.status = state["status"]
+    req.linked_to = state["linked_to"]
+    req.votes = state["votes"]
+    req.snoozed_until = datetime.fromisoformat(state["snoozed_until"]) if state["snoozed_until"] else None
+    req.merged_into = state["merged_into"]
+
+
+def _log(db: Session, req: Request, action: str, prior: dict, actor: User | None, *,
+         data: dict | None = None, meta: dict | None = None) -> RequestAction:
+    """Record the action for undo and write its one event row. Caller commits."""
+    row = RequestAction(
+        id=f"ract_{token_urlsafe(12)}", request_id=req.id, action=action,
+        prior=prior, after=_state(req), data=data or {},
+    )
+    db.add(row)
+    # events.record commits; flush first so the action row and the request change land together.
+    db.flush()
+    _event(db, actor, f"request_{action}", req, {"action_id": row.id, **(meta or {})})
+    return row
+
+
+def _event(db: Session, actor: User | None, action: str, req: Request, meta: dict) -> None:
+    if actor is None:
+        events_svc.record(db, actor_type="system", surface="rest", action=action,
+                          target_type="request", target_id=req.key, project_id=req.project_id, meta=meta)
+    else:
+        events_svc.record_user(db, actor, action=action, target_type="request",
+                               target_id=req.key, project_id=req.project_id, meta=meta)
+
+
+def _get(db: Session, request_id: str) -> Request | None:
+    return db.get(Request, keys.resolve_request(db, request_id) or request_id)
+
+
+def _require_open(req: Request, action: str) -> None:
+    if req.status in ("linked", "merged", "declined"):
+        raise ActionRefused(f"cannot {action} a request that is already {req.status}; undo that first")
+
+
+def _final_target(db: Session, source: Request, target_id: str) -> Request | Item:
+    """Resolve a merge target, following merged requests to the end of the chain."""
+    seen = {source.id}
+    current: Request | Item | None = None
+    nxt = target_id
+    while True:
+        rid = keys.resolve_request(db, nxt)
+        current = db.get(Request, rid or nxt)
+        if current is None:
+            iid = keys.resolve_item(db, nxt)
+            item = db.get(Item, iid or nxt)
+            if item is None:
+                raise ActionRefused(f"merge target not found: {target_id}")
+            return item
+        if current.id in seen:
+            raise ActionRefused("merge refused: it would create a cycle")
+        seen.add(current.id)
+        if current.status != "merged" or not current.merged_into:
+            if current.project_id != source.project_id:
+                raise ActionRefused("merge target is in a different project")
+            return current
+        nxt = current.merged_into
+
+
+def merge_request(db: Session, request_id: str, target_id: str, *, actor: User | None = None) -> Request | None:
+    """Merge a request into a duplicate item or request.
+
+    Into a request: the voter rows move (deduplicated by voter_key) and the vote count becomes
+    the union of the two voter sets. Into an item there are no votes to carry. A target that is
+    itself merged is followed to the end of its chain; a chain leading back here is refused."""
+    req = _get(db, request_id)
+    if req is None:
+        return None
+    _require_open(req, "merge")
+    target = _final_target(db, req, target_id)
+    prior = _state(req)
+    data: dict = {}
+    if isinstance(target, Request):
+        src_rows = list(db.scalars(select(RequestVote).where(RequestVote.request_id == req.id)))
+        have = set(db.scalars(select(RequestVote.voter_key).where(RequestVote.request_id == target.id)))
+        added = []
+        for row in src_rows:
+            if row.voter_key not in have:
+                db.add(RequestVote(request_id=target.id, voter_key=row.voter_key, created_at=row.created_at))
+                added.append(row.voter_key)
+                have.add(row.voter_key)
+        overlap = len(src_rows) - len(added)
+        data = {
+            "target_votes_before": target.votes,
+            "source_rows": [[r.voter_key, _iso(r.created_at)] for r in src_rows],
+            "added_keys": added,
+        }
+        for row in src_rows:
+            db.delete(row)
+        # Counts can exceed rows (operator votes carry no voter row); keep that surplus.
+        target.votes = target.votes + req.votes - overlap
+        req.votes = 0
+        data["target_votes_after"] = target.votes
+    req.status = "merged"
+    req.merged_into = target.id
+    data["target_id"] = target.id
+    data["target_kind"] = "request" if isinstance(target, Request) else "item"
+    db.flush()
+    _log(db, req, "merge", prior, actor, data=data, meta={"target": target.key})
+    db.commit()
+    db.refresh(req)
+    return req
+
+
+def _notify_decline(req: Request, reason: str) -> bool:
+    """Tell the submitter through the PRD-43 path: email when we hold an address, else the
+    event row alone (the tracking page shows the `declined` status either way)."""
+    addr = ((req.meta or {}).get("account") or {}).get("email") or (req.by if "@" in (req.by or "") else "")
+    if not addr:
+        return False
+    text = f'Your request "{req.title}" was declined.'
+    if reason:
+        text += f"\n\nReason: {reason}"
+    return email_svc.send_email(addr, f"Your request was declined: {req.title}", text)
+
+
+def decline_request(db: Session, request_id: str, *, reason: str = "", actor: User | None = None) -> Request | None:
+    req = _get(db, request_id)
+    if req is None:
+        return None
+    _require_open(req, "decline")
+    prior = _state(req)
+    req.status = "declined"
+    req.snoozed_until = None
+    db.flush()
+    notified = _notify_decline(req, reason)
+    _log(db, req, "decline", prior, actor, meta={"reason": reason, "notified": notified})
+    db.commit()
+    db.refresh(req)
+    return req
+
+
+def snooze_request(db: Session, request_id: str, until: datetime, *, actor: User | None = None) -> Request | None:
+    req = _get(db, request_id)
+    if req is None:
+        return None
+    _require_open(req, "snooze")
+    until = _aware(until)
+    if until <= utcnow():
+        raise ActionRefused("snooze date must be in the future")
+    prior = _state(req)
+    req.status = "snoozed"
+    req.snoozed_until = until
+    db.flush()
+    _log(db, req, "snooze", prior, actor, meta={"until": _iso(until)})
+    db.commit()
+    db.refresh(req)
+    return req
+
+
+def undo_action(db: Session, request_id: str, action_id: str, *, actor: User | None = None) -> Request | None:
+    """Reverse one action, restoring the request (and its votes / created item) exactly.
+
+    Refused, with the reason, when the record has changed since the action — undo never
+    overwrites someone else's edit."""
+    req = _get(db, request_id)
+    if req is None:
+        return None
+    row = db.get(RequestAction, action_id)
+    if row is None or row.request_id != req.id:
+        raise ActionRefused("action not found for this request")
+    if row.undone_at is not None:
+        raise ActionRefused("action was already undone")
+    later = db.scalar(
+        select(func.count()).select_from(RequestAction).where(
+            RequestAction.request_id == req.id, RequestAction.undone_at.is_(None),
+            RequestAction.created_at > row.created_at, RequestAction.id != row.id,
+        )
+    )
+    if later:
+        raise ActionRefused("a later action exists on this request; undo that first")
+    if _state(req) != row.after:
+        raise ActionRefused("the request was changed after this action; undo would overwrite that change")
+
+    data = row.data or {}
+    if row.action == "accept":
+        item = db.get(Item, data["item_id"])
+        if item is not None:
+            if _iso(item.updated_at) != data["item_updated_at"]:
+                raise ActionRefused("the created item was edited since; it is kept and the accept stays")
+            others = db.scalar(
+                select(func.count()).select_from(Request).where(
+                    Request.linked_to == item.id, Request.id != req.id)
+            )
+            if others:
+                raise ActionRefused("another request is linked to the created item; it is kept")
+        _apply_state(req, row.prior)
+        db.flush()
+        if item is not None:
+            db.delete(item)
+    elif row.action == "merge" and data.get("target_kind") == "request":
+        target = db.get(Request, data["target_id"])
+        if target is None or target.votes != data["target_votes_after"]:
+            raise ActionRefused("the merge target's votes changed since; undo would overwrite them")
+        for key in data["added_keys"]:
+            db.execute(RequestVote.__table__.delete().where(
+                RequestVote.request_id == target.id, RequestVote.voter_key == key))
+        target.votes = data["target_votes_before"]
+        for key, ts in data["source_rows"]:
+            db.add(RequestVote(request_id=req.id, voter_key=key, created_at=datetime.fromisoformat(ts)))
+        _apply_state(req, row.prior)
+    else:
+        _apply_state(req, row.prior)
+    row.undone_at = utcnow()
+    db.flush()
+    _event(db, actor, "request_undo", req, {"action_id": row.id, "undone": row.action})
+    db.commit()
+    db.refresh(req)
+    return req
+
+
+def merged_target_key(db: Session, req: Request) -> str | None:
+    """The rendered key a merged request points at, for the board and tracking page."""
+    if req.status != "merged" or not req.merged_into:
+        return None
+    target = db.get(Request, req.merged_into) or db.get(Item, req.merged_into)
+    return target.key if target is not None else None

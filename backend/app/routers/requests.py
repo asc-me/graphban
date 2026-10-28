@@ -1,14 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Request, User
+from app.models import Request, RequestAction, User
 from app.schemas import (
     DuplicateHintOut,
+    RequestAcceptIn,
     RequestAcceptOut,
     RequestCreate,
+    RequestDeclineIn,
     RequestLinkIn,
+    RequestMergeIn,
     RequestOut,
+    RequestSnoozeIn,
+    RequestUndoIn,
     RequestVoteIn,
     TriageRequestOut,
 )
@@ -114,21 +120,94 @@ def triage_queue(
     return out
 
 
-@router.post("/{request_id}/accept", response_model=RequestAcceptOut)
-def accept(request_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Triage a request into tracked work — one transaction, not two calls.
-
-    Idempotent: accepting an already-linked request returns its existing item instead of
-    minting a second, so a double-click cannot fork one report into two pieces of work.
-    """
+def _writable(db: Session, user: User, request_id: str) -> Request:
     existing = db.get(Request, keys.resolve_request(db, request_id) or request_id)
     if existing is None:
         raise HTTPException(404, "request not found")
     authz.require_writable(db, user.id, existing.project_id, "request")
-    result = req_svc.accept_request(
-        db, request_id, reporter={"name": user.name, "handle": user.handle, "avatar": user.avatar}
+    return existing
+
+
+def _out(db: Session, req: Request, action_id: str | None = None) -> RequestOut:
+    out = RequestOut.model_validate(req)
+    out.merged_into = req_svc.merged_target_key(db, req)
+    out.action_id = action_id
+    return out
+
+
+def _last_action_id(db: Session, req: Request) -> str | None:
+    return db.scalar(
+        select(RequestAction.id).where(RequestAction.request_id == req.id)
+        .order_by(RequestAction.created_at.desc()).limit(1)
     )
+
+
+@router.post("/{request_id}/accept", response_model=RequestAcceptOut)
+def accept(
+    request_id: str,
+    body: RequestAcceptIn | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Triage a request into tracked work — one transaction, not two calls.
+
+    `status` (`backlog` default, or `next`) is where the item lands; `prd_id` optionally
+    links it to a PRD. Idempotent: accepting an already-linked request returns its existing
+    item instead of minting a second, so a double-click cannot fork one report into two
+    pieces of work.
+    """
+    _writable(db, user, request_id)
+    body = body or RequestAcceptIn()
+    try:
+        result = req_svc.accept_request(
+            db, request_id, reporter={"name": user.name, "handle": user.handle, "avatar": user.avatar},
+            status=body.status, prd_id=body.prd_id, actor=user,
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e))
     if result is None:
         raise HTTPException(404, "request not found")
     req, item = result
-    return RequestAcceptOut(request=RequestOut.model_validate(req), item=ItemOut.model_validate(item))
+    return RequestAcceptOut(
+        request=_out(db, req), item=ItemOut.model_validate(item), action_id=_last_action_id(db, req),
+    )
+
+
+def _action(db: Session, fn, *args, **kw) -> Request:
+    try:
+        req = fn(db, *args, **kw)
+    except req_svc.ActionRefused as e:
+        raise HTTPException(409, str(e))
+    if req is None:
+        raise HTTPException(404, "request not found")
+    return req
+
+
+@router.post("/{request_id}/merge", response_model=RequestOut)
+def merge(request_id: str, body: RequestMergeIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Merge into a duplicate item or request; votes carry over (deduplicated by voter)."""
+    _writable(db, user, request_id)
+    req = _action(db, req_svc.merge_request, request_id, body.target_id, actor=user)
+    return _out(db, req, _last_action_id(db, req))
+
+
+@router.post("/{request_id}/decline", response_model=RequestOut)
+def decline(request_id: str, body: RequestDeclineIn | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    _writable(db, user, request_id)
+    req = _action(db, req_svc.decline_request, request_id, reason=(body.reason if body else ""), actor=user)
+    return _out(db, req, _last_action_id(db, req))
+
+
+@router.post("/{request_id}/snooze", response_model=RequestOut)
+def snooze(request_id: str, body: RequestSnoozeIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    _writable(db, user, request_id)
+    req = _action(db, req_svc.snooze_request, request_id, body.until, actor=user)
+    return _out(db, req, _last_action_id(db, req))
+
+
+@router.post("/{request_id}/undo", response_model=RequestOut)
+def undo(request_id: str, body: RequestUndoIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Reverse an action. 409 with the reason when the record changed since."""
+    _writable(db, user, request_id)
+    req = _action(db, req_svc.undo_action, request_id, body.action_id, actor=user)
+    return _out(db, req)
