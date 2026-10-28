@@ -1694,6 +1694,8 @@ class CodeScan(Base):
     # is distinguishable from a thorough one's.
     reported_by: Mapped[str] = mapped_column(String, default="", server_default="")
     note: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # Producer outcome (GRPH-1125): complete | tool_missing | not_applicable | incomplete.
+    result: Mapped[str] = mapped_column(String, default="complete", server_default="complete")
 
     __table_args__ = (
         # Every report is a row; the newest per scanner+path is the cell (GRPH-1128).

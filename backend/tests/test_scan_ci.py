@@ -484,8 +484,12 @@ def test_rows_carry_category_and_the_component_root_and_come_before_the_attestat
     names = [n for n, _ in calls]
     assert names == ["record_scan", "update_item"]  # bandit never ran: no row for it
     row = calls[0][1]
-    assert row == {**row, "scanner_id": "pip-audit", "path": "backend/",
-                   "scanned_sha": head, "category": "security", "findings": []}
+    assert row["scanner_id"] == "pip-audit"
+    assert row["path"] == "backend/"
+    assert row["scanned_sha"] == head
+    assert row["category"] == "security"
+    assert row["findings"] == []
+    assert row["result"] == "complete"
 
 
 def test_open_work_stale_graph_and_failing_tests_are_not_inputs(repo, fakes):

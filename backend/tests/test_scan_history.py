@@ -97,19 +97,22 @@ def test_matching_is_one_to_one():
 def test_the_cell_reads_the_newest_row_not_the_union(db):
     # Findings at an old sha, then a clean re-scan at head: the cell is clean, and the
     # cleared finding is not resurrected into it from the history.
+    from tests.scan_topology_fixtures import seed_core_topology
+
+    seed_core_topology(db)
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="bandit", path="backend/", scanned_sha="old",
-        findings=[_f("assert used", path="backend/app/x.py")],
+        db, project_id="core", scanner_id="bandit", path="backend/pyproject.toml", scanned_sha="old",
+        findings=[_f("assert used", path="backend/pyproject.toml")],
     )
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="bandit", path="backend/", scanned_sha="head",
-        findings=[],
+        db, project_id="core", scanner_id="bandit", path="backend/pyproject.toml", scanned_sha="head",
+        findings=[], result="complete",
     )
     health = scans_svc.component_health(db, "core", head_sha="head")
-    api = next(c for c in health["components"] if c["id"] == "api")
+    api = next(c for c in health["components"] if c["path"] == "backend/pyproject.toml")
     assert api["categories"]["security"]["state"] == "clean_at_sha"
     assert api["categories"]["security"]["findings"] == []
-    rows = scans_svc.scan_status(db, "core", path="backend/", head_sha="head")["scans"]
+    rows = scans_svc.scan_status(db, "core", path="backend/pyproject.toml", head_sha="head")["scans"]
     assert len(rows) == 2
     assert [f["summary"] for f in rows[0]["history"]["cleared"]] == ["assert used"]
 

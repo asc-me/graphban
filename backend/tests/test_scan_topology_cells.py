@@ -65,7 +65,7 @@ def test_topology_lockfile_scan_satisfies_only_that_security_cell(db):
     db.commit()
     scans_svc.record_scan(
         db, project_id="core", scanner_id="npm-audit",
-        path="package-lock.json", scanned_sha="sha1", findings=[],
+        path="package-lock.json", scanned_sha="sha1", findings=[], result="complete",
     )
     health = scans_svc.component_health(db, "core", head_sha="sha1")
     root = next(c for c in health["components"] if c["path"] == "package-lock.json")

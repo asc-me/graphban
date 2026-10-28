@@ -79,7 +79,7 @@ def test_empty_findings_is_a_clean_result_not_never_scanned(client, auth):
     _post_topology(client, key)
     r = client.post("/api/platform/stack/scans", json={
         "project_id": "core", "scanner_id": "vulture", "path": "cli/",
-        "scanned_sha": "cafe1234", "findings": [], "category": "refactor",
+        "scanned_sha": "cafe1234", "findings": [], "result": "complete", "category": "refactor",
     }, headers={"X-API-Key": key})
     assert r.status_code == 200, r.text
     assert r.json()["findings_recorded"] == 0
@@ -113,7 +113,7 @@ def test_an_unknown_scanner_without_category_is_422_and_nothing_is_stored(client
     _post_topology(client, key)
     r = client.post("/api/platform/stack/scans", json={
         "project_id": "core", "scanner_id": "coderabbit", "path": "web/package-lock.json",
-        "scanned_sha": "cafe1234", "findings": [],
+        "scanned_sha": "cafe1234", "findings": [], "result": "complete",
     }, headers={"X-API-Key": key})
     assert r.status_code == 422, r.text
     assert "pip-audit" in r.text and "refactor" in r.text
