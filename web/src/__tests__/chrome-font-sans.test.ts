@@ -75,22 +75,22 @@ describe("shell chrome uses Sans, not Mono (GRPH-938)", () => {
     assertLineNoMono(src, "loading…", "AppFrame loading");
   });
 
-  it("LeftNav RailHeading is not font-mono", () => {
+  it("LeftNav SectionHeader is not font-mono", () => {
     const src = readShell("LeftNav.tsx");
-    // The RailHeading component's className line.
+    // The SectionHeader component's className line.
     const lines = src.split("\n");
-    const idx = lines.findIndex((l) => l.includes("RailHeading") && l.includes("function"));
-    expect(idx, "RailHeading function not found").toBeGreaterThanOrEqual(0);
+    const idx = lines.findIndex((l) => l.includes("SectionHeader") && l.includes("function"));
+    expect(idx, "SectionHeader function not found").toBeGreaterThanOrEqual(0);
     // Find the className within the next few lines.
     let found = false;
-    for (let j = idx!; j < Math.min(idx! + 10, lines.length); j++) {
+    for (let j = idx!; j < Math.min(idx! + 25, lines.length); j++) {
       if (lines[j]!.includes("className=")) {
-        expect(lines[j]!, "RailHeading: chrome must not use font-mono (GRPH-938)").not.toContain("font-mono");
+        expect(lines[j]!, "SectionHeader: chrome must not use font-mono (GRPH-938)").not.toContain("font-mono");
         found = true;
         break;
       }
     }
-    expect(found, "RailHeading className not found").toBe(true);
+    expect(found, "SectionHeader className not found").toBe(true);
   });
 
   it("AgentSidebar memory count label is not font-mono", () => {
