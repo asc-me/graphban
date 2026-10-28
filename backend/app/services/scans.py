@@ -58,9 +58,10 @@ _SEV_NORM = {
     "high": "high",
     "med": "med", "medium": "med",
     "low": "low",
-    "info": "low",
+    "info": "info",
 }
-_SEV_ORDER = ("crit", "high", "med", "low")
+_SEV_ORDER = ("crit", "high", "med", "low", "info")
+_DEPENDENCY_VALUES = frozenset({"direct", "transitive"})
 
 # Stack deployable id → repo path prefix (ticket paths; api owns backend/, not "api/").
 COMPONENT_PATHS: dict[str, str] = {
@@ -126,6 +127,83 @@ def _norm_path(path: str) -> str:
 def _norm_sev(raw: str) -> str:
     key = (raw or "medium").strip().lower()
     return _SEV_NORM.get(key, "med")
+
+
+def _optional_str(raw: object) -> str:
+    return str(raw or "").strip()
+
+
+def _optional_count(raw: object) -> int | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise ValueError("count must be a non-negative integer")
+    return raw
+
+
+def _validate_finding_extra(i: int, raw: dict) -> None:
+    dep = _optional_str(raw.get("dependency"))
+    if dep and dep not in _DEPENDENCY_VALUES:
+        raise ValueError(
+            f"findings[{i}].dependency must be direct or transitive (got {dep!r})"
+        )
+    _optional_count(raw.get("count"))
+
+
+def _finding_row(
+    *,
+    scan_id: str,
+    project_id: str,
+    path_n: str,
+    raw: dict,
+    default_sev: str,
+) -> ScanFinding:
+    summary = _optional_str(raw.get("summary"))
+    dep = _optional_str(raw.get("dependency"))
+    fixed = _optional_str(raw.get("fixed_version"))
+    kind = _optional_str(raw.get("kind"))
+    advisory = _optional_str(raw.get("advisory_id"))
+    count = _optional_count(raw.get("count"))
+    return ScanFinding(
+        scan_id=scan_id,
+        project_id=project_id,
+        path=_optional_str(raw.get("path")) or path_n,
+        severity=_norm_sev(str(raw.get("severity") or default_sev)),
+        summary=summary,
+        link_kind=_optional_str(raw.get("link_kind")),
+        link_ref=_optional_str(raw.get("link_ref")),
+        advisory_id=advisory,
+        dependency=dep,
+        fixed_version=fixed,
+        kind=kind,
+        count=count,
+    )
+
+
+def _finding_dict(f: ScanFinding) -> dict:
+    out = {
+        "severity": f.severity,
+        "summary": f.summary,
+        "path": f.path,
+        "link_kind": f.link_kind or None,
+        "link_ref": f.link_ref or None,
+    }
+    if f.advisory_id:
+        out["advisory_id"] = f.advisory_id
+    if f.dependency:
+        out["dependency"] = f.dependency
+    if f.fixed_version:
+        out["fixed_version"] = f.fixed_version
+    if f.kind:
+        out["kind"] = f.kind
+    if f.count is not None:
+        out["count"] = f.count
+    return out
+
+
+def _informational_rollup(finding: dict) -> bool:
+    """Knip-style rollups (kind + count) are not offered as tracker items."""
+    return bool(_optional_str(finding.get("kind"))) and finding.get("count") is not None
 
 
 def _infer_category(scanner_id: str, category: str | None) -> str:
@@ -240,6 +318,7 @@ def record_scan(
                 f"findings[{i}] requires a non-empty summary "
                 f"(got keys {sorted(raw.keys())})"
             )
+        _validate_finding_extra(i, raw)
 
     counts: dict[str, int] | None = None
     default_sev = "medium"
@@ -286,15 +365,12 @@ def record_scan(
     db.add(scan)
     stored = 0
     for raw in rows:
-        summary = str(raw.get("summary") or "").strip()
-        db.add(ScanFinding(
+        db.add(_finding_row(
             scan_id=scan.id,
             project_id=project_id,
-            path=str(raw.get("path") or path_n).strip() or path_n,
-            severity=_norm_sev(str(raw.get("severity") or default_sev)),
-            summary=summary,
-            link_kind=str(raw.get("link_kind") or "").strip(),
-            link_ref=str(raw.get("link_ref") or "").strip(),
+            path_n=path_n,
+            raw=raw,
+            default_sev=default_sev,
         ))
         stored += 1
     db.commit()
@@ -319,16 +395,7 @@ def _findings_for(db: Session, scan_id: str) -> list[dict]:
         select(ScanFinding).where(ScanFinding.scan_id == scan_id)
         .order_by(ScanFinding.id.asc())
     ).all())
-    return [
-        {
-            "severity": f.severity,
-            "summary": f.summary,
-            "path": f.path,
-            "link_kind": f.link_kind or None,
-            "link_ref": f.link_ref or None,
-        }
-        for f in rows
-    ]
+    return [_finding_dict(f) for f in rows]
 
 
 def _same_finding(a: dict, b: dict) -> bool:
@@ -899,6 +966,8 @@ def _attach_offers(
     for cat, cell in categories.items():
         if cat != "work":
             for f in cell.get("findings") or []:
+                if _informational_rollup(f):
+                    continue
                 k = filed_key(component, cat, f.get("path") or "", f.get("summary") or "")
                 f["filed_key"] = k
                 f["filed_item"] = filed.get(k)

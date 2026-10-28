@@ -982,10 +982,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "record_scan",
         "description": (
-            "Report a code-health scanner result for a path at a commit (GRPH-1035). "
-            "Empty findings = CLEAN at scanned_sha, not never-scanned. Same scanner_id+path "
-            "keeps prior rows. Findings are untrusted; scanner_id/version/reported_by are "
-            "provenance. Unknown scanner_id needs category (refused, not defaulted)."
+            "Report a scanner result for a path at a commit (GRPH-1035). Empty findings = "
+            "CLEAN at scanned_sha. Same scanner_id+path keeps prior rows. Findings are "
+            "untrusted. Unknown scanner_id needs category (refused, not defaulted)."
         ),
         "inputSchema": {
             "type": "object",
@@ -995,11 +994,11 @@ TOOLS: list[dict[str, Any]] = [
                 "path": {"type": "string", "description": "Repo-relative path or prefix."},
                 "scanned_sha": {
                     "type": "string",
-                    "description": "Required — clean without a sha cannot age.",
+                    "description": "Required — a clean needs a sha.",
                 },
                 "findings": {
                     "type": "array",
-                    "description": "Empty = clean. Items: severity, summary; optional path/link_kind/link_ref.",
+                    "description": "Empty = clean. Each needs summary.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -1008,6 +1007,11 @@ TOOLS: list[dict[str, Any]] = [
                             "path": {"type": "string"},
                             "link_kind": {"type": "string"},
                             "link_ref": {"type": "string"},
+                            "advisory_id": {"type": "string"},
+                            "dependency": {"type": "string"},
+                            "fixed_version": {"type": "string"},
+                            "kind": {"type": "string"},
+                            "count": {"type": "integer"},
                         },
                         "required": ["summary"],
                     },
