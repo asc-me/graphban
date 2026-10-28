@@ -513,7 +513,13 @@ def cmd_fleet(args) -> int:
               f"     …or `brew install asc-me/tap/gban` installs this client only — the "
               f"supervisor is a separate package.", file=sys.stderr)
         return EXIT_NO_SUPERVISOR
-    argv = [binary, *[a for a in args.rest if a != "--"]]
+    # Only a LEADING `--` is ours to drop (`gban fleet -- ps`). Any later one belongs to
+    # gbfleet: `service install --name X -- <until args>` splits on it, and stripping it
+    # handed the until args to `service install` itself.
+    rest = list(args.rest)
+    if rest[:1] == ["--"]:
+        rest = rest[1:]
+    argv = [binary, *rest]
     url = config.resolve(args.server, config.URL_ENV, "url")
     if url and "--server" not in argv:
         argv += ["--server", url]
