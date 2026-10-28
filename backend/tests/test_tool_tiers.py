@@ -392,7 +392,8 @@ CORE_TOKENS = 8918
 # GRPH-1089: bound_only is fleet-only args, not base TOOLS, so fleet stays 1100.
 # codegraph 1791 → 1790: record_scan refuses an unknown scanner with no category (GRPH-1108).
 # GRPH-1125: `result` is fleet-only on record_scan; base prose trimmed, tier unchanged.
-TIER_TOKENS = {"prd": 1998, "codegraph": 1790, "fleet": 1100, "misc": 1238}
+# codegraph 1790 → 1789: GRPH-1125 met GRPH-1128's "keeps prior rows" on main.
+TIER_TOKENS = {"prd": 1998, "codegraph": 1789, "fleet": 1100, "misc": 1238}
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.

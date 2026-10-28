@@ -22,6 +22,10 @@ counts an empty findings list cannot be told apart from a suite that collected n
 failing test is a finding; a run that executed zero tests is stored WITH a finding, never as
 clean; skips are written into the note rather than folded into the passes. The counts live
 in the note, not a column — a reader sees them where the scan's other context already is.
+
+History (GRPH-1128): a report never deletes an earlier one. Every report is a row; a cell
+reads the newest row per (scanner, path), and `scan_status` for a path returns every row
+newest first, each naming what cleared and what is new against the row before it.
 """
 from __future__ import annotations
 
@@ -30,11 +34,12 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import CodeRef, CodeScan, Item, ScanFinding
 from app.services import code_graph as code_svc
+from app.services import scan_topology as topo_svc
 from app.services.clustering import _match
 
 logger = logging.getLogger("graphban.scans")
@@ -215,11 +220,12 @@ def record_scan(
     tests: dict | None = None,
     result: str | None = None,
 ) -> dict:
-    """Upsert a scanner's report for `path` at `scanned_sha`.
+    """Record a scanner's report for `path` at `scanned_sha`.
 
     Empty `findings` requires `result='complete'` — nothing else is stored. Other producer
     results (`tool_missing`, `not_applicable`, `incomplete`) name blocked or partial runs.
-    Replaces any prior row for the same (project, scanner_id, path).
+    Prior rows for the same (project, scanner_id, path) are kept: the newest is the
+    cell, the older ones are its history (GRPH-1128).
     A tests-category scan also needs `tests` counts (see the module docstring).
     """
     sid = (scanner_id or "").strip()
@@ -303,18 +309,6 @@ def record_scan(
             f"result '{outcome}' cannot be stored with findings; nothing was stored"
         )
 
-    # Replace prior result for this scanner+path (one live answer).
-    prior = list(db.scalars(
-        select(CodeScan).where(
-            CodeScan.project_id == project_id,
-            CodeScan.scanner_id == sid,
-            CodeScan.path == path_n,
-        )
-    ).all())
-    for old in prior:
-        db.execute(delete(ScanFinding).where(ScanFinding.scan_id == old.id))
-        db.delete(old)
-
     scan = CodeScan(
         id="cs_" + uuid.uuid4().hex[:12],
         project_id=project_id,
@@ -391,6 +385,45 @@ def _stale_note(scan: CodeScan, head: str, prefix: str = "") -> str:
     )
 
 
+def _same_finding(a: dict, b: dict) -> bool:
+    """Is `b` the same finding as `a`? The advisory id when BOTH carry one, else the exact
+    summary and the exact path. One-sided ids are not an advisory match, and the missing id
+    is never treated as a wildcard. No fuzzy match: a reworded summary is another finding."""
+    aa = str(a.get("advisory_id") or "").strip()
+    ba = str(b.get("advisory_id") or "").strip()
+    if aa and ba:
+        return aa == ba
+    return a.get("summary") == b.get("summary") and a.get("path") == b.get("path")
+
+
+def finding_diff(earlier: list[dict], later: list[dict]) -> dict:
+    """What cleared between two rows of one scanner+path, and what is new.
+
+    One-to-one: two identical findings on the earlier row and one on the later leaves one
+    cleared, not zero."""
+    remaining = list(earlier)
+    new: list[dict] = []
+    for f in later:
+        idx = next((i for i, e in enumerate(remaining) if _same_finding(e, f)), None)
+        if idx is None:
+            new.append(f)
+        else:
+            remaining.pop(idx)
+    return {"cleared": remaining, "new": new}
+
+
+def _newest_per_scanner_path(scans: list[CodeScan]) -> list[CodeScan]:
+    """The newest row per (scanner_id, path) — the cell. `scans` must be newest first."""
+    seen: set[tuple[str, str]] = set()
+    out: list[CodeScan] = []
+    for s in scans:
+        k = (s.scanner_id, s.path)
+        if k not in seen:
+            seen.add(k)
+            out.append(s)
+    return out
+
+
 def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) -> dict:
     """Overlay cell state. Never defaults to clean."""
     if scan is None:
@@ -463,16 +496,31 @@ def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) 
     return {**base, "state": "clean_at_sha"}
 
 
-def _scans_for_prefix(db: Session, project_id: str, prefix: str) -> list[CodeScan]:
-    """Every live scan row whose path is under or equal to the component prefix.
+def _scans_for_exact_path(db: Session, project_id: str, path: str) -> list[CodeScan]:
+    """The newest row per scanner recorded at exactly this path (security lockfile cells).
 
-    Upsert already keeps one row per (scanner_id, path). Do not collapse to the latest
-    per scanner: a clean nested-path scan must not hide findings recorded on a parent.
+    Older rows are history, not the cell (GRPH-1128) — the same rule as `_scans_for_prefix`.
     """
-    all_scans = list(db.scalars(
+    path_n = path.strip().removeprefix("./")
+    return _newest_per_scanner_path(list(db.scalars(
+        select(CodeScan).where(
+            CodeScan.project_id == project_id,
+            CodeScan.path == path_n,
+        ).order_by(CodeScan.scanned_at.desc())
+    ).all()))
+
+
+def _scans_for_prefix(db: Session, project_id: str, prefix: str) -> list[CodeScan]:
+    """The newest row per (scanner_id, path) whose path is under or equal to the prefix.
+
+    Older rows of the same scanner+path are history, not the cell (GRPH-1128). Do not
+    collapse further to the latest per scanner: a clean nested-path scan must not hide
+    findings recorded on a parent.
+    """
+    all_scans = _newest_per_scanner_path(list(db.scalars(
         select(CodeScan).where(CodeScan.project_id == project_id)
         .order_by(CodeScan.scanned_at.desc())
-    ).all())
+    ).all()))
     pref = prefix.rstrip("/")
     out: list[CodeScan] = []
     for s in all_scans:
@@ -486,19 +534,23 @@ def _scans_for_prefix(db: Session, project_id: str, prefix: str) -> list[CodeSca
     return out
 
 
+def _coverage_not_computable() -> dict:
+    return {
+        "state": "not_computable",
+        "scanner": "code-graph health",
+        "scanner_version": None,
+        "scanned_sha": None,
+        "scanned_at": None,
+        "findings": [],
+        "note": (
+            "This project has no code-graph nodes — coverage is not computable per component."
+        ),
+        "result": None,
+    }
+
+
 def _coverage_category(db: Session, project_id: str, prefix: str, head_sha: str) -> dict:
     """Built-in: code-graph health rolled to this component path."""
-    if not code_svc.list_nodes(db, project_id):
-        return {
-            "state": "not_computable",
-            "scanner": "code-graph health",
-            "scanner_version": None,
-            "scanned_sha": None,
-            "scanned_at": None,
-            "findings": [],
-            "note": "No code-graph nodes in this project — coverage cannot be computed.",
-            "result": None,
-        }
     h = code_svc.health(db, project_id, limit=80)
     findings: list[dict] = []
     if not h.get("ever_described"):
@@ -679,6 +731,9 @@ def scan_status(
     """Read scan state for one path or the whole project.
 
     When `path` is a component prefix (or omitted), returns the overlay-shaped payload.
+    With `path`, every row for it is returned newest first — older rows of a scanner are
+    `current: false` history — and each row with an earlier one of the same scanner names
+    what `cleared` and what is `new` against that earlier row (GRPH-1128).
     """
     head = (head_sha or "").strip()
     if path:
@@ -690,13 +745,22 @@ def scan_status(
         if scanner_id:
             q = q.where(CodeScan.scanner_id == scanner_id.strip())
         scans = list(db.scalars(q.order_by(CodeScan.scanned_at.desc())).all())
+        found = {s.id: _findings_for(db, s.id) for s in scans}
+        current = {s.id for s in _newest_per_scanner_path(scans)}
         out = []
-        for s in scans:
-            out.append(_state_for_scan(s, _findings_for(db, s.id), head) | {
+        for i, s in enumerate(scans):
+            prev = next((o for o in scans[i + 1:] if o.scanner_id == s.scanner_id), None)
+            history = None
+            if prev is not None:
+                history = {"compared_to": prev.id, "compared_sha": prev.scanned_sha}
+                history |= finding_diff(found[prev.id], found[s.id])
+            out.append(_state_for_scan(s, found[s.id], head) | {
                 "path": s.path,
                 "category": s.category,
                 "scanner_id": s.scanner_id,
                 "scan_id": s.id,
+                "current": s.id in current,
+                "history": history,
             })
         if scanner_id and not out:
             return {
@@ -725,6 +789,13 @@ def scans_due(db: Session, project_id: str, *, head_sha: str = "") -> dict:
     scanner has ever reported (otherwise they stay never_scanned without nagging).
     """
     health = component_health(db, project_id, head_sha=head_sha)
+    if health.get("mapping", {}).get("state") == "unmapped":
+        return {
+            "head_sha": health.get("head_sha"),
+            "mapping": health.get("mapping"),
+            "due": [],
+            "due_count": 0,
+        }
     due = []
     for comp in health["components"]:
         for cat_key, cat in (comp.get("categories") or {}).items():
@@ -858,11 +929,13 @@ def _merge_category_scans(
     return _state_for_scan(latest, [], head_sha) | {"scanner": label}
 
 
-def _roll_component(categories: dict[str, dict], path: str, head_sha: str) -> dict:
+def _roll_component(
+    categories: dict[str, dict], path: str, head_sha: str, *, keys: tuple[str, ...] = CATEGORIES,
+) -> dict:
     """Per-box footer: FINDINGS / STALE / NOT SCANNED / CLEAN — never invent a score."""
-    states = {k: (categories[k].get("state") or "never_scanned") for k in CATEGORIES}
+    states = {k: (categories[k].get("state") or "never_scanned") for k in keys}
     findings = []
-    for k in CATEGORIES:
+    for k in keys:
         if states[k] == "has_findings":
             findings.extend(categories[k].get("findings") or [])
     sev_counts: dict[str, int] = {}
@@ -873,7 +946,10 @@ def _roll_component(categories: dict[str, dict], path: str, head_sha: str) -> di
         for s in _SEV_ORDER if sev_counts.get(s)
     ]
     stale_n = sum(1 for s in states.values() if s == "stale")
-    nr_n = sum(1 for s in states.values() if s == "never_scanned")
+    nr_n = sum(
+        1 for s in states.values()
+        if s in ("never_scanned", "not_computable")
+    )
     blocked_n = sum(1 for s in states.values() if s in ("tool_missing", "incomplete"))
     gaps = " · ".join(filter(None, [
         f"{stale_n} stale" if stale_n else "",
@@ -905,7 +981,7 @@ def _roll_component(categories: dict[str, dict], path: str, head_sha: str) -> di
             "state": "never_scanned",
             "worst_severity": None,
             "severity_badges": [],
-            "meta": f"{nr_n} of {len(CATEGORIES)} never run",
+            "meta": f"{nr_n} of {len(keys)} never run",
             "finding_count": 0,
         }
     return {
@@ -954,53 +1030,47 @@ def _attach_offers(
         cell["cta"] = {"kind": kind, "path": prefix, "filed_key": k, "filed_item": filed.get(k)}
 
 
-def _component_paths(db: Session, project_id: str) -> dict[str, str]:
-    """Graphban's fixed components, plus one per deployable the project's own code map
-    describes (`app:<dir>` → `<dir>/`), so its scans land on its own boxes. A repo-root
-    deployable gets none: an empty prefix would claim every scan in the project."""
-    from app.services import stack as stack_svc
-
-    paths = dict(COMPONENT_PATHS)
-    try:
-        owner = stack_svc.source_ownership(db, project_id)
-        for dep in stack_svc.own_deployables(db, project_id, owner):
-            if dep["dir"]:
-                paths[stack_svc.own_node_id(dep["dir"])] = dep["dir"] + "/"
-    except Exception:  # noqa: BLE001 — derived components are additive
-        logger.debug("own deployables unavailable for health", exc_info=True)
-    return paths
-
-
 def component_health(db: Session, project_id: str, *, head_sha: str = "") -> dict:
-    """Stack overlay payload: one entry per deployable with scannable code."""
+    """Stack overlay payload: one entry per scan cell from the posted app topology."""
     head = (head_sha or "").strip()
     filed = _filed_items(db, project_id)
+    mapping, cells = topo_svc.scan_cells(db, project_id)
     components = []
-    for cid, prefix in _component_paths(db, project_id).items():
-        scans = _scans_for_prefix(db, project_id, prefix)
+    for cell in cells:
+        prefix = cell.path
+        scans = (
+            _scans_for_exact_path(db, project_id, prefix)
+            if cell.exact_path
+            else _scans_for_prefix(db, project_id, prefix)
+        )
         cats: dict[str, dict] = {}
-        for cat in CATEGORIES:
+        for cat in cell.categories:
             if cat == "coverage":
-                cats[cat] = _coverage_category(db, project_id, prefix, head)
+                if cell.id == "_coverage:not_computable":
+                    cats[cat] = _coverage_not_computable()
+                else:
+                    cats[cat] = _coverage_category(db, project_id, prefix, head)
             elif cat == "work":
                 cats[cat] = _work_category(db, project_id, prefix)
             else:
                 cats[cat] = _merge_category_scans(db, scans, cat, head, prefix=prefix)
-        _attach_offers(cats, cid, prefix, filed)
-        roll = _roll_component(cats, prefix, head)
+        _attach_offers(cats, cell.id, prefix, filed)
+        keys = tuple(cell.categories)
+        roll = _roll_component(cats, prefix, head, keys=keys)
         components.append({
-            "id": cid,
+            "id": cell.id,
             "path": prefix,
             "head_sha": head or None,
             "rollup": roll,
             "categories": {
-                k: {**cats[k], "label": CATEGORY_LABELS[k]} for k in CATEGORIES
+                k: {**cats[k], "label": CATEGORY_LABELS[k]} for k in keys
             },
         })
     return {
         "project_id": project_id,
         "head_sha": head or None,
         "generated_at": _utcnow().isoformat(),
+        "mapping": mapping,
         "components": components,
         # Explicit: no single health score is fabricated.
         "scored": False,
