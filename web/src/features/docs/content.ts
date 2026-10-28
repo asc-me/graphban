@@ -231,7 +231,7 @@ const CONTENT: Record<string, DocEntry> = {
     ],
   },
 
-  "/memory-review": {
+  "/memory": {
     badge: "MEMORY REVIEW",
     title: "Memory review",
     tagline: "Approve agent-written memory before it's trusted.",
@@ -239,7 +239,8 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 1, h: "Candidates, not truth", b: "Memory an agent writes (via add_memory or auto-extracted on Done) enters as a candidate. It stays out of the default semantic search until you publish it here." },
       { num: 2, h: "Publish or reject", b: "Publish promotes a shard into the trusted retrieval path every future agent searches. Reject keeps it for provenance but never surfaces it. Both are recorded in Activity." },
       { num: 3, h: "Recurring lessons", b: "When the same correction shows up several times, it's grouped as a recurring lesson — publish it once as a principle and drop the duplicates in a single action." },
-      { num: 4, h: "The LLM judge", b: "When the LLM judge is on, opening the queue scores groundedness and readiness (capped). Similarity is always there. A missing list score means the toggle is off, the cap was hit, or the model could not decide — never that the note is fine. Ask the judge re-asks keep/quality for one candidate; it does not replace the list scores." },
+      { num: 4, h: "Sweep and stale", b: "Sweep rejects every shard scored under 30% confidence in one action, after a preview; each rejection can be undone from the toast. A stale flag marks anything still unreviewed after 7 days. Recent auto-actions sit at the bottom with Undo and an unvetted-only filter." },
+      { num: 5, h: "The LLM judge", b: "When the LLM judge is on, opening the queue scores groundedness and readiness (capped). Similarity is always there. A missing list score means the toggle is off, the cap was hit, or the model could not decide — never that the note is fine. Ask the judge re-asks keep/quality for one candidate; it does not replace the list scores." },
     ],
     related: [
       { label: "Lessons", to: "/lessons" },
@@ -258,7 +259,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 3, h: "Org promotion", b: "The Promote control is always on the detail page when the lesson is still project-reach. It shows the real reason it is disabled. Unverifiable cannot be overridden. There is no separate org-catalog page in this slice — a successful promote is visible on sibling project lists." },
     ],
     related: [
-      { label: "Memory review", to: "/memory-review" },
+      { label: "Memory review", to: "/memory" },
       { label: "Activity", to: "/activity" },
     ],
   },
@@ -368,7 +369,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 1, h: "Memory write modes", b: "Review: agent writes wait as candidates. Auto: only corroborated lessons publish. Trusted: publishes on write, labelled and undoable. An empty catalog is not a high score." },
       { num: 2, h: "Danger mode is conditional", b: "Allow self-review only applies when no other agent could have reviewed the item. With a second agent here, self-review is still refused. Items signed this way say so." },
     ],
-    related: [{ label: "Memory review", to: "/memory-review" }],
+    related: [{ label: "Memory review", to: "/memory" }],
   },
 
   "/settings/project/integrations": {

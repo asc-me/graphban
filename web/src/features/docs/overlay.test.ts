@@ -34,8 +34,8 @@ const PAGES: [string, string][] = [
   ["/p/CORE/activity", "Activity"],
   ["/live", "Live"],
   ["/p/CORE/live", "Live"],
-  ["/memory-review", "Memory review"],
-  ["/p/CORE/memory-review", "Memory review"],
+  ["/memory", "Memory review"],
+  ["/p/CORE/memory", "Memory review"],
   ["/lessons", "Lessons"],
   ["/lessons/sh_1", "Lessons"],
   ["/p/CORE/lessons", "Lessons"],
@@ -316,7 +316,7 @@ describe("docs overlay routes", () => {
   });
 
   it("Memory review overlay names list judging and that a missing score is not clean", () => {
-    const ask = docFor("/memory-review").sections.find((s) => /llm judge/i.test(s.h));
+    const ask = docFor("/memory").sections.find((s) => /llm judge/i.test(s.h));
     expect(ask?.b).toMatch(/capped/);
     expect(ask?.b).toMatch(/never that the note is fine/);
     expect(ask?.b).toMatch(/keep\/quality/);

@@ -54,8 +54,7 @@ const SECTIONS: { key: Section; label: string; icon: React.ReactNode; pages: Pag
   },
   {
     key: "observe", label: "Observe", icon: <Activity size={16} />, pages: [
-      { view: "memory-review", icon: <Inbox size={16} />, label: "Memory review", count: "review" },
-      { view: "memory-triage", icon: <Inbox size={16} />, label: "Memory triage" },
+      { view: "memory", icon: <Inbox size={16} />, label: "Memory", count: "review" },
       { view: "lessons", icon: <BookMarked size={16} />, label: "Lessons" },
       { view: "activity", icon: <ScrollText size={16} />, label: "Activity" },
       { view: "live", icon: <Activity size={16} />, label: "Live" },

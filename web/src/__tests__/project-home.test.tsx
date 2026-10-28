@@ -219,7 +219,7 @@ describe("Project home", () => {
     expect(link(/PRDs/)).toHaveTextContent("1 docs");
     expect(link(/Code graph/)).toHaveAttribute("href", "/p/CORE/code");
     expect(link(/Code graph/)).toHaveTextContent("40 nodes");
-    expect(link(/^Memory/)).toHaveAttribute("href", "/p/CORE/memory-review");
+    expect(link(/^Memory/)).toHaveAttribute("href", "/p/CORE/memory");
     expect(link(/^Memory/)).toHaveTextContent("2 to review");
     expect(link(/Lessons/)).toHaveAttribute("href", "/p/CORE/lessons");
     expect(link(/Lessons/)).toHaveTextContent("3 published");

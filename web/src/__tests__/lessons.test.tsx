@@ -129,10 +129,10 @@ function renderAt(path: string) {
           <Routes>
             <Route path="/lessons/:id" element={<LessonsView />} />
             <Route path="/lessons" element={<LessonsView />} />
-            <Route path="/memory-review" element={<div>memory inbox</div>} />
+            <Route path="/memory" element={<div>memory inbox</div>} />
             <Route path="/p/:tag/lessons/:id" element={<LessonsView />} />
             <Route path="/p/:tag/lessons" element={<LessonsView />} />
-            <Route path="/p/:tag/memory-review" element={<div>memory inbox</div>} />
+            <Route path="/p/:tag/memory" element={<div>memory inbox</div>} />
           </Routes>
         </ProjectProvider>
       </MemoryRouter>
@@ -183,7 +183,7 @@ describe("Lessons catalog", () => {
     expect(screen.getByText(/not a scoreboard/)).toBeInTheDocument();
     expect(screen.getByText(/empty catalog is not a high score/)).toBeInTheDocument();
     const memory = screen.getByRole("link", { name: "Memory" });
-    expect(memory).toHaveAttribute("href", "/memory-review");
+    expect(memory).toHaveAttribute("href", "/memory");
     expect(screen.queryByText(/you're all caught up/i)).not.toBeInTheDocument();
     expect(screen.queryByText("100%")).not.toBeInTheDocument();
     expect(screen.queryByText(/all caught up/i)).not.toBeInTheDocument();
@@ -301,7 +301,7 @@ describe("Lessons catalog", () => {
   it("keeps the Memory empty-state link on the current hosted project", async () => {
     renderAt("/p/CORE/lessons");
     const memory = await screen.findByRole("link", { name: "Memory" });
-    expect(memory).toHaveAttribute("href", "/p/CORE/memory-review");
+    expect(memory).toHaveAttribute("href", "/p/CORE/memory");
   });
 });
 
@@ -546,6 +546,6 @@ describe("Lessons docs overlay", () => {
     expect(docFor("/lessons/sh_1").title).toBe("Lessons");
     expect(docFor("/p/CORE/lessons").title).toBe("Lessons");
     expect(docFor("/p/CORE/lessons/sh_1").badge).toBe("LESSONS");
-    expect(docFor("/lessons").related?.map((r) => r.to)).toEqual(["/memory-review", "/activity"]);
+    expect(docFor("/lessons").related?.map((r) => r.to)).toEqual(["/memory", "/activity"]);
   });
 });
