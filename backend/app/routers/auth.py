@@ -9,14 +9,15 @@ from app.config import settings
 from app.db import get_db
 from app.models import Membership, Project, User
 from app.schemas import (LoginIn, PasswordChangeIn, PasswordResetConfirmIn,
-                         PasswordResetRequestIn, RefreshIn, RegisterIn, TokenOut,
-                         UserOut)
+                         PasswordResetRequestIn, PreferencesIn, PreferencesOut,
+                         RefreshIn, RegisterIn, TokenOut, UserOut)
 from app.security.deps import get_current_user
 from app.security.jwt import create_access_token, create_refresh_token, decode_token
 from app.security.net import client_ip
 from app.security.passwords import hash_password, verify_password
 from app.services import orgs as orgs_svc
 from app.services import password_reset as reset_svc
+from app.services import preferences as preferences_svc
 from app.services import ratelimit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -239,3 +240,36 @@ def my_memberships(user: User = Depends(get_current_user), db: Session = Depends
             "access": m.access,
         })
     return out
+
+
+@router.get("/me/preferences", response_model=PreferencesOut)
+def my_preferences(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """This user's UI preference document (PRD-60 D1 / GRPH-1133).
+
+    `{saved, preferences}`. `saved: false` means the server has never held a document for this
+    user, and it is NOT the same answer as `saved: true` with `{}` — the client's localStorage
+    migration uploads its local values once and only in the first case, so a second device
+    reads the server copy instead of overwriting the first device's layout with its own.
+
+    The document comes back as written. No defaults are filled in here, because a default the
+    server invents is indistinguishable from a choice the user made.
+    """
+    return preferences_svc.read(db, user.id)
+
+
+@router.put("/me/preferences", response_model=PreferencesOut)
+def put_my_preferences(body: PreferencesIn, user: User = Depends(get_current_user),
+                       db: Session = Depends(get_db)):
+    """Replace this user's whole document. Last write wins, across devices and tabs alike.
+
+    An unknown key or a value outside its vocabulary is a 422 naming the field
+    (`PreferencesIn`, `extra="forbid"` at every level). A typo'd key stored silently would be
+    a save that reports success and changes nothing.
+
+    `exclude_unset` rather than a plain dump: a key the client did not send stays ABSENT in the
+    stored document instead of materialising as a server-side default the UI never chose.
+
+    Not recorded as an event, deliberately — this fires on every sidebar toggle and condense
+    click, and an audit log that is mostly `nav.collapsed` is one nobody reads.
+    """
+    return preferences_svc.write(db, user.id, body.model_dump(exclude_unset=True))
