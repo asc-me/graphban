@@ -529,6 +529,8 @@ export interface Item {
   reach: Reach;
   created_at: string;
   updated_at: string;
+  /** When it last reached `done` (GRPH-1134); null while it is not done. */
+  done_at: string | null;
 }
 
 export type ShardStatus = "candidate" | "published" | "rejected";

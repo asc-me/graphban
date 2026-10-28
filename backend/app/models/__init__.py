@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     false,
     true,
 )
@@ -677,6 +678,11 @@ class Item(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+    # When the item last ARRIVED at `done` (GRPH-1134 / PRD-60 D2), for "done in the last N
+    # days" windows and auto-hide. `updated_at` cannot answer it: retitling a finished item
+    # bumps it. NULL whenever the status is not `done`. Written by `_stamp_done_at` below,
+    # never by hand. Migration 0145 backfilled rows that were already done.
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # The backstop for the mint path (services/items.py): even if minting is bypassed
     # or two agents race, the database refuses a duplicate number within a project.
@@ -692,6 +698,23 @@ class Item(Base):
     @property
     def prd_key(self) -> str | None:
         return _key_of(self, self.prd_id, "prd")
+
+
+@event.listens_for(Item.status, "set", active_history=True)
+def _stamp_done_at(item: Item, value, oldvalue, _initiator) -> None:
+    """Keep `done_at` in step with `status` on EVERY writer (GRPH-1134).
+
+    An attribute event rather than a line in `update_item`, because status is written in at
+    least five places (update_item, sign_off, release_item, gitops, waits) and a
+    sixth will be added. A stamp in only one of them would leave items signed off with no
+    `done_at`. Re-setting `done` on a done item keeps the original time. Leaving `done` clears
+    it, so a reopened item that is finished again gets a new time.
+    """
+    if value == "done":
+        if oldvalue != "done":
+            item.done_at = utcnow()
+    else:
+        item.done_at = None
 
 
 class ArtifactRecommendation(Base):

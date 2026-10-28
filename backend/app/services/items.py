@@ -1840,6 +1840,11 @@ def item_dict(item: Item) -> dict:
         # needs the value that IS there, not a field that is always present and
         # usually blank.
         out["branch"] = item.branch
+    if item.done_at is not None:
+        # When it last reached `done` (GRPH-1134), a unix timestamp like `claimed_at`. Shown
+        # only when set, like `branch`: every open row would otherwise carry an empty field.
+        # Reply-only, for the same token-ceiling reason as `claimed_at`.
+        out["done_at"] = int(item.done_at.timestamp())
     if item.reviewed_by_capabilities:
         # The reviewer's tier, vendor and model (GRPH-945), so a cheap-on-cheap sign-off reads
         # differently from a frontier or human one. Present only once somebody signed it off,
