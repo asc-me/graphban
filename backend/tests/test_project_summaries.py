@@ -139,9 +139,11 @@ def test_one_request_labels_every_readable_project_with_its_own_numbers(client, 
         assert row["agent_count"] == len(roster), pid
         assert row["live_agents"] <= row["agent_count"], pid
 
-    # Neither row is the instance total. Dropping the `project_id` predicate from an aggregate
-    # would make both equal it, and the two comparisons above are what catch that.
-    assert by_id["core"]["item_count"] >= decoy["items"] >= 0
+    # Neither row carries both populations. `assert_populated` above guarantees the decoy has
+    # items, so a scope widened to the instance would show up as one row equalling the pair.
+    both = by_id["core"]["item_count"] + by_id[did]["item_count"]
+    assert by_id["core"]["item_count"] < both
+    assert by_id[did]["item_count"] < both
     assert by_id["core"]["item_count"] != by_id[did]["item_count"]
 
 
@@ -166,10 +168,15 @@ def test_a_caller_with_no_projects_gets_an_empty_list_not_the_instance(client, a
 
 def test_a_second_tenant_is_neither_listed_nor_counted(client, auth, db):
     """The refusal half. A project the caller cannot read must not appear, and its rows must
-    not join the counts of one that can."""
+    not join the counts of one that can — measured ACROSS the other tenant arriving, so the
+    before/after comparison has something to differ from."""
     from app.services import items as items_svc
 
     headers, uid = _register(client, db)
+    core_before = {k: v for k, v in _summaries(client, auth)[1]["core"].items()
+                   if k in COUNT_FIELDS}
+    assert core_before["item_count"] > 0, "core has no items, so a leak into it is invisible"
+
     theirs = proj_svc.create_project(db, name="Outsider only", owner_user_id=uid, tag="OUTS").id
     for i in range(5):
         items_svc.create_item(db, title=f"their item {i}", project_id=theirs)
@@ -184,13 +191,13 @@ def test_a_second_tenant_is_neither_listed_nor_counted(client, auth, db):
     assert [r["project_id"] for r in rows] == [theirs], rows
     assert hers[theirs]["item_count"] == 5
     assert hers[theirs]["agent_count"] == 1
+    assert hers[theirs]["live_agents"] == 1, "a just-registered agent did not read as live"
 
     _, mine = _summaries(client, auth)
     assert theirs not in mine, "a project the caller cannot read appeared in the switcher"
-    core_before = {k: v for k, v in mine["core"].items() if k in COUNT_FIELDS}
-    assert core_before["item_count"] > 0, "core has no items, so a leak into it is invisible"
-    _, mine_again = _summaries(client, auth)
-    assert {k: mine_again["core"][k] for k in COUNT_FIELDS} == core_before
+    assert {k: mine["core"][k] for k in COUNT_FIELDS} == core_before, (
+        "another tenant's rows joined this project's counts"
+    )
 
 
 def test_an_empty_project_reports_null_and_not_a_number(client, auth, db):

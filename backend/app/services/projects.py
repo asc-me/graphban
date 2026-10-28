@@ -454,11 +454,13 @@ def project_summaries(db: Session, readable_ids: list[str]) -> list[dict]:
     live_cutoff = datetime.now(timezone.utc) - timedelta(
         seconds=fleet_svc.presence_ttl_seconds())
     is_live = and_(Agent.state != _NOT_LIVE_STATE, Agent.last_seen_at >= live_cutoff)
+    # No COALESCE around the SUM: `else_=0` means every row of a group contributes, so a
+    # group's sum is 0 at the lowest and never NULL. A project with no agents has no GROUP at
+    # all, and the `.get(..., (0, 0))` below is what answers for it.
     agent_rows = {
         pid: (n, live_n)
         for pid, n, live_n in db.execute(
-            select(Agent.project_id, func.count(),
-                   func.coalesce(func.sum(case((is_live, 1), else_=0)), 0))
+            select(Agent.project_id, func.count(), func.sum(case((is_live, 1), else_=0)))
             .where(Agent.project_id.in_(ids), Agent.dismissed_at.is_(None))
             .group_by(Agent.project_id))
     }
@@ -470,9 +472,9 @@ def project_summaries(db: Session, readable_ids: list[str]) -> list[dict]:
         agent_count, live_count = agent_rows.get(p.id, (0, 0))
         out.append({
             "project_id": p.id,
-            "item_count": int(item_count or 0),
-            "agent_count": int(agent_count or 0),
-            "live_agents": int(live_count or 0),
+            "item_count": int(item_count),
+            "agent_count": int(agent_count),
+            "live_agents": int(live_count),
             "default_branch": branches.get(p.id),
             "last_activity_at": _latest(item_latest, ledger.get(p.id)),
         })
