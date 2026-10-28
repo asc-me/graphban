@@ -79,7 +79,7 @@ export function ColumnsPopover({ prefs, items }: { prefs: ColumnPrefsApi; items:
                         aria-pressed={current === mode}
                         onClick={() => prefs.setMode(status, mode)}
                         className={cn(
-                          "rounded px-1.5 py-px text-[11px]",
+                          "rounded px-1.5 py-px text-[12px]",
                           current === mode ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
                         )}
                       >
@@ -92,7 +92,7 @@ export function ColumnsPopover({ prefs, items }: { prefs: ColumnPrefsApi; items:
             })}
           </div>
           <div className="mt-2 flex items-center gap-2 border-t border-line pt-2">
-            <span className="flex-1 text-[11px] text-faint">
+            <span className="flex-1 text-[12px] text-faint">
               Hidden columns still count toward views. Their cards don't move.
             </span>
             <button type="button" onClick={prefs.reset} className="text-[12px] text-muted hover:text-fg">

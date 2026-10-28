@@ -51,7 +51,7 @@ export function TrackerBoard({
               aria-label={`Expand ${meta.label} (${cards.length})`}
               title={`Expand ${meta.label}`}
               onClick={() => columns.setMode(status, "show")}
-              className="flex min-h-[320px] w-11 flex-none flex-col items-center gap-2 rounded-[12px] border border-line-2 bg-surface/40 py-3 hover:border-control-hover"
+              className="flex min-h-[320px] w-11 flex-none flex-col items-center gap-2 rounded-[12px] border border-control bg-surface/40 py-3 hover:border-control-hover"
             >
               <span className="h-2 w-2 rounded-full" style={{ background: meta.color }} />
               <span className="font-mono text-[10.5px] text-faint">{cards.length}</span>
