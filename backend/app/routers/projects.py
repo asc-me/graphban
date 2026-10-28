@@ -10,7 +10,7 @@ from app.db import get_db
 from app.models import Membership, Project, User
 from app.schemas import (
     GitopsPatch, GitopsView, MemberOut, ProjectCreate, ProjectOut, ProjectRetagIn,
-    ProjectUpdate, UserOut,
+    ProjectSummaryOut, ProjectUpdate, UserOut,
 )
 from app.security import authz
 from app.security.deps import get_current_user
@@ -66,6 +66,13 @@ def list_projects(db: Session = Depends(get_db), user: User = Depends(get_curren
     readable = set(authz.readable_project_ids(db, user.id))
     rows = db.scalars(select(Project).order_by(Project.name)).all()
     return [p for p in rows if p.id in readable]
+
+
+@router.get("/summaries", response_model=list[ProjectSummaryOut])
+def project_summaries(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The project switcher's rows — counts, branch, presence and last activity for every
+    project this user can read, in one request of fixed cost (GRPH-1131)."""
+    return projects_svc.project_summaries(db, authz.readable_project_ids(db, user.id))
 
 
 @router.post("", response_model=ProjectOut, status_code=201)
