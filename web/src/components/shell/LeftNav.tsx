@@ -74,7 +74,7 @@ export function sectionFromPath(pathname: string): Section | null {
 /** Remembered per browser until the per-user server store (GRPH-1133) exists. */
 export const SIDEBAR_STORAGE_KEY = "gb.sidebar.collapsed";
 
-function readCollapsed(): boolean {
+export function readSidebarCollapsed(): boolean {
   try {
     return localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1";
   } catch {
@@ -124,7 +124,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
   const current = sectionFromPath(pathname);
   const view = viewSegment(pathname);
 
-  const [collapsed, setCollapsed] = React.useState(readCollapsed);
+  const [collapsed, setCollapsed] = React.useState(readSidebarCollapsed);
   const [inline, setInline] = React.useState(true);
   const [tip, setTip] = React.useState<Tip | null>(null);
   // Any open menu (project switcher, section menu) suppresses rail labels.
@@ -499,7 +499,7 @@ function ProjectSwitcher({
   const initial = (active?.name ?? "?").slice(0, 1).toUpperCase();
   const tile = (
     <span
-      className="flex h-6 w-6 flex-none items-center justify-center rounded-md border font-mono text-[11px] font-semibold"
+      className="flex h-6 w-6 flex-none items-center justify-center rounded-md border font-mono text-small font-semibold"
       style={{ color: accent, borderColor: `${accent}4d`, background: `${accent}29` }}
     >
       {initial}
