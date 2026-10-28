@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from app.models import CodeRef, CodeScan, Item, ScanFinding
 from app.services import code_graph as code_svc
+from app.services import scan_topology as topo_svc
 from app.services.clustering import _match
 
 logger = logging.getLogger("graphban.scans")
@@ -388,6 +389,17 @@ def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) 
     return {**base, "state": "clean_at_sha"}
 
 
+def _scans_for_exact_path(db: Session, project_id: str, path: str) -> list[CodeScan]:
+    """Live scan rows recorded at exactly this path (security lockfile cells)."""
+    path_n = path.strip().removeprefix("./")
+    return list(db.scalars(
+        select(CodeScan).where(
+            CodeScan.project_id == project_id,
+            CodeScan.path == path_n,
+        ).order_by(CodeScan.scanned_at.desc())
+    ).all())
+
+
 def _scans_for_prefix(db: Session, project_id: str, prefix: str) -> list[CodeScan]:
     """Every live scan row whose path is under or equal to the component prefix.
 
@@ -409,6 +421,20 @@ def _scans_for_prefix(db: Session, project_id: str, prefix: str) -> list[CodeSca
                 continue
         out.append(s)
     return out
+
+
+def _coverage_not_computable() -> dict:
+    return {
+        "state": "not_computable",
+        "scanner": "code-graph health",
+        "scanner_version": None,
+        "scanned_sha": None,
+        "scanned_at": None,
+        "findings": [],
+        "note": (
+            "This project has no code-graph nodes — coverage is not computable per component."
+        ),
+    }
 
 
 def _coverage_category(db: Session, project_id: str, prefix: str, head_sha: str) -> dict:
@@ -639,6 +665,13 @@ def scans_due(db: Session, project_id: str, *, head_sha: str = "") -> dict:
     scanner has ever reported (otherwise they stay never_scanned without nagging).
     """
     health = component_health(db, project_id, head_sha=head_sha)
+    if health.get("mapping", {}).get("state") == "unmapped":
+        return {
+            "head_sha": health.get("head_sha"),
+            "mapping": health.get("mapping"),
+            "due": [],
+            "due_count": 0,
+        }
     due = []
     for comp in health["components"]:
         for cat_key, cat in (comp.get("categories") or {}).items():
@@ -734,11 +767,13 @@ def _merge_category_scans(
     return _state_for_scan(latest, [], head_sha) | {"scanner": label}
 
 
-def _roll_component(categories: dict[str, dict], path: str, head_sha: str) -> dict:
+def _roll_component(
+    categories: dict[str, dict], path: str, head_sha: str, *, keys: tuple[str, ...] = CATEGORIES,
+) -> dict:
     """Per-box footer: FINDINGS / STALE / NOT SCANNED / CLEAN — never invent a score."""
-    states = {k: (categories[k].get("state") or "never_scanned") for k in CATEGORIES}
+    states = {k: (categories[k].get("state") or "never_scanned") for k in keys}
     findings = []
-    for k in CATEGORIES:
+    for k in keys:
         if states[k] == "has_findings":
             findings.extend(categories[k].get("findings") or [])
     sev_counts: dict[str, int] = {}
@@ -749,7 +784,10 @@ def _roll_component(categories: dict[str, dict], path: str, head_sha: str) -> di
         for s in _SEV_ORDER if sev_counts.get(s)
     ]
     stale_n = sum(1 for s in states.values() if s == "stale")
-    nr_n = sum(1 for s in states.values() if s == "never_scanned")
+    nr_n = sum(
+        1 for s in states.values()
+        if s in ("never_scanned", "not_computable")
+    )
     gaps = " · ".join(filter(None, [
         f"{stale_n} stale" if stale_n else "",
         f"{nr_n} not run" if nr_n else "",
@@ -779,7 +817,7 @@ def _roll_component(categories: dict[str, dict], path: str, head_sha: str) -> di
             "state": "never_scanned",
             "worst_severity": None,
             "severity_badges": [],
-            "meta": f"{nr_n} of {len(CATEGORIES)} never run",
+            "meta": f"{nr_n} of {len(keys)} never run",
             "finding_count": 0,
         }
     return {
@@ -828,53 +866,47 @@ def _attach_offers(
         cell["cta"] = {"kind": kind, "path": prefix, "filed_key": k, "filed_item": filed.get(k)}
 
 
-def _component_paths(db: Session, project_id: str) -> dict[str, str]:
-    """Graphban's fixed components, plus one per deployable the project's own code map
-    describes (`app:<dir>` → `<dir>/`), so its scans land on its own boxes. A repo-root
-    deployable gets none: an empty prefix would claim every scan in the project."""
-    from app.services import stack as stack_svc
-
-    paths = dict(COMPONENT_PATHS)
-    try:
-        owner = stack_svc.source_ownership(db, project_id)
-        for dep in stack_svc.own_deployables(db, project_id, owner):
-            if dep["dir"]:
-                paths[stack_svc.own_node_id(dep["dir"])] = dep["dir"] + "/"
-    except Exception:  # noqa: BLE001 — derived components are additive
-        logger.debug("own deployables unavailable for health", exc_info=True)
-    return paths
-
-
 def component_health(db: Session, project_id: str, *, head_sha: str = "") -> dict:
-    """Stack overlay payload: one entry per deployable with scannable code."""
+    """Stack overlay payload: one entry per scan cell from the posted app topology."""
     head = (head_sha or "").strip()
     filed = _filed_items(db, project_id)
+    mapping, cells = topo_svc.scan_cells(db, project_id)
     components = []
-    for cid, prefix in _component_paths(db, project_id).items():
-        scans = _scans_for_prefix(db, project_id, prefix)
+    for cell in cells:
+        prefix = cell.path
+        scans = (
+            _scans_for_exact_path(db, project_id, prefix)
+            if cell.exact_path
+            else _scans_for_prefix(db, project_id, prefix)
+        )
         cats: dict[str, dict] = {}
-        for cat in CATEGORIES:
+        for cat in cell.categories:
             if cat == "coverage":
-                cats[cat] = _coverage_category(db, project_id, prefix, head)
+                if cell.id == "_coverage:not_computable":
+                    cats[cat] = _coverage_not_computable()
+                else:
+                    cats[cat] = _coverage_category(db, project_id, prefix, head)
             elif cat == "work":
                 cats[cat] = _work_category(db, project_id, prefix)
             else:
                 cats[cat] = _merge_category_scans(db, scans, cat, head, prefix=prefix)
-        _attach_offers(cats, cid, prefix, filed)
-        roll = _roll_component(cats, prefix, head)
+        _attach_offers(cats, cell.id, prefix, filed)
+        keys = tuple(cell.categories)
+        roll = _roll_component(cats, prefix, head, keys=keys)
         components.append({
-            "id": cid,
+            "id": cell.id,
             "path": prefix,
             "head_sha": head or None,
             "rollup": roll,
             "categories": {
-                k: {**cats[k], "label": CATEGORY_LABELS[k]} for k in CATEGORIES
+                k: {**cats[k], "label": CATEGORY_LABELS[k]} for k in keys
             },
         })
     return {
         "project_id": project_id,
         "head_sha": head or None,
         "generated_at": _utcnow().isoformat(),
+        "mapping": mapping,
         "components": components,
         # Explicit: no single health score is fabricated.
         "scored": False,
