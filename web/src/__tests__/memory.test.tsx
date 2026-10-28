@@ -147,7 +147,7 @@ describe("Memory panel", () => {
   });
 
   it("names the memory-review queue count instead of silent zero (GRPH-923)", async () => {
-    renderSidebar("/memory-review");
+    renderSidebar("/memory");
     expect(await screen.findByText(/763 waiting · 1 shards shown/i)).toBeInTheDocument();
   });
 });

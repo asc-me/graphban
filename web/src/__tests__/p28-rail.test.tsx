@@ -150,7 +150,7 @@ describe("P28 self-host rail", () => {
   it("shows Memory and Lessons under Observe on /lessons (children are collapsed on /tracker)", async () => {
     wrap(<LeftNav />, "/lessons");
     expect(await screen.findByText("Lessons")).toBeInTheDocument();
-    expect(screen.getByText("Memory review")).toBeInTheDocument();
+    expect(screen.getByText("Memory")).toBeInTheDocument();
     expect(screen.getByText("Activity")).toBeInTheDocument();
   });
 
@@ -158,7 +158,7 @@ describe("P28 self-host rail", () => {
     wrap(<LeftNav />, "/live");
     expect(await screen.findByText("Live")).toBeInTheDocument();
     expect(screen.getByText("Activity")).toBeInTheDocument();
-    expect(screen.getByText("Memory review")).toBeInTheDocument();
+    expect(screen.getByText("Memory")).toBeInTheDocument();
     expect(screen.getByText("Lessons")).toBeInTheDocument();
   });
 
@@ -174,11 +174,11 @@ describe("P28 self-host rail", () => {
     expect(build).not.toContain('view: "fleet.v');
 
     const observe = src.match(/key: "observe"[\s\S]*?\],\n  \}/)?.[0] ?? "";
-    const mem = observe.indexOf('view: "memory-review"');
+    const mem = observe.indexOf('view: "memory"');
     const les = observe.indexOf('view: "lessons"');
     expect(mem).toBeGreaterThan(-1);
     expect(les).toBeGreaterThan(mem);
-    expect(observe.slice(mem, les).match(/view:/g)?.length).toBe(2);
+    expect(observe.slice(mem, les).match(/view:/g)?.length).toBe(1);
 
     const act = observe.indexOf('view: "activity"');
     const live = observe.indexOf('view: "live"');
@@ -244,7 +244,7 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     expect(await screen.findByText("Activity")).toBeInTheDocument();
     expect(screen.getByText("Live")).toBeInTheDocument();
     expect(screen.getByText("Harness")).toBeInTheDocument();
-    expect(screen.getByText("Memory review")).toBeInTheDocument();
+    expect(screen.getByText("Memory")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Observe" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
   });
@@ -303,7 +303,7 @@ describe("P28 Home", () => {
     const jump = await screen.findByRole("region", { name: "Jump to" });
     expect(within(jump).getByRole("link", { name: /Tracker/ })).toHaveAttribute("href", "/tracker");
     expect(within(jump).getByRole("link", { name: /Triage/ })).toHaveAttribute("href", "/triage");
-    expect(within(jump).getByRole("link", { name: /^Memory/ })).toHaveAttribute("href", "/memory-review");
+    expect(within(jump).getByRole("link", { name: /^Memory/ })).toHaveAttribute("href", "/memory");
     expect(within(jump).getByRole("link", { name: /Fleet/ })).toHaveAttribute("href", "/fleet");
     expect(within(jump).getByRole("link", { name: /Lessons/ })).toHaveAttribute("href", "/lessons");
     expect(within(jump).getByRole("link", { name: /^Live/ })).toHaveAttribute("href", "/live");

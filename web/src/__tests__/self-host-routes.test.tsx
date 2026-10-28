@@ -61,6 +61,17 @@ describe("the org plane is absent on self-host, not guarded", () => {
     expect(app).toContain('tab="harness"');
   });
 
+  it("names Memory as one page, and redirects memory-review / memory-triage to it (hosted and flat)", () => {
+    expect(app).toContain('["memory"');
+    expect(app).not.toContain('["memory-review"');
+    expect(app).not.toContain("MemoryTriageView");
+    for (const old of ["memory-review", "memory-triage"]) {
+      expect(app).toContain(`path="/${old}" element={<MemoryRedirect />}`);
+      expect(app).toContain(`path="/p/:tag/${old}" element={<MemoryRedirect />}`);
+      expect(app).toContain(`path="/${old}" element={<FlatRedirect to="memory" />}`);
+    }
+  });
+
   it("clears org state on boot for a self-host build", () => {
     // D1.2: a self-host build must not resurrect an org context it has no way to serve.
     const routes = import.meta.glob("../lib/routes.ts", {

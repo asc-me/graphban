@@ -22,7 +22,6 @@ import { LessonsView } from "@/features/lessons/LessonsView";
 import { HarnessView } from "@/features/harness/HarnessView";
 import { LiveView } from "@/features/live/LiveView";
 import { MemoryReviewView } from "@/features/memory/MemoryReviewView";
-import { MemoryTriageView } from "@/features/memory/MemoryTriageView";
 import { InviteAcceptPage } from "@/features/onboarding/InviteAcceptPage";
 import { PrdEditorView } from "@/features/prds/PrdEditorView";
 import { PrdListView } from "@/features/prds/PrdListView";
@@ -86,8 +85,7 @@ const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["harness", <HarnessView />],
   ["activity", <ActivityView />],
   ["live", <LiveView />],
-  ["memory-review", <MemoryReviewView />],
-  ["memory-triage", <MemoryTriageView />],
+  ["memory", <MemoryReviewView />],
   ["lessons", <LessonsView />],
   ["lessons/:id", <LessonsView />],
   ["prds", <PrdListView />],
@@ -130,6 +128,16 @@ function AuthedApp() {
               <Route path="/fleet.v1" element={<FleetTabRedirect tab="manage" />} />
               <Route path="/fleet.v2" element={<FleetTabRedirect tab="harness" />} />
             </>}
+        {/* memory-review / memory-triage are old bookmarks for the one Memory page. */}
+        {hosted
+          ? <>
+              <Route path="/p/:tag/memory-review" element={<MemoryRedirect />} />
+              <Route path="/p/:tag/memory-triage" element={<MemoryRedirect />} />
+            </>
+          : <>
+              <Route path="/memory-review" element={<MemoryRedirect />} />
+              <Route path="/memory-triage" element={<MemoryRedirect />} />
+            </>}
         {hosted && <Route path="/p/:tag" element={<ProjectHome />} />}
         {hosted && <Route path="/p/:tag/dashboard" element={<DashboardRedirect />} />}
         {!hosted && (
@@ -153,6 +161,8 @@ function AuthedApp() {
             <Route path="/dashboard" element={<FlatRedirect />} />
             <Route path="/fleet.v1" element={<FleetTabRedirect tab="manage" />} />
             <Route path="/fleet.v2" element={<FleetTabRedirect tab="harness" />} />
+            <Route path="/memory-review" element={<FlatRedirect to="memory" />} />
+            <Route path="/memory-triage" element={<FlatRedirect to="memory" />} />
             <Route path="/organization" element={<Navigate to={ORG_BASE} replace />} />
           </>
         )}
@@ -184,6 +194,13 @@ function FleetTabRedirect({ tab }: { tab: "manage" | "harness" }) {
   return <Navigate to={`${dest}?tab=${tab}`} replace />;
 }
 
+/** Old `memory-review` / `memory-triage` bookmark: the one Memory page. */
+function MemoryRedirect() {
+  const { pathname, search } = useLocation();
+  const dest = pathname.replace(/\/memory-(review|triage)\/?$/, "/memory");
+  return <Navigate to={`${dest}${search}`} replace />;
+}
+
 /**
  * A flat path on a hosted deployment: resolve a project and move to its tag URL.
  *
@@ -192,12 +209,12 @@ function FleetTabRedirect({ tab }: { tab: "manage" | "harness" }) {
  * project to show, so the org plane is the honest destination rather than a project
  * page for a project that does not exist.
  */
-function FlatRedirect() {
+function FlatRedirect({ to }: { to?: string }) {
   const { pathname, search } = useLocation();
   const { projects, loading } = useProjectCtx();
   if (loading) return null;
 
-  const view = pathname.replace(/^\/+/, "");
+  const view = to ?? pathname.replace(/^\/+/, "");
   const remembered = lastProjectTag();
   const target =
     projects.find((p) => p.tag === remembered) ?? projects[0] ?? null;

@@ -71,7 +71,6 @@ vi.mock("@/features/harness/HarnessView", stub("HarnessView"));
 vi.mock("@/features/activity/ActivityView", stub("ActivityView"));
 vi.mock("@/features/live/LiveView", stub("LiveView"));
 vi.mock("@/features/memory/MemoryReviewView", stub("MemoryReviewView"));
-vi.mock("@/features/memory/MemoryTriageView", stub("MemoryTriageView"));
 vi.mock("@/features/lessons/LessonsView", stub("LessonsView"));
 vi.mock("@/features/prds/PrdListView", stub("PrdListView"));
 vi.mock("@/features/prds/PrdEditorView", stub("PrdEditorView"));
@@ -292,7 +291,7 @@ describe("GRPH-1141 motion", () => {
  */
 const VIEWS = [
   "tracker", "requests", "triage", "links", "code", "stack", "roadmap", "fleet",
-  "outposts", "harness", "activity", "live", "memory-review", "memory-triage", "lessons",
+  "outposts", "harness", "activity", "live", "memory", "lessons",
   "lessons/l1", "prds", "prds/p1", "feedback-kit",
 ];
 const SHARED = ["/settings", "/settings/project/mcp", "/usage", "/profile"];

@@ -382,7 +382,7 @@ function EmptyCatalog() {
   const { active } = useProjectCtx();
   const { pathname } = useLocation();
   const tag = tagFromPath(pathname);
-  const memoryTo = tag && active?.tag ? projectPath(active.tag, "memory-review") : "/memory-review";
+  const memoryTo = tag && active?.tag ? projectPath(active.tag, "memory") : "/memory";
   return (
     <div className="py-16 text-center text-[13px] leading-relaxed text-muted">
       No published lessons in this project. Agent-written notes queue in{" "}
