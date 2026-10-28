@@ -54,11 +54,11 @@ describe("the org plane is absent on self-host, not guarded", () => {
     expect(app).toMatch(/path=\{`\/\$\{path\}`\}/);
   });
 
-  it("names Fleet.v1 and Fleet.v2 as pages, and aliases /fleet to v2", () => {
-    expect(app).toContain('["fleet.v1"');
-    expect(app).toContain('["fleet.v2"');
-    expect(app).toContain("FleetAliasRedirect");
-    expect(app).toContain('"/fleet.v2"');
+  it("names Fleet as one page, and redirects fleet.v1 / fleet.v2 to its tabs", () => {
+    expect(app).toContain('["fleet"');
+    expect(app).not.toContain('["fleet.v');
+    expect(app).toContain("FleetTabRedirect");
+    expect(app).toContain('tab="harness"');
   });
 
   it("clears org state on boot for a self-host build", () => {

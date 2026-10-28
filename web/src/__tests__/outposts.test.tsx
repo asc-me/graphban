@@ -67,7 +67,7 @@ describe("OutpostsView", () => {
     );
     expect(screen.getByTestId("outposts-empty")).toHaveTextContent(/No host has checked in/);
     expect(screen.getByTestId("outposts-empty")).toHaveTextContent(/not a list of zero machines/i);
-    expect(screen.getByRole("link", { name: "Fleet catalog" })).toHaveAttribute("href", "/fleet.v2");
+    expect(screen.getByRole("link", { name: "Fleet catalog" })).toHaveAttribute("href", "/fleet?tab=harness");
   });
 
   // ---- PRD-47 S7 (GRPH-958) ------------------------------------------------------------------
@@ -169,7 +169,7 @@ describe("OutpostsView", () => {
     };
     const { unmount } = show();
     expect(screen.getByTestId("fix-hint")).toHaveTextContent(/Offline while holding/);
-    expect(screen.getByRole("link", { name: /Open on Fleet/ })).toHaveAttribute("href", "/fleet.v1");
+    expect(screen.getByRole("link", { name: /Open on Fleet/ })).toHaveAttribute("href", "/fleet");
     unmount();
 
     fleet.data = {
