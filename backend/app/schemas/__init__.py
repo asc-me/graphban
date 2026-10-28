@@ -7,6 +7,12 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, fie
 # Imports nothing from `app`, so this cannot cycle back through schemas.
 from app.services import tool_tiers as tool_tiers_svc
 
+# The preference document's vocabularies have one owner and it is the service, so they are
+# referenced here rather than restated — AGENTS.md's rule for `items.STATUSES`. Neither module
+# imports schemas (nor does anything they import), so neither can cycle back here.
+from app.services import items as items_svc
+from app.services import preferences as prefs_svc
+
 
 class ORMModel(BaseModel):
     # populate_by_name so the `id` fields aliased to a rendered `key` (PRD-13) can still
@@ -83,6 +89,167 @@ class UserOut(ORMModel):
     email: EmailStr
     avatar: str
     initials: str
+
+
+# ---- Per-user UI preferences (PRD-60 D1 / GRPH-1133) ----
+class _Prefs(BaseModel):
+    """Base for every level of the preference document.
+
+    `extra="forbid"` is the whole contract, and it has to be inherited at EVERY level rather
+    than declared once on the root: a nested model that quietly allowed extras would accept
+    `{"nav": {"collapsedd": true}}`, store nothing, and answer 200 — a save that reports
+    success and changes nothing. Pydantic reports the offending key in `loc`, so the 422 names
+    the field instead of the caller having to diff what they sent against what came back.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+def _one_of(value: str, allowed: tuple[str, ...], field: str) -> str:
+    """Membership against a service-owned vocabulary, naming both the field and the choices.
+
+    A validator rather than a `Literal`, because two of these vocabularies are `items.STATUSES`
+    and `prds.STATUSES` — lists that live in the services and grow there. A `Literal` would be
+    a hand-copied snapshot of them that stops agreeing the day a status is added.
+    """
+    if value not in allowed:
+        raise ValueError(f"{field} must be one of: {', '.join(allowed)}")
+    return value
+
+
+class NavPrefs(_Prefs):
+    collapsed: bool = False
+
+
+class PlanPrefs(_Prefs):
+    condensed: bool = False
+
+
+class BoardPrefs(_Prefs):
+    """`{status: shown|collapsed|hidden}` — the KEYS are validated as well as the values.
+
+    A column named after a status that does not exist is an unknown key wearing a dict's
+    clothes: `extra="forbid"` cannot see inside a `dict[str, str]`, so without this a typo'd
+    status would be stored, silently match no column on the board, and read back as a
+    preference the UI honours by doing nothing.
+    """
+
+    columns: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("columns")
+    @classmethod
+    def _known_columns(cls, value: dict[str, str]) -> dict[str, str]:
+        unknown = sorted(set(value) - set(items_svc.STATUSES))
+        if unknown:
+            raise ValueError(
+                f"columns: not an item status: {', '.join(unknown)} "
+                f"(expected one of: {', '.join(items_svc.STATUSES)})"
+            )
+        for status in sorted(value):
+            _one_of(value[status], prefs_svc.COLUMN_STATES, f"columns.{status}")
+        return value
+
+
+class TrackerPrefs(_Prefs):
+    layout: str = "board"
+    board: BoardPrefs = Field(default_factory=BoardPrefs)
+
+    @field_validator("layout")
+    @classmethod
+    def _known_layout(cls, v: str) -> str:
+        return _one_of(v, prefs_svc.LAYOUTS, "layout")
+
+
+class SavedView(_Prefs):
+    """One saved view. `status` is the page's own vocabulary, so it lives on the subclasses."""
+
+    # Bounded, not enumerated: a view id is minted by the client ("My view N"), so a fixed set
+    # here would reject every view the moment the frontend picks a scheme this file lacked.
+    id: str = Field(min_length=1, max_length=prefs_svc.MAX_ID_LENGTH)
+    label: str = Field(min_length=1, max_length=prefs_svc.MAX_LABEL_LENGTH)
+    window: str = "all"
+    hide: str = "never"
+
+    @field_validator("window")
+    @classmethod
+    def _known_window(cls, v: str) -> str:
+        return _one_of(v, prefs_svc.WINDOWS, "window")
+
+    @field_validator("hide")
+    @classmethod
+    def _known_hide(cls, v: str) -> str:
+        return _one_of(v, prefs_svc.AUTO_HIDE, "hide")
+
+
+class TrackerSavedView(SavedView):
+    status: str = "all"
+
+    @field_validator("status")
+    @classmethod
+    def _known_status(cls, v: str) -> str:
+        return _one_of(v, prefs_svc.TRACKER_STATUSES, "status")
+
+
+class PrdSavedView(SavedView):
+    status: str = "all"
+
+    @field_validator("status")
+    @classmethod
+    def _known_status(cls, v: str) -> str:
+        return _one_of(v, prefs_svc.PRD_STATUSES, "status")
+
+
+class _PageViews(_Prefs):
+    """`views.{page}.default` — the id of the view the page opens on.
+
+    `None` rather than `""` for "no default chosen": an empty string is a value that names no
+    view, and a client that stored one would open on nothing and report it as a preference.
+    """
+
+    default: str | None = Field(default=None, min_length=1,
+                                max_length=prefs_svc.MAX_ID_LENGTH)
+
+
+class TrackerViews(_PageViews):
+    saved: list[TrackerSavedView] = Field(default_factory=list)
+
+
+class PrdViews(_PageViews):
+    saved: list[PrdSavedView] = Field(default_factory=list)
+
+
+class ViewsPrefs(_Prefs):
+    tracker: TrackerViews = Field(default_factory=TrackerViews)
+    prds: PrdViews = Field(default_factory=PrdViews)
+
+
+class PreferencesIn(_Prefs):
+    """The whole document, as sent.
+
+    Every key optional and nothing defaulted on the way out: the router stores
+    `model_dump(exclude_unset=True)`, so a key the client did not send stays ABSENT rather than
+    arriving as a server-side guess. Defaults belong to the UI, which is the only place that
+    knows what they should be next release.
+    """
+
+    nav: NavPrefs = Field(default_factory=NavPrefs)
+    plan: PlanPrefs = Field(default_factory=PlanPrefs)
+    tracker: TrackerPrefs = Field(default_factory=TrackerPrefs)
+    views: ViewsPrefs = Field(default_factory=ViewsPrefs)
+
+
+class PreferencesOut(BaseModel):
+    """`{saved, preferences}`.
+
+    `saved` is the flag the localStorage migration reads, and it is the reason the response is
+    not just the document: `saved: false` means the server has never held one for this user,
+    which is the ONLY case where a client uploads its local values. `saved: true` with `{}`
+    means the user saved an empty document on purpose. Rendered the same way by any UI, the two
+    would let a second device flatten the first one's layout.
+    """
+
+    saved: bool
+    preferences: dict
 
 
 # ---- Organizations (hosted-only, AL-74b) ----

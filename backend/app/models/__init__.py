@@ -85,6 +85,29 @@ class User(Base):
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="user")
 
 
+class UserPreference(Base):
+    """One user's UI preference document (PRD-60 D1 / GRPH-1133).
+
+    `user_id` IS the primary key rather than a surrogate beside it: a user has at most one
+    document, and saying so in the schema is what makes "no row" mean "never written" instead
+    of meaning "nobody checked". That distinction is the whole reason `GET` can answer
+    `saved: false` — an absent row and an empty document are different facts, and a client
+    migrating off localStorage has to be able to tell them apart (the server copy wins only
+    once the server HAS a copy).
+
+    The document is stored as written. It is validated on the way in
+    (`app/schemas/__init__.py:PreferencesIn`) and never filled out with defaults on the way
+    out, so a key the client did not send stays absent rather than arriving as a server-side
+    guess about what the UI should look like.
+    """
+
+    __tablename__ = "user_preferences"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    doc: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 def _key_of(owner, stored_id: str | None, kind: str) -> str | None:
     """Render a cross-referenced entity's key, falling back to the stored id.
 

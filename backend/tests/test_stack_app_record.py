@@ -436,8 +436,10 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     cfg.set_main_option("script_location", str(_BACKEND / "alembic"))
     cfg.set_main_option("path_separator", "os")
     script = ScriptDirectory.from_config(cfg)
-    # 0143 (GRPH-1127, scan finding grain) on 0142 (GRPH-1125, scan result); linear through 0140.
-    assert script.get_heads() == ["0143"]
+    # 0144 (GRPH-1133, per-user UI preferences) on 0143 (GRPH-1127, scan finding grain);
+    # linear through 0140.
+    assert script.get_heads() == ["0144"]
+    assert script.get_revision("0144").down_revision == "0143"
     assert script.get_revision("0143").down_revision == "0142"
     assert script.get_revision("0142").down_revision == "0141"
     assert script.get_revision("0141").down_revision == "0140"
