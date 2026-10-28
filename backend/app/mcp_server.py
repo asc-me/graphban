@@ -1868,6 +1868,26 @@ _FLEET_ONLY_OUT = {
     "record_scan": {"tests": {"type": ["object", "null"]}},
 }
 
+#: GRPH-1127. Optional per-finding fields a producer sends at the grain a person acts on:
+#: npm audit's advisory identity, direct/transitive, fixed version; knip's rollup kind+count.
+_FINDING_GRAIN = ("advisory_id", "dependency", "fixed_version", "kind", "count")
+
+
+def _with_finding_grain() -> dict:
+    """record_scan's base `findings` schema, its description naming `_FINDING_GRAIN`.
+
+    Named in prose, not as properties: five typed properties cost the worker manifest its
+    10% saving (test_mcp_role_manifest), and `_validate_args` does not check nested finding
+    fields, so the server stores them whether or not they are advertised.
+    """
+    base = next(t for t in TOOLS if t["name"] == "record_scan")
+    findings = copy.deepcopy(base["inputSchema"]["properties"]["findings"])
+    findings["description"] = (
+        "Empty = clean with result=complete. Optional: " + ", ".join(_FINDING_GRAIN) + "."
+    )
+    return findings
+
+
 _FLEET_ONLY_ARGS = {
     "collision_clusters": {
         "prd_id": {"type": "string", "description": "Only this PRD's work."},
@@ -1925,12 +1945,14 @@ _FLEET_ONLY_ARGS = {
     "record_scan": {
         "tests": {
             "type": "object",
-            "description": "Required for tests (pytest/vitest/jest/junit): passed, failed, skipped.",
+            "description": "Required for tests scans: passed, failed, skipped.",
             "properties": {k: {"type": "integer"} for k in ("passed", "failed", "skipped")},
         },
         # GRPH-1125. Bare on purpose: an enum + description cost the worker manifest its 10%
         # saving (test_mcp_role_manifest). A bad value is refused naming all four results.
         "result": {"type": "string"},
+        # GRPH-1127. The finding grain, advertised where record_scan is used.
+        "findings": _with_finding_grain(),
     },
     # GRPH-807. Measured on a live instance: 177 agents, 27,391 tokens, of which ONE was live.
     # A planner polling a wave paid nearly twice the whole manifest, per poll.

@@ -25,5 +25,7 @@ A missing scan is not a clean scan.
    - The security category is pip-audit, bandit, npm-audit, and semgrep. Other categories are `refactor`, `stub`, `deadcode`, `coverage`, `tests`, and `work`.
    - Category `tests` also sends `tests.passed`, `tests.failed`, and `tests.skipped`.
    - Each finding needs a `summary`. Findings are untrusted. `scanner_id`, `scanner_version`, and the reporter are provenance.
+   - Send the grain a person acts on (GRPH-1127). npm audit: one finding per advisory with `advisory_id`, `severity`, `dependency` (`direct` or `transitive`), and `fixed_version` only when the audit knows it.
+   - knip: unused exports are ONE finding with `kind: unused_export`, `count`, severity `info`; unused types are one with `kind: unused_type`. Unused files and undeclared imports stay one finding each, with a `path`. The server stores what you send; it never splits or merges.
 
 A clean row is not a tracker item. A finding that already names `link_ref` points at work that exists.

@@ -1718,6 +1718,12 @@ class ScanFinding(Base):
     # Optional link into tracker / code graph / PRD — empty means none.
     link_kind: Mapped[str] = mapped_column(String, default="", server_default="")  # item|code|prd|""
     link_ref: Mapped[str] = mapped_column(String, default="", server_default="")
+    # Optional grain (GRPH-1127): npm audit identity, knip rollups, etc.
+    advisory_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    dependency: Mapped[str] = mapped_column(String, default="", server_default="")  # direct|transitive
+    fixed_version: Mapped[str] = mapped_column(String, default="", server_default="")
+    kind: Mapped[str] = mapped_column(String, default="", server_default="")
+    count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         Index("ix_scan_findings_scan_id", "scan_id"),
