@@ -23,6 +23,8 @@ import { ItemDetailPanel } from "./ItemDetailPanel";
 import { ItemRow } from "./ItemRow";
 import { NewItemDialog } from "./NewItemDialog";
 import { OwnerCloseDialog } from "./OwnerCloseDialog";
+import { useColumnPrefs } from "./columnPrefs";
+import { ColumnsPopover } from "./ColumnsPopover";
 import { TrackerBoard } from "./TrackerBoard";
 
 /** Typed waits can PATCH `done` without an attestation — a human emptied them. */
@@ -74,6 +76,7 @@ export function TrackerView() {
   const [overId, setOverId] = React.useState<string | null>(null);
   const [closing, setClosing] = React.useState<Item | null>(null);
   const [layout, setLayoutState] = React.useState<TrackerLayout>(readLayout);
+  const columns = useColumnPrefs();
   const [refusal, setRefusal] = React.useState<string | null>(null);
 
   function setLayout(next: TrackerLayout) {
@@ -199,6 +202,7 @@ export function TrackerView() {
 
       <div className="flex flex-none flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
         <LayoutToggle layout={layout} onChange={setLayout} />
+        {layout === "board" && <ColumnsPopover prefs={columns} items={items} />}
         {layout === "list" && (
           <>
             <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={ordered.length} />
@@ -247,6 +251,7 @@ export function TrackerView() {
             selectedId={selectedId}
             onSelect={setSelectedId}
             onStatus={setStatus}
+            columns={columns}
           />
         )
       ) : (
