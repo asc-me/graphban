@@ -1,17 +1,9 @@
-import { Activity, BarChart3, BookMarked, Boxes, Building2, Check, ChevronDown, ChevronRight, ChevronsUpDown, Gauge, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, PanelLeftClose, PanelLeftOpen, Plug, Plus, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
+import { Activity, BarChart3, BookMarked, Boxes, Building2, ChevronDown, ChevronRight, ChevronsUpDown, Gauge, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, PanelLeftClose, PanelLeftOpen, Plug, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
 import * as React from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { ProjectSwitcher, ProjectTile } from "@/components/shell/ProjectSwitcher";
 import { useProjectCtx } from "@/features/ProjectContext";
-import { NewProjectDialog } from "@/features/onboarding/NewProjectDialog";
 import { CloudOrgLinkDialog } from "@/features/settings/CloudOrgLinkDialog";
 import { cn } from "@/lib/cn";
 import {
@@ -276,7 +268,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
             !collapsed && "pointer-events-none",
           )}
         >
-          <ProjectSwitcher variant="tile" onOpenChange={onMenu} tipProps={tipProps({ label: "Switch project" })} />
+          <ProjectEntry variant="tile" orgName={org?.name} hosted={hosted} onOpenChange={onMenu} tipProps={tipProps({ label: "Switch project" })} />
           {dashboardPath && (
             <RailLink to={dashboardPath} end label="Dashboard" icon={<LayoutGrid size={16} />} tipProps={tipProps({ label: "Dashboard" })} />
           )}
@@ -347,7 +339,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
             collapsed && "pointer-events-none",
           )}
         >
-          <ProjectSwitcher variant="card" orgName={org?.name} onOpenChange={onMenu} />
+          <ProjectEntry variant="card" orgName={org?.name} hosted={hosted} onOpenChange={onMenu} />
 
           <nav aria-label="Project" className="mt-4 flex flex-col gap-0.5">
             {dashboardPath && (
@@ -602,81 +594,53 @@ const SectionFlyout = React.forwardRef<HTMLDivElement, {
   );
 });
 
-/** Project card (expanded) or initial tile (rail). Both open the same switcher. */
-function ProjectSwitcher({
-  variant, orgName, onOpenChange, tipProps,
+/** Project card (expanded) or initial tile (rail). Both open the same switcher (GRPH-1143). */
+function ProjectEntry({
+  variant, orgName, hosted, onOpenChange, tipProps,
 }: {
   variant: "card" | "tile";
   orgName?: string;
+  hosted: boolean;
   onOpenChange: (open: boolean) => void;
   tipProps?: TipHandlers;
 }) {
-  const { projects, active, setActiveId } = useProjectCtx();
-  const [newProjectOpen, setNewProjectOpen] = React.useState(false);
-  const accent = active?.accent ?? "#c6f24e";
-  const initial = (active?.name ?? "?").slice(0, 1).toUpperCase();
-  const tile = (
-    <span
-      className="flex h-6 w-6 flex-none items-center justify-center rounded-md border font-mono text-small font-semibold"
-      style={{ color: accent, borderColor: `${accent}4d`, background: `${accent}29` }}
-    >
-      {initial}
-    </span>
-  );
+  const { active } = useProjectCtx();
   return (
-    <>
-      <DropdownMenu modal={false} onOpenChange={onOpenChange}>
-        <DropdownMenuTrigger asChild>
-          {variant === "tile" ? (
-            <button type="button" aria-label="Switch project" {...tipProps} className={cn(RAIL_BTN, "mb-1")}>
-              {tile}
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="flex h-11 w-full items-center gap-2.5 rounded-[10px] border border-control bg-surface-2 px-2.5 transition-colors hover:border-control-hover"
-            >
-              {tile}
-              <span className="min-w-0 flex-1 text-left">
-                <span className="block truncate text-[13px] font-semibold leading-tight">
-                  {active?.name ?? "—"}
-                </span>
-                <span className="mt-0.5 block truncate font-mono text-[10px] uppercase text-faint">
-                  {[orgName, active?.tag].filter(Boolean).join(" · ")}
-                </span>
-              </span>
-              <ChevronsUpDown size={12} className="flex-none text-faint" />
-            </button>
-          )}
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" side={variant === "tile" ? "right" : "bottom"} className="w-[220px]">
-          <DropdownMenuLabel>Switch project</DropdownMenuLabel>
-          {projects.map((p) => (
-            <DropdownMenuItem
-              key={p.id}
-              onSelect={() => setActiveId(p.id)}
-              className="gap-2.5 text-body"
-            >
-              <span className="h-2.5 w-2.5 flex-none rounded-[3px]" style={{ background: p.accent }} />
-              <span className="flex-1 truncate text-left">{p.name}</span>
-              {p.id === active?.id && <Check size={13} style={{ color: p.accent }} />}
-            </DropdownMenuItem>
-          ))}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            onSelect={(e) => {
-              e.preventDefault();
-              setNewProjectOpen(true);
-            }}
-            className="gap-2.5 text-body text-muted"
+    <ProjectSwitcher
+      placement={variant === "tile" ? "right" : "below"}
+      orgName={orgName}
+      hosted={hosted}
+      onOpenChange={onOpenChange}
+      trigger={({ ref, ...t }) =>
+        variant === "tile" ? (
+          <button ref={ref} type="button" aria-label="Switch project" {...tipProps} {...t} className={cn(RAIL_BTN, "mb-1")}>
+            <ProjectTile project={active} />
+          </button>
+        ) : (
+          <button
+            ref={ref}
+            type="button"
+            aria-label="Switch project"
+            {...t}
+            className={cn(
+              "flex h-11 w-full items-center gap-2.5 rounded-[10px] border bg-surface-2 px-2.5 transition-colors hover:border-control-hover",
+              t["aria-expanded"] ? "border-control-hover" : "border-control",
+            )}
           >
-            <Plus size={14} className="flex-none" />
-            <span className="flex-1 truncate text-left">New project</span>
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <NewProjectDialog open={newProjectOpen} onOpenChange={setNewProjectOpen} />
-    </>
+            <ProjectTile project={active} />
+            <span className="min-w-0 flex-1 text-left">
+              <span className="block truncate text-[13px] font-semibold leading-tight">
+                {active?.name ?? "—"}
+              </span>
+              <span className="mt-0.5 block truncate font-mono text-[10px] uppercase text-faint">
+                {[orgName, active?.tag].filter(Boolean).join(" · ")}
+              </span>
+            </span>
+            <ChevronsUpDown size={12} className="flex-none text-faint" />
+          </button>
+        )
+      }
+    />
   );
 }
 

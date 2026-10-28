@@ -71,6 +71,7 @@ import type {
   PrdSummary,
   PrdVersion,
   Project,
+  ProjectSummary,
   RequestItem,
   RoadmapPhase,
   CandidateJudge,
@@ -400,6 +401,7 @@ export const api = {
   config: () => request<AppConfig>("/config"),
 
   projects: () => request<Project[]>("/projects"),
+  projectSummaries: () => request<ProjectSummary[]>("/projects/summaries"),
   createProject: (body: {
     name: string;
     /** Omit to let the server derive one from `name`. */
