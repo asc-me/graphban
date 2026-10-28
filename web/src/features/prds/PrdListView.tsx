@@ -5,8 +5,11 @@ import { useNavigate } from "react-router-dom";
 import {
   PlannerEmpty,
   PlannerError,
+  PlannerFilteredEmpty,
   PrdListSkeleton,
 } from "@/components/planner/PlannerStates";
+import { ViewBar, ViewFooter } from "@/components/planner/ViewBar";
+import { hiddenSummary, scopeRows, statusMatches, useViews } from "@/components/planner/viewScope";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,6 +34,18 @@ export function PrdListView() {
   const { activeId } = useProjectCtx();
   const { data: prds = [], isLoading, isError, refetch } = usePrds(activeId);
   const navigate = useNavigate();
+  const views = useViews("prds");
+
+  const scopeOf = (v: { window: number; hide: number }) =>
+    scopeRows(prds, v, {
+      activity: (p) => p.updated_at,
+      finishedAt: (p) => (p.status === "closed" ? p.closed_at ?? p.updated_at : null),
+    });
+  const scoped = scopeOf(views.state);
+  const visible = scoped.shown.filter((p) => statusMatches(p.status, views.state.status, []));
+  const hidden = hiddenSummary(scoped, views.state, "closed");
+  const showHidden = () => views.patch({ window: 0, hide: 0 });
+  const showing = !isLoading && !isError && prds.length > 0;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -38,6 +53,12 @@ export function PrdListView() {
         viewName="PRDs"
         purpose="Product specs with version history, linked items, and AI drafting commands."
         action={<NewPrdDialog onCreated={(id) => navigate(`/prds/${id}`)} />}
+      />
+
+      <ViewBar
+        views={views}
+        doneWord="closed"
+        countFor={(v) => scopeOf(v).shown.filter((p) => statusMatches(p.status, v.status, [])).length}
       />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -51,9 +72,14 @@ export function PrdListView() {
             description="Product specs live here — versioned requirements with linked items and AI drafting. Write the first PRD to define what you are building."
             action={<NewPrdDialog onCreated={(id) => navigate(`/prds/${id}`)} />}
           />
+        ) : visible.length === 0 ? (
+          <PlannerFilteredEmpty
+            message={`No PRDs in this view${hidden ? ` — ${hidden}` : ""}.`}
+            onClear={() => views.select(views.views.find((v) => v.id === "all") ?? views.current)}
+          />
         ) : (
           <div className="space-y-2 p-4">
-            {prds.map((p) => {
+            {visible.map((p) => {
               const meta = prdStatusMeta(p.status);
               return (
                 <button
@@ -90,6 +116,7 @@ export function PrdListView() {
           </div>
         )}
       </div>
+      {showing && <ViewFooter shown={visible.length} hidden={hidden} onShowHidden={showHidden} />}
     </div>
   );
 }
