@@ -3513,7 +3513,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise errors.NotFound(f"prd not found: {args['prd_id']}")
         if prd.project_id not in readable:
             raise authz.Forbidden(f"prd {args['prd_id']!r} is outside this key's project scope")
-        questions, retried = prd_svc.ai_command_detail(db, prd.id, "grill")
+        # Not `ai_command_detail`. That call sends the body to `_COMMANDS["grill"]`
+        # and never reads the transcript, so a settled grill was asked a fresh list
+        # (GRPH-1123). This is the stream's prompt, and it still writes nothing.
+        questions, retried = prd_svc.grill_questions(db, prd.id)
         # `retried` is reported rather than logged only: a caller whose grill was slow can
         # tell contention from a hung server without reading the server's logs (GRPH-505).
         #

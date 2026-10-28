@@ -529,8 +529,9 @@ def grill_stream(prd_id: str, body: GrillIn, db: Session = Depends(get_db), user
         # thread route already relies on.
         parts: list[str] = []
         if provider == "stub":
-            # Offline: stream the deterministic opening questions.
-            for line in prd_svc._stub_command("grill", prd).splitlines(keepends=True):
+            # Same outstanding-only list `grill_prd` returns. The one-shot editor
+            # command stays on `_stub_command`, which has no transcript.
+            for line in prd_svc._stub_grill(db, prd).splitlines(keepends=True):
                 parts.append(line)
                 yield _sse("delta", json.dumps({"text": line}))
         else:
