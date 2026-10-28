@@ -33,6 +33,7 @@ vi.mock("@/lib/api", () => ({
     projects: vi.fn(async () => [project]),
     counts: vi.fn(async () => ({
       items: 41, items_in_progress: 3, requests: 7, review: 5, triage_new: 4, lessons_published: 6,
+      items_open: 41, requests_untriaged: 7, code_nodes: 2184, mcp_tools: 24, fleet_agents: 3, outposts: 2, live_agents: 2,
     })),
     items: vi.fn(async () => []),
     prds: vi.fn(async () => []),

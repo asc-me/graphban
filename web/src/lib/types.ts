@@ -2134,6 +2134,14 @@ export type ShellCounts = {
   review: number;
   triage_new: number;
   lessons_published: number;
+  /** The sidebar badges (GRPH-1132): each restates the population of the page it sits on. */
+  items_open: number;
+  requests_untriaged: number;
+  code_nodes: number;
+  mcp_tools: number;
+  fleet_agents: number;
+  outposts: number;
+  live_agents: number;
 };
 
 /** A deployment credential (PRD-25). `used_by` and `falling_back` are DERIVED server-side. */
