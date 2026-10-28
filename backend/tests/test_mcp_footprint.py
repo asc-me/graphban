@@ -159,7 +159,11 @@ CEILING = 15060
 # findings description, so MEASURED_TOKENS stays 15053.
 # GRPH-1129: record_scan says a write key suffices and planners are refused; paid by dropping
 # the base findings description's repeat of "clean with result=complete", so it stays 15053.
-MEASURED_TOKENS = 15053
+# 15053 -> 15056 (GRPH-1137). `create_item` gains `question` and `options`, the only way an agent
+# can file a structured decision wait. Paid by shortening `_EFFORT_DESC` (three tools), the
+# `fidelity` default and one `touchpoints` sentence, which keeps the ceiling and the worker
+# key's >10% saving (test_mcp_role_manifest) intact. core 8918 -> 8920. Headroom 4.
+MEASURED_TOKENS = 15056
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

@@ -4816,7 +4816,11 @@ def collect_directive(db: Session, agent_id: str | None) -> dict | None:
     expired = session_expired(db, agent)
     directive = pending_directive(agent, expired=expired)
     if directive is None:
-        return None
+        # A human answered a question this agent asked (GRPH-1137). Delivered once, after any
+        # role change, which is the more urgent fact.
+        from app.services import waits as waits_svc
+
+        return waits_svc.answer_directive(db, agent_id)
     agent.role_acked_at = datetime.now(timezone.utc)
     db.commit()
     return directive

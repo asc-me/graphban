@@ -113,7 +113,7 @@ _REQUEST_TYPE_ENUM = req_svc.REQUEST_TYPES
 #: said where descriptions are WRITTEN. It used to live only in the sign_off refusal hint, which
 #: reviewers see and planners — who write the descriptions — never do.
 _ITEM_BODY_DESC = "List acceptance under ## Acceptance; prose refuses sign_off."
-_EFFORT_DESC = "Relative effort estimate (higher = more work). No fixed unit."
+_EFFORT_DESC = "Relative size; higher = more."
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -170,13 +170,15 @@ TOOLS: list[dict[str, Any]] = [
                 "description": {"type": "string", "description": _ITEM_BODY_DESC},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "touchpoints": {"type": "array", "items": {"type": "string"},
-                                "description": "Files/globs it affects, e.g. backend/app/routers/*. Powers clustering."},
+                                "description": "Files/globs it affects, e.g. backend/app/routers/*."},
                 "effort": {"type": "integer", "description": _EFFORT_DESC},
                 "status": {"type": "string", "enum": _STATUS_ENUM, "description": "Defaults to backlog."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
-                             "description": "high = needs a prototype first. Default low."},
+                             "description": "high = prototype first."},
                 "prd_id": {"type": "string", "description": "The PRD this implements."},
                 "prd_section": {"type": "string", "description": "Its PRD section."},
+                "question": {"type": "string", "description": "Asks a human."},
+                "options": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["title"],
         },
@@ -201,7 +203,7 @@ TOOLS: list[dict[str, Any]] = [
                 "effort": {"type": "integer", "description": _EFFORT_DESC},
                 "blocker": {"type": "string", "description": "Empty string clears it."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
-                             "description": "high = needs a prototype first."},
+                             "description": "high = prototype first."},
                 "prd_id": {"type": "string"},
                 "prd_section": {"type": "string"},
                 "evidence": {
@@ -2651,6 +2653,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             touchpoints=args.get("touchpoints"),
             prd_id=args.get("prd_id"),
             prd_section=args.get("prd_section", ""),
+            question=args.get("question"),
+            options=args.get("options"),
             reporter={"name": "Agent", "handle": "mcp", "avatar": "#a78bfa"},
         )
         _idempotent_remember(db, args, "create_item", item.id)
