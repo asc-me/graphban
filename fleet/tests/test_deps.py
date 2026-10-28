@@ -257,6 +257,31 @@ def test_a_squash_merged_pr_frees_the_dependant(tmp_path, monkeypatch):
     assert unknown == []
 
 
+def test_a_later_merged_pr_wins_over_an_earlier_closed_salvage(tmp_path, monkeypatch):
+    """GRPH-896: evidence was closed #812 then merged #844. First-wins held GRPH-898."""
+    from gbfleet import propose as propose_mod
+
+    repo = _repo(tmp_path)
+    stranded = _branch_commit(repo, "dep-branch")
+    row = _dep("GRPH-896", stranded)
+    row["evidence"].extend([
+        {"kind": "url", "url": "https://github.com/asc-me/graphban/pull/812", "detail": "salvage"},
+        {"kind": "url", "url": "https://github.com/asc-me/graphban/pull/844", "detail": "merged"},
+    ])
+
+    def _view(_repo, selector, **_kw):
+        if "812" in str(selector):
+            return {"state": "CLOSED"}, ""
+        if "844" in str(selector):
+            return {"state": "MERGED", "mergeCommit": {"oid": "c" * 40}}, ""
+        return None, "no PR"
+
+    monkeypatch.setattr(propose_mod, "view", _view)
+    absent, unknown = deps.check(Planner([row]), "GRPH-898", repo, "main")
+    assert absent == [], "a later MERGED PR must free the dependant"
+    assert unknown == []
+
+
 def test_an_open_pr_with_unmerged_sha_is_still_absent(tmp_path, monkeypatch):
     """The PR is open, the SHA is not ancestral. Not merged yet — hold the dependant."""
     from gbfleet import propose as propose_mod

@@ -40,6 +40,7 @@ def _is_dependency(row: dict) -> bool:
     return "dependency" in [str(t) for t in (row.get("link_types") or [])]
 
 
+<<<<<<< Updated upstream
 def _pr_state(repo: Path | str, dep_row: dict) -> tuple[bool | None, str]:
     """`(merged, label)` for this dependency's PR — what the forge said, and how to name it.
 
@@ -64,6 +65,26 @@ def _pr_state(repo: Path | str, dep_row: dict) -> tuple[bool | None, str]:
     number = pr.get("number")
     label = f"#{number}" if number else selector
     return str(pr.get("state") or "").upper() == "MERGED", label
+=======
+def _pr_urls(dep_row: dict) -> list[str]:
+    """Every GitHub PR URL on the item, oldest first.
+
+    `pr_selector` returns the FIRST receipt. Evidence APPENDS, so a later merged PR
+    (GRPH-896 #844) sits after a closed salvage (#812). First-wins made squash-merged
+    work look absent and held the dependant (GRPH-898) forever.
+    """
+    out: list[str] = []
+    pr = dep_row.get("pr")
+    if isinstance(pr, str) and "/pull/" in pr:
+        out.append(pr.strip())
+    for e in dep_row.get("evidence") or []:
+        if not isinstance(e, dict):
+            continue
+        url = str(e.get("url") or "").strip()
+        if "/pull/" in url and url not in out:
+            out.append(url)
+    return out
+>>>>>>> Stashed changes
 
 
 def _pr_is_merged(repo: Path | str, dep_row: dict) -> bool | None:
@@ -73,11 +94,37 @@ def _pr_is_merged(repo: Path | str, dep_row: dict) -> bool | None:
     The PR state is the fact that survives the rewrite: a MERGED PR means the work is in
     the base, regardless of which SHA carries it.
 
+<<<<<<< Updated upstream
     Three answers: True (MERGED), False (the forge said not merged), None (no PR to ask about,
     or gh could not say). None is not False — a forge we cannot reach is not evidence the PR
     is unmerged.
     """
     return _pr_state(repo, dep_row)[0]
+=======
+    Three answers: True (MERGED), False (open/closed/not found), None (gh could not say).
+    None is not False — a forge we cannot reach is not evidence the PR is unmerged.
+
+    Every PR URL is tried. A CLOSED salvage in front of a MERGED receipt must not win.
+    """
+    repo_path = Path(repo) if not isinstance(repo, Path) else repo
+    urls = _pr_urls(dep_row)
+    if not urls:
+        selector = propose_mod.pr_selector(dep_row)
+        if not selector:
+            return False
+        urls = [selector]
+    saw_unknown = False
+    for selector in urls:
+        pr, err = propose_mod.view(repo_path, selector)
+        if pr is None:
+            saw_unknown = True
+            continue
+        if str(pr.get("state") or "").upper() == "MERGED":
+            return True
+    if saw_unknown:
+        return None
+    return False
+>>>>>>> Stashed changes
 
 
 def check(planner: Any, item_id: str, repo: Path | str, base: str) -> tuple[list[dict], list[dict]]:
