@@ -108,6 +108,8 @@ def test_no_project_counts_nothing(db):
     assert proj_svc.shell_counts(db, None) == {
         "items": 0, "items_in_progress": 0, "requests": 0, "review": 0,
         "triage_new": 0, "lessons_published": 0,
+        "items_open": 0, "requests_untriaged": 0, "code_nodes": 0, "mcp_tools": 0,
+        "fleet_agents": 0, "outposts": 0, "live_agents": 0,
     }
 
 
@@ -120,9 +122,13 @@ def test_the_counts_endpoint_is_small(client, auth):
     assert set(r.json()) == {
         "items", "items_in_progress", "requests", "review",
         "triage_new", "lessons_published",
+        # The sidebar badges (GRPH-1132).
+        "items_open", "requests_untriaged", "code_nodes", "mcp_tools",
+        "fleet_agents", "outposts", "live_agents",
     }
     assert all(isinstance(v, int) for v in r.json().values())
-    assert len(r.content) < 200, f"counts payload grew to {len(r.content)} bytes"
+    # 13 integers with their names. Still bytes, not the megabytes this replaced.
+    assert len(r.content) < 400, f"counts payload grew to {len(r.content)} bytes"
 
 
 def test_shard_limit_caps_live_shards_not_rows_read(db):
