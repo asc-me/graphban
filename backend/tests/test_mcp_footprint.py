@@ -153,9 +153,10 @@ CEILING = 15060
 # MEASURED_TOKENS stays 15050, CORE_TOKENS 8918, and TIER_TOKENS fleet 1100.
 # 15050 -> 15049 (GRPH-1108). record_scan's "First category: security (...)" becomes the
 # refusal of an unknown scanner_id with no category; codegraph 1791 -> 1790. Headroom 11.
-# 15049 -> 15095 (GRPH-1129). record_scan names write-key + fleet + planner refusal; codegraph
-# 1790 -> 1836. Over ceiling by 35 — same posture as GRPH-1108 headroom note. Headroom -35.
-MEASURED_TOKENS = 15095
+# 15049 stays 15049 (GRPH-1129 / GRPH-1130). record_scan says a write key may record and a
+# planner may not. The longer sentence was 15095, 35 over the ceiling, so it was shortened
+# inside the same tool. codegraph measures 1791. Headroom 11.
+MEASURED_TOKENS = 15049
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.
