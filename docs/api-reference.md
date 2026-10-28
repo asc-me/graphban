@@ -42,6 +42,7 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | --- | --- | --- | --- |
 | GET | `/api/projects` | JWT | List projects (each carries its `tag`) |
 | POST | `/api/projects` | JWT | Create a project. `tag` is optional — derived from `name` when omitted, refused with 422 when taken or malformed |
+| GET | `/api/projects/summaries` | JWT | Project switcher rows for every project the caller can read: `item_count`, `agent_count` (roster, dismissed excluded), `live_agents` (heartbeat inside the presence TTL, not quarantined), `default_branch` (gitops `base_branch`; `null` is unset, never `main`) and `last_activity_at` (latest item change or audit event; `null` when there is none). Fixed statement count, whatever the item count |
 | GET | `/api/projects/tag-suggestion?name=` | JWT | A free tag derived from a project name (prefills the creation form) |
 | GET | `/api/projects/tag-check?tag=` | JWT | `{tag, available, reason}` for live form feedback |
 | POST | `/api/projects/{id}/retag` | JWT (write) | Move the project's tag. One UPDATE + one tag-history row + one audit event; **no other row in the database changes**. Retired tags are never reusable |

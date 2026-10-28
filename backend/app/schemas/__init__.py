@@ -535,6 +535,24 @@ class ProjectOut(ORMModel):
     release_ref: str | None = None
 
 
+class ProjectSummaryOut(BaseModel):
+    """One project switcher row (GRPH-1131): what the row draws, counted in SQL.
+
+    `default_branch` is gitops `base_branch` — null is unset, never `main`.
+    `last_activity_at` is null when nothing has ever happened, so the switcher can say so
+    instead of rendering an epoch as "idle 20000d".
+    """
+    id: str
+    name: str
+    tag: str
+    accent: str
+    item_count: int
+    agent_count: int
+    live_agents: int
+    default_branch: str | None = None
+    last_activity_at: datetime | None = None
+
+
 class ProjectCreate(BaseModel):
     name: str
     # Optional: derived from `name` when omitted. NOT on ProjectUpdate — changing a tag

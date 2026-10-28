@@ -7,12 +7,15 @@ while multi-project callers can still be explicit.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app import tagging
 from app.models import (
+    Agent,
+    Event,
     Item,
     LegacyEntityKey,
     Membership,
@@ -305,6 +308,74 @@ def shell_counts(db: Session, project_id: str | None) -> dict:
         "triage_new": req_svc.untriaged_count(db, project_id),
         "lessons_published": mem_svc.count_published_lessons(db, project_id),
     }
+
+
+# ---- project switcher summaries (GRPH-1131 / PRD-P59 D3) -----------------------------------
+
+def _aware(dt: datetime | None) -> datetime | None:
+    # SQLite hands back naive datetimes, Postgres aware ones; both are UTC here.
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def project_summaries(db: Session, readable_ids: list[str]) -> list[dict]:
+    """One switcher row per readable project, from grouped aggregates (GRPH-1131).
+
+    The caller passes the authz-resolved readable ids and every query is filtered by them, so
+    a project outside the list is neither returned nor counted. The statement count is fixed —
+    one per source, never one per project or item — because fetching each project's
+    collections to count them is the GRPH-431 hang.
+
+    - `agent_count` is the roster `list_agents` shows: every agent not dismissed.
+    - `live_agents` is fleet presence: heartbeat inside the presence TTL, not quarantined.
+    - `last_activity_at` is the latest item change or audit event; null when there is none.
+    """
+    from app.services import fleet as fleet_svc
+    from app.services import gitops
+
+    if not readable_ids:
+        return []
+    projects = list(db.scalars(
+        select(Project).where(Project.id.in_(readable_ids)).order_by(Project.name)).all())
+    if not projects:
+        return []
+    ids = [p.id for p in projects]
+
+    items = {pid: (n, latest) for pid, n, latest in db.execute(
+        select(Item.project_id, func.count(), func.max(Item.updated_at))
+        .where(Item.project_id.in_(ids)).group_by(Item.project_id))}
+
+    live_cutoff = datetime.now(timezone.utc) - timedelta(seconds=fleet_svc.presence_ttl_seconds())
+    is_live = (Agent.last_seen_at >= live_cutoff) & (Agent.state != "quarantined")
+    agents = {pid: (n, live or 0) for pid, n, live in db.execute(
+        select(Agent.project_id, func.count(), func.sum(case((is_live, 1), else_=0)))
+        .where(Agent.project_id.in_(ids), Agent.dismissed_at.is_(None))
+        .group_by(Agent.project_id))}
+
+    events = dict(db.execute(
+        select(Event.project_id, func.max(Event.ts))
+        .where(Event.project_id.in_(ids)).group_by(Event.project_id)).all())
+
+    branches = gitops.base_branches(db, projects)
+
+    out = []
+    for p in projects:
+        item_count, item_latest = items.get(p.id, (0, None))
+        agent_count, live = agents.get(p.id, (0, 0))
+        stamps = [t for t in (_aware(item_latest), _aware(events.get(p.id))) if t is not None]
+        out.append({
+            "id": p.id,
+            "name": p.name,
+            "tag": p.tag,
+            "accent": p.accent,
+            "item_count": item_count,
+            "agent_count": agent_count,
+            "live_agents": int(live),
+            "default_branch": branches.get(p.id),
+            "last_activity_at": max(stamps) if stamps else None,
+        })
+    return out
 
 
 # ---- release ref (GRPH-1109 / PRD-P57 S2) ----------------------------------------------------
