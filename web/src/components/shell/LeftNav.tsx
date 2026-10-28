@@ -287,6 +287,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
                     label={s.label}
                     expanded={inline}
                     controls={`nav-${s.key}`}
+                    reduce={reduce}
                     onToggle={() => setInline((v) => !v)}
                   />
                   {inline && (
@@ -563,11 +564,12 @@ function ProjectSwitcher({
 }
 
 function SectionHeader({
-  label, expanded, controls, onToggle,
+  label, expanded, controls, reduce, onToggle,
 }: {
   label: string;
   expanded: boolean;
   controls: string;
+  reduce: boolean;
   onToggle: () => void;
 }) {
   // `aria-controls` is dropped while collapsed: the panel only exists when open, so
@@ -583,7 +585,12 @@ function SectionHeader({
       <span className="flex-1 font-medium">{label}</span>
       <ChevronDown
         size={12}
-        className={`text-faint transition-transform ${expanded ? "rotate-180" : ""}`}
+        data-chevron="section"
+        style={{
+          transform: expanded ? "rotate(180deg)" : "none",
+          transition: reduce ? "none" : `transform 240ms ${EASE}`,
+        }}
+        className="text-faint"
       />
     </button>
   );

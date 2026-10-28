@@ -260,6 +260,8 @@ describe("GRPH-1141 motion", () => {
     expect(sidebar().style.transition).toBe("width 240ms cubic-bezier(.2,.8,.2,1)");
     expect(layer("rail").style.transition).toContain("opacity 180ms");
     expect(layer("expanded").style.transition).toContain("transform 240ms");
+    const chevron = layer("expanded").querySelector<HTMLElement>("[data-chevron]");
+    expect(chevron?.style.transition).toBe("transform 240ms cubic-bezier(.2,.8,.2,1)");
   });
 
   it("applies no width or transform transition under prefers-reduced-motion", async () => {
@@ -271,6 +273,15 @@ describe("GRPH-1141 motion", () => {
       expect(el.style.transition).not.toMatch(/width|transform/);
     }
     expect(sidebar().style.transition).toBe("none");
+    // No descendant of either layer may transition a transform, inline or by class
+    // (the section chevron used to keep Tailwind's `transition-transform`).
+    fireEvent.keyDown(window, { key: "[" });
+    const all = [...layer("rail").querySelectorAll<HTMLElement>("*"), ...layer("expanded").querySelectorAll<HTMLElement>("*")];
+    expect(layer("expanded").querySelector("[data-chevron]")).not.toBeNull();
+    for (const el of all) {
+      expect(el.style.transition).not.toMatch(/width|transform|all/);
+      expect(el.getAttribute("class") ?? "").not.toMatch(/(^|\s)transition(-transform|-all)?(\s|$)/);
+    }
   });
 });
 
