@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 169 of the 249 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 170 of the 250 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -39,6 +39,7 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | GET | `/api/projects` | JWT | List projects (each carries its `tag`) |
+| GET | `/api/projects/summaries` | JWT | The project switcher's per-row numbers for **every** project the caller can read, in one request: `item_count`, `agent_count` (registered roster, dismissed excluded), `live_agents` (heartbeat inside the fleet's presence TTL), `default_branch`, `last_activity_at`. Grouped aggregates — the statement count does not grow with the item count. Both nulls are answers: `default_branch` null is gitops' *unmeasured*, never `main`, and `last_activity_at` null is a project nothing has happened in, which the switcher renders as idle (GRPH-1131) |
 | POST | `/api/projects` | JWT | Create a project. `tag` is optional — derived from `name` when omitted, refused with 422 when taken or malformed |
 | GET | `/api/projects/tag-suggestion?name=` | JWT | A free tag derived from a project name (prefills the creation form) |
 | GET | `/api/projects/tag-check?tag=` | JWT | `{tag, available, reason}` for live form feedback |

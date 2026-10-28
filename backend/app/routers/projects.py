@@ -10,7 +10,7 @@ from app.db import get_db
 from app.models import Membership, Project, User
 from app.schemas import (
     GitopsPatch, GitopsView, MemberOut, ProjectCreate, ProjectOut, ProjectRetagIn,
-    ProjectUpdate, UserOut,
+    ProjectSummaryOut, ProjectUpdate, UserOut,
 )
 from app.security import authz
 from app.security.deps import get_current_user
@@ -66,6 +66,22 @@ def list_projects(db: Session = Depends(get_db), user: User = Depends(get_curren
     readable = set(authz.readable_project_ids(db, user.id))
     rows = db.scalars(select(Project).order_by(Project.name)).all()
     return [p for p in rows if p.id in readable]
+
+
+@router.get("/summaries", response_model=list[ProjectSummaryOut])
+def project_summaries(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The project switcher's per-row numbers, for every readable project in ONE request
+    (GRPH-1131 / PRD-P59 D3).
+
+    Scoped by exactly the list `GET /projects` filters on, so the two cannot disagree about
+    what the caller may see — and an unreadable project is never queried rather than being
+    fetched and dropped, which is what keeps a count from crossing a tenant.
+
+    The numbers are grouped aggregates, one statement per collection whatever its size:
+    this route is on the shell's critical path, and the per-project-fetch version of it is
+    the 2.1 MB badge payload GRPH-431 removed.
+    """
+    return projects_svc.project_summaries(db, authz.readable_project_ids(db, user.id))
 
 
 @router.post("", response_model=ProjectOut, status_code=201)

@@ -368,6 +368,34 @@ class ProjectOut(ORMModel):
     release_ref: str | None = None
 
 
+class ProjectSummaryOut(BaseModel):
+    """One switcher row's numbers (GRPH-1131 / PRD-P59 D3).
+
+    Deliberately NOT `ProjectOut` plus five fields. The switcher renders on every route, so
+    a row that carried the project's 25 configuration fields to display `24 items · 3 agents
+    · main` would put GRPH-431 back on the one surface that cannot opt out of loading.
+
+    Both nulls are answers rather than absences, and both have a wrong-looking alternative
+    that a renderer would silently accept:
+
+    - `default_branch: None` is gitops' `unmeasured` — nobody has said, so the row shows no
+      branch. Never `main`: guessing a default here is the exact reading gitops exists to
+      stop, and this repo has shipped it before.
+    - `last_activity_at: None` is a project nothing has happened in, which the switcher
+      renders as idle. A zero or an epoch would render as activity in 1970, and an empty
+      project would read as a stale one instead of a fresh one.
+    """
+
+    project_id: str
+    item_count: int
+    #: Registered roster, dismissed agents excluded — the population `live.board` counts.
+    agent_count: int
+    #: Roster members with a heartbeat inside `fleet.presence_ttl_seconds()`.
+    live_agents: int
+    default_branch: str | None = None
+    last_activity_at: datetime | None = None
+
+
 class ProjectCreate(BaseModel):
     name: str
     # Optional: derived from `name` when omitted. NOT on ProjectUpdate — changing a tag

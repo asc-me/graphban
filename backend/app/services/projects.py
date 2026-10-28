@@ -7,12 +7,15 @@ while multi-project callers can still be explicit.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
 from app import tagging
 from app.models import (
+    Agent,
+    Event,
     Item,
     LegacyEntityKey,
     Membership,
@@ -356,3 +359,121 @@ def release_ref_view(db: Session, project_id: str | None) -> dict:
     if project.release_ref:
         return {"ref": project.release_ref, "source": "project"}
     return {"ref": None, "source": "unmeasured"}
+
+
+# ---- switcher summaries (GRPH-1131 / PRD-P59 D3) -------------------------------------------
+#
+# The project switcher draws `24 items · 3 agents · main` and a `2 live` chip on every row,
+# or `idle 12d` when nothing has happened. `ProjectOut` carries none of those numbers, and
+# the obvious way to get them — fetch each project's items and agents, call `len()` — is
+# GRPH-431 again on the one surface that renders on EVERY route: a cost that grows with the
+# biggest project the caller can read, paid to draw a navigation affordance.
+#
+# So every number here is a grouped aggregate over a bounded id list. The statement count is
+# constant in the number of PROJECTS and independent of the number of items, agents and
+# ledger rows; `test_project_summaries.py` pins that by adding rows and re-measuring.
+#
+# THREE definitions are borrowed rather than restated, because each already has one owner
+# and a second copy is a second chance to drift:
+#
+#   live    — `fleet.presence_ttl_seconds()`, the same clock `_has_specialised_agents`
+#             compares `last_seen_at` against in SQL. Not a constant here: a project that
+#             raises its lease would otherwise get a switcher declaring its workers dead.
+#   roster  — dismissed agents are out, which is what `live.board` counts as `total_agents`.
+#   branch  — `gitops.base_branch_overlay`, the project-then-org overlay. Unset stays None.
+
+#: The stored agent state that is NOT a fresh-heartbeat question. `presence_state` checks it
+#: before the clock because a quarantined agent may still be heartbeating — that is what got
+#: it quarantined — so `last_seen_at` alone would report a refused agent as fleet capacity.
+#: The other member of `fleet._ABSENT`, `offline`, is derived from the clock and so is
+#: expressed by the cutoff itself rather than by a stored value.
+_NOT_LIVE_STATE = "quarantined"
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    """UTC-aware, whatever the dialect handed back. SQLite returns naive datetimes and
+    Postgres returns aware ones, so a MAX() over a timestamp column is naive on one engine
+    and aware on the other — comparing or serializing it without this differs by dialect."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _latest(*stamps: datetime | None) -> datetime | None:
+    """The newest of several stored timestamps, tz-normalised, or None when all are None.
+
+    BOTH sources, never one. `Item.updated_at` alone misses a project whose recent work was
+    memory, PRD or request writes; `Event.ts` alone misses items moved by a path that
+    recorded no ledger row. Either miss renders as `idle 12d` on a project somebody worked
+    in yesterday, and idle is the reassuring wrong answer — the switcher is read at a
+    glance to pick where to work next.
+    """
+    aware = [a for a in (_aware(s) for s in stamps) if a is not None]
+    return max(aware) if aware else None
+
+
+def project_summaries(db: Session, readable_ids: list[str]) -> list[dict]:
+    """One row per readable project, as grouped aggregates. Ordered by project name.
+
+    `readable_ids` is the caller's authz answer, computed at the boundary
+    (`authz.readable_project_ids`) and passed in: services stay principal-free, and a count
+    that resolved its own scope is how a nav badge ends up counting every project on the
+    box — the failure `shell_counts` guards against for a single project. Nothing is ever
+    counted across tenants, because nothing outside this list is queried at all.
+
+    A project with nothing in it still gets a row. Dropping it would make the switcher lose
+    a project the caller can read, which reads as "you have no access" rather than "it is
+    empty" — the two are different facts and only one of them is true.
+    """
+    from app.services import fleet as fleet_svc
+    from app.services import gitops
+
+    if not readable_ids:
+        return []
+    projects = list(db.scalars(
+        select(Project).where(Project.id.in_(readable_ids)).order_by(Project.name)).all())
+    if not projects:
+        return []
+    ids = [p.id for p in projects]
+
+    item_rows = {
+        pid: (n, latest)
+        for pid, n, latest in db.execute(
+            select(Item.project_id, func.count(), func.max(Item.updated_at))
+            .where(Item.project_id.in_(ids))
+            .group_by(Item.project_id))
+    }
+    ledger = {
+        pid: latest
+        for pid, latest in db.execute(
+            select(Event.project_id, func.max(Event.ts))
+            .where(Event.project_id.in_(ids))
+            .group_by(Event.project_id))
+    }
+
+    live_cutoff = datetime.now(timezone.utc) - timedelta(
+        seconds=fleet_svc.presence_ttl_seconds())
+    is_live = and_(Agent.state != _NOT_LIVE_STATE, Agent.last_seen_at >= live_cutoff)
+    agent_rows = {
+        pid: (n, live_n)
+        for pid, n, live_n in db.execute(
+            select(Agent.project_id, func.count(),
+                   func.coalesce(func.sum(case((is_live, 1), else_=0)), 0))
+            .where(Agent.project_id.in_(ids), Agent.dismissed_at.is_(None))
+            .group_by(Agent.project_id))
+    }
+    branches = gitops.base_branch_overlay(db, projects)
+
+    out = []
+    for p in projects:
+        item_count, item_latest = item_rows.get(p.id, (0, None))
+        agent_count, live_count = agent_rows.get(p.id, (0, 0))
+        out.append({
+            "project_id": p.id,
+            "item_count": int(item_count or 0),
+            "agent_count": int(agent_count or 0),
+            "live_agents": int(live_count or 0),
+            "default_branch": branches.get(p.id),
+            "last_activity_at": _latest(item_latest, ledger.get(p.id)),
+        })
+    return out

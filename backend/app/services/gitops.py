@@ -204,6 +204,30 @@ def _org_of(db: Session, project: Project | None) -> Organization | None:
     return db.get(Organization, project.org_id)
 
 
+def base_branch_overlay(db: Session, projects: list[Project]) -> dict[str, str | None]:
+    """`{project.id: base_branch or None}` for a batch, by `_pick`'s own precedence.
+
+    For callers that want the ANSWER for many projects at once and nothing else — the
+    project switcher's `24 items · 3 agents · main` line (GRPH-1131). `resolve_local` per
+    project is three statements each, one of which (`_plan_ref`) fetches a migration
+    checklist the switcher cannot render; this is one statement for the whole batch, and
+    the precedence rule stays owned here instead of being restated at the call site.
+
+    `None` is `unmeasured`, never `main` — the reading this whole module exists to protect.
+    A caller that renders it has to keep that: an unset branch means nobody has said, not
+    that the repository's default applies.
+    """
+    org_ids = {p.org_id for p in projects if p.org_id}
+    orgs: dict[str, Organization] = {}
+    if org_ids:
+        orgs = {o.id: o for o in db.scalars(
+            select(Organization).where(Organization.id.in_(org_ids))).all()}
+    return {
+        p.id: _pick(p, orgs.get(p.org_id) if p.org_id else None, "base_branch").value
+        for p in projects
+    }
+
+
 def resolve_local(db: Session, project_id: str | None) -> GitopsView:
     """This database's org+project rows. Never inspects link_status. Never outbound.
 
