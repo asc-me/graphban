@@ -303,15 +303,31 @@ def test_graphbans_own_project_does_not_draw_backend_beside_api(db, monkeypatch)
 
 
 def test_own_deployables_get_their_own_health_component(db, monkeypatch):
+    from app.models import AppTopology
     from app.services import scans as scans_svc
 
     _clear_code_map(db)
     _describe(db, "frontend/package.json", "package.json")
+    # Scan cells come from the posted app topology, not the code map (GRPH-1124).
+    row = db.get(AppTopology, "core")
+    if row is None:
+        row = AppTopology(
+            project_id="core", mapped_sha="h1", components=[], infrastructure=[],
+            external_services=[], unresolved=[], edges=[],
+        )
+        db.add(row)
+    row.components = [{
+        "id": "frontend",
+        "dir": "frontend",
+        "label": "Frontend",
+        "provenance": {"file": "frontend/package.json", "rule": "name", "line": 1},
+    }]
+    row.mapped_sha = "h1"
+    db.commit()
     comps = {c["id"]: c for c in scans_svc.component_health(db, "core", head_sha="h1")["components"]}
-    assert comps["app:frontend"]["path"] == "frontend/"
-    # The workspace root was dropped, and a root deployable never gets an empty prefix.
+    assert comps["frontend"]["path"] == "frontend/"
     assert not any(c["path"] == "" or c["id"] == "app:." for c in comps.values())
-    assert {"web", "api", "fleet", "cli"} <= set(comps)
+    assert "web" not in comps and "api" not in comps
 
 
 def test_each_box_names_its_plane_and_the_map_says_who_writes_graphban(db, monkeypatch):

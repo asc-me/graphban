@@ -677,9 +677,14 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
                                  "review again, not a merge")
     else:
         checked.append("head=reviewed")
-    if not any(same_commit(reviewed, g) for g in green):
+    # CI runs on the commit the forge would merge. When the head is still the reviewed
+    # commit, that is `reviewed`. When the head moved and this item's paths did not
+    # (GRPH-1032), the suite that matters is the one on `head`: the reviewed commit can
+    # stay red forever while the follow-up commit is the one CI attested.
+    vouched = head if "paths-unchanged" in checked else reviewed
+    if not any(same_commit(vouched, g) for g in green):
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
-                      reason=f"CI has not attested {CI_PREDICATE} on {reviewed[:12]}")
+                      reason=f"CI has not attested {CI_PREDICATE} on {vouched[:12]}")
     checked.append(f"ci={CI_PREDICATE}")
 
     # GRPH-P57 D6. Against `head`, not `reviewed`: the paths-unchanged pass above vouches

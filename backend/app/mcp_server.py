@@ -984,7 +984,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Report a code-health scanner result for a path at a commit (GRPH-1035). "
             "Empty findings = CLEAN at scanned_sha only with result=complete. Same "
-            "scanner_id+path replaces prior. Unknown scanner_id needs category (refused)."
+            "scanner_id+path keeps history. Unknown scanner_id needs category (refused)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1928,11 +1928,9 @@ _FLEET_ONLY_ARGS = {
             "description": "Required for tests (pytest/vitest/jest/junit): passed, failed, skipped.",
             "properties": {k: {"type": "integer"} for k in ("passed", "failed", "skipped")},
         },
-        "result": {
-            "type": "string",
-            "enum": list(scans_svc.PRODUCER_RESULTS),
-            "description": "complete|tool_missing|not_applicable|incomplete; required when empty.",
-        },
+        # GRPH-1125. Bare on purpose: an enum + description cost the worker manifest its 10%
+        # saving (test_mcp_role_manifest). A bad value is refused naming all four results.
+        "result": {"type": "string"},
     },
     # GRPH-807. Measured on a live instance: 177 agents, 27,391 tokens, of which ONE was live.
     # A planner polling a wave paid nearly twice the whole manifest, per poll.
