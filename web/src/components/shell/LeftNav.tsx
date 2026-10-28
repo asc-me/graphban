@@ -1,4 +1,4 @@
-import { Activity, BarChart3, BookMarked, Boxes, Building2, Check, ChevronDown, CreditCard, GitBranch, GitFork, Gauge, Inbox, LayoutGrid, ListChecks, Map, Network, Orbit, Palette, Plug, Plus, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
+import { Activity, BarChart3, BookMarked, Boxes, Building2, Check, ChevronDown, ChevronRight, ChevronsUpDown, Gauge, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, PanelLeftClose, PanelLeftOpen, Plug, Plus, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
 import * as React from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 
@@ -20,368 +20,518 @@ import {
   useOrgs,
   useSyncStatus,
 } from "@/lib/queries";
-import { adminPath, consoleHref, orgPath, projectPath, settingsPath, tagFromPath, usableHttpUrl } from "@/lib/routes";
+import { adminPath, consoleHref, orgPath, projectPath, settingsPath, tagFromPath, usableHttpUrl, viewSegment } from "@/lib/routes";
 
-/** Branding stays behind the same build flag the console route uses. */
-const SPECULATIVE_ENABLED = import.meta.env.VITE_SPECULATIVE === "1";
-
-/** Hosted workspace views grouped into Plan / Build / Observe (GRPH-940).
- * Dashboard is not one of them: it is the project home, rendered above the sections (GRPH-1066). */
-const HOSTED_PLAN = [
-  { to: "tracker", icon: <ListChecks size={16} />, label: "Tracker", count: "items" as const },
-  { to: "requests", icon: <Star size={16} />, label: "Requests", count: "requests" as const },
-  { to: "triage", icon: <Radar size={16} />, label: "Triage" },
-  { to: "prds", icon: <BarChart3 size={16} />, label: "PRDs" },
-  { to: "roadmap", icon: <Map size={16} />, label: "Roadmap" },
-];
-const HOSTED_BUILD = [
-  { to: "links", icon: <GitFork size={16} />, label: "Links" },
-  { to: "code", icon: <Network size={16} />, label: "Code graph" },
-  { to: "stack", icon: <Boxes size={16} />, label: "Stack" },
-  { to: "mcp-tools", icon: <Plug size={16} />, label: "MCP Tools" },
-  { to: "fleet.v2", icon: <Users size={16} />, label: "Fleet.v2" },
-  { to: "fleet.v1", icon: <Users size={16} />, label: "Fleet.v1" },
-  { to: "outposts", icon: <Server size={16} />, label: "Outposts" },
-];
-const HOSTED_OBSERVE = [
-  { to: "memory-review", icon: <Inbox size={16} />, label: "Memory review", count: "review" as const },
-  { to: "memory-triage", icon: <Inbox size={16} />, label: "Memory triage" },
-  { to: "lessons", icon: <BookMarked size={16} />, label: "Lessons" },
-  { to: "activity", icon: <ScrollText size={16} />, label: "Activity" },
-  { to: "live", icon: <Activity size={16} />, label: "Live" },
-  { to: "harness", icon: <Gauge size={16} />, label: "Harness" },
-];
+type CountKey = "items" | "requests" | "review";
+type Page = { view: string; icon: React.ReactNode; label: string; count?: CountKey; hostedOnly?: boolean };
+type Section = "plan" | "build" | "observe";
 
 /**
- * The rail, split into what you use and what you administer (PRD-21 rev2).
- *
- * The ADMIN group renders for `owner` and `admin` only, and for a `member` it is
- * **absent** — not greyed, not a permission error. A disabled row advertises a thing you
- * cannot have and invites a support ticket; an absent one is simply the truthful shape of
- * that person's product. `authz.require_org_admin` is the same gate server-side, so this
- * hides nothing that the API would have allowed.
- *
- * Self-host has neither group: no org exists to administer, and the workspace lives at
- * the root exactly as before.
+ * Plan / Build / Observe (GRPH-940), one list for hosted and self-host (GRPH-1141). A view
+ * is the path segment after the project: `/p/GRPH/tracker` hosted, `/tracker` self-host.
+ * Dashboard is not one of them: it is the project home, rendered above the sections (GRPH-1066).
+ * MCP Tools is hosted only — self-host keeps it under Settings.
  */
-export function LeftNav({ hosted = false }: { hosted?: boolean }) {
-  // GRPH-P28: the accordion is self-host only. Hosted keeps today's rail, including
-  // Admin and Galaxy — hiding those here is the sabotage the suite is written to catch.
-  if (!hosted) return <SelfHostLeftNav />;
-  return <HostedLeftNav />;
+const SECTIONS: { key: Section; label: string; icon: React.ReactNode; pages: Page[] }[] = [
+  {
+    key: "plan", label: "Plan", icon: <ListChecks size={16} />, pages: [
+      { view: "tracker", icon: <ListChecks size={16} />, label: "Tracker", count: "items" },
+      { view: "requests", icon: <Star size={16} />, label: "Requests", count: "requests" },
+      { view: "triage", icon: <Radar size={16} />, label: "Triage" },
+      { view: "prds", icon: <BarChart3 size={16} />, label: "PRDs" },
+      { view: "roadmap", icon: <Map size={16} />, label: "Roadmap" },
+    ],
+  },
+  {
+    key: "build", label: "Build", icon: <Network size={16} />, pages: [
+      { view: "code", icon: <Network size={16} />, label: "Code graph" },
+      { view: "stack", icon: <Boxes size={16} />, label: "Stack" },
+      { view: "links", icon: <GitFork size={16} />, label: "Links" },
+      { view: "mcp-tools", icon: <Plug size={16} />, label: "MCP Tools", hostedOnly: true },
+      { view: "fleet.v2", icon: <Users size={16} />, label: "Fleet.v2" },
+      { view: "fleet.v1", icon: <Users size={16} />, label: "Fleet.v1" },
+      { view: "outposts", icon: <Server size={16} />, label: "Outposts" },
+    ],
+  },
+  {
+    key: "observe", label: "Observe", icon: <Activity size={16} />, pages: [
+      { view: "memory-review", icon: <Inbox size={16} />, label: "Memory review", count: "review" },
+      { view: "memory-triage", icon: <Inbox size={16} />, label: "Memory triage" },
+      { view: "lessons", icon: <BookMarked size={16} />, label: "Lessons" },
+      { view: "activity", icon: <ScrollText size={16} />, label: "Activity" },
+      { view: "live", icon: <Activity size={16} />, label: "Live" },
+      { view: "harness", icon: <Gauge size={16} />, label: "Harness" },
+    ],
+  },
+];
+
+/** The section that owns the current page, in either URL shape. Null on Dashboard, Settings, … */
+export function sectionFromPath(pathname: string): Section | null {
+  const view = viewSegment(pathname);
+  return SECTIONS.find((s) => s.pages.some((p) => p.view === view))?.key ?? null;
 }
 
-function HostedLeftNav() {
-  const hosted = true;
-  const { projects, active, activeId, setActiveId } = useProjectCtx();
-  // Badge numbers only — never the collections. Fetching items, requests, candidates and
-  // auto-actions in full to call `.length` on them cost 2.1 MB on every route (GRPH-431).
-  // The review count still means what it did: candidates PLUS anything auto-published
-  // without them (AL-287), because counting only candidates reads as "no work" on a project
-  // whose agents publish directly — exactly when there is most to look at. That sum now
-  // happens server-side, next to the definition it depends on.
+/** Remembered per browser until the per-user server store (GRPH-1133) exists. */
+export const SIDEBAR_STORAGE_KEY = "gb.sidebar.collapsed";
+
+export function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** `[` belongs to whatever is being typed into, never to the sidebar. */
+function isTypingTarget(t: EventTarget | null): boolean {
+  if (!(t instanceof HTMLElement)) return false;
+  return /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable;
+}
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+const EASE = "cubic-bezier(.2,.8,.2,1)";
+
+type Tip = { group?: string; label: string; meta?: string; top: number };
+
+/**
+ * The sidebar: 216px expanded or a 60px icon rail, toggled from its footer or with `[`
+ * (GRPH-P59 §D1). One component for hosted and self-host and every route.
+ *
+ * The Admin row renders for `owner` and `admin` only, and for a `member` it is **absent** —
+ * not greyed, not a permission error (PRD-21 rev2). `authz.require_org_admin` is the same
+ * gate server-side, so this hides nothing the API would have allowed. Self-host has no org
+ * to administer and so no Admin row.
+ */
+export function LeftNav({ hosted = false }: { hosted?: boolean }) {
+  const { active, activeId } = useProjectCtx();
+  // Badge numbers only — never the collections (GRPH-431). The review count is candidates
+  // PLUS anything auto-published without them (AL-287), summed server-side.
   const { data: counts } = useCounts(activeId);
   const { data: orgs = [] } = useOrgs(hosted);
-  const org = orgs[0] ?? null;
+  const org = hosted ? (orgs[0] ?? null) : null;
   const canAdminister = org?.role === "owner" || org?.role === "admin";
   // 404 (the non-admin case) resolves as an error, so this is false for tenants.
   const { data: adminMe } = useIsPlatformAdmin();
   const isPlatformAdmin = !!adminMe?.is_platform_admin;
-  const [newProjectOpen, setNewProjectOpen] = React.useState(false);
+  const [orgDialogOpen, setOrgDialogOpen] = React.useState(false);
   const { pathname } = useLocation();
   // The URL is the project, and it is known before the project list answers.
-  const homeTag = active?.tag ?? tagFromPath(pathname);
-  const routeSection = hostedSectionFromPath(pathname);
-  const [section, setSection] = React.useState<Section | null>(routeSection);
-  const lastRoute = React.useRef(routeSection);
-  if (lastRoute.current !== routeSection) {
-    lastRoute.current = routeSection;
-    if (routeSection) setSection(routeSection);
-  }
-  const toggle = (s: Section) => setSection((cur) => (cur === s ? null : s));
+  const homeTag = hosted ? (active?.tag ?? tagFromPath(pathname)) : null;
+  const current = sectionFromPath(pathname);
+  const view = viewSegment(pathname);
 
-  const badges: Record<string, number | undefined> = {
+  const [collapsed, setCollapsed] = React.useState(readSidebarCollapsed);
+  const [inline, setInline] = React.useState(true);
+  const [tip, setTip] = React.useState<Tip | null>(null);
+  // Any open menu (project switcher, section menu) suppresses rail labels.
+  const [menus, setMenus] = React.useState(0);
+  const asideRef = React.useRef<HTMLElement>(null);
+  const reduce = prefersReducedMotion();
+
+  const toggle = React.useCallback(() => {
+    setTip(null);
+    setCollapsed((c) => {
+      const next = !c;
+      try {
+        localStorage.setItem(SIDEBAR_STORAGE_KEY, next ? "1" : "0");
+      } catch {
+        // Private mode: the toggle still works for this page.
+      }
+      return next;
+    });
+  }, []);
+
+  React.useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "[" || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+      if (isTypingTarget(e.target)) return;
+      toggle();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toggle]);
+
+  const badges: Record<CountKey, number | undefined> = {
     items: counts?.items,
     requests: counts?.requests,
     review: counts?.review || undefined,
   };
-  const viewPath = (view: string) =>
-    hosted && active?.tag ? projectPath(active.tag, view) : `/${view}`;
+  const viewPath = (v: string) =>
+    hosted ? (homeTag ? projectPath(homeTag, v) : `/${v}`) : `/${v}`;
+  const dashboardPath = hosted ? (homeTag ? projectPath(homeTag) : null) : "/home";
+  const sections = SECTIONS.map((s) => ({
+    ...s,
+    pages: s.pages.filter((p) => hosted || !p.hostedOnly),
+  }));
+  const onMenu = (open: boolean) => setMenus((n) => Math.max(0, n + (open ? 1 : -1)));
+
+  const tipProps = (t: Omit<Tip, "top">) => {
+    const show = (e: React.SyntheticEvent<HTMLElement>) => {
+      const box = asideRef.current?.getBoundingClientRect();
+      const r = e.currentTarget.getBoundingClientRect();
+      setTip({ ...t, top: r.top - (box?.top ?? 0) + r.height / 2 });
+    };
+    const hide = () => setTip(null);
+    return { onMouseEnter: show, onFocus: show, onMouseLeave: hide, onBlur: hide };
+  };
+
+  const fade = reduce ? undefined : `opacity 180ms ${EASE}`;
+  const slide = reduce ? undefined : `opacity 180ms ${EASE}, transform 240ms ${EASE}`;
+  const tipOn = !!tip && collapsed && menus === 0;
 
   return (
-    <aside className="flex w-[216px] flex-none flex-col border-r border-line bg-[rgba(9,11,13,0.5)] px-3 py-4">
-      {hosted ? (
-        <a
-          href={consoleHref(orgPath())}
-          className="flex h-10 w-full items-center gap-2.5 rounded-[10px] border border-line-2 bg-surface-2 px-3 transition-colors hover:border-line-hover"
+    <aside
+      ref={asideRef}
+      aria-label="Sidebar"
+      data-collapsed={collapsed ? "true" : "false"}
+      style={{ width: collapsed ? 60 : 216, transition: reduce ? "none" : `width 240ms ${EASE}` }}
+      className="relative flex-none border-r border-line bg-[rgba(9,11,13,0.5)]"
+    >
+      <div className="absolute inset-0 overflow-hidden">
+        {/* Rail */}
+        <div
+          data-layer="rail"
+          aria-hidden={!collapsed}
+          inert={!collapsed}
+          style={{ opacity: collapsed ? 1 : 0, transition: fade }}
+          className={cn(
+            "absolute inset-y-0 left-0 flex w-[60px] flex-col items-center gap-1 overflow-y-auto py-4",
+            !collapsed && "pointer-events-none",
+          )}
         >
-          <span className="flex h-5 w-5 flex-none items-center justify-center rounded-md border border-accent/30 bg-accent/[0.16] font-mono text-[10px] font-semibold text-accent">
-            {(org?.name ?? "?").slice(0, 1).toUpperCase()}
-          </span>
-          <span className="min-w-0 flex-1 text-left">
-            <span className="block truncate text-body font-semibold leading-tight">
-              {org?.name ?? "—"}
-            </span>
-            <span className="mt-0.5 block text-meta text-faint">
-              {org?.plan ?? ""} plan
-            </span>
-          </span>
-        </a>
-      ) : (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button className="flex h-10 w-full items-center gap-2.5 rounded-[10px] border border-control bg-surface-2 px-3 transition-colors hover:border-control-hover">
-              <span
-                className="h-2.5 w-2.5 flex-none rounded-[3px]"
-                style={{ background: active?.accent ?? "#c6f24e" }}
+          <ProjectSwitcher variant="tile" onOpenChange={onMenu} tipProps={tipProps({ label: "Switch project" })} />
+          {dashboardPath && (
+            <RailLink to={dashboardPath} end label="Dashboard" icon={<LayoutGrid size={16} />} tipProps={tipProps({ label: "Dashboard" })} />
+          )}
+          {sections.map((s) =>
+            s.key === current ? (
+              <React.Fragment key={s.key}>
+                <RailDivider />
+                {s.pages.map((p) => (
+                  <RailLink
+                    key={p.view}
+                    to={viewPath(p.view)}
+                    label={p.label}
+                    icon={p.icon}
+                    current={p.view === view}
+                    tipProps={tipProps({
+                      group: s.label.toUpperCase(),
+                      label: p.label,
+                      meta: p.count && badges[p.count] != null ? String(badges[p.count]) : undefined,
+                    })}
+                  />
+                ))}
+                <RailDivider />
+              </React.Fragment>
+            ) : (
+              <SectionMenu
+                key={s.key}
+                section={s}
+                variant="icon"
+                viewPath={viewPath}
+                badges={badges}
+                onOpenChange={onMenu}
+                tipProps={tipProps({ label: s.label, meta: "›" })}
               />
-              <span className="flex-1 truncate text-left text-[13px] font-semibold">
-                {active?.name ?? "Core Platform"}
-              </span>
-              <ChevronDown size={12} className="text-faint" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-[220px]">
-            <DropdownMenuLabel>Switch project</DropdownMenuLabel>
-            {projects.map((p) => (
-              <DropdownMenuItem
-                key={p.id}
-                onSelect={() => setActiveId(p.id)}
-                className="gap-2.5 text-body"
-              >
-                <span className="h-2.5 w-2.5 flex-none rounded-[3px]" style={{ background: p.accent }} />
-                <span className="flex-1 truncate text-left">{p.name}</span>
-                {p.id === active?.id && <Check size={13} style={{ color: p.accent }} />}
-              </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onSelect={(e) => {
-                e.preventDefault();
-                setNewProjectOpen(true);
-              }}
-              className="gap-2.5 text-body text-muted"
-            >
-              <Plus size={14} className="flex-none" />
-              <span className="flex-1 truncate text-left">New project</span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
+            ),
+          )}
+          <div className="mt-auto" />
+          <RailDivider />
+          {canAdminister && (
+            <RailLink href={consoleHref(adminPath())} label="Admin" icon={<UsersRound size={16} />} tipProps={tipProps({ label: "Admin" })} />
+          )}
+          <RailLink to="/usage" label="Usage" icon={<BarChart3 size={16} />} tipProps={tipProps({ label: "Usage" })} />
+          <RailLink to={viewPath("feedback-kit")} label="Feedback Kit" icon={<Sparkles size={16} />} tipProps={tipProps({ label: "Feedback Kit" })} />
+          <RailLink to="/settings" label="Settings" icon={<Settings size={16} />} tipProps={tipProps({ label: "Settings" })} />
+          <RailDivider />
+          <button
+            type="button"
+            onClick={toggle}
+            aria-label="Expand sidebar"
+            {...tipProps({ label: "Expand sidebar", meta: "[" })}
+            className={RAIL_BTN}
+          >
+            <PanelLeftOpen size={16} />
+          </button>
+        </div>
 
-      <NewProjectDialog open={newProjectOpen} onOpenChange={setNewProjectOpen} />
+        {/* Expanded */}
+        <div
+          data-layer="expanded"
+          aria-hidden={collapsed}
+          inert={collapsed}
+          style={{
+            opacity: collapsed ? 0 : 1,
+            transform: collapsed ? "translateX(-48px)" : "none",
+            transition: slide,
+          }}
+          className={cn(
+            "absolute inset-y-0 left-0 flex w-[216px] flex-col overflow-y-auto px-3 py-4",
+            collapsed && "pointer-events-none",
+          )}
+        >
+          <ProjectSwitcher variant="card" orgName={org?.name} onOpenChange={onMenu} />
 
-      <nav className="mt-4 flex flex-col gap-0.5">
-        {homeTag && (
-          <NavItem
-            to={projectPath(homeTag)}
-            icon={<LayoutGrid size={16} />}
-            label="Dashboard"
-            end
-          />
-        )}
-        <SectionHeader
-          label="Plan"
-          expanded={section === "plan"}
-          controls="hosted-nav-plan"
-          onToggle={() => toggle("plan")}
-        />
-        {section === "plan" && (
-          <div id="hosted-nav-plan" className="flex flex-col gap-0.5 pl-2">
-            {HOSTED_PLAN.map((n) => (
-              <NavItem
-                key={n.to}
-                to={viewPath(n.to)}
-                icon={n.icon}
-                label={n.label}
-                count={"count" in n && n.count ? badges[n.count] : undefined}
-              />
-            ))}
-          </div>
-        )}
-
-        <SectionHeader
-          label="Build"
-          expanded={section === "build"}
-          controls="hosted-nav-build"
-          onToggle={() => toggle("build")}
-        />
-        {section === "build" && (
-          <div id="hosted-nav-build" className="flex flex-col gap-0.5 pl-2">
-            {HOSTED_BUILD.map((n) => (
-              <NavItem
-                key={n.to}
-                to={viewPath(n.to)}
-                icon={n.icon}
-                label={n.label}
-              />
-            ))}
-          </div>
-        )}
-
-        <SectionHeader
-          label="Observe"
-          expanded={section === "observe"}
-          controls="hosted-nav-observe"
-          onToggle={() => toggle("observe")}
-        />
-        {section === "observe" && (
-          <div id="hosted-nav-observe" className="flex flex-col gap-0.5 pl-2">
-            {HOSTED_OBSERVE.map((n) => (
-              <NavItem
-                key={n.to}
-                to={viewPath(n.to)}
-                icon={n.icon}
-                label={n.label}
-                count={"count" in n && n.count ? badges[n.count] : undefined}
-              />
-            ))}
-          </div>
-        )}
-      </nav>
-
-      {hosted && canAdminister && (
-        <>
-          <RailHeading>Admin</RailHeading>
-          <nav className="flex flex-col gap-0.5">
-            <NavItem href={consoleHref(adminPath("users"))} icon={<UsersRound size={16} />} label="Users & access" />
-            <NavItem href={consoleHref(adminPath("teams"))} icon={<Users size={16} />} label="Teams" />
-            <NavItem href={consoleHref(adminPath("deployments"))} icon={<Server size={16} />} label="Deployments" />
-            {SPECULATIVE_ENABLED && (
-              <NavItem href={consoleHref(adminPath("branding"))} icon={<Palette size={16} />} label="Branding" />
+          <nav aria-label="Project" className="mt-4 flex flex-col gap-0.5">
+            {dashboardPath && (
+              <NavItem to={dashboardPath} icon={<LayoutGrid size={16} />} label="Dashboard" end />
             )}
-            <NavItem href={consoleHref(adminPath("integrations"))} icon={<Plug size={16} />} label="Integrations" />
-            <NavItem href={consoleHref(adminPath("gitops"))} icon={<GitBranch size={16} />} label="Gitops" />
-            <NavItem href={consoleHref(adminPath("billing"))} icon={<CreditCard size={16} />} label="Billing" />
+            {sections.map((s) =>
+              s.key === current ? (
+                <React.Fragment key={s.key}>
+                  <SectionHeader
+                    label={s.label}
+                    expanded={inline}
+                    controls={`nav-${s.key}`}
+                    onToggle={() => setInline((v) => !v)}
+                  />
+                  {inline && (
+                    <div id={`nav-${s.key}`} className="flex flex-col gap-0.5 pl-2">
+                      {s.pages.map((p) => (
+                        <NavItem
+                          key={p.view}
+                          to={viewPath(p.view)}
+                          icon={p.icon}
+                          label={p.label}
+                          count={p.count ? badges[p.count] : undefined}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </React.Fragment>
+              ) : (
+                <SectionMenu
+                  key={s.key}
+                  section={s}
+                  variant="row"
+                  viewPath={viewPath}
+                  badges={badges}
+                  onOpenChange={onMenu}
+                />
+              ),
+            )}
           </nav>
-        </>
-      )}
 
-      <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-3">
-        {hosted && !canAdminister && (
-          <div className="mb-2 rounded-[9px] border border-dashed border-line-2 px-2.5 py-2">
-            <div className="text-meta font-medium text-faint-2">
-              no admin group
-            </div>
-            <p className="mt-1.5 text-small leading-relaxed text-muted">
-              You are a <span className="font-mono text-fg-2">member</span>. Org administration
-              belongs to an owner or admin — ask one of them if you need a change here.
-            </p>
+          <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-3">
+            {hosted ? (
+              <NavItem href={consoleHref(orgPath())} icon={<Building2 size={16} />} label="Organization" />
+            ) : (
+              <OrgRailItem onOpenDialog={() => setOrgDialogOpen(true)} />
+            )}
+            {canAdminister && (
+              <NavItem href={consoleHref(adminPath())} icon={<UsersRound size={16} />} label="Admin" />
+            )}
+            <NavItem to="/usage" icon={<BarChart3 size={16} />} label="Usage" />
+            {isPlatformAdmin && <NavItem href={consoleHref("/operator")} icon={<ShieldCheck size={16} />} label="Operator" />}
+            <NavItem to={viewPath("feedback-kit")} icon={<Sparkles size={16} />} label="Feedback Kit" />
+            <NavItem to="/settings" icon={<Settings size={16} />} label="Settings" />
+            <div className="my-1.5 border-t border-line" />
+            <button
+              type="button"
+              onClick={toggle}
+              title="Collapse to icons"
+              className="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
+            >
+              <PanelLeftClose size={16} />
+              <span className="flex-1">Collapse sidebar</span>
+              <kbd className="rounded border border-line-2 px-1.5 font-mono text-[10px] text-faint">[</kbd>
+            </button>
           </div>
-        )}
-        {hosted && (
+        </div>
+      </div>
+
+      <div
+        role="tooltip"
+        aria-hidden="true"
+        style={{
+          top: tip?.top ?? 0,
+          opacity: tipOn ? 1 : 0,
+          transform: tipOn ? "translate(4px,-50%)" : "translate(-2px,-50%)",
+          transition: reduce ? undefined : `opacity 120ms ${EASE}, transform 120ms ${EASE}`,
+        }}
+        className="pointer-events-none absolute left-full z-50 ml-2 flex items-center gap-1.5 whitespace-nowrap rounded-md border border-line-2 bg-surface-3 px-2 py-1 text-[12px] text-fg shadow-lg"
+      >
+        <span className="absolute -left-[5px] top-1/2 h-2 w-2 -translate-y-1/2 rotate-45 border-b border-l border-line-2 bg-surface-3" />
+        {tipOn && (
           <>
-            <NavItem href={consoleHref(orgPath("galaxy"))} icon={<Orbit size={16} />} label="Galaxy" />
-            <NavItem href={consoleHref(orgPath())} icon={<Building2 size={16} />} label="Organization" />
+            {tip.group && <span className="text-[10px] font-medium text-faint">{tip.group}</span>}
+            <span>{tip.label}</span>
+            {tip.meta && <span className="font-mono text-[10px] text-faint">{tip.meta}</span>}
           </>
         )}
-        {!hosted && <NavItem to="/organization" icon={<Building2 size={16} />} label="Organization" />}
-        <NavItem to="/usage" icon={<BarChart3 size={16} />} label="Usage" />
-        {isPlatformAdmin && <NavItem href={consoleHref("/operator")} icon={<ShieldCheck size={16} />} label="Operator" />}
-        <NavItem to={viewPath("feedback-kit")} icon={<Sparkles size={16} />} label="Feedback Kit" />
-        <NavItem to="/settings" icon={<Settings size={16} />} label="Settings" />
       </div>
+
+      {!hosted && <CloudOrgLinkDialog open={orgDialogOpen} onOpenChange={setOrgDialogOpen} />}
     </aside>
   );
 }
 
-const PLAN = [
-  { to: "/tracker", icon: <ListChecks size={16} />, label: "Tracker", count: "items" as const },
-  { to: "/triage", icon: <Radar size={16} />, label: "Triage" },
-  { to: "/requests", icon: <Star size={16} />, label: "Requests", count: "requests" as const },
-  { to: "/prds", icon: <BarChart3 size={16} />, label: "PRDs" },
-  { to: "/roadmap", icon: <Map size={16} />, label: "Roadmap" },
-];
-const BUILD = [
-  { to: "/code", icon: <Network size={16} />, label: "Code graph" },
-  { to: "/stack", icon: <Boxes size={16} />, label: "Stack" },
-  { to: "/links", icon: <GitFork size={16} />, label: "Links" },
-  { to: "/fleet.v2", icon: <Users size={16} />, label: "Fleet.v2" },
-  { to: "/fleet.v1", icon: <Users size={16} />, label: "Fleet.v1" },
-  { to: "/outposts", icon: <Server size={16} />, label: "Outposts" },
-];
-const OBSERVE = [
-  { to: "/activity", icon: <ScrollText size={16} />, label: "Activity" },
-  { to: "/live", icon: <Activity size={16} />, label: "Live" },
-  { to: "/memory-review", icon: <Inbox size={16} />, label: "Memory", count: "review" as const },
-  { to: "/memory-triage", icon: <Inbox size={16} />, label: "Memory triage" },
-  { to: "/lessons", icon: <BookMarked size={16} />, label: "Lessons" },
-  { to: "/harness", icon: <Gauge size={16} />, label: "Harness" },
-];
+type TipHandlers = {
+  onMouseEnter: React.MouseEventHandler<HTMLElement>;
+  onMouseLeave: React.MouseEventHandler<HTMLElement>;
+  onFocus: React.FocusEventHandler<HTMLElement>;
+  onBlur: React.FocusEventHandler<HTMLElement>;
+};
 
-function ownsPath(pathname: string, prefix: string): boolean {
-  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+const RAIL_BTN =
+  "relative flex h-9 w-9 flex-none items-center justify-center rounded-[9px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2";
+
+function RailDivider() {
+  return <div className="my-1 h-px w-6 flex-none bg-line" />;
 }
 
-type Section = "plan" | "build" | "observe";
-
-function sectionFromPath(pathname: string): Section | "home" | null {
-  if (pathname === "/home" || pathname === "/") return "home";
-  if (PLAN.some((n) => ownsPath(pathname, n.to))) return "plan";
-  if (BUILD.some((n) => ownsPath(pathname, n.to))) return "build";
-  if (OBSERVE.some((n) => ownsPath(pathname, n.to))) return "observe";
-  return null;
-}
-
-/** Hosted paths are `/p/:tag/:view` — extract the view and match it to a section. */
-function hostedSectionFromPath(pathname: string): Section | null {
-  const m = pathname.match(/^\/p\/[^/]+\/(.+)$/);
-  const view = m?.[1];
-  if (!view) return null;
-  if (HOSTED_PLAN.some((n) => n.to === view)) return "plan";
-  if (HOSTED_BUILD.some((n) => n.to === view)) return "build";
-  if (HOSTED_OBSERVE.some((n) => n.to === view)) return "observe";
-  return null;
-}
-
-function SelfHostLeftNav() {
-  const { projects, active, activeId, setActiveId } = useProjectCtx();
-  const { data: counts } = useCounts(activeId);
-  const { data: adminMe } = useIsPlatformAdmin();
-  const isPlatformAdmin = !!adminMe?.is_platform_admin;
-  const [newProjectOpen, setNewProjectOpen] = React.useState(false);
-  const [orgDialogOpen, setOrgDialogOpen] = React.useState(false);
-  const { pathname } = useLocation();
-  // A header expands its section and stops there — it is a disclosure, not a link. Clicking
-  // "Observe" used to navigate to whichever child the rail guessed at, which lands you on a
-  // page you never asked for and gives you no way to *look* at a section before choosing
-  // (GRPH-P28 rev2). The route still opens the section that owns the current page, so
-  // wherever you are is always visible; the click only opens or closes.
-  const routeSection = sectionFromPath(pathname);
-  const [section, setSection] = React.useState<Section | null>(
-    routeSection === "home" ? null : routeSection,
-  );
-  const lastRoute = React.useRef(routeSection);
-  if (lastRoute.current !== routeSection) {
-    lastRoute.current = routeSection;
-    // Only a move *into* a section reopens it. Landing on Home or an unowned route leaves
-    // whatever you last opened alone rather than snapping the rail shut under you.
-    if (routeSection && routeSection !== "home") setSection(routeSection);
-  }
-  const toggle = (s: Section) => setSection((cur) => (cur === s ? null : s));
-
-  const badges: Record<string, number | undefined> = {
-    items: counts?.items,
-    requests: counts?.requests,
-    review: counts?.review || undefined,
-  };
-
+/** The lime bar that marks the current page, in the rail and in the expanded list. */
+function CurrentBar({ className }: { className?: string }) {
   return (
-    <aside className="flex w-[216px] flex-none flex-col border-r border-line bg-[rgba(9,11,13,0.5)] px-3 py-4">
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button className="flex h-10 w-full items-center gap-2.5 rounded-[10px] border border-control bg-surface-2 px-3 transition-colors hover:border-control-hover">
-            <span
-              className="h-2.5 w-2.5 flex-none rounded-[3px]"
-              style={{ background: active?.accent ?? "#c6f24e" }}
-            />
-            <span className="flex-1 truncate text-left text-[13px] font-semibold">
-              {active?.name ?? "Core Platform"}
-            </span>
-            <ChevronDown size={12} className="text-faint" />
+    <span
+      data-current-bar
+      aria-hidden="true"
+      className={cn("absolute top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-accent", className)}
+    />
+  );
+}
+
+function RailLink({
+  to, href, end, current, label, icon, tipProps,
+}: {
+  to?: string;
+  href?: string;
+  end?: boolean;
+  /** Overrides NavLink's own match — a page is current only inside its section. */
+  current?: boolean;
+  label: string;
+  icon: React.ReactNode;
+  tipProps: TipHandlers;
+}) {
+  if (href) {
+    return (
+      <a href={href} aria-label={label} {...tipProps} className={RAIL_BTN}>
+        {icon}
+      </a>
+    );
+  }
+  return (
+    <NavLink
+      to={to!}
+      end={end}
+      aria-label={label}
+      {...tipProps}
+      className={({ isActive }) =>
+        cn(RAIL_BTN, (current ?? isActive) && "bg-surface-3 text-accent hover:text-accent")
+      }
+    >
+      {({ isActive }) => (
+        <>
+          {(current ?? isActive) && <CurrentBar className="-left-3" />}
+          {icon}
+        </>
+      )}
+    </NavLink>
+  );
+}
+
+/**
+ * A section other than the current one: one row (or rail icon) that opens its pages beside
+ * the sidebar. Opening never navigates; choosing a page does, and that section becomes the
+ * current one because the route says so.
+ */
+function SectionMenu({
+  section, variant, viewPath, badges, onOpenChange, tipProps,
+}: {
+  section: { key: Section; label: string; icon: React.ReactNode; pages: Page[] };
+  variant: "row" | "icon";
+  viewPath: (v: string) => string;
+  badges: Record<CountKey, number | undefined>;
+  onOpenChange: (open: boolean) => void;
+  tipProps?: TipHandlers;
+}) {
+  const navigate = useNavigate();
+  return (
+    <DropdownMenu modal={false} onOpenChange={onOpenChange}>
+      <DropdownMenuTrigger asChild>
+        {variant === "icon" ? (
+          <button type="button" aria-label={section.label} {...tipProps} className={cn(RAIL_BTN, "data-[state=open]:bg-surface-3 data-[state=open]:text-fg")}>
+            {section.icon}
           </button>
+        ) : (
+          <button
+            type="button"
+            className="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2 data-[state=open]:bg-surface-3 data-[state=open]:text-fg"
+          >
+            <span className="flex-1 font-medium">{section.label}</span>
+            <ChevronRight size={12} className="text-faint" />
+          </button>
+        )}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent side="right" align="start" sideOffset={8} className="w-[220px]">
+        <DropdownMenuLabel>{section.label.toUpperCase()}</DropdownMenuLabel>
+        {section.pages.map((p) => {
+          const n = p.count ? badges[p.count] : undefined;
+          return (
+            <DropdownMenuItem key={p.view} onSelect={() => navigate(viewPath(p.view))} className="gap-2.5 text-body">
+              <span className="flex-none text-muted">{p.icon}</span>
+              <span className="flex-1 truncate">{p.label}</span>
+              {n != null && <span className="font-mono text-[10px] text-faint">{n}</span>}
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** Project card (expanded) or initial tile (rail). Both open the same switcher. */
+function ProjectSwitcher({
+  variant, orgName, onOpenChange, tipProps,
+}: {
+  variant: "card" | "tile";
+  orgName?: string;
+  onOpenChange: (open: boolean) => void;
+  tipProps?: TipHandlers;
+}) {
+  const { projects, active, setActiveId } = useProjectCtx();
+  const [newProjectOpen, setNewProjectOpen] = React.useState(false);
+  const accent = active?.accent ?? "#c6f24e";
+  const initial = (active?.name ?? "?").slice(0, 1).toUpperCase();
+  const tile = (
+    <span
+      className="flex h-6 w-6 flex-none items-center justify-center rounded-md border font-mono text-small font-semibold"
+      style={{ color: accent, borderColor: `${accent}4d`, background: `${accent}29` }}
+    >
+      {initial}
+    </span>
+  );
+  return (
+    <>
+      <DropdownMenu modal={false} onOpenChange={onOpenChange}>
+        <DropdownMenuTrigger asChild>
+          {variant === "tile" ? (
+            <button type="button" aria-label="Switch project" {...tipProps} className={cn(RAIL_BTN, "mb-1")}>
+              {tile}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="flex h-11 w-full items-center gap-2.5 rounded-[10px] border border-control bg-surface-2 px-2.5 transition-colors hover:border-control-hover"
+            >
+              {tile}
+              <span className="min-w-0 flex-1 text-left">
+                <span className="block truncate text-[13px] font-semibold leading-tight">
+                  {active?.name ?? "—"}
+                </span>
+                <span className="mt-0.5 block truncate font-mono text-[10px] uppercase text-faint">
+                  {[orgName, active?.tag].filter(Boolean).join(" · ")}
+                </span>
+              </span>
+              <ChevronsUpDown size={12} className="flex-none text-faint" />
+            </button>
+          )}
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-[220px]">
+        <DropdownMenuContent align="start" side={variant === "tile" ? "right" : "bottom"} className="w-[220px]">
           <DropdownMenuLabel>Switch project</DropdownMenuLabel>
           {projects.map((p) => (
             <DropdownMenuItem
@@ -407,76 +557,8 @@ function SelfHostLeftNav() {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-
       <NewProjectDialog open={newProjectOpen} onOpenChange={setNewProjectOpen} />
-
-      <nav className="mt-4 flex flex-col gap-0.5">
-        <NavItem to="/home" icon={<LayoutGrid size={16} />} label="Dashboard" end />
-
-        <SectionHeader
-          label="Plan"
-          expanded={section === "plan"}
-          controls="nav-plan"
-          onToggle={() => toggle("plan")}
-        />
-        {section === "plan" && (
-          <div id="nav-plan" className="flex flex-col gap-0.5 pl-2">
-            {PLAN.map((n) => (
-              <NavItem
-                key={n.to}
-                to={n.to}
-                icon={n.icon}
-                label={n.label}
-                count={"count" in n && n.count ? badges[n.count] : undefined}
-              />
-            ))}
-          </div>
-        )}
-
-        <SectionHeader
-          label="Build"
-          expanded={section === "build"}
-          controls="nav-build"
-          onToggle={() => toggle("build")}
-        />
-        {section === "build" && (
-          <div id="nav-build" className="flex flex-col gap-0.5 pl-2">
-            {BUILD.map((n) => (
-              <NavItem key={n.to} to={n.to} icon={n.icon} label={n.label} />
-            ))}
-          </div>
-        )}
-
-        <SectionHeader
-          label="Observe"
-          expanded={section === "observe"}
-          controls="nav-observe"
-          onToggle={() => toggle("observe")}
-        />
-        {section === "observe" && (
-          <div id="nav-observe" className="flex flex-col gap-0.5 pl-2">
-            {OBSERVE.map((n) => (
-              <NavItem
-                key={n.to}
-                to={n.to}
-                icon={n.icon}
-                label={n.label}
-                count={"count" in n && n.count ? badges[n.count] : undefined}
-              />
-            ))}
-          </div>
-        )}
-      </nav>
-
-      <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-3">
-        <OrgRailItem onOpenDialog={() => setOrgDialogOpen(true)} />
-        <NavItem to="/usage" icon={<BarChart3 size={16} />} label="Usage" />
-        <NavItem to="/feedback-kit" icon={<Sparkles size={16} />} label="Feedback Kit" />
-        {isPlatformAdmin && <NavItem href={consoleHref("/operator")} icon={<ShieldCheck size={16} />} label="Operator" />}
-        <NavItem to="/settings" icon={<Settings size={16} />} label="Settings" />
-      </div>
-      <CloudOrgLinkDialog open={orgDialogOpen} onOpenChange={setOrgDialogOpen} />
-    </aside>
+    </>
   );
 }
 
@@ -496,7 +578,7 @@ function SectionHeader({
       aria-expanded={expanded}
       aria-controls={expanded ? controls : undefined}
       onClick={onToggle}
-      className="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
+      className="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[13px] text-fg-2 transition-colors hover:bg-surface-3"
     >
       <span className="flex-1 font-medium">{label}</span>
       <ChevronDown
@@ -548,21 +630,12 @@ function OrgRailItem({ onOpenDialog }: { onOpenDialog: () => void }) {
   );
 }
 
-function RailHeading({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="mb-2 mt-5 px-2 text-[10px] font-medium text-faint">
-      {children}
-    </div>
-  );
-}
-
 function NavItem({
   to,
   href,
   icon,
   label,
   count,
-  soon,
   end,
 }: {
   to?: string;
@@ -571,59 +644,45 @@ function NavItem({
   icon: React.ReactNode;
   label: string;
   count?: number;
-  soon?: boolean;
   /** Match this path exactly. A prefix would light the parent on every child page. */
   end?: boolean;
 }) {
   const base =
-    "flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13px] transition-colors";
-  if (soon || (!to && !href)) {
-    return (
-      <div
-        className={cn(base, "cursor-default text-faint-2")}
-        title="Coming in a later pass"
-      >
-        {icon}
-        <span className="flex-1">{label}</span>
-        <span className="rounded border border-line-2 px-1.5 py-px text-[9px] text-faint-2">
-          soon
-        </span>
-      </div>
-    );
-  }
+    "relative flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13px] transition-colors";
+  const badge = count != null && (
+    <span className="rounded-md bg-surface-4 px-1.5 py-0.5 font-mono text-[10px] text-muted">
+      {count}
+    </span>
+  );
   if (href) {
     return (
       <a href={href} className={cn(base, "text-muted hover:bg-surface-3 hover:text-fg-2")}>
         {icon}
         <span className="flex-1">{label}</span>
-        {count != null && (
-          <span className="rounded-md bg-surface-4 px-1.5 py-0.5 font-mono text-[10px] text-muted">
-            {count}
-          </span>
-        )}
+        {badge}
       </a>
     );
   }
-  if (!to) return null;
   return (
     <NavLink
-      to={to}
+      to={to!}
       end={end}
       className={({ isActive }) =>
         cn(
           base,
           isActive
-            ? "bg-surface-3 text-fg"
+            ? "bg-surface-3 text-fg [&>svg]:text-accent"
             : "text-muted hover:bg-surface-3 hover:text-fg-2",
         )
       }
     >
-      {icon}
-      <span className="flex-1">{label}</span>
-      {count != null && (
-        <span className="rounded-md bg-surface-4 px-1.5 py-0.5 font-mono text-[10px] text-muted">
-          {count}
-        </span>
+      {({ isActive }) => (
+        <>
+          {isActive && <CurrentBar className="-left-3" />}
+          {icon}
+          <span className="flex-1">{label}</span>
+          {badge}
+        </>
       )}
     </NavLink>
   );
