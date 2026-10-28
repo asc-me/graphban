@@ -645,6 +645,9 @@ class ItemOut(ORMModel):
     fidelity: str = "low"
     created_at: datetime
     updated_at: datetime
+    #: When it last reached `done` (GRPH-1134); null while it is not done. The board's
+    #: done-window and auto-hide read this, not `updated_at`, which any edit bumps.
+    done_at: datetime | None = None
 
     @field_validator("touchpoints", "evidence", mode="before")
     @classmethod

@@ -68,6 +68,7 @@ const doneItem: Item = {
   reach: "repo",
   created_at: "",
   updated_at: "",
+  done_at: "2026-09-01T12:00:00Z",
 };
 
 const reviewItem: Item = {

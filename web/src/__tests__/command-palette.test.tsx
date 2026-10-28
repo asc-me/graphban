@@ -51,6 +51,7 @@ const items: Item[] = [
     reach: "repo",
     created_at: "",
     updated_at: "",
+    done_at: null,
   },
 ];
 
