@@ -1696,7 +1696,7 @@ class CodeScan(Base):
     note: Mapped[str] = mapped_column(Text, default="", server_default="")
 
     __table_args__ = (
-        # One live result per scanner+path: re-recording replaces (service deletes prior).
+        # Every report is a row; the newest per scanner+path is the cell (GRPH-1128).
         Index("ix_code_scans_project_scanner_path", "project_id", "scanner_id", "path"),
         Index("ix_code_scans_project_category_path", "project_id", "category", "path"),
     )
