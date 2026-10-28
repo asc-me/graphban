@@ -191,8 +191,8 @@ describe("GRPH-1141 the current page", () => {
     expect(link.className).toContain("text-accent");
     const other = within(layer("rail")).getByRole("link", { name: "Tracker" });
     expect(other.querySelector("[data-current-bar]")).toBeNull();
-    // Other sections are one icon each, opening a menu rather than linking away.
-    expect(within(layer("rail")).getByRole("button", { name: "Build" })).toHaveAttribute("aria-haspopup", "menu");
+    // Other sections are one icon each, opening a flyout rather than linking away.
+    expect(within(layer("rail")).getByRole("button", { name: "Build" })).toHaveAttribute("aria-haspopup", "dialog");
     expect(within(layer("rail")).queryByRole("link", { name: "Code graph" })).toBeNull();
   });
 
@@ -230,14 +230,14 @@ describe("GRPH-1141 rail labels", () => {
     expect(tip).toHaveTextContent("[");
   });
 
-  it("is suppressed while a menu is open", async () => {
+  it("is suppressed while a flyout is open", async () => {
     const user = userEvent.setup();
     localStorage.setItem(SIDEBAR_STORAGE_KEY, "1");
     wrap(<LeftNav />, "/tracker");
     const tip = document.querySelector<HTMLElement>('[role="tooltip"]')!;
     const build = within(layer("rail")).getByRole("button", { name: "Build" });
     await user.click(build);
-    await screen.findByRole("menu");
+    await screen.findByRole("dialog", { name: "Build" });
     fireEvent.mouseEnter(build);
     expect(tip.style.opacity).toBe("0");
   });
@@ -287,7 +287,7 @@ describe("GRPH-1141 motion", () => {
 /**
  * Every route mounts the one sidebar and none mounts the old accordion. The accordion's
  * signature was every section as an in-place disclosure (`hosted-nav-*` panels for the
- * closed ones too); now only the current section is inline and the rest open menus.
+ * closed ones too); now only the current section is inline and the rest open flyouts.
  */
 const VIEWS = [
   "tracker", "requests", "triage", "links", "code", "stack", "roadmap", "fleet",
@@ -323,9 +323,9 @@ function expectNewSidebar(path: string) {
   const inline = document.querySelectorAll('[id^="nav-"]');
   expect(inline.length, `${path}: at most one section is inline`).toBeLessThanOrEqual(1);
   const menus = ["Plan", "Build", "Observe"].filter(
-    (s) => nav.getByRole("button", { name: s }).getAttribute("aria-haspopup") === "menu",
+    (s) => nav.getByRole("button", { name: s }).getAttribute("aria-haspopup") === "dialog",
   );
-  expect(menus.length, `${path}: the other sections open menus`).toBe(3 - inline.length);
+  expect(menus.length, `${path}: the other sections open flyouts`).toBe(3 - inline.length);
   expect(layer("rail"), path).not.toBeNull();
   expect(nav.getByRole("button", { name: /Collapse sidebar/ }), path).toBeInTheDocument();
 }
