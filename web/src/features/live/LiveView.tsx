@@ -31,8 +31,8 @@ export function LiveView() {
   const { data, isLoading, isError, refetch } = useLive(activeId, user);
   const { data: fleet } = useFleet(activeId);
   const fleetTo = config?.hosted_mode && active?.tag
-    ? projectPath(active.tag, "fleet.v1")
-    : "/fleet.v1";
+    ? projectPath(active.tag, "fleet")
+    : "/fleet";
   const trackerTo = config?.hosted_mode && active?.tag ? projectPath(active.tag, "tracker") : "/tracker";
 
   const [paused, setPaused] = React.useState(false);
@@ -85,7 +85,7 @@ export function LiveView() {
               {paused ? "Resume" : "Pause"}
             </button>
             <Link to={fleetTo} className="text-body text-muted hover:text-fg-2">
-              Fleet.v1
+              Fleet
             </Link>
           </div>
         }
@@ -116,7 +116,7 @@ export function LiveView() {
                 to={fleetTo}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-line-hover hover:text-fg-2"
               >
-                Open Fleet.v1
+                Open Fleet
               </Link>
             }
           />

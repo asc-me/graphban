@@ -132,7 +132,7 @@ const CONTENT: Record<string, DocEntry> = {
     ],
     related: [
       { label: "Requests", to: "/requests" },
-      { label: "Fleet.v1", to: "/fleet.v1" },
+      { label: "Fleet", to: "/fleet" },
     ],
   },
 
@@ -146,7 +146,7 @@ const CONTENT: Record<string, DocEntry> = {
     ],
     related: [
       { label: "Stack", to: "/stack" },
-      { label: "Fleet.v1", to: "/fleet.v1" },
+      { label: "Fleet", to: "/fleet" },
     ],
   },
 
@@ -162,37 +162,23 @@ const CONTENT: Record<string, DocEntry> = {
     related: [
       { label: "Code graph", to: "/code" },
       { label: "Outposts", to: "/outposts" },
-      { label: "Fleet.v2", to: "/fleet.v2" },
+      { label: "Fleet", to: "/fleet" },
     ],
   },
 
-  "/fleet.v2": {
-    badge: "FLEET.V2",
-    title: "Fleet.v2",
-    tagline: "Which model each harness runs, the catalog behind it, and how you allocate them.",
+  "/fleet": {
+    badge: "FLEET",
+    title: "Fleet",
+    tagline: "Who is working here, and what they can be spawned as.",
     sections: [
-      { num: 1, h: "Tier map", b: "Harness × tier, editable, for THIS deployment. An override is stored beside the committed matrix rather than in it, so clearing one falls back to the packaged model instead of to nothing. Inherit from performance grading fills only the cells grading has measured; an unmeasured cell is left exactly as it was and says so, because a value invented there would be an override nobody chose wearing a measurement's authority. Save is off until the draft differs from what is stored." },
-      { num: 2, h: "Catalog", b: "The harness × model × tier table is the committed matrix, and it is read-only: a commit changes it, this page does not. Performance and rankings live on Observe → Harness — this page does not rank models." },
-      { num: 3, h: "Allocation", b: "Mix is your share of recent spawns — off means the scorer always picks the winner. Unregistered harnesses cannot take a share. Roster, seats, and waves are Fleet.v1." },
+      { num: 1, h: "Fleet management", b: "Roster, seats and waves. Offline agents fade rather than vanish — one that died holding a branch is what you need to see. A seat is the role for this session — paste it into the prompt, not the MCP config. Ending a wave is irreversible and names which wave. The API key that authenticates is minted on Settings → API keys; a wave key minted here is swept by End wave." },
+      { num: 2, h: "Harness config: tier map", b: "Harness × tier, editable, for THIS deployment. An override is stored beside the committed matrix rather than in it, so clearing one falls back to the packaged model instead of to nothing. Inherit from performance grading fills only the cells grading has measured; an unmeasured cell is left exactly as it was and says so, because a value invented there would be an override nobody chose wearing a measurement's authority. Save is off until the draft differs from what is stored." },
+      { num: 3, h: "Harness config: catalog and mix", b: "The harness × model × tier table is the committed matrix, and it is read-only: a commit changes it, this page does not. Performance and rankings live on Observe → Harness. Mix is your share of recent spawns — off means the scorer always picks the winner. Unregistered harnesses cannot take a share." },
     ],
     related: [
-      { label: "Fleet.v1", to: "/fleet.v1" },
+      { label: "API keys", to: settingsPath("project/api-keys") },
       { label: "Outposts", to: "/outposts" },
       { label: "Harness", to: "/harness" },
-    ],
-  },
-
-  "/fleet.v1": {
-    badge: "FLEET.V1",
-    title: "Fleet.v1",
-    tagline: "Who is here, and the seats that put them here.",
-    sections: [
-      { num: 1, h: "Roster and posture", b: "Offline agents fade rather than vanish — one that died holding a branch is what you need to see. Fleet posture: specialised roles review themselves. Single-agent: you are the reviewer." },
-      { num: 2, h: "Waves and seats", b: "A seat is the role for this session — paste it into the prompt, not the MCP config. Ending a wave is irreversible and names which wave. The API key that authenticates is minted on Settings → API keys; a wave key minted here is swept by End wave." },
-    ],
-    related: [
-      { label: "Fleet.v2", to: "/fleet.v2" },
-      { label: "API keys", to: settingsPath("project/api-keys") },
     ],
   },
 
@@ -205,7 +191,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 2, h: "Recommendations are drafts", b: "A card can suggest promoting, demoting, or reweighting. Accepting it writes through the same profile or matrix commit a person would make. Nothing here auto-routes." },
       { num: 3, h: "What each harness loads", b: "Skills and MCP server names a child on one machine would actually see, posted by `gbfleet surface` or `gban doctor`. A name on one harness and absent from another is listed. A harness that was not checked is said so — an empty difference list is only shown once two lists were complete. No URLs or credentials." },
     ],
-    related: [{ label: "Fleet.v2", to: "/fleet.v2" }],
+    related: [{ label: "Fleet", to: "/fleet" }],
   },
 
   "/outposts": {
@@ -216,7 +202,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 1, h: "A host is who checked in", b: "Grouped from each agent's declared host, or the label after @. Unspecified is a real group — it is not localhost. Empty means nobody has registered, not a list of zero machines." },
       { num: 2, h: "Build info", b: "Vendor, model, tier, OS if declared, worktree and branch — what the agent said about itself at register/heartbeat." },
     ],
-    related: [{ label: "Fleet.v2", to: "/fleet.v2" }],
+    related: [{ label: "Fleet", to: "/fleet" }],
   },
 
   "/roadmap": {
@@ -241,7 +227,7 @@ const CONTENT: Record<string, DocEntry> = {
     ],
     related: [
       { label: "API keys", to: settingsPath("project/api-keys") },
-      { label: "Fleet.v1", to: "/fleet.v1" },
+      { label: "Fleet", to: "/fleet" },
     ],
   },
 
@@ -300,7 +286,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 5, h: "What it handed to children", b: "A planner that calls delegate before spawning gets a row per delegation under its name: open, claimed by which child and what model it declared, expired when nothing ever claimed it, superseded when a stranger took the item. Requested and declared tiers sit side by side; a mismatch is stated, never refused. 'No delegations' is a word, and 'expired, nothing claimed' is a spawn that died before it registered." },
     ],
     related: [
-      { label: "Fleet.v1", to: "/fleet.v1" },
+      { label: "Fleet", to: "/fleet" },
       { label: "Code graph", to: "/code" },
       { label: "Activity", to: "/activity" },
     ],
@@ -343,7 +329,7 @@ const CONTENT: Record<string, DocEntry> = {
     ],
     related: [
       { label: "MCP Tools", to: settingsPath("project/mcp") },
-      { label: "Fleet.v1", to: "/fleet.v1" },
+      { label: "Fleet", to: "/fleet" },
       { label: "AI providers", to: settingsPath("deployment/providers") },
     ],
   },
@@ -528,7 +514,7 @@ const CONTENT: Record<string, DocEntry> = {
     ],
     related: [
       { label: "Users & access", to: adminPath("users") },
-      { label: "Fleet.v1", to: "/fleet.v1" },
+      { label: "Fleet", to: "/fleet" },
     ],
   },
 
@@ -614,7 +600,6 @@ export function docFor(pathname: string): DocEntry {
   if (/^\/lessons(?:\/[^/]+)?$/.test(path)) return CONTENT["/lessons"];
   if (path === "/home") return CONTENT["/home"];
   if (path === "/dashboard") return CONTENT["/dashboard"];
-  if (path === "/fleet") return CONTENT["/fleet.v2"];
 
   if (path.startsWith("/admin")) return CONTENT["operator"];
 

@@ -639,7 +639,7 @@ export function FleetView() {
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="fleet-v1">
       <PlaceHeader
-        viewName={`Fleet.v1 ${scope}`}
+        viewName={`Fleet ${scope}`}
         purpose={data
           ? `${data.online} of ${data.total} online · heartbeat every ${data.heartbeat_interval_seconds}s`
           : "Agents working this project, and what they hold."}

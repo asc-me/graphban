@@ -15,8 +15,7 @@ import { PublicFeedbackPage } from "@/features/public/PublicFeedbackPage";
 import { PublicRoadmapPage } from "@/features/public/PublicRoadmapPage";
 import { PublicTrackingPage } from "@/features/public/PublicTrackingPage";
 import { LinksGraphView } from "@/features/links/LinksGraphView";
-import { FleetView } from "@/features/fleet/FleetView";
-import { FleetV2View } from "@/features/fleet/FleetV2View";
+import { FleetPage } from "@/features/fleet/FleetPage";
 import { OutpostsView } from "@/features/fleet/OutpostsView";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { LessonsView } from "@/features/lessons/LessonsView";
@@ -82,8 +81,7 @@ const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["stack", <StackView />],
   ["roadmap", <RoadmapView />],
   ["mcp-tools", <McpToolsView />],
-  ["fleet.v1", <FleetView />],
-  ["fleet.v2", <FleetV2View />],
+  ["fleet", <FleetPage />],
   ["outposts", <OutpostsView />],
   ["harness", <HarnessView />],
   ["activity", <ActivityView />],
@@ -122,10 +120,16 @@ function AuthedApp() {
           : PROJECT_VIEWS.filter(([path]) => path !== "mcp-tools").map(
               ([path, el]) => <Route key={path} path={`/${path}`} element={el} />,
             )}
-        {/* /fleet is the old URL. The named pages are fleet.v1 (roster) and fleet.v2 (catalog). */}
+        {/* fleet.v1 / fleet.v2 are old bookmarks for the two Fleet tabs. */}
         {hosted
-          ? <Route path="/p/:tag/fleet" element={<FleetAliasRedirect />} />
-          : <Route path="/fleet" element={<FleetAliasRedirect />} />}
+          ? <>
+              <Route path="/p/:tag/fleet.v1" element={<FleetTabRedirect tab="manage" />} />
+              <Route path="/p/:tag/fleet.v2" element={<FleetTabRedirect tab="harness" />} />
+            </>
+          : <>
+              <Route path="/fleet.v1" element={<FleetTabRedirect tab="manage" />} />
+              <Route path="/fleet.v2" element={<FleetTabRedirect tab="harness" />} />
+            </>}
         {hosted && <Route path="/p/:tag" element={<ProjectHome />} />}
         {hosted && <Route path="/p/:tag/dashboard" element={<DashboardRedirect />} />}
         {!hosted && (
@@ -147,7 +151,8 @@ function AuthedApp() {
             ))}
             {/* Retired page. FlatRedirect lands on /p/:tag/dashboard, which then goes home. */}
             <Route path="/dashboard" element={<FlatRedirect />} />
-            <Route path="/fleet" element={<FlatRedirect />} />
+            <Route path="/fleet.v1" element={<FleetTabRedirect tab="manage" />} />
+            <Route path="/fleet.v2" element={<FleetTabRedirect tab="harness" />} />
             <Route path="/organization" element={<Navigate to={ORG_BASE} replace />} />
           </>
         )}
@@ -172,11 +177,11 @@ function DashboardRedirect() {
   return <Navigate to={projectPath(tag)} replace />;
 }
 
-/** Old `/fleet` bookmark — the redesign is Fleet.v2, roster is Fleet.v1. */
-function FleetAliasRedirect() {
+/** Old `fleet.v1` / `fleet.v2` bookmark: the one Fleet page with the matching tab. */
+function FleetTabRedirect({ tab }: { tab: "manage" | "harness" }) {
   const { pathname } = useLocation();
-  const dest = pathname.replace(/\/fleet\/?$/, "/fleet.v2");
-  return <Navigate to={dest || "/fleet.v2"} replace />;
+  const dest = pathname.replace(/\/fleet\.v[12]\/?$/, "/fleet");
+  return <Navigate to={`${dest}?tab=${tab}`} replace />;
 }
 
 /**
@@ -188,7 +193,7 @@ function FleetAliasRedirect() {
  * page for a project that does not exist.
  */
 function FlatRedirect() {
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const { projects, loading } = useProjectCtx();
   if (loading) return null;
 
@@ -197,7 +202,7 @@ function FlatRedirect() {
   const target =
     projects.find((p) => p.tag === remembered) ?? projects[0] ?? null;
   if (!target?.tag) return <Navigate to={ORG_BASE} replace />;
-  return <Navigate to={projectPath(target.tag, view)} replace />;
+  return <Navigate to={`${projectPath(target.tag, view)}${search}`} replace />;
 }
 
 function HomeRedirect({ hosted }: { hosted: boolean }) {

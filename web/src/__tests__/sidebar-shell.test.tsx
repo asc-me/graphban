@@ -291,7 +291,7 @@ describe("GRPH-1141 motion", () => {
  * closed ones too); now only the current section is inline and the rest open menus.
  */
 const VIEWS = [
-  "tracker", "requests", "triage", "links", "code", "stack", "roadmap", "fleet.v1", "fleet.v2",
+  "tracker", "requests", "triage", "links", "code", "stack", "roadmap", "fleet",
   "outposts", "harness", "activity", "live", "memory-review", "memory-triage", "lessons",
   "lessons/l1", "prds", "prds/p1", "feedback-kit",
 ];

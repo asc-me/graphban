@@ -157,7 +157,7 @@ describe("Live board", () => {
     renderLive();
     expect(await screen.findByText("No agents on this project yet")).toBeInTheDocument();
     expect(screen.getByText(/Live shows who is working here right now/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Open Fleet\.v1/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Open Fleet/ })).toBeInTheDocument();
   });
 
   it("renders a row unchanged whether the delegations field is absent, null or present (PRD-35 PR 1)", async () => {
@@ -437,7 +437,7 @@ describe("Live board", () => {
     expect(boardEl.getByText("declared on item, not reserved")).toBeInTheDocument();
     expect(boardEl.queryByText(/^leased$/)).not.toBeInTheDocument();
     expect(screen.getByText("1 worker")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Fleet.v1" })).toHaveAttribute("href", "/fleet.v1");
+    expect(screen.getByRole("link", { name: "Fleet" })).toHaveAttribute("href", "/fleet");
   });
 
   // ---- PRD-34 PR 1: the feed. Silence is a word; sources are named; nothing is guessed. ----
