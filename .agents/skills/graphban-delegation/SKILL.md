@@ -1,6 +1,10 @@
 ---
 name: graphban-delegation
-description: Hand a Graphban work item to a child agent running on a cheaper model, and enable delegation on a project that does not have it yet. Use when asked to delegate, fan out, spawn a worker, mint seats, retire a wave, or run a wave.
+description: >
+  Hand one Graphban item to one child on a cheaper model, and enable
+  delegation on a project that does not have it yet. Use when asked to
+  delegate one item, spawn one worker, mint seats, or retire a wave.
+  A whole PRD is /graphban-wave.
 ---
 
 # Delegating a Graphban item
@@ -197,6 +201,5 @@ So a delegated item needs a second agent to review it. Plan for that, or the wor
 
 ## When not to use this
 
-For a whole backlog, ask the person to run `gbfleet until` instead. It runs the wave with no
-model in the loop; fanning the same work out by hand keeps your context awake for the wave's
-entire length just to poll and adjudicate.
+A whole PRD is `graphban-wave`. It runs `gbfleet until` for that PRD. Fanning the items out
+from here keeps a frontier context polling for the wave's whole length.
