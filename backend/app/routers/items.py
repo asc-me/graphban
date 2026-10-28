@@ -3,11 +3,14 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import User
-from app.schemas import ItemCreate, ItemOut, ItemUpdate, OwnerCloseIn, ReorderIn
+from app.schemas import (
+    ItemCreate, ItemOut, ItemUpdate, OwnerCloseIn, ReorderIn, SnoozeIn, WaitAnswerIn,
+)
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import collision as collision_svc
 from app.services import items as items_svc
+from app.services import waits as waits_svc
 
 router = APIRouter(prefix="/items", tags=["items"])
 
@@ -46,6 +49,8 @@ def create_item(
             prd_id=body.prd_id,
             prd_section=body.prd_section,
             reporter=reporter,
+            question=body.question,
+            options=body.options,
         )
     except items_svc.MissingAttestation as e:
         raise HTTPException(409, str(e))
@@ -78,6 +83,17 @@ def collision_clusters(
     to run concurrently. Defaults to the unstarted pool (backlog + next) when no status."""
     authz.require_readable(db, user.id, project_id)
     return {"clusters": collision_svc.clusters_for_project(db, project_id, status)}
+
+
+@router.get("/blockers")
+def blockers(
+    project_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Blocked items for triage (snoozed ones hidden); decision waits carry question/options."""
+    authz.require_readable(db, user.id, project_id)
+    return {"blockers": waits_svc.triage_blockers(db, project_id)}
 
 
 @router.get("/{item_id}", response_model=ItemOut)
@@ -165,3 +181,54 @@ def owner_close(
     if item is None:
         raise HTTPException(404, "item not found")
     return item
+
+
+def _blocker_action(db: Session, user: User, item_id: str, run):
+    existing = items_svc.get_item(db, item_id)
+    if existing is None:
+        raise HTTPException(404, "item not found")
+    authz.require_writable(db, user.id, existing.project_id, "item")
+    try:
+        return run(existing.id)
+    except waits_svc.ActionRefused as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@router.post("/{item_id}/answer")
+def answer_wait(item_id: str, body: WaitAnswerIn, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    """Answer a decision wait: stores the answer, marks it done, releases what waited on it."""
+    return _blocker_action(db, user, item_id, lambda i: waits_svc.answer_wait(
+        db, i, choice=body.option, text=body.text, actor=user))
+
+
+@router.post("/{item_id}/unblock")
+def unblock(item_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return _blocker_action(db, user, item_id, lambda i: waits_svc.unblock(db, i, actor=user))
+
+
+@router.post("/{item_id}/release-claim")
+def release_claim(item_id: str, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    return _blocker_action(db, user, item_id, lambda i: waits_svc.release_claim(db, i, actor=user))
+
+
+@router.post("/{item_id}/escalate")
+def escalate(item_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return _blocker_action(db, user, item_id, lambda i: waits_svc.escalate(db, i, actor=user))
+
+
+@router.post("/{item_id}/snooze")
+def snooze(item_id: str, body: SnoozeIn, db: Session = Depends(get_db),
+           user: User = Depends(get_current_user)):
+    return _blocker_action(db, user, item_id, lambda i: waits_svc.snooze(
+        db, i, until=body.until, actor=user))
+
+
+@router.post("/{item_id}/undo")
+def undo_blocker_action(item_id: str, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """Undo the newest blocker action on the item; refused once anything else changed it."""
+    return _blocker_action(db, user, item_id, lambda i: waits_svc.undo(db, i, actor=user))

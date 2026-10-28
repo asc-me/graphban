@@ -683,6 +683,12 @@ class Item(Base):
     # bumps it. NULL whenever the status is not `done`. Written by `_stamp_done_at` below,
     # never by hand. Migration 0145 backfilled rows that were already done.
     done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # A structured decision wait (GRPH-1137 / PRD-60 D7): `{question, options, answer, notify}`
+    # on a `wait:decision` item. NULL on every other item. `answer` is written once by
+    # `waits.answer_wait`; `notify` names the live holders to tell, `notified` those told.
+    decision: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Hide this blocker from triage until then (GRPH-1137). NULL = not snoozed.
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # The backstop for the mint path (services/items.py): even if minting is bypassed
     # or two agents race, the database refuses a duplicate number within a project.
