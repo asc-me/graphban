@@ -65,6 +65,7 @@ import type {
   PlatformConfig,
   StackHealth,
   RecommendedRules,
+  RefusalCoverage,
   RulesFlow,
   UnmappedRefusals,
   StackTopology,
@@ -1058,6 +1059,9 @@ export const api = {
   /** Unmapped refusals grouped and ranked over the last `days` by the server (GRPH-1195). */
   unmappedRefusals: (projectId: string, days = 7) =>
     request<UnmappedRefusals>(`/rules/refusals/unmapped${projectQuery(projectId)}&days=${days}`),
+  /** "N of M refusal sites name their rule", as the build published it (GRPH-1192). */
+  refusalCoverage: (projectId: string) =>
+    request<RefusalCoverage>(`/rules/refusal-coverage${projectQuery(projectId)}`),
   /** Suggestions from the project's own evidence; `sources` says what was and wasn't read (GRPH-1160). */
   recommendedRules: (projectId: string) =>
     request<RecommendedRules>(`/rules/recommended${projectQuery(projectId)}`),

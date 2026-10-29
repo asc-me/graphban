@@ -349,6 +349,12 @@ describe("the tracker row (PRD-47 S3)", () => {
     });
   });
 
+  it("draws the list PR chip without a git-pull-request icon", async () => {
+    await showRow(dressed);
+    const chip = screen.getByTitle("PR #42 · open · checks passing");
+    expect(chip.querySelector(".lucide-git-pull-request")).toBeNull();
+  });
+
   it("shows no PR chip on an item without a PR", async () => {
     await showRow({ ...dressed, pr: null });
     expect(screen.queryByTitle(/^PR #/)).not.toBeInTheDocument();
@@ -406,6 +412,19 @@ describe("the tracker board (GRPH-1144)", () => {
     expect(within(column("Done")).getByText("Finished thing")).toBeInTheDocument();
     expect(within(column("Backlog")).getByText("Drop here")).toBeInTheDocument();
     expect(within(column("In Progress")).queryByText("Drop here")).not.toBeInTheDocument();
+  });
+
+  it("keeps one subtitle across Board and List, and a kanban icon on the Board toggle", async () => {
+    const subtitle = "One linear stream. Priority + recency. Drag to reorder, click a status to advance it.";
+    const user = userEvent.setup();
+    renderTracker();
+    await screen.findByText("In progress thing");
+    expect(screen.getByText(subtitle)).toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: /Board/ });
+    expect(toggle.querySelector(".lucide-square-kanban")).not.toBeNull();
+    expect(toggle.querySelector(".lucide-columns-3")).toBeNull();
+    await user.click(screen.getByRole("button", { name: /List/ }));
+    expect(screen.getByText(subtitle)).toBeInTheDocument();
   });
 
   it("renders the status chip row on Board", async () => {

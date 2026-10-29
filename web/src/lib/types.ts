@@ -2805,6 +2805,15 @@ export interface RuleStage {
   rules: RuleFlowRule[];
 }
 
+/** `published: false` carries null numbers; the UI never shows 0 or computes one (GRPH-1192). */
+export interface RefusalCoverage {
+  published: boolean;
+  n: number | null;
+  m: number | null;
+  commit: string | null;
+  published_at: string | null;
+}
+
 export interface RulesFlow {
   version: string;
   /** Null when the project's gitops model is unmeasured. */

@@ -639,23 +639,23 @@ export function FleetView() {
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="fleet-v1">
       <PlaceHeader
-        viewName={`Fleet ${scope}`}
+        viewName="Fleet"
         purpose={data
           ? `${data.online} of ${data.total} online · heartbeat every ${data.heartbeat_interval_seconds}s`
           : "Agents working this project, and what they hold."}
         action={
           <div className="flex items-center gap-3">
             <Link
-              to={viewHref("outposts")}
-              className="text-[12px] text-muted transition-colors hover:text-fg-2"
-            >
-              Outposts
-            </Link>
-            <Link
               to={viewHref("harness")}
               className="text-[12px] text-muted transition-colors hover:text-fg-2"
             >
               Harness performance
+            </Link>
+            <Link
+              to={viewHref("outposts")}
+              className="text-[12px] text-muted transition-colors hover:text-fg-2"
+            >
+              Outposts
             </Link>
             {waves.length > 0 && (
               <Button onClick={askEndWave}>End wave</Button>
@@ -681,6 +681,7 @@ export function FleetView() {
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
+       <div className="max-w-[930px]" data-testid="fleet-content">
         {error && <p className="mb-3 text-[12px] text-red-400">{error}</p>}
 
         {confirming && (
@@ -1215,6 +1216,7 @@ export function FleetView() {
         </Section>
           </>
         )}
+       </div>
       </div>
     </div>
   );

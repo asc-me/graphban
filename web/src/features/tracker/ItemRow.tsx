@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Github, GitPullRequest, GripVertical, MoreHorizontal } from "lucide-react";
+import { ArrowDown, ArrowUp, Github, GripVertical, MoreHorizontal } from "lucide-react";
 import * as React from "react";
 
 import { Dot } from "@/components/ui/badge";
@@ -139,7 +139,7 @@ export function ItemRow({
           style={{ color: PR_STATE_COLOR[item.pr.state] ?? "#8b949e" }}
           title={`PR #${item.pr.number} · ${item.pr.state} · checks ${item.pr.checks}`}
         >
-          <GitPullRequest size={11} />#{item.pr.number}
+          #{item.pr.number}
           <span
             className="h-1.5 w-1.5 rounded-full"
             style={{ background: CHECK_COLOR[item.pr.checks] ?? "#8b949e" }}

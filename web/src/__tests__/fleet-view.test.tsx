@@ -966,7 +966,8 @@ describe("Fleet view", () => {
     // declaring it once above them is not.
     fleet.data = { ...BASE };
     renderView();
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toMatch(/Fleet\s*core/);
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Fleet");
+    expect(screen.getByTestId("place-header-tag")).toHaveTextContent("core");
   });
 });
 
@@ -1154,6 +1155,17 @@ describe("Fleet.v1 stays the roster", () => {
     expect(screen.queryByTestId("fleet-matrix")).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Harness config/ })).toHaveAttribute("aria-selected", "false");
     expect(screen.getByRole("link", { name: "Outposts" })).toHaveAttribute("href", "/outposts");
+  });
+
+  it("names itself Fleet with no project tag, links Harness performance before Outposts, and is left-aligned", () => {
+    renderView();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Fleet");
+    const perf = screen.getByRole("link", { name: "Harness performance" });
+    const outposts = screen.getByRole("link", { name: "Outposts" });
+    expect(Boolean(perf.compareDocumentPosition(outposts) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    const body = screen.getByTestId("fleet-content");
+    expect(body.className).toContain("max-w-[930px]");
+    expect(body.className).not.toContain("mx-auto");
   });
 });
 

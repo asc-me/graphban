@@ -11,6 +11,15 @@ COPY pyproject.toml ./
 COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
+# Refusal coverage (GRPH-1192): publish it the way the packer does, so the image reports
+# "N of M" instead of `published: false`. The build context is backend/, so the script is
+# a byte-identical copy of scripts/refusal_ratchet.py (guarded by test_refusals.py); it
+# scans `<root>/backend/app`, hence the symlinked layout. A failing ratchet fails the build.
+COPY scripts/refusal_ratchet.py /opt/ratchet/scripts/refusal_ratchet.py
+ARG GIT_SHA=unknown
+RUN ln -s /app /opt/ratchet/backend \
+    && python /opt/ratchet/scripts/refusal_ratchet.py publish /app/app/data/refusal_coverage.json "$GIT_SHA" \
+    && test -s /app/app/data/refusal_coverage.json
 RUN pip install --no-cache-dir .
 
 # Release identity: passed at build time (see docs/deploy.md), surfaced by /health.

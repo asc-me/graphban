@@ -433,7 +433,7 @@ function TypeBars({ data }: { data: DashboardData }) {
             >
               {titleCase(TYPE_META[t].label)}
             </span>
-            <div className="h-2.5 flex-1">
+            <div data-testid="request-track" className="h-2.5 flex-1 rounded-[3px] bg-surface-2">
               <div
                 className="h-full rounded-[3px]"
                 style={{
@@ -463,6 +463,10 @@ type JumpProps = {
   online?: number | null;
 };
 
+function isLive(value: number | null | undefined): boolean {
+  return typeof value === "number" && value > 0;
+}
+
 function metaText(value: number | null | undefined, phrase: (n: number) => string): ReactNode {
   if (value === null || value === undefined) return "—";
   return phrase(value);
@@ -471,10 +475,10 @@ function metaText(value: number | null | undefined, phrase: (n: number) => strin
 function JumpTo({
   to, pending, inFlight, triageNew, prds, nodes, review, lessons, online,
 }: JumpProps) {
-  const tiles: { sub: string; label: string; icon: ReactNode; meta: ReactNode }[] = [
-    { sub: "tracker", icon: <ListChecks size={14} />, label: "Tracker", meta: metaText(inFlight ?? null, (n) => `${n} in flight`) },
-    { sub: "triage", icon: <Radar size={14} />, label: "Triage", meta: metaText(triageNew ?? null, (n) => `${n} new`) },
-    { sub: "prds", icon: <BarChart3 size={14} />, label: "PRDs", meta: metaText(prds ?? null, (n) => `${n} docs`) },
+  const tiles: { sub: string; label: string; icon: ReactNode; meta: ReactNode; live: boolean }[] = [
+    { sub: "tracker", icon: <ListChecks size={14} />, label: "Tracker", meta: metaText(inFlight ?? null, (n) => `${n} in flight`), live: isLive(inFlight) },
+    { sub: "triage", icon: <Radar size={14} />, label: "Triage", meta: metaText(triageNew ?? null, (n) => `${n} new`), live: isLive(triageNew) },
+    { sub: "prds", icon: <BarChart3 size={14} />, label: "PRDs", meta: metaText(prds ?? null, (n) => `${n} docs`), live: isLive(prds) },
     {
       sub: "code",
       icon: <Network size={14} />,
@@ -482,12 +486,13 @@ function JumpTo({
       meta: nodes === 0
         ? <span className="text-st-review">not pushed</span>
         : metaText(nodes ?? null, (n) => `${n} nodes`),
+      live: isLive(nodes),
     },
-    { sub: "memory", icon: <Inbox size={14} />, label: "Memory", meta: metaText(review ?? null, (n) => `${n} to review`) },
-    { sub: "lessons", icon: <BookMarked size={14} />, label: "Lessons", meta: metaText(lessons ?? null, (n) => `${n} published`) },
+    { sub: "memory", icon: <Inbox size={14} />, label: "Memory", meta: metaText(review ?? null, (n) => `${n} to review`), live: isLive(review) },
+    { sub: "lessons", icon: <BookMarked size={14} />, label: "Lessons", meta: metaText(lessons ?? null, (n) => `${n} published`), live: isLive(lessons) },
     // One server integer. Filtering `agents` here would be a list length (GRPH-431).
-    { sub: "fleet", icon: <Users size={14} />, label: "Fleet", meta: metaText(online ?? null, (n) => `${n} online`) },
-    { sub: "live", icon: <Activity size={14} />, label: "Live", meta: metaText(online ?? null, (n) => `${n} on now`) },
+    { sub: "fleet", icon: <Users size={14} />, label: "Fleet", meta: metaText(online ?? null, (n) => `${n} online`), live: isLive(online) },
+    { sub: "live", icon: <Activity size={14} />, label: "Live", meta: metaText(online ?? null, (n) => `${n} on now`), live: isLive(online) },
   ];
   return (
     <section className="mt-6" aria-label="Jump to">
@@ -500,9 +505,9 @@ function JumpTo({
             className="flex items-center gap-2 rounded-[11px] border border-line bg-surface-2 px-3 py-2 transition-colors hover:border-line-hover"
           >
             <span className="flex-none text-muted">{tile.icon}</span>
-            <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{tile.label}</span>
+            <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-fg">{tile.label}</span>
             {!pending && (
-              <span className="flex-none font-mono text-[10.5px] text-muted">{tile.meta}</span>
+              <span className={`flex-none font-mono text-[10.5px] ${tile.live ? "text-accent" : "text-muted"}`}>{tile.meta}</span>
             )}
           </Link>
         ))}

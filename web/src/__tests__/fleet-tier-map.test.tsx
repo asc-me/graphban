@@ -50,6 +50,9 @@ function map(cells: FleetTierCell[], over: Partial<FleetTierMap> = {}): FleetTie
 
 /** The accessible name of the gbagent/cheap dropdown — a select per harness × tier. */
 const CHEAP = "Model for gbagent at cheap";
+/** The option the select shows: the one place a cell names its model. */
+const selected = (select: HTMLElement) => (select as HTMLSelectElement).selectedOptions[0];
+
 const CODEX = "Model for codex at frontier";
 
 function show() {
@@ -97,7 +100,7 @@ describe("tier map panel", () => {
     // Nothing has been edited, so there is nothing to write.
     expect(screen.getByRole("button", { name: /Save tier map/ })).toBeDisabled();
     expect(screen.getByTestId("tier-map-grading-link")).toHaveAttribute("href", "/harness");
-    expect(screen.getByTestId("tier-map-performance-link")).toHaveAttribute("href", "/harness");
+    expect(screen.queryByTestId("tier-map-performance-link")).not.toBeInTheDocument();
 
     // The tier column is named by the server's own tier, and the select's resting value is
     // "no override" — the packaged model is an OPTION, never a stored choice.
@@ -107,7 +110,7 @@ describe("tier map panel", () => {
     expect(within(select).getByRole("option", { name: /packaged/ })).toHaveTextContent("qwen3.6");
     expect(within(select).getAllByRole("option").map((o) => o.textContent?.trim()))
       .toEqual(["packaged · qwen3.6", "qwen3.6", "haiku"]);
-    expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("qwen3.6");
+    expect(selected(screen.getByLabelText(CHEAP))).toHaveTextContent("qwen3.6");
     expect(screen.getByTestId("tier-map-status")).toHaveTextContent(
       "No overrides saved — every cell runs its packaged model.");
   });
@@ -142,7 +145,7 @@ describe("tier map panel", () => {
 
     await user.selectOptions(screen.getByLabelText(CHEAP), "haiku");
 
-    expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("haiku");
+    expect(selected(screen.getByLabelText(CHEAP))).toHaveTextContent("haiku");
     // The overridden cell is marked, and marked as not yet written.
     expect(screen.getByText("override")).toBeInTheDocument();
     expect(screen.getByText("unsaved")).toBeInTheDocument();
@@ -171,12 +174,12 @@ describe("tier map panel", () => {
     const user = userEvent.setup();
     show();
     await loaded();
-    expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("haiku");
+    expect(selected(screen.getByLabelText(CHEAP))).toHaveTextContent("haiku");
     expect(screen.getByTestId("tier-map-status")).toHaveTextContent("1 saved override · nothing unsaved.");
 
     await user.selectOptions(screen.getByLabelText(CHEAP), "");
 
-    expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("qwen3.6");
+    expect(selected(screen.getByLabelText(CHEAP))).toHaveTextContent("qwen3.6");
     expect(screen.queryByText("override")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Save tier map/ }));
     await waitFor(() => expect(api.saveFleetTierMap).toHaveBeenCalledWith({
@@ -203,7 +206,7 @@ describe("tier map panel", () => {
     expect(screen.getByLabelText(CHEAP)).toHaveValue("haiku");
     // codex has no measurement: the draft is untouched and the square says why.
     expect(screen.getByLabelText(CODEX)).toHaveValue("");
-    expect(within(codexSquare).getByTestId("tier-map-effective")).toHaveTextContent("gpt-5");
+    expect(selected(within(codexSquare).getByLabelText(CODEX))).toHaveTextContent("gpt-5");
     expect(within(codexSquare).getByTestId("tier-map-graded")).toHaveTextContent("not measured");
     expect(screen.getByTestId("tier-map-note")).toHaveTextContent(/1 not measured/);
     // Only the measured cell became a pending change — nothing was invented for the other.
@@ -218,7 +221,7 @@ describe("tier map panel", () => {
     await user.click(screen.getByRole("checkbox", { name: /Inherit from performance grading/ }));
     expect(screen.getByTestId("tier-map-note")).toHaveTextContent(/no cell in this catalog is measured yet/);
     expect(screen.getByLabelText(CHEAP)).toHaveValue("");
-    expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("qwen3.6");
+    expect(selected(screen.getByLabelText(CHEAP))).toHaveTextContent("qwen3.6");
     expect(screen.getByRole("button", { name: /Save tier map/ })).toBeDisabled();
   });
 
@@ -236,14 +239,14 @@ describe("tier map panel", () => {
     const user = userEvent.setup();
     show();
     await loaded();
-    expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("haiku");
+    expect(selected(screen.getByLabelText(CHEAP))).toHaveTextContent("haiku");
 
     await user.click(screen.getByRole("button", { name: /Clear overrides/ }));
 
     await waitFor(() => expect(api.clearFleetTierMap).toHaveBeenCalledTimes(1));
     expect(api.clearFleetTierMap).toHaveBeenCalledWith("core");
-    expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("qwen3.6");
-    expect(screen.getByTestId("tier-map-effective")).not.toHaveTextContent("—");
+    expect(selected(screen.getByLabelText(CHEAP))).toHaveTextContent("qwen3.6");
+    expect(selected(screen.getByLabelText(CHEAP))).not.toHaveTextContent("nothing committed");
     expect(screen.getByLabelText(CHEAP)).toHaveValue("");
     expect(within(screen.getByLabelText(CHEAP)).getByRole("option", { name: /packaged/ }))
       .toHaveTextContent("qwen3.6");
@@ -262,12 +265,12 @@ describe("tier map panel", () => {
     show();
     await loaded();
     await user.selectOptions(screen.getByLabelText(CHEAP), "haiku");
-    expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("haiku");
+    expect(selected(screen.getByLabelText(CHEAP))).toHaveTextContent("haiku");
 
     await user.click(screen.getByRole("button", { name: /Clear overrides/ }));
 
     await waitFor(() => expect(api.clearFleetTierMap).toHaveBeenCalledTimes(1));
-    expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("qwen3.6");
+    expect(selected(screen.getByLabelText(CHEAP))).toHaveTextContent("qwen3.6");
     expect(screen.getByRole("button", { name: /Save tier map/ })).toBeDisabled();
   });
 
@@ -275,7 +278,7 @@ describe("tier map panel", () => {
     api.fleetTierMap.mockResolvedValue(map([cell({ packaged_model: "", effective_model: "", models: [] })]));
     show();
     await loaded();
-    expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("—");
+    expect(selected(screen.getByLabelText(CHEAP))).toHaveTextContent("nothing committed");
     expect(screen.getByRole("option", { name: /packaged/ })).toHaveTextContent("nothing committed");
     // One option, and it is the sentinel: no empty option that reads as a real choice.
     expect(screen.getAllByRole("option")).toHaveLength(1);
@@ -297,7 +300,7 @@ describe("tier map panel", () => {
     expect(select).toHaveValue("sonnet-3.5");
     expect(within(select).getByRole("option", { name: /sonnet-3\.5/ }))
       .toHaveTextContent("not in this catalog");
-    expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("sonnet-3.5");
+    expect(selected(screen.getByLabelText(CHEAP))).toHaveTextContent("sonnet-3.5");
   });
 
   it("surfaces a failed save rather than swallowing it", async () => {
@@ -316,7 +319,7 @@ describe("tier map panel", () => {
     expect(within(surface).getByRole("alert")).toBeInTheDocument();
     expect(within(surface).getByRole("button", { name: "Retry" })).toBeInTheDocument();
     // A failed write must not look like a save: the edit is still pending and still editable.
-    expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("haiku");
+    expect(selected(screen.getByLabelText(CHEAP))).toHaveTextContent("haiku");
     expect(screen.getByTestId("tier-map-status")).toHaveTextContent("Unsaved changes in 1 cell.");
     expect(screen.getByRole("button", { name: /Save tier map/ })).toBeEnabled();
     expect(screen.queryByTestId("tier-map-empty")).not.toBeInTheDocument();
@@ -336,7 +339,7 @@ describe("tier map panel", () => {
     expect(surface).toHaveTextContent("tier map is read-only on this deployment");
     expect(within(surface).getByRole("button", { name: "Retry" })).toBeInTheDocument();
     // Claiming the overrides are gone when the DELETE failed is the worse half of this bug.
-    expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("haiku");
+    expect(selected(screen.getByLabelText(CHEAP))).toHaveTextContent("haiku");
     expect(screen.getByText("override")).toBeInTheDocument();
   });
 
@@ -379,6 +382,22 @@ describe("tier map panel", () => {
     await waitFor(() => expect(api.fleetTierMap).toHaveBeenCalledTimes(2));
 
     expect(screen.getByTestId("tier-map-status")).toHaveTextContent("Unsaved changes in 1 cell.");
-    expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("haiku");
+    expect(selected(screen.getByLabelText(CHEAP))).toHaveTextContent("haiku");
+  });
+
+  it("a cell is a grade badge, the select and one meta line, naming the model once", async () => {
+    api.fleetTierMap.mockResolvedValue(map([cell({})]));
+    show();
+    await loaded();
+    const td = screen.getByLabelText(CHEAP).closest("td") as HTMLElement;
+    expect(within(td).getByTestId("tier-map-grade")).toHaveTextContent("–");
+    expect(within(td).getAllByTestId("tier-map-graded")).toHaveLength(1);
+    expect(within(td).getByTestId("tier-map-graded")).toHaveTextContent("– pass · – runs");
+    // The model name lives in the select's options only; no plain-text repeat beside it.
+    const select = within(td).getByLabelText(CHEAP);
+    const outside = Array.from(td.querySelectorAll("*")).filter(
+      (el) => !select.contains(el) && el !== select && el.children.length === 0 && /qwen3\.6/.test(el.textContent ?? ""),
+    );
+    expect(outside).toHaveLength(0);
   });
 });

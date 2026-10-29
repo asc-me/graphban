@@ -10,7 +10,7 @@ import { api } from "@/lib/api";
 import type { Event, RulesFlow, UnmappedRefusals } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
-  api: { rulesFlow: vi.fn(), unmappedRefusals: vi.fn(), recommendedRules: vi.fn(), dismissRecommendedRule: vi.fn(), createItem: vi.fn() },
+  api: { rulesFlow: vi.fn(), unmappedRefusals: vi.fn(), recommendedRules: vi.fn(), dismissRecommendedRule: vi.fn(), createItem: vi.fn(), refusalCoverage: vi.fn() },
 }));
 vi.mock("@/features/ProjectContext", () => ({
   useProjectCtx: () => ({ activeId: "core", active: { id: "core", tag: "CORE", name: "Core" }, projects: [], setActiveId: () => {} }),
@@ -51,6 +51,7 @@ function renderAt(url: string) {
 beforeEach(() => {
   vi.mocked(api.rulesFlow).mockResolvedValue(flow);
   vi.mocked(api.unmappedRefusals).mockResolvedValue({ days: 7, recording_since: null, groups: [] });
+  vi.mocked(api.refusalCoverage).mockResolvedValue({ published: false, n: null, m: null, commit: null, published_at: null });
 });
 
 describe("refusal links", () => {
@@ -100,12 +101,31 @@ describe("unmapped refusals", () => {
     expect(screen.getByTestId("rules-unmapped-footer").textContent).toMatch(/Mapping a refusal is a code change/);
   });
 
-  it("empty says since when, and the coverage line is unknown rather than zero", async () => {
+  it("a published build shows N of M and the commit", async () => {
+    vi.mocked(api.refusalCoverage).mockResolvedValue({ published: true, n: 40, m: 50, commit: "abcdef1234", published_at: "2026-10-29T00:00:00+00:00" });
+    renderAt("/rules");
+    await userEvent.click(screen.getByTestId("rules-open-unmapped"));
+    await waitFor(() => expect(screen.getByTestId("rules-coverage-n").textContent).toBe("40"));
+    expect(screen.getByTestId("rules-coverage-m").textContent).toBe("50");
+    expect(screen.getByTestId("rules-unmapped-coverage").textContent).toContain("abcdef1");
+  });
+
+  it("an unpublished build says so and shows no number", async () => {
+    vi.mocked(api.refusalCoverage).mockResolvedValue({ published: false, n: null, m: null, commit: null, published_at: null });
+    renderAt("/rules");
+    await userEvent.click(screen.getByTestId("rules-open-unmapped"));
+    const line = await screen.findByTestId("rules-unmapped-coverage");
+    await waitFor(() => expect(line.textContent).toMatch(/Not published by this build/));
+    expect(line.textContent).not.toMatch(/\d/);
+  });
+
+  it("empty says since when, and the coverage line is not published rather than zero", async () => {
+    vi.mocked(api.refusalCoverage).mockResolvedValue({ published: false, n: null, m: null, commit: null, published_at: null });
     vi.mocked(api.unmappedRefusals).mockResolvedValue(unmappedBody());
     renderAt("/rules");
     await userEvent.click(screen.getByTestId("rules-open-unmapped"));
     expect((await screen.findByTestId("rules-unmapped-empty")).textContent).toMatch(/No unmapped refusals recorded since .*2026/);
-    expect(screen.getByTestId("rules-unmapped-coverage").textContent).toMatch(/unknown/i);
+    await waitFor(() => expect(screen.getByTestId("rules-unmapped-coverage").textContent).toMatch(/not published/i));
   });
 
   it("empty with nothing ever recorded does not read as clean", async () => {

@@ -1755,6 +1755,15 @@ class RuleStageOut(BaseModel):
     rules: list[RuleFlowRuleOut]
 
 
+class RefusalCoverageOut(BaseModel):
+    """`published: false` carries null numbers — never a zero (GRPH-1192)."""
+    published: bool
+    n: int | None = None
+    m: int | None = None
+    commit: str | None = None
+    published_at: str | None = None
+
+
 class RulesFlowOut(BaseModel):
     version: str
     model: str | None = None

@@ -497,6 +497,15 @@ export function useUnmappedRefusals(projectId: string) {
   });
 }
 
+/** Refusal coverage (GRPH-1192): read from the server, never computed from events. */
+export function useRefusalCoverage(projectId: string) {
+  return useQuery({
+    queryKey: ["rules-refusal-coverage", projectId],
+    queryFn: () => api.refusalCoverage(projectId),
+    enabled: !!projectId,
+  });
+}
+
 /** Recommended rules (GRPH-1164). Fetched when the panel opens; the server caches briefly. */
 export function useRecommendedRules(projectId: string, enabled: boolean) {
   return useQuery({

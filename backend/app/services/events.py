@@ -129,9 +129,10 @@ def unmapped_refusals(db: Session, project_id: str, *, days: int = 7,
     (UTC). Attribution: an event belongs to the project it was recorded against (an MCP
     refusal uses the calling key's project, or the call's `project_id`). One that names no
     project at all is the PLATFORM bucket; it is returned only when `include_platform` is set
-    (the route sets it for the project's owner) and each such group says `platform: True`.
-    `recording_since` is the earliest refusal event of any kind, so an empty answer can say
-    since when it is empty — None means nothing has ever been recorded, not "zero since".
+    (the route sets it for a platform admin, or a self-hosted project owner) and each such
+    group says `platform: True`. `recording_since` is the earliest refusal event of any kind
+    in the SAME scope, so an empty answer can say since when it is empty without revealing
+    other projects' activity — None means nothing has ever been recorded here, not "zero since".
     """
     now = now or _now()
     since = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -159,7 +160,7 @@ def unmapped_refusals(db: Session, project_id: str, *, days: int = 7,
         if 0 <= age < days:
             g["daily"][days - 1 - age] += 1
     ranked = sorted(groups.values(), key=lambda g: (-g["count"], g["where"]))
-    first = db.scalar(select(func.min(Event.ts)).where(Event.action.in_(TYPED_REFUSAL_ACTIONS)))
+    first = db.scalar(select(func.min(Event.ts)).where(Event.action.in_(TYPED_REFUSAL_ACTIONS), scope))
     return {"days": days, "recording_since": _aware(first), "groups": ranked}
 
 

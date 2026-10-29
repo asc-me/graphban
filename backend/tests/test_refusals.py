@@ -210,6 +210,32 @@ def test_coverage_reads_what_publish_wrote(tmp_path):
     assert (got["n"], got["m"]) == (c["naming_a_rule"], c["refusal_sites"])
 
 
+def test_route_serves_the_published_numbers(client, auth, tmp_path, monkeypatch):
+    out = tmp_path / "c.json"
+    assert _ratchet().main(["publish", str(out), "abc123"]) == 0
+    monkeypatch.setattr(R, "REFUSAL_COVERAGE_FILE", out)
+    r = client.get("/api/rules/refusal-coverage", headers=auth)
+    c = _ratchet().scan()
+    assert r.status_code == 200
+    assert r.json()["published"] is True and r.json()["commit"] == "abc123"
+    assert (r.json()["n"], r.json()["m"]) == (c["naming_a_rule"], c["refusal_sites"])
+
+
+def test_route_without_the_file_is_unpublished_with_null_numbers(client, auth, tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "REFUSAL_COVERAGE_FILE", tmp_path / "missing.json")
+    r = client.get("/api/rules/refusal-coverage", headers=auth)
+    assert r.status_code == 200
+    assert r.json() == {"published": False, "n": None, "m": None, "commit": None,
+                        "published_at": None}
+
+
+def test_the_image_copy_of_the_ratchet_matches_the_script_and_the_dockerfile_publishes():
+    copy = Path(__file__).resolve().parents[1] / "scripts" / "refusal_ratchet.py"
+    assert copy.read_bytes() == SCRIPT.read_bytes(), "backend/scripts copy drifted from scripts/"
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+    assert "refusal_ratchet.py publish" in dockerfile
+
+
 def test_no_coverage_is_committed_by_a_pr():
     """It is a build artefact (GRPH-1185): gitignored, and nothing tracks it. A tracked copy
     would be a number no build of THIS tree computed, shipped by every package after it."""
@@ -312,3 +338,40 @@ def test_projectless_refusals_are_a_platform_bucket_for_the_owner_only(client, a
         db.close()
     assert [(g["where"], g["platform"]) for g in owner["groups"]] == [("tool_x", True), ("GET /api/mine", False)]
     assert [g["where"] for g in reader["groups"]] == ["GET /api/mine"]
+
+
+def _platform_wheres(client, headers, pid="core"):
+    r = client.get(f"/api/rules/refusals/unmapped?project_id={pid}", headers=headers)
+    assert r.status_code == 200, r.text
+    return [g["where"] for g in r.json()["groups"] if g["platform"]]
+
+
+def test_the_platform_bucket_is_for_platform_admins_or_a_self_hosted_owner(client, auth, monkeypatch):
+    """Project-less refusals come from every tenant. A hosted owner is anyone who made a
+    project, so owning one must not reveal them; only a platform admin sees them there."""
+    from app.config import settings
+    db = SessionLocal()
+    try:
+        _unmapped(db, 2, where="tool_x", project_id=None)
+    finally:
+        db.close()
+    assert _platform_wheres(client, auth) == ["tool_x"]  # self-hosted owner: one tenant
+    monkeypatch.setattr(settings, "hosted_mode", True)
+    monkeypatch.setattr(settings, "platform_admin_emails", "")
+    r = client.post("/api/auth/login", json={"email": "dana@ascme-labs.com", "password": "graphban"})
+    dana = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    client.post("/api/orgs", json={"name": "Dana Co"}, headers=dana)
+    pid = client.post("/api/projects", json={"name": "Dana Project"}, headers=dana).json()["id"]
+    assert _platform_wheres(client, dana, pid) == []
+    monkeypatch.setattr(settings, "platform_admin_emails", "dana@ascme-labs.com")
+    assert _platform_wheres(client, dana, pid) == ["tool_x"]
+
+def test_recording_since_does_not_see_other_projects(client, auth):
+    other = client.post("/api/projects", json={"name": "Elsewhere"}, headers=auth).json()["id"]
+    db = SessionLocal()
+    try:
+        _unmapped(db, 1, where="GET /api/elsewhere", project_id=other)
+    finally:
+        db.close()
+    body = client.get("/api/rules/refusals/unmapped?project_id=core", headers=auth).json()
+    assert body["recording_since"] is None and body["groups"] == []

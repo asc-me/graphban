@@ -1,4 +1,4 @@
-import { Check, Link2 } from "lucide-react";
+import { Check } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
@@ -34,10 +34,9 @@ export function LinkDialog({ request }: { request: RequestItem }) {
       <DialogTrigger asChild>
         <button
           onClick={(e) => e.stopPropagation()}
-          className="inline-flex items-center gap-1 rounded-md border border-control px-2 py-1 font-mono text-[10px] text-muted transition-colors hover:border-control-hover hover:text-fg"
+          className="inline-flex items-center rounded-md border border-control px-2 py-1 font-mono text-[10px] text-muted transition-colors hover:border-control-hover hover:text-fg"
         >
-          <Link2 size={11} />
-          {request.linked_to ?? "link"}
+          {request.linked_to ?? "Link"}
         </button>
       </DialogTrigger>
       <DialogContent className="max-w-lg">

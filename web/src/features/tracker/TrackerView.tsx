@@ -1,4 +1,4 @@
-import { Columns3, List } from "lucide-react";
+import { List, SquareKanban } from "lucide-react";
 import * as React from "react";
 import { useSearchParams } from "react-router-dom";
 
@@ -203,11 +203,7 @@ export function TrackerView() {
     <div className="relative flex h-full min-h-0 flex-col">
       <PlaceHeader
         viewName="Tracker"
-        purpose={
-          layout === "board"
-            ? "Work by status. Drag a card to another column to move it."
-            : "One linear stream. Priority + recency. Drag to reorder, click a status to advance it."
-        }
+        purpose="One linear stream. Priority + recency. Drag to reorder, click a status to advance it."
         action={<NewItemDialog />}
         condensed={condensed}
       />
@@ -372,7 +368,7 @@ function LayoutToggle({
             layout === l ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
           )}
         >
-          {l === "board" ? <Columns3 size={12} /> : <List size={12} />}
+          {l === "board" ? <SquareKanban size={12} /> : <List size={12} />}
           {l === "board" ? "Board" : "List"}
         </button>
       ))}
