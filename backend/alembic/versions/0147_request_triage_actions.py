@@ -1,7 +1,7 @@
 """Request triage actions: snooze/merge columns and the `request_actions` undo log (GRPH-1136).
 
-Revision ID: 0146
-Revises: 0145
+Revision ID: 0147
+Revises: 0146
 """
 
 from typing import Sequence, Union
@@ -9,8 +9,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0146"
-down_revision: Union[str, None] = "0145"
+revision: str = "0147"
+down_revision: Union[str, None] = "0146"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -165,3 +165,18 @@ def test_merge_into_item_and_public_pointer(client, auth, db):
     assert m.status_code == 200 and m.json()["merged_into"] == it["id"]
     from app.services import requests as req_svc
     assert req_svc.merged_target_key(db, db.get(Request, rid)) == it["id"]
+
+
+def test_merge_refuses_targets_in_another_project(client, auth, db):
+    other = client.post("/api/projects", headers=auth, json={"name": "Elsewhere"}).json()["id"]
+    rid = _mk(client, auth)
+    it = client.post("/api/items", headers=auth, json={"title": "dup", "project_id": other}).json()
+    m = client.post(f"/api/requests/{rid}/merge", headers=auth, json={"target_id": it["id"]})
+    assert m.status_code == 409 and "different project" in m.json()["detail"]
+    r = client.post("/api/requests", headers=auth,
+                    json={"type": "feature", "title": "dup", "project_id": other}).json()["id"]
+    m2 = client.post(f"/api/requests/{rid}/merge", headers=auth, json={"target_id": r})
+    assert m2.status_code == 409 and "different project" in m2.json()["detail"]
+    db.expire_all()
+    req = db.get(Request, rid)
+    assert req.status == "new" and req.merged_into is None

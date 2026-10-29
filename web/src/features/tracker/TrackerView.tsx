@@ -9,6 +9,9 @@ import {
   TrackerBoardSkeleton,
   TrackerListSkeleton,
 } from "@/components/planner/PlannerStates";
+import { ViewBar, ViewFooter } from "@/components/planner/ViewBar";
+import { Collapsible } from "@/components/planner/Collapsible";
+import { hiddenSummary, scopeRows, statusMatches, useCondensed, useViews } from "@/components/planner/viewScope";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Dot } from "@/components/ui/badge";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -48,7 +51,7 @@ function canPatchDone(item: Item): boolean {
 /** Planner-facing statuses: live work, not backlog/next/done. */
 const ACTIVE_STATUSES: Status[] = ["in_progress", "review", "blocked"];
 
-type TrackerFilter = Status | "all" | "active";
+type TrackerFilter = string;
 
 type TrackerLayout = "board" | "list";
 
@@ -70,7 +73,10 @@ export function TrackerView() {
   const update = useUpdateItem();
   const reorder = useReorderItems();
 
-  const [filter, setFilter] = React.useState<TrackerFilter>("active");
+  const views = useViews("tracker");
+  const [condensed, toggleCondensed] = useCondensed();
+  const filter: TrackerFilter = views.state.status;
+  const setFilter = (status: TrackerFilter) => views.patch({ status });
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [dragId, setDragId] = React.useState<string | null>(null);
   const [overId, setOverId] = React.useState<string | null>(null);
@@ -102,26 +108,30 @@ export function TrackerView() {
     [items],
   );
 
-  const visible = ordered.filter((it) => {
-    if (filter === "all") return true;
-    if (filter === "active") return ACTIVE_STATUSES.includes(it.status);
-    return it.status === filter;
-  });
+  const scopeOf = (v: { window: number; hide: number }) =>
+    scopeRows(
+      ordered,
+      v,
+      { activity: (it) => it.updated_at || it.created_at, finishedAt: (it) => (it.status === "done" ? it.done_at : null) },
+    );
+  const scoped = scopeOf(views.state);
+  const visible = scoped.shown.filter((it) => statusMatches(it.status, filter, ACTIVE_STATUSES));
 
+  // Chip counts follow the scope, so a chip's number is the rows it would show.
   const counts = React.useMemo(() => {
     const c: Record<string, number> = {};
-    for (const it of ordered) c[it.status] = (c[it.status] ?? 0) + 1;
+    for (const it of scoped.shown) c[it.status] = (c[it.status] ?? 0) + 1;
     return c;
-  }, [ordered]);
+  }, [scoped.shown]);
 
-  const activeCount = React.useMemo(
-    () => ACTIVE_STATUSES.reduce((n, s) => n + (counts[s] ?? 0), 0),
-    [counts],
-  );
+  const activeCount = ACTIVE_STATUSES.reduce((n, s) => n + (counts[s] ?? 0), 0);
+  const hidden = hiddenSummary(scoped, views.state, "done");
+  const showHidden = () => views.patch({ window: 0, hide: 0 });
 
   const selected = items.find((i) => i.id === selectedId) ?? null;
   const isEmpty = !isLoading && !isError && ordered.length === 0;
   const isFilteredEmpty = !isLoading && !isError && ordered.length > 0 && visible.length === 0;
+  const clearFilter = () => views.select(views.views.find((v) => v.id === "all") ?? views.current);
 
   function setStatus(item: Item, status: Status) {
     if (status === "done" && !canPatchDone(item)) {
@@ -198,33 +208,43 @@ export function TrackerView() {
             : "One linear stream. Priority + recency. Drag to reorder, click a status to advance it."
         }
         action={<NewItemDialog />}
+        condensed={condensed}
       />
 
-      <div className="flex flex-none flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
-        <LayoutToggle layout={layout} onChange={setLayout} />
-        {layout === "board" && <ColumnsPopover prefs={columns} items={items} />}
-        {layout === "list" && (
+      <ViewBar
+        condensed={condensed}
+        onToggleCondense={toggleCondensed}
+        views={views}
+        doneWord="done"
+        countFor={(v) =>
+          scopeOf(v).shown.filter((it) => statusMatches(it.status, v.status, ACTIVE_STATUSES)).length
+        }
+        leading={
           <>
-            <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={ordered.length} />
-            <FilterChip
-              active={filter === "active"}
-              onClick={() => setFilter("active")}
-              label="Active"
-              count={activeCount}
-            />
-            {STATUS_ORDER.map((s) => (
-              <FilterChip
-                key={s}
-                active={filter === s}
-                onClick={() => setFilter(s)}
-                label={STATUS_META[s].label}
-                count={counts[s] ?? 0}
-                color={STATUS_META[s].color}
-              />
-            ))}
+            <LayoutToggle layout={layout} onChange={setLayout} />
+            {layout === "board" && <ColumnsPopover prefs={columns} items={items} />}
           </>
-        )}
-      </div>
+        }
+      />
+
+      {layout === "list" && (
+        <Collapsible collapsed={condensed}>
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
+          <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={scoped.shown.length} />
+          <FilterChip active={filter === "active"} onClick={() => setFilter("active")} label="Active" count={activeCount} />
+          {STATUS_ORDER.map((s) => (
+            <FilterChip
+              key={s}
+              active={filter === s}
+              onClick={() => setFilter(s)}
+              label={STATUS_META[s].label}
+              count={counts[s] ?? 0}
+              color={STATUS_META[s].color}
+            />
+          ))}
+        </div>
+        </Collapsible>
+      )}
 
       {refusal && (
         <div
@@ -245,9 +265,17 @@ export function TrackerView() {
           <PlannerError message="Items unavailable" onRetry={() => refetch()} />
         ) : isEmpty ? (
           emptyState
+        ) : isFilteredEmpty ? (
+          <PlannerFilteredEmpty
+            message={`No items in this view${hidden ? ` — ${hidden}` : filterLabel(filter)}.`}
+            onClear={clearFilter}
+          />
         ) : (
           <TrackerBoard
-            items={ordered}
+            items={visible}
+            doneHidden={scoped.doneHidden}
+            hideDays={views.state.hide}
+            onShowHidden={showHidden}
             selectedId={selectedId}
             onSelect={setSelectedId}
             onStatus={setStatus}
@@ -264,8 +292,8 @@ export function TrackerView() {
             emptyState
           ) : isFilteredEmpty ? (
             <PlannerFilteredEmpty
-              message={`No items match this filter${filterLabel(filter)}.`}
-              onClear={() => setFilter("all")}
+              message={`No items in this view${hidden ? ` — ${hidden}` : filterLabel(filter)}.`}
+              onClear={clearFilter}
             />
           ) : (
             visible.map((item) => {
@@ -296,6 +324,10 @@ export function TrackerView() {
         </div>
       )}
 
+      {!isLoading && !isError && !isEmpty && (
+        <ViewFooter shown={visible.length} hidden={hidden} onShowHidden={showHidden} />
+      )}
+
       {selected && (
         <ItemDetailPanel
           item={selected}
@@ -313,7 +345,7 @@ export function TrackerView() {
 function filterLabel(filter: TrackerFilter): string {
   if (filter === "all") return "";
   if (filter === "active") return " (Active)";
-  return ` (${STATUS_META[filter].label})`;
+  return ` (${STATUS_META[filter as Status]?.label ?? filter})`;
 }
 
 function LayoutToggle({

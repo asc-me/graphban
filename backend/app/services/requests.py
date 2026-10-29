@@ -457,6 +457,8 @@ def _final_target(db: Session, source: Request, target_id: str) -> Request | Ite
             item = db.get(Item, iid or nxt)
             if item is None:
                 raise ActionRefused(f"merge target not found: {target_id}")
+            if item.project_id != source.project_id:
+                raise ActionRefused("merge target is in a different project")
             return item
         if current.id in seen:
             raise ActionRefused("merge refused: it would create a cycle")

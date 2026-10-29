@@ -19,12 +19,19 @@ export function TrackerBoard({
   onSelect,
   onStatus,
   columns,
+  doneHidden = 0,
+  hideDays = 0,
+  onShowHidden,
 }: {
   items: Item[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   onStatus: (item: Item, status: Status) => void;
   columns: ColumnPrefsApi;
+  /** Done cards the view's auto-hide left out; the Done column says so. */
+  doneHidden?: number;
+  hideDays?: number;
+  onShowHidden?: () => void;
 }) {
   const [dragId, setDragId] = React.useState<string | null>(null);
   const [overCol, setOverCol] = React.useState<Status | null>(null);
@@ -120,6 +127,14 @@ export function TrackerBoard({
                 }}
               />
             ))}
+            {status === "done" && doneHidden > 0 && onShowHidden && (
+              <div className="px-1 text-[11.5px] text-muted">
+                + {doneHidden} done more than {hideDays}d ago ·{" "}
+                <button type="button" onClick={onShowHidden} className="text-accent hover:underline">
+                  show
+                </button>
+              </div>
+            )}
             {cards.length === 0 && (
               <div className="flex min-h-[72px] flex-1 items-center justify-center rounded-[10px] border border-dashed border-line-2 font-mono text-[10.5px] text-faint-2">
                 Drop here

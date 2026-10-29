@@ -577,6 +577,17 @@ class ItemCreate(BaseModel):
     project_id: str = "core"
     prd_id: str | None = None
     prd_section: str = ""
+    question: str | None = None
+    options: list[str] | None = None
+
+
+class WaitAnswerIn(BaseModel):
+    option: str | None = None
+    text: str | None = None
+
+
+class SnoozeIn(BaseModel):
+    until: datetime
 
 
 class ItemUpdate(BaseModel):
@@ -648,6 +659,18 @@ class ItemOut(ORMModel):
     #: When it last reached `done` (GRPH-1134); null while it is not done. The board's
     #: done-window and auto-hide read this, not `updated_at`, which any edit bumps.
     done_at: datetime | None = None
+    #: A decision wait's `{question, options, answer?}` (GRPH-1137); null on every other item.
+    decision: dict | None = None
+    #: Hidden from triage until this time (GRPH-1137).
+    snoozed_until: datetime | None = None
+
+    @field_validator("decision", mode="before")
+    @classmethod
+    def _decision_public(cls, v):
+        # Strips the server-side `notify` bookkeeping from what the web reads.
+        if not v:
+            return None
+        return {k: v[k] for k in ("question", "options", "answer") if k in v}
 
     @field_validator("touchpoints", "evidence", mode="before")
     @classmethod

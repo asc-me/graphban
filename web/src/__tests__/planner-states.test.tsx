@@ -158,6 +158,7 @@ describe("planner surfaces (GRPH-913)", () => {
     itemsLoading = false;
     itemsError = false;
     localStorage.removeItem("gb_tracker_layout");
+    localStorage.setItem("gb_views_tracker", JSON.stringify({ saved: [], defaultId: "all" }));
     Element.prototype.scrollTo = Element.prototype.scrollTo ?? (() => {});
   });
 
@@ -175,7 +176,7 @@ describe("planner surfaces (GRPH-913)", () => {
     renderTracker();
     await screen.findByText("First item");
     await user.click(screen.getByRole("button", { name: /^Backlog/ }));
-    expect(await screen.findByText(/No items match this filter \(Backlog\)/)).toBeInTheDocument();
+    expect(await screen.findByText(/No items in this view \(Backlog\)/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Clear filter" })).toBeInTheDocument();
   });
 

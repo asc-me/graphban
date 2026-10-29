@@ -33,6 +33,7 @@ vi.mock("@/lib/api", () => ({
     projects: vi.fn(async () => [project]),
     counts: vi.fn(async () => ({
       items: 41, items_in_progress: 3, requests: 7, review: 5, triage_new: 4, lessons_published: 6,
+      items_open: 41, requests_untriaged: 7, code_nodes: 2184, mcp_tools: 24, fleet_agents: 3, outposts: 2, live_agents: 2,
     })),
     // Collections the shell chrome asks for. Empty on purpose: the redirect tests assert on
     // where the URL landed, and a populated palette/sidebar only adds noise around it.
@@ -106,12 +107,12 @@ describe("P28 self-host rail", () => {
     expect(await screen.findByText("41")).toBeInTheDocument();
   });
 
-  it("opens Build as a menu beside the sidebar without leaving the current page", async () => {
+  it("opens Build as a flyout beside the sidebar without leaving the current page", async () => {
     const user = userEvent.setup();
     wrap(<LeftNav />, "/tracker");
     await screen.findByText("Tracker");
     await user.click(screen.getByRole("button", { name: "Build" }));
-    const menu = await screen.findByRole("menu");
+    const menu = await screen.findByRole("dialog", { name: "Build" });
     expect(within(menu).getByText("Code graph")).toBeInTheDocument();
     expect(within(menu).getByText("Fleet")).toBeInTheDocument();
     expect(within(menu).queryByText("Fleet.v1")).not.toBeInTheDocument();
@@ -127,10 +128,12 @@ describe("P28 self-host rail", () => {
     wrap(<LeftNav />, "/tracker");
     await screen.findByText("Tracker");
     await user.click(screen.getByRole("button", { name: "Plan" }));
-    expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
+    // The rows stay mounted to animate shut, but inert and hidden from assistive tech.
+    expect(screen.queryByRole("link", { name: /^Tracker/ })).toBeNull();
+    expect(document.getElementById("nav-plan")).toHaveAttribute("inert");
     expect(screen.getByRole("button", { name: "Plan" })).toHaveAttribute("aria-expanded", "false");
     await user.click(screen.getByRole("button", { name: "Plan" }));
-    expect(screen.getByText("Tracker")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /^Tracker/ })).toBeInTheDocument();
     expect(screen.getByTestId("here")).toHaveTextContent("/tracker");
   });
 
@@ -139,7 +142,8 @@ describe("P28 self-host rail", () => {
     wrap(<LeftNav />, "/tracker");
     await screen.findByText("Tracker");
     await user.click(screen.getByRole("button", { name: "Observe" }));
-    await user.click(await screen.findByRole("menuitem", { name: /Activity/ }));
+    const fly = await screen.findByRole("dialog", { name: "Observe" });
+    await user.click(within(fly).getByRole("link", { name: /Activity/ }));
     // Choosing a page changes the route, and the sidebar follows the route.
     expect(screen.getByTestId("here")).toHaveTextContent("/activity");
     expect(screen.getByRole("button", { name: "Observe" })).toHaveAttribute("aria-expanded", "true");
@@ -162,34 +166,13 @@ describe("P28 self-host rail", () => {
     expect(screen.getByText("Lessons")).toBeInTheDocument();
   });
 
-  it("keeps Lessons in OBSERVE next to Memory, and keeps headers non-navigating", () => {
+  it("keeps headers non-navigating", () => {
     const sources = import.meta.glob("../components/shell/LeftNav.tsx", {
       query: "?raw",
       import: "default",
       eager: true,
     }) as Record<string, string>;
     const src = Object.values(sources)[0] ?? "";
-    const build = src.match(/key: "build"[\s\S]*?\],\n  \}/)?.[0] ?? "";
-    expect(build).toContain('view: "fleet",');
-    expect(build).not.toContain('view: "fleet.v');
-
-    const observe = src.match(/key: "observe"[\s\S]*?\],\n  \}/)?.[0] ?? "";
-    const mem = observe.indexOf('view: "memory"');
-    const les = observe.indexOf('view: "lessons"');
-    expect(mem).toBeGreaterThan(-1);
-    expect(les).toBeGreaterThan(mem);
-    expect(observe.slice(mem, les).match(/view:/g)?.length).toBe(1);
-
-    const act = observe.indexOf('view: "activity"');
-    const live = observe.indexOf('view: "live"');
-    expect(act).toBeGreaterThan(-1);
-    expect(live).toBeGreaterThan(act);
-    expect(observe.slice(act, live).match(/view:/g)?.length).toBe(1);
-
-    const harness = observe.indexOf('view: "harness"');
-    expect(harness).toBeGreaterThan(live);
-    expect(observe.slice(live, harness).match(/view:/g)?.length).toBe(1);
-
     // A section header expands; it never navigates. No default landing page may creep back in.
     const header = src.match(/function SectionHeader\(\{[\s\S]*?\n\}/)?.[0] ?? "";
     expect(header).toContain("onToggle");
@@ -217,7 +200,7 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     expect(dash).not.toHaveAttribute("aria-current");
     expect(await screen.findByRole("link", { name: "Admin" })).toBeInTheDocument();
     expect(screen.getByText("Feedback Kit")).toBeInTheDocument();
-    // Build and Observe are closed menus — their pages are not in the document.
+    // Build and Observe are closed flyouts — their pages are not in the document.
     expect(screen.queryByText("Code graph")).not.toBeInTheDocument();
     expect(screen.queryByText("Memory review")).not.toBeInTheDocument();
   });
@@ -227,14 +210,14 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     wrap(<LeftNav hosted />, "/p/CORE/tracker");
     await screen.findByText("Tracker");
     await user.click(screen.getByRole("button", { name: "Build" }));
-    const menu = await screen.findByRole("menu");
+    const menu = await screen.findByRole("dialog", { name: "Build" });
     expect(within(menu).getByText("Code graph")).toBeInTheDocument();
     expect(within(menu).getByText("MCP Tools")).toBeInTheDocument();
     expect(within(menu).getByText("Fleet")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-expanded", "true");
     // Opening must not navigate — same trap as self-host (GRPH-P28 rev2).
     expect(screen.getByTestId("here")).toHaveTextContent("/p/CORE/tracker");
-    await user.click(within(menu).getByRole("menuitem", { name: /Code graph/ }));
+    await user.click(within(menu).getByRole("link", { name: /Code graph/ }));
     expect(screen.getByTestId("here")).toHaveTextContent("/p/CORE/code");
     expect(document.getElementById("nav-build")).not.toBeNull();
   });

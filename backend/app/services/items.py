@@ -97,8 +97,12 @@ def create_item(
     prd_section: str = "",
     fidelity: str = "low",
     commit: bool = True,
+    question: str | None = None,
+    options: list[str] | None = None,
 ) -> Item:
     """Create a tracked item.
+
+    `question`/`options` file it as a structured decision wait (`waits.set_decision`).
 
     ``commit=False`` leaves the row flushed but uncommitted so a caller can make the item
     and something that references it one transaction — `accept_request` needs the item and
@@ -145,6 +149,9 @@ def create_item(
         prd_section=prd_section or "",
         fidelity=fidelity,
     )
+    if question or options:
+        from app.services.waits import set_decision
+        set_decision(item, question, options)
     db.add(item)
     if commit:
         db.commit()
@@ -1840,6 +1847,11 @@ def item_dict(item: Item) -> dict:
         # needs the value that IS there, not a field that is always present and
         # usually blank.
         out["branch"] = item.branch
+    if item.decision:
+        # The agent's question and options, and the answer once given (GRPH-1137). Present
+        # only on a decision wait; `notify` bookkeeping stays server-side. Reply-only.
+        from app.services.waits import decision_dict
+        out["decision"] = decision_dict(item)
     if item.done_at is not None:
         # When it last reached `done` (GRPH-1134), a unix timestamp like `claimed_at`. Shown
         # only when set, like `branch`: every open row would otherwise carry an empty field.

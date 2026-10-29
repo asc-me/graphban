@@ -46,6 +46,21 @@ export interface Project {
   decider_credential_id?: string | null;
 }
 
+/** One project switcher row (GRPH-1131), counted server-side so the switcher never fetches collections. */
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  tag: string;
+  accent: string;
+  item_count: number;
+  agent_count: number;
+  live_agents: number;
+  /** Gitops base branch. Null when unset — never a guessed `main`. */
+  default_branch: string | null;
+  /** Null when nothing has ever happened, not an epoch. */
+  last_activity_at: string | null;
+}
+
 // ── Deploy config + Organizations (hosted-only, AL-74b) ────────────────────
 export type SignupMode = "open" | "invite_only" | "closed";
 
@@ -1283,6 +1298,8 @@ export interface PrdSummary {
   version: string;
   linked: string[];
   updated_at: string;
+  /** When the PRD closed; the list falls back to updated_at while the API omits it. */
+  closed_at?: string | null;
 }
 
 export interface Prd extends PrdSummary {
@@ -2117,6 +2134,14 @@ export type ShellCounts = {
   review: number;
   triage_new: number;
   lessons_published: number;
+  /** The sidebar badges (GRPH-1132): each restates the population of the page it sits on. */
+  items_open: number;
+  requests_untriaged: number;
+  code_nodes: number;
+  mcp_tools: number;
+  fleet_agents: number;
+  outposts: number;
+  live_agents: number;
 };
 
 /** A deployment credential (PRD-25). `used_by` and `falling_back` are DERIVED server-side. */

@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 176 of the 255 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 183 of the 262 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -70,6 +70,13 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | PATCH | `/api/items/reorder` | JWT |
 | GET | `/api/items/{id}` | JWT |
 | PATCH | `/api/items/{id}` | JWT |
+| GET | `/api/items/blockers` | JWT (read) | Blocked items for triage, snoozed ones hidden; decision waits carry `decision: {question, options, answer?}` (GRPH-1137). |
+| POST | `/api/items/{id}/answer` | JWT (write) | Answer a decision wait. Body: `{option?, text?}`; stores the answer, marks the wait done and returns the blocked item to `next`. 409 if already answered, 422 if `option` is not one of the options. |
+| POST | `/api/items/{id}/unblock` | JWT (write) | Clear the blocker: `next`, or `in_progress` while the lease is live. Writes one `blocker.*` event (as do the rest below). |
+| POST | `/api/items/{id}/release-claim` | JWT (write) | Drop the lease and return the item to `next` with no holder. |
+| POST | `/api/items/{id}/escalate` | JWT (write) | Record an event and email the project owner when SMTP is set. |
+| POST | `/api/items/{id}/snooze` | JWT (write) | Body `{until}`; hides the blocker from triage until then. |
+| POST | `/api/items/{id}/undo` | JWT (write) | Undo the newest blocker action on the item; 409 once anything else changed it. Escalate's email cannot be unsent. |
 | POST | `/api/items/{id}/owner-close` | JWT (project owner) | Close a hand-merged item. Body: `{commit, pr_url?}`. Writes an `owner.close` attestation, not `fleet.sign_off`. |
 
 ## Requests
