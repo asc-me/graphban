@@ -469,7 +469,7 @@ describe("Harness tabs", () => {
 
   it("switches to the Changes tab and shows recommendations and the probe panel", async () => {
     probeCandidates.mockResolvedValueOnce(probeData());
-    harnessRecommendations.mockResolvedValueOnce({
+    harnessRecommendations.mockResolvedValue({
       project_id: "core",
       cards: [{
         rule: "R1", key: "R1:test", evidence_hash: "abc",
@@ -487,6 +487,10 @@ describe("Harness tabs", () => {
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[2]);
     expect(await screen.findByTestId("harness-cards")).toBeInTheDocument();
+    harnessRecommendations.mockResolvedValue({
+      project_id: "core", cards: [], rules: ["R1", "R2", "R3", "R4", "R5", "R6"],
+      lessons_drafted: [], window_days: 90, floor: 5,
+    });
     expect(screen.getByTestId("harness-probe-panel")).toBeInTheDocument();
     expect(screen.getByText(/This page changes nothing/)).toBeInTheDocument();
   });

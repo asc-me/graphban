@@ -127,7 +127,7 @@ describe("Fleet view", () => {
     // Settings → API keys. Linking to /mcp-tools or the MCP catalog would send the
     // person who asked "how do I connect" to a tool list with no key on it.
     renderView();
-    expect(screen.getByRole("link", { name: /looking for mcp\?/i }))
+    expect(screen.getByRole("link", { name: /Settings → API keys/ }))
       .toHaveAttribute("href", settingsPath("project/api-keys"));
   });
 
