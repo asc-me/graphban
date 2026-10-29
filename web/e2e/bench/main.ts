@@ -80,18 +80,25 @@ function bench(name: "sparse" | "dense", opts?: { renderer?: "webgl" | "canvas2d
   renderer.draw(first);
   const paintMs = performance.now() - t0;
 
+  // A pan frame on a shared CI runner can stall for reasons that are not the
+  // renderer. Warm-up frames are drawn and thrown away, and enough frames are
+  // timed that p95 is not just the second-slowest one.
+  const warmup = 5;
+  const timed = 120;
   const samples: number[] = [];
-  for (let i = 0; i < 40; i++) {
-    // The Canvas 2D budget pans at a fixed zoom, the same walk the S2 bench
-    // already measured. An explicit zoom (dense WebGL at 2.6×) also steps ±0.05,
-    // which stays inside the renderer's 8% bake window so the pan does not
-    // re-upload instance buffers.
+  for (let n = 0; n < warmup + timed; n++) {
+    // The walk repeats the same 40 cameras, so a longer run does not pan
+    // further. The Canvas 2D budget pans at a fixed zoom, the same walk the S2
+    // bench already measured. An explicit zoom (dense WebGL at 2.6×) also steps
+    // ±0.05, which stays inside the renderer's 8% bake window so the pan does
+    // not re-upload instance buffers.
+    const i = n % 40;
     const cam = opts?.zoom != null
       ? { x: origin.x + (i % 5) * 6, y: origin.y + (i % 4) * 4, k: zoom + (i % 2) * 0.05 }
       : { x: origin.x + (i + 1) * 4, y: origin.y + (i + 1) * 2, k: zoom };
     const t = performance.now();
     renderer.draw(buildScene(layout, { ...base, camera: cam }));
-    samples.push(performance.now() - t);
+    if (n >= warmup) samples.push(performance.now() - t);
   }
   samples.sort((a, b) => a - b);
   const panP95 = samples[Math.min(samples.length - 1, Math.floor(samples.length * 0.95))];
