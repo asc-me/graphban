@@ -126,8 +126,34 @@ describe("the request row (PRD-47 S3)", () => {
     // Scoped to the row: the filter bar above the list carries a "BUG" chip of its own,
     // and matching either one would not show that the row is typed.
     const row = vote.closest<HTMLDivElement>("div[class*='rounded-[12px]']")!;
-    expect(within(row).getByText("Bug")).toBeInTheDocument();
-    expect(within(row).queryByText("BUG")).not.toBeInTheDocument();
+    expect(within(row).getByText("BUG")).toBeInTheDocument();
+  });
+
+  it("casts chips in sentence case and the badge and status in uppercase", async () => {
+    renderRequests();
+    const vote = await screen.findByTitle("Upvote");
+    const row = vote.closest<HTMLDivElement>("div[class*='rounded-[12px]']")!;
+    expect(screen.getByRole("button", { name: /^Bug/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^BUG/ })).not.toBeInTheDocument();
+    expect(within(row).getByText("BUG")).toBeInTheDocument();
+    expect(within(row).getByText("new")).toHaveClass("uppercase");
+  });
+
+  it("carries no icon on Publish or Link, and shows the PUBLISHED pill once published", async () => {
+    renderRequests();
+    const publish = await screen.findByTitle(/publish.*public board/i);
+    expect(publish.querySelector("svg")).toBeNull();
+    const link = screen.getByRole("button", { name: /^Link$/ });
+    expect(link.querySelector("svg")).toBeNull();
+  });
+
+  it("shows the published pill without an icon", async () => {
+    requestsMock.mockResolvedValueOnce([makeReq({ published_at: "2026-01-01T00:00:00Z" })]);
+    renderRequests();
+    const pill = await screen.findByTitle(/unpublish.*public board/i);
+    expect(pill.querySelector("svg")).toBeNull();
+    expect(pill.textContent).toMatch(/published/i);
+    expect(pill.className).not.toMatch(/green-(400|500)/);
   });
 
   it("shows the short age, not '… ago'", async () => {
@@ -145,7 +171,8 @@ describe("the request row (PRD-47 S3)", () => {
     await userEvent.click(await screen.findByTitle(/show detail/i));
     expect(await screen.findByText("backend/app/x.py")).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("backend/app/services/x.py")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /^Link$/ }));
+    // The row's own Link button comes first; the add-link toggle is the one in the expanded section.
+    await userEvent.click(screen.getAllByRole("button", { name: /^Link$/ }).at(-1)!);
     expect(screen.getByPlaceholderText("backend/app/services/x.py")).toBeInTheDocument();
   });
 
