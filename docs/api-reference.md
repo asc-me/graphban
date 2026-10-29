@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 183 of the 262 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 186 of the 265 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -68,6 +68,10 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | GET | `/api/items` (`?status=`, `?project_id=`) | JWT |
 | POST | `/api/items` | JWT |
 | PATCH | `/api/items/reorder` | JWT |
+| GET | `/api/items/collision-triage` (`?project_id=`) | JWT | Colliding clusters with no live decision (GRPH-1138). |
+| GET | `/api/items/collision-decisions` (`?project_id=`) | JWT | Live decisions: serialize, parallel, hold, override, snooze. |
+| POST | `/api/items/collision-decisions` | JWT (override: project owner) | Body: `{project_id, members, decision, order?, snooze_until?}`. Serialize/hold add dependency links in `order`; override is refused (403) for non-owners. Writes a `collision_decide` event. |
+| DELETE | `/api/items/collision-decisions/{id}` | JWT | Undo: removes exactly the links the decision added. Writes `collision_undo`. |
 | GET | `/api/items/{id}` | JWT |
 | PATCH | `/api/items/{id}` | JWT |
 | GET | `/api/items/blockers` | JWT (read) | Blocked items for triage, snoozed ones hidden; decision waits carry `decision: {question, options, answer?}` (GRPH-1137). |
