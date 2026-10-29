@@ -135,6 +135,14 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("memory.independent_adjudication", "learn", "Agents do not publish their own memory",
          "An agent may discard its candidate shard; only an independent judge publishes one.",
          "enforced", _src("app/services/memory.py", "agent_publish"), "code"),
+    Rule("memory.write_access", "learn", "Changing memory needs write access",
+         "Retiring or restoring a shard needs write access to its project, or to at least one "
+         "project when the shard has none.",
+         "enforced", _src("app/routers/memory.py", "Refused"), "code"),
+    Rule("memory.retire_window", "learn", "Retire and restore follow the shard's state",
+         "Only a published shard can be retired, and a retired shard can be restored for "
+         "14 days; after that the retirement is final.",
+         "enforced", _src("app/services/memory.py", "RetireRefused"), "code"),
     Rule("review.role_gated_tools", "review", "Role-gated tools",
          "MCP tools outside an agent's role are refused.",
          "enforced", _src("app/services/fleet.py", "check_tool_role"), "code"),
@@ -285,6 +293,8 @@ RULE_STAGE = {
     "review.clause_capability": "review",
     "review.acceptance_covered": "review",
     "memory.independent_adjudication": "learn",
+    "memory.write_access": "learn",
+    "memory.retire_window": "learn",
     "review.reviewer_diversity": "review",
     "gitops.reviewer_bar": "review",
     "gitops.base_branch": "merge",
