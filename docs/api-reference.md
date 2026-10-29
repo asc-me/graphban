@@ -119,7 +119,7 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | GET | `/api/memory/candidates` | JWT | The review queue — agent shards awaiting publish (AL-49) |
 | GET | `/api/memory/judge-status` | JWT | Which judge will grade this project's next candidate (`decider` / `chat` / `similarity` / `off`) and whether that was imposed rather than chosen — `falling_back` with a `reason` naming the credential that could not be reached (GRPH-995). Read-only: resolves the pointer, never calls a model |
 | POST | `/api/memory/shards` | JWT | Human-authored → published immediately |
-| PATCH | `/api/memory/shards/{id}` | JWT | |
+| PATCH | `/api/memory/shards/{id}` | JWT | Edit `text` (re-embeds) and/or `shard_class` (`pitfall`/`convention`/`principle`; `""` or null clears; other values 422; never re-embeds). Rows carry `shard_class`, `""` = unclassified |
 | POST | `/api/memory/shards/{id}/publish` | JWT | Promote a candidate into the trusted retrieval path |
 | POST | `/api/memory/shards/{id}/reject` | JWT | Reject a candidate (kept for provenance, never searched) |
 | POST | `/api/memory/shards/{id}/judge` | JWT | On-demand LLM judge for a candidate. Advisory — never mutates status. A missing verdict is a cause, not quality 0 |

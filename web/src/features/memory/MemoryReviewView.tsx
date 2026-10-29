@@ -16,6 +16,7 @@ import {
   usePromoteCluster,
   useReviewShard,
   useScoredCandidates,
+  useSetShardClass,
   useStaleActions,
   useStaleShards,
   useUndoAutoShard,
@@ -84,6 +85,7 @@ export function MemoryReviewView() {
   const undoAuto = useUndoAutoShard();
   const judge = useJudgeShard();
   const staleActs = useStaleActions();
+  const setClass = useSetShardClass();
 
   const [queue, setQueue] = React.useState<QueueId>("needs");
   const [search, setSearch] = React.useState("");
@@ -578,6 +580,7 @@ export function MemoryReviewView() {
                 canonId={canon[activeRow.id] ?? activeRow.cluster?.representative.id ?? activeRow.id}
                 onCanon={(id) => setCanon((c) => ({ ...c, [activeRow.id]: id }))}
                 asked={asked[activeRow.id]}
+                onClass={(c) => setClass.mutate({ id: activeRow.id, shardClass: c })}
               />
             ) : (
               <p className="px-5 py-10 text-center text-body leading-relaxed text-muted">Nothing selected.</p>
@@ -649,7 +652,7 @@ function RowView({
           ))}
         </div>
       </div>
-      <span className="font-mono text-meta text-muted">{r.shard.scope || "—"}</span>
+      <span data-testid="row-class" className="font-mono text-meta text-muted">{r.shard.shard_class || "—"}</span>
       <span className={cn("text-right font-mono text-small", confCls)} title={r.conf == null ? "Not scored" : confBand(r.conf) ?? undefined}>
         {r.conf == null ? "—" : r.conf.toFixed(2)}
       </span>

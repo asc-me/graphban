@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import { cn } from "@/lib/cn";
-import type { CandidateJudge } from "@/lib/types";
+import { SHARD_CLASSES, type CandidateJudge, type ShardClass } from "@/lib/types";
 
 import { QUEUE_BY_ID, confBand, judgeWords, type Row } from "./queues";
 
@@ -40,6 +40,7 @@ export function MemoryDetail({
   canonId,
   onCanon,
   asked,
+  onClass,
 }: {
   row: Row;
   pos: string;
@@ -48,6 +49,7 @@ export function MemoryDetail({
   canonId: string;
   onCanon: (id: string) => void;
   asked?: CandidateJudge;
+  onClass: (c: ShardClass | "") => void;
 }) {
   const q = QUEUE_BY_ID[row.queue];
   const s = row.scored;
@@ -60,7 +62,6 @@ export function MemoryDetail({
     ["CONFIDENCE", row.conf == null ? "not scored" : `${row.conf.toFixed(2)} · ${confBand(row.conf)}`],
     ...(judge ? [["JUDGE", judge] as [string, string]] : []),
     ...(s && s.reasons.length ? [["EVIDENCE", s.reasons.join(" · ")] as [string, string]] : []),
-    ["CLASS", row.shard.scope || "—"],
   ];
   const rec = row.stale?.recommendation;
 
@@ -83,6 +84,25 @@ export function MemoryDetail({
               <dd className="m-0 text-fg-2">{v}</dd>
             </div>
           ))}
+          <dt className="pt-1 font-mono text-micro tracking-wide text-faint">CLASS</dt>
+          <dd className="m-0 flex flex-wrap gap-1.5" role="group" aria-label="Class">
+            {SHARD_CLASSES.map((c) => {
+              const on = row.shard.shard_class === c;
+              return (
+                <button
+                  key={c}
+                  aria-pressed={on}
+                  onClick={() => onClass(on ? "" : c)}
+                  className={cn(
+                    "rounded-[5px] border px-1.5 py-0.5 font-mono text-micro uppercase tracking-wide",
+                    on ? "border-accent/45 bg-accent/10 text-accent" : "border-control text-faint hover:border-control-hover",
+                  )}
+                >
+                  {c}
+                </button>
+              );
+            })}
+          </dd>
         </dl>
       </div>
 

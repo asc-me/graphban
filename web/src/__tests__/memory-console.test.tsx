@@ -16,6 +16,7 @@ const OLD = new Date(Date.now() - 20 * 86_400_000).toISOString();
 const shard = (id: string, text: string, extra: Partial<Shard> = {}): Shard => ({
   id, text, scope: "item", source: "", status: "candidate", origin: "agent:worker-1",
   item_id: null, project_id: "core", fresh: true, scoring_source: "", auto_confidence: null,
+  shard_class: "",
   created_at: RECENT, ...extra,
 });
 
@@ -37,7 +38,7 @@ const d1 = shard("d1", "Run migrations with --plan before applying on staging.")
 const d2 = shard("d2", "Always --plan migrations on staging.");
 const CLUSTERS = [{ size: 2, representative: d1, members: [d2] }];
 
-const st1 = shard("st1", "Wave-5 keys expire at midnight UTC.", { status: "published", created_at: OLD });
+const st1 = shard("st1", "Wave-5 keys expire at midnight UTC.", { status: "published", created_at: OLD, shard_class: "pitfall" });
 const st2 = shard("st2", "Use the ci-runner-3 cache for node builds.", { status: "published", created_at: OLD });
 const STALE: StaleShardRow[] = [
   { shard: st1, why: ["nothing has corroborated it in 30+ days"], ungraded: false, ungraded_reason: "",
@@ -63,6 +64,7 @@ const spies = vi.hoisted(() => ({
   retire: vi.fn(async (id: string) => ({ id })),
   restore: vi.fn(async (id: string) => ({ id })),
   keep: vi.fn(async (id: string) => ({ id })),
+  setClass: vi.fn(async (id: string) => ({ id })),
   apply: vi.fn(async (ids: string[]) => ids.map((id) => ({ shard_id: id, action: "retire", confidence: 0.93, applied: true, reason: "", undo: "restore" }))),
 }));
 
@@ -92,6 +94,7 @@ vi.mock("@/lib/api", () => ({
     retireShard: spies.retire,
     restoreShard: spies.restore,
     keepShard: spies.keep,
+    setShardClass: spies.setClass,
     applyRecommendations: spies.apply,
   },
 }));
@@ -308,6 +311,34 @@ describe("bulk", () => {
     await user.click(within(panel).getByRole("button", { name: /^Keep/ }));
     await waitFor(() => expect(spies.keep).toHaveBeenCalledWith("st2"));
     await waitFor(() => expect(screen.queryByText(/ci-runner-3 cache/)).not.toBeInTheDocument());
+  });
+
+  it("the CLASS column shows the stored class and a dash when unclassified, never scope", async () => {
+    const user = userEvent.setup();
+    renderView();
+    await ready();
+    await user.click(screen.getByTestId("queue-stale"));
+    const rows = await screen.findAllByRole("option");
+    const cls = (id: string) => rows.find((r) => r.getAttribute("data-row-id") === id)!;
+    expect(within(cls("st1")).getByTestId("row-class")).toHaveTextContent("pitfall");
+    expect(within(cls("st2")).getByTestId("row-class")).toHaveTextContent("—");
+  });
+
+  it("a class chip PATCHes that class, and the active chip clears it", async () => {
+    const user = userEvent.setup();
+    renderView();
+    await ready();
+    await user.click(screen.getByTestId("queue-stale"));
+    await user.click(await screen.findByText(/ci-runner-3 cache/));
+    let panel = screen.getByTestId("memory-detail");
+    await user.click(within(panel).getByRole("button", { name: "convention" }));
+    await waitFor(() => expect(spies.setClass).toHaveBeenCalledWith("st2", "convention"));
+    await user.click(await screen.findByText(/Wave-5 keys expire/));
+    panel = screen.getByTestId("memory-detail");
+    const active = within(panel).getByRole("button", { name: "pitfall" });
+    expect(active).toHaveAttribute("aria-pressed", "true");
+    await user.click(active);
+    await waitFor(() => expect(spies.setClass).toHaveBeenCalledWith("st1", ""));
   });
 
   it("merges a duplicate cluster into the wording the reviewer picked", async () => {
