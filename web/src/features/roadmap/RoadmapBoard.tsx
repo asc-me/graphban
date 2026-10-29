@@ -4,7 +4,7 @@ import type { RoadmapPhase } from "@/lib/types";
 
 export function RoadmapBoard({ phases }: { phases: RoadmapPhase[] }) {
   return (
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+    <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
       {phases.map((p) => {
         const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
         return (
@@ -26,7 +26,7 @@ export function RoadmapBoard({ phases }: { phases: RoadmapPhase[] }) {
                   <span
                     className="mt-0.5 flex h-4 w-4 flex-none items-center justify-center rounded-[5px] border"
                     style={{
-                      borderColor: m.done ? p.color : "#2a333a",
+                      borderColor: m.done ? p.color : "var(--color-line)",
                       background: m.done ? p.color : "transparent",
                     }}
                   >

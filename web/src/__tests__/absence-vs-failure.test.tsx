@@ -27,6 +27,10 @@ import { OutpostsView } from "@/features/fleet/OutpostsView";
 import { HarnessView } from "@/features/harness/HarnessView";
 import { ProjectHome } from "@/features/projecthome/ProjectHome";
 import { ProjectProvider } from "@/features/ProjectContext";
+import { PrdListView } from "@/features/prds/PrdListView";
+import { RequestsView } from "@/features/requests/RequestsView";
+import { RoadmapView } from "@/features/roadmap/RoadmapView";
+import { TrackerView } from "@/features/tracker/TrackerView";
 import { TriageView } from "@/features/triage/TriageView";
 
 /**
@@ -39,7 +43,7 @@ import { TriageView } from "@/features/triage/TriageView";
 const FAILING_ENDPOINTS = [
   "dashboard", "counts", "events", "projectTriage", "fleet", "harness", "harnessProbeCandidates",
   "items", "shards", "codeMap", "prds", "orgs", "galaxy", "platform", "mcpTools",
-  "links", "apiKeys",
+  "links", "apiKeys", "roadmap", "requests",
 ];
 
 vi.mock("@/lib/api", () => {
@@ -47,7 +51,7 @@ vi.mock("@/lib/api", () => {
   const endpoints = [
     "dashboard", "counts", "events", "projectTriage", "fleet", "harness", "harnessProbeCandidates",
     "items", "shards", "codeMap", "prds", "orgs", "galaxy", "platform", "mcpTools",
-    "links", "apiKeys",
+    "links", "apiKeys", "roadmap", "requests",
   ];
   return {
     setActiveProjectId: vi.fn(),
@@ -184,5 +188,24 @@ describe("a failed fetch is not an empty project", () => {
     expect(await screen.findByText(STALE_BANNER)).toBeInTheDocument();
     expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
     expect(screen.queryByText("—")).not.toBeInTheDocument();
+  });
+});
+
+describe("Plan pages: a failed fetch shows the error card and no zero counts", () => {
+  const cases: [string, React.ReactElement, RegExp, RegExp][] = [
+    ["Tracker", <TrackerView />, /items unavailable/i, /no items yet/i],
+    ["PRDs", <PrdListView />, /prds unavailable/i, /no prds yet/i],
+    ["Requests", <RequestsView />, /requests unavailable/i, /no requests yet/i],
+    ["Roadmap", <RoadmapView />, /roadmap unavailable/i, /no milestones/i],
+  ];
+  it.each(cases)("%s", async (_name, ui, title, emptyCopy) => {
+    show(ui);
+    expect(await screen.findByText(title)).toBeInTheDocument();
+    expect(screen.getByText(/nothing here means empty/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByText(emptyCopy)).not.toBeInTheDocument();
+    // No view tabs, no chip row, so no zero count anywhere.
+    expect(screen.queryByRole("tablist", { name: "Views" })).not.toBeInTheDocument();
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
   });
 });
