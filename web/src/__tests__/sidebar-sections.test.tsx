@@ -79,7 +79,7 @@ describe("GRPH-1142 grouping", () => {
   it("lists the decided pages in the decided order", () => {
     expect(SECTIONS.map((s) => [s.label, s.pages.map((p) => p.label)])).toEqual([
       ["Plan", ["Triage", "Tracker", "Requests", "PRDs", "Roadmap"]],
-      ["Build", ["Code graph", "Links", "Stack", "MCP Tools", "Fleet", "Outposts"]],
+      ["Build", ["Code graph", "Links", "Stack", "Rules", "MCP Tools", "Fleet", "Outposts"]],
       ["Observe", ["Live", "Activity", "Memory", "Lessons", "Harness"]],
     ]);
     const harness = SECTIONS[2].pages.find((p) => p.view === "harness");
@@ -92,7 +92,7 @@ describe("GRPH-1142 grouping", () => {
     await screen.findByText("Code graph");
     const links = within(document.getElementById("nav-build")!).getAllByRole("link");
     expect(links.map((l) => l.textContent?.replace(/\d+$/, ""))).toEqual(
-      ["Code graph", "Links", "Stack", "MCP Tools", "Fleet", "Outposts"],
+      ["Code graph", "Links", "Stack", "Rules", "MCP Tools", "Fleet", "Outposts"],
     );
   });
 });

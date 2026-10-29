@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 193 of the 272 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 194 of the 273 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -67,6 +67,7 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | GET | `/api/rules` | JWT (project reader) | The rule registry (`services/rules.py`): every delivery rule with its enforcement, typed enforcer and truth. Gitops rows carry the effective value and `source` from `gitops.resolve`; a gitops rule is `advisory` (or `unmeasured`), never `enforced` |
+| GET | `/api/rules/flow` | JWT (project reader) | The registry placed on the Rules map's seven fixed stages (`rules.flow`): each stage's `state` is the weakest of its used rules, `not_used` only when every rule on it is unused under the project's gitops `model`, and `unmeasured` when no rule is registered. Unused rules stay listed with `used: false` |
 
 ## Items (tracker)
 
