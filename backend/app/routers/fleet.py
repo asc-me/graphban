@@ -324,6 +324,7 @@ class PolicyIn(BaseModel):
     reviewer_cross_vendor: bool = False
     allowed_harnesses: list[str] = []
     caps: dict | None = None
+    cluster_ceiling: dict | None = None
 
 
 @router.get("/profile")
@@ -377,6 +378,8 @@ def read_policy(project_id: str, db: Session = Depends(get_db),
 @router.put("/policy")
 def write_policy(body: PolicyIn, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
+    """Full replace: clients send the WHOLE policy, and any key left out is cleared.
+    Read it, change what you mean to, and PUT it all back."""
     authz.require_writable(db, user.id, body.project_id)
     project = db.get(Project, body.project_id)
     if project is None:
