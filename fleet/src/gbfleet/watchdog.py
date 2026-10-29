@@ -32,7 +32,7 @@ def install_stack_dump(stream=None) -> bool:
     """Register SIGUSR1 to dump all threads' stacks. False where the platform has no SIGUSR1."""
     global _dump_file
     sig = getattr(signal, "SIGUSR1", None)
-    if sig is None:
+    if sig is None or not hasattr(faulthandler, "register"):  # Windows has neither
         return False
     target = stream
     if target is None:

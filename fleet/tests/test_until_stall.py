@@ -143,6 +143,8 @@ def test_a_retry_is_not_progress():
         dog.check(live=False)
 
 
+@pytest.mark.skipif(not hasattr(signal, "SIGUSR1") or not hasattr(faulthandler, "register"),
+                    reason="no SIGUSR1 / faulthandler.register on this platform (Windows)")
 def test_faulthandler_is_registered_for_sigusr1(monkeypatch, tmp_path, git_repo, log):
     seen = {}
     monkeypatch.setattr(faulthandler, "register",
