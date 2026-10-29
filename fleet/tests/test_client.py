@@ -243,8 +243,16 @@ def test_the_rest_surface_is_pinned_and_every_post_is_checked_against_it():
     tree = ast.parse(source)
     cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "Graphban")
     posts = [n for n in cls.body if isinstance(n, ast.FunctionDef)
-             and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
-                     and c.func.attr == "post" for c in ast.walk(n))]
+             and any(isinstance(c, ast.Call) and (
+                         (isinstance(c.func, ast.Attribute) and c.func.attr == "post")
+                         # GRPH-1179: `_rpc` posts through the total-deadline helper.
+                         or (isinstance(c.func, ast.Name) and c.func.id == "_post_within"))
+                     for c in ast.walk(n))]
+    # ...and that helper is the one place a module-level function opens the stream.
+    streams = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)
+               and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                       and c.func.attr == "stream" for c in ast.walk(n))]
+    assert streams == ["_post_within"], streams
     # `_rpc` is the MCP endpoint, governed by `ALLOWED_TOOLS`; `_post` is everything else,
     # governed by `ALLOWED_PATHS`. Two POSTing methods, two gates, and no third.
     assert sorted(n.name for n in posts) == ["_post", "_rpc"], (

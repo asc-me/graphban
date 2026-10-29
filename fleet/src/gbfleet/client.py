@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
@@ -89,6 +90,10 @@ class ServerUnreachable(RuntimeError):
     tool error means the server is fine and answered.
     """
 
+    def __init__(self, message: str = "", tool: str = "") -> None:
+        super().__init__(message)
+        self.tool = tool
+
 
 class ProtocolError(RuntimeError):
     """A reply that was not the JSON-RPC exchange we asked for."""
@@ -115,6 +120,9 @@ class Graphban:
     base_url: str
     api_key: str
     timeout: float = 30.0
+    #: TOTAL seconds one request may take, start to last byte (GRPH-1179). `timeout` is per
+    #: read, so a server that trickles bytes can hold a call open indefinitely.
+    deadline: float = 90.0
     #: Injected by tests via `httpx.MockTransport`. Production leaves it None and gets
     #: httpx's default — there is no second code path, which is the point.
     transport: httpx.BaseTransport | None = None
@@ -289,16 +297,16 @@ class Graphban:
             "params": params,
         }
         try:
-            response = self._client().post(self.endpoint, json=body)
+            response = _post_within(self._client(), self.endpoint, body, self.deadline)
         except httpx.HTTPError as exc:
-            raise ServerUnreachable(f"{self.endpoint}: {exc}") from exc
+            raise ServerUnreachable(f"{self.endpoint}: {exc!r}", tool=label) from exc
 
         if response.status_code >= 500:
             # A 5xx is the server failing to answer, which for D-i's purposes is the
             # same situation as not reaching it: retrying is the right move and
             # spawning is not. A 4xx is an answer — a bad credential does not become
             # true by waiting — so it stays a ProtocolError below.
-            raise ServerUnreachable(f"{self.endpoint}: HTTP {response.status_code}")
+            raise ServerUnreachable(f"{self.endpoint}: HTTP {response.status_code}", tool=label)
         if response.status_code != 200:
             raise ProtocolError(
                 f"{self.endpoint}: HTTP {response.status_code}: {response.text[:200]}"
@@ -329,6 +337,26 @@ class Graphban:
 
     def propose_allocation(self, **arguments: Any) -> dict:
         return self.call("propose_allocation", **arguments)
+
+
+def _post_within(client: httpx.Client, url: str, body: dict, deadline: float) -> httpx.Response:
+    """POST `body`, giving up after `deadline` seconds in TOTAL (GRPH-1179).
+
+    httpx's timeouts bound each connect/read/write, not the exchange: a response that trickles
+    a byte every few seconds never trips them. Streaming lets the clock be checked between
+    chunks. Raises `httpx.ReadTimeout`, so callers treat it as any other transport failure.
+    """
+    start = time.monotonic()
+    with client.stream("POST", url, json=body) as streamed:
+        chunks: list[bytes] = []
+        for chunk in streamed.iter_bytes():
+            chunks.append(chunk)
+            if time.monotonic() - start > deadline:
+                raise httpx.ReadTimeout(f"no complete reply within {deadline:g}s")
+        headers = [(k, v) for k, v in streamed.headers.multi_items()
+                   if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
+        return httpx.Response(streamed.status_code, headers=headers, content=b"".join(chunks),
+                              request=streamed.request)
 
 
 def _text_of(result: dict) -> str:

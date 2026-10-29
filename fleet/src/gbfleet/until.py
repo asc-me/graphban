@@ -26,6 +26,7 @@ from . import deps
 from . import worktree as wt_mod
 from . import observe
 from . import waits as wait_mod
+from . import watchdog as watchdog_mod
 from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreachable, ToolFailed
 from .lock import hold
 from .seat import Seat
@@ -221,6 +222,8 @@ def run(
     matrix: "matrix_mod.Matrix | None" = None,
     merge: bool = False,
     base_branch: str | None = None,
+    stall_after: float = watchdog_mod.STALL_AFTER_S,
+    clock: Callable[[], float] = time.monotonic,
 ) -> Report:
     """Hold the repo lock and run until idle, a cap, or a config refusal.
 
@@ -252,6 +255,10 @@ def run(
 
     from . import observe
     observe.configure(state)
+    # GRPH-1179. `kill -USR1 <pid>` dumps every thread's stack to the service log, and the
+    # watchdog turns a silent stall into a logged one and a non-zero exit (KeepAlive restarts).
+    watchdog_mod.install_stack_dump()
+    watchdog_mod.current = watchdog_mod.Watchdog(stall_after, clock)
 
     try:
         if budget:
@@ -371,6 +378,10 @@ def run(
     except CapError as exc:
         wave.reason = exc.reason
         return Report(ok=False, reason=exc.reason, exit=1, detail=str(exc), wave=wave,
+                      minted=minted, spawned=len(wave.spawned))
+    except watchdog_mod.Stalled as exc:
+        wave.reason = "stall"
+        return Report(ok=False, reason="stall", exit=1, detail=str(exc), wave=wave,
                       minted=minted, spawned=len(wave.spawned))
 
 
@@ -547,7 +558,8 @@ def _loop(
             # and there are still unheld review rows. Not off a role.
             try:
                 rows_for_reap = _review_rows(planner)
-            except (NotPermitted, ToolFailed, ServerUnreachable):
+            except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+                watchdog_mod.current.retry("review_rows(reap)", exc)
                 rows_for_reap = []
             unheld_at_reap = [r for r in rows_for_reap if not r.get("review_claimed_by")]
             for child in finished:
@@ -573,6 +585,8 @@ def _loop(
                 return _finish(wave, "handoff-failed", 1, minted, planner)
 
         live = [c for c in children if c.running]
+        wd = watchdog_mod.current
+        wd.check(bool(live))
         holdings = _any_holdings(supervisor)
         try:
             rows = _review_rows(planner)
@@ -584,6 +598,7 @@ def _loop(
             raise ConfigError(f"cannot classify review/waits: {exc}") from exc
         except ServerUnreachable as exc:
             # Unknown is not empty: leftover review must not look like idle.
+            wd.retry("review/waits", exc)
             if live or holdings:
                 sleep(poll)
                 continue
@@ -591,6 +606,7 @@ def _loop(
                 "cap",
                 f"search_items unreachable; leftover review is unknown, not empty ({exc})",
             ) from exc
+        wd.progress("review/waits read")
 
         # GRPH-846, GRPH-880. The merger discovers candidates from the attestation, not from
         # observing departures. An item already `done` with a sign_off attestation is a
@@ -615,8 +631,9 @@ def _loop(
         try:
             need = _wanted_workers(planner, supervisor, live_n=len(live),
                                    max_workers=limits.max_workers, prd=prd)
-        except ServerUnreachable:
+        except ServerUnreachable as exc:
             # D-i: no new spawns while unreachable. Live children run to their lease.
+            wd.retry("wanted_workers", exc)
             if not live:
                 wave.reason = "cap"
                 raise CapError("cap", "server unreachable with no live children")
@@ -628,7 +645,8 @@ def _loop(
             try:
                 need = _wanted_workers(planner, supervisor, live_n=len(live),
                                        max_workers=limits.max_workers, prd=prd)
-            except ServerUnreachable:
+            except ServerUnreachable as exc:
+                wd.retry("wanted_workers(recheck)", exc)
                 sleep(poll)
                 continue
             if need <= 0:
@@ -712,6 +730,7 @@ def _loop(
                     repo, workspace, wave_name, supervisor, limits, planner, debug,
                     base=base,
                 )
+                wd.progress(f"spawned for {seed}")
                 continue
             else:
                 empty = 0
@@ -773,6 +792,7 @@ def _loop(
                     repo, workspace, wave_name, supervisor, limits, planner, debug,
                     base=base,
                 )
+                wd.progress(f"spawned for {seed}")
                 continue
 
         # S6 (PRD-39 D-i): unheld review rows need a merged worker. Re-keyed off the
@@ -1882,7 +1902,8 @@ def _any_holdings(supervisor: Graphban) -> bool:
     the caller pairs it with `live`; a stale hold is a dead agent's, not a holding."""
     try:
         roster = supervisor.call("fleet_status")
-    except ServerUnreachable:
+    except ServerUnreachable as exc:
+        watchdog_mod.current.retry("fleet_status", exc)
         return False
     for agent in roster.get("agents") or []:
         # A `stale` hold is a lease older than the presence TTL — a builder that exited with
