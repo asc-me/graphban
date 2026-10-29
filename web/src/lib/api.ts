@@ -79,8 +79,12 @@ import type {
   RequestComment,
   RequestItem,
   RoadmapPhase,
+  ApplyRecommendationResult,
   CandidateJudge,
   JudgeStatus,
+  MemoryQueueCount,
+  MemoryQueueKey,
+  StaleShardRow,
   ScoredCandidate,
   AssistantThread,
   AssistantThreadDetail,
@@ -649,6 +653,22 @@ export const api = {
   // GRPH-995: whether the judge this project asked for can actually answer.
   judgeStatus: (projectId?: string) =>
     request<JudgeStatus>(`/memory/judge-status${projectId ? `?project_id=${projectId}` : ""}`),
+  // GRPH-1175: the triage console's queue counts, the stale-or-wrong list, retire/restore.
+  memoryQueues: (projectId: string) =>
+    request<Record<MemoryQueueKey, MemoryQueueCount>>(
+      `/memory/queues?project_id=${encodeURIComponent(projectId)}`,
+    ),
+  staleShards: (projectId: string) =>
+    request<StaleShardRow[]>(`/memory/stale?project_id=${encodeURIComponent(projectId)}`),
+  retireShard: (id: string) =>
+    request<Shard>(`/memory/shards/${id}/retire`, { method: "POST" }),
+  restoreShard: (id: string) =>
+    request<Shard>(`/memory/shards/${id}/restore`, { method: "POST" }),
+  applyRecommendations: (shard_ids: string[]) =>
+    request<ApplyRecommendationResult[]>("/memory/apply-recommendations", {
+      method: "POST",
+      body: JSON.stringify({ shard_ids }),
+    }),
 
   harness: (projectId: string, opts: { windowDays?: number; versions?: "current" | "all" } = {}) => {
     const q = new URLSearchParams({ project_id: projectId });

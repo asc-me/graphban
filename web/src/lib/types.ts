@@ -548,7 +548,8 @@ export interface Item {
   done_at: string | null;
 }
 
-export type ShardStatus = "candidate" | "published" | "rejected";
+/** `retired` (GRPH-1175): unpublished from Memory, restorable for 14 days. */
+export type ShardStatus = "candidate" | "published" | "rejected" | "retired";
 
 export interface Shard {
   id: string;
@@ -746,6 +747,46 @@ export interface ScoredCandidate {
   judge_reason?: string;
   ungraded_reason?: string;
   judge_source?: string;
+}
+
+/** GRPH-1175: the five Memory triage queues, counted in one call. */
+export type MemoryQueueKey =
+  | "needs_decision"
+  | "conflicts"
+  | "duplicate_clusters"
+  | "stale_or_wrong"
+  | "published_unreviewed";
+
+/** `count` is null only when `state` is `failed` — 0 is a measured zero, never a failure. */
+export interface MemoryQueueCount {
+  count: number | null;
+  state: "ok" | "failed";
+  error: string;
+}
+
+export interface StaleRecommendation {
+  action: "keep" | "revise" | "retire" | "verify";
+  confidence: number;
+  reason: string;
+}
+
+/** A published shard that is stale or reported wrong. `ungraded` means the judge did not
+ *  answer — `recommendation` is null then, never an invented one. */
+export interface StaleShardRow {
+  shard: Shard;
+  why: string[];
+  ungraded: boolean;
+  ungraded_reason: string;
+  recommendation: StaleRecommendation | null;
+}
+
+export interface ApplyRecommendationResult {
+  shard_id: string;
+  action: string | null;
+  confidence: number | null;
+  applied: boolean;
+  reason: string;
+  undo: "restore" | null;
 }
 
 /** On-demand LLM judge (GRPH-650). `verdict` XOR `cause` — a missing quality is not 0. */
