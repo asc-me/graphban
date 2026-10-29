@@ -166,8 +166,8 @@ describe("a failed fetch is not an empty project", () => {
     vi.mocked(api.codeMap).mockResolvedValue({ node_count: 40 } as never);
     vi.mocked(api.fleet).mockResolvedValue({ online: 1 } as never);
     show(<ProjectHome />);
-    expect(await screen.findByText("Items")).toBeInTheDocument();
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(await screen.findByText("Items", { selector: "span" })).toBeInTheDocument();
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("4");
     expect(screen.queryByText(STALE_BANNER)).not.toBeInTheDocument();
     expect(screen.queryByText(FAILED_COPY)).not.toBeInTheDocument();
   });
@@ -179,14 +179,14 @@ describe("a failed fetch is not an empty project", () => {
     vi.mocked(api.codeMap).mockResolvedValue({ node_count: 40 } as never);
     vi.mocked(api.fleet).mockResolvedValue({ online: 1 } as never);
     const { qc } = show(<ProjectHome />);
-    expect(await screen.findByText("Items")).toBeInTheDocument();
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(await screen.findByText("Items", { selector: "span" })).toBeInTheDocument();
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("4");
 
     vi.mocked(api.dashboard).mockRejectedValue(new Error("boom"));
     await qc.refetchQueries({ queryKey: ["dashboard", "core"] }).catch(() => undefined);
 
     expect(await screen.findByText(STALE_BANNER)).toBeInTheDocument();
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("4");
     expect(screen.queryByText("—")).not.toBeInTheDocument();
   });
 });
