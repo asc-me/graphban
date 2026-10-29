@@ -141,7 +141,7 @@ function RequestRow({
         </button>
 
         <span
-          className="flex-none rounded-md border px-1.5 py-0.5 font-mono text-[9.5px] uppercase"
+          className="flex-none rounded-md border px-1.5 py-0.5 font-mono text-meta uppercase"
           style={{ color: meta.color, background: meta.bg, borderColor: meta.border }}
         >
           {meta.label}
@@ -200,7 +200,7 @@ function RequestRow({
             <p className="whitespace-pre-wrap text-body leading-relaxed text-fg-2">{request.detail}</p>
           )}
           <div>
-            <div className="mb-1.5 font-mono text-[9.5px] uppercase text-faint">Linked code</div>
+            <div className="mb-1.5 font-mono text-meta uppercase text-faint">Linked code</div>
             <LinkedCode refId={request.id} projectId={activeId} variant="chips" />
           </div>
           <CommentThread requestId={request.id} />
