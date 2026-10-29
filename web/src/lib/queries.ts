@@ -1022,12 +1022,23 @@ export function useUnpublishRequest() {
   });
 }
 
+export function useRequestComments(id: string) {
+  return useQuery({
+    queryKey: ["request-comments", id],
+    queryFn: () => api.requestComments(id),
+    enabled: !!id,
+  });
+}
+
 export function useCreateRequestComment() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, body, visibility }: { id: string; body: string; visibility: "public" | "private" }) =>
       api.createRequestComment(id, body, visibility),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.requests }),
+    onSuccess: (_d, { id }) => {
+      void qc.invalidateQueries({ queryKey: ["request-comments", id] });
+      void qc.invalidateQueries({ queryKey: keys.requests });
+    },
   });
 }
 

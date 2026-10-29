@@ -75,6 +75,7 @@ import type {
   PrdVersion,
   Project,
   ProjectSummary,
+  RequestComment,
   RequestItem,
   RoadmapPhase,
   CandidateJudge,
@@ -799,8 +800,11 @@ export const api = {
     request<{ published: boolean; published_at: string | null }>(`/requests/${id}/publish`, { method: "POST" }),
   unpublishRequest: (id: string) =>
     request<{ published: boolean }>(`/requests/${id}/unpublish`, { method: "POST" }),
+  /** PRD-60 D9: the operator thread — public replies, internal notes and submitter replies. */
+  requestComments: (id: string) => request<RequestComment[]>(`/requests/${id}/comments`),
+  /** The write lives on the public router (PRD-43 D7); a public reply emails the submitter. */
   createRequestComment: (id: string, body: string, visibility: "public" | "private" = "private") =>
-    request<{ id: string; body: string; visibility: string; created_at: string }>(`/requests/${id}/comments`, {
+    request<{ id: string; body: string; visibility: string; created_at: string }>(`/public/requests/${id}/comments`, {
       method: "POST",
       body: JSON.stringify({ body, visibility }),
     }),
