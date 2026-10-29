@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 194 of the 273 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 199 of the 278 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -121,6 +121,11 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | POST | `/api/memory/shards/{id}/publish` | JWT | Promote a candidate into the trusted retrieval path |
 | POST | `/api/memory/shards/{id}/reject` | JWT | Reject a candidate (kept for provenance, never searched) |
 | POST | `/api/memory/shards/{id}/judge` | JWT | On-demand LLM judge for a candidate. Advisory — never mutates status. A missing verdict is a cause, not quality 0 |
+| GET | `/api/memory/queues` | JWT | The five triage-queue counts (`needs_decision`, `conflicts`, `duplicate_clusters`, `stale_or_wrong`, `published_unreviewed`) in one call. A queue whose source failed is `state: failed` with `count: null`, never 0 (GRPH-1175) |
+| GET | `/api/memory/stale` | JWT | Published shards that are stale or reported wrong, each with `why` and the judge's `recommendation` `{action: keep\|revise\|retire\|verify, confidence, reason}`. Judge off/unreachable/capped → `ungraded: true` with `ungraded_reason`, no recommendation |
+| POST | `/api/memory/shards/{id}/retire` | JWT | Retire a published shard; restorable for 14 days. 409 if not published |
+| POST | `/api/memory/shards/{id}/restore` | JWT | Undo a retire; 409 once the 14-day window has closed |
+| POST | `/api/memory/apply-recommendations` | JWT | `{shard_ids, min_confidence=0.85}`: apply each shard's recommendation at/above the floor. Only `retire` mutates (`undo: restore`); `revise`/`verify` are left for a person. Per-id result |
 | POST | `/api/memory/search` | JWT | Published-only semantic search |
 | POST | `/api/memory/backfill` | JWT |
 | GET | `/api/memory/export` | JWT |
