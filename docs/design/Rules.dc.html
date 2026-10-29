@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="_ds/design-system-83ade3bd-4186-4c71-9857-a0fe2bc1a395/_ds_bundle.js"></script>
+<style>
+:root{--bg:#0a0c0e;--panel:#0f1317;--panel2:#12171b;--hover:#1b2127;--el:#1e242a;--line:#1a1f24;--line2:#1e242a;--lineh:#2a333a;--ctl:#626c75;--tx:#e6e9ec;--tx15:#dfe3e7;--tx2:#8b949e;--tx3:#5c656e;--acc:#c6f24e;--acch:#d8ff74;--accbg:rgba(198,242,78,.09);--accln:rgba(198,242,78,.32);--pur:#c9b8ff;--purln:rgba(167,139,250,.42);--purbg:rgba(167,139,250,.09);--red:#ff6b6b;--amb:#e0b34a;--grn:#c6f24e;--hdr:rgba(12,15,17,.72);--shadow:rgba(0,0,0,.45);}
+*{box-sizing:border-box;}
+html,body{margin:0;height:100%;background:var(--bg);-webkit-font-smoothing:antialiased;}
+a{color:var(--acc);text-decoration:none;} a:hover{color:var(--acch);}
+button{font:inherit;color:inherit;cursor:pointer;}
+input::placeholder{color:#7f8891;}
+select option{background:#12171b;color:#e6e9ec;}
+@keyframes rlSheetIn{from{opacity:0;transform:translateX(18px) scale(.985);}to{opacity:1;transform:none;}}
+@keyframes rlSheetUp{from{opacity:0;transform:translateY(28px);}to{opacity:1;transform:none;}}
+@keyframes rlRowIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
+@keyframes rlPop{from{opacity:0;transform:translateY(-4px) scale(.98);}to{opacity:1;transform:none;}}
+button{transition:transform .12s cubic-bezier(.2,.8,.2,1), background-color .15s ease, border-color .15s ease, color .15s ease, box-shadow .15s ease;}
+button:active:not(:disabled){transform:scale(.97);}
+@media (prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:1ms!important;animation-delay:0ms!important;transition-duration:1ms!important;}}
+::-webkit-scrollbar{width:10px;height:10px;}
+::-webkit-scrollbar-thumb{background:#20272d;border-radius:8px;border:2px solid var(--bg);}
+</style>
+</helmet>
+
+<div data-screen-label="Rules" style="height:{{ rootH }};min-height:640px;display:flex;flex-direction:column;font-family:'IBM Plex Sans',system-ui,sans-serif;color:var(--tx);background:radial-gradient(1200px 600px at 78% -10%, rgba(167,139,250,.06), transparent 60%),radial-gradient(900px 500px at 12% 110%, rgba(198,242,78,.05), transparent 55%),#0a0c0e;">
+
+  <sc-if value="{{ chrome }}" hint-placeholder-val="{{ true }}"><header style="height:56px;flex:0 0 auto;display:flex;align-items:center;gap:18px;padding:0 20px;border-bottom:1px solid #1a1f24;background:rgba(12,15,17,.72);backdrop-filter:blur(8px);">
+    <div style="display:flex;align-items:center;gap:11px;min-width:0;">
+      <div style="width:26px;height:26px;flex:0 0 auto;border-radius:7px;background:linear-gradient(150deg,#c6f24e,#8fd12e);display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 1px rgba(198,242,78,.35),0 6px 18px rgba(198,242,78,.18);"><svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M3 2v12M3 4h8M3 8h6M3 12h9" stroke="#0a0c0e" stroke-width="1.8" stroke-linecap="round"></path></svg></div>
+      <div style="line-height:1;min-width:0;overflow:hidden;"><div style="font-weight:700;font-size:15px;letter-spacing:-.2px;">Graphban</div><div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#5c656e;letter-spacing:.6px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">AGENT MEMORY · LINEAR EXECUTION</div></div>
+    </div>
+    <div style="width:1px;height:24px;flex:0 0 auto;background:#1e242a;"></div>
+    <sc-if value="{{ notNarrow }}" hint-placeholder-val="{{ true }}"><div style="position:relative;flex:1 1 240px;min-width:220px;max-width:340px;">
+      <svg style="position:absolute;left:11px;top:50%;transform:translateY(-50%);opacity:.5;" width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="5" stroke="#8b949e" stroke-width="1.6"></circle><path d="M11 11l3 3" stroke="#8b949e" stroke-width="1.6" stroke-linecap="round"></path></svg>
+      <input readonly="" placeholder="Jump to a page, item, or PRD…" style="width:100%;height:34px;padding:0 44px 0 33px;background:#101418;border:1px solid #1e242a;border-radius:9px;font:inherit;font-size:13px;outline:none;color:#e6e9ec;cursor:pointer;">
+      <span style="position:absolute;right:9px;top:50%;transform:translateY(-50%);font-family:'IBM Plex Mono',monospace;font-size:10px;color:#4a525a;border:1px solid #232a30;border-radius:5px;padding:1px 5px;">⌘K</span>
+    </div></sc-if>
+    <div style="flex:1;"></div>
+    <sc-if value="{{ notNarrow }}" hint-placeholder-val="{{ true }}"><div style="display:flex;align-items:center;gap:6px;flex:0 1 auto;white-space:nowrap;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#5fd07a;padding:5px 10px;border:1px solid #1c2620;border-radius:8px;background:rgba(95,208,122,.05);"><span style="width:6px;height:6px;flex:0 0 auto;border-radius:50%;background:#5fd07a;box-shadow:0 0 8px #5fd07a;"></span>MCP · 24 TOOLS LIVE</div></sc-if>
+    <button style="display:flex;align-items:center;gap:8px;height:34px;flex:0 0 auto;padding:0 13px;border-radius:9px;border:1px solid #2a2440;background:rgba(167,139,250,.06);color:#c9b8ff;font-size:12.5px;font-weight:600;" style-hover="border-color:#3a3358;"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 1.5c-2 0-3.2 1.4-3.2 3 0 .8.3 1.4.7 1.9-1 .5-1.7 1.5-1.7 2.8 0 1.9 1.4 3.3 3.2 3.3M8 1.5c2 0 3.2 1.4 3.2 3 0 .8-.3 1.4-.7 1.9 1 .5 1.7 1.5 1.7 2.8 0 1.9-1.4 3.3-3.2 3.3M8 1.5v11" stroke="#a78bfa" stroke-width="1.3" stroke-linecap="round"></path></svg>Agent</button>
+    <div style="width:1px;height:24px;flex:0 0 auto;background:#1e242a;"></div>
+    <button style="display:flex;align-items:center;gap:8px;height:36px;flex:0 0 auto;padding:3px 8px 3px 3px;border-radius:20px;border:1px solid #1e242a;background:#0f1317;" style-hover="border-color:#2a333a;"><span style="width:28px;height:28px;border-radius:50%;background:#c9b8ff;color:#0a0c0e;font-size:11px;font-weight:700;font-family:'IBM Plex Mono',monospace;display:flex;align-items:center;justify-content:center;">AS</span><svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="#5c656e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button>
+  </header></sc-if>
+
+  <div style="flex:1;min-height:0;display:flex;">
+    <dc-import name="Sidebar Nav" section="build" page="rules" collapsed="{{ railCollapsed }}" hotkeys="{{ true }}" hint-size="216px,100%"></dc-import>
+
+    <main style="flex:1;min-width:0;display:flex;flex-direction:column;">
+      <div style="flex:0 0 auto;display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap;padding:14px 24px 12px;border-bottom:1px solid var(--line);">
+        <div style="min-width:0;flex:1 1 320px;display:flex;flex-direction:column;gap:3px;">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <h1 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-.015em;">Rules</h1>
+            <span title="Gitops model" style="display:inline-flex;align-items:center;gap:7px;padding:2px 9px;border-radius:999px;border:1px {{ modelBs }} {{ modelB }};font-family:'IBM Plex Mono',monospace;font-size:11px;"><span style="font-size:9.5px;letter-spacing:.7px;color:var(--tx3);">GITOPS</span><span style="font-weight:600;color:{{ modelC }};">{{ modelV }}</span><span style="font-size:9.5px;letter-spacing:.5px;color:{{ ctlC }};">{{ ctlL }}</span></span>
+          </div>
+          <p style="margin:0;font-size:12.5px;color:var(--tx2);">How work moves through GRPH, and what holds each step.</p>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <button onClick="{{ openRec }}" aria-haspopup="dialog" aria-expanded="{{ recExp }}" style="display:flex;align-items:center;gap:7px;height:30px;padding:0 11px;border-radius:8px;border:1px solid {{ recBtnB }};background:{{ recBtnBg }};color:#c9b8ff;font-size:12.5px;font-weight:500;white-space:nowrap;" style-hover="background:rgba(167,139,250,.1);border-color:#a78bfa;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"></path><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"></path></svg>Recommended · <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;">{{ recCount }}</span></button>
+        <button onClick="{{ openUnm }}" aria-haspopup="dialog" style="display:flex;align-items:center;gap:6px;height:30px;padding:0 11px;border-radius:8px;border:1px solid rgba(224,179,74,.45);background:transparent;color:var(--amb);font-size:12.5px;font-weight:500;white-space:nowrap;box-shadow:{{ pulseSh }};transition:box-shadow .8s ease;" style-hover="background:rgba(224,179,74,.08);border-color:var(--amb);">Unmapped refusals · <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;">{{ unmTotal }}</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></svg></button>
+        </div>
+      </div>
+
+      <sc-if value="{{ hasBanner }}" hint-placeholder-val="{{ false }}">
+        <div role="status" style="animation:rlPop .3s cubic-bezier(.2,.8,.2,1) both;flex:0 0 auto;margin:12px 24px 0;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 12px;border-radius:12px;border:1px {{ banBs }} {{ banB }};background:var(--panel);">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.7px;color:{{ banC }};white-space:nowrap;">{{ banL }}</span>
+          <span style="flex:1 1 280px;font-size:12.5px;line-height:1.45;color:var(--tx15);text-wrap:pretty;">{{ banT }}</span>
+          <sc-if value="{{ banHasAct }}" hint-placeholder-val="{{ false }}"><button onClick="{{ banAct }}" style="height:30px;padding:0 12px;border-radius:8px;border:0;background:var(--acc);color:#0a0c0e;font-size:12.5px;font-weight:600;white-space:nowrap;" style-hover="background:var(--acch);">{{ banActL }}</button></sc-if>
+        </div>
+      </sc-if>
+
+      <div style="flex:1;min-height:0;position:relative;">
+        <sc-if value="{{ showCanvas }}" hint-placeholder-val="{{ true }}">
+        <div ref="{{ scRef }}" tabindex="0" role="listbox" aria-label="Rules map. Left and right move between stages, Enter opens, Escape closes." aria-activedescendant="{{ activeDesc }}" style="position:absolute;inset:0;overflow:auto;padding:12px;user-select:none;cursor:grab;outline:none;">
+          <div ref="{{ szRef }}" style="position:relative;margin:0 auto;width:{{ sizerW }};height:{{ sizerH }};">
+            <div style="position:absolute;left:0;top:0;width:1696px;height:560px;transform:{{ innerTf }};transform-origin:0 0;line-height:1.25;">
+              <svg width="1696" height="560" viewBox="0 0 1696 560" style="position:absolute;left:0;top:0;overflow:visible;pointer-events:none;">
+                <defs>
+                  <marker id="rl-ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:#626c75;"></path></marker>
+                  <marker id="rl-ahs" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:#c6f24e;"></path></marker>
+                </defs>
+                <sc-for list="{{ edges }}" as="e" hint-placeholder-count="6"><path d="{{ e.d }}" markerEnd="{{ e.mk }}" style="fill:none;stroke:{{ e.sc }};stroke-width:{{ e.sw }};stroke-dasharray:{{ e.da }};stroke-linejoin:round;"></path></sc-for>
+              </svg>
+
+              <sc-for list="{{ stages }}" as="s" hint-placeholder-count="7">
+                <div id="{{ s.domId }}" role="option" aria-selected="{{ s.ariaSel }}" aria-label="{{ s.aria }}" onClick="{{ s.pick }}" onMouseEnter="{{ s.enter }}" onMouseLeave="{{ s.leave }}" style="position:absolute;left:{{ s.l }};top:56px;width:208px;height:128px;padding:10px 12px;border:{{ s.bd }};border-radius:12px;background:{{ s.bg }};box-shadow:{{ s.ring }};opacity:{{ s.op }};transform:{{ s.tf }};display:flex;flex-direction:column;gap:6px;cursor:pointer;overflow:hidden;transition:opacity .15s ease, box-shadow .18s ease, transform .22s cubic-bezier(.2,.8,.2,1);">
+                  <sc-if value="{{ s.full }}" hint-placeholder-val="{{ true }}"><span style="display:flex;align-items:center;gap:6px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.7px;color:var(--tx3);">{{ s.num }} · {{ s.idU }}</span><span style="flex:1;"></span><sc-if value="{{ s.hasOrg }}" hint-placeholder-val="{{ false }}"><span title="{{ s.orgTitle }}" style="display:inline-flex;align-items:center;gap:4px;padding:0 5px;border-radius:4px;border:1px {{ s.orgBs }} #626c75;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.4px;color:#dfe3e7;opacity:{{ s.orgOp }};"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"></path><path d="M5 21V7l7-4 7 4v14"></path><path d="M9 21v-6h6v6"></path></svg>{{ s.orgL }}</span></sc-if></span></sc-if>
+                  <span style="font-size:{{ s.nameFs }};font-weight:600;letter-spacing:-.01em;line-height:1.1;">{{ s.label }}</span>
+                  <sc-if value="{{ s.hasPill }}" hint-placeholder-val="{{ true }}"><span style="align-self:flex-start;display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;border:1px {{ s.pbs }} {{ s.pb }};background:{{ s.pbg }};color:{{ s.lc }};font-family:'IBM Plex Mono',monospace;font-size:{{ s.pillFs }};font-weight:600;letter-spacing:.6px;white-space:nowrap;"><span style="display:inline-flex;line-height:0;flex:none;"><dc-import name="Rule Level Icon" level="{{ s.pl }}" size="{{ s.pIcon }}" hint-size="12px,12px"></dc-import></span>{{ s.word }}</span></sc-if>
+                  <sc-if value="{{ s.full }}" hint-placeholder-val="{{ true }}">
+                    <span style="margin-top:auto;display:flex;flex-wrap:wrap;gap:0 5px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;"><sc-for list="{{ s.segs }}" as="g" hint-placeholder-count="2"><span style="color:{{ g.c }};white-space:nowrap;">{{ g.t }}</span></sc-for></span>
+                    <span style="display:flex;gap:2px;height:4px;"><sc-for list="{{ s.bars }}" as="b" hint-placeholder-count="2"><span style="flex:{{ b.n }};border-radius:2px;background:{{ b.bg }};"></span></sc-for></span>
+                  </sc-if>
+                  <sc-if value="{{ s.skel }}" hint-placeholder-val="{{ false }}"><span style="margin-top:auto;width:70%;height:9px;border-radius:4px;background:#1b2127;"></span><span style="width:100%;height:4px;border-radius:2px;background:#1b2127;"></span></sc-if>
+                </div>
+              </sc-for>
+
+              <sc-for list="{{ chips }}" as="c" hint-placeholder-count="0">
+                <div onClick="{{ c.pick }}" onMouseEnter="{{ c.enter }}" onMouseLeave="{{ c.leave }}" title="{{ c.titleAttr }}" style="position:absolute;left:{{ c.l }};top:{{ c.t }};width:192px;height:50px;padding:7px 10px;border:{{ c.bd }};border-radius:10px;background:{{ c.bg }};box-shadow:{{ c.ring }};opacity:{{ c.op }};transform:{{ c.tf }};display:flex;flex-direction:column;gap:4px;cursor:pointer;overflow:hidden;transition:box-shadow .18s ease, transform .2s cubic-bezier(.2,.8,.2,1);">
+                  <div style="display:flex;align-items:center;gap:6px;color:{{ c.lc }};"><span style="display:inline-flex;line-height:0;flex:none;"><dc-import name="Rule Level Icon" level="{{ c.lvl }}" size="12" hint-size="12px,12px"></dc-import></span><span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;font-weight:600;letter-spacing:.6px;">{{ c.word }}</span><span style="flex:1;"></span><sc-if value="{{ c.isOrg }}" hint-placeholder-val="{{ false }}"><span title="{{ c.orgTitle }}" style="display:inline-flex;align-items:center;gap:3px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.4px;padding:0 5px;border-radius:4px;border:1px {{ c.orgBs }} #626c75;color:#dfe3e7;opacity:{{ c.orgOp }};"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"></path><path d="M5 21V7l7-4 7 4v14"></path><path d="M9 21v-6h6v6"></path></svg>ORG</span></sc-if><span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.4px;padding:0 5px;border-radius:4px;border:1px solid {{ c.tb }};color:{{ c.tc }};">{{ c.truthT }}</span></div>
+                  <span style="flex:none;font-size:12px;line-height:16px;color:{{ c.nc }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ c.title }}</span>
+                </div>
+              </sc-for>
+              <sc-for list="{{ mores }}" as="m" hint-placeholder-count="0"><button onClick="{{ m.go }}" style="position:absolute;left:{{ m.l }};top:{{ m.t }};height:26px;padding:0 10px;border-radius:8px;border:1px solid var(--line2);background:var(--panel);font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx15);opacity:{{ m.op }};" style-hover="border-color:var(--ctl);">{{ m.label }}</button></sc-for>
+
+              <sc-if value="{{ showPack }}" hint-placeholder-val="{{ true }}">
+                <div id="{{ pack.domId }}" role="option" aria-selected="{{ pack.ariaSel }}" aria-label="Agent instructions, Graphban pack, advisory" onClick="{{ pack.pick }}" style="position:absolute;left:544px;top:470px;width:368px;height:64px;padding:9px 12px;border:1.5px dashed rgba(224,179,74,.7);border-radius:12px;background:rgba(15,19,23,.6);box-shadow:{{ pack.ring }};display:flex;align-items:center;gap:12px;cursor:pointer;" style-hover="box-shadow:0 0 0 2px rgba(224,179,74,.7);">
+                  <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;">
+                    <span style="font-size:13px;font-weight:600;color:var(--tx15);">Agent instructions <span style="font-weight:400;color:var(--tx2);">(Graphban pack)</span></span>
+                    <span style="display:flex;align-items:center;gap:6px;color:var(--amb);font-family:'IBM Plex Mono',monospace;font-size:9.5px;font-weight:600;letter-spacing:.6px;"><span style="display:inline-flex;line-height:0;flex:none;"><dc-import name="Rule Level Icon" level="advisory" size="12" hint-size="12px,12px"></dc-import></span>ADVISORY<span style="color:var(--tx2);font-weight:400;letter-spacing:0;">· FILE · 9 skills · gban 0.8.2</span></span>
+                  </div>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8b949e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg>
+                </div>
+              </sc-if>
+            </div>
+          </div>
+        </div>
+
+        <div style="position:absolute;left:16px;bottom:60px;z-index:6;display:flex;flex-direction:column;gap:5px;padding:9px 12px;border-radius:12px;border:1px solid var(--line2);background:var(--panel);box-shadow:0 8px 24px var(--shadow);">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.7px;color:var(--tx3);">ENFORCEMENT</span>
+          <sc-for list="{{ legend }}" as="g" hint-placeholder-count="5"><span style="display:flex;align-items:center;gap:7px;color:{{ g.c }};font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.5px;"><span style="display:inline-flex;line-height:0;flex:none;"><dc-import name="Rule Level Icon" level="{{ g.l }}" size="12" hint-size="12px,12px"></dc-import></span><span style="width:82px;">{{ g.w }}</span><span style="min-width:16px;text-align:right;color:var(--tx2);font-weight:400;">{{ g.n }}</span></span></sc-for>
+        </div>
+
+        <div style="position:absolute;left:16px;bottom:16px;z-index:6;display:flex;align-items:center;gap:2px;padding:3px;border-radius:10px;border:1px solid var(--line2);background:var(--panel);box-shadow:0 8px 24px var(--shadow);">
+          <button onClick="{{ zoomOut }}" aria-label="Zoom out" title="Zoom out" style="width:28px;height:28px;border:0;border-radius:7px;background:transparent;font-size:16px;line-height:1;color:var(--tx);" style-hover="background:var(--hover);">−</button>
+          <span style="min-width:46px;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx);">{{ zoomPct }}</span>
+          <button onClick="{{ zoomIn }}" aria-label="Zoom in" title="Zoom in" style="width:28px;height:28px;border:0;border-radius:7px;background:transparent;font-size:16px;line-height:1;color:var(--tx);" style-hover="background:var(--hover);">+</button>
+          <span style="width:1px;height:18px;margin:0 3px;background:var(--line2);"></span>
+          <button onClick="{{ zoomFit }}" aria-pressed="{{ fitOn }}" style="height:28px;padding:0 9px;border:0;border-radius:7px;background:{{ fitBg }};font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx);" style-hover="background:var(--hover);">Fit</button>
+          <button onClick="{{ zoom100 }}" style="height:28px;padding:0 9px;border:0;border-radius:7px;background:transparent;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx);" style-hover="background:var(--hover);">1:1</button>
+          <span style="width:1px;height:18px;margin:0 3px;background:var(--line2);"></span>
+          <span title="Detail drops as you zoom out" style="padding:0 8px 0 4px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx3);white-space:nowrap;">{{ lodLabel }}</span>
+        </div>
+        </sc-if>
+
+        <sc-if value="{{ narrow }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;inset:0;overflow:auto;padding:12px 16px 40px;display:flex;flex-direction:column;gap:10px;">
+            <div style="display:flex;flex-wrap:wrap;gap:6px 12px;padding:2px 2px 4px;"><sc-for list="{{ legend }}" as="g" hint-placeholder-count="5"><span style="display:flex;align-items:center;gap:5px;color:{{ g.c }};font-family:'IBM Plex Mono',monospace;font-size:9.5px;font-weight:600;letter-spacing:.5px;"><span style="display:inline-flex;line-height:0;flex:none;"><dc-import name="Rule Level Icon" level="{{ g.l }}" size="11" hint-size="11px,11px"></dc-import></span>{{ g.w }}</span></sc-for></div>
+            <sc-for list="{{ stages }}" as="s" hint-placeholder-count="7">
+              <button onClick="{{ s.pick }}" aria-pressed="{{ s.ariaSel }}" style="display:flex;flex-direction:column;gap:7px;padding:12px 14px;text-align:left;border:{{ s.bd }};border-radius:12px;background:{{ s.bg }};box-shadow:{{ s.ring }};opacity:{{ s.op }};">
+                <span style="display:flex;align-items:center;gap:8px;width:100%;"><span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.7px;color:var(--tx3);">{{ s.num }}</span><span style="font-size:15px;font-weight:600;">{{ s.label }}</span><span style="flex:1;"></span><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;border:1px {{ s.pbs }} {{ s.pb }};background:{{ s.pbg }};color:{{ s.lc }};font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.6px;white-space:nowrap;"><span style="display:inline-flex;line-height:0;flex:none;"><dc-import name="Rule Level Icon" level="{{ s.pl }}" size="12" hint-size="12px,12px"></dc-import></span>{{ s.word }}</span></span>
+                <span style="display:flex;flex-wrap:wrap;gap:0 5px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;"><sc-for list="{{ s.segs }}" as="g" hint-placeholder-count="2"><span style="color:{{ g.c }};">{{ g.t }}</span></sc-for></span>
+                <span style="display:flex;gap:2px;height:4px;width:100%;"><sc-for list="{{ s.bars }}" as="b" hint-placeholder-count="2"><span style="flex:{{ b.n }};border-radius:2px;background:{{ b.bg }};"></span></sc-for></span>
+              </button>
+            </sc-for>
+            <button onClick="{{ pack.pick }}" style="display:flex;align-items:center;gap:8px;padding:11px 14px;text-align:left;border:1.5px dashed rgba(224,179,74,.7);border-radius:12px;background:transparent;color:var(--amb);font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.5px;"><span style="display:inline-flex;line-height:0;flex:none;"><dc-import name="Rule Level Icon" level="advisory" size="12" hint-size="12px,12px"></dc-import></span>ADVISORY<span style="font-family:'IBM Plex Sans',sans-serif;font-size:13px;font-weight:600;letter-spacing:0;color:var(--tx15);">Agent instructions (Graphban pack)</span></button>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isError }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;">
+            <div role="alert" style="width:480px;max-width:100%;padding:20px 22px;border-radius:12px;border:1.5px solid var(--red);background:rgba(255,107,107,.05);box-shadow:0 18px 50px var(--shadow);display:flex;flex-direction:column;gap:9px;">
+              <span style="display:flex;align-items:center;gap:7px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;font-weight:600;letter-spacing:.7px;color:var(--red);"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"></path><path d="M12 17h.01"></path><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path></svg>COULD NOT LOAD</span>
+              <span style="font-size:16px;font-weight:600;">The rules map didn't load</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--tx15);">GET /api/projects/GRPH/rules → 503 Service Unavailable · 14:06:12</span>
+              <span style="font-size:12.5px;line-height:1.5;color:var(--tx2);text-wrap:pretty;">Nothing is known, so no map is drawn. This isn't an empty contract — the server still refuses what it refuses.</span>
+              <div style="display:flex;gap:8px;margin-top:4px;"><button onClick="{{ retry }}" style="height:32px;padding:0 14px;border-radius:8px;border:0;background:var(--acc);color:#0a0c0e;font-size:12.5px;font-weight:600;" style-hover="background:var(--acch);">Retry</button></div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ hasIns }}" hint-placeholder-val="{{ false }}">
+          <aside aria-label="{{ ins.aria }}" style="position:absolute;top:{{ insTop }};right:{{ insRight }};bottom:{{ insBottom }};left:{{ insLeft }};width:{{ insW }};max-height:{{ insMaxH }};display:flex;flex-direction:column;border:1px solid var(--line2);border-radius:{{ insRad }};background:var(--panel);box-shadow:0 2px 6px rgba(0,0,0,.3),0 18px 50px var(--shadow);overflow:hidden;z-index:10;animation:{{ insAnim }};">
+            <sc-if value="{{ narrow }}" hint-placeholder-val="{{ false }}"><span style="align-self:center;width:36px;height:4px;margin-top:8px;border-radius:2px;background:#2a333a;"></span></sc-if>
+            <sc-if value="{{ ins.hasFrom }}" hint-placeholder-val="{{ false }}"><div style="display:flex;align-items:center;gap:7px;padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel2);font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx15);"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg><span style="color:var(--tx3);">From:</span>{{ ins.from }}</div></sc-if>
+            <div style="display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line);">
+              <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.7px;color:var(--tx3);">{{ ins.kicker }}</span>
+                <span style="font-size:16px;font-weight:600;line-height:1.25;">{{ ins.title }}</span>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <span style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;border:1px {{ ins.pbs }} {{ ins.pb }};background:{{ ins.pbg }};color:{{ ins.lc }};font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.6px;"><span style="display:inline-flex;line-height:0;flex:none;"><dc-import name="Rule Level Icon" level="{{ ins.pl }}" size="12" hint-size="12px,12px"></dc-import></span>{{ ins.word }}</span>
+                  <span style="display:flex;flex-wrap:wrap;gap:0 5px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;"><sc-for list="{{ ins.segs }}" as="g" hint-placeholder-count="2"><span style="color:{{ g.c }};">{{ g.t }}</span></sc-for></span>
+                </div>
+                <sc-if value="{{ ins.hasBars }}" hint-placeholder-val="{{ true }}"><span style="display:flex;gap:2px;height:4px;"><sc-for list="{{ ins.bars }}" as="b" hint-placeholder-count="2"><span style="flex:{{ b.n }};border-radius:2px;background:{{ b.bg }};"></span></sc-for></span></sc-if>
+                <span style="font-size:12.5px;line-height:1.5;color:var(--tx2);text-wrap:pretty;">{{ ins.summary }}</span>
+              </div>
+              <button onClick="{{ closeSel }}" aria-label="Close inspector" style="width:28px;height:28px;flex:none;border-radius:8px;border:1px solid var(--ctl);background:transparent;color:var(--tx2);font-size:15px;line-height:1;" style-hover="color:var(--tx);border-color:var(--tx2);">×</button>
+            </div>
+            <div ref="{{ insRef }}" style="position:relative;flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:8px;">
+              <sc-if value="{{ ins.isNu }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-direction:column;gap:3px;padding:10px 12px;border-radius:8px;border:1.5px dashed var(--line2);"><span style="display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--tx2);"><span style="display:inline-flex;line-height:0;flex:none;"><dc-import name="Rule Level Icon" level="nu" size="12" hint-size="12px,12px"></dc-import></span>NOT USED</span><span style="font-size:12px;line-height:1.45;color:var(--tx2);">Every rule on this stage is not used by this project's model: push_to_base. They stay drawn so you can see what would apply.</span></div></sc-if>
+              <sc-if value="{{ ins.isEmpty }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-direction:column;gap:5px;padding:14px;border-radius:12px;border:1.5px dashed var(--ctl);"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--tx15);">NOTHING REGISTERED</span><span style="font-size:13px;font-weight:600;">No rules registered for this stage yet</span><span style="font-size:12px;line-height:1.5;color:var(--tx2);text-wrap:pretty;">Nothing in the registry governs this stage yet. That isn't the same as nothing applying.</span></div></sc-if>
+
+              <sc-for list="{{ ins.rows }}" as="r" hint-placeholder-count="0">
+                <div id="{{ r.domId }}" style="position:relative;display:grid;grid-template-columns:100px minmax(0,1fr);gap:10px;padding:12px 12px 12px 14px;border-radius:12px;border:1px solid {{ r.rb }};background:{{ r.rbg }};transition:border-color .2s ease, background-color .2s ease;animation:rlRowIn .32s cubic-bezier(.2,.8,.2,1) both;animation-delay:{{ r.delay }};">
+                  <span style="position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:0 3px 3px 0;background:{{ r.bar }};transition:background-color .25s ease;"></span>
+                  <span style="display:flex;align-items:flex-start;gap:6px;padding-top:2px;color:{{ r.lc }};font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.5px;opacity:{{ r.op }};"><span style="display:inline-flex;line-height:0;flex:none;"><dc-import name="Rule Level Icon" level="{{ r.lvl }}" size="13" hint-size="13px,13px"></dc-import></span>{{ r.word }}</span>
+                  <div style="display:flex;flex-direction:column;gap:6px;min-width:0;">
+                    <div style="display:flex;flex-direction:column;gap:6px;opacity:{{ r.op }};">
+                      <span style="font-size:13px;font-weight:600;line-height:1.35;color:var(--tx);text-wrap:pretty;">{{ r.title }}</span>
+                      <span style="font-size:12px;line-height:1.45;color:var(--tx2);text-wrap:pretty;">{{ r.summary }}</span>
+                      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;"><span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx15);overflow-wrap:anywhere;">{{ r.id }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.4px;padding:0 5px;border-radius:4px;border:1px solid {{ r.tb }};color:{{ r.tc }};">{{ r.truth }}</span></div>
+                      <a href="{{ r.href }}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:5px;font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.4;overflow-wrap:anywhere;"><span style="flex:none;padding:0 4px;border-radius:3px;border:1px solid var(--lineh);font-size:9px;letter-spacing:.5px;color:var(--tx2);">{{ r.ekind }}</span><span>{{ r.enforcer }}</span><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;"><path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path></svg></a>
+                    </div>
+                    <sc-if value="{{ r.isNu }}" hint-placeholder-val="{{ false }}"><span style="font-size:11.5px;line-height:1.45;color:var(--tx2);">{{ r.nuT }}</span></sc-if>
+                    <sc-if value="{{ r.hasQuiet }}" hint-placeholder-val="{{ false }}"><span style="font-size:11.5px;line-height:1.45;color:var(--tx3);">{{ r.quiet }}</span></sc-if>
+                    <sc-if value="{{ r.isExt }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-direction:column;gap:5px;padding:8px 10px;border-radius:8px;border:3px double rgba(167,139,250,.45);"><span style="display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.6px;color:#c9b8ff;"><span style="width:7px;height:7px;border-radius:50%;border:1.5px solid #c9b8ff;"></span>NOT VERIFIED</span><span style="font-size:11.5px;line-height:1.45;color:var(--tx15);text-wrap:pretty;">{{ r.extT }}</span><sc-if value="{{ r.hasExtLink }}" hint-placeholder-val="{{ false }}"><a href="{{ r.extHref }}" style="align-self:flex-start;font-size:12px;">{{ r.extL }}</a></sc-if></div></sc-if>
+                    <sc-if value="{{ r.isChk }}" hint-placeholder-val="{{ false }}">
+                      <sc-if value="{{ r.hasRes }}" hint-placeholder-val="{{ false }}"><span style="align-self:flex-start;display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;border:1px solid {{ r.resC }};color:{{ r.resC }};font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.6px;"><span style="width:6px;height:6px;border-radius:50%;background:{{ r.resC }};"></span>{{ r.resT }}</span></sc-if>
+                      <sc-if value="{{ r.noRes }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-direction:column;gap:2px;padding:7px 10px;border-radius:8px;border:1.5px dashed var(--ctl);background:repeating-linear-gradient(45deg,transparent 0 6px,rgba(139,148,158,.1) 6px 7px);"><span style="display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--tx15);"><span style="width:7px;height:7px;border-radius:50%;border:1.5px solid var(--tx2);"></span>NO RESULT RECORDED</span><span style="font-size:11.5px;color:var(--tx2);">Nothing has reported yet. That is not a pass.</span></div></sc-if>
+                    </sc-if>
+                    <sc-if value="{{ r.isDb }}" hint-placeholder-val="{{ false }}">
+                      <div style="display:flex;flex-direction:column;gap:8px;padding:10px;border-radius:8px;border:1px {{ r.vbs }} {{ r.vb }};background:var(--bg);">
+                        <div style="display:flex;align-items:center;gap:8px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx3);">{{ r.field }}</span><span style="flex:1;"></span><span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.5px;padding:0 6px;border-radius:4px;border:1px {{ r.srcBs }} {{ r.srcB }};color:{{ r.srcC }};">{{ r.srcL }}</span></div>
+                        <sc-if value="{{ r.showVal }}" hint-placeholder-val="{{ false }}"><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;color:{{ r.valC }};opacity:{{ r.vop }};">{{ r.val }}</span></sc-if>
+                        <sc-if value="{{ r.edText }}" hint-placeholder-val="{{ false }}">
+                          <input ref="{{ r.inRef }}" aria-label="{{ r.field }}" value="{{ r.draft }}" onChange="{{ r.onDraft }}" onKeyDown="{{ r.onKey }}" disabled="{{ r.busy }}" placeholder="{{ r.ph }}" style="height:32px;padding:0 10px;border-radius:8px;border:1px solid {{ r.inB }};background:var(--panel);color:var(--tx);font-family:'IBM Plex Mono',monospace;font-size:12px;outline:none;" style-focus="border-color:var(--acc);box-shadow:0 0 0 3px rgba(198,242,78,.18);">
+                          <sc-if value="{{ r.hasTokens }}" hint-placeholder-val="{{ false }}"><div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;"><span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.6px;color:var(--tx3);margin-right:2px;">{{ r.tokL }}</span><sc-for list="{{ r.tokens }}" as="k" hint-placeholder-count="5"><button onClick="{{ k.go }}" onMouseDown="{{ k.keep }}" disabled="{{ r.busy }}" style="height:22px;padding:0 7px;border-radius:6px;border:1px solid var(--ctl);background:transparent;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx15);" style-hover="border-color:var(--acc);color:var(--acc);">{{ k.t }}</button></sc-for></div></sc-if>
+                        </sc-if>
+                        <sc-if value="{{ r.edSelect }}" hint-placeholder-val="{{ false }}"><select aria-label="{{ r.field }}" value="{{ r.draft }}" onChange="{{ r.onDraft }}" disabled="{{ r.busy }}" style="height:32px;padding:0 8px;border-radius:8px;border:1px solid var(--ctl);background:var(--panel);color:var(--tx);font-family:'IBM Plex Mono',monospace;font-size:12px;outline:none;"><sc-for list="{{ r.opts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}">{{ o.l }}</option></sc-for></select></sc-if>
+                        <sc-if value="{{ r.edToggle }}" hint-placeholder-val="{{ false }}"><button role="switch" aria-checked="{{ r.tgOn }}" aria-label="{{ r.field }}" onClick="{{ r.toggle }}" disabled="{{ r.busy }}" style="align-self:flex-start;display:flex;align-items:center;gap:10px;padding:0;border:0;background:transparent;"><span style="position:relative;width:34px;height:20px;border-radius:999px;border:1px solid {{ r.tgB }};background:{{ r.tgBg }};"><span style="position:absolute;top:2px;left:{{ r.tgX }};width:14px;height:14px;border-radius:50%;background:{{ r.tgK }};transition:left .15s ease;"></span></span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--tx);">{{ r.tgL }}</span></button></sc-if>
+                        <sc-if value="{{ r.showActions }}" hint-placeholder-val="{{ false }}"><div style="display:flex;align-items:center;gap:8px;animation:rlPop .2s cubic-bezier(.2,.8,.2,1) both;"><button onClick="{{ r.save }}" disabled="{{ r.busy }}" style="height:28px;padding:0 12px;border-radius:8px;border:0;background:{{ r.saveBg }};color:#0a0c0e;font-size:12px;font-weight:600;" style-hover="background:var(--acch);">{{ r.saveL }}</button><button onClick="{{ r.cancel }}" disabled="{{ r.busy }}" style="height:28px;padding:0 10px;border-radius:8px;border:1px solid var(--ctl);background:transparent;color:var(--tx);font-size:12px;" style-hover="border-color:var(--tx2);">Cancel</button></div></sc-if>
+                        <sc-if value="{{ r.isFailed }}" hint-placeholder-val="{{ false }}"><div role="alert" style="animation:rlPop .24s cubic-bezier(.2,.8,.2,1) both;display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-radius:8px;border:1px solid var(--red);background:rgba(255,107,107,.07);"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--red);">SAVE FAILED · 422 · server said</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;line-height:1.45;color:var(--tx);overflow-wrap:anywhere;">{{ r.err }}</span><span style="font-size:11.5px;color:var(--tx2);">Your value is kept. Change it and save again.</span></div></sc-if>
+                        <sc-if value="{{ r.isSaved }}" hint-placeholder-val="{{ false }}"><span role="status" style="animation:rlPop .28s cubic-bezier(.2,.8,.2,1) both;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--grn);"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>{{ r.savedT }}</span></sc-if>
+                        <sc-if value="{{ r.hasLock }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-direction:column;gap:3px;"><span style="font-size:12px;line-height:1.45;color:{{ r.lockC }};">{{ r.lockT }}</span><sc-if value="{{ r.lockLink }}" hint-placeholder-val="{{ false }}"><a href="Log%20Export.dc.html" style="font-size:12px;">Edit in Admin → Gitops</a></sc-if></div></sc-if>
+                      </div>
+                    </sc-if>
+                  </div>
+                </div>
+              </sc-for>
+
+              <sc-if value="{{ ins.isPack }}" hint-placeholder-val="{{ false }}">
+                <span style="font-size:12px;line-height:1.5;color:var(--tx2);">Shipped with gban 0.8.2 — the pack Graphban ships, not this project's .claude/skills. Read by agents at Build and Review; nothing checks that an agent followed it.</span>
+                <sc-for list="{{ ins.skills }}" as="k" hint-placeholder-count="9"><a href="{{ k.h }}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;border:1px solid var(--line2);font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx);" style-hover="border-color:var(--ctl);background:var(--hover);"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ k.p }}</span><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--acc)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path></svg></a></sc-for>
+              </sc-if>
+            </div>
+          </aside>
+        </sc-if>
+
+        <sc-if value="{{ unmOpen }}" hint-placeholder-val="{{ false }}">
+          <aside role="dialog" aria-label="Unmapped refusals" style="position:absolute;top:{{ insTop }};right:{{ insRight }};bottom:{{ insBottom }};left:{{ insLeft }};width:{{ unmW }};max-height:{{ insMaxH }};display:flex;flex-direction:column;border:1px solid var(--line2);border-radius:{{ insRad }};background:var(--panel);box-shadow:0 2px 6px rgba(0,0,0,.3),0 18px 50px var(--shadow);overflow:hidden;z-index:11;animation:{{ insAnim }};">
+            <div style="display:flex;align-items:flex-start;gap:10px;padding:14px;border-bottom:1px solid var(--line);">
+              <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.7px;color:var(--amb);">REFUSAL_UNMAPPED · LAST 7 DAYS</span>
+                <span style="font-size:16px;font-weight:600;">Unmapped refusals</span>
+                <span style="font-size:12.5px;line-height:1.5;color:var(--tx2);text-wrap:pretty;">Refusals the server made without naming a rule. Each one is a gap in this map.</span>
+              </div>
+              <button onClick="{{ closeUnm }}" aria-label="Close" style="width:28px;height:28px;flex:none;border-radius:8px;border:1px solid var(--ctl);background:transparent;color:var(--tx2);font-size:15px;line-height:1;" style-hover="color:var(--tx);border-color:var(--tx2);">×</button>
+            </div>
+            <div style="flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:14px;">
+              <div style="display:flex;flex-direction:column;gap:6px;">
+                <div style="display:flex;align-items:baseline;gap:8px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;">11 of 46</span><span style="font-size:12.5px;color:var(--tx15);">refusal sites name their rule</span></div>
+                <span style="position:relative;height:4px;border-radius:2px;background:#1b2127;overflow:hidden;"><span style="position:absolute;left:0;top:0;bottom:0;width:23.9%;border-radius:2px;background:var(--acc);"></span></span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx3);">CI ratchet · this number can grow, never shrink · was 9 on 2026-10-14</span>
+              </div>
+              <sc-if value="{{ unmPop }}" hint-placeholder-val="{{ true }}">
+                <div style="display:flex;flex-direction:column;">
+                  <div style="display:grid;grid-template-columns:18px minmax(0,1fr) 40px 44px 64px;gap:8px;padding:0 0 6px;font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.6px;color:var(--tx3);"><span>#</span><span>ROUTE</span><span>STATUS</span><span style="text-align:right;">COUNT</span><span style="text-align:right;">7 DAYS</span></div>
+                  <sc-for list="{{ unmRows }}" as="u" hint-placeholder-count="4">
+                    <div style="display:flex;flex-direction:column;gap:7px;padding:10px 0;border-top:1px solid var(--line2);animation:rlRowIn .32s cubic-bezier(.2,.8,.2,1) both;animation-delay:{{ u.delay }};">
+                      <div style="display:grid;grid-template-columns:18px minmax(0,1fr) 40px 44px 64px;gap:8px;align-items:center;font-family:'IBM Plex Mono',monospace;font-size:11.5px;">
+                        <span style="color:var(--tx3);">{{ u.rank }}</span>
+                        <span style="color:var(--tx);overflow-wrap:anywhere;">{{ u.route }}</span>
+                        <span style="color:var(--red);font-weight:600;">{{ u.status }}</span>
+                        <span style="text-align:right;color:var(--tx15);">{{ u.count }}</span>
+                        <svg width="64" height="18" viewBox="0 0 64 18" aria-label="{{ u.sparkL }}"><sc-for list="{{ u.spark }}" as="b" hint-placeholder-count="7"><rect x="{{ b.x }}" y="{{ b.y }}" width="7" height="{{ b.h }}" rx="1" fill="{{ b.f }}"></rect></sc-for></svg>
+                      </div>
+                      <div style="display:flex;align-items:center;gap:8px;padding-left:26px;">
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx2);">last seen {{ u.last }}</span>
+                        <span style="flex:1;"></span>
+                        <button onClick="{{ u.copy }}" style="height:24px;padding:0 8px;border-radius:6px;border:1px solid var(--ctl);background:transparent;color:var(--tx);font-size:11px;" style-hover="border-color:var(--tx2);">{{ u.copyL }}</button>
+                        <sc-if value="{{ u.notFiled }}" hint-placeholder-val="{{ true }}"><button onClick="{{ u.file }}" style="height:24px;padding:0 8px;border-radius:6px;border:1px solid var(--ctl);background:transparent;color:var(--tx);font-size:11px;" style-hover="border-color:var(--acc);color:var(--acc);">File as item</button></sc-if>
+                        <sc-if value="{{ u.isFiled }}" hint-placeholder-val="{{ false }}"><a href="Plan.dc.html" style="font-family:'IBM Plex Mono',monospace;font-size:11px;">filed {{ u.filedId }} ↗</a></sc-if>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+                <span style="font-size:11.5px;line-height:1.5;color:var(--tx3);text-wrap:pretty;">Mapping a refusal is a code change: the refusing route has to return its rule_id. There's nothing to create here.</span>
+              </sc-if>
+              <sc-if value="{{ unmEmpty }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-direction:column;gap:4px;padding:14px;border-radius:12px;border:1.5px dashed var(--ctl);"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--tx15);">MEASURED · ZERO</span><span style="font-size:13px;font-weight:600;">No unmapped refusals recorded since 2026-10-21 09:00</span><span style="font-size:12px;line-height:1.5;color:var(--tx2);">That's when the recorder started. Every refusal since then named its rule.</span></div></sc-if>
+              <sc-if value="{{ unmErr }}" hint-placeholder-val="{{ false }}"><div role="alert" style="display:flex;flex-direction:column;gap:5px;padding:14px;border-radius:12px;border:1.5px solid var(--red);background:rgba(255,107,107,.05);"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--red);">COULD NOT LOAD</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--tx15);">GET /api/projects/GRPH/refusals/unmapped → 500 · 14:06:40</span><span style="font-size:12px;color:var(--tx2);">Unknown, not zero. Retry before reading anything into it.</span><button onClick="{{ unmRetry }}" style="align-self:flex-start;margin-top:4px;height:28px;padding:0 12px;border-radius:8px;border:0;background:var(--acc);color:#0a0c0e;font-size:12px;font-weight:600;">Retry</button></div></sc-if>
+            </div>
+          </aside>
+        </sc-if>
+        <sc-if value="{{ recOpen }}" hint-placeholder-val="{{ false }}">
+          <aside role="dialog" aria-label="Recommended rules" style="position:absolute;top:{{ insTop }};right:{{ insRight }};bottom:{{ insBottom }};left:{{ insLeft }};width:{{ unmW }};max-height:{{ insMaxH }};display:flex;flex-direction:column;border:1px solid var(--line2);border-radius:{{ insRad }};background:var(--panel);box-shadow:0 2px 6px rgba(0,0,0,.3),0 18px 50px var(--shadow);overflow:hidden;z-index:11;animation:{{ insAnim }};">
+            <div style="display:flex;align-items:flex-start;gap:10px;padding:14px;border-bottom:1px solid var(--line);">
+              <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.7px;color:#c9b8ff;">SUGGESTED · FROM THE SOURCES BELOW</span>
+                <span style="font-size:16px;font-weight:600;">Recommended rules</span>
+                <span style="font-size:12.5px;line-height:1.5;color:var(--tx2);text-wrap:pretty;">Gaps your architecture implies but nothing holds yet. A suggestion isn't a rule until a value or code holds it.</span>
+              </div>
+              <button onClick="{{ closeRec }}" aria-label="Close" style="width:28px;height:28px;flex:none;border-radius:8px;border:1px solid var(--ctl);background:transparent;color:var(--tx2);font-size:15px;line-height:1;" style-hover="color:var(--tx);border-color:var(--tx2);">×</button>
+            </div>
+            <div style="flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:10px;">
+              <div style="display:flex;flex-direction:column;gap:5px;padding:9px 11px;border-radius:8px;border:1px solid var(--line2);">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.6px;color:var(--tx3);">EVIDENCE SOURCES</span>
+                <sc-for list="{{ recSrc }}" as="x" hint-placeholder-count="3"><div style="display:flex;align-items:center;gap:8px;font-size:12px;"><span style="width:7px;height:7px;flex:none;border-radius:50%;background:{{ x.dot }};border:1.5px solid {{ x.dc }};"></span><span style="color:var(--tx15);">{{ x.n }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:{{ x.sc }};">{{ x.st }}</span><span style="flex:1;"></span><sc-if value="{{ x.hasLink }}" hint-placeholder-val="{{ false }}"><a href="Log%20Export.dc.html" style="font-size:11.5px;white-space:nowrap;">Connect GitHub</a></sc-if><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx3);white-space:nowrap;">{{ x.at }}</span></div></sc-for>
+              </div>
+              <sc-if value="{{ recGhMissing }}" hint-placeholder-val="{{ false }}"><span style="font-size:11.5px;line-height:1.5;color:var(--amb);text-wrap:pretty;">No PR-title suggestion: it comes from your PR history, and GitHub isn't connected.</span></sc-if>
+              <sc-for list="{{ recs }}" as="c" hint-placeholder-count="4">
+                <div style="display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;border:1px solid var(--line2);background:var(--panel2);animation:rlRowIn .32s cubic-bezier(.2,.8,.2,1) both;animation-delay:{{ c.delay }};">
+                  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx3);">{{ c.rank }}</span>
+                    <button onClick="{{ c.showStage }}" title="Show this stage on the map" style="padding:0 6px;height:18px;border-radius:4px;border:1px solid var(--lineh);background:transparent;font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.5px;color:var(--tx15);" style-hover="border-color:var(--ctl);">{{ c.stageU }}</button>
+                    <span style="flex:1;"></span>
+                    <span style="display:inline-flex;align-items:center;gap:6px;padding:1px 8px;border-radius:999px;border:1px dashed {{ c.pb }};color:{{ c.lc }};font-family:'IBM Plex Mono',monospace;font-size:9.5px;font-weight:600;letter-spacing:.5px;"><span style="display:inline-flex;line-height:0;flex:none;"><dc-import name="Rule Level Icon" level="{{ c.lvl }}" size="11" hint-size="11px,11px"></dc-import></span>{{ c.chipT }}</span>
+                  </div>
+                  <span style="font-size:13px;font-weight:600;line-height:1.35;text-wrap:pretty;">{{ c.title }}</span>
+                  <span style="font-size:12px;line-height:1.5;color:var(--tx2);text-wrap:pretty;">{{ c.why }}</span>
+                  <span style="font-size:11.5px;line-height:1.45;color:{{ c.oc }};text-wrap:pretty;">{{ c.outcome }}</span>
+                  <div style="display:flex;flex-direction:column;gap:4px;padding:8px 10px;border-radius:8px;background:var(--bg);">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.6px;color:var(--tx3);">EVIDENCE</span>
+                    <sc-for list="{{ c.ev }}" as="e" hint-placeholder-count="1"><div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:11.5px;line-height:1.45;"><span style="color:var(--tx15);">{{ e.t }}</span><a href="{{ e.h }}" style="font-family:'IBM Plex Mono',monospace;font-size:10px;white-space:nowrap;">{{ e.s }} ↗</a></div></sc-for>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.5px;padding:0 6px;border-radius:4px;border:1px solid {{ c.kb }};color:{{ c.kc }};">{{ c.kindL }}</span>
+                    <span style="flex:1;"></span>
+                    <button onClick="{{ c.dismiss }}" style="height:26px;padding:0 9px;border-radius:8px;border:0;background:transparent;color:var(--tx2);font-size:11.5px;" style-hover="color:var(--tx);background:var(--hover);">Dismiss</button>
+                    <sc-if value="{{ c.notFiled }}" hint-placeholder-val="{{ true }}"><button onClick="{{ c.act }}" style="height:26px;padding:0 10px;border-radius:8px;border:1px solid {{ c.ab }};background:{{ c.abg }};color:{{ c.ac }};font-size:11.5px;font-weight:600;" style-hover="border-color:var(--acc);">{{ c.actL }}</button></sc-if>
+                    <sc-if value="{{ c.isFiled }}" hint-placeholder-val="{{ false }}"><a href="Plan.dc.html" style="font-family:'IBM Plex Mono',monospace;font-size:11px;">filed {{ c.filedId }} ↗</a></sc-if>
+                  </div>
+                </div>
+              </sc-for>
+              <sc-if value="{{ recNone }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-direction:column;gap:4px;padding:14px;border-radius:12px;border:1.5px dashed var(--ctl);"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--tx15);">NOTHING LEFT TO SUGGEST</span><span style="font-size:12px;line-height:1.5;color:var(--tx2);">Every suggestion from the current topology is dismissed or filed. New ones appear when Stack or the code graph changes.</span><button onClick="{{ recRestore }}" style="align-self:flex-start;padding:0;border:0;background:transparent;color:var(--acc);font-size:12px;">Show dismissed ({{ recDismissedN }})</button></div></sc-if>
+              <span style="font-size:11.5px;line-height:1.5;color:var(--tx3);text-wrap:pretty;">Suggestions don't change enforcement. A value you save is told to agents — nothing refuses a violation. Anything that should refuse needs a PR, so it files as an item.</span>
+            </div>
+          </aside>
+        </sc-if>
+      </div>
+    </main>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;scenario&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;local&quot;,&quot;linked_set&quot;,&quot;linked_unset&quot;,&quot;linked_unreachable&quot;,&quot;push&quot;,&quot;fresh&quot;,&quot;loading&quot;,&quot;error&quot;],&quot;default&quot;:&quot;local&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;initialSelected&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;s:review&quot;,&quot;s:merge&quot;,&quot;s:learn&quot;,&quot;r:pack&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;canWrite&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;embedded&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  qp = (() => { try { return new URLSearchParams(location.search); } catch (e) { return new URLSearchParams(""); } })();
+  state = (() => {
+    const p = this.qp, g = (k) => p.get(k);
+    const s = { sel: g("sel") || undefined, row: g("row"), focus: g("focus"), hover: g("hover"), scen: g("scen") || undefined, zoom: g("zoom") ? Number(g("zoom")) : "fit", vw: 1100, vh: 600, ww: typeof window !== "undefined" ? window.innerWidth : 1440, edits: {}, drafts: {}, est: {}, err: {}, from: g("from"), unm: g("unm"), rec: g("rec") === "1", recDis: {}, recFiled: {}, pulse: g("pulse") === "hold", filed: {}, copied: null, nav: { plan: false, build: true, observe: false }, ro: g("ro") === "1" };
+    const ed = g("edit"), dr = g("draft"), es = g("est");
+    if (ed && dr != null) {
+      if (es === "saved") { s.edits[ed] = dr; s.est[ed] = "saved"; }
+      else { s.drafts[ed] = dr; if (es === "saving") s.est[ed] = "saving"; if (es === "failed") { s.est[ed] = "failed"; s.err[ed] = this.validate(ed, dr); } }
+    }
+    if (s.row && !s.sel) s.sel = "s:" + (g("rowStage") || "");
+    return s;
+  })();
+  scRef = React.createRef(); szRef = React.createRef(); insRef = React.createRef(); curScale = 1; inputs = {}; refFns = {};
+  validate(id, v) {
+    if (!/pattern/.test(id)) return null;
+    if (/[*?]/.test(v)) return id.replace("gitops.", "") + ": globs are rejected. Use tokens: {item_id} {tag} {slug} {version} {date}.";
+    const bad = (v.match(/\{[^}]*\}/g) || []).map((t) => t.slice(1, -1)).filter((t) => !["item_id", "tag", "slug", "version", "date"].includes(t));
+    return bad.length ? id.replace("gitops.", "") + ": unknown token {" + bad[0] + "}. Allowed: {item_id} {tag} {slug} {version} {date}." : null;
+  }
+  componentDidMount() {
+    this.onResize = () => this.setState({ ww: window.innerWidth }); window.addEventListener("resize", this.onResize); this.onResize();
+    this.bindCanvas();
+    this.onGlobal = (e) => {
+      if (e.key !== "Escape") return;
+      if (this.state.unm) this.setState({ unm: null }); else if (this.curSel) { this.setState({ sel: null, row: null }); const el = this.scRef.current; if (el) el.focus(); }
+    };
+    window.addEventListener("keydown", this.onGlobal);
+    if (this.qp.get("pulse") === "1") { setTimeout(() => this.setState({ pulse: true }), 250); setTimeout(() => this.setState({ pulse: false }), 1250); }
+    if (this.state.row) this.scrollRow = this.state.row;
+    const f = this.qp.get("focus"); if (f) setTimeout(() => this.scRef.current && this.scRef.current.focus({ preventScroll: true }), 50);
+  }
+  bindCanvas() {
+    const el = this.scRef.current; if (!el || el === this.boundEl) return;
+    this.unbindCanvas(); this.boundEl = el;
+    const m = () => this.setState({ vw: el.clientWidth, vh: el.clientHeight });
+    m(); if (window.ResizeObserver) { this.ro = new ResizeObserver(m); this.ro.observe(el); }
+    this.onWheel = (e) => { e.preventDefault(); const r = el.getBoundingClientRect(); this.zoomTo(this.curScale * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)), e.clientX - r.left, e.clientY - r.top); };
+    this.onDown = (e) => { if (e.button !== 0) return; this.drag = { x: e.clientX, y: e.clientY, sl: el.scrollLeft, st: el.scrollTop, moved: false }; };
+    this.onMove = (e) => { const d = this.drag; if (!d) return; const dx = e.clientX - d.x, dy = e.clientY - d.y; if (!d.moved && Math.abs(dx) + Math.abs(dy) < 4) return; d.moved = true; el.scrollLeft = d.sl - dx; el.scrollTop = d.st - dy; el.style.cursor = "grabbing"; };
+    this.onUp = () => { if (this.drag && this.drag.moved) { this.justDragged = true; setTimeout(() => (this.justDragged = false), 0); } this.drag = null; el.style.cursor = ""; };
+    this.onKey = (e) => this.handleKey(e);
+    el.addEventListener("wheel", this.onWheel, { passive: false }); el.addEventListener("pointerdown", this.onDown); el.addEventListener("keydown", this.onKey);
+    window.addEventListener("pointermove", this.onMove); window.addEventListener("pointerup", this.onUp);
+  }
+  unbindCanvas() {
+    const el = this.boundEl; if (this.ro) this.ro.disconnect();
+    if (el) { el.removeEventListener("wheel", this.onWheel); el.removeEventListener("pointerdown", this.onDown); el.removeEventListener("keydown", this.onKey); }
+    window.removeEventListener("pointermove", this.onMove); window.removeEventListener("pointerup", this.onUp); this.boundEl = null;
+  }
+  componentWillUnmount() { this.unbindCanvas(); window.removeEventListener("resize", this.onResize); window.removeEventListener("keydown", this.onGlobal); }
+  zoomTo(s1, mx, my) {
+    const el = this.scRef.current, sz = this.szRef.current; if (!el || !sz) return;
+    s1 = Math.min(2, Math.max(0.25, s1)); const s0 = this.curScale;
+    if (mx == null) { mx = el.clientWidth / 2; my = el.clientHeight / 2; }
+    this.anchor = { cx: (el.scrollLeft + mx - sz.offsetLeft) / s0, cy: (el.scrollTop + my - sz.offsetTop) / s0, mx, my };
+    this.setState({ zoom: s1 });
+  }
+  componentDidUpdate() {
+    this.bindCanvas();
+    const el = this.scRef.current, sz = this.szRef.current;
+    if (this.anchor && el && sz) { const a = this.anchor; this.anchor = null; el.scrollLeft = a.cx * this.curScale + sz.offsetLeft - a.mx; el.scrollTop = a.cy * this.curScale + sz.offsetTop - a.my; }
+    if (this.scrollRow && this.insRef.current) {
+      const box = this.insRef.current, r = document.getElementById("rw-" + this.scrollRow.replace(/[^a-z0-9]/gi, "-"));
+      if (r) { box.scrollTop = Math.max(0, r.offsetTop - 12); this.scrollRow = null; }
+    }
+    if (this.caret) { const c = this.caret; this.caret = null; const i = this.inputs[c.id]; if (i) { i.focus(); i.setSelectionRange(c.pos, c.pos); } }
+  }
+  handleKey(e) {
+    const N = this.navMap; if (!N) return;
+    const k = e.key;
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Enter", " ", "Home", "End"].includes(k)) return;
+    e.preventDefault();
+    let f = this.state.focus || this.curSel || N[0]; if (!N.includes(f)) f = N[0];
+    if (k === "Enter" || k === " ") { this.setState({ sel: f, focus: f, row: null, unm: null }); return; }
+    const i = N.indexOf(f), P = "r:pack";
+    let nf = f;
+    if (k === "ArrowRight") nf = f === P ? "s:review" : N[Math.min(6, i + 1)];
+    if (k === "ArrowLeft") nf = f === P ? "s:build" : N[Math.max(0, i - 1)];
+    if (k === "ArrowDown" && (f === "s:build" || f === "s:review")) nf = P;
+    if (k === "ArrowUp" && f === P) nf = "s:build";
+    if (k === "Home") nf = N[0];
+    if (k === "End") nf = N[6];
+    this.setState({ focus: nf, sel: this.curSel ? nf : this.curSel, row: null });
+  }
+  renderVals() {
+    const CW = 1696, CH = 560;
+    const narrow = this.state.ww <= 900;
+    const scen = this.state.scen ?? this.props.scenario ?? "local";
+    const canWrite = !this.state.ro && (this.props.canWrite ?? true);
+    const ip = this.props.initialSelected;
+    const sel = this.state.sel !== undefined ? this.state.sel : ip && ip !== "none" ? ip : null;
+    this.curSel = sel;
+    const { focus, hover } = this.state;
+    const isError = scen === "error", isLoading = scen === "loading";
+    const fitS = Math.max(0.25, Math.min(1, (this.state.vw - 24) / CW, (this.state.vh - 24) / CH));
+    const sc = this.state.zoom === "fit" ? fitS : this.state.zoom; this.curScale = sc;
+    const lod = sc >= 0.55 ? "full" : "outline";
+    const full = lod === "full";
+    const control = { linked_set: "linked_set", linked_unset: "linked_unset", linked_unreachable: "linked_unreachable" }[scen] || "local";
+    const model = scen === "push" ? "push_to_base" : scen === "fresh" || scen === "linked_unset" ? null : "prs_to_base";
+    const HATCH = "repeating-linear-gradient(135deg,transparent 0 7px,rgba(255,107,107,.09) 7px 8px),#0f1317";
+    const LV = {
+      enforced: { w: "ENFORCED", c: "#c6f24e", bd: "1px solid #2a333a", sbd: "1.5px solid #2f3a42", bg: "#12171b", nc: "#e6e9ec", rk: 3, pb: "rgba(198,242,78,.32)", pbs: "solid", pbg: "rgba(198,242,78,.09)", bar: "#c6f24e" },
+      checked: { w: "CHECKED", c: "#7ca2ff", bd: "1px solid rgba(124,162,255,.42)", sbd: "1.5px solid rgba(124,162,255,.5)", bg: "#0f1317", nc: "#e6e9ec", rk: 2, pb: "rgba(124,162,255,.4)", pbs: "solid", pbg: "rgba(124,162,255,.08)", bar: "#7ca2ff" },
+      external: { w: "EXTERNAL", c: "#c9b8ff", bd: "3px double rgba(167,139,250,.5)", sbd: "3px double rgba(167,139,250,.6)", bg: "#0f1317", nc: "#e6e9ec", rk: 1.5, pb: "rgba(167,139,250,.5)", pbs: "double", pbg: "rgba(167,139,250,.08)", bar: "linear-gradient(#c9b8ff,#c9b8ff) top/100% 1px no-repeat,linear-gradient(#c9b8ff,#c9b8ff) bottom/100% 1px no-repeat,linear-gradient(#c9b8ff,#c9b8ff) left/1px 100% no-repeat,linear-gradient(#c9b8ff,#c9b8ff) right/1px 100% no-repeat" },
+      advisory: { w: "ADVISORY", c: "#e0b34a", bd: "1.5px dashed rgba(224,179,74,.7)", sbd: "2px dashed rgba(224,179,74,.85)", bg: "rgba(15,19,23,.6)", nc: "#dfe3e7", rk: 1, pb: "rgba(224,179,74,.6)", pbs: "dashed", pbg: "rgba(224,179,74,.07)", bar: "repeating-linear-gradient(90deg,#e0b34a 0 4px,transparent 4px 6px)" },
+      unmeasured: { w: "UNMEASURED", c: "#ff6b6b", bd: "1.5px dotted #ff6b6b", sbd: "2px dotted #ff6b6b", bg: HATCH, nc: "#dfe3e7", rk: 0, pb: "#ff6b6b", pbs: "dotted", pbg: "rgba(255,107,107,.06)", bar: "repeating-linear-gradient(90deg,#ff6b6b 0 2px,transparent 2px 4px)" },
+      nu: { w: "NOT USED", c: "#8b949e", bd: "1.5px dashed #2a333a", sbd: "1.5px dashed #2a333a", bg: "#0f1317", nc: "#8b949e", rk: 9, pb: "#2a333a", pbs: "dashed", pbg: "transparent", bar: "#2a333a" },
+    };
+    const RC = { enforced: "rgba(198,242,78,.55)", checked: "rgba(124,162,255,.65)", external: "rgba(167,139,250,.7)", advisory: "rgba(224,179,74,.7)", unmeasured: "rgba(255,107,107,.65)", nu: "rgba(139,148,158,.5)" };
+    const STAGES = [
+      ["spec", "Spec", "A PRD earns approval by surviving its grill."],
+      ["plan", "Plan", "Who can enrol agents, and how much an item may spend."],
+      ["build", "Build", "What an agent may do while it holds a claim."],
+      ["review", "Review", "Who may sign off a change, and what they must do first."],
+      ["merge", "Merge", "How a change reaches the base branch. This is your delivery contract."],
+      ["release", "Release", "Where versions come from and what a release contains."],
+      ["learn", "Learn", "What happens to lessons and scans after work ships."],
+    ];
+    const GB = "https://github.com/asc-me/graphban/blob/2026.10.23/backend/app/services/", SRC = (f, x) => ["SOURCE", "graphban · services/" + f + (x || "") + " @ 2026.10.23", GB + f], CTX = (f) => ["CONTEXT", "get_context · gitops." + f, "Build.dc.html#mcp"];
+    let R = [
+      ["gate.approval_earned_by_grill", "spec", "Approval is earned by finishing the grill, never set", "A PRD becomes approved only when its grill finishes. No request can set the status.", "enforced", "code", SRC("prds.py")],
+      ["gate.grill_dimensions_closed", "spec", "All four grill dimensions closed before approval", "The grill can't finish while any of its four dimensions is still open.", "enforced", "code", SRC("prds.py")],
+      ["plan.planner_only_minting", "plan", "Only a planner can mint enrolment seats", "Enrolment seats are minted by a planner seat and by nothing else.", "enforced", "code", SRC("fleet.py")],
+      ["plan.budget_cap", "plan", "Item token budget cap", "A claim is meant to stop when the item's token spend reaches the cap.", "external", "db", ["SUPERVISOR", "gbfleet supervisor · capability policy", "Build.dc.html#fleet"], ["400k tokens", "project"]],
+      ["gitops.branch_name_pattern", "build", "Branch name pattern", "Branches opened for an item should match this pattern.", "advisory", "db", CTX("branch_name_pattern"), ["{tag}-{item_id}-{slug}", "org"]],
+      ["build.reach_refusal", "build", "Item text may not instruct an out-of-reach act", "Item text that tells an agent to act outside its reach is refused.", "enforced", "code", SRC("reach.py")],
+      ["build.heartbeat", "build", "Claims lapse without a heartbeat (150 s)", "A claim with no heartbeat for 150 seconds lapses and the item returns to the queue.", "enforced", "code", SRC("fleet.py")],
+      ["review.not_own_work", "review", "An agent can never sign off its own work", "The seat that wrote a change can't be the seat that signs it off.", "enforced", "code", SRC("fleet.py", " · SelfReview")],
+      ["review.reviewer_diversity", "review", "Reviewer must be a different vendor", "Sign-off has to come from a different vendor than the author's.", "enforced", "code", SRC("fleet.py")],
+      ["gitops.reviewer_bar", "review", "Reviewer bar", "What should happen before a change counts as reviewed.", "advisory", "db", CTX("reviewer_bar"), ["sign_off", "project"]],
+      ["review.sabotage_before_sign_off", "review", "Reviewer runs a sabotage before signing", "The review skill asks reviewers to break the change on purpose before they sign.", "advisory", "repo_file", ["SKILL", "gban 0.8.2 · skills/graphban-review/SKILL.md", "https://github.com/asc-me/graphban/blob/cli-v0.8.2/cli/src/gban/skills/graphban-review/SKILL.md"]],
+      ["gitops.base_branch", "merge", "Base branch", "The branch every change should merge into.", "advisory", "db", CTX("base_branch"), ["main", "org"]],
+      ["gitops.no_push_to_base", "merge", "No direct push to base", "Changes should reach the base branch only through a merge.", "advisory", "db", CTX("no_push_to_base"), ["true", "org"]],
+      ["gitops.pr_title_pattern", "merge", "PR title pattern", "The pattern PR titles should follow.", "advisory", "db", CTX("pr_title_pattern"), [null, "unmeasured"]],
+      ["merge.ci_green", "merge", "Merged work passed CI", "CI attests suite_green on each item's branch; this reads the latest attestation on a merged item.", "checked", "derived", ["CI", "suite_green attestation · ci.yml", "https://github.com/asc-me/graphban/actions/workflows/ci.yml"], null, { outcome: "pass", at: "last attested 2h ago" }],
+      ["merge.ci_required", "merge", "CI is the sole required check", "The forge is meant to refuse a merge until CI passes.", "external", "derived", ["FORGE", "GitHub · branch protection · main", "https://github.com/asc-me/graphban/settings/branches"]],
+      ["gitops.version_from", "release", "Version source", "Where release versions should come from.", "advisory", "db", CTX("version_from"), ["calver", "project"]],
+      ["gitops.release_defined_in", "release", "Release definition", "The file that says what a release contains.", "advisory", "db", CTX("release_defined_in"), [null, "unmeasured"]],
+      ["scan.security_cadence", "learn", "Security scan per release", "A security scan should report for every release.", "checked", "derived", ["SCAN", "scan kind security", "Observe.dc.html"], null, null],
+      ["learn.lessons_reviewed", "learn", "Mined lessons are reviewed before publishing", "Lessons mined from finished work are reviewed before they publish to memory.", "enforced", "code", SRC("memory.py")],
+    ].map(([id, stage, title, summary, enforcement, truth, en, vs, res]) => ({ id, stage, title, summary, enforcement, truth, ek: en[0], elabel: en[1], href: en[2], vs, res }));
+    const noStage = this.qp.get("nostage");
+    if (noStage) R = R.filter((r) => r.stage !== noStage);
+    const PH = { "gitops.pr_title_pattern": "Unmeasured — not set", "gitops.release_defined_in": "Unmeasured — not docs/release.md", "gitops.base_branch": "Unmeasured — not main", "gitops.branch_name_pattern": "Unmeasured — not set" };
+    const VL = { sign_off: "Graphban sign_off", forge: "Forge approvals", both: "Both", calver: "CalVer tag", semver: "semver", git_tag: "git tag", true: "on · pushes to base refused", false: "off · pushes to base allowed" };
+    const SEL = { "gitops.reviewer_bar": ["sign_off", "forge", "both"], "gitops.version_from": ["git_tag", "semver", "calver"] };
+    const NU_RULE = scen === "push" ? { "gitops.pr_title_pattern": "Not used by this project's model: push_to_base has no PR step.", "gitops.no_push_to_base": "Not used: the push_to_base model pushes straight to base, which contradicts this rule." } : {};
+    const { edits, drafts, est, err } = this.state;
+    const isGit = (id) => id.startsWith("gitops.");
+    const eff = (r) => {
+      if (r.id in edits) return edits[r.id] == null ? [null, "unmeasured"] : [edits[r.id], "project"];
+      let v = r.vs;
+      if (isGit(r.id)) {
+        if (scen === "fresh" || control === "linked_unset" || control === "linked_unreachable") v = [null, "unmeasured"];
+        else if (control !== "local") v = v[0] == null ? v : [v[0], "org"];
+        if (scen === "push" && r.id === "gitops.no_push_to_base") v = ["false", "org"];
+      }
+      return v;
+    };
+    const rs = R.map((r) => {
+      const fv = r.truth === "db" ? eff(r) : null;
+      const nu = !!NU_RULE[r.id];
+      const lvl = nu ? "nu" : fv && fv[1] === "unmeasured" ? "unmeasured" : r.enforcement;
+      return { ...r, fv, lvl, nu, nuT: NU_RULE[r.id] || "", res: scen === "fresh" ? null : r.res };
+    });
+    const X = (i) => 24 + i * 240;
+    const keyS = (id) => "s:" + id;
+    const domS = (k) => "rl-" + k.replace(/[^a-z0-9]/gi, "-");
+    const pickS = (id, row) => () => { if (this.justDragged) return; const k = keyS(id); if (row) this.scrollRow = row; this.setState({ sel: !row && sel === k ? null : k, focus: k, row: row || null, unm: null }); };
+    const ringFor = (k) => (sel === k ? "0 0 0 2px #0a0c0e, 0 0 0 4px #c6f24e" : focus === k ? "0 0 0 2px #0a0c0e, 0 0 0 4px #c6f24e" : hover && k === keyS(hover) ? "0 0 0 2px rgba(198,242,78,.45)" : "none");
+    const byStage = {}; rs.forEach((r) => (byStage[r.stage] = byStage[r.stage] || []).push(r));
+    const ORDER = ["enforced", "checked", "external", "advisory", "unmeasured", "nu"];
+    const segsOf = (list) => ORDER.map((l) => [l, list.filter((r) => r.lvl === l).length]).filter(([, n]) => n).map(([l, n], i) => ({ t: (i ? "· " : "") + n + " " + (l === "nu" ? "not used" : l), c: l === "enforced" ? "#8b949e" : LV[l].c, l, n }));
+    const barsOf = (list) => segsOf(list).map((g) => ({ n: g.n, bg: LV[g.l].bar }));
+    const weakest = (list) => { const live = list.filter((r) => !r.nu); return live.length ? live.reduce((w, r) => (LV[r.lvl].rk < LV[w].rk ? r.lvl : w), "enforced") : "nu"; };
+    const sortW = (list) => [...list].sort((a, b) => LV[a.lvl].rk - LV[b.lvl].rk);
+    const stages = STAGES.map(([id, label, sum], i) => {
+      const list = byStage[id] || [], snu = list.length > 0 && list.every((r) => r.nu), empty = !list.length, w = snu ? "nu" : weakest(list), k = keyS(id), L = LV[empty ? "nu" : w];
+      const word = isLoading ? "" : snu ? "NOT USED" : empty ? "NO RULES" : L.w;
+      return {
+        id, label, sum, idU: id.toUpperCase(), num: String(i + 1).padStart(2, "0"), l: X(i) + "px", domId: domS(k), ariaSel: sel === k ? "true" : "false",
+        aria: "Stage " + label + ", " + (snu ? "not used" : empty ? "no rules registered" : "drawn as " + w) + ". " + segsOf(list).map((g) => g.t.replace("· ", "")).join(", "),
+        bd: isLoading ? "1px solid #1e242a" : empty ? "1.5px dashed #626c75" : L.sbd, bg: isLoading ? "#0f1317" : snu ? "#0f1317" : "#12171b",
+        lc: empty ? "#dfe3e7" : L.c, word, pl: empty ? "" : w, pb: empty ? "#626c75" : L.pb, pbs: empty ? "dashed" : L.pbs, pbg: L.pbg,
+        hasPill: !isLoading, full: full && !isLoading, skel: isLoading, nameFs: full ? "15px" : "24px", pillFs: full ? "10px" : "14px", pIcon: full ? 12 : 16,
+        segs: empty ? [{ t: "nothing registered yet", c: "#8b949e" }] : segsOf(list), bars: empty ? [] : barsOf(list),
+        tf: hover === id && sel !== k ? "translateY(-2px)" : "none", hasOrg: list.some((r) => r.fv && r.fv[1] === "org"), orgL: list.filter((r) => r.fv && r.fv[1] === "org").length + " FROM ORG", orgTitle: "Values set by Ascme Labs (linked org)", orgBs: control === "linked_unreachable" ? "dashed" : "solid", orgOp: control === "linked_unreachable" ? 0.6 : 1, op: snu ? 0.5 : 1, ring: sel === k || focus === k ? ringFor(k) : hover === id ? "0 0 0 2px " + RC[empty ? "nu" : w] : "none", pick: pickS(id), enter: () => this.setState({ hover: id }), leave: () => this.setState({ hover: null }), list, w, snu, empty, i,
+      };
+    });
+    const TT = { db: "DB", code: "CODE", repo_file: "FILE", derived: "DERIVED" };
+    const chips = [], mores = [];
+    if (full && !isLoading) stages.forEach((s) => {
+      const list = sortW(s.list), hl = hover === s.id || sel === keyS(s.id);
+      list.slice(0, 3).forEach((r, j) => {
+        const L = LV[r.lvl];
+        chips.push({ l: X(s.i) + 16 + "px", t: 208 + j * 58 + "px", bd: L.bd, bg: L.bg, lc: L.c, nc: L.nc, word: L.w, lvl: r.lvl, title: r.title, titleAttr: r.id + " — " + r.title + (r.lvl === "external" ? " · not verified" : ""), truthT: TT[r.truth], tb: r.truth === "db" ? "#626c75" : "#2a333a", tc: r.truth === "db" ? "#e6e9ec" : "#8b949e", tf: this.state.hoverChip === r.id ? "translateY(-1px)" : "none", isOrg: !!(r.fv && r.fv[1] === "org"), orgTitle: "Set by Ascme Labs (linked org)", orgBs: control === "linked_unreachable" ? "dashed" : "solid", orgOp: control === "linked_unreachable" ? 0.6 : 1, op: r.nu ? 0.5 : 1, ring: hl || this.state.hoverChip === r.id ? "0 0 0 1.5px " + RC[r.lvl] : "none", enter: () => this.setState({ hoverChip: r.id }), leave: () => this.setState({ hoverChip: null }), pick: pickS(s.id, r.id) });
+      });
+      if (list.length > 3) mores.push({ l: X(s.i) + 16 + "px", t: 208 + 3 * 58 + "px", label: "+" + (list.length - 3) + " more", op: s.snu ? 0.5 : 1, go: pickS(s.id) });
+    });
+    const colBottom = (s) => { const n = Math.min(3, s.list.length); return s.list.length > 3 ? 208 + 3 * 58 + 26 : 208 + (n - 1) * 58 + 50; };
+    const edges = [];
+    for (let i = 0; i < 6; i++) {
+      const pr = [stages[i], stages[i + 1]], selOn = pr.some((s) => sel === keyS(s.id)), hs = pr.find((s) => hover === s.id), on = selOn || !!hs;
+      edges.push({ d: "M" + (X(i) + 208) + " 120 L" + (X(i + 1) - 2) + " 120", sc: selOn ? "#c6f24e" : hs ? LV[hs.empty ? "nu" : hs.w].c : "#626c75", sw: on ? 2 : 1.5, da: "none", mk: selOn ? "url(#rl-ahs)" : "url(#rl-ah)" });
+    }
+    if (full && !isLoading) {
+      stages.forEach((s) => {
+        if (!s.list.length) return;
+        const x = X(s.i) + 8, n = Math.min(3, s.list.length), last = 208 + (n - 1) * 58 + 25, on = hover === s.id || sel === keyS(s.id), c = sel === keyS(s.id) ? "#c6f24e" : on ? LV[s.w].c : "#2a333a";
+        edges.push({ d: "M" + x + " 184 V" + last, sc: c, sw: on ? 2 : 1.5, da: s.snu ? "3 4" : "none", mk: "" });
+        for (let j = 0; j < n; j++) edges.push({ d: "M" + x + " " + (208 + j * 58 + 25) + " H" + (x + 8), sc: c, sw: on ? 2 : 1.5, da: "none", mk: "" });
+      });
+      const pOn = sel === "r:pack" || focus === "r:pack";
+      [[stages[2], 608], [stages[3], 848]].forEach(([s, x]) => edges.push({ d: "M" + x + " 470 V" + (colBottom(s) + 6), sc: pOn ? "#c6f24e" : "#626c75", sw: 1, da: "2 4", mk: "" }));
+    }
+    this.navMap = isError || isLoading ? null : [...stages.map((s) => keyS(s.id)), "r:pack"];
+    const PACKSK = ["graphban-delegation", "graphban-grill", "graphban-orient", "graphban-prd", "graphban-review", "graphban-scan", "graphban-wave", "graphban-work", "watch-wave"].map((s) => ({ p: "gban 0.8.2 · skills/" + s + "/SKILL.md", h: "https://github.com/asc-me/graphban/blob/cli-v0.8.2/cli/src/gban/skills/" + s + "/SKILL.md" }));
+    const pack = { domId: domS("r:pack"), ariaSel: sel === "r:pack" ? "true" : "false", ring: ringFor("r:pack"), pick: () => { if (this.justDragged) return; this.setState({ sel: sel === "r:pack" ? null : "r:pack", focus: "r:pack", unm: null }); } };
+    const cnt = (l) => rs.filter((r) => r.lvl === l).length;
+    const legend = ["enforced", "checked", "external", "advisory", "unmeasured", "nu"].map((l) => ({ l, w: LV[l].w, c: LV[l].c, n: isLoading ? "" : String(cnt(l)) }));
+
+    let ins = null;
+    const vl = (v) => (VL[v] != null ? VL[v] : v);
+    if (sel && !isError && !isLoading && sel === "r:pack") {
+      const L = LV.advisory;
+      ins = { aria: "Agent instructions inspector", kicker: "OFF THE MAIN FLOW · LINKED TO BUILD, REVIEW", title: "Agent instructions (Graphban pack)", pl: "advisory", word: L.w, lc: L.c, pb: L.pb, pbs: L.pbs, pbg: L.pbg, segs: [{ t: "9 skills shipped with gban 0.8.2", c: "#8b949e" }], bars: [], hasBars: false, summary: "The instruction pack every agent loads.", isPack: true, skills: PACKSK, rows: [], isNu: false, isEmpty: false, hasFrom: false };
+    } else if (sel && !isError && !isLoading && sel.startsWith("s:")) {
+      const s = stages.find((x) => keyS(x.id) === sel);
+      if (s) {
+        const L = LV[s.empty ? "nu" : s.w];
+        const rows = sortW(s.list).map((r, ri) => {
+          const RL = LV[r.lvl], id = r.id, fv = r.fv, src = fv ? fv[1] : null, isHl = this.state.row === id;
+          const d = drafts[id] !== undefined ? drafts[id] : fv && fv[0] != null ? fv[0] : "";
+          const st = est[id] || (drafts[id] !== undefined && d !== (fv && fv[0] != null ? fv[0] : "") ? "dirty" : "clean");
+          const gitLocked = isGit(id) && control !== "local";
+          const editable = r.truth === "db" && !r.nu && src !== "org" && (!isGit(id) || control === "local") && canWrite;
+          const busy = st === "saving";
+          const setDraft = (v) => this.setState((S) => { const e2 = { ...S.est }; delete e2[id]; return { drafts: { ...S.drafts, [id]: v }, est: e2 }; });
+          const save = () => {
+            const v = (this.state.drafts[id] ?? "").trim(); if (!v) return;
+            this.setState((S) => ({ est: { ...S.est, [id]: "saving" } }));
+            setTimeout(() => {
+              const bad = this.validate(id, v);
+              if (bad) this.setState((S) => ({ est: { ...S.est, [id]: "failed" }, err: { ...S.err, [id]: bad } }));
+              else this.setState((S) => { const dd = { ...S.drafts }; delete dd[id]; return { edits: { ...S.edits, [id]: v }, drafts: dd, est: { ...S.est, [id]: "saved" } }; });
+            }, 900);
+          };
+          const cancel = () => this.setState((S) => { const dd = { ...S.drafts }, e2 = { ...S.est }; delete dd[id]; delete e2[id]; return { drafts: dd, est: e2 }; });
+          if (!this.refFns[id]) this.refFns[id] = (el) => (this.inputs[id] = el);
+          const isPattern = /pattern/.test(id), isBase = id === "gitops.base_branch";
+          const tokens = isPattern ? ["item_id", "tag", "slug", "version", "date"].map((t) => ({ t: "{" + t + "}", keep: (e) => e.preventDefault(), go: () => { const i = this.inputs[id], cur = this.state.drafts[id] ?? d, a = i ? i.selectionStart : cur.length, b = i ? i.selectionEnd : cur.length, ins2 = "{" + t + "}"; this.caret = { id, pos: a + ins2.length }; setDraft(cur.slice(0, a) + ins2 + cur.slice(b)); } }))
+            : isBase ? ["main", "stage", "test", "develop"].map((t) => ({ t, keep: (e) => e.preventDefault(), go: () => setDraft(t) })) : [];
+          const lockT = r.truth !== "db" || editable ? "" : r.nu ? "" : control === "linked_unreachable" && isGit(id) ? "Org unreachable — the server returned no value. Nothing is editable until it's back." : control === "linked_unset" && isGit(id) ? "Your org has not set this." : src === "org" ? "Inherited from Ascme Labs." : !canWrite ? "Only an org owner or admin can change this." : "";
+          const stale = false;
+          const kind = SEL[id] ? "select" : id === "gitops.no_push_to_base" ? "toggle" : "text";
+          const tgOn = d === "true";
+          const nextStage = (() => { if (st !== "saved") return ""; return "Saved 14:08 · now " + RL.w.toLowerCase() + " — agents are told, nothing refuses. " + s.label + " is drawn as " + LV[s.w].w.toLowerCase() + "."; })();
+          return {
+            delay: 60 + ri * 45 + "ms", domId: "rw-" + id.replace(/[^a-z0-9]/gi, "-"), id, title: r.title, summary: r.summary, lvl: r.lvl, word: RL.w, lc: RL.c, op: r.nu ? 0.55 : 1,
+            rb: isHl ? "rgba(198,242,78,.45)" : "#2a333a", rbg: isHl ? "rgba(198,242,78,.05)" : "transparent", bar: isHl ? "#c6f24e" : "transparent",
+            truth: r.truth, tb: r.truth === "db" ? "#626c75" : "#2a333a", tc: r.truth === "db" ? "#e6e9ec" : "#8b949e",
+            enforcer: r.elabel, ekind: r.ek, href: r.href, isNu: r.nu, nuT: r.nuT,
+            hasQuiet: !r.nu && (r.truth === "code" || r.truth === "repo_file" || (isGit(id) && r.lvl === "advisory")), quiet: r.truth === "code" ? "Held in code. Change it with a PR, not here." : r.truth === "repo_file" ? "Written in the review skill. Nothing checks it." : "Told to agents in every get_context. Nothing refuses a violation.",
+            isExt: r.lvl === "external", extT: id === "plan.budget_cap" ? "Held by the gbfleet supervisor on the agent's machine. Graphban can't verify it — some vendor rows can't honour a cap at all." : "Held by GitHub branch protection. Graphban reads that CI is green, but can't verify the forge would refuse a merge without it.", hasExtLink: id === "plan.budget_cap", extHref: "Build.dc.html#fleet", extL: "Build → Fleet ↗",
+            isChk: r.enforcement === "checked" && !r.nu, hasRes: !!r.res, noRes: !r.res, resC: r.res ? (r.res.outcome === "pass" ? "#c6f24e" : "#ff6b6b") : "", resT: r.res ? r.res.outcome.toUpperCase() + " · " + r.res.at : "",
+            isDb: r.truth === "db", field: id.replace("gitops.", ""), srcL: src === "project" ? "PROJECT" : src === "org" ? (stale ? "ORG · ASCME LABS · LAST KNOWN" : "ORG · ASCME LABS") : "UNMEASURED",
+            srcB: src === "project" ? "var(--purln)" : src === "org" ? "#626c75" : "#ff6b6b", srcC: src === "project" ? "#c9b8ff" : src === "org" ? "#dfe3e7" : "#ff6b6b", srcBs: src === "unmeasured" || stale ? "dashed" : "solid",
+            vb: stale ? "#626c75" : "#2a333a", vbs: stale ? "dashed" : "solid", vop: stale ? 0.5 : 1,
+            showVal: !editable, val: fv && fv[0] != null ? vl(fv[0]) : "— no value", valC: fv && fv[0] != null ? "#e6e9ec" : "#ff6b6b",
+            edText: editable && kind === "text", edSelect: editable && kind === "select", edToggle: editable && kind === "toggle",
+            draft: d, ph: PH[id] || "", onDraft: (e) => setDraft(e.target.value), onKey: (e) => { if (e.key === "Enter") save(); if (e.key === "Escape") { e.stopPropagation(); cancel(); } }, inRef: this.refFns[id], busy, inB: st === "failed" ? "#ff6b6b" : "#626c75",
+            hasTokens: tokens.length > 0, tokens, tokL: isPattern ? "INSERT" : "LITERAL",
+            opts: (SEL[id] || []).map((o) => ({ v: o, l: vl(o) })).concat(d === "" ? [{ v: "", l: "Unmeasured" }] : []),
+            tgOn: tgOn ? "true" : "false", tgB: tgOn ? "#c6f24e" : "#626c75", tgBg: tgOn ? "rgba(198,242,78,.18)" : "transparent", tgX: tgOn ? "16px" : "2px", tgK: tgOn ? "#c6f24e" : "#8b949e", tgL: d === "" ? "unset" : vl(d), toggle: () => setDraft(tgOn ? "false" : "true"),
+            showActions: editable && (st === "dirty" || st === "saving" || st === "failed"), saveL: busy ? "Saving…" : "Save", saveBg: busy ? "#8fa83a" : "#c6f24e", save, cancel,
+            isFailed: st === "failed", err: err[id] || "", isSaved: st === "saved", savedT: nextStage,
+            hasLock: !!lockT, lockT, lockC: stale ? "#e0b34a" : control === "linked_unset" && isGit(id) ? "#ff6b6b" : "#8b949e", lockLink: !stale && (src === "org" || gitLocked) && r.truth === "db",
+          };
+        });
+        const from = this.state.from;
+        ins = { aria: s.label + " stage inspector", kicker: "STAGE " + s.num + " · " + s.idU, title: s.label, pl: s.empty ? "" : s.w, word: s.word, lc: s.lc, pb: s.pb, pbs: s.pbs, pbg: s.pbg, segs: s.segs, bars: s.bars, hasBars: !s.empty, summary: s.sum, rows, isNu: s.snu, isEmpty: s.empty, isPack: false, skills: [], hasFrom: !!from, from: from || "" };
+      }
+    }
+    const unmMode = this.state.unm;
+    const unmOpen = !!unmMode && !isError;
+    const UNM = [["PATCH /api/items/{id}", "422", 41, "3 min ago", [3, 5, 4, 8, 6, 7, 8]], ["MCP · claim_next", "409", 17, "26 min ago", [0, 2, 3, 1, 4, 3, 4]], ["POST /api/projects/{id}/links", "400", 3, "1 h ago", [0, 0, 1, 0, 1, 0, 1]], ["PUT /api/fleet/agents/{id}/role", "403", 1, "2 d ago", [0, 0, 0, 0, 0, 1, 0]]];
+    const unmRows = UNM.map(([route, status, count, last, sp], i) => {
+      const mx = Math.max(...sp, 1), fid = this.state.filed[route];
+      return { delay: 80 + i * 50 + "ms", rank: i + 1, route, status, count, last, sparkL: "last 7 days: " + sp.join(", "),
+        spark: sp.map((v, j) => { const h = v ? Math.max(2, Math.round((v / mx) * 16)) : 1; return { x: j * 9, y: 18 - h, h, f: v ? "#e0b34a" : "#2a333a" }; }),
+        copyL: this.state.copied === route ? "Copied" : "Copy route", copy: () => { try { navigator.clipboard.writeText(route); } catch (e) {} this.setState({ copied: route }); setTimeout(() => this.setState({ copied: null }), 1400); },
+        notFiled: !fid, isFiled: !!fid, filedId: fid || "", file: () => this.setState((S) => ({ filed: { ...S.filed, [route]: "GRPH-" + (1187 + Object.keys(S.filed).length) } })) };
+    });
+    const BAN = isError || isLoading ? null : scen === "fresh" ? ["NEW PROJECT", "Your delivery contract is unmeasured. The server's own gates still apply.", "#ff6b6b", "dotted", "#ff6b6b", "Set it up in Merge"]
+      : control === "linked_set" ? ["LINKED", "Gitops is owned by Ascme Labs and read-only here.", "#626c75", "solid", "#dfe3e7"]
+      : control === "linked_unset" ? ["LINKED · NOT SET", "Ascme Labs owns gitops for this project and hasn't set a contract. Every gitops rule is unmeasured until it does.", "#ff6b6b", "dotted", "#ff6b6b"]
+      : control === "linked_unreachable" ? ["ORG UNREACHABLE", "Couldn't reach Ascme Labs' gitops. The contract is unmeasured until it's back — Graphban never falls back to an old copy.", "#e0b34a", "dashed", "#e0b34a"] : null;
+    const CTL = { local: ["LOCAL", "#c9b8ff"], linked_set: ["LINKED", "#dfe3e7"], linked_unset: ["LINKED · UNSET", "#ff6b6b"], linked_unreachable: ["UNREACHABLE", "#e0b34a"] }[control];
+    const recOpen = !!this.state.rec && !isError && !isLoading && !unmOpen;
+    const gh = this.qp.get("gh") !== "0";
+    const RECS = [
+      { id: "gitops.pr_title_pattern", src: "github", stage: "merge", lvl: "advisory", title: "Set a PR title pattern", why: "The field is unmeasured, but your PRs already follow one shape.", ev: [["34 of the last 40 PRs match {tag}-{item_id}: {slug}", "GitHub · last 40 PRs", "Observe.dc.html"]], kind: "value", suggest: "{tag}-{item_id}: {slug}" },
+      { id: "merge.migration_check", src: "code", stage: "merge", lvl: "checked", title: "Check that migrations apply before merge", why: "api writes to PostgreSQL through Alembic, and nothing checks a migration before it lands on main.", ev: [["api → database · psycopg :5432 · schema 0047_lesson_dedupe", "Stack", "Stack.dc.html"], ["6 of the last 20 merges touched backend/alembic/", "Code graph", "Build.dc.html#code"]], kind: "code" },
+      { id: "release.security_scan_gate", src: "code", stage: "release", lvl: "enforced", title: "Refuse a release with no security scan result", why: "api exposes /mcp to vendor agents, yet gb.cut_release never looks at the security scan.", ev: [["api serves MCP on /mcp to 3 vendor agents", "Stack", "Stack.dc.html"], ["scan.security_cadence · no result recorded", "Rules · Learn", "Rules.dc.html?sel=s:learn"]], kind: "code" },
+      { id: "gitops.release_defined_in", src: "code", stage: "release", lvl: "advisory", title: "Point the release definition at docs/release.md", why: "That file changes in every CalVer tag commit, so it already acts as the release definition.", ev: [["docs/release.md touched in 9 of 9 tag commits", "Code graph · docs/", "Build.dc.html#code"]], kind: "value", suggest: "docs/release.md" },
+    ];
+    const recLive = RECS.filter((c) => (gh || c.src !== "github") && !this.state.recDis[c.id] && !(c.kind === "value" && rs.find((r) => r.id === c.id && r.fv && r.fv[1] !== "unmeasured")));
+    const recs = recLive.map((c, i) => {
+      const L = LV[c.lvl], fid = this.state.recFiled[c.id], locked = c.kind === "value" && (control !== "local" || !canWrite), st = STAGES.find((x) => x[0] === c.stage);
+      return { outcome: c.kind === "value" ? "Agents would be told this in every get_context. Nothing would refuse a violation." : "Needs a code change. Until it ships, nothing holds it.", oc: c.kind === "value" ? "#e0b34a" : "#8b949e", delay: 80 + i * 60 + "ms", rank: String(i + 1).padStart(2, "0"), stageU: c.stage.toUpperCase(), lvl: c.lvl, word: L.w, chipT: c.kind === "value" ? "WOULD BE " + L.w : L.w + " ONCE BUILT", lc: L.c, pb: L.pb, title: c.title, why: c.why, ev: c.ev.map(([t, s2, h]) => ({ t, s: s2, h })),
+        kindL: c.kind === "value" ? (locked ? "VALUE · SET IN ADMIN" : "VALUE · EDITABLE HERE") : "CODE CHANGE", kb: c.kind === "value" ? "var(--purln)" : "#2a333a", kc: c.kind === "value" ? "#c9b8ff" : "#8b949e",
+        actL: c.kind === "value" ? (locked ? "See in " + st[1] : "Review in " + st[1]) : "File as item", ab: c.kind === "value" && !locked ? "#c6f24e" : "#626c75", abg: c.kind === "value" && !locked ? "rgba(198,242,78,.09)" : "transparent", ac: c.kind === "value" && !locked ? "#c6f24e" : "#e6e9ec",
+        notFiled: !fid, isFiled: !!fid, filedId: fid || "",
+        showStage: () => this.setState({ rec: false, sel: "s:" + c.stage, focus: "s:" + c.stage, row: null }),
+        dismiss: () => this.setState((S) => ({ recDis: { ...S.recDis, [c.id]: 1 } })),
+        act: () => {
+          if (c.kind === "code") return this.setState((S) => ({ recFiled: { ...S.recFiled, [c.id]: "GRPH-" + (1191 + Object.keys(S.recFiled).length) } }));
+          this.scrollRow = c.id;
+          this.setState((S) => ({ rec: false, sel: "s:" + c.stage, focus: "s:" + c.stage, row: c.id, drafts: locked ? S.drafts : { ...S.drafts, [c.id]: c.suggest } }));
+        } };
+    });
+    const showIns = !!ins && !unmOpen && !recOpen;
+    const narrowIns = narrow && (showIns || unmOpen || recOpen);
+    const sec = (k, label, items) => ({ label, open: this.state.nav[k], exp: this.state.nav[k] ? "true" : "false", rot: this.state.nav[k] ? "rotate(90deg)" : "none", toggle: () => this.setState((S) => ({ nav: { ...S.nav, [k]: !S.nav[k] } })),
+      items: items.map(([l, href]) => { const on = l === "Rules"; return { label: l, href, cur: on ? "page" : "false", bg: on ? "#1b2127" : "transparent", c: on ? "#e6e9ec" : "#8b949e", bar: on ? "#c6f24e" : "transparent", isRules: on }; }) });
+    return {
+      chrome: !this.props.embedded, rootH: this.props.embedded ? "100%" : "100vh", narrow, notNarrow: !narrow, showRail: !this.props.embedded, railCollapsed: narrow,
+      navSecs: [sec("plan", "PLAN", [["Triage", "Plan.dc.html"], ["Tracker", "Plan.dc.html"], ["Requests", "Plan.dc.html"], ["PRDs", "Plan.dc.html"], ["Roadmap", "Plan.dc.html"]]), sec("build", "BUILD", [["Links", "Build.dc.html#links"], ["Code graph", "Build.dc.html#code"], ["Stack", "Stack.dc.html"], ["Rules", "Rules.dc.html"], ["MCP Tools", "Build.dc.html#mcp"], ["Fleet", "Build.dc.html#fleet"], ["Outposts", "Build.dc.html#outposts"]]), sec("observe", "OBSERVE", [["Live", "Live.dc.html"], ["Activity", "Activity.dc.html"], ["Memory", "Memory.dc.html"], ["Lessons", "Lessons.dc.html"], ["Harness", "Harness.dc.html"]])],
+      modelV: isLoading ? "loading…" : model || "unmeasured", modelC: model ? "#e6e9ec" : isLoading ? "#8b949e" : "#ff6b6b", modelB: model || isLoading ? "#2a333a" : "#ff6b6b", modelBs: model || isLoading ? "solid" : "dotted", ctlL: isLoading ? "" : CTL[0], ctlC: CTL[1],
+      unmTotal: unmMode === "empty" ? 0 : 62, openUnm: () => this.setState({ unm: this.qp.get("unm") || "populated", sel: null, rec: false }), closeUnm: () => this.setState({ unm: null }),
+      pulseSh: this.state.pulse ? "0 0 0 4px rgba(224,179,74,.35), 0 0 18px rgba(224,179,74,.35)" : "0 0 0 0 rgba(224,179,74,0)",
+      hasBanner: !!BAN, banL: BAN ? BAN[0] : "", banT: BAN ? BAN[1] : "", banB: BAN ? BAN[2] : "", banBs: BAN ? BAN[3] : "solid", banC: BAN ? BAN[4] : "", banHasAct: !!(BAN && BAN[5]), banActL: BAN && BAN[5] ? BAN[5] : "", banAct: () => this.setState({ sel: "s:merge", focus: "s:merge", row: null }),
+      showCanvas: !narrow && !isError, isError, retry: () => this.setState({ scen: "local" }),
+      stages, chips, mores, edges, pack, showPack: !isLoading, legend,
+      scRef: this.scRef, szRef: this.szRef, insRef: this.insRef, activeDesc: focus ? domS(focus) : "",
+      sizerW: CW * sc + "px", sizerH: CH * sc + "px", innerTf: "scale(" + sc + ")",
+      zoomPct: Math.round(sc * 100) + "%", fitOn: this.state.zoom === "fit" ? "true" : "false", fitBg: this.state.zoom === "fit" ? "var(--hover)" : "transparent",
+      zoomIn: () => this.zoomTo(sc * 1.25), zoomOut: () => this.zoomTo(sc / 1.25), zoomFit: () => this.setState({ zoom: "fit" }), zoom100: () => this.zoomTo(1),
+      lodLabel: (full ? "full detail" : "stages only") + " · scroll to zoom, drag to pan",
+      hasIns: showIns, ins: ins || { rows: [], segs: [], bars: [], skills: [] }, closeSel: () => this.setState({ sel: null, row: null }),
+      insAnim: narrowIns ? "rlSheetUp .3s cubic-bezier(.2,.8,.2,1) both" : "rlSheetIn .26s cubic-bezier(.2,.8,.2,1) both", insTop: narrowIns ? "auto" : "12px", insRight: narrowIns ? "0" : "12px", insBottom: narrowIns ? "0" : "12px", insLeft: narrowIns ? "0" : "auto", insW: narrowIns ? "auto" : "380px", unmW: narrowIns ? "auto" : "440px", insMaxH: narrowIns ? "74%" : "none", insRad: narrowIns ? "16px 16px 0 0" : "16px",
+      recSrc: [["Stack", "read", "@ 3f9c2a1 · 12 min ago"], ["Code graph", "read", "12 min ago"], gh ? ["GitHub", "read", "last 40 PRs · 12 min ago"] : ["GitHub", "not connected", ""]].map(([n, st, at]) => ({ n, st, at, dot: st === "read" ? "#c6f24e" : "transparent", dc: st === "read" ? "#c6f24e" : "#626c75", sc: st === "read" ? "#8b949e" : "#e0b34a", hasLink: st !== "read" })), recGhMissing: !gh,
+      recOpen, recs, recCount: isLoading || isError ? "–" : recLive.length, recNone: recLive.length === 0, recDismissedN: Object.keys(this.state.recDis).length, recRestore: () => this.setState({ recDis: {} }),
+      openRec: () => this.setState((S) => ({ rec: !S.rec, unm: null, sel: null })), closeRec: () => this.setState({ rec: false }), recExp: recOpen ? "true" : "false", recBtnB: recOpen ? "#a78bfa" : "rgba(167,139,250,.42)", recBtnBg: recOpen ? "rgba(167,139,250,.1)" : "transparent",
+      unmOpen, unmPop: unmMode === "populated", unmEmpty: unmMode === "empty", unmErr: unmMode === "error", unmRows, unmRetry: () => this.setState({ unm: "populated" }),
+    };
+  }
+}
+</script>
+</body>
+</html>
