@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app import tagging
 from app.config import settings
 from app.db import get_db
+from app.errors import Refused
 from app.models import Membership, Project, User
 from app.schemas import (
     GitopsPatch, GitopsView, MemberOut, ProjectCreate, ProjectOut, ProjectRetagIn,
@@ -208,7 +209,7 @@ def patch_gitops(project_id: str, body: GitopsPatch, db: Session = Depends(get_d
         authz.require_org_admin(db, user.id, project.org_id)
     else:
         if code_sync.link_status(db)["linked"]:
-            raise HTTPException(403, gitops.LINKED_PATCH_DETAIL)
+            raise Refused(403, gitops.LINKED_PATCH_DETAIL, rule_id="gitops.owned_by_org")
         authz.require_writable(db, user.id, project_id)
     try:
         changed = gitops.apply_patch(project, {k: getattr(body, k) for k in body.model_fields_set})

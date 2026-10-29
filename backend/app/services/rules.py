@@ -98,9 +98,43 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("gate.decompose_requires_approval", "approval", "Decompose needs approval",
          "Tasks are filed from a PRD only once it has earned approval.",
          "enforced", _src("app/services/prds.py", "DecomposeRequiresApproval"), "code"),
+    Rule("gitops.observe_answer_required", "build", "Observe before the plan",
+         "A gitops plan's Observe step needs a named answer before it, or the plan, can move on.",
+         "enforced", _src("app/services/gitops.py", "refuse_observe_progress"), "code"),
+    Rule("gitops.checklist_needs_evidence", "build", "Checklist children need evidence",
+         "A gitops checklist child cannot reach review or done without evidence.",
+         "enforced", _src("app/services/gitops.py", "refuse_already_progress"), "code"),
+    Rule("gitops.owned_by_org", "branching", "Gitops owned by the org",
+         "On a linked instance the git process is set by the org admin; project edits are refused.",
+         "enforced", _src("app/routers/projects.py", "Refused"), "code", scope="org"),
+    Rule("reach.deploy_not_delegable", "plan", "Deploy-reach work is not delegated",
+         "An item declared reach=deploy acts on a running system and is never delegated.",
+         "enforced", _src("app/services/delegation.py", "Refused"), "code"),
+    Rule("reach.acknowledge_signals", "plan", "Reach signals need an acknowledgement",
+         "Work whose text suggests a running system needs acknowledge_reach=true to delegate.",
+         "enforced", _src("app/services/delegation.py", "Refused"), "code"),
     Rule("review.not_own_work", "review", "Not your own work",
          "The agent that built an item cannot sign it off.",
          "enforced", _src("app/services/fleet.py", "SelfReview"), "code"),
+    Rule("review.adversarial_evidence", "review", "Sign-off needs adversarial evidence",
+         "Work above the effort threshold is signed off only with a sabotage receipt.",
+         "enforced", _src("app/services/fleet.py", "MissingAdversarialEvidence"), "code"),
+    Rule("review.attest_the_head", "review", "Attest the head, not the base",
+         "A sign-off names the commit reviewed, never the commit the branch was cut from.",
+         "enforced", _src("app/services/fleet.py", "AttestedTheBase"), "code"),
+    Rule("review.predicates_compared", "review", "Predicates must have run",
+         "A check that could not run is not a pass; it needs a comparison or a recorded waiver.",
+         "enforced", _src("app/services/fleet.py", "UncomparedPredicate"), "code"),
+    Rule("review.clause_capability", "review", "Reviewer holds the clause's capability",
+         "An acceptance clause needing a tool or a human is signed off only by a reviewer "
+         "who declared it.",
+         "enforced", _src("app/services/fleet.py", "ClauseCapability"), "code"),
+    Rule("review.acceptance_covered", "review", "Every acceptance clause is tested",
+         "Sign-off names a test for each clause under ## Acceptance.",
+         "enforced", _src("app/services/fleet.py", "MissingAcceptanceCoverage"), "code"),
+    Rule("memory.independent_adjudication", "learn", "Agents do not publish their own memory",
+         "An agent may discard its candidate shard; only an independent judge publishes one.",
+         "enforced", _src("app/services/memory.py", "agent_publish"), "code"),
     Rule("review.role_gated_tools", "review", "Role-gated tools",
          "MCP tools outside an agent's role are refused.",
          "enforced", _src("app/services/fleet.py", "check_tool_role"), "code"),
@@ -122,6 +156,26 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
 )
 
 RULES_BY_ID = {r.id: r for r in RULES}
+
+#: Written only by a passing build on main (`scripts/refusal_ratchet.py publish`, GRPH-1158).
+REFUSAL_COVERAGE_FILE = Path(__file__).resolve().parents[1] / "data" / "refusal_coverage.json"
+
+
+def refusal_coverage(path: Path | None = None) -> dict:
+    """"N of M refusal sites name their rule", as the last green main build published it.
+
+    Read, never computed: a number worked out at runtime would come from whatever tree is
+    deployed, failing or not. No file is `published: False` — nobody measured — and never a
+    zero, which would read as "no refusal names its rule"."""
+    import json
+
+    try:
+        data = json.loads((path or REFUSAL_COVERAGE_FILE).read_text())
+    except (FileNotFoundError, ValueError):
+        return {"published": False, "n": None, "m": None, "commit": None,
+                "published_at": None}
+    return {"published": True, "n": data["n"], "m": data["m"],
+            "commit": data.get("commit") or None, "published_at": data.get("published_at")}
 
 
 def source_url(path: str, version: str | None = None) -> str:
@@ -216,10 +270,21 @@ RULE_STAGE = {
     "gate.approval_earned_by_grill": "spec",
     "gate.decompose_requires_approval": "plan",
     "gitops.branch_name_pattern": "build",
+    "gitops.observe_answer_required": "build",
+    "gitops.checklist_needs_evidence": "build",
+    "gitops.owned_by_org": "build",
+    "reach.deploy_not_delegable": "plan",
+    "reach.acknowledge_signals": "plan",
     "budget.cap": "build",
     "agents.operating_loop": "build",
     "review.not_own_work": "review",
     "review.role_gated_tools": "review",
+    "review.adversarial_evidence": "review",
+    "review.attest_the_head": "review",
+    "review.predicates_compared": "review",
+    "review.clause_capability": "review",
+    "review.acceptance_covered": "review",
+    "memory.independent_adjudication": "learn",
     "review.reviewer_diversity": "review",
     "gitops.reviewer_bar": "review",
     "gitops.base_branch": "merge",

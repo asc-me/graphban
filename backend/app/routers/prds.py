@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.errors import Refused
 from app.models import User
 from app.providers import iter_reply, llm_meter
 from app.schemas import (
@@ -453,7 +454,7 @@ def decompose_prd(prd_id: str, create: bool = False, include_prose: bool = False
     except prd_svc.DecomposeRequiresApproval as e:
         # 409, like ApprovalNotEarned: the request is well-formed; the PRD is not there yet.
         # 422 would read as a malformed payload.
-        raise HTTPException(409, str(e))
+        raise Refused(409, str(e), rule_id="gate.decompose_requires_approval")
 
 
 @router.get("/{prd_id}", response_model=PrdOut)
@@ -476,7 +477,7 @@ def update_prd(prd_id: str, body: PrdUpdate, db: Session = Depends(get_db), user
     except prd_svc.ApprovalNotEarned as e:
         # 409, not 422: the request is well-formed and permitted, the PRD just is not
         # there yet. A validation error would read as "you sent something malformed".
-        raise HTTPException(409, str(e))
+        raise Refused(409, str(e), rule_id="gate.approval_earned_by_grill")
     except ValueError as e:
         raise HTTPException(422, str(e))
     if prd is None:

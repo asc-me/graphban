@@ -10,6 +10,8 @@ uses a separate ``unauthorized`` code, owned by ``security/authz.Forbidden``).
 """
 from __future__ import annotations
 
+from fastapi import HTTPException
+
 
 class AppError(Exception):
     """Base for expected, agent-correctable failures. ``hint`` names the fix."""
@@ -79,3 +81,29 @@ class RateLimited(AppError):
     Mapped to a ``rate_limited`` MCP tool error; the agent should back off and retry."""
 
     code = "rate_limited"
+
+
+class Refused(HTTPException):
+    """A request the server understood and declined **by policy** (GRPH-1158 / PRD-P61 §6).
+
+    An `HTTPException`, so every existing REST path keeps working, but typed: not-found and
+    malformed input stay plain `HTTPException` and are not refusals. `rule_id` names the
+    registry rule (`services/rules.py`) that refused; `None` means "not mapped to a rule
+    yet", which the UI says out loud rather than staying silent — silence would read as "no
+    rule applies". The REST handler in `main.py` and the MCP dispatcher both record it, once:
+    a raise site never records its own event. `meta` rides into that event (a gate's own
+    audit fields), and `target` overrides the item/PRD the handler would otherwise infer.
+    """
+
+    def __init__(self, status_code: int, detail: str, *, rule_id: str | None = None,
+                 hint: str | None = None, meta: dict | None = None,
+                 target: tuple[str, str] | None = None):
+        super().__init__(status_code, detail)
+        self.rule_id = rule_id
+        self.hint = hint
+        self.meta = meta or {}
+        self.target = target
+
+    @property
+    def mcp_code(self) -> str:
+        return "unauthorized" if self.status_code == 403 else "conflict"

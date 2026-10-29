@@ -79,6 +79,44 @@ def record_user(db: Session, user: User, *, action: str, target_type: str = "",
     )
 
 
+def record_refusal(db: Session, *, rule_id: str | None, surface: str, where: str,
+                   status: int, detail: str, actor: tuple[str, str, str] = ("system", "", ""),
+                   target_type: str = "", target_id: str = "",
+                   project_id: str | None = None, meta: dict | None = None) -> None:
+    """The one place a typed `Refused` is recorded (GRPH-1158 / PRD-P61 §6).
+
+    Mapped refusals record `refusal` with the rule; unmapped record `refusal_unmapped` with
+    `where` — the route TEMPLATE (`PATCH /api/items/{id}`) or the MCP tool name, never a
+    concrete path, so a gap counts once however many ids hit it. `meta` is the raise site's
+    own audit fields (`Refused.meta`); the fields named here win over it.
+    """
+    meta = {**(meta or {}), "where": where, "status": status, "reason": detail[:500]}
+    if rule_id:
+        meta["rule_id"] = rule_id
+    if project_id is None and target_type in ("item", "prd") and target_id:
+        # A route like `PATCH /api/prds/{prd_id}` names no project; without one the refusal
+        # is in the ledger but in no project's Activity, which reads as "nothing refused".
+        project_id = _target_project(db, target_type, target_id)
+    record(
+        db, actor_type=actor[0], actor_id=actor[1], actor_label=actor[2], surface=surface,
+        action="refusal" if rule_id else "refusal_unmapped", target_type=target_type,
+        target_id=target_id, project_id=project_id, meta=meta,
+    )
+
+
+def _target_project(db: Session, target_type: str, target_id: str) -> str | None:
+    from app.models import Item, Prd
+    from app.services import keys
+
+    try:
+        model = Item if target_type == "item" else Prd
+        row = db.get(model, keys.resolve(db, target_id, target_type) or target_id)
+        return row.project_id if row is not None else None
+    except Exception:  # recording a refusal must never turn it into a 500
+        logger.exception("could not resolve the project of a refusal's target")
+        return None
+
+
 # ── Activity: lenses, facets, histogram (PRD-47 S10 / GRPH-961) ──────────────
 #
 # Every filter and aggregate below reads a COLUMN that already exists on `Event`
@@ -90,7 +128,15 @@ def record_user(db: Session, user: User, *, action: str, target_type: str = "",
 #: The refusals the ledger actually records. Everything else a caller might call
 #: "rejected" — a bounced review, a router 422, auto-triage's `auto_reject_shard` — is
 #: NOT here, and the lens publishes this tuple so the tile can state its own coverage.
-REFUSAL_ACTIONS = ("sign_off_refused", "role_refused", "agent_reject_shard")
+#:
+#: Since GRPH-1158 the sign-off and role gates record the typed `refusal` (with `rule_id`)
+#: through `record_refusal` instead; `sign_off_refused` and `role_refused` stay listed
+#: because rows written before then are keyed by them. `agent_reject_shard` is not a raised
+#: refusal (the judge's "no" is a successful call), so it keeps its action and carries its
+#: `rule_id` in meta.
+TYPED_REFUSAL_ACTIONS = ("refusal", "refusal_unmapped")
+REFUSAL_ACTIONS = ("sign_off_refused", "role_refused", "agent_reject_shard",
+                   *TYPED_REFUSAL_ACTIONS)
 
 #: Keys, seats, invites, roles and memberships. Both spellings of the api-key target
 #: type are live in the data — `api_key` from routers/apikeys.py, `apikey` from
@@ -174,8 +220,9 @@ def lens_definitions() -> list[dict]:
                  "person, an agent, or auto-triage."},
         {"id": "rejected", "label": "Rejected",
          "hint": f"Only the {len(REFUSAL_ACTIONS)} refusal kinds the ledger records: "
-                 f"{', '.join(REFUSAL_ACTIONS)}. A bounced review, a rejected HTTP "
-                 "request or an auto-triage rejection is not counted here.",
+                 f"{', '.join(REFUSAL_ACTIONS)}. A policy refusal not yet typed as one, a "
+                 "bounced review, an HTTP error that is not a refusal (a 404, a malformed "
+                 "payload) or an auto-triage rejection is not counted here.",
          "covers": list(REFUSAL_ACTIONS)},
     ]
     return defs

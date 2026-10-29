@@ -108,7 +108,7 @@ def test_a_linked_box_can_still_set_it(client, auth, proj, monkeypatch):
     monkeypatch.setattr(settings, "sync_api_key", "gb_sk_link")
 
     g = client.patch(f"/api/projects/{proj}/gitops", json={"base_branch": "x"}, headers=auth)
-    assert g.status_code == 403 and g.json() == {"detail": LINKED_403_DETAIL}, \
+    assert g.status_code == 403 and g.json() == {"detail": LINKED_403_DETAIL, "rule_id": "gitops.owned_by_org"}, \
         "precondition: this box must be linked, or the test proves nothing"
 
     r = _patch(client, auth, proj, {"release_ref": "main"})
