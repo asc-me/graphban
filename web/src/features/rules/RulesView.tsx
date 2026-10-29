@@ -51,6 +51,7 @@ import {
   type Level,
   type MapLayout,
 } from "./levels";
+import { BudgetCapEditor, GITOPS_RULE_FIELDS, GitopsRuleEditor } from "./RuleEditors";
 import { RuleLevelIcon } from "./RuleLevelIcon";
 
 const PACK_KEY = "pack";
@@ -969,6 +970,16 @@ function RuleRow({ rule, version, model }: { rule: RuleFlowRule; version: string
           </div>
         )}
         {rule.truth === "db" && (
+          <ValueBox rule={rule} value={value} />
+        )}
+        {rule.id === "budget.cap" && rule.used && <BudgetCapEditor />}
+      </div>
+    </div>
+  );
+}
+
+function ValueBox({ rule, value }: { rule: RuleFlowRule; value: string | null }) {
+  const box = (
           <div className="flex flex-col gap-2 rounded-[8px] border border-[#2a333a] bg-bg p-2.5">
             <div className="flex items-center gap-2">
               <span className={cn(MONO, "text-[10px] text-muted-2")}>{rule.id.split(".").pop()}</span>
@@ -992,10 +1003,9 @@ function RuleRow({ rule, version, model }: { rule: RuleFlowRule; version: string
               {value ?? "— no value"}
             </span>
           </div>
-        )}
-      </div>
-    </div>
   );
+  const field = GITOPS_RULE_FIELDS[rule.id];
+  return field ? <GitopsRuleEditor rule={rule} field={field} fallback={box} /> : box;
 }
 
 function EnforcerLink({ kind, text, url }: { kind: string; text: string; url: string }) {
