@@ -320,7 +320,7 @@ describe("Project home", () => {
     vi.mocked(api.orgGalaxy).mockReturnValue(new Promise(() => {}) as never);
     renderHome();
 
-    await screen.findByText("Items");
+    await screen.findByText("Items", { selector: "span" });
     // Unknown is a third answer: no heading, no honest empty, no failure copy.
     expect(screen.queryByRole("heading", { name: "Cross-project dependencies" })).not.toBeInTheDocument();
     expect(screen.queryByText(/No sibling repo declares this one/)).not.toBeInTheDocument();
@@ -378,14 +378,14 @@ describe("Project home", () => {
     expect(screen.getByText("Nothing has happened here yet.")).toBeInTheDocument();
     expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
     // The stat grid stays: shards were measured, so a zero items cell is a real zero.
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("0");
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("0");
     expect(screen.getByText("Memory shards").parentElement).toHaveTextContent("2");
   });
 
   it("does not call a healthy read stale", async () => {
     renderHome();
-    expect(await screen.findByText("Items")).toBeInTheDocument();
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(await screen.findByText("Items", { selector: "span" })).toBeInTheDocument();
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("4");
     expect(screen.queryByText(STALE_BANNER)).not.toBeInTheDocument();
     expect(screen.queryByText(/the request failed/i)).not.toBeInTheDocument();
   });
@@ -393,8 +393,8 @@ describe("Project home", () => {
   it("keeps the last good counts and names them stale when a refresh fails", async () => {
     const { api } = await import("@/lib/api");
     const { qc } = renderHome();
-    expect(await screen.findByText("Items")).toBeInTheDocument();
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(await screen.findByText("Items", { selector: "span" })).toBeInTheDocument();
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("4");
     expect(screen.queryByText(STALE_BANNER)).not.toBeInTheDocument();
 
     vi.mocked(api.dashboard).mockRejectedValue(new Error("boom"));
@@ -402,7 +402,7 @@ describe("Project home", () => {
 
     expect(await screen.findByText(STALE_BANNER)).toBeInTheDocument();
     // The failed refresh must not replace the last read with — or with the first-load error.
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("4");
     expect(screen.queryByText(/A count showing — was not read/i)).not.toBeInTheDocument();
   });
 });
