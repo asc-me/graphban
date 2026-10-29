@@ -155,7 +155,10 @@ describe("Fleet.v2 catalog and allocation", () => {
     expect(above(table, within(panel).getByTestId("tier-map-status"))).toBe(true);
     // Subtitle is the whole sentence, not cut off mid-way.
     expect(panel).toHaveTextContent(/lands on it\. Each cell takes the top-graded model/);
-    expect(panel).toHaveTextContent(/pick Inherit to drop an override/);
+    const subtitle = within(panel).getByText(/Which model each harness runs when/).closest("p")!;
+    expect(subtitle).toHaveTextContent(
+      /Each cell takes the top-graded model for that harness and tier\. Pick a model to pin an override; pick Inherit to drop it\.$/,
+    );
     expect(within(panel).getByTestId("tier-map-grade")).toHaveTextContent("–");
     expect(within(panel).getByRole("button", { name: /Clear overrides/ })).toBeInTheDocument();
     expect(within(panel).getByRole("button", { name: /Save tier map/ })).toBeInTheDocument();

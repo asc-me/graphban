@@ -160,8 +160,8 @@ export function TierMapPanel({ projectId, harnessHref }: {
           <p className="mt-0.5 text-[12px] text-muted">
             Which model each harness runs when{" "}
             <code className="font-mono text-small">spawn(tier=)</code> lands on it. Each cell takes
-            the top-graded model for its harness and tier; pick Inherit to drop an override and
-            follow grading.
+            the top-graded model for that harness and tier. Pick a model to pin an override; pick
+            Inherit to drop it.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-3 text-[12px]">
