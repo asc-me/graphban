@@ -2,9 +2,9 @@
  * Rules side sheets (GRPH-1164, frames 5a–5e): Unmapped refusals and Recommended rules.
  *
  * Unmapped groups are read from the ledger's `refusal_unmapped` events by route template or MCP
- * tool plus status. The "N of M refusal sites name their rule" coverage line is the number a
- * green main build publishes — the browser never computes it, so until the API serves it the
- * line says it is unknown, never zero.
+ * tool plus status. The "N of M refusal sites name their rule" coverage line is the number the
+ * build of this package published, served by the API — the browser never computes it, and a build
+ * that did not publish says so, never zero.
  */
 import * as React from "react";
 
@@ -13,7 +13,7 @@ import { absTime } from "@/features/activity/model";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { useCreateItem, useDismissRecommendedRule, useEvents, useRecommendedRules } from "@/lib/queries";
+import { useCreateItem, useDismissRecommendedRule, useEvents, useRecommendedRules, useRefusalCoverage } from "@/lib/queries";
 import type { Event, RuleSuggestion, SuggestionSource } from "@/lib/types";
 
 const MONO = "font-mono";
@@ -99,6 +99,32 @@ function Note({ children, testId, tone = "muted" }: { children: React.ReactNode;
   );
 }
 
+function CoverageLine({ projectId }: { projectId: string }) {
+  const q = useRefusalCoverage(projectId);
+  const c = q.data;
+  if (c?.published && c.n != null && c.m != null) {
+    const pct = c.m > 0 ? Math.round((c.n / c.m) * 100) : 0;
+    return (
+      <Note testId="rules-unmapped-coverage">
+        <div className="mb-1.5 text-fg">
+          <span className={MONO} data-testid="rules-coverage-n">{c.n}</span> of <span className={MONO} data-testid="rules-coverage-m">{c.m}</span>{" "}
+          refusal sites name their rule
+        </div>
+        <div className="h-1.5 w-full rounded-full" style={{ background: "#2a333a" }} data-testid="rules-coverage-bar">
+          <div className="h-full rounded-full" style={{ width: `${pct}%`, background: "#c6f24e" }} />
+        </div>
+        {c.commit && <div className={cn(MONO, "mt-1.5 text-xs")}>commit {c.commit.slice(0, 7)}</div>}
+      </Note>
+    );
+  }
+  return (
+    <Note testId="rules-unmapped-coverage">
+      {q.isError || q.isLoading ? "Coverage unavailable" : "Not published by this build"}: the “N of M refusal sites name their rule”
+      number is measured when a package is built. That is not zero.
+    </Note>
+  );
+}
+
 function Spark({ days }: { days: number[] }) {
   const max = Math.max(1, ...days);
   return (
@@ -137,10 +163,7 @@ export function UnmappedSheet({ onClose }: { onClose: () => void }) {
 
   return (
     <Sheet label="Unmapped refusals" kicker="REFUSALS WITH NO RULE" title="Unmapped refusals" onClose={onClose} testId="rules-unmapped">
-      <Note testId="rules-unmapped-coverage">
-        Coverage unknown: the “N of M refusal sites name their rule” number is published by green main builds and this server is not
-        serving it yet. That is not zero.
-      </Note>
+      <CoverageLine projectId={activeId} />
       {q.isError ? (
         <Note tone="red" testId="rules-unmapped-error">
           Could not read unmapped refusals: {errorDetail(q.error, "request failed")}. The count is unknown, not zero.
