@@ -49,8 +49,22 @@ def test_approval_by_update_is_refused_with_its_rule_and_recorded(client, auth):
     assert ev.actor_type == "user"
 
 
-def test_an_unmapped_refusal_is_recorded_as_such(client, auth):
+@pytest.fixture
+def scratch_routes():
+    """The shared app, with any route a test adds removed again afterwards.
+
+    A throwaway route left on the app is a real route to every later test in the process:
+    `test_docs_completeness` then finds an undocumented path and a census one too high.
+    """
     from app.main import app
+
+    before = list(app.router.routes)
+    yield app
+    app.router.routes[:] = before
+
+
+def test_an_unmapped_refusal_is_recorded_as_such(client, auth, scratch_routes):
+    app = scratch_routes
 
     @app.get("/api/_t/refused/{item_id}")
     def _boom(item_id: str):
@@ -337,8 +351,9 @@ def test_a_delegation_role_refusal_names_its_rule_and_is_recorded(client, _worke
     assert (ev.target_type, ev.target_id) == ("item", item)
 
 
-def test_a_path_value_equal_to_a_literal_segment_records_the_right_template(client, auth):
-    from app.main import app
+def test_a_path_value_equal_to_a_literal_segment_records_the_right_template(client, auth,
+                                                                            scratch_routes):
+    app = scratch_routes
 
     @app.get("/api/_t/things/{thing_id}/things")
     def _boom(thing_id: str):
