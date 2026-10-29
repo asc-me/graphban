@@ -2777,6 +2777,13 @@ export interface RuleEnforcer {
   url: string;
 }
 
+export interface RuleResult {
+  outcome: "pass" | "fail";
+  at: string;
+  item: string;
+  commit: string;
+}
+
 export interface RuleFlowRule {
   id: string;
   stage: string;
@@ -2795,6 +2802,8 @@ export interface RuleFlowRule {
   /** Sent (as null) on every rule; a list only on the skills pack. Null on the pack: the gban
    *  package was not readable on the server. */
   skills: string[] | null;
+  /** Only on a `checked` rule; null when nothing has been recorded. */
+  last_result?: RuleResult | null;
 }
 
 export interface RuleStage {
