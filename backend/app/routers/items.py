@@ -1,4 +1,7 @@
+from datetime import datetime
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -94,6 +97,68 @@ def blockers(
     """Blocked items for triage (snoozed ones hidden); decision waits carry question/options."""
     authz.require_readable(db, user.id, project_id)
     return {"blockers": waits_svc.triage_blockers(db, project_id)}
+
+
+class CollisionDecisionIn(BaseModel):
+    project_id: str
+    members: list[str]
+    decision: str
+    order: list[str] | None = None
+    snooze_until: datetime | None = None
+
+
+def _decision_out(r) -> dict:
+    return {"id": r.id, "project_id": r.project_id, "members": r.members, "decision": r.decision,
+            "order": r.order, "links_added": r.links_added,
+            "snooze_until": r.snooze_until.isoformat() if r.snooze_until else None,
+            "decided_by": r.decided_by,
+            "undone_at": r.undone_at.isoformat() if r.undone_at else None}
+
+
+@router.get("/collision-triage")
+def collision_triage(project_id: str, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Colliding clusters with no live decision (GRPH-1138)."""
+    authz.require_readable(db, user.id, project_id)
+    return {"clusters": collision_svc.triage(db, project_id)}
+
+
+@router.get("/collision-decisions")
+def collision_decisions(project_id: str, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    authz.require_readable(db, user.id, project_id)
+    return {"decisions": [_decision_out(r) for r in collision_svc.decisions(db, project_id)]}
+
+
+@router.post("/collision-decisions")
+def decide_collision(body: CollisionDecisionIn, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Serialize, allow parallel, hold, override or snooze one cluster. Override is the
+    project owner's alone (a REST caller is a person, never a worker credential)."""
+    authz.require_writable(db, user.id, body.project_id)
+    owner = authz.project_role(db, user.id, body.project_id) == "owner"
+    try:
+        row = collision_svc.decide(
+            db, body.project_id, body.members, body.decision,
+            authority="owner" if owner else "writer", actor=user.id,
+            order=body.order, snooze_until=body.snooze_until)
+    except collision_svc.OverrideRefused as exc:
+        raise HTTPException(403, str(exc))
+    except collision_svc.DecisionError as exc:
+        raise HTTPException(409, str(exc))
+    return _decision_out(row)
+
+
+@router.delete("/collision-decisions/{decision_id}")
+def undo_collision_decision(decision_id: int, db: Session = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+    from app.models import CollisionDecision
+
+    row = db.get(CollisionDecision, decision_id)
+    if row is None:
+        raise HTTPException(404, "decision not found")
+    authz.require_writable(db, user.id, row.project_id)
+    return _decision_out(collision_svc.undo(db, decision_id, actor=user.id))
 
 
 @router.get("/{item_id}", response_model=ItemOut)

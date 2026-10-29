@@ -3,8 +3,8 @@
 A submitter has no user row; their tracking token is the credential. Existing rows are all
 operator comments, which the server default covers.
 
-Revision ID: 0148
-Revises: 0147
+Revision ID: 0149
+Revises: 0148
 """
 
 from typing import Sequence, Union
@@ -12,8 +12,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0148"
-down_revision: Union[str, None] = "0147"
+revision: str = "0149"
+down_revision: Union[str, None] = "0148"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -1603,6 +1603,36 @@ class Link(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class CollisionDecision(Base):
+    """A person's (or planner's) answer to one collision cluster (PRD-60 D8 / GRPH-1138).
+
+    Clustering is computed on every read and never decided; this is the decision. It is keyed
+    by the cluster's MEMBER SET (`member_key`, the sorted ids joined), so it expires on its
+    own when a member is added or removed: the cluster that now exists is not the one anybody
+    answered. Expiry is judged on read against the live partition and stamped in `expired_at`.
+
+    `links_added` is the exact list of dependency links this decision created, as [a, b]
+    pairs, so undoing a serialize removes those and nothing a person authored.
+    """
+
+    __tablename__ = "collision_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    member_key: Mapped[str] = mapped_column(String, index=True)
+    members: Mapped[list] = mapped_column(JSON, default=list)
+    # serialize | parallel | hold | override | snooze  (services/collision.py:DECISIONS)
+    decision: Mapped[str] = mapped_column(String)
+    # The order serialize/hold used, leader first.
+    order: Mapped[list] = mapped_column(JSON, default=list)
+    links_added: Mapped[list] = mapped_column(JSON, default=list)
+    snooze_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_by: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class ProjectEdge(Base):
     """An evidenced dependency between two projects in one org (PRD-21 D3).
 
