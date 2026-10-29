@@ -1,4 +1,4 @@
-import { ChevronsLeftRight, EyeOff, GitPullRequest } from "lucide-react";
+import { ChevronLeft, ChevronRight, EyeOff } from "lucide-react";
 import * as React from "react";
 
 import { Avatar } from "@/components/ui/avatar";
@@ -19,6 +19,7 @@ export function TrackerBoard({
   onSelect,
   onStatus,
   columns,
+  statuses = BOARD_COLUMNS,
   doneHidden = 0,
   hideDays = 0,
   onShowHidden,
@@ -28,6 +29,8 @@ export function TrackerBoard({
   onSelect: (id: string) => void;
   onStatus: (item: Item, status: Status) => void;
   columns: ColumnPrefsApi;
+  /** Columns the active view/chip keeps; the rest are not rendered. */
+  statuses?: readonly Status[];
   /** Done cards the view's auto-hide left out; the Done column says so. */
   doneHidden?: number;
   hideDays?: number;
@@ -45,7 +48,7 @@ export function TrackerBoard({
 
   return (
     <div className="flex min-h-0 flex-1 items-stretch gap-3 overflow-x-auto px-5 py-4">
-      {BOARD_COLUMNS.map((status) => {
+      {statuses.map((status) => {
         const mode = columns.modeOf(status);
         if (mode === "hide") return null;
         const meta = STATUS_META[status];
@@ -60,6 +63,7 @@ export function TrackerBoard({
               onClick={() => columns.setMode(status, "show")}
               className="flex min-h-[320px] w-11 flex-none flex-col items-center gap-2 rounded-[12px] border border-control bg-surface/40 py-3 hover:border-control-hover"
             >
+              <ChevronRight size={12} className="text-faint" />
               <span className="h-2 w-2 rounded-full" style={{ background: meta.color }} />
               <span className="font-mono text-[10.5px] text-faint">{cards.length}</span>
               <span className="text-body font-semibold text-fg-2 [writing-mode:vertical-rl]">{meta.label}</span>
@@ -82,9 +86,10 @@ export function TrackerBoard({
             className={cn(
               "flex min-h-[320px] min-w-[232px] flex-1 flex-col gap-2 rounded-[12px] border px-2 py-2.5",
               overCol === status && dragId
-                ? "border-accent/50 bg-surface-2"
+                ? "bg-surface-2"
                 : "border-line-2 bg-surface/40",
             )}
+            style={overCol === status && dragId ? { borderColor: meta.color } : undefined}
           >
             <div className="flex items-center gap-2 pb-1 pl-1">
               <span className="h-2 w-2 rounded-full" style={{ background: meta.color }} />
@@ -96,16 +101,16 @@ export function TrackerBoard({
                 aria-label={`Collapse ${meta.label}`}
                 title="Collapse"
                 onClick={() => columns.setMode(status, "collapse")}
-                className="text-faint hover:text-fg"
+                className="flex h-[22px] w-[22px] items-center justify-center rounded text-faint hover:bg-surface-4 hover:text-fg"
               >
-                <ChevronsLeftRight size={12} />
+                <ChevronLeft size={12} />
               </button>
               <button
                 type="button"
                 aria-label={`Hide ${meta.label}`}
-                title="Hide"
+                title="Hide column"
                 onClick={() => columns.setMode(status, "hide")}
-                className="text-faint hover:text-fg"
+                className="flex h-[22px] w-[22px] items-center justify-center rounded text-faint hover:bg-surface-4 hover:text-fg"
               >
                 <EyeOff size={12} />
               </button>
@@ -127,18 +132,19 @@ export function TrackerBoard({
                 }}
               />
             ))}
-            {status === "done" && doneHidden > 0 && onShowHidden && (
-              <div className="px-1 text-[11.5px] text-muted">
-                + {doneHidden} done more than {hideDays}d ago ·{" "}
-                <button type="button" onClick={onShowHidden} className="text-accent hover:underline">
-                  show
-                </button>
-              </div>
-            )}
             {cards.length === 0 && (
               <div className="flex min-h-[72px] flex-1 items-center justify-center rounded-[10px] border border-dashed border-line-2 font-mono text-[10.5px] text-faint-2">
                 Drop here
               </div>
+            )}
+            {status === "done" && doneHidden > 0 && onShowHidden && (
+              <button
+                type="button"
+                onClick={onShowHidden}
+                className="mt-auto w-full px-1 text-left font-mono text-[10px] text-faint hover:text-accent"
+              >
+                + {doneHidden} done more than {hideDays}d ago · show
+              </button>
             )}
           </section>
         );
@@ -173,7 +179,7 @@ function BoardCard({
       data-testid={`card-${item.id}`}
       className={cn(
         "flex cursor-grab flex-col gap-2 rounded-[10px] border bg-surface-2 px-[11px] py-2.5 transition-colors",
-        selected ? "border-accent" : "border-line-2 hover:border-control-hover",
+        selected ? "border-accent/55" : "border-line-2 hover:border-control-hover",
         dragging && "opacity-40",
       )}
     >
@@ -198,7 +204,7 @@ function BoardCard({
               className="h-[5px] w-[5px] rounded-full"
               style={{ background: CHECK_COLOR[item.pr.checks] ?? "#8b949e" }}
             />
-            <GitPullRequest size={10} />#{item.pr.number}
+            #{item.pr.number}
           </span>
         )}
       </div>
@@ -217,10 +223,8 @@ function BoardCard({
         <span className="flex-1" />
         <span
           className={cn(
-            "flex items-center gap-1 rounded-md border px-1 font-mono text-[10px]",
-            item.claimed_by
-              ? "border-[rgba(198,242,78,0.3)] text-accent"
-              : "border-transparent text-faint",
+            "flex items-center gap-1 font-mono text-[10px]",
+            item.claimed_by ? "text-accent" : "text-faint",
           )}
           title={item.claimed_by ? `Claimed by ${item.claimed_by}` : owner ? `Assigned to ${owner}` : "Unassigned"}
         >

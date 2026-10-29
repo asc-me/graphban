@@ -17,7 +17,7 @@ import { Dot } from "@/components/ui/badge";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { STATUS_META, STATUS_ORDER } from "@/lib/meta";
+import { BOARD_COLUMNS, STATUS_META, STATUS_ORDER } from "@/lib/meta";
 import { PALETTE_ITEM_PARAM } from "@/lib/palette-nav";
 import { useItems, useReorderItems, useUpdateItem } from "@/lib/queries";
 import type { Item, Status } from "@/lib/types";
@@ -230,7 +230,7 @@ export function TrackerView() {
       />
       )}
 
-      {populated && layout === "list" && (
+      {populated && (
         <Collapsible collapsed={condensed}>
         <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
           <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={scoped.shown.length} />
@@ -283,6 +283,7 @@ export function TrackerView() {
             onSelect={setSelectedId}
             onStatus={setStatus}
             columns={columns}
+            statuses={BOARD_COLUMNS.filter((st) => statusMatches(st, filter, ACTIVE_STATUSES))}
           />
         )
       ) : (
