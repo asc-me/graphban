@@ -45,6 +45,16 @@ def create_request(body: RequestCreate, db: Session = Depends(get_db), user: Use
         raise HTTPException(422, str(e))
 
 
+@router.get("/{request_id}/comments")
+def list_request_comments(request_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """PRD-60 D9: the operator thread — public and internal comments, with author and role."""
+    req = db.get(Request, keys.resolve_request(db, request_id) or request_id)
+    if req is None:
+        raise HTTPException(404, "request not found")
+    authz.require_readable(db, user.id, req.project_id)
+    return req_svc.list_comment_thread(db, req.id)
+
+
 @router.post("/{request_id}/vote", response_model=RequestOut)
 def vote(request_id: str, body: RequestVoteIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     existing = db.get(Request, keys.resolve_request(db, request_id) or request_id)
