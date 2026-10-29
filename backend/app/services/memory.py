@@ -114,6 +114,10 @@ def age_state(shard: MemoryShard, *, now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
     if created.tzinfo is None:
         created = created.replace(tzinfo=timezone.utc)
+    # A person's Keep restarts the clock for a published shard (GRPH-1180).
+    kept = _aware(shard.kept_at) if shard.kept_at is not None else None
+    if kept is not None and kept > created:
+        created = kept
     days = (now - created).days
     if shard.status == "candidate" and days >= CANDIDATE_EXPIRY_DAYS:
         return "expired"
@@ -2589,6 +2593,20 @@ def retire_shard(db: Session, shard_id: str, *, now: datetime | None = None) -> 
     return shard
 
 
+def keep_shard(db: Session, shard_id: str, *, now: datetime | None = None) -> MemoryShard | None:
+    """A person confirmed a published shard is still right: it stays published and its
+    staleness clock restarts, so it leaves the stale queue until PUBLISHED_STALE_DAYS pass again."""
+    shard = db.get(MemoryShard, shard_id)
+    if shard is None:
+        return None
+    if shard.status != "published":
+        raise RetireRefused(f"only a published shard can be kept; this one is {shard.status}")
+    shard.kept_at = now or datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(shard)
+    return shard
+
+
 def restore_shard(db: Session, shard_id: str, *, now: datetime | None = None) -> MemoryShard | None:
     """Retired → published, refused once the recovery window has closed (final)."""
     shard = db.get(MemoryShard, shard_id)
@@ -2717,8 +2735,8 @@ def apply_recommendations(
     db: Session, shard_ids: list[str], *, floor: float = RECOMMENDATION_FLOOR,
 ) -> list[dict]:
     """Apply each shard's judge recommendation when it clears `floor`. Per-id result so the UI
-    can undo: `undo` is `restore` for a retire. Only `retire` mutates — `keep` has nothing to
-    do, and `revise`/`verify` need a person's edit, so they are reported as left alone."""
+    can undo: `undo` is `restore` for a retire. `retire` and `keep` mutate — `keep` restarts the
+    staleness clock via `keep_shard`; `revise`/`verify` need a person's edit, so they are reported as left alone."""
     results = []
     for sid in shard_ids:
         shard = db.get(MemoryShard, sid)
@@ -2743,7 +2761,8 @@ def apply_recommendations(
             retire_shard(db, sid)
             res.update(applied=True, undo="restore", reason=rec["reason"])
         elif rec["action"] == "keep":
-            res.update(applied=True, reason="kept; nothing to change")
+            keep_shard(db, sid)
+            res.update(applied=True, reason=rec["reason"])
         else:
             res["reason"] = f"{rec['action']} needs a person's edit; left alone"
     return results

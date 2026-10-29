@@ -62,6 +62,7 @@ const spies = vi.hoisted(() => ({
   undoAuto: vi.fn(async (id: string) => ({ id })),
   retire: vi.fn(async (id: string) => ({ id })),
   restore: vi.fn(async (id: string) => ({ id })),
+  keep: vi.fn(async (id: string) => ({ id })),
   apply: vi.fn(async (ids: string[]) => ids.map((id) => ({ shard_id: id, action: "retire", confidence: 0.93, applied: true, reason: "", undo: "restore" }))),
 }));
 
@@ -90,6 +91,7 @@ vi.mock("@/lib/api", () => ({
     undoAutoShard: spies.undoAuto,
     retireShard: spies.retire,
     restoreShard: spies.restore,
+    keepShard: spies.keep,
     applyRecommendations: spies.apply,
   },
 }));
@@ -282,7 +284,7 @@ describe("bulk", () => {
     await waitFor(() => expect(spies.restore).toHaveBeenCalledWith("st1"));
   });
 
-  it("an ungraded stale row has nothing to apply, and Keep says why it cannot run", async () => {
+  it("an ungraded stale row has nothing to apply, and Keep is available", async () => {
     const user = userEvent.setup();
     renderView();
     await ready();
@@ -291,9 +293,21 @@ describe("bulk", () => {
     const panel = screen.getByTestId("memory-detail");
     expect(within(panel).getByText(/No recommendation, so nothing to apply/)).toBeInTheDocument();
     expect(within(panel).getByRole("button", { name: /Apply recommendation/ })).toBeDisabled();
-    expect(within(panel).getByRole("button", { name: /Keep/ })).toBeDisabled();
+    expect(within(panel).getByRole("button", { name: /Keep/ })).toBeEnabled();
     await user.click(within(panel).getByRole("button", { name: /^Retire/ }));
     await waitFor(() => expect(spies.retire).toHaveBeenCalledWith("st2"));
+  });
+
+  it("Keep on a stale row calls the keep endpoint and the row leaves the stale list", async () => {
+    const user = userEvent.setup();
+    renderView();
+    await ready();
+    await user.click(screen.getByTestId("queue-stale"));
+    await user.click(await screen.findByText(/ci-runner-3 cache/));
+    const panel = screen.getByTestId("memory-detail");
+    await user.click(within(panel).getByRole("button", { name: /^Keep/ }));
+    await waitFor(() => expect(spies.keep).toHaveBeenCalledWith("st2"));
+    await waitFor(() => expect(screen.queryByText(/ci-runner-3 cache/)).not.toBeInTheDocument());
   });
 
   it("merges a duplicate cluster into the wording the reviewer picked", async () => {

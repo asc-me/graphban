@@ -460,6 +460,19 @@ def retire_shard(shard_id: str, db: Session = Depends(get_db), user: User = Depe
     return shard
 
 
+@router.post("/shards/{shard_id}/keep", response_model=ShardOut)
+def keep_shard(shard_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Confirm a stale published shard is still right: stays published, staleness clock resets."""
+    existing = _writable_shard(db, user, shard_id)
+    try:
+        shard = mem_svc.keep_shard(db, shard_id)
+    except mem_svc.RetireRefused as exc:
+        raise Refused(409, str(exc), rule_id="memory.retire_window") from exc
+    events_svc.record_user(db, user, action="keep_shard", target_type="shard",
+                           target_id=shard_id, project_id=existing.project_id)
+    return shard
+
+
 @router.post("/shards/{shard_id}/restore", response_model=ShardOut)
 def restore_shard(shard_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Undo a retire. Refused (409) once 14 days have passed."""
@@ -493,8 +506,9 @@ def apply_recommendations(body: ApplyIn, db: Session = Depends(get_db), user: Us
     projects = {sid: _writable_shard(db, user, sid).project_id for sid in body.shard_ids}
     results = mem_svc.apply_recommendations(db, body.shard_ids, floor=body.min_confidence)
     for r in results:
-        if r["applied"] and r["undo"]:
-            events_svc.record_user(db, user, action="retire_shard", target_type="shard",
+        if r["applied"] and (r["undo"] or r["action"] == "keep"):
+            events_svc.record_user(db, user, action="retire_shard" if r["undo"] else "keep_shard",
+                                   target_type="shard",
                                    target_id=r["shard_id"], project_id=projects[r["shard_id"]],
                                    meta={"via": "apply-recommendations"})
     return results

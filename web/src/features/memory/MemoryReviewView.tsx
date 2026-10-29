@@ -208,6 +208,7 @@ export function MemoryReviewView() {
     },
     retire: (rows) =>
       each(rows, "Retired", (r) => staleActs.retire.mutateAsync(r.id), (r) => staleActs.restore.mutateAsync(r.id)),
+    keep: (rows) => each(rows, "Kept", (r) => staleActs.keep.mutateAsync(r.id)),
     reverify: async (rows) => runners.judge(rows),
     retract: (rows) => each(rows, "Retracted", (r) => undoAuto.mutateAsync(r.id)),
   };
@@ -241,7 +242,7 @@ export function MemoryReviewView() {
           },
           { id: "retire", label: "Retire", sub: "Unpublish; agents stop seeing it. Recoverable for 14 days", key: "E", tone: "red" },
           { id: "reverify", label: "Re-verify", sub: "Ask the judge to re-read it now", key: "V", tone: "purple", disabled: judgeOff },
-          { id: "keep", label: "Keep", sub: "", key: "", tone: "neutral", disabled: "Not available yet — there is no keep endpoint, so it stays in this queue" },
+          { id: "keep", label: "Keep", sub: "Still right: stays published and leaves Stale until it ages out again", key: "K", tone: "neutral" },
         ];
       }
       case "unvetted":
@@ -256,7 +257,7 @@ export function MemoryReviewView() {
   // Bulk acts on one queue at a time: the same verb means different things across queues
   // (a "Reject" on a published stale row would skip its 14-day retire path).
   const selQueues = [...new Set(selected.map((r) => QUEUE_BY_ID[r.queue].label))];
-  const bulk = selQueues.length === 1 ? decisionsFor(selected[0]).filter((d) => !d.disabled && d.id !== "keep") : [];
+  const bulk = selQueues.length === 1 ? decisionsFor(selected[0]).filter((d) => !d.disabled) : [];
 
   async function run(id: string, rows: Row[]) {
     if (!rows.length || busy.current) return;

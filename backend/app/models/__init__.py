@@ -1174,6 +1174,9 @@ class MemoryShard(Base):
     # never retired. Restorable for `RETIRE_RECOVERY_DAYS` after this; finality is computed
     # from this timestamp, so there is no sweep to forget to run.
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set when a person confirms a stale shard is still right (Keep). `age_state` measures
+    # the staleness clock from the later of this and `created_at`.
+    kept_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     @property
     def item_key(self) -> str | None:

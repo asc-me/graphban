@@ -140,3 +140,52 @@ def test_apply_skips_ungraded(client, auth):
     sid = _published(client, auth, pid)
     r = client.post("/api/memory/apply-recommendations", json={"shard_ids": [sid]}, headers=auth).json()
     assert r[0]["applied"] is False and r[0]["reason"].startswith("ungraded")
+
+
+def _events(action):
+    from app.models import Event
+    db = SessionLocal()
+    try:
+        return [(e.actor_id, e.target_id) for e in db.query(Event).filter(Event.action == action).all()]
+    finally:
+        db.close()
+
+
+def test_keep_resets_staleness_and_leaves_published(client, auth):
+    pid = _proj(client, auth, "Keep")
+    sid = _published(client, auth, pid)
+    _age(sid, created_days=mem_svc.PUBLISHED_STALE_DAYS + 5)
+    assert [r["shard"]["id"] for r in client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json()] == [sid]
+    r = client.post(f"/api/memory/shards/{sid}/keep", headers=auth)
+    assert r.status_code == 200 and r.json()["status"] == "published"
+    assert client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json() == []
+    body = client.get(f"/api/memory/queues?project_id={pid}", headers=auth).json()
+    assert body["stale_or_wrong"]["count"] == 0
+
+
+def test_keep_refused_when_not_published(client, auth):
+    pid = _proj(client, auth, "KeepRefused")
+    sid = _published(client, auth, pid)
+    client.post(f"/api/memory/shards/{sid}/retire", headers=auth)
+    r = client.post(f"/api/memory/shards/{sid}/keep", headers=auth)
+    assert r.status_code == 409
+    assert r.json()["rule_id"] == "memory.retire_window"
+
+
+def test_keep_records_an_event_naming_user_and_shard(client, auth):
+    pid = _proj(client, auth, "KeepEvent")
+    sid = _published(client, auth, pid)
+    client.post(f"/api/memory/shards/{sid}/keep", headers=auth)
+    events = _events("keep_shard")
+    assert len(events) == 1 and events[0][0] and events[0][1] == sid
+
+
+def test_apply_recommendations_keep_uses_the_keep_path(client, auth, monkeypatch):
+    pid = _proj(client, auth, "ApplyKeep", judge=True)
+    sid = _published(client, auth, pid)
+    _age(sid, created_days=mem_svc.PUBLISHED_STALE_DAYS + 5)
+    _judge(monkeypatch, '{"keep": true, "quality": 0.95, "reason": "still right"}')
+    r = client.post("/api/memory/apply-recommendations", json={"shard_ids": [sid]}, headers=auth).json()
+    assert r[0]["applied"] is True and r[0]["action"] == "keep"
+    assert client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json() == []
+    assert [e[1] for e in _events("keep_shard")] == [sid]
