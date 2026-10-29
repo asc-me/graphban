@@ -195,7 +195,7 @@ export function TrackerView() {
     <PlannerEmpty
       title="No items yet"
       description="The tracker is your project's linear stream — one ordered list of work. Create the first item to start grooming."
-      action={<NewItemDialog />}
+      action={<NewItemDialog icon={false} />}
     />
   );
 
