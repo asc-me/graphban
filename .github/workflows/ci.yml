@@ -85,6 +85,16 @@ jobs:
               - 'docs/fleet-supervisor-walk.md'
               - '.github/workflows/ci.yml'
 
+  # Both refusal counts must not go up (GRPH-1158). Pure AST scan, no install needed.
+  refusal-ratchet:
+    name: Refusal ratchet
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/refusal_ratchet.py check
+
   backend-sqlite:
     name: Backend tests (SQLite)
     needs: changes
@@ -365,7 +375,7 @@ jobs:
     # Every job defined above must appear here. A job that runs but is not needed by this
     # gate is worse than no job: it burns the minutes and reports nowhere.
     # `test_ci_gate_covers_every_job` in the backend suite is what enforces that.
-    needs: [changes, backend-sqlite, backend-postgres, backend-packaging, frontend, fleet, cli-tests, windows]
+    needs: [changes, refusal-ratchet, backend-sqlite, backend-postgres, backend-packaging, frontend, fleet, cli-tests, windows]
     # `always()` so a failed/skipped suite still runs the gate (otherwise a broken
     # filter looks like a green PR). Fork PRs are excluded: this job talks to the
     # LAN ledger on ubuntu-srv, and a public repo must not run untrusted checkout
@@ -399,6 +409,19 @@ jobs:
       - name: Check out (the gate job has no source yet)
         if: always()
         uses: actions/checkout@v4
+      # The refusal coverage line ("N of M refusal sites name their rule", GRPH-1158) is
+      # published ONLY here: a push to main, after the gate step above passed. A PR build,
+      # green or red, never writes a count. The release build packages the artifact into
+      # `app/data/`; the UI reads it and never computes it.
+      - name: Publish refusal coverage
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python3 scripts/refusal_ratchet.py publish refusal_coverage.json
+      - name: Upload refusal coverage
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: refusal-coverage
+          path: refusal_coverage.json
       # BEFORE the attestation and unconditionally, which is the whole point (GRPH-555).
       # A failing run writes no receipt — but it must still move the head, or the last
       # PASSING attestation goes on opening the gate for code that has since broken. That is

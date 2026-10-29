@@ -79,6 +79,26 @@ def record_user(db: Session, user: User, *, action: str, target_type: str = "",
     )
 
 
+def record_refusal(db: Session, *, rule_id: str | None, surface: str, where: str,
+                   status: int, detail: str, actor: tuple[str, str, str] = ("system", "", ""),
+                   target_type: str = "", target_id: str = "",
+                   project_id: str | None = None) -> None:
+    """The one place a typed `Refused` is recorded (GRPH-1158 / PRD-P61 §6).
+
+    Mapped refusals record `refusal` with the rule; unmapped record `refusal_unmapped` with
+    `where` — the route TEMPLATE (`PATCH /api/items/{id}`) or the MCP tool name, never a
+    concrete path, so a gap counts once however many ids hit it.
+    """
+    meta = {"where": where, "status": status, "reason": detail[:500]}
+    if rule_id:
+        meta["rule_id"] = rule_id
+    record(
+        db, actor_type=actor[0], actor_id=actor[1], actor_label=actor[2], surface=surface,
+        action="refusal" if rule_id else "refusal_unmapped", target_type=target_type,
+        target_id=target_id, project_id=project_id, meta=meta,
+    )
+
+
 # ── Activity: lenses, facets, histogram (PRD-47 S10 / GRPH-961) ──────────────
 #
 # Every filter and aggregate below reads a COLUMN that already exists on `Event`
@@ -91,6 +111,10 @@ def record_user(db: Session, user: User, *, action: str, target_type: str = "",
 #: "rejected" — a bounced review, a router 422, auto-triage's `auto_reject_shard` — is
 #: NOT here, and the lens publishes this tuple so the tile can state its own coverage.
 REFUSAL_ACTIONS = ("sign_off_refused", "role_refused", "agent_reject_shard")
+
+#: The typed-refusal events (`record_refusal`). Kept apart from REFUSAL_ACTIONS so the
+#: Rejected lens keeps its published coverage until GRPH-1164 decides how to show them.
+TYPED_REFUSAL_ACTIONS = ("refusal", "refusal_unmapped")
 
 #: Keys, seats, invites, roles and memberships. Both spellings of the api-key target
 #: type are live in the data — `api_key` from routers/apikeys.py, `apikey` from

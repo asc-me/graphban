@@ -2522,12 +2522,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         count = fleet_svc.record_refusal(db, agent_id=_agent_id, tool=name,
                                          reason=str(refusal))
         meta = {"tool": name, "reason": str(refusal), "agent_id": _agent_id,
-                "consecutive_refusals": count}
+                "consecutive_refusals": count, "rule_id": "review.role_gated_tools"}
         if _agent_id and count >= fleet_svc.QUARANTINE_AFTER_REFUSALS:
             meta["quarantine"] = fleet_svc.quarantine(db, _agent_id)
         events_svc.record_key(db, key, action="role_refused", target_type="agent",
                               target_id=_agent_id or "", project_id=pid, meta=meta)
-        raise
+        raise errors.Refused(403, str(refusal), rule_id="review.role_gated_tools",
+                             hint=refusal.hint) from refusal
     # Consecutive is the property that matters: three refusals spread across a productive hour
     # is one stale code path, not an agent that has stopped listening.
     fleet_svc.clear_refusals(db, _agent_id)
@@ -3063,8 +3064,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 "wait for the agent working it to call update_item(status='review'), or take "
                 "other work with claim_review"))
         except fleet_svc.SelfReview as e:
-            raise authz.Forbidden(
-                str(e), hint="another agent takes it from review; call fleet_status to see who")
+            raise errors.Refused(
+                403, str(e), rule_id="review.not_own_work",
+                hint="another agent takes it from review; call fleet_status to see who") from e
         except fleet_svc.MissingAdversarialEvidence as e:
             # Audited on the REFUSAL path, because the dispatcher only audits successes — and a
             # gate whose refusals leave no trace cannot be examined for whether it is being
@@ -3462,7 +3464,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # `conflict`, not `validation`: the call was well-formed and permitted, the
             # PRD simply is not there yet. The message names what is still outstanding
             # so the agent knows what to go ask about.
-            raise errors.Conflict(str(e)) from e
+            raise errors.Refused(409, str(e), rule_id="gate.approval_earned_by_grill") from e
         return _prd_dict(updated)
     if name == "answer_grill":
         prd = prd_svc.get_prd(db, args["prd_id"])
@@ -4029,7 +4031,8 @@ def _success(id_: Any, result: Any, modern: bool = False) -> dict:
 
 
 def _tool_error(id_: Any, code: str, message: str, hint: str | None = None,
-                modern: bool = False) -> dict:
+                modern: bool = False, *, rule_id: str | None = None,
+                refusal: bool = False) -> dict:
     """A tool-level failure. Reported via isError so the agent sees it, with a stable
     machine-readable `code` in structuredContent to branch on and an optional `hint`
     naming the corrective action (AL-47). An isError payload is still a Result, so it
@@ -4037,6 +4040,9 @@ def _tool_error(id_: Any, code: str, message: str, hint: str | None = None,
     err: dict[str, Any] = {"code": code, "message": message}
     if hint:
         err["hint"] = hint
+    if refusal:
+        # Present-but-null on an unmapped refusal: absence must not read as "no rule applies".
+        err["rule_id"] = rule_id
     text = f"{code}: {message}" + (f" ({hint})" if hint else "")
     payload: dict[str, Any] = {
         "content": [{"type": "text", "text": text}],
@@ -4161,6 +4167,21 @@ async def mcp_endpoint(
                          ok=False, error_code=code, started=_started)
             return _tool_error(id_, code, message, hint, modern=modern)
 
+        def _refused(e: errors.Refused) -> dict:
+            # A typed policy refusal (GRPH-1158). Recorded once, here, with the TOOL name —
+            # every MCP call arrives on one POST, so the route would say nothing. The rule
+            # rides in the error so an agent can branch on it without parsing prose.
+            tid = str(args.get("id") or args.get("item_id") or args.get("prd_id") or "")
+            events_svc.record_refusal(
+                db, rule_id=e.rule_id, surface="mcp", where=name, status=e.status_code,
+                detail=str(e.detail), actor=("apikey", key.id, key.name or key.id),
+                target_type="prd" if args.get("prd_id") else ("item" if tid else ""),
+                target_id=tid, project_id=args.get("project_id"))
+            _record_call(db, key, name, args, None, scope, _session_id,
+                         ok=False, error_code=e.mcp_code, started=_started)
+            return _tool_error(id_, e.mcp_code, str(e.detail), e.hint, modern=modern,
+                               rule_id=e.rule_id, refusal=True)
+
         try:
             # Validate arguments against the declared schema before dispatch, so a
             # bad call is an actionable error rather than a KeyError or a silently
@@ -4195,6 +4216,8 @@ async def mcp_endpoint(
             # Collected here rather than inside each handler: every fleet tool would otherwise
             # need to remember, and the one that forgot would strand a directive silently.
             result = await run_in_threadpool(_attach_directive, db, result, args)
+        except errors.Refused as e:
+            return _refused(e)
         except authz.Forbidden as e:
             # Authenticated but out of scope: distinct code so agents can branch
             # (retry won't help — a different key or membership grant will).
@@ -4223,9 +4246,10 @@ async def mcp_endpoint(
             # CONFLICT, not validation (GRPH-654). The arguments are fine; the PRD has not
             # earned approved. `validation` would send an agent editing a payload that is
             # already correct. Mapped here so REST 409 and MCP conflict cannot drift.
-            return _fail("conflict", str(e),
-                               "finish the grill so the PRD reaches approved, then send "
-                               "create=true again")
+            return _refused(errors.Refused(
+                409, str(e), rule_id="gate.decompose_requires_approval",
+                hint="finish the grill so the PRD reaches approved, then send "
+                     "create=true again"))
         except items_svc.ReviewOnlySeat as e:
             # CONFLICT, mapped here rather than in each claim handler because this is the one
             # place every path into those service calls passes through (GRPH-988) —

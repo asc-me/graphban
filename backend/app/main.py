@@ -10,7 +10,7 @@ from sqlalchemy import text
 import logging
 
 from app.config import settings
-from app.errors import QuotaExceeded
+from app.errors import QuotaExceeded, Refused
 from app.observability import RequestIdMiddleware
 from app.db import SessionLocal, init_db
 from app.version import __version__
@@ -304,6 +304,40 @@ async def _quota_handler(_: Request, exc: QuotaExceeded):
     dispatcher maps the same exception to a ``quota_exceeded`` tool error itself.)"""
     detail = str(exc) + (f" — {exc.hint}" if exc.hint else "")
     return JSONResponse(status_code=402, content={"detail": detail})
+
+
+@app.exception_handler(Refused)
+async def _refused_handler(request: Request, exc: Refused):
+    """The one handler that records every REST refusal (GRPH-1158). Recording never breaks
+    the response: `events.record` swallows its own failures."""
+    from app.services import events as events_svc
+
+    params = request.path_params
+    # The route template, rebuilt from the concrete path: the matched route's own `.path`
+    # omits the include prefix, and a concrete path would count one gap once per id.
+    by_value = {str(v): k for k, v in params.items()}
+    segs = [f"{{{by_value[s]}}}" if s in by_value else s
+            for s in request.url.path.split("/")]
+    where = f"{request.method} {'/'.join(segs)}"
+    target_type, target_id = "", ""
+    if params.get("prd_id"):
+        target_type, target_id = "prd", params["prd_id"]
+    elif params.get("item_id"):
+        target_type, target_id = "item", params["item_id"]
+    db = SessionLocal()
+    try:
+        events_svc.record_refusal(
+            db, rule_id=exc.rule_id, surface="rest", where=where, status=exc.status_code,
+            detail=str(exc.detail),
+            actor=getattr(request.state, "actor", ("system", "", "")),
+            target_type=target_type, target_id=target_id,
+            project_id=params.get("project_id"))
+    finally:
+        db.close()
+    body: dict = {"detail": exc.detail, "rule_id": exc.rule_id}
+    if exc.hint:
+        body["hint"] = exc.hint
+    return JSONResponse(status_code=exc.status_code, content=body, headers=exc.headers)
 
 
 app.add_middleware(
