@@ -1507,6 +1507,11 @@ def agent_adjudication_enabled(db: Session, project_id: str | None) -> bool:
     return bool(project and project.agent_adjudication)
 
 
+#: The rule an `agent_reject_shard` event names (GRPH-1158): an agent holds only the "no" side
+#: of the memory gate — it may discard a candidate, but publishing is the judge's call.
+ADJUDICATION_RULE = "memory.independent_adjudication"
+
+
 def agent_reject(db: Session, shard: MemoryShard, *, origin: str) -> MemoryShard:
     """An agent discards its own candidate. Kept for provenance, never surfaced."""
     shard.status = "rejected"
@@ -1516,7 +1521,7 @@ def agent_reject(db: Session, shard: MemoryShard, *, origin: str) -> MemoryShard
     events_svc.record(
         db, actor_type="agent", actor_label=origin, surface="mcp",
         action="agent_reject_shard", target_type="shard", target_id=shard.id,
-        project_id=shard.project_id, meta={"source": "agent"},
+        project_id=shard.project_id, meta={"source": "agent", "rule_id": ADJUDICATION_RULE},
     )
     return shard
 
@@ -1552,7 +1557,8 @@ def agent_publish(db: Session, shard: MemoryShard, *, origin: str) -> tuple[Memo
         action="agent_publish_shard" if keep else "agent_reject_shard",
         target_type="shard", target_id=shard.id, project_id=shard.project_id,
         meta={"source": "agent", "confidence": verdict["quality"],
-              "reason": verdict.get("reason", ""), "kept": keep},
+              "reason": verdict.get("reason", ""), "kept": keep,
+              **({} if keep else {"rule_id": ADJUDICATION_RULE})},
     )
     if keep:
         maybe_record_recurrence_miss(db, shard)
@@ -2554,3 +2560,190 @@ def promote_org(
         "eligibility": elig,
         "lesson": detail,
     }
+
+
+# --- Memory triage queues (GRPH-1175) -------------------------------------------
+RETIRE_RECOVERY_DAYS = 14
+RECOMMENDATION_FLOOR = 0.85   # the console's "Apply N" default
+STALE_JUDGE_MAX = REVIEW_JUDGE_MAX  # judge calls per stale listing, same bill as the review queue
+RECOMMENDATION_ACTIONS = ("keep", "revise", "retire", "verify")
+QUEUES = ("needs_decision", "conflicts", "duplicate_clusters", "stale_or_wrong",
+          "published_unreviewed")
+
+
+class RetireRefused(Exception):
+    """The shard cannot be retired or restored; the message says why."""
+
+
+def retire_shard(db: Session, shard_id: str, *, now: datetime | None = None) -> MemoryShard | None:
+    """Published → retired. Out of retrieval at once, restorable for RETIRE_RECOVERY_DAYS."""
+    shard = db.get(MemoryShard, shard_id)
+    if shard is None:
+        return None
+    if shard.status != "published":
+        raise RetireRefused(f"only a published shard can be retired; this one is {shard.status}")
+    shard.status = "retired"
+    shard.retired_at = now or datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(shard)
+    return shard
+
+
+def restore_shard(db: Session, shard_id: str, *, now: datetime | None = None) -> MemoryShard | None:
+    """Retired → published, refused once the recovery window has closed (final)."""
+    shard = db.get(MemoryShard, shard_id)
+    if shard is None:
+        return None
+    if shard.status != "retired" or shard.retired_at is None:
+        raise RetireRefused(f"only a retired shard can be restored; this one is {shard.status}")
+    now = now or datetime.now(timezone.utc)
+    if (now - _aware(shard.retired_at)).days >= RETIRE_RECOVERY_DAYS:
+        raise RetireRefused(
+            f"retired more than {RETIRE_RECOVERY_DAYS} days ago — the retirement is final"
+        )
+    shard.status = "published"
+    shard.retired_at = None
+    db.commit()
+    db.refresh(shard)
+    return shard
+
+
+def _wrong_reports(db: Session, shard_ids: list[str]) -> dict[str, int]:
+    """Count of missed/contradicted outcomes per shard — someone said it was wrong."""
+    return {sid: sum(1 for o in outs if o.kind in _MISS_KINDS)
+            for sid, outs in _outcomes_for(db, shard_ids).items()}
+
+
+def stale_or_wrong(db: Session, project_id: str | None) -> list[tuple[MemoryShard, list[str]]]:
+    """Published shards that are stale or reported wrong, each with WHY. Cheap: no judge."""
+    shards = list_shards(db, project_id=project_id, status="published")
+    wrong = _wrong_reports(db, [s.id for s in shards])
+    out: list[tuple[MemoryShard, list[str]]] = []
+    for s in shards:
+        why: list[str] = []
+        if age_state(s) == "stale":
+            why.append(f"nothing has corroborated it in {PUBLISHED_STALE_DAYS}+ days")
+        if wrong.get(s.id):
+            why.append(f"reported wrong or contradicted {wrong[s.id]}x")
+        if origin_path_state(db, s) == "gone":
+            why.append("the code it came from no longer exists")
+        if why:
+            out.append((s, why))
+    return out
+
+
+def _recommend(verdict: dict, *, reported_wrong: bool) -> dict:
+    keep, quality = bool(verdict["keep"]), float(verdict["quality"])
+    if not keep:
+        action, conf = "retire", 1 - quality
+        reason = verdict.get("reason") or "the judge would not keep it"
+    elif quality >= DECIDER_QUALITY_MIN:
+        # Reported wrong but the judge still likes it: a human should look, not a bulk apply.
+        action, conf = ("verify" if reported_wrong else "keep"), quality
+        reason = verdict.get("reason") or "the judge would keep it"
+    else:
+        action, conf = "revise", 1 - quality
+        reason = verdict.get("reason") or "kept, but weakly written"
+    return {"action": action, "confidence": round(conf, 3), "reason": reason}
+
+
+def recommendations(
+    db: Session, rows: list[tuple[MemoryShard, list[str]]], project_id: str | None,
+) -> list[dict]:
+    """Attach the project's judge recommendation to each row. A judge that is off, absent,
+    capped or unsure yields `ungraded` with the cause — never an invented recommendation."""
+    _m, _r, judge_on = _triage_prefs(db, project_id)
+    asked = 0
+    out = []
+    for shard, why in rows:
+        row = {"shard": shard, "why": why, "ungraded": True, "recommendation": None,
+               "ungraded_reason": JUDGE_CAUSES["off"]}
+        if judge_on:
+            if asked >= STALE_JUDGE_MAX:
+                row["ungraded_reason"] = JUDGE_CAUSES["capped"]
+            else:
+                asked += 1
+                verdict, cause = judge_verdict(db, shard)
+                if verdict is None:
+                    row["ungraded_reason"] = JUDGE_CAUSES.get(cause, cause)
+                else:
+                    row["ungraded"] = False
+                    row["ungraded_reason"] = ""
+                    row["recommendation"] = _recommend(
+                        verdict, reported_wrong=any("wrong" in w for w in why))
+        out.append(row)
+    return out
+
+
+def stale_list(db: Session, project_id: str | None) -> list[dict]:
+    return recommendations(db, stale_or_wrong(db, project_id), project_id)
+
+
+def queue_counts(db: Session, project_id: str | None) -> dict:
+    """One call for the five queue cards. A queue whose source raised is `failed` with the
+    error and `count: None`; 0 is only ever a measured zero."""
+    def counted(fn):
+        try:
+            return {"count": int(fn()), "state": "ok", "error": ""}
+        except Exception as exc:  # noqa: BLE001 — one broken source must not hide the others
+            logger.exception("memory queue count failed")
+            return {"count": None, "state": "failed", "error": str(exc) or type(exc).__name__}
+
+    scored: list[dict] | None = None
+
+    def scored_rows() -> list[dict]:
+        nonlocal scored
+        if scored is None:
+            scored = score_candidates(db, project_id=project_id)
+        return scored
+
+    def unreviewed() -> int:
+        stmt = select(func.count()).select_from(MemoryShard).where(
+            MemoryShard.status == "published", MemoryShard.scoring_source != "")
+        if project_id:
+            stmt = stmt.where(MemoryShard.project_id == project_id)
+        return db.scalar(stmt) or 0
+
+    return {
+        "needs_decision": counted(lambda: len(scored_rows())),
+        "conflicts": counted(lambda: sum(1 for r in scored_rows() if r.get("conflicts"))),
+        "duplicate_clusters": counted(lambda: len(cluster_candidates(db, project_id=project_id))),
+        "stale_or_wrong": counted(lambda: len(stale_or_wrong(db, project_id))),
+        "published_unreviewed": counted(unreviewed),
+    }
+
+
+def apply_recommendations(
+    db: Session, shard_ids: list[str], *, floor: float = RECOMMENDATION_FLOOR,
+) -> list[dict]:
+    """Apply each shard's judge recommendation when it clears `floor`. Per-id result so the UI
+    can undo: `undo` is `restore` for a retire. Only `retire` mutates — `keep` has nothing to
+    do, and `revise`/`verify` need a person's edit, so they are reported as left alone."""
+    results = []
+    for sid in shard_ids:
+        shard = db.get(MemoryShard, sid)
+        res = {"shard_id": sid, "action": None, "confidence": None, "applied": False,
+               "reason": "", "undo": None}
+        results.append(res)
+        if shard is None:
+            res["reason"] = "shard not found"
+            continue
+        if shard.status != "published":
+            res["reason"] = f"not published ({shard.status})"
+            continue
+        row = recommendations(db, [(shard, [])], shard.project_id)[0]
+        rec = row["recommendation"]
+        if rec is None:
+            res["reason"] = f"ungraded: {row['ungraded_reason']}"
+            continue
+        res.update(action=rec["action"], confidence=rec["confidence"])
+        if rec["confidence"] < floor:
+            res["reason"] = f"confidence {rec['confidence']} is below the floor {floor}"
+        elif rec["action"] == "retire":
+            retire_shard(db, sid)
+            res.update(applied=True, undo="restore", reason=rec["reason"])
+        elif rec["action"] == "keep":
+            res.update(applied=True, reason="kept; nothing to change")
+        else:
+            res["reason"] = f"{rec['action']} needs a person's edit; left alone"
+    return results

@@ -54,5 +54,5 @@ export type ColumnPrefsApi = ReturnType<typeof useColumnPrefs>;
 
 export function columnsSummary(hidden: number, collapsed: number): string {
   const parts = [hidden && `${hidden} hidden`, collapsed && `${collapsed} collapsed`].filter(Boolean);
-  return parts.length ? parts.join(" · ") : "Columns";
+  return parts.length ? `Columns ${parts.join(" · ")}` : "Columns";
 }

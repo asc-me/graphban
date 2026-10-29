@@ -1170,6 +1170,10 @@ class MemoryShard(Base):
         ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Set when a human or an applied recommendation retires a published shard. NULL means
+    # never retired. Restorable for `RETIRE_RECOVERY_DAYS` after this; finality is computed
+    # from this timestamp, so there is no sweep to forget to run.
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     @property
     def item_key(self) -> str | None:

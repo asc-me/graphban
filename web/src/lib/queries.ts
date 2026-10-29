@@ -479,6 +479,15 @@ export function usePlatform(projectId: string) {
 }
 
 /** Derived architecture map (GRPH-1034). Polls gently — topology changes with fleet presence. */
+/** Rules map (GRPH-1162). Stage state comes from the server; the view never recomputes it. */
+export function useRulesFlow(projectId: string) {
+  return useQuery({
+    queryKey: ["rules-flow", projectId],
+    queryFn: () => api.rulesFlow(projectId),
+    enabled: !!projectId,
+  });
+}
+
 export function useStack(projectId: string) {
   return useQuery({
     queryKey: ["stack", projectId],

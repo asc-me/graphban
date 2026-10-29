@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.errors import Refused
 from app.models import Item, Link, Organization, Project
 from app.schemas import (
     GitopsControl,
@@ -99,6 +100,7 @@ _RELEASE_DEFINED_MAX = 500
 _TOKENS_HELP = ", ".join("{" + t + "}" for t in NAMING_TOKENS)
 _FETCH_TIMEOUT = 3.0
 
+OBSERVE_RULE = "gitops.observe_answer_required"
 LINKED_PATCH_DETAIL = "gitops on a linked instance is owned by the org admin"
 
 MESSAGES = {
@@ -743,9 +745,11 @@ def refuse_observe_progress(db: Session, item: Item, fields: dict) -> None:
     if _is_observe(item):
         merged = append_evidence(item.evidence, fields.get("evidence") or [])
         if observe_answer_from(merged) is None:
-            raise ValueError(
+            raise Refused(
+                409,
                 "Observe needs evidence whose first token is remote, none, or unknown "
-                "— unknown is a real answer, not a skip"
+                "— unknown is a real answer, not a skip",
+                rule_id=OBSERVE_RULE,
             )
         return
     if _is_plan_parent(item):
@@ -754,13 +758,17 @@ def refuse_observe_progress(db: Session, item: Item, fields: dict) -> None:
             return
         answer = observe_answer_from(obs.evidence)
         if answer is None:
-            raise ValueError(
+            raise Refused(
+                409,
                 "the Observe child has no remote/none/unknown answer — "
-                "the rest of the plan stays blocked"
+                "the rest of the plan stays blocked",
+                rule_id=OBSERVE_RULE,
             )
         if answer == "unknown":
-            raise ValueError(
-                "Observe answered unknown — the rest of the plan stays blocked"
+            raise Refused(
+                409,
+                "Observe answered unknown — the rest of the plan stays blocked",
+                rule_id=OBSERVE_RULE,
             )
 
 
@@ -805,9 +813,11 @@ def refuse_already_progress(db: Session, item: Item, fields: dict) -> None:
         return
     merged = append_evidence(item.evidence, fields.get("evidence") or [])
     if not merged:
-        raise ValueError(
+        raise Refused(
+            409,
             "this checklist child needs evidence: `already` plus what you saw if it "
-            "already matches, or a note of what you did. Graphban will not mark it done"
+            "already matches, or a note of what you did. Graphban will not mark it done",
+            rule_id="gitops.checklist_needs_evidence",
         )
 
 

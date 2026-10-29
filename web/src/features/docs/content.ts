@@ -166,6 +166,21 @@ const CONTENT: Record<string, DocEntry> = {
     ],
   },
 
+  "/rules": {
+    badge: "RULES",
+    title: "Rules",
+    tagline: "How work moves through the project, and what holds each step.",
+    sections: [
+      { num: 1, h: "Stages are fixed", b: "Spec → Plan → Build → Review → Merge → Release → Learn, always drawn whole. Each rule hangs off the stage it governs; a rule the gitops model does not use stays drawn, dimmed and marked NOT USED." },
+      { num: 2, h: "A stage is its weakest rule", b: "ENFORCED (the server refuses), CHECKED (CI or a scan reports), EXTERNAL (held outside Graphban, not verified), ADVISORY (agents are told, nothing refuses), UNMEASURED (no value). Icon and word, never colour alone; the legend counts every registered rule." },
+      { num: 3, h: "Inspector", b: "Click a stage for its rules weakest first: what enforces each one, where its truth lives, the effective gitops value and its source. A checked rule with no result says so — that is not a pass." },
+    ],
+    related: [
+      { label: "Stack", to: "/stack" },
+      { label: "Fleet", to: "/fleet" },
+    ],
+  },
+
   "/fleet": {
     badge: "FLEET",
     title: "Fleet",

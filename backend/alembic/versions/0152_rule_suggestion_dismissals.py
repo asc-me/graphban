@@ -1,7 +1,7 @@
 """`rule_suggestion_dismissals`: per-project dismissed Recommended rules (GRPH-1160).
 
-Revision ID: 0151
-Revises: 0150
+Revision ID: 0152
+Revises: 0151
 """
 
 from typing import Sequence, Union
@@ -9,8 +9,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0151"
-down_revision: Union[str, None] = "0150"
+revision: str = "0152"
+down_revision: Union[str, None] = "0151"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

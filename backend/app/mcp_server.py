@@ -42,7 +42,7 @@ from app.config import settings
 from app.version import __version__
 from app.db import get_db
 from app.models import (Agent, ApiKey, ArtifactRecommendation, Item, Link, MemoryShard,
-                        Prd, Project)
+                        Prd, Project, User)
 from app.security import authz
 from app.security.deps import get_agent_key
 from app.services import clustering as cluster_svc
@@ -2519,15 +2519,17 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         # Refusals are audited with the agent AND the human principal behind the key, both
         # stamped server-side — a compromised client still produces a correctly attributed
         # trail, because none of it comes from anything the client sent.
+        #
+        # Recorded once, by the dispatcher's refusal path, as the typed `refusal` event with
+        # its rule (GRPH-1158) — it was `role_refused`, which old rows are still keyed by.
         count = fleet_svc.record_refusal(db, agent_id=_agent_id, tool=name,
                                          reason=str(refusal))
-        meta = {"tool": name, "reason": str(refusal), "agent_id": _agent_id,
-                "consecutive_refusals": count}
+        meta = {"tool": name, "agent_id": _agent_id, "consecutive_refusals": count}
         if _agent_id and count >= fleet_svc.QUARANTINE_AFTER_REFUSALS:
             meta["quarantine"] = fleet_svc.quarantine(db, _agent_id)
-        events_svc.record_key(db, key, action="role_refused", target_type="agent",
-                              target_id=_agent_id or "", project_id=pid, meta=meta)
-        raise
+        raise errors.Refused(403, str(refusal), rule_id="review.role_gated_tools",
+                             hint=refusal.hint, meta=meta,
+                             target=("agent", _agent_id or "")) from refusal
     # Consecutive is the property that matters: three refusals spread across a productive hour
     # is one stale code path, not an agent that has stopped listening.
     fleet_svc.clear_refusals(db, _agent_id)
@@ -3042,6 +3044,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "sign_off":
         _scoped_item(db, args["id"], allowed)
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
+        _who = {"agent_id": args.get("agent_id")}
         try:
             item = fleet_svc.sign_off(
                 db, item_id=keys.resolve_item(db, args["id"]) or args["id"],
@@ -3063,74 +3066,62 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 "wait for the agent working it to call update_item(status='review'), or take "
                 "other work with claim_review"))
         except fleet_svc.SelfReview as e:
-            raise authz.Forbidden(
-                str(e), hint="another agent takes it from review; call fleet_status to see who")
+            raise errors.Refused(
+                403, str(e), rule_id="review.not_own_work", meta=_who,
+                hint="another agent takes it from review; call fleet_status to see who") from e
+        # The gates below are typed refusals (GRPH-1158): each names its rule, and the
+        # dispatcher's refusal path records it once, as `refusal` on the item — audited on
+        # the refusal path because the dispatcher only audits successes, and a gate nobody
+        # can see being routed around is a gate on paper (GRPH-321, GRPH-970). They were
+        # `sign_off_refused`, which rows written before then are still keyed by. 409, not
+        # 403: the caller IS permitted to sign this off — the work simply is not accounted
+        # for yet, and `unauthorized` would send a worker hunting a permissions problem.
         except fleet_svc.MissingAdversarialEvidence as e:
-            # Audited on the REFUSAL path, because the dispatcher only audits successes — and a
-            # gate whose refusals leave no trace cannot be examined for whether it is being
-            # routed around, which is the exact failure that kept GRPH-321 parked.
-            events_svc.record_key(
-                db, key, action="sign_off_refused", target_type="item",
-                target_id=args.get("id", ""), project_id=pid,
-                meta={"reason": str(e), "agent_id": args.get("agent_id")})
-            # Conflict, not unauthorized: the caller IS permitted to sign this off — the work
-            # simply is not accounted for yet. `unauthorized` would send a worker hunting a
-            # permissions problem it does not have.
-            raise errors.Conflict(str(e), hint=(
-                "dispatch two opposing-lens critics, or run the passes yourself, and record "
-                "each as evidence {kind: sabotage, claim, mutation, tests_failed}"))
+            raise errors.Refused(
+                409, str(e), rule_id="review.adversarial_evidence", meta=_who, hint=(
+                    "dispatch two opposing-lens critics, or run the passes yourself, and "
+                    "record each as evidence {kind: sabotage, claim, mutation, tests_failed}"),
+            ) from e
         except fleet_svc.AttestedTheBase as e:
-            # Audited on the refusal path with the others: a gate nobody can see being routed
-            # around is a gate on paper (GRPH-970).
-            events_svc.record_key(
-                db, key, action="sign_off_refused", target_type="item",
-                target_id=args.get("id", ""), project_id=pid,
-                meta={"reason": str(e), "agent_id": args.get("agent_id")})
-            # Conflict, like its neighbours: the caller may sign this off, but the revision it
-            # named is not the work.
-            raise errors.Conflict(str(e), hint=(
-                "attest the head of the branch you reviewed — `git rev-parse HEAD` in the "
-                "worktree — not the commit it was cut from; if `git log base..HEAD` is empty "
-                "there is nothing to review and this belongs in a bounce"))
+            # The caller may sign this off, but the revision it named is not the work.
+            raise errors.Refused(
+                409, str(e), rule_id="review.attest_the_head", meta=_who, hint=(
+                    "attest the head of the branch you reviewed — `git rev-parse HEAD` in the "
+                    "worktree — not the commit it was cut from; if `git log base..HEAD` is "
+                    "empty there is nothing to review and this belongs in a bounce"),
+            ) from e
         except fleet_svc.UncomparedPredicate as e:
-            # Audited like its neighbours (GRPH-970's rule): a gate nobody can see being
-            # routed around is a gate on paper.
-            events_svc.record_key(
-                db, key, action="sign_off_refused", target_type="item",
-                target_id=args.get("id", ""), project_id=pid,
-                meta={"reason": str(e), "agent_id": args.get("agent_id")})
-            # Conflict, not unauthorized: the caller may sign this off, the receipt simply
-            # would not stand behind it.
-            raise errors.Conflict(str(e), hint=(
-                "a predicate that could not run is not a pass — give it something to compare "
-                "against, or waive it on the record with waive={\"<predicate>\": \"<why>\"}"))
+            # The caller may sign this off, the receipt simply would not stand behind it.
+            raise errors.Refused(
+                409, str(e), rule_id="review.predicates_compared", meta=_who, hint=(
+                    "a predicate that could not run is not a pass — give it something to "
+                    "compare against, or waive it on the record with "
+                    "waive={\"<predicate>\": \"<why>\"}"),
+            ) from e
         except fleet_svc.ClauseCapability as e:
-            # Same audit as the coverage refusal (GRPH-970): a gate whose refusals leave no
-            # trace cannot be examined for whether it is being routed around.
-            events_svc.record_key(
-                db, key, action="sign_off_refused", target_type="item",
-                target_id=args.get("id", ""), project_id=pid,
-                meta={"reason": str(e), "agent_id": args.get("agent_id")})
-            raise errors.Conflict(str(e), hint=(
-                "this clause needs a reviewer who declared the capability — capabilities.tools "
-                "or capabilities.allows, and capabilities.human for a human-only clause. "
-                "Leave the item in review; do not bounce it"))
+            raise errors.Refused(
+                409, str(e), rule_id="review.clause_capability", meta=_who, hint=(
+                    "this clause needs a reviewer who declared the capability — "
+                    "capabilities.tools or capabilities.allows, and capabilities.human for a "
+                    "human-only clause. Leave the item in review; do not bounce it"),
+            ) from e
         except fleet_svc.MissingAcceptanceCoverage as e:
-            events_svc.record_key(
-                db, key, action="sign_off_refused", target_type="item",
-                target_id=args.get("id", ""), project_id=pid,
-                meta={"reason": str(e), "agent_id": args.get("agent_id")})
             if isinstance(e, fleet_svc.UnreadableAcceptance):
-                raise errors.Conflict(str(e), hint=(
-                    "bounce it, or update_item the description so each acceptance clause is a "
-                    "list item under ## Acceptance, then name each in a {kind: test} entry"))
-            raise errors.Conflict(str(e), hint=(
-                "pass, in this sign_off's evidence, a {kind: test} entry whose detail names "
-                "each acceptance clause from the item's ## Acceptance / ## Tests section — a "
-                "{kind: note} does not cover; a clause the evidence says was not delivered "
-                "needs a bounce, not a test; quoting the clause (including its own 'not' / "
-                "'cannot') is not a denial, and 'N failed' on a sabotage-style clause is the "
-                "expected red run"))
+                raise errors.Refused(
+                    409, str(e), rule_id="review.acceptance_covered", meta=_who, hint=(
+                        "bounce it, or update_item the description so each acceptance clause "
+                        "is a list item under ## Acceptance, then name each in a {kind: test} "
+                        "entry"),
+                ) from e
+            raise errors.Refused(
+                409, str(e), rule_id="review.acceptance_covered", meta=_who, hint=(
+                    "pass, in this sign_off's evidence, a {kind: test} entry whose detail "
+                    "names each acceptance clause from the item's ## Acceptance / ## Tests "
+                    "section — a {kind: note} does not cover; a clause the evidence says was "
+                    "not delivered needs a bounce, not a test; quoting the clause (including "
+                    "its own 'not' / 'cannot') is not a denial, and 'N failed' on a "
+                    "sabotage-style clause is the expected red run"),
+            ) from e
         out = _item_dict(item)
         if fleet_svc.is_credential(agent):
             # Say it in the response, not only in the column. A caller that never registered
@@ -3462,7 +3453,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # `conflict`, not `validation`: the call was well-formed and permitted, the
             # PRD simply is not there yet. The message names what is still outstanding
             # so the agent knows what to go ask about.
-            raise errors.Conflict(str(e)) from e
+            raise errors.Refused(409, str(e), rule_id="gate.approval_earned_by_grill") from e
         return _prd_dict(updated)
     if name == "answer_grill":
         prd = prd_svc.get_prd(db, args["prd_id"])
@@ -4029,7 +4020,8 @@ def _success(id_: Any, result: Any, modern: bool = False) -> dict:
 
 
 def _tool_error(id_: Any, code: str, message: str, hint: str | None = None,
-                modern: bool = False) -> dict:
+                modern: bool = False, *, rule_id: str | None = None,
+                refusal: bool = False) -> dict:
     """A tool-level failure. Reported via isError so the agent sees it, with a stable
     machine-readable `code` in structuredContent to branch on and an optional `hint`
     naming the corrective action (AL-47). An isError payload is still a Result, so it
@@ -4037,6 +4029,9 @@ def _tool_error(id_: Any, code: str, message: str, hint: str | None = None,
     err: dict[str, Any] = {"code": code, "message": message}
     if hint:
         err["hint"] = hint
+    if refusal:
+        # Present-but-null on an unmapped refusal: absence must not read as "no rule applies".
+        err["rule_id"] = rule_id
     text = f"{code}: {message}" + (f" ({hint})" if hint else "")
     payload: dict[str, Any] = {
         "content": [{"type": "text", "text": text}],
@@ -4161,6 +4156,27 @@ async def mcp_endpoint(
                          ok=False, error_code=code, started=_started)
             return _tool_error(id_, code, message, hint, modern=modern)
 
+        def _refused(e: errors.Refused) -> dict:
+            # A typed policy refusal (GRPH-1158). Recorded once, here, with the TOOL name —
+            # every MCP call arrives on one POST, so the route would say nothing. The rule
+            # rides in the error so an agent can branch on it without parsing prose.
+            tid = str(args.get("id") or args.get("item_id") or args.get("prd_id") or "")
+            ttype, tid = e.target or ("prd" if args.get("prd_id") else ("item" if tid else ""),
+                                      tid)
+            meta = dict(e.meta)
+            owner = db.get(User, key.user_id) if key.user_id else None
+            if owner is not None:  # the human behind the key, as `record_key` stamps it
+                meta["principal"] = {"id": owner.id, "label": owner.handle or owner.name}
+            events_svc.record_refusal(
+                db, rule_id=e.rule_id, surface="mcp", where=name, status=e.status_code,
+                detail=str(e.detail), actor=("apikey", key.id, key.name or key.id),
+                target_type=ttype, target_id=tid, meta=meta,
+                project_id=scope.get("project_id") or args.get("project_id"))
+            _record_call(db, key, name, args, None, scope, _session_id,
+                         ok=False, error_code=e.mcp_code, started=_started)
+            return _tool_error(id_, e.mcp_code, str(e.detail), e.hint, modern=modern,
+                               rule_id=e.rule_id, refusal=True)
+
         try:
             # Validate arguments against the declared schema before dispatch, so a
             # bad call is an actionable error rather than a KeyError or a silently
@@ -4195,6 +4211,8 @@ async def mcp_endpoint(
             # Collected here rather than inside each handler: every fleet tool would otherwise
             # need to remember, and the one that forgot would strand a directive silently.
             result = await run_in_threadpool(_attach_directive, db, result, args)
+        except errors.Refused as e:
+            return _refused(e)
         except authz.Forbidden as e:
             # Authenticated but out of scope: distinct code so agents can branch
             # (retry won't help — a different key or membership grant will).
@@ -4223,9 +4241,10 @@ async def mcp_endpoint(
             # CONFLICT, not validation (GRPH-654). The arguments are fine; the PRD has not
             # earned approved. `validation` would send an agent editing a payload that is
             # already correct. Mapped here so REST 409 and MCP conflict cannot drift.
-            return _fail("conflict", str(e),
-                               "finish the grill so the PRD reaches approved, then send "
-                               "create=true again")
+            return _refused(errors.Refused(
+                409, str(e), rule_id="gate.decompose_requires_approval",
+                hint="finish the grill so the PRD reaches approved, then send "
+                     "create=true again"))
         except items_svc.ReviewOnlySeat as e:
             # CONFLICT, mapped here rather than in each claim handler because this is the one
             # place every path into those service calls passes through (GRPH-988) —

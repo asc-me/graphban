@@ -2714,3 +2714,53 @@ export interface HarnessGuidance {
   };
   fleet_status_text: string;
 }
+
+// ── Rules map (GRPH-P61 §3–§4, GRPH-1162) ────────────────────────────────────
+/** `services/rules.py:ENFORCEMENT_ORDER`, strongest first. */
+export type RuleEnforcement = "enforced" | "checked" | "external" | "advisory" | "unmeasured";
+/** A stage reads `not_used` only when every rule on it is unused under the gitops model. */
+export type RuleStageState = RuleEnforcement | "not_used";
+
+export interface RuleEnforcer {
+  /** `services/rules.py:ENFORCER_KINDS`. */
+  kind: string;
+  ref: string;
+  /** Empty when the server has no link for it. */
+  url: string;
+}
+
+export interface RuleFlowRule {
+  id: string;
+  stage: string;
+  title: string;
+  summary: string;
+  enforcement: RuleEnforcement;
+  channel: string | null;
+  enforcer: RuleEnforcer;
+  truth: "db" | "code" | "repo_file" | "derived";
+  scope: string;
+  models: string[];
+  value: string | boolean | null;
+  source: string | null;
+  used: boolean;
+  label: string | null;
+  /** Sent (as null) on every rule; a list only on the skills pack. Null on the pack: the gban
+   *  package was not readable on the server. */
+  skills: string[] | null;
+}
+
+export interface RuleStage {
+  id: string;
+  title: string;
+  summary: string;
+  state: RuleStageState;
+  rules: RuleFlowRule[];
+}
+
+export interface RulesFlow {
+  version: string;
+  /** Null when the project's gitops model is unmeasured. */
+  model: string | null;
+  stages: RuleStage[];
+  edges: [string, string][];
+}

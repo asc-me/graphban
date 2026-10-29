@@ -211,8 +211,8 @@ def test_the_refusal_is_in_the_ledger(client, key, db):
     _rpc(client, key, "sign_off",
          {"id": item, "agent_id": reviewer["agent_id"], "commit": BASE})
 
-    actions = [e.action for e in db.query(Event).all()]
-    assert "sign_off_refused" in actions
+    rules = [e.meta.get("rule_id") for e in db.query(Event).filter(Event.action == "refusal")]
+    assert "review.attest_the_head" in rules
 
 
 def test_the_worktree_receipt_does_not_count_as_an_attestation(client, key):

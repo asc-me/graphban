@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 195 of the 274 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 201 of the 280 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -67,6 +67,7 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | GET | `/api/rules` | JWT (project reader) | The rule registry (`services/rules.py`): every delivery rule with its enforcement, typed enforcer and truth. Gitops rows carry the effective value and `source` from `gitops.resolve`; a gitops rule is `advisory` (or `unmeasured`), never `enforced` |
+| GET | `/api/rules/flow` | JWT (project reader) | The registry placed on the Rules map's seven fixed stages (`rules.flow`): each stage's `state` is the weakest of its used rules, `not_used` only when every rule on it is unused under the project's gitops `model`, and `unmeasured` when no rule is registered. Unused rules stay listed with `used: false` |
 | GET | `/api/rules/recommended` | JWT (project reader) | Recommended-rules suggestions (`services/rules_recommend.py`): `suggestions[]` (`kind` value\|code, `evidence[]`, `fingerprint`) and an always-present `sources[]` (`read` or `not_available` + reason such as `not_connected`). Computed on open, cached ~60s per project; never writes a rule, and a saved value suggestion is advisory |
 | POST | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Dismiss a suggestion for the project, keyed on id + evidence fingerprint; it returns when the evidence changes. 204, or 404 for an unknown id |
 
@@ -122,6 +123,11 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | POST | `/api/memory/shards/{id}/publish` | JWT | Promote a candidate into the trusted retrieval path |
 | POST | `/api/memory/shards/{id}/reject` | JWT | Reject a candidate (kept for provenance, never searched) |
 | POST | `/api/memory/shards/{id}/judge` | JWT | On-demand LLM judge for a candidate. Advisory — never mutates status. A missing verdict is a cause, not quality 0 |
+| GET | `/api/memory/queues` | JWT | The five triage-queue counts (`needs_decision`, `conflicts`, `duplicate_clusters`, `stale_or_wrong`, `published_unreviewed`) in one call. A queue whose source failed is `state: failed` with `count: null`, never 0 (GRPH-1175) |
+| GET | `/api/memory/stale` | JWT | Published shards that are stale or reported wrong, each with `why` and the judge's `recommendation` `{action: keep\|revise\|retire\|verify, confidence, reason}`. Judge off/unreachable/capped → `ungraded: true` with `ungraded_reason`, no recommendation |
+| POST | `/api/memory/shards/{id}/retire` | JWT | Retire a published shard; restorable for 14 days. 409 if not published |
+| POST | `/api/memory/shards/{id}/restore` | JWT | Undo a retire; 409 once the 14-day window has closed |
+| POST | `/api/memory/apply-recommendations` | JWT | `{shard_ids, min_confidence=0.85}`: apply each shard's recommendation at/above the floor. Only `retire` mutates (`undo: restore`); `revise`/`verify` are left for a person. Per-id result |
 | POST | `/api/memory/search` | JWT | Published-only semantic search |
 | POST | `/api/memory/backfill` | JWT |
 | GET | `/api/memory/export` | JWT |
