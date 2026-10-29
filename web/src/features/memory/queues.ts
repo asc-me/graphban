@@ -24,25 +24,33 @@ export interface QueueDef {
   tag: string;
 }
 
+/** Thresholds the hints quote — the backend's own constants (backend/app/services/memory.py). */
+export const SCORER_BAND = { low: 0.55, high: 0.9 } as const; // DECIDER_KEEP_MIN .. _AUTO_ACCEPT_MIN
+export const DUPLICATE_SIMILARITY = 0.88; // cluster_candidates(threshold=0.88)
+export const AUTO_PUBLISH_MIN = 0.9; // _AUTO_ACCEPT_MIN
+export const AUTO_REJECT_DUPE_MIN = 0.95; // _SIM_DUP
+
+const fmt = (n: number) => n.toFixed(2);
+
 export const QUEUES: QueueDef[] = [
   {
     id: "needs", key: "needs_decision", label: "Needs a decision",
-    hint: "Candidates the scorer left to a person",
+    hint: `Scorer undecided · ${fmt(SCORER_BAND.low)}–${fmt(SCORER_BAND.high)}`,
     dot: "bg-accent", ring: "border-accent/45", tag: "border-accent/45 bg-accent/10 text-accent",
   },
   {
     id: "conflicts", key: "conflicts", label: "Conflicts",
-    hint: "Contradicts published memory",
+    hint: "Contradicts a published shard",
     dot: "bg-st-blocked", ring: "border-st-blocked/40", tag: "border-st-blocked/30 bg-st-blocked/[0.07] text-ty-bug",
   },
   {
     id: "dupes", key: "duplicate_clusters", label: "Duplicate clusters",
-    hint: "Near-duplicate candidates, merged once",
+    hint: `Notes · similarity ≥ ${fmt(DUPLICATE_SIMILARITY)}`,
     dot: "bg-st-review", ring: "border-st-review/40", tag: "border-st-review/30 bg-st-review/[0.08] text-st-review",
   },
   {
     id: "stale", key: "stale_or_wrong", label: "Stale or wrong",
-    hint: "Uncorroborated, reported wrong, or code gone",
+    hint: "Code moved, source ended, or stopped helping",
     dot: "bg-muted", ring: "border-line-hover", tag: "border-line-2 text-muted",
   },
   {

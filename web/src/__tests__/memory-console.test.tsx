@@ -429,4 +429,34 @@ describe("empty queue", () => {
     expect(within(screen.getByTestId("queue-needs")).getByText("0")).toBeInTheDocument();
     expect(screen.getByTestId("memory-policy")).toHaveTextContent(/PROJECT POLICY/);
   });
+
+  // GRPH-1211: queue copy and numerals match the design; thresholds are the backend's constants.
+  it("shows the design's queue subtitles with the backend's real thresholds", async () => {
+    const q = await import("@/features/memory/queues");
+    expect(q.SCORER_BAND).toEqual({ low: 0.55, high: 0.9 }); // DECIDER_KEEP_MIN, _AUTO_ACCEPT_MIN
+    expect(q.DUPLICATE_SIMILARITY).toBe(0.88); // cluster_candidates default; the design's 0.92 is not real
+    renderView();
+    await screen.findByTestId("queue-needs");
+    expect(within(screen.getByTestId("queue-needs")).getByText("Scorer undecided · 0.55–0.90")).toBeInTheDocument();
+    expect(within(screen.getByTestId("queue-conflicts")).getByText("Contradicts a published shard")).toBeInTheDocument();
+    expect(await within(screen.getByTestId("queue-dupes")).findByText(/notes? · similarity ≥ 0\.88/)).toBeInTheDocument();
+    expect(within(screen.getByTestId("queue-stale")).getByText("Code moved, source ended, or stopped helping")).toBeInTheDocument();
+  });
+
+  it("renders queue counts in the sans display style, not mono", async () => {
+    renderView();
+    const card = await screen.findByTestId("queue-needs");
+    const num = await within(card).findByTitle("");
+    expect(num.className).not.toMatch(/font-mono/);
+    expect(num.className).toMatch(/text-\[22px\]/);
+  });
+
+  it("pins the policy strip to settings that exist", async () => {
+    renderView();
+    const strip = await screen.findByTestId("memory-policy");
+    const labels = [...strip.querySelectorAll("span.text-small")].map((e) => e.firstChild?.textContent?.trim());
+    // No design entry without a backing setting (Expire candidates, Flag on code change,
+    // Human review for principles) is shown.
+    expect(labels).toEqual(["Auto-publish ≥", "Auto-reject dupes ≥", "LLM judge", "Grading"]);
+  });
 });
