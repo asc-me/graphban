@@ -81,3 +81,14 @@ def test_no_email_still_records_event(client, auth):
     evs = _events(rid)
     assert len(evs) == 2
     assert [e.meta["notified"] for e in evs] == [False, False]
+
+
+def test_submitter_comment_rejects_malformed_body(client):
+    # Unauthenticated route: a non-object or oversized body is a 422, never a 500.
+    _, tok = _submit(client)
+    url = f"/api/public/t/{tok}/comments"
+    assert client.post(url, json=["body"]).status_code == 422
+    assert client.post(url, json="body").status_code == 422
+    assert client.post(url, json={"body": ""}).status_code == 422
+    assert client.post(url, json={"body": "x" * 5001}).status_code == 422
+    assert client.post(url, json={"body": "x" * 5000}).status_code == 201

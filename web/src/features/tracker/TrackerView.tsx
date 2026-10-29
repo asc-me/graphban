@@ -10,7 +10,8 @@ import {
   TrackerListSkeleton,
 } from "@/components/planner/PlannerStates";
 import { ViewBar, ViewFooter } from "@/components/planner/ViewBar";
-import { hiddenSummary, scopeRows, statusMatches, useViews } from "@/components/planner/viewScope";
+import { Collapsible } from "@/components/planner/Collapsible";
+import { hiddenSummary, scopeRows, statusMatches, useCondensed, useViews } from "@/components/planner/viewScope";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Dot } from "@/components/ui/badge";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -73,6 +74,7 @@ export function TrackerView() {
   const reorder = useReorderItems();
 
   const views = useViews("tracker");
+  const [condensed, toggleCondensed] = useCondensed();
   const filter: TrackerFilter = views.state.status;
   const setFilter = (status: TrackerFilter) => views.patch({ status });
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
@@ -206,9 +208,12 @@ export function TrackerView() {
             : "One linear stream. Priority + recency. Drag to reorder, click a status to advance it."
         }
         action={<NewItemDialog />}
+        condensed={condensed}
       />
 
       <ViewBar
+        condensed={condensed}
+        onToggleCondense={toggleCondensed}
         views={views}
         doneWord="done"
         countFor={(v) =>
@@ -223,7 +228,8 @@ export function TrackerView() {
       />
 
       {layout === "list" && (
-        <div className="flex flex-none flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
+        <Collapsible collapsed={condensed}>
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
           <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={scoped.shown.length} />
           <FilterChip active={filter === "active"} onClick={() => setFilter("active")} label="Active" count={activeCount} />
           {STATUS_ORDER.map((s) => (
@@ -237,6 +243,7 @@ export function TrackerView() {
             />
           ))}
         </div>
+        </Collapsible>
       )}
 
       {refusal && (

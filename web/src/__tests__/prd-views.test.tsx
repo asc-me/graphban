@@ -69,3 +69,35 @@ describe("PRD list views (GRPH-1146)", () => {
     expect(await screen.findByText("Spec P-2")).toBeInTheDocument();
   });
 });
+
+describe("condense toggle (GRPH-1147)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    served = [prd("P1", "draft", daysAgo(1))];
+  });
+
+  it("hides the page header, flips label and aria-pressed, persists across remounts and closes the popover", async () => {
+    const user = userEvent.setup();
+    const first = renderPrds();
+    const toggle = await screen.findByRole("button", { name: "Condense controls" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("heading", { name: "PRDs" })).toBeInTheDocument();
+
+    await user.click(screen.getByTitle("Time window and auto-hide"));
+    expect(screen.getByRole("dialog", { name: "Scope" })).toBeInTheDocument();
+
+    await user.click(toggle);
+    expect(screen.queryByRole("dialog", { name: "Scope" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "PRDs" })).toBeNull();
+    const on = screen.getByRole("button", { name: "Show all controls" });
+    expect(on).toHaveAttribute("aria-pressed", "true");
+
+    first.unmount();
+    renderPrds();
+    expect(await screen.findByRole("button", { name: "Show all controls" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "PRDs" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Show all controls" }));
+    expect(screen.getByRole("heading", { name: "PRDs" })).toBeInTheDocument();
+  });
+});

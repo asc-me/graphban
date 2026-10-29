@@ -37,6 +37,7 @@ from app.schemas import (
     PublicRequestIn,
     PublicRequestOut,
     RequestOut,
+    SubmitterCommentIn,
 )
 from app.services import attachments as att_svc
 from app.services import duplicates as dup_svc
@@ -327,11 +328,12 @@ def tracking_page(track_token: str, request: FastAPIRequest, db: Session = Depen
         item = db.get(Item, req.linked_to)
         if item:
             data["linked_status"] = item.status
+    data["merged_into"] = req_svc.merged_target_key(db, req)
     return data
 
 
 @router.post("/t/{track_token}/comments", status_code=201)
-def submitter_comment(track_token: str, body: dict, request: FastAPIRequest, db: Session = Depends(get_db)):
+def submitter_comment(track_token: str, body: SubmitterCommentIn, request: FastAPIRequest, db: Session = Depends(get_db)):
     """PRD-60 D9: the submitter replies on their own request. The tracking token is the
     credential; an unknown token is a 404, same as the tracking page."""
     _rate_or_429(db, request, None)
@@ -341,7 +343,7 @@ def submitter_comment(track_token: str, body: dict, request: FastAPIRequest, db:
     try:
         comment = req_svc.create_comment(
             db, request_id=req.id, author_user_id=None,
-            body=str(body.get("body", "")), author_kind="submitter",
+            body=body.body, author_kind="submitter",
         )
     except ValueError as e:
         raise HTTPException(422, str(e))
@@ -372,6 +374,7 @@ def public_issues_board(
             item = db.get(Item, r.linked_to)
             if item:
                 row["linked_status"] = item.status
+        row["merged_into"] = req_svc.merged_target_key(db, r)
         rows.append(row)
     return rows
 
@@ -398,6 +401,7 @@ def public_requests_board(
             item = db.get(Item, r.linked_to)
             if item:
                 row["linked_status"] = item.status
+        row["merged_into"] = req_svc.merged_target_key(db, r)
         rows.append(row)
     return rows
 
@@ -722,6 +726,7 @@ def host_issues(
             item = db.get(Item, r.linked_to)
             if item:
                 row["linked_status"] = item.status
+        row["merged_into"] = req_svc.merged_target_key(db, r)
         rows.append(row)
     return rows
 
@@ -755,6 +760,7 @@ def host_requests(
             item = db.get(Item, r.linked_to)
             if item:
                 row["linked_status"] = item.status
+        row["merged_into"] = req_svc.merged_target_key(db, r)
         rows.append(row)
     return rows
 
@@ -786,5 +792,6 @@ def host_tracking(
         item = db.get(Item, req.linked_to)
         if item:
             data["linked_status"] = item.status
+    data["merged_into"] = req_svc.merged_target_key(db, req)
     return data
 

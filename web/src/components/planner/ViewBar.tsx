@@ -1,4 +1,4 @@
-import { ChevronDown, Clock } from "lucide-react";
+import { ChevronDown, Clock, Maximize2, Minimize2 } from "lucide-react";
 import * as React from "react";
 
 import { cn } from "@/lib/cn";
@@ -51,12 +51,16 @@ export function ViewBar({
   countFor,
   doneWord,
   leading,
+  condensed,
+  onToggleCondense,
 }: {
   views: ViewsApi;
   countFor: (v: ViewDef) => number;
   doneWord: "done" | "closed";
   /** Page-specific controls that sit before the tabs (layout toggle, columns). */
   leading?: React.ReactNode;
+  condensed: boolean;
+  onToggleCondense: () => void;
 }) {
   const [open, setOpen] = React.useState(false);
   const root = React.useRef<HTMLDivElement>(null);
@@ -76,6 +80,7 @@ export function ViewBar({
   }, [open]);
 
   const { state } = views;
+  const label = condensed ? "Show all controls" : "Condense controls";
   return (
     <div className="flex flex-none flex-wrap items-center gap-x-4 gap-y-2.5 border-b border-line px-5 py-2.5">
       {leading}
@@ -103,7 +108,7 @@ export function ViewBar({
         })}
       </div>
 
-      {views.edited && (
+      {!condensed && views.edited && (
         <div className="flex items-center gap-2">
           <span className="font-mono text-meta tracking-wide text-[#e0b34a]">EDITED</span>
           <button
@@ -118,7 +123,7 @@ export function ViewBar({
           </button>
         </div>
       )}
-      {views.canSetDefault && (
+      {!condensed && views.canSetDefault && (
         <button
           type="button"
           title="Open this page on this view"
@@ -140,9 +145,9 @@ export function ViewBar({
           onClick={() => setOpen((o) => !o)}
           className="inline-flex h-[30px] items-center gap-2 whitespace-nowrap rounded-lg border border-control bg-surface-2 px-2.5 font-mono text-[10.5px] text-fg-2 hover:border-control-hover"
         >
-          <Clock size={13} className="text-muted" />
+          {!condensed && <Clock size={13} className="text-muted" />}
           {scopeSummary(state, doneWord)}
-          <ChevronDown size={10} className="text-faint" />
+          {!condensed && <ChevronDown size={10} className="text-faint" />}
         </button>
         {open && (
           <div
@@ -164,6 +169,32 @@ export function ViewBar({
           </div>
         )}
       </div>
+
+      <button
+        type="button"
+        aria-pressed={condensed}
+        title={label}
+        aria-label={label}
+        onClick={() => {
+          setOpen(false);
+          onToggleCondense();
+        }}
+        className={cn(
+          "relative inline-flex h-[30px] w-[30px] items-center justify-center rounded-lg border transition-colors",
+          condensed
+            ? "border-accent bg-accent text-black"
+            : "border-control bg-surface-2 text-muted hover:border-control-hover hover:text-fg-2",
+        )}
+      >
+        <Minimize2
+          size={14}
+          className={cn("absolute transition-all duration-[180ms] motion-reduce:transition-none", condensed ? "scale-50 opacity-0" : "scale-100 opacity-100")}
+        />
+        <Maximize2
+          size={14}
+          className={cn("absolute transition-all duration-[180ms] motion-reduce:transition-none", condensed ? "scale-100 opacity-100" : "scale-50 opacity-0")}
+        />
+      </button>
     </div>
   );
 }

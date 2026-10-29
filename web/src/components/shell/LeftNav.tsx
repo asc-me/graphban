@@ -12,9 +12,12 @@ import {
   useOrgs,
   useSyncStatus,
 } from "@/lib/queries";
+import type { ShellCounts } from "@/lib/types";
 import { adminPath, consoleHref, orgPath, projectPath, settingsPath, tagFromPath, usableHttpUrl, viewSegment } from "@/lib/routes";
 
-type CountKey = "items" | "requests" | "review";
+/** The `ShellCounts` field each page's badge restates (GRPH-P59 §D4, GRPH-1132). */
+type CountKey = Extract<keyof ShellCounts,
+  "items_open" | "requests_untriaged" | "code_nodes" | "mcp_tools" | "fleet_agents" | "outposts" | "live_agents" | "review">;
 type Page = {
   view: string;
   icon: React.ReactNode;
@@ -40,25 +43,25 @@ export const SECTIONS: SectionDef[] = [
   {
     key: "plan", label: "Plan", icon: <ListChecks size={16} />, pages: [
       { view: "triage", icon: <Radar size={16} />, label: "Triage", desc: "Overlaps and duplicates before work starts" },
-      { view: "tracker", icon: <ListChecks size={16} />, label: "Tracker", desc: "One linear stream of work", count: "items" },
-      { view: "requests", icon: <Star size={16} />, label: "Requests", desc: "Submissions from the public form", count: "requests" },
+      { view: "tracker", icon: <ListChecks size={16} />, label: "Tracker", desc: "One linear stream of work", count: "items_open" },
+      { view: "requests", icon: <Star size={16} />, label: "Requests", desc: "Submissions from the public form", count: "requests_untriaged" },
       { view: "prds", icon: <BarChart3 size={16} />, label: "PRDs", desc: "Versioned specs with linked items" },
       { view: "roadmap", icon: <Map size={16} />, label: "Roadmap", desc: "MVP → Post-MVP → Later" },
     ],
   },
   {
     key: "build", label: "Build", icon: <Network size={16} />, pages: [
-      { view: "code", icon: <Network size={16} />, label: "Code graph", desc: "Modules, files and symbols agents changed" },
+      { view: "code", icon: <Network size={16} />, label: "Code graph", desc: "Modules, files and symbols agents changed", count: "code_nodes" },
       { view: "links", icon: <GitFork size={16} />, label: "Links", desc: "Typed relations between items and requests" },
       { view: "stack", icon: <Boxes size={16} />, label: "Stack", desc: "Languages, frameworks and services" },
-      { view: "mcp-tools", icon: <Plug size={16} />, label: "MCP Tools", desc: "How agents connect and call tools", hostedOnly: true },
-      { view: "fleet", icon: <Users size={16} />, label: "Fleet", desc: "Who works here and what they spawn as" },
-      { view: "outposts", icon: <Server size={16} />, label: "Outposts", desc: "Machines your agents run on" },
+      { view: "mcp-tools", icon: <Plug size={16} />, label: "MCP Tools", desc: "How agents connect and call tools", count: "mcp_tools", hostedOnly: true },
+      { view: "fleet", icon: <Users size={16} />, label: "Fleet", desc: "Who works here and what they spawn as", count: "fleet_agents" },
+      { view: "outposts", icon: <Server size={16} />, label: "Outposts", desc: "Machines your agents run on", count: "outposts" },
     ],
   },
   {
     key: "observe", label: "Observe", icon: <Activity size={16} />, pages: [
-      { view: "live", icon: <Activity size={16} />, label: "Live", desc: "Who is on the project right now", live: true },
+      { view: "live", icon: <Activity size={16} />, label: "Live", desc: "Who is on the project right now", count: "live_agents", live: true },
       { view: "activity", icon: <ScrollText size={16} />, label: "Activity", desc: "Every accepted mutation, attributed" },
       { view: "memory", icon: <Inbox size={16} />, label: "Memory", desc: "Candidates waiting to be published", count: "review" },
       { view: "lessons", icon: <BookMarked size={16} />, label: "Lessons", desc: "Published memory, scored for usefulness" },
@@ -97,7 +100,19 @@ function prefersReducedMotion(): boolean {
 
 const EASE = "cubic-bezier(.2,.8,.2,1)";
 
-type Tip = { group?: string; label: string; meta?: string; top: number };
+/**
+ * A page's badge text, or undefined when there is no number to show. Absent is not zero:
+ * while the counts load, after a failed read, or from a server without the field, nothing
+ * renders — a `0` is drawn only when a read succeeded and said 0.
+ */
+export function badgeText(page: Page, counts: ShellCounts | undefined): string | undefined {
+  const n = page.count && counts ? counts[page.count] : undefined;
+  if (typeof n !== "number") return undefined;
+  const text = n.toLocaleString("en-US");
+  return page.live ? `${text} live` : text;
+}
+
+type Tip = { group?: string; label: string; meta?: string; live?: boolean; top: number };
 type Fly = { key: Section; top: number; trigger: HTMLElement };
 
 /**
@@ -113,7 +128,9 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
   const { active, activeId } = useProjectCtx();
   // Badge numbers only — never the collections (GRPH-431). The review count is candidates
   // PLUS anything auto-published without them (AL-287), summed server-side.
-  const { data: counts } = useCounts(activeId);
+  const countsQ = useCounts(activeId);
+  // A failed refetch keeps the last data; a failed read still shows no number.
+  const counts = countsQ.isError ? undefined : countsQ.data;
   const { data: orgs = [] } = useOrgs(hosted);
   const org = hosted ? (orgs[0] ?? null) : null;
   const canAdminister = org?.role === "owner" || org?.role === "admin";
@@ -213,11 +230,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [toggle]);
 
-  const badges: Record<CountKey, number | undefined> = {
-    items: counts?.items,
-    requests: counts?.requests,
-    review: counts?.review || undefined,
-  };
+  const meta = (p: Page) => badgeText(p, counts);
   const viewPath = (v: string) =>
     hosted ? (homeTag ? projectPath(homeTag, v) : `/${v}`) : `/${v}`;
   const dashboardPath = hosted ? (homeTag ? projectPath(homeTag) : null) : "/home";
@@ -286,7 +299,8 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
                     tipProps={tipProps({
                       group: s.label.toUpperCase(),
                       label: p.label,
-                      meta: p.count && badges[p.count] != null ? String(badges[p.count]) : undefined,
+                      meta: meta(p),
+                      live: p.live,
                     })}
                   />
                 ))}
@@ -375,7 +389,8 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
                           to={viewPath(p.view)}
                           icon={p.icon}
                           label={p.label}
-                          count={p.count ? badges[p.count] : undefined}
+                          count={meta(p)}
+                          live={p.live}
                         />
                       ))}
                     </div>
@@ -439,7 +454,9 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
           <>
             {tip.group && <span className="text-[10px] font-medium text-faint">{tip.group}</span>}
             <span>{tip.label}</span>
-            {tip.meta && <span className="font-mono text-[10px] text-faint">{tip.meta}</span>}
+            {tip.meta && (
+              <span className={cn("font-mono text-[10px]", tip.live ? "text-st-done" : "text-faint")}>{tip.meta}</span>
+            )}
           </>
         )}
       </div>
@@ -452,7 +469,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
           section={sections.find((x) => x.key === flyShown.key)!}
           tag={active?.tag ?? homeTag ?? undefined}
           viewPath={viewPath}
-          badges={badges}
+          meta={meta}
           reduce={reduce}
           onPick={() => closeFly()}
         />
@@ -538,10 +555,10 @@ const SectionFlyout = React.forwardRef<HTMLDivElement, {
   section: SectionDef;
   tag?: string;
   viewPath: (v: string) => string;
-  badges: Record<CountKey, number | undefined>;
+  meta: (p: Page) => string | undefined;
   reduce: boolean;
   onPick: () => void;
-}>(function SectionFlyout({ open, top, section, tag, viewPath, badges, reduce, onPick }, ref) {
+}>(function SectionFlyout({ open, top, section, tag, viewPath, meta, reduce, onPick }, ref) {
   return (
     <div
       ref={ref}
@@ -567,7 +584,7 @@ const SectionFlyout = React.forwardRef<HTMLDivElement, {
       </div>
       <div className="flex flex-col gap-px px-1.5 pb-1.5 pt-0.5">
         {section.pages.map((p) => {
-          const n = p.count ? badges[p.count] : undefined;
+          const n = meta(p);
           return (
             <Link
               key={p.view}
@@ -582,7 +599,7 @@ const SectionFlyout = React.forwardRef<HTMLDivElement, {
               </span>
               {n != null && (
                 <span className={cn("mt-0.5 font-mono text-[10px]", p.live ? "text-st-done" : "text-faint")}>
-                  {p.live ? `${n} live` : n}
+                  {n}
                 </span>
               )}
             </Link>
@@ -724,6 +741,7 @@ function NavItem({
   icon,
   label,
   count,
+  live,
   end,
 }: {
   to?: string;
@@ -731,14 +749,17 @@ function NavItem({
   href?: string;
   icon: React.ReactNode;
   label: string;
-  count?: number;
+  /** Badge text from `badgeText`; undefined renders no badge. */
+  count?: string;
+  /** Presence ("2 live") reads green. */
+  live?: boolean;
   /** Match this path exactly. A prefix would light the parent on every child page. */
   end?: boolean;
 }) {
   const base =
     "relative flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13px] transition-colors";
   const badge = count != null && (
-    <span className="rounded-md bg-surface-4 px-1.5 py-0.5 font-mono text-[10px] text-muted">
+    <span data-badge className={cn("font-mono text-[10px]", live ? "text-st-done" : "text-faint")}>
       {count}
     </span>
   );

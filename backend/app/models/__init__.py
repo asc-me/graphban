@@ -1207,7 +1207,7 @@ class Request(Base):
     detail: Mapped[str] = mapped_column(Text, default="")  # submitter's full description
     by: Mapped[str] = mapped_column(String, default="")
     votes: Mapped[int] = mapped_column(Integer, default=0)
-    status: Mapped[str] = mapped_column(String, default="new")  # new/triaging/linked
+    status: Mapped[str] = mapped_column(String, default="new")  # new/triaging/linked/declined/merged/snoozed
     linked_to: Mapped[str | None] = mapped_column(ForeignKey("items.id"), nullable=True)
     ago: Mapped[str] = mapped_column(String, default="")  # display string from design
     source_url: Mapped[str] = mapped_column(String, default="")  # page the widget was on
@@ -1218,6 +1218,11 @@ class Request(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # PRD-43 D3: unguessable tracking token (stored hashed). The URL is the capability.
     track_token_hash: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+    # PRD-60 D6: triage actions. `snoozed_until` hides a `snoozed` request from the queue until
+    # then. `merged_into` is the frozen id of the request or item a `merged` request points at
+    # (no FK: it may name either table).
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    merged_into: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (UniqueConstraint("project_id", "number", name="uq_request_number"),)
 
@@ -1928,6 +1933,25 @@ class RequestComment(Base):
         String, default="private", server_default="private", nullable=False
     )  # private | public; absence of the tag is private (PRD-43 D7)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RequestAction(Base):
+    """PRD-60 D6: one triage action on a request, with what undo needs to reverse it.
+
+    `prior` is the request's state before the action; `after` is its state right after, which
+    undo compares to the live row so a change made since is refused rather than overwritten.
+    `data` holds action-specific restore detail (created item id, moved voter rows)."""
+
+    __tablename__ = "request_actions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # ract_...
+    request_id: Mapped[str] = mapped_column(ForeignKey("requests.id"), index=True)
+    action: Mapped[str] = mapped_column(String)  # accept/merge/decline/snooze
+    prior: Mapped[dict] = mapped_column(JSON, default=dict)
+    after: Mapped[dict] = mapped_column(JSON, default=dict)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class RequestVote(Base):
