@@ -15,8 +15,8 @@ import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { stepIndex } from "@/lib/graph/useGraphKeyboard";
 import { useGraphViewport, zoomAbout } from "@/lib/graph/useGraphViewport";
-import { useRulesFlow } from "@/lib/queries";
-import { adminPath, projectPath, tagFromPath } from "@/lib/routes";
+import { useConfig, useGitops, useRulesFlow } from "@/lib/queries";
+import { projectPath, settingsPath, tagFromPath } from "@/lib/routes";
 import type { RuleFlowRule, RuleStage, RuleSuggestion, RulesFlow } from "@/lib/types";
 
 import {
@@ -53,7 +53,7 @@ import {
   type MapLayout,
 } from "./levels";
 import { RecommendedSheet, UnmappedSheet } from "./RefusalPanels";
-import { BudgetCapEditor, GITOPS_RULE_FIELDS, GitopsRuleEditor } from "./RuleEditors";
+import { AdminGitopsLink, BudgetCapEditor, GITOPS_RULE_FIELDS, GitopsRuleEditor, useOrgName } from "./RuleEditors";
 import { RuleLevelIcon } from "./RuleLevelIcon";
 
 const PACK_KEY = "pack";
@@ -121,7 +121,11 @@ export function RulesView() {
     if (!flow.stages.some((s) => stageKey(s.id) === sel)) setSel(null);
   }, [flow, sel]);
 
-  const fresh = !!flow && flow.model === null;
+  // A null model is also what linked_unset and linked_unreachable look like; only a local
+  // project with no model is new.
+  const { data: gitops } = useGitops(activeId);
+  const controlState = gitops?.control.state ?? null;
+  const fresh = !!flow && flow.model === null && controlState === "local";
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="rules-view">
@@ -172,6 +176,7 @@ export function RulesView() {
           The refusal names {focusRule}, which is not in this project's registry on this server. The rule exists in the refusal's record; the map can't show it.
         </div>
       )}
+      <ControlBanner state={controlState} gitops={gitops} />
       {fresh && (
         <div
           role="status"
@@ -1076,6 +1081,52 @@ function RuleRow({
   );
 }
 
+const CONTROL_BANNERS = {
+  linked_set: { label: "LINKED", color: "#c9b8ff", text: "Gitops values come from your org." },
+  linked_unset: { label: "LINKED · NOT SET", color: "#dfe3e7", text: "Your org has not set a gitops contract for this project." },
+  linked_unreachable: { label: "ORG UNREACHABLE", color: "#ff6b6b", text: "The org's gitops could not be reached, so no values are shown." },
+} as const;
+
+/** Frames 3b–3d: which plane holds the gitops contract, and the pill that says so. */
+function ControlBanner({ state, gitops }: { state: string | null; gitops: ReturnType<typeof useGitops>["data"] }) {
+  const orgName = useOrgName(gitops);
+  if (state !== "linked_set" && state !== "linked_unset" && state !== "linked_unreachable") return null;
+  const b = CONTROL_BANNERS[state];
+  return (
+    <div
+      role="status"
+      data-testid={`rules-control-banner-${state}`}
+      className="mx-5 mt-3 flex flex-wrap items-center gap-3 rounded-[12px] bg-surface-2 px-3 py-2.5"
+      style={{ border: `1px ${state === "linked_unreachable" ? "dotted" : "solid"} ${b.color}` }}
+    >
+      <span className={cn(MONO, "text-[10px] font-semibold tracking-[0.07em]")} style={{ color: b.color }}>{b.label}</span>
+      <span className="flex-1 text-body text-fg-2">
+        {gitops?.control.message || b.text}
+      </span>
+      <span
+        data-testid="rules-control-pill"
+        className={cn(MONO, "rounded-[4px] border border-control px-1.5 text-meta tracking-[0.04em] text-fg-2")}
+      >
+        ORG · {orgName}
+      </span>
+      <AdminGitopsLink />
+    </div>
+  );
+}
+
+function ModelWhere() {
+  const { data: config } = useConfig();
+  const hosted = config?.hosted_mode ?? false;
+  return (
+    <span className="text-[11.5px] leading-snug text-muted" data-testid="rules-gitops-model-where">
+      A preset rewrites other fields, so the model is not edited inline. Change it in{" "}
+      {hosted ? <AdminGitopsLink /> : (
+        <Link to={settingsPath("deployment/gitops")} className="text-accent hover:underline">Settings → Gitops</Link>
+      )}
+    </span>
+  );
+}
+
 function ValueBox({ rule, value, prefill }: { rule: RuleFlowRule; value: string | null; prefill?: string }) {
   const box = (
           <div className="flex flex-col gap-2 rounded-[8px] border border-[#2a333a] bg-bg p-2.5">
@@ -1107,10 +1158,7 @@ function ValueBox({ rule, value, prefill }: { rule: RuleFlowRule; value: string 
     return (
       <div className="flex flex-col gap-1.5">
         {box}
-        <span className="text-[11.5px] leading-snug text-muted" data-testid="rules-gitops-model-where">
-          Change the model in{" "}
-          <Link to={adminPath("gitops")} className="text-accent hover:underline">Admin → Gitops</Link>
-        </span>
+        <ModelWhere />
       </div>
     );
   }

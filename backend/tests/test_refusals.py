@@ -210,6 +210,32 @@ def test_coverage_reads_what_publish_wrote(tmp_path):
     assert (got["n"], got["m"]) == (c["naming_a_rule"], c["refusal_sites"])
 
 
+def test_route_serves_the_published_numbers(client, auth, tmp_path, monkeypatch):
+    out = tmp_path / "c.json"
+    assert _ratchet().main(["publish", str(out), "abc123"]) == 0
+    monkeypatch.setattr(R, "REFUSAL_COVERAGE_FILE", out)
+    r = client.get("/api/rules/refusal-coverage", headers=auth)
+    c = _ratchet().scan()
+    assert r.status_code == 200
+    assert r.json()["published"] is True and r.json()["commit"] == "abc123"
+    assert (r.json()["n"], r.json()["m"]) == (c["naming_a_rule"], c["refusal_sites"])
+
+
+def test_route_without_the_file_is_unpublished_with_null_numbers(client, auth, tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "REFUSAL_COVERAGE_FILE", tmp_path / "missing.json")
+    r = client.get("/api/rules/refusal-coverage", headers=auth)
+    assert r.status_code == 200
+    assert r.json() == {"published": False, "n": None, "m": None, "commit": None,
+                        "published_at": None}
+
+
+def test_the_image_copy_of_the_ratchet_matches_the_script_and_the_dockerfile_publishes():
+    copy = Path(__file__).resolve().parents[1] / "scripts" / "refusal_ratchet.py"
+    assert copy.read_bytes() == SCRIPT.read_bytes(), "backend/scripts copy drifted from scripts/"
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+    assert "refusal_ratchet.py publish" in dockerfile
+
+
 def test_no_coverage_is_committed_by_a_pr():
     """It is a build artefact (GRPH-1185): gitignored, and nothing tracks it. A tracked copy
     would be a number no build of THIS tree computed, shipped by every package after it."""

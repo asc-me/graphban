@@ -65,6 +65,7 @@ import type {
   PlatformConfig,
   StackHealth,
   RecommendedRules,
+  RefusalCoverage,
   RulesFlow,
   StackTopology,
   Prd,
@@ -1054,6 +1055,9 @@ export const api = {
     request<StackTopology>(`/platform/stack${projectQuery(projectId)}`),
   /** The rule registry placed on the Rules map's fixed stages (GRPH-1156). */
   rulesFlow: (projectId: string) => request<RulesFlow>(`/rules/flow${projectQuery(projectId)}`),
+  /** "N of M refusal sites name their rule", as the build published it (GRPH-1192). */
+  refusalCoverage: (projectId: string) =>
+    request<RefusalCoverage>(`/rules/refusal-coverage${projectQuery(projectId)}`),
   /** Suggestions from the project's own evidence; `sources` says what was and wasn't read (GRPH-1160). */
   recommendedRules: (projectId: string) =>
     request<RecommendedRules>(`/rules/recommended${projectQuery(projectId)}`),

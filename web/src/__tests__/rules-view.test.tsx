@@ -8,9 +8,9 @@ import { legendCounts, stageLevel } from "@/features/rules/levels";
 import { RulesView } from "@/features/rules/RulesView";
 import { SECTIONS } from "@/components/shell/LeftNav";
 import { api } from "@/lib/api";
-import type { RuleFlowRule, RuleStage, RulesFlow } from "@/lib/types";
+import type { GitopsControlState, GitopsView, RuleFlowRule, RuleStage, RulesFlow } from "@/lib/types";
 
-vi.mock("@/lib/api", () => ({ api: { rulesFlow: vi.fn() } }));
+vi.mock("@/lib/api", () => ({ api: { rulesFlow: vi.fn(), gitops: vi.fn(), config: vi.fn(), syncStatus: vi.fn() } }));
 
 vi.mock("@/features/ProjectContext", () => ({
   useProjectCtx: () => ({
@@ -111,12 +111,50 @@ function renderAt(path = "/rules") {
   );
 }
 
+function gitopsView(state: GitopsControlState): GitopsView {
+  const f = <T,>(value: T) => ({ value, source: "unmeasured" as const });
+  return {
+    project_id: "core", org_id: "org_1",
+    fields: {
+      base_branch: f(null), no_push_to_base: f(null), branch_name_pattern: f(null),
+      pr_title_pattern: f(null), reviewer_bar: f(null),
+    },
+    control: { state, writable: state === "local", message: "" },
+    was: null, version_from: f(null), release_defined_in: f(null), model: f(null), plan: null, projects: [],
+  };
+}
+
 const pill = (stageId: string) => within(screen.getByTestId(`rules-stage-${stageId}`)).getByTestId("rules-stage-pill");
 
 describe("RulesView", () => {
   beforeEach(() => {
     vi.mocked(api.rulesFlow).mockReset();
     vi.mocked(api.rulesFlow).mockResolvedValue(flowFixture());
+    vi.mocked(api.gitops).mockReset();
+    vi.mocked(api.gitops).mockResolvedValue(gitopsView("local"));
+    vi.mocked(api.config).mockResolvedValue({ hosted_mode: false } as never);
+    vi.mocked(api.syncStatus).mockResolvedValue({ linked: true, org: "Acme Co", cloud_url: "https://c.example" } as never);
+  });
+
+  it.each([
+    ["linked_set", "LINKED"],
+    ["linked_unset", "LINKED · NOT SET"],
+    ["linked_unreachable", "ORG UNREACHABLE"],
+  ] as const)("%s shows its banner and control pill, and no fresh banner", async (state, label) => {
+    vi.mocked(api.rulesFlow).mockResolvedValue(flowFixture({ model: null }));
+    vi.mocked(api.gitops).mockResolvedValue(gitopsView(state));
+    renderAt();
+    const banner = await screen.findByTestId(`rules-control-banner-${state}`);
+    expect(banner).toHaveTextContent(label);
+    expect(within(banner).getByTestId("rules-control-pill")).toHaveTextContent("ORG · Acme Co");
+    expect(within(banner).getByRole("link", { name: "Admin → Gitops" }).getAttribute("href")).toMatch(/^http.*\/org\/admin\/gitops$/);
+    expect(screen.queryByTestId("rules-fresh-banner")).toBeNull();
+  });
+
+  it("local shows no control banner", async () => {
+    renderAt();
+    await screen.findByTestId("rules-canvas");
+    expect(screen.queryByTestId(/rules-control-banner/)).toBeNull();
   });
 
   it("draws every stage from the route, in order, with its fixed edges", async () => {

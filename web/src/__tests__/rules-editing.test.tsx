@@ -9,7 +9,7 @@ import { api } from "@/lib/api";
 import type { GitopsView, RuleFlowRule } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
-  api: { gitops: vi.fn(), updateGitops: vi.fn(), fleetPolicy: vi.fn(), saveFleetPolicy: vi.fn() },
+  api: { config: vi.fn(), syncStatus: vi.fn(), gitops: vi.fn(), updateGitops: vi.fn(), fleetPolicy: vi.fn(), saveFleetPolicy: vi.fn() },
 }));
 vi.mock("@/features/ProjectContext", () => ({
   useProjectCtx: () => ({ activeId: "core", active: { id: "core", tag: "CORE", name: "Core" }, projects: [], setActiveId: () => {} }),
@@ -36,7 +36,11 @@ function renderIt(ui: React.ReactElement) {
   return render(<QueryClientProvider client={qc}><MemoryRouter>{ui}</MemoryRouter></QueryClientProvider>);
 }
 
-beforeEach(() => vi.resetAllMocks());
+beforeEach(() => {
+  vi.resetAllMocks();
+  vi.mocked(api.config).mockResolvedValue({ hosted_mode: false } as never);
+  vi.mocked(api.syncStatus).mockResolvedValue({ linked: true, org: "Acme Co" } as never);
+});
 
 describe("gitops row editing", () => {
   it("saves through PATCH and shows ADVISORY copy, never enforced", async () => {
@@ -80,12 +84,12 @@ describe("gitops row editing", () => {
   it("linked rows never open an editor", async () => {
     vi.mocked(api.gitops).mockResolvedValue(view({ state: "linked_set", writable: false }, "acme"));
     const { unmount } = renderIt(<GitopsRuleEditor rule={rule} field="base_branch" fallback={box} />);
-    expect(await screen.findByTestId("rules-gitops-linked")).toHaveTextContent("Inherited from acme");
+    expect(await screen.findByTestId("rules-gitops-linked")).toHaveTextContent("ORG · Acme Co");
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
     unmount();
     vi.mocked(api.gitops).mockResolvedValue(view({ state: "linked_unset", writable: false }, "acme"));
     renderIt(<GitopsRuleEditor rule={rule} field="base_branch" fallback={box} />);
-    expect(await screen.findByText("Your org has not set this")).toBeTruthy();
+    expect(await screen.findByText("Acme Co has not set this")).toBeTruthy();
   });
 
   it("unreachable shows UNMEASURED with no value and no input", async () => {
@@ -134,5 +138,50 @@ describe("budget cap editing", () => {
     expect(policyWithItemCap(null, 7)).toEqual({
       local_only: false, reviewer_cross_vendor: false, allowed_harnesses: [], caps: { per_item_tokens: 7 },
     });
+  });
+});
+
+
+describe("linked gitops rows", () => {
+  const linkedView = (state: "linked_set" | "linked_unset" | "linked_unreachable") => {
+    const v = view({ state, writable: false }, "org_1");
+    if (state === "linked_set") v.fields.base_branch = { value: "trunk", source: "org" };
+    return v;
+  };
+
+  it("linked_set keeps the value box and names the org, not its id", async () => {
+    vi.mocked(api.gitops).mockResolvedValue(linkedView("linked_set"));
+    renderIt(<GitopsRuleEditor rule={rule} field="base_branch" fallback={box} />);
+    expect(await screen.findByTestId("rules-gitops-org")).toHaveTextContent("ORG · Acme Co");
+    expect(screen.getByText("current box")).toBeInTheDocument();
+    expect(screen.queryByText(/org_1/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+
+  it("linked_unset says the org has not set it", async () => {
+    vi.mocked(api.gitops).mockResolvedValue(linkedView("linked_unset"));
+    renderIt(<GitopsRuleEditor rule={rule} field="base_branch" fallback={box} />);
+    expect(await screen.findByTestId("rules-gitops-org")).toHaveTextContent("Acme Co has not set this");
+  });
+
+  it("linked_unreachable shows no value and no input", async () => {
+    vi.mocked(api.gitops).mockResolvedValue(linkedView("linked_unreachable"));
+    renderIt(<GitopsRuleEditor rule={rule} field="base_branch" fallback={box} />);
+    expect(await screen.findByTestId("rules-gitops-unreachable")).toBeInTheDocument();
+    expect(screen.queryByText("current box")).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("self-host Admin link leaves for the console; hosted keeps the in-app route", async () => {
+    vi.mocked(api.gitops).mockResolvedValue(linkedView("linked_set"));
+    const { unmount } = renderIt(<GitopsRuleEditor rule={rule} field="base_branch" fallback={box} />);
+    const selfHost = await screen.findByRole("link", { name: "Admin → Gitops" });
+    expect(selfHost.getAttribute("href")).toMatch(/^https?:\/\/.+\/org\/admin\/gitops$/);
+    unmount();
+    vi.mocked(api.config).mockResolvedValue({ hosted_mode: true } as never);
+    renderIt(<GitopsRuleEditor rule={rule} field="base_branch" fallback={box} />);
+    await waitFor(() =>
+      expect(screen.getByRole("link", { name: "Admin → Gitops" }).getAttribute("href")).toBe("/org/admin/gitops"),
+    );
   });
 });

@@ -20,8 +20,8 @@ import {
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { useFleetPolicy, useGitops, useSaveFleetPolicy, useUpdateGitops } from "@/lib/queries";
-import { adminPath } from "@/lib/routes";
+import { useConfig, useFleetPolicy, useGitops, useSaveFleetPolicy, useSyncStatus, useUpdateGitops } from "@/lib/queries";
+import { adminPath, consoleHref } from "@/lib/routes";
 import type { FleetPolicy, GitopsPatch, GitopsView, RuleFlowRule } from "@/lib/types";
 
 const MONO = "font-mono";
@@ -73,6 +73,25 @@ export function readOnlyCopy(view: GitopsView): string {
 
 const note = "text-[11.5px] leading-snug text-muted";
 
+/**
+ * "Admin → Gitops". Hosted mounts `/org` in-app; a self-host box has no org route, and linked
+ * states only occur there, so it leaves for the cloud console instead of falling through to Home.
+ */
+export function AdminGitopsLink({ className }: { className?: string }) {
+  const { data: config } = useConfig();
+  const cls = className ?? "text-[11.5px] text-accent hover:underline";
+  if (config?.hosted_mode) {
+    return <Link to={adminPath("gitops")} className={cls}>Admin → Gitops</Link>;
+  }
+  return <a href={consoleHref(adminPath("gitops"))} className={cls}>Admin → Gitops</a>;
+}
+
+/** The org's display name for a linked row: the sync link's `org`, else the id the view carries. */
+export function useOrgName(view: GitopsView | undefined): string {
+  const { data: sync } = useSyncStatus();
+  return sync?.org || view?.org_id || "your org";
+}
+
 /** Replaces the plain value box of a gitops row; `fallback` is that box, used until the view loads. */
 export function GitopsRuleEditor({
   rule,
@@ -88,6 +107,7 @@ export function GitopsRuleEditor({
 }) {
   const { activeId } = useProjectCtx();
   const { data: view } = useGitops(activeId);
+  const orgName = useOrgName(view);
   if (!view) return <>{fallback}</>;
 
   const { state, message } = view.control;
@@ -100,14 +120,18 @@ export function GitopsRuleEditor({
     );
   }
   if (state === "linked_set" || state === "linked_unset") {
+    const own = (
+      field === "version_from" ? view.version_from
+      : field === "release_defined_in" ? view.release_defined_in
+      : view.fields[field]
+    ).source;
     return (
       <div className="flex flex-col gap-1" data-testid="rules-gitops-linked">
-        <span className="text-[12px] text-fg-2">
-          {state === "linked_set" ? `Inherited from ${view.org_id ?? "your org"}` : "Your org has not set this"}
+        {fallback}
+        <span className="text-[12px] text-fg-2" data-testid="rules-gitops-org">
+          {state === "linked_unset" ? `${orgName} has not set this` : own === "unmeasured" ? "Unmeasured" : `ORG · ${orgName}`}
         </span>
-        <Link to={adminPath("gitops")} className="text-[11.5px] text-accent hover:underline">
-          Admin → Gitops
-        </Link>
+        <AdminGitopsLink />
       </div>
     );
   }

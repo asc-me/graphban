@@ -11,7 +11,7 @@ import { api } from "@/lib/api";
 import type { Event, RulesFlow } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
-  api: { rulesFlow: vi.fn(), events: vi.fn(), recommendedRules: vi.fn(), dismissRecommendedRule: vi.fn(), createItem: vi.fn() },
+  api: { rulesFlow: vi.fn(), events: vi.fn(), recommendedRules: vi.fn(), dismissRecommendedRule: vi.fn(), createItem: vi.fn(), refusalCoverage: vi.fn() },
 }));
 vi.mock("@/features/ProjectContext", () => ({
   useProjectCtx: () => ({ activeId: "core", active: { id: "core", tag: "CORE", name: "Core" }, projects: [], setActiveId: () => {} }),
@@ -86,12 +86,33 @@ describe("unmapped refusals", () => {
     expect(g.map((x) => [x.where, x.count])).toEqual([["B", 2], ["A", 1]]);
   });
 
+  it("a published build shows N of M and the commit", async () => {
+    vi.mocked(api.events).mockResolvedValue({ results: [], total: 0, limit: 500, offset: 0, has_more: false } as never);
+    vi.mocked(api.refusalCoverage).mockResolvedValue({ published: true, n: 40, m: 50, commit: "abcdef1234", published_at: "2026-10-29T00:00:00+00:00" });
+    renderAt("/rules");
+    await userEvent.click(screen.getByTestId("rules-open-unmapped"));
+    await waitFor(() => expect(screen.getByTestId("rules-coverage-n").textContent).toBe("40"));
+    expect(screen.getByTestId("rules-coverage-m").textContent).toBe("50");
+    expect(screen.getByTestId("rules-unmapped-coverage").textContent).toContain("abcdef1");
+  });
+
+  it("an unpublished build says so and shows no number", async () => {
+    vi.mocked(api.events).mockResolvedValue({ results: [{ id: 1 }], total: 1, limit: 500, offset: 0, has_more: false } as never);
+    vi.mocked(api.refusalCoverage).mockResolvedValue({ published: false, n: null, m: null, commit: null, published_at: null });
+    renderAt("/rules");
+    await userEvent.click(screen.getByTestId("rules-open-unmapped"));
+    const line = await screen.findByTestId("rules-unmapped-coverage");
+    await waitFor(() => expect(line.textContent).toMatch(/Not published by this build/));
+    expect(line.textContent).not.toMatch(/\d/);
+  });
+
   it("empty says so, and the coverage line is unknown rather than zero", async () => {
+    vi.mocked(api.refusalCoverage).mockResolvedValue({ published: false, n: null, m: null, commit: null, published_at: null });
     vi.mocked(api.events).mockResolvedValue({ results: [], total: 0, limit: 500, offset: 0, has_more: false } as never);
     renderAt("/rules");
     await userEvent.click(screen.getByTestId("rules-open-unmapped"));
     expect(await screen.findByTestId("rules-unmapped-empty")).toBeTruthy();
-    expect(screen.getByTestId("rules-unmapped-coverage").textContent).toMatch(/unknown/i);
+    expect(screen.getByTestId("rules-unmapped-coverage").textContent).toMatch(/not published/i);
   });
 
   it("an error says unknown, never zero", async () => {
