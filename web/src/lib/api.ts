@@ -1,4 +1,4 @@
-import type { HarnessRecommendations, HarnessReport } from "@/lib/types";
+import type { HarnessRecommendations, HarnessReport, ShardClass } from "@/lib/types";
 import type { Credential, CredentialIn, FleetOverview, FleetPolicy, FleetPresence, FleetProfile, FleetProfileRead, FleetTierMap, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
@@ -665,6 +665,8 @@ export const api = {
     request<StaleShardRow[]>(`/memory/stale?project_id=${encodeURIComponent(projectId)}`),
   retireShard: (id: string) =>
     request<Shard>(`/memory/shards/${id}/retire`, { method: "POST" }),
+  setShardClass: (id: string, shard_class: ShardClass | "") =>
+    request<Shard>(`/memory/shards/${id}`, { method: "PATCH", body: JSON.stringify({ shard_class }) }),
   keepShard: (id: string) =>
     request<Shard>(`/memory/shards/${id}/keep`, { method: "POST" }),
   restoreShard: (id: string) =>

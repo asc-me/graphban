@@ -1161,6 +1161,11 @@ class MemoryShard(Base):
     lesson_class: Mapped[str] = mapped_column(
         String, default="", server_default="", nullable=False
     )
+    # pitfall | convention | principle; "" = unclassified. Not `lesson_class` (a different
+    # taxonomy on the Lessons catalog). Existing rows stay "" — no backfill guess.
+    shard_class: Mapped[str] = mapped_column(
+        String, default="", server_default="", nullable=False
+    )
     # NULL is unmeasured. SET NULL so a deleted user does not stay a countable ghost.
     actor_user_id: Mapped[str | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True

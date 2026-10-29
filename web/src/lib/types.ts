@@ -549,6 +549,9 @@ export interface Item {
 }
 
 /** `retired` (GRPH-1175): unpublished from Memory, restorable for 14 days. */
+export const SHARD_CLASSES = ["pitfall", "convention", "principle"] as const;
+export type ShardClass = (typeof SHARD_CLASSES)[number];
+
 export type ShardStatus = "candidate" | "published" | "rejected" | "retired";
 
 export interface Shard {
@@ -564,6 +567,8 @@ export interface Shard {
   /** AL-227: "" = human-only; else the signal that auto-acted ("similarity" | "llm"). */
   scoring_source: string;
   auto_confidence: number | null;
+  /** "" = unclassified. */
+  shard_class: ShardClass | "";
   created_at: string;
 }
 

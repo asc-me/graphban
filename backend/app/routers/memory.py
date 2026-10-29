@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -28,7 +28,19 @@ router = APIRouter(prefix="/memory", tags=["memory"])
 
 
 class ShardEdit(BaseModel):
-    text: str
+    text: str | None = None
+    # "" (or null) clears the class; anything outside the allowed set is a 422.
+    shard_class: str | None = None
+
+    @model_validator(mode="after")
+    def _something_to_change(self):
+        if self.text is None and "shard_class" not in self.model_fields_set:
+            raise ValueError("send text and/or shard_class")
+        if self.shard_class is not None and self.shard_class not in ("", *mem_svc.SHARD_CLASSES):
+            raise ValueError(
+                f"shard_class must be one of {', '.join(mem_svc.SHARD_CLASSES)} or empty"
+            )
+        return self
 
 
 class ImportIn(BaseModel):
@@ -523,7 +535,10 @@ def edit_shard(shard_id: str, body: ShardEdit, db: Session = Depends(get_db), us
         authz.require_writable(db, user.id, existing.project_id, "shard")
     elif not authz.writable_project_ids(db, user.id):
         raise HTTPException(403, "no write access to any project")
-    shard = mem_svc.update_shard(db, shard_id, text_body=body.text)
+    shard = mem_svc.update_shard(
+        db, shard_id, text_body=body.text,
+        shard_class=(body.shard_class or "") if "shard_class" in body.model_fields_set else None,
+    )
     if shard is None:
         raise HTTPException(404, "shard not found")
     return shard

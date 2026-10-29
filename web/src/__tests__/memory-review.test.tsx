@@ -13,7 +13,7 @@ import type { CandidateJudge, JudgeStatus, ScoredCandidate, Shard } from "@/lib/
 const candidate: Shard = {
   id: "m9", text: "Agent guess: batch writes for perf.", scope: "item", source: "lesson from AL-12",
   status: "candidate", origin: "agent:loop-agent", item_id: "AL-12", project_id: "core",
-  fresh: true, scoring_source: "", auto_confidence: null, created_at: "",
+  fresh: true, scoring_source: "", shard_class: "", auto_confidence: null, created_at: "",
 };
 
 const plain: ScoredCandidate = {
@@ -25,20 +25,20 @@ const plain: ScoredCandidate = {
 const autoRejected: Shard = {
   id: "m10", text: "Duplicate: batch writes for perf.", scope: "item", source: "",
   status: "rejected", origin: "agent:loop-agent", item_id: "AL-12", project_id: "core",
-  fresh: true, scoring_source: "similarity", auto_confidence: 0.97, created_at: "",
+  fresh: true, scoring_source: "similarity", shard_class: "", auto_confidence: 0.97, created_at: "",
 };
 
 const autoDecider: Shard = {
   id: "m12", text: "Always pin the pgvector image to pg16 in CI.", scope: "global", source: "",
   status: "published", origin: "agent:loop-agent", item_id: null, project_id: "core",
-  fresh: true, scoring_source: "decider", auto_confidence: 0.91, created_at: "",
+  fresh: true, scoring_source: "decider", shard_class: "", auto_confidence: 0.91, created_at: "",
 };
 
 // Published with NO human involved (AL-280 trusted / AL-282 agent).
 const unvetted: Shard = {
   id: "m11", text: "Published by the agent while you were away.", scope: "global", source: "",
   status: "published", origin: "agent:loop-agent", item_id: null, project_id: "core",
-  fresh: true, scoring_source: "agent", auto_confidence: 0.93, created_at: "",
+  fresh: true, scoring_source: "agent", shard_class: "", auto_confidence: 0.93, created_at: "",
 };
 
 // Hoisted so the (hoisted) vi.mock factory can reference the spies eagerly.

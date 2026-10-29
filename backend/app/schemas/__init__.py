@@ -700,6 +700,8 @@ class ShardOut(ORMModel):
     # ("similarity" | "llm") plus the confidence it acted on.
     scoring_source: str = ""
     auto_confidence: float | None = None
+    # pitfall | convention | principle; "" = unclassified.
+    shard_class: str = ""
     created_at: datetime
 
 
