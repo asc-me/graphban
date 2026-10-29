@@ -106,3 +106,26 @@ def test_best_prd_for_request(client, auth, db):
     rid = _req(client, auth, "Dark mode theme toggle for the app")
     hit = prd_svc.best_prd_for_request(db, db.get(Request, rid))
     assert hit and hit["prd_id"] == prd_svc.get_prd(db, pid).key
+
+
+def test_suggestions_embed_each_section_once(client, auth, db, monkeypatch):
+    # Sections are embedded once per PRD, not once per candidate request.
+    from app.providers import get_embedder
+
+    pid = _prd(client, auth, body="# T\n\n## Dark mode\nTheme toggle.\n\n## Light mode\nOther theme.\n")
+    for i in range(4):
+        _req(client, auth, f"Dark mode {i}")
+    real, calls = get_embedder(), []
+
+    class Counting:
+        def embed(self, text):
+            calls.append(text)
+            return real.embed(text)
+
+    monkeypatch.setattr("app.providers.get_embedder", lambda: Counting())
+    assert client.get(f"/api/prds/{pid}/request-suggestions", headers=auth).json()["available"] is True
+    from app.models import Request
+
+    n_requests = db.query(Request).filter(Request.project_id == "core").count()
+    assert n_requests >= 4
+    assert len(calls) == 2 + n_requests  # two sections once, plus one per candidate request

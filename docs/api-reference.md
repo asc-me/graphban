@@ -272,7 +272,7 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | GET / POST | `/api/prds/{id}/versions` | JWT |
 | POST | `/api/prds/{id}/link` | JWT |
 | GET / POST | `/api/prds/{id}/requests` | JWT | PRD↔request links (many-to-many; GRPH-1140). `POST {request_id}` links; refused 409 on a closed PRD, 404 for a request in another project.
-| DELETE | `/api/prds/{id}/requests/{request_id}` | JWT | Unlink (same refusals). `GET /api/prds` summaries carry `request_count`, `request_votes`, `request_types` `GET /api/prds` summaries carry `request_count`, `request_votes`, `request_types` |
+| DELETE | `/api/prds/{id}/requests/{request_id}` | JWT | Unlink (same refusals). `GET /api/prds` summaries carry `request_count`, `request_votes`, `request_types`. |
 | GET | `/api/prds/{id}/request-suggestions` | JWT | Unlinked requests scored against the PRD's sections (`{available, suggestions[{request_id,title,type,votes,score}]}`, score ≥ 0.55). `{available:false, suggestions:[]}` when the embedder fails — not an empty match list |
 | POST | `/api/prds/{id}/ai` | JWT | one-shot AI command (expand/risks/summarize/grill) |
 | POST | `/api/prds/{id}/grill/stream` | JWT (SSE) | interactive grill — clarifying questions (AL-67) |

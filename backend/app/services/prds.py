@@ -277,11 +277,19 @@ def _prd_texts(prd: Prd) -> list[str]:
     return texts or [f"{prd.title}\n{prd.body or ''}"]
 
 
-def _score(embedder, texts: list[str], req: Request) -> float:
+def _section_vectors(embedder, prd: Prd) -> list:
+    """Embed a PRD's sections once; callers reuse them across every request they score."""
+    return [embedder.embed(t) for t in _prd_texts(prd)]
+
+
+def _request_vector(embedder, req: Request):
+    return embedder.embed(f"{req.title}\n{req.detail or ''}")
+
+
+def _score(section_vecs: list, request_vec) -> float:
     from app.providers import cosine_similarity
 
-    rv = embedder.embed(f"{req.title}\n{req.detail or ''}")
-    return max(cosine_similarity(rv, embedder.embed(t)) for t in texts)
+    return max(cosine_similarity(request_vec, sv) for sv in section_vecs)
 
 
 def request_suggestions(db: Session, prd: Prd, *, threshold: float = SUGGESTION_THRESHOLD) -> dict:
@@ -294,8 +302,8 @@ def request_suggestions(db: Session, prd: Prd, *, threshold: float = SUGGESTION_
         Request.project_id == prd.project_id, Request.id.not_in(linked))).all()
     try:
         embedder = get_embedder()
-        texts = _prd_texts(prd)
-        scored = [(r, _score(embedder, texts, r)) for r in cands]
+        section_vecs = _section_vectors(embedder, prd)
+        scored = [(r, _score(section_vecs, _request_vector(embedder, r))) for r in cands]
     except Exception:  # noqa: BLE001 — any provider failure means "unavailable"
         logging.getLogger("graphban.prds").warning("request suggestions unavailable", exc_info=True)
         return {"available": False, "suggestions": []}
@@ -314,7 +322,8 @@ def best_prd_for_request(db: Session, req: Request, *, threshold: float = SUGGES
             if p.close_record is None]
     try:
         embedder = get_embedder()
-        best = max(((p, _score(embedder, _prd_texts(p), req)) for p in prds),
+        rv = _request_vector(embedder, req) if prds else None
+        best = max(((p, _score(_section_vectors(embedder, p), rv)) for p in prds),
                    key=lambda x: x[1], default=None)
     except Exception:  # noqa: BLE001
         logging.getLogger("graphban.prds").warning("best prd unavailable", exc_info=True)
