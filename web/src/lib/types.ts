@@ -796,12 +796,70 @@ export interface RequestItem {
   published_at: string | null;
 }
 
+/** One comment on a request's operator thread (PRD-60 D9). `internal` is a private note. */
+export interface RequestComment {
+  id: string;
+  body: string;
+  visibility: "public" | "private";
+  role: "submitter" | "team" | "internal";
+  /** Display name; empty when the operator account is gone. */
+  author: string;
+  created_at: string;
+}
+
 /** A request or item that looks like this one. Advisory — never auto-merged. */
 export interface DuplicateHint {
   kind: "request" | "item";
   id: string;
   title: string;
   score: number;
+}
+
+/** One row of the unified triage feed (GRPH-1135). `kind` picks the shape of the rest. */
+export type TriageTab = "all" | "bugs" | "requests" | "blockers" | "collisions";
+
+interface TriageFeedBase {
+  id: string;
+  title: string;
+  age_seconds: number;
+  paths: string[];
+}
+
+export interface TriageRequestRow extends TriageFeedBase {
+  kind: "bug" | "feature" | "enhancement" | "feedback";
+  by: string;
+  votes: number;
+  source: string;
+  body: string;
+  duplicate: { id: string; title: string; score: number; status: string } | null;
+  /** Absent when nothing fits or the embedder is down — advisory, not a verdict. */
+  suggested_prd?: { id: string; score: number };
+}
+
+export interface TriageBlockerRow extends TriageFeedBase {
+  kind: "blocker";
+  owner: string | null;
+  blocked_seconds: number;
+  reason: string;
+  decision?: { question: string; options: string[] };
+  waiting_on?: { id: string; title: string; status: string };
+}
+
+export interface TriageCollisionRow extends TriageFeedBase {
+  kind: "collision";
+  risk: "blocked" | "serialize";
+  predicted: boolean;
+  members: { id: string; title: string; owner: string | null; status: string }[];
+  recommendation: string;
+}
+
+export type TriageFeedRow = TriageRequestRow | TriageBlockerRow | TriageCollisionRow;
+
+export interface TriageFeed {
+  rows: TriageFeedRow[];
+  counts: Record<TriageTab, number>;
+  /** Sources that did not answer; their kinds are missing from `rows`, not clear. */
+  failed_sources: string[];
 }
 
 export interface TriageRow {
@@ -1300,6 +1358,33 @@ export interface PrdSummary {
   updated_at: string;
   /** When the PRD closed; the list falls back to updated_at while the API omits it. */
   closed_at?: string | null;
+  /** GRPH-1140 rollup of linked requests; absent on older servers. */
+  request_count?: number;
+  request_votes?: number;
+  request_types?: Partial<Record<RequestType, number>>;
+}
+
+/** One request linked to a PRD (GET /prds/{id}/requests). */
+export interface PrdLinkedRequest {
+  id: string;
+  title: string;
+  type: RequestType;
+  votes: number;
+  status: string;
+}
+
+export interface PrdRequestSuggestion {
+  request_id: string;
+  title: string;
+  type: RequestType;
+  votes: number;
+  score: number;
+}
+
+/** `available: false` means the embedder failed — NOT "nothing matches". */
+export interface PrdRequestSuggestions {
+  available: boolean;
+  suggestions: PrdRequestSuggestion[];
 }
 
 export interface Prd extends PrdSummary {

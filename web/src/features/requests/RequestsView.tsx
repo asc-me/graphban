@@ -1,4 +1,4 @@
-import { ChevronRight, ChevronUp, ExternalLink, Globe, Lock, Send } from "lucide-react";
+import { ChevronRight, ChevronUp, ExternalLink, Globe, Lock } from "lucide-react";
 import * as React from "react";
 
 import {
@@ -12,9 +12,10 @@ import { LinkedCode } from "@/features/code/LinkedCode";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { TYPE_META } from "@/lib/meta";
-import { useRequests, useVoteRequest, usePublishRequest, useUnpublishRequest, useCreateRequestComment } from "@/lib/queries";
+import { useRequests, useVoteRequest, usePublishRequest, useUnpublishRequest } from "@/lib/queries";
 import type { RequestItem, RequestType } from "@/lib/types";
 
+import { CommentThread } from "./CommentThread";
 import { LinkDialog } from "./LinkDialog";
 
 const STATUS_COLOR: Record<string, string> = {
@@ -105,9 +106,6 @@ function RequestRow({
   const [open, setOpen] = React.useState(false);
   const publish = usePublishRequest();
   const unpublish = useUnpublishRequest();
-  const addComment = useCreateRequestComment();
-  const [commentBody, setCommentBody] = React.useState("");
-  const [commentVis, setCommentVis] = React.useState<"public" | "private">("private");
   const isPublished = request.published_at != null;
 
   async function handlePublishToggle() {
@@ -116,13 +114,6 @@ function RequestRow({
     } else {
       await publish.mutateAsync(request.id);
     }
-  }
-
-  async function handleComment(e: React.FormEvent) {
-    e.preventDefault();
-    if (!commentBody.trim()) return;
-    await addComment.mutateAsync({ id: request.id, body: commentBody.trim(), visibility: commentVis });
-    setCommentBody("");
   }
 
   return (
@@ -201,35 +192,7 @@ function RequestRow({
             <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">Linked code</div>
             <LinkedCode refId={request.id} projectId={activeId} />
           </div>
-          <form onSubmit={handleComment} className="space-y-2 border-t border-line pt-3">
-            <div className="font-mono text-[10px] uppercase tracking-wide text-faint">Operator comment</div>
-            <textarea
-              value={commentBody}
-              onChange={(e) => setCommentBody(e.target.value)}
-              rows={2}
-              placeholder="Write a comment…"
-              className="w-full rounded-md border border-control bg-surface px-2 py-1.5 text-[12px] text-fg-2 placeholder:text-faint focus:border-accent/50 focus:outline-none"
-            />
-            <div className="flex items-center gap-2">
-              <label className="flex items-center gap-1.5 text-small text-fg-2">
-                <input
-                  type="checkbox"
-                  checked={commentVis === "public"}
-                  onChange={(e) => setCommentVis(e.target.checked ? "public" : "private")}
-                  className="accent-accent"
-                />
-                Public
-              </label>
-              <button
-                type="submit"
-                disabled={!commentBody.trim() || addComment.isPending}
-                className="ml-auto flex items-center gap-1 rounded-md border border-control bg-surface px-2.5 py-1 font-mono text-[10px] text-fg-2 transition-colors hover:border-accent/40 disabled:opacity-50"
-              >
-                <Send size={10} />
-                {addComment.isPending ? "Posting…" : "Post"}
-              </button>
-            </div>
-          </form>
+          <CommentThread requestId={request.id} />
         </div>
       )}
     </div>
