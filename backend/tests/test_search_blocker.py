@@ -81,3 +81,22 @@ def test_tags_still_match(client, auth, session):
     found = items_svc.search_items(session, query="distinctive", project_id="core")
 
     assert made["id"] in [i.id for i in found]
+
+
+
+def test_search_items_full_rows_carry_the_blocker(client, auth):
+    """GRPH-1182. The search matched on blocker text while the full row omitted the field, so
+    every hit read as unblocked and `gbfleet until` never adopted a hold an earlier run wrote.
+    Sabotage: drop `blocker` from the full row → this fails."""
+    key = client.post("/api/api-keys", json={"name": "blk", "scopes": ["read", "write"]},
+                      headers=auth).json()["plaintext"]
+    parked = _parked(client, auth, "held dependent", "waiting on #1116 [gbfleet dependency hold]")
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "search_items",
+                       "arguments": {"query": "gbfleet dependency hold", "fields": "full",
+                                     "project_id": "core"}}}
+    rows = client.post("/api/mcp", json=body, headers={"X-API-Key": key}).json()[
+        "result"]["structuredContent"]["results"]
+
+    [row] = [r for r in rows if r["title"] == "held dependent"]
+    assert row["blocker"] == "waiting on #1116 [gbfleet dependency hold]", parked

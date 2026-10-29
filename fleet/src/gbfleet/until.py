@@ -526,8 +526,8 @@ def _loop(
     # changes the answer, so these are lifted out of `delegated` when one lands.
     held: dict[str, list[str]] = {}
     # GRPH-950: holds are blockers on the server, so they outlive the wave that wrote them.
-    _adopt_holds(planner, held, delegated)
-    rechecked = 0.0
+    _resume_holds(planner, held, delegated, repo, base)
+    rechecked = time.monotonic()
 
     while True:
         # GRPH-1056. This loop IS the supervisor working. An `mcp` that merely stays
@@ -1244,16 +1244,9 @@ def _dependency_holds(planner: Graphban, free: list[dict], repo: Path | None,
     """The GRPH-950 holds a wave would write now, and the ones already written. READS ONLY."""
     out: list[dict] = []
     seen: set[str] = set()
-    try:
-        got = planner.call("search_items", query=deps.HOLD_MARK, limit=200, fields="full") or {}
-    except (ToolFailed, NotPermitted, ServerUnreachable):
-        got = {}
-    for row in (got.get("results") if isinstance(got, dict) else None) or []:
-        if isinstance(row, dict) and deps.is_hold(str(row.get("blocker") or "")):
-            item_id = str(row.get("id") or "")
-            seen.add(item_id)
-            out.append({"item": item_id, "waiting_on": str(row.get("blocker") or ""),
-                        "already_held": True})
+    for item_id, blocker in _held_on_server(planner):
+        seen.add(item_id)
+        out.append({"item": item_id, "waiting_on": blocker, "already_held": True})
     if repo is None or not base:
         return out
     for cluster in free:
@@ -1454,17 +1447,52 @@ def _adopt_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[s
     A blocker nobody re-checks strands its item after the merge it waits on — worse than the
     duplicate it prevented, because it looks deliberate.
     """
+    for item_id, _blocker in _held_on_server(planner):
+        if item_id not in held:
+            held[item_id] = []
+            delegated.add(item_id)
+
+
+def _resume_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str],
+                  repo: Path | None, base: str) -> None:
+    """Adopt the holds earlier runs wrote and re-check them NOW, before the first tick.
+
+    GRPH-1182: not a recheck period later. Under `gbfleet service` every run is a fresh
+    process that may exit idle well inside that period, so a hold whose dependency an
+    earlier run merged was lifted by nobody.
+    """
+    _adopt_holds(planner, held, delegated)
+    _recheck_holds(planner, held, delegated, repo, base)
+
+
+def _held_on_server(planner: Graphban) -> list[tuple[str, str]]:
+    """Every GRPH-950 hold the server carries, as (item, blocker). Empty when unreadable.
+
+    The search matches on blocker text, but a row that does not carry `blocker` says nothing
+    about it (GRPH-1182): `search_items` full rows omitted the field, so every hit read as
+    unheld and no later run ever adopted, re-checked or lifted a hold. Such a row is confirmed
+    against `get_item_details`, the read that does carry it, never dropped as clean.
+    """
     try:
         got = planner.call("search_items", query=deps.HOLD_MARK, limit=200, fields="full") or {}
     except (ToolFailed, NotPermitted, ServerUnreachable):
-        return
+        return []
+    out: list[tuple[str, str]] = []
     for row in (got.get("results") if isinstance(got, dict) else None) or []:
-        if not isinstance(row, dict) or not deps.is_hold(str(row.get("blocker") or "")):
+        item_id = str(row.get("id") or "") if isinstance(row, dict) else ""
+        if not item_id:
             continue
-        item_id = str(row.get("id") or "")
-        if item_id and item_id not in held:
-            held[item_id] = []
-            delegated.add(item_id)
+        if "blocker" in row:
+            blocker = str(row["blocker"] or "")
+        else:
+            try:
+                details = planner.call("get_item_details", id=item_id) or {}
+            except (ToolFailed, NotPermitted, ServerUnreachable):
+                continue
+            blocker = str(details.get("blocker") or "") if isinstance(details, dict) else ""
+        if deps.is_hold(blocker):
+            out.append((item_id, blocker))
+    return out
 
 
 def _recheck_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str],
