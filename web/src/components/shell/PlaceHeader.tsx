@@ -4,11 +4,10 @@ import { Collapsible } from "@/components/planner/Collapsible";
 import { useProjectCtx } from "@/features/ProjectContext";
 
 /**
- * The place header: project · view · purpose · one primary action.
+ * The place header: H1 view name with the project tag beside it, purpose, one primary action.
  *
  * Views opt in by passing their name, a one-line purpose, and at most one action.
- * The project name is read from context so it is always visible — not buried in the
- * rail dropdown where a long list hides it (GRPH-941).
+ * The project tag is read from context so the project is always visible (GRPH-941).
  *
  * The hairline border-b is a true split between page chrome and content. Do not wrap
  * this in another border-line-2 card.
@@ -26,29 +25,26 @@ export function PlaceHeader({
   condensed?: boolean;
 }) {
   const { active } = useProjectCtx();
-  const projectName = active?.name ?? "";
+  const projectTag = active?.tag ?? "";
 
   return (
     <Collapsible collapsed={condensed}>
-    <div className="border-b border-line px-5 py-4" data-testid="place-header">
-      <div className="flex items-baseline gap-2">
-        {projectName && (
-          <>
-            <span className="text-body text-muted">{projectName}</span>
-            <span className="text-faint-2">·</span>
-          </>
-        )}
-        <h1 className="text-[15px] font-semibold tracking-tight text-fg">{viewName}</h1>
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line px-5 py-4" data-testid="place-header">
+      {/* `min-w-[18rem]` floors the title block: without it the purpose collapses to its
+          min-content width once the action is wide (Code graph's ~740px toolbar crushed the
+          sentence into a 110px column), so a too-wide action wraps onto its own line instead. */}
+      <div className="min-w-[18rem] flex-1">
+        <div className="flex items-baseline gap-2.5">
+          <h1 className="text-title font-semibold text-fg">{viewName}</h1>
+          {projectTag && (
+            <span className="font-mono text-small text-muted" data-testid="place-header-tag">
+              {projectTag}
+            </span>
+          )}
+        </div>
+        <p className="mt-1 text-body text-muted">{purpose}</p>
       </div>
-      {/* `flex-1` alone lets the purpose collapse to its MIN-CONTENT width — the longest word
-          — once the action is wide enough, which on Code graph (a find box, Hubs and five edge
-          chips, ~740px) crushed the sentence into a 110px column thirteen lines tall. A floor
-          plus wrapping drops a too-wide action onto its own line instead, which is the only
-          outcome that keeps the sentence readable at any width. */}
-      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-2">
-        <p className="min-w-[18rem] flex-1 text-body text-muted">{purpose}</p>
-        {action && <div className="flex-none">{action}</div>}
-      </div>
+      {action && <div className="flex-none">{action}</div>}
     </div>
     </Collapsible>
   );

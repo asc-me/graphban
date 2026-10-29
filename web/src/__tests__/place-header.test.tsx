@@ -8,7 +8,7 @@ import { TrackerView } from "@/features/tracker/TrackerView";
 import type { Item } from "@/lib/types";
 
 const project = {
-  id: "core", name: "Graphban", accent: "#a78bfa", visibility: "private", description: "",
+  id: "core", name: "Graphban", tag: "GRPH", accent: "#a78bfa", visibility: "private", description: "",
   share_global_memory: false, auto_extract: true, mcp_enabled: true, embed_model: "",
 };
 
@@ -49,8 +49,10 @@ describe("PlaceHeader", () => {
     renderTracker();
 
     const header = await screen.findByTestId("place-header");
-    expect(await within(header).findByText("Graphban")).toBeInTheDocument();
-    expect(within(header).getByRole("heading", { level: 1 })).toHaveTextContent("Tracker");
+    const tag = await within(header).findByText("GRPH");
+    const h1 = within(header).getByRole("heading", { level: 1 });
+    expect(h1).toHaveTextContent("Tracker");
+    expect(h1.parentElement).toContainElement(tag);
   });
 
   it("renders the purpose line", async () => {
@@ -68,11 +70,11 @@ describe("PlaceHeader", () => {
     expect(header.querySelector("button")).toBeInTheDocument();
   });
 
-  it("sabotage: dropping the project name from the header fails", async () => {
+  it("sabotage: dropping the project tag from the header fails", async () => {
     renderTracker();
 
     const header = await screen.findByTestId("place-header");
-    // Drop `{projectName}` from PlaceHeader — this assertion is the gate.
-    expect(await within(header).findByText("Graphban")).toBeInTheDocument();
+    // Drop `{projectTag}` from PlaceHeader — this assertion is the gate.
+    expect(await within(header).findByText("GRPH")).toBeInTheDocument();
   });
 });
