@@ -101,7 +101,7 @@ describe("Triage inbox", () => {
     renderTriage();
     expect(await screen.findByText("Decider falls back silently", { selector: "span" })).toBeInTheDocument();
     expect(selected()).toHaveTextContent("Decider falls back silently");
-    expect(screen.getByText(/4/, { selector: "span.text-fg-2" })).toBeInTheDocument();
+    expect(screen.getByText("4", { selector: "span.text-fg" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Bugs\s*2/ })).toBeInTheDocument();
   });
 
@@ -219,6 +219,56 @@ describe("Triage inbox", () => {
     m.projectTriage.mockResolvedValue(feed([]));
     renderTriage();
     expect(await screen.findByText("Triage clear")).toBeInTheDocument();
+    expect(screen.getByText(/Nothing waiting\. Everything reported has been triaged/)).toBeInTheDocument();
+  });
+
+  it("puts the tab row above both columns, not inside the list", async () => {
+    renderTriage();
+    await screen.findByText("Crash on empty project");
+    const tabs = screen.getByRole("group", { name: "Triage tabs" });
+    expect(tabs.contains(screen.getByRole("button", { name: /Collisions/ }))).toBe(true);
+    expect(tabs.contains(screen.getByRole("listbox"))).toBe(false);
+    expect(screen.getByRole("listbox").closest("[role=group]")).toBeNull();
+  });
+
+  it("hides the Processed card until something is processed", async () => {
+    renderTriage();
+    await screen.findByText("Crash on empty project");
+    expect(screen.queryByRole("button", { name: /Undo last/ })).not.toBeInTheDocument();
+  });
+
+  it("renders the blocker callout with the agent's options as chips", async () => {
+    m.projectTriage.mockResolvedValue(feed([
+      { ...blocker, decision: { question: "Which key?", options: ["Use env", "Use vault"] } } as TriageFeedRow,
+    ]));
+    renderTriage();
+    const label = await screen.findByText("AGENT ASKED");
+    expect(label.parentElement).toHaveClass("border-st-blocked/30");
+    expect(screen.getByText("Which key?")).toBeInTheDocument();
+    const chips = screen.getByLabelText("Agent's options");
+    expect(chips).toHaveTextContent("Use env");
+    expect(chips).toHaveTextContent("Use vault");
+    expect(document.querySelector("ul")).toBeNull();
+  });
+
+  it("renders the collision cluster table and the amber recommendation callout", async () => {
+    m.projectTriage.mockResolvedValue(feed([collision]));
+    renderTriage();
+    expect(await screen.findByText("ITEMS IN THIS CLUSTER")).toBeInTheDocument();
+    expect(screen.queryByText("MEMBERS, IN ORDER")).not.toBeInTheDocument();
+    const rec = screen.getByText("RECOMMENDATION · BLOCKED");
+    expect(rec.parentElement).toHaveClass("border-st-review/30");
+    expect(screen.getByText("Hold the rest.")).toBeInTheDocument();
+    expect(screen.getByText("GRPH-2")).toBeInTheDocument();
+  });
+
+  it("renders the likely-duplicate callout with the score in its heading", async () => {
+    m.projectTriage.mockResolvedValue(feed([dupBug]));
+    renderTriage();
+    const head = await screen.findByText(/LIKELY DUPLICATE · 86%/);
+    expect(head.parentElement).toHaveClass("border-st-next/30");
+    expect(screen.getByText("CORE-R7")).toBeInTheDocument();
+    expect(screen.getByText("Sidebar collapse bug")).toBeInTheDocument();
   });
 });
 
