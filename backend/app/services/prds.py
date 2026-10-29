@@ -14,7 +14,8 @@ from collections import Counter
 from datetime import timezone
 
 from app.models import (
-    CodeNode, Event, GrillDimension, GrillTurn, Item, Prd, PrdVersion, Verdict,
+    CodeNode, Event, GrillDimension, GrillTurn, Item, Prd, PrdRequestLink, PrdVersion, Request,
+    Verdict,
     WorkClassification, utcnow,
 )
 from app.services import items as items_svc
@@ -218,6 +219,109 @@ def link_item(db: Session, prd_id: str, item_id: str, add: bool = True) -> Prd |
     db.commit()
     db.refresh(prd)
     return prd
+
+
+# ---- PRD <-> request links (PRD-60 D10 / GRPH-1140) ----
+SUGGESTION_THRESHOLD = 0.55
+
+
+class RequestNotInProject(ValueError):
+    """The request is unknown or belongs to another project than the PRD."""
+
+
+def _request_for(db: Session, prd: Prd, request_id: str) -> Request:
+    req = db.get(Request, keys.resolve_request(db, request_id) or request_id)
+    if req is None or req.project_id != prd.project_id:
+        raise RequestNotInProject("request not found in this PRD's project")
+    return req
+
+
+def link_request(db: Session, prd: Prd, request_id: str, add: bool = True) -> Prd:
+    if prd.close_record is not None:
+        raise PrdClosed("this PRD is closed; requests can no longer be linked or unlinked")
+    req = _request_for(db, prd, request_id)
+    row = db.get(PrdRequestLink, (prd.id, req.id))
+    if add and row is None:
+        db.add(PrdRequestLink(prd_id=prd.id, request_id=req.id))
+    elif not add and row is not None:
+        db.delete(row)
+    db.commit()
+    return prd
+
+
+def linked_requests(db: Session, prd: Prd) -> list[Request]:
+    return list(db.scalars(
+        select(Request).join(PrdRequestLink, PrdRequestLink.request_id == Request.id)
+        .where(PrdRequestLink.prd_id == prd.id).order_by(Request.number)).all())
+
+
+def request_rollups(db: Session, prd_ids: list[str]) -> dict[str, dict]:
+    out = {pid: {"request_count": 0, "request_votes": 0, "request_types": {}} for pid in prd_ids}
+    if not prd_ids:
+        return out
+    rows = db.execute(
+        select(PrdRequestLink.prd_id, Request.type, Request.votes)
+        .join(Request, Request.id == PrdRequestLink.request_id)
+        .where(PrdRequestLink.prd_id.in_(prd_ids))).all()
+    for pid, typ, votes in rows:
+        o = out[pid]
+        o["request_count"] += 1
+        o["request_votes"] += votes or 0
+        o["request_types"][typ] = o["request_types"].get(typ, 0) + 1
+    return out
+
+
+def _prd_texts(prd: Prd) -> list[str]:
+    spans = section_spans(prd.body or "")
+    texts = [f"{t}\n{(prd.body or '')[s:e].strip()}" for t, s, e in spans]
+    return texts or [f"{prd.title}\n{prd.body or ''}"]
+
+
+def _score(embedder, texts: list[str], req: Request) -> float:
+    from app.providers import cosine_similarity
+
+    rv = embedder.embed(f"{req.title}\n{req.detail or ''}")
+    return max(cosine_similarity(rv, embedder.embed(t)) for t in texts)
+
+
+def request_suggestions(db: Session, prd: Prd, *, threshold: float = SUGGESTION_THRESHOLD) -> dict:
+    """Unlinked requests scored against the PRD's sections. An embedder failure is
+    `{available: false}` — an empty list would read as "nothing matches"."""
+    from app.providers import get_embedder
+
+    linked = select(PrdRequestLink.request_id).where(PrdRequestLink.prd_id == prd.id)
+    cands = db.scalars(select(Request).where(
+        Request.project_id == prd.project_id, Request.id.not_in(linked))).all()
+    try:
+        embedder = get_embedder()
+        texts = _prd_texts(prd)
+        scored = [(r, _score(embedder, texts, r)) for r in cands]
+    except Exception:  # noqa: BLE001 — any provider failure means "unavailable"
+        logging.getLogger("graphban.prds").warning("request suggestions unavailable", exc_info=True)
+        return {"available": False, "suggestions": []}
+    hits = sorted((x for x in scored if x[1] >= threshold), key=lambda x: x[1], reverse=True)
+    return {"available": True, "suggestions": [
+        {"request_id": r.key, "title": r.title, "type": r.type, "votes": r.votes,
+         "score": round(sc, 4)} for r, sc in hits]}
+
+
+def best_prd_for_request(db: Session, req: Request, *, threshold: float = SUGGESTION_THRESHOLD) -> dict | None:
+    """The open PRD in the request's project that fits best, or None (also when the
+    embedder is down). Closed PRDs cannot take links, so they are not offered."""
+    from app.providers import get_embedder
+
+    prds = [p for p in db.scalars(select(Prd).where(Prd.project_id == req.project_id)).all()
+            if p.close_record is None]
+    try:
+        embedder = get_embedder()
+        best = max(((p, _score(embedder, _prd_texts(p), req)) for p in prds),
+                   key=lambda x: x[1], default=None)
+    except Exception:  # noqa: BLE001
+        logging.getLogger("graphban.prds").warning("best prd unavailable", exc_info=True)
+        return None
+    if best is None or best[1] < threshold:
+        return None
+    return {"prd_id": best[0].key, "title": best[0].title, "score": round(best[1], 4)}
 
 
 # ---- AI commands ----

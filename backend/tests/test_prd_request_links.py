@@ -1,0 +1,108 @@
+"""PRD <-> request links and similarity suggestions (GRPH-1140 / PRD-60 D10)."""
+import pytest
+
+from app.models import Prd
+from app.services import prds as prd_svc
+
+
+@pytest.fixture()
+def db(client):
+    from app.db import SessionLocal
+
+    s = SessionLocal()
+    try:
+        yield s
+    finally:
+        s.close()
+
+
+def _req(client, auth, title, type_="feature", project="core"):
+    r = client.post("/api/requests", headers=auth, json={"type": type_, "title": title, "project_id": project})
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def _prd(client, auth, body="# T\n\n## Dark mode\nDark mode theme toggle for the app.\n"):
+    r = client.post("/api/prds", headers=auth, json={"title": "Theming", "project_id": "core", "body": body})
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def _summary(client, auth, pid):
+    return next(p for p in client.get("/api/prds?project_id=core", headers=auth).json() if p["id"] == pid)
+
+
+def test_link_unlink_updates_summary(client, auth):
+    pid = _prd(client, auth)
+    a, b = _req(client, auth, "Dark mode"), _req(client, auth, "Crash", "bug")
+    client.post(f"/api/requests/{a}/vote", headers=auth, json={"delta": 1})
+    for r in (a, b):
+        assert client.post(f"/api/prds/{pid}/requests", headers=auth, json={"request_id": r}).status_code == 200
+    s = _summary(client, auth, pid)
+    assert s["request_count"] == 2 and s["request_types"] == {"feature": 1, "bug": 1}
+    assert s["request_votes"] >= 1
+    assert len(client.get(f"/api/prds/{pid}/requests", headers=auth).json()) == 2
+    assert client.delete(f"/api/prds/{pid}/requests/{a}", headers=auth).status_code == 200
+    s = _summary(client, auth, pid)
+    assert s["request_count"] == 1 and s["request_types"] == {"bug": 1}
+
+
+def test_closed_prd_refuses_link(client, auth, db):
+    pid = _prd(client, auth)
+    rid = _req(client, auth, "Dark mode")
+    prd = prd_svc.get_prd(db, pid)
+    prd.close_record = {"closed": True}
+    db.commit()
+    assert client.post(f"/api/prds/{pid}/requests", headers=auth, json={"request_id": rid}).status_code == 409
+
+
+def test_other_projects_request_refused(client, auth, db):
+    from app.models import Project
+
+    db.add(Project(id="other", name="Other", tag="OTH"))
+    db.commit()
+    from app.models import Request
+    from app.services import keys
+
+    rid, number = keys.mint(db, "other", "request")
+    db.add(Request(id=rid, number=number, project_id="other", type="feature", title="Dark mode"))
+    db.commit()
+    pid = _prd(client, auth)
+    r = client.post(f"/api/prds/{pid}/requests", headers=auth, json={"request_id": rid})
+    assert r.status_code == 404
+    assert _summary(client, auth, pid)["request_count"] == 0
+
+
+def test_suggestions_exclude_linked_and_respect_threshold(client, auth):
+    pid = _prd(client, auth)
+    a = _req(client, auth, "Dark mode theme toggle")
+    _req(client, auth, "Dark mode theme toggle for the app")
+    client.post(f"/api/prds/{pid}/requests", headers=auth, json={"request_id": a})
+    body = client.get(f"/api/prds/{pid}/request-suggestions", headers=auth).json()
+    assert body["available"] is True
+    ids = [s["request_id"] for s in body["suggestions"]]
+    assert a not in ids and ids
+    assert all(s["score"] >= prd_svc.SUGGESTION_THRESHOLD for s in body["suggestions"])
+
+
+def test_embedder_failure_is_unavailable_not_empty(client, auth, monkeypatch):
+    # Sabotage: a dead embedder must not look like "no matches".
+    pid = _prd(client, auth)
+    _req(client, auth, "Dark mode theme toggle")
+
+    class Dead:
+        def embed(self, text):
+            raise RuntimeError("down")
+
+    monkeypatch.setattr("app.providers.get_embedder", lambda: Dead())
+    body = client.get(f"/api/prds/{pid}/request-suggestions", headers=auth).json()
+    assert body["available"] is False
+
+
+def test_best_prd_for_request(client, auth, db):
+    from app.models import Request
+
+    pid = _prd(client, auth)
+    rid = _req(client, auth, "Dark mode theme toggle for the app")
+    hit = prd_svc.best_prd_for_request(db, db.get(Request, rid))
+    assert hit and hit["prd_id"] == prd_svc.get_prd(db, pid).key
