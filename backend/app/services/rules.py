@@ -136,9 +136,9 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "An agent may discard its candidate shard; only an independent judge publishes one.",
          "enforced", _src("app/services/memory.py", "agent_publish"), "code"),
     Rule("memory.write_access", "learn", "Changing memory needs write access",
-         "Retiring or restoring a shard needs write access to its project, or to at least one "
-         "project when the shard has none.",
-         "enforced", _src("app/routers/memory.py", "Refused"), "code"),
+         "Retiring, restoring or applying recommendations to a shard needs write access to its "
+         "project, or to at least one project when the shard has none.",
+         "enforced", _src("app/routers/memory.py", "refuse_memory_write"), "code"),
     Rule("memory.retire_window", "learn", "Retire and restore follow the shard's state",
          "Only a published shard can be retired or kept, and a retired shard can be restored for "
          "14 days; after that the retirement is final.",

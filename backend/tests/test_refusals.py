@@ -213,3 +213,30 @@ def test_coverage_reads_what_publish_wrote(tmp_path):
 def test_no_coverage_is_committed_by_a_pr():
     """Only the main build writes it; a tree that carries one was hand-written or copied."""
     assert not R.REFUSAL_COVERAGE_FILE.exists() or R.refusal_coverage()["commit"]
+
+
+def test_a_refused_shard_retire_lands_in_the_shards_project(client, auth):
+    """A read-only member's retire is a `memory.write_access` refusal on the shard, recorded
+    in the shard's project. Sabotage: drop the shard branch of `_target_project` — fails."""
+    from app.models import Membership
+    from app.services import events
+
+    pid = client.post("/api/projects", json={"name": "Shards"}, headers=auth).json()["id"]
+    sid = client.post("/api/memory/shards", json={"text": "pin pg16 in CI", "project_id": pid},
+                      headers=auth).json()["id"]
+    db = SessionLocal()
+    try:
+        for m in db.scalars(select(Membership).where(Membership.project_id == pid)):
+            m.access = "read"
+        db.commit()
+    finally:
+        db.close()
+    r = client.post(f"/api/memory/shards/{sid}/retire", headers=auth)
+    assert r.status_code == 403 and r.json()["rule_id"] == "memory.write_access"
+    db = SessionLocal()
+    try:
+        out = events.list_events(db, project_ids=[pid], lens="rejected")
+    finally:
+        db.close()
+    assert [(x["action"], x["target_type"], x["target_id"]) for x in out["results"]] == [
+        ("refusal", "shard", sid)]

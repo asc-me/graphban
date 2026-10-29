@@ -93,7 +93,7 @@ def record_refusal(db: Session, *, rule_id: str | None, surface: str, where: str
     meta = {**(meta or {}), "where": where, "status": status, "reason": detail[:500]}
     if rule_id:
         meta["rule_id"] = rule_id
-    if project_id is None and target_type in ("item", "prd") and target_id:
+    if project_id is None and target_type in ("item", "prd", "shard") and target_id:
         # A route like `PATCH /api/prds/{prd_id}` names no project; without one the refusal
         # is in the ledger but in no project's Activity, which reads as "nothing refused".
         project_id = _target_project(db, target_type, target_id)
@@ -105,10 +105,13 @@ def record_refusal(db: Session, *, rule_id: str | None, surface: str, where: str
 
 
 def _target_project(db: Session, target_type: str, target_id: str) -> str | None:
-    from app.models import Item, Prd
+    from app.models import Item, MemoryShard, Prd
     from app.services import keys
 
     try:
+        if target_type == "shard":
+            row = db.get(MemoryShard, target_id)
+            return row.project_id if row is not None else None
         model = Item if target_type == "item" else Prd
         row = db.get(model, keys.resolve(db, target_id, target_type) or target_id)
         return row.project_id if row is not None else None
