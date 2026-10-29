@@ -1,32 +1,167 @@
-import { ArrowUp, Check, Copy, Inbox, MessageSquare, Radar } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
-import {
-  FETCH_FAILED,
-  PlannerError,
-  TriageQueueSkeleton,
-} from "@/components/planner/PlannerStates";
+import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
+import { useTriageFeed } from "@/lib/queries";
 import { TYPE_META } from "@/lib/meta";
-import { useAcceptRequest, useFleet, useTriageQueue, useVoteRequest } from "@/lib/queries";
-import type { RequestType, TriageRow } from "@/lib/types";
+import type { RequestType, TriageFeedRow } from "@/lib/types";
+
+import { TABS, actionsFor, formatAge, inTab, type TriageAction, type Undo } from "./actions";
+import { TriageDetail } from "./TriageDetail";
 
 /**
- * Screen 14 — Triage. Two questions on one page, because they are asked together:
- * *what came in*, and *what is already in flight that a new claim would collide with*.
+ * Triage — one keyboard-driven queue across bugs, requests, blockers and collisions
+ * (GRPH-1148, PRD-60 D11). Per-project: collision clustering reasons over one project's code
+ * graph only.
  *
- * **Per-project, and the header says so.** Collision clustering reasons over one
- * project's code graph; `collision.py` and `clustering.py` scope every query by
- * `project_id`. A package name shared across repos is a galaxy edge, not a collision, and
- * a screen that implied otherwise would be promising an analysis nothing computes.
+ * Three states are kept apart on purpose, because each reads as "nothing waiting" if merged:
+ * still loading, a source that did not answer (`failed_sources`), and a queue that is truly
+ * clear. Only the last may say "Triage clear".
  */
+
+interface Processed {
+  row: TriageFeedRow;
+  result: string;
+  undo: Undo;
+}
+
+const KIND_COLOR: Record<string, string> = {
+  blocker: "#ff6b6b",
+  collision: "#e0b34a",
+};
+const kindColor = (r: TriageFeedRow) => KIND_COLOR[r.kind] ?? (r.kind in TYPE_META ? TYPE_META[r.kind as RequestType].color : undefined) ?? "#8b949e";
+const kindLabel = (r: TriageFeedRow) => r.kind.toUpperCase();
+
+function metaOf(r: TriageFeedRow): string {
+  if (r.kind === "blocker")
+    return `${r.owner ?? "unclaimed"} · ${r.decision ? "needs a decision" : r.waiting_on ? `waiting on ${r.waiting_on.id}` : "blocked"}`;
+  if (r.kind === "collision") return `${r.members.length} items · ${r.risk}`;
+  return `↑ ${r.votes} · ${r.by || "anonymous"}${r.duplicate ? " · dup?" : ""}`;
+}
+
 export function TriageView() {
   const { active } = useProjectCtx();
   const projectId = active?.id ?? "";
-  const queueQ = useTriageQueue(projectId);
-  const fleetQ = useFleet(projectId);
-  const queue = queueQ.data ?? [];
-  const clusters = fleetQ.data?.clusters ?? [];
+  const qc = useQueryClient();
+  const feedQ = useTriageFeed(projectId);
+
+  const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("all");
+  const [selId, setSelId] = useState<string | null>(null);
+  const [processed, setProcessed] = useState<Processed[]>([]);
+  const [confirming, setConfirming] = useState<TriageAction | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const busy = useRef(false);
+
+  const hidden = useMemo(() => new Set(processed.map((p) => p.row.id)), [processed]);
+  const live = useMemo(
+    () => (feedQ.data?.rows ?? []).filter((r) => !hidden.has(r.id)),
+    [feedQ.data, hidden],
+  );
+  const shown = useMemo(() => live.filter((r) => inTab(r, tab)), [live, tab]);
+  const sel = shown.find((r) => r.id === selId) ?? shown[0] ?? null;
+  const actions = useMemo(() => (sel ? actionsFor(sel, projectId) : []), [sel, projectId]);
+
+  const refresh = useCallback(
+    () => qc.invalidateQueries({ queryKey: ["triage-feed", projectId] }),
+    [qc, projectId],
+  );
+
+  const run = useCallback(
+    async (action: TriageAction) => {
+      if (!sel || busy.current) return;
+      busy.current = true;
+      setConfirming(null);
+      setError(null);
+      const i = shown.indexOf(sel);
+      const next = shown[i + 1] ?? shown[i - 1] ?? null;
+      try {
+        const { result, undo } = await action.run();
+        setProcessed((p) => [...p, { row: sel, result, undo }]);
+        setSelId(next?.id ?? null);
+        void refresh();
+      } catch (e) {
+        // The row stays: a failed action must not look processed.
+        setError(`${action.label} failed — ${e instanceof Error ? e.message : "the request failed"}`);
+      } finally {
+        busy.current = false;
+      }
+    },
+    [sel, shown, refresh],
+  );
+
+  const trigger = useCallback(
+    (action: TriageAction) => (action.confirm ? setConfirming(action) : void run(action)),
+    [run],
+  );
+
+  const undo = useCallback(async () => {
+    const last = processed[processed.length - 1];
+    if (!last || busy.current) return;
+    busy.current = true;
+    setError(null);
+    try {
+      await last.undo();
+      setProcessed((p) => p.slice(0, -1));
+      setTab("all");
+      setSelId(last.row.id);
+      void refresh();
+    } catch (e) {
+      setError(`Undo failed — ${e instanceof Error ? e.message : "the request failed"}`);
+    } finally {
+      busy.current = false;
+    }
+  }, [processed, refresh]);
+
+  const move = useCallback(
+    (dir: number) => {
+      if (!shown.length) return;
+      const i = Math.max(0, sel ? shown.indexOf(sel) : 0);
+      setSelId(shown[Math.min(shown.length - 1, Math.max(0, i + dir))].id);
+    },
+    [shown, sel],
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      // Letter keys never fire while focus is in a text field.
+      if (t && (/^(input|textarea|select)$/i.test(t.tagName) || t.isContentEditable)) return;
+      const k = e.key.toLowerCase();
+      if (confirming) {
+        if (e.key === "Enter") { if (t?.tagName !== "BUTTON") { e.preventDefault(); void run(confirming); } }
+        else if (e.key === "Escape") setConfirming(null);
+        return;
+      }
+      if (k === "j" || e.key === "ArrowDown") { move(1); e.preventDefault(); return; }
+      if (k === "k" || e.key === "ArrowUp") { move(-1); e.preventDefault(); return; }
+      if (e.key === "Backspace" || k === "z") { void undo(); e.preventDefault(); return; }
+      const tabHit = TABS.find((x) => x.key === e.key);
+      if (tabHit) { setTab(tabHit.id); setSelId(null); return; }
+      if (e.key === "Enter") {
+        // A focused button handles its own Enter; running the primary too would fire twice.
+        if (t?.tagName === "BUTTON") return;
+        const primary = actions.find((a) => a.primary);
+        if (primary) { e.preventDefault(); trigger(primary); }
+        return;
+      }
+      if (k === "c") {
+        const ta = document.querySelector<HTMLTextAreaElement>("textarea[data-triage-comment]");
+        if (ta) { ta.focus(); e.preventDefault(); return; }
+      }
+      const hit = actions.find((a) => a.key === k);
+      if (hit) { e.preventDefault(); trigger(hit); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [actions, confirming, move, run, trigger, undo]);
+
+  const loading = feedQ.isLoading;
+  const failedRead = feedQ.isError && !feedQ.data;
+  const failedSources = feedQ.data?.failed_sources ?? [];
+  const total = live.length + processed.length;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -34,7 +169,7 @@ export function TriageView() {
         viewName="Triage"
         purpose={
           <span className="flex items-center gap-2.5">
-            Clustering reasons over this project's code graph only. Overlaps across repos are not computed — a shared package name is a galaxy edge, not a collision.
+            What is waiting on a person. Clustering reasons over this project's code graph only — overlaps across repos are not computed.
             <span className="rounded-full border border-st-next/30 bg-st-next/[0.07] px-2 py-0.5 font-mono text-meta uppercase tracking-[0.06em] text-st-next">
               per-project · {active?.tag ?? "—"}
             </span>
@@ -42,272 +177,170 @@ export function TriageView() {
         }
       />
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[1300px] px-6 pb-16 pt-6">
-          <div className="grid gap-4 lg:grid-cols-[320px_1fr] lg:items-start">
-            <IncomingQueue
-              rows={queue}
-              loading={queueQ.isLoading}
-              failed={queueQ.isError && !queueQ.data}
-              onRetry={() => void queueQ.refetch()}
-              projectId={projectId}
-            />
-            <Clusters
-              clusters={clusters}
-              failed={fleetQ.isError && !fleetQ.data}
-              onRetry={() => void fleetQ.refetch()}
-            />
+      <div className="flex flex-wrap items-center gap-4 border-b border-line px-6 py-2.5 font-mono text-meta text-muted">
+        <span>
+          <span className="text-fg-2">{loading || failedRead ? "—" : live.length}</span> waiting ·{" "}
+          <span className="text-fg-2">{processed.length}</span> processed this session
+        </span>
+        <div
+          className="h-1 w-40 overflow-hidden rounded-full bg-surface-3"
+          role="progressbar"
+          aria-label="Processed this session"
+          aria-valuemin={0}
+          aria-valuemax={total}
+          aria-valuenow={processed.length}
+        >
+          <div
+            className="h-full bg-accent"
+            style={{ width: total ? `${(processed.length / total) * 100}%` : "0%" }}
+          />
+        </div>
+        <span className="flex-1" />
+        <span className="text-faint-2">J K move · 1–5 tabs · A…Z act · ⌫ undo</span>
+      </div>
+
+      {failedSources.length > 0 && (
+        <div role="alert" className="border-b border-st-review/30 bg-st-review/[0.07] px-6 py-2 text-small text-st-review">
+          Did not answer: {failedSources.join(", ")}. Those rows are missing from this queue —
+          it is not clear.
+        </div>
+      )}
+      {error && (
+        <div role="alert" className="border-b border-st-blocked/30 bg-st-blocked/[0.07] px-6 py-2 text-small text-st-blocked">
+          {error}
+        </div>
+      )}
+
+      <div className="grid min-h-0 flex-1 lg:grid-cols-[360px_1fr]">
+        <div className="flex min-h-0 flex-col border-r border-line">
+          <div className="flex gap-1 border-b border-line px-3 py-2">
+            {TABS.map((t) => {
+              const n = feedQ.data?.counts[t.id];
+              const on = tab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => { setTab(t.id); setSelId(null); }}
+                  aria-pressed={on}
+                  className={`flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-meta ${
+                    on ? "border-control bg-surface-3 text-fg" : "border-transparent text-muted hover:text-fg-2"
+                  }`}
+                >
+                  {t.dot && <span className="h-1.5 w-1.5 rounded-full" style={{ background: t.dot }} />}
+                  {t.label}
+                  <span className="text-faint-2">{n ?? "·"}</span>
+                </button>
+              );
+            })}
           </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
-function IncomingQueue({
-  rows,
-  loading,
-  failed,
-  onRetry,
-  projectId,
-}: {
-  rows: TriageRow[];
-  loading: boolean;
-  /** The request failed. Distinct from `rows.length === 0`, which means the queue is clear. */
-  failed: boolean;
-  onRetry: () => void;
-  projectId: string;
-}) {
-  return (
-    <section className="overflow-hidden rounded-[13px] border border-line bg-surface-2">
-      <div className="flex items-center gap-2.5 border-b border-line px-3.5 py-3">
-        <MessageSquare size={15} className="shrink-0 text-accent" />
-        <h2 className="flex-1 text-lead font-semibold">Incoming</h2>
-        <span className="font-mono text-meta text-faint-2">{rows.length}</span>
-      </div>
-
-      {failed ? (
-        <PlannerError message={FETCH_FAILED} onRetry={onRetry} />
-      ) : loading ? (
-        <div className="p-3.5">
-          <TriageQueueSkeleton />
-        </div>
-      ) : rows.length === 0 ? (
-        <div className="px-3.5 py-7 text-center">
-          <div className="text-[13px] font-semibold text-fg-2">Queue is empty</div>
-          <p className="mx-auto mt-1.5 max-w-[34ch] text-[11.5px] leading-relaxed text-muted">
-            Everything reported has been triaged. Not the same as nothing having been
-            reported — history lives in the tracker.
-          </p>
-        </div>
-      ) : (
-        rows.map((row) => <QueueRow key={row.request.id} row={row} projectId={projectId} />)
-      )}
-    </section>
-  );
-}
-
-function QueueRow({ row, projectId }: { row: TriageRow; projectId: string }) {
-  const accept = useAcceptRequest(projectId);
-  const vote = useVoteRequest();
-  const { request: req, duplicate } = row;
-  const meta = TYPE_META[req.type as RequestType];
-
-  return (
-    <div className="border-b border-line px-3.5 py-3 hover:bg-surface-3">
-      <div className="flex items-start gap-2.5">
-        <span
-          className="mt-0.5 shrink-0 rounded border px-1.5 py-px font-mono text-micro uppercase tracking-[0.04em]"
-          style={{ color: meta?.color, borderColor: `${meta?.color}44` }}
-        >
-          {req.type}
-        </span>
-        <span className="min-w-0 flex-1 text-body leading-snug text-fg-2">{req.title}</span>
-      </div>
-
-      <div className="mt-2 flex items-center gap-2.5 font-mono text-meta text-faint-2">
-        <span>{req.by || "anonymous"}</span>
-        <span className="text-faint">·</span>
-        <button
-          onClick={() => vote.mutate({ id: req.id, delta: 1 })}
-          className="inline-flex items-center gap-1 text-muted hover:text-accent"
-        >
-          <ArrowUp size={9} />
-          {req.votes}
-        </button>
-        <div className="flex-1" />
-        <button
-          onClick={() => accept.mutate(req.id)}
-          disabled={accept.isPending}
-          className="h-5 rounded-[5px] border border-accent/30 px-2 font-mono text-micro uppercase tracking-[0.04em] text-accent hover:bg-accent/10 disabled:opacity-50"
-        >
-          {accept.isPending ? "…" : "Accept"}
-        </button>
-      </div>
-
-      {duplicate && (
-        <div className="mt-2 flex items-center gap-2 rounded-md border border-line bg-surface px-2 py-1.5">
-          <Copy size={11} className="shrink-0 text-st-next" />
-          <span className="min-w-0 flex-1 text-small text-muted">
-            looks like <span className="font-mono text-st-next">{duplicate.id}</span> —{" "}
-            {Math.round(duplicate.score * 100)}% similar
-          </span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-type Cluster = NonNullable<ReturnType<typeof useFleet>["data"]>["clusters"][number];
-
-/**
- * In-flight work grouped by the code it touches.
- *
- * A cluster of one is not a collision, so only real overlaps are drawn — but "no
- * overlaps" has two very different causes, and the empty state names which one it is
- * rather than showing a calm green tick over an idle project.
- */
-function Clusters({
-  clusters,
-  failed,
-  onRetry,
-}: {
-  clusters: Cluster[];
-  /**
-   * The fleet read failed. Without this the calm green "Nothing in flight" panel — which
-   * asserts the check ran and found no conflict — would be shown for a check that never
-   * ran at all (PRD-47 S1).
-   */
-  failed: boolean;
-  onRetry: () => void;
-}) {
-  const overlapping = clusters.filter((c) => c.items.length > 1);
-  const anyInFlight = clusters.length > 0;
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-2.5">
-        <Radar
-          size={15}
-          className={failed ? "text-muted" : overlapping.length ? "text-st-review" : "text-st-done"}
-        />
-        <h2 className="text-lead font-semibold">Collision clusters</h2>
-        <span className="font-mono text-meta uppercase tracking-[0.05em] text-faint-2">
-          {failed
-            ? "unavailable"
-            : overlapping.length
-              ? `${overlapping.length} overlapping`
-              : `${clusters.length} in flight`}
-        </span>
-      </div>
-
-      {failed ? (
-        <div className="rounded-[13px] border border-line bg-surface-2">
-          <PlannerError message={FETCH_FAILED} onRetry={onRetry} />
-        </div>
-      ) : overlapping.length === 0 ? (
-        <div className="flex gap-3 rounded-[13px] border border-st-done/25 bg-st-done/[0.05] px-4 py-5">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border border-st-done/30 bg-st-done/[0.12]">
-            {anyInFlight ? (
-              <Check size={16} className="text-st-done" />
+          <div className="min-h-0 flex-1 overflow-y-auto" role="listbox" aria-label="Triage queue">
+            {failedRead ? (
+              <PlannerError message={FETCH_FAILED} onRetry={() => void feedQ.refetch()} />
+            ) : loading ? (
+              <p className="px-4 py-6 font-mono text-meta text-muted" aria-busy="true">
+                Loading the triage queue…
+              </p>
+            ) : shown.length === 0 ? (
+              <EmptyState tab={tab} processed={processed.length} partial={failedSources.length > 0} />
             ) : (
-              <Inbox size={16} className="text-st-done" />
+              shown.map((r) => {
+                const on = r.id === sel?.id;
+                return (
+                  <div
+                    key={r.id}
+                    role="option"
+                    aria-selected={on}
+                    onClick={() => setSelId(r.id)}
+                    className={`cursor-pointer border-b border-line px-3.5 py-2.5 ${on ? "bg-surface-3" : "hover:bg-surface-2"}`}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <span
+                        className="mt-0.5 shrink-0 rounded border px-1.5 py-px font-mono text-micro uppercase tracking-[0.04em]"
+                        style={{ color: kindColor(r), borderColor: `${kindColor(r)}44` }}
+                      >
+                        {kindLabel(r)}
+                      </span>
+                      <span className={`min-w-0 flex-1 text-body leading-snug ${on ? "text-fg" : "text-fg-2"}`}>{r.title}</span>
+                      <span className="shrink-0 font-mono text-meta text-faint-2">{formatAge(r.age_seconds)}</span>
+                    </div>
+                    <div className="mt-1 font-mono text-meta text-faint-2">
+                      {r.kind} · {r.id} · {metaOf(r)}
+                    </div>
+                  </div>
+                );
+              })
             )}
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="text-lead font-semibold text-st-done">
-              {anyInFlight ? "No overlaps in flight" : "Nothing in flight"}
+          </div>
+
+          <div className="border-t border-line px-3.5 py-2.5">
+            <div className="flex items-center gap-2 font-mono text-micro uppercase tracking-[0.07em] text-faint-2">
+              <span className="flex-1">Processed</span>
+              <button
+                onClick={() => void undo()}
+                disabled={!processed.length}
+                className="rounded border border-control px-1.5 py-px normal-case tracking-normal text-muted enabled:hover:text-fg disabled:opacity-40"
+              >
+                Undo last <kbd>⌫</kbd>
+              </button>
             </div>
-            <div className="mt-1 text-[12px] leading-relaxed text-st-done/70">
-              {anyInFlight
-                ? `${clusters.length} claim${clusters.length === 1 ? "" : "s"} open and no two touch the same code, so they can run in parallel.`
-                : "Nothing is claimed, so there is nothing to collide. This is an idle project, not a cleared one — the check found no work rather than no conflict."}
+            <ul className="mt-1.5 space-y-1">
+              {processed.slice(-5).reverse().map((p) => (
+                <li key={p.row.id} className="truncate text-small text-muted">
+                  <span className="font-mono text-faint-2">{p.row.id}</span> {p.result}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+
+        <div className="min-h-0 overflow-y-auto">
+          {sel ? (
+            <TriageDetail row={sel} actions={actions} onAction={trigger} />
+          ) : (
+            <p className="px-6 py-10 text-small text-muted">Nothing selected.</p>
+          )}
+        </div>
+      </div>
+
+      {confirming && (
+        <div role="dialog" aria-modal="true" aria-label={`Confirm ${confirming.label}`}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-[380px] rounded-[13px] border border-line-2 bg-surface-2 p-5">
+            <div className="text-lead font-semibold">{confirming.label}?</div>
+            <p className="mt-2 text-small leading-relaxed text-muted">{confirming.confirm}</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setConfirming(null)}
+                className="h-7 rounded-md border border-control px-3 text-small text-muted hover:text-fg">
+                Cancel <kbd className="font-mono">esc</kbd>
+              </button>
+              <button autoFocus onClick={() => void run(confirming)}
+                className="h-7 rounded-md bg-accent px-3 text-small font-semibold text-bg">
+                {confirming.label} <kbd className="font-mono">↵</kbd>
+              </button>
             </div>
           </div>
         </div>
-      ) : (
-        overlapping.map((c, i) => <ClusterCard key={i} cluster={c} />)
       )}
     </div>
   );
 }
 
-function ClusterCard({ cluster }: { cluster: Cluster }) {
-  const risk = cluster.blocked_on ? "blocked" : "serialize";
+function EmptyState({ tab, processed, partial }: { tab: string; processed: number; partial: boolean }) {
+  if (tab !== "all") {
+    const name = TABS.find((t) => t.id === tab)?.label.toLowerCase();
+    return <p className="px-4 py-6 text-small text-muted">No {name} waiting.</p>;
+  }
   return (
-    <section
-      className={`overflow-hidden rounded-[13px] border bg-surface-2 ${
-        risk === "blocked" ? "border-st-blocked/30" : "border-st-review/30"
-      }`}
-    >
-      <div
-        className={`flex flex-wrap items-center gap-2.5 px-4 py-3 ${
-          risk === "blocked" ? "bg-st-blocked/[0.05]" : "bg-st-review/[0.05]"
-        }`}
-      >
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.05em] ${
-            risk === "blocked"
-              ? "border-st-blocked/30 text-st-blocked"
-              : "border-st-review/30 text-st-review"
-          }`}
-        >
-          <span className="h-[5px] w-[5px] rounded-full bg-current" />
-          {risk}
-        </span>
-        <span className="font-mono text-[11.5px] text-fg-2">
-          {cluster.items.length} items overlap
-        </span>
-        {cluster.predicted && (
-          <span className="rounded border border-purple/30 px-1.5 py-px font-mono text-micro uppercase tracking-[0.05em] text-purple">
-            predicted
-          </span>
-        )}
-      </div>
-
-      <div className="px-4 py-3">
-        <div className="flex flex-wrap gap-1.5">
-          {cluster.items.map((id) => (
-            <span
-              key={id}
-              className="rounded-[5px] border border-line px-1.5 py-px font-mono text-[10.5px] text-fg-2"
-            >
-              {id}
-            </span>
-          ))}
-        </div>
-
-        <div className="mt-2.5 font-mono text-[9px] uppercase tracking-[0.07em] text-faint-2">
-          shared paths
-        </div>
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {cluster.areas.map((a) => (
-            <span
-              key={a}
-              className="rounded-[5px] border border-line bg-surface px-1.5 py-px font-mono text-[10px] text-muted"
-            >
-              {a}
-            </span>
-          ))}
-        </div>
-
-        <p className="mt-3 text-[11.5px] leading-relaxed text-muted">
-          {cluster.blocked_on ? (
-            <>
-              Blocked on <span className="font-mono text-st-blocked">{cluster.blocked_on}</span> —
-              the overlap is already held, so a second claim would be refused rather than
-              queued.
-            </>
-          ) : (
-            <>
-              Serialize — these touch{" "}
-              <span className="font-mono text-fg-2">{cluster.areas[0] ?? "the same code"}</span>
-              {cluster.areas.length > 1 && ` and ${cluster.areas.length - 1} more`}. Running
-              them together is what produces the conflict this check exists to predict.
-            </>
-          )}
-        </p>
-      </div>
-    </section>
+    <div className="px-4 py-8 text-center">
+      <div className="text-[13px] font-semibold text-fg-2">{partial ? "Nothing to show" : "Triage clear"}</div>
+      <p className="mx-auto mt-1.5 max-w-[34ch] text-[11.5px] leading-relaxed text-muted">
+        {partial
+          ? "Some sources did not answer, so this is not a clear queue."
+          : processed
+            ? `You processed ${processed} this session. Nothing else is waiting.`
+            : "Nothing is waiting. History lives in the tracker."}
+      </p>
+    </div>
   );
 }

@@ -37,7 +37,7 @@ import { TriageView } from "@/features/triage/TriageView";
  * The factory is hoisted above every top-level binding, so `fail` is declared inside it.
  */
 const FAILING_ENDPOINTS = [
-  "dashboard", "counts", "events", "triageQueue", "fleet", "harness", "harnessProbeCandidates",
+  "dashboard", "counts", "events", "projectTriage", "fleet", "harness", "harnessProbeCandidates",
   "items", "shards", "codeMap", "prds", "orgs", "galaxy", "platform", "mcpTools",
   "links", "apiKeys",
 ];
@@ -45,7 +45,7 @@ const FAILING_ENDPOINTS = [
 vi.mock("@/lib/api", () => {
   const fail = () => Promise.reject(new Error("boom"));
   const endpoints = [
-    "dashboard", "counts", "events", "triageQueue", "fleet", "harness", "harnessProbeCandidates",
+    "dashboard", "counts", "events", "projectTriage", "fleet", "harness", "harnessProbeCandidates",
     "items", "shards", "codeMap", "prds", "orgs", "galaxy", "platform", "mcpTools",
     "links", "apiKeys",
   ];
@@ -120,14 +120,10 @@ describe("a failed fetch is not an empty project", () => {
     expect(screen.queryByRole("group", { name: "Activity lenses" })).not.toBeInTheDocument();
   });
 
-  it("Triage names both failures instead of 'Queue is empty' and 'Nothing in flight'", async () => {
+  it("Triage names the failure instead of 'Triage clear'", async () => {
     show(<TriageView />);
-    const failures = await screen.findAllByText(FAILED_COPY);
-    // Two independent reads fail independently: the queue and the fleet.
-    expect(failures.length).toBe(2);
-    expect(screen.queryByText(/queue is empty/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/nothing in flight/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/no overlaps in flight/i)).not.toBeInTheDocument();
+    expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
+    expect(screen.queryByText(/triage clear/i)).not.toBeInTheDocument();
   });
 
   it("Harness says the catalog was not served, not that nothing is measured", async () => {

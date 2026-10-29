@@ -39,6 +39,8 @@ vi.mock("@/lib/api", () => ({
     publishRequest: publishSpy,
     unpublishRequest: unpublishSpy,
     createRequestComment: commentSpy,
+    requestComments: vi.fn(async () => []),
+    me: vi.fn(async () => ({ id: "u1", name: "Alex Smith", handle: "alex", email: "", avatar: "", initials: "AS" })),
     // The expanded row mounts `LinkedCode`, which reads the request's code links. Served
     // as an empty list so the no-links copy is asserted against a real answer rather than
     // against a query that threw because nothing was mocked.
@@ -81,14 +83,15 @@ describe("Requests publish/comment controls (GRPH-903 sabotage)", () => {
     expect(btn.textContent).toMatch(/published/i);
   });
 
-  it("has a comment form with a public visibility toggle in the expanded row", async () => {
+  it("mounts the shared comment thread, with the public/internal toggle, in the expanded row", async () => {
     renderRequests();
     const expandBtn = await screen.findByTitle(/show detail/i);
     expandBtn.click();
-    const publicCheckbox = await screen.findByLabelText(/public/i);
-    expect(publicCheckbox).toBeTruthy();
-    const textarea = screen.getByPlaceholderText(/write a comment/i);
-    expect(textarea).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Public reply" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Internal note" })).toBeTruthy();
+    expect(screen.getByPlaceholderText(/reply to the submitter/i)).toBeTruthy();
+    // Requests is not the triage inbox: its box is not the one C focuses.
+    expect(document.querySelector("textarea[data-triage-comment]")).toBeNull();
   });
 });
 

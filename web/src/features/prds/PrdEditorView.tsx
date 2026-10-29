@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, ChevronDown, Copy, Eye, FlaskConical, History, Link2, ListChecks, MessageCircleQuestion, MessagesSquare, Save, ShieldQuestion, Sparkles } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Copy, FlaskConical, Link2, ListChecks } from "lucide-react";
 import * as React from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
@@ -130,11 +130,14 @@ export function PrdEditorView() {
         <StatusMenu status={prd.status} onChange={setStatus} complete={!!grill?.complete} />
         <span className="rounded-md bg-surface-4 px-2 py-1 font-mono text-[10px] text-muted-2">{prd.version}</span>
         <Button variant="outline" size="sm" onClick={snapshot}>
-          <History size={13} />
           Snapshot
         </Button>
-        <Button size="sm" onClick={save} disabled={!dirty || saving}>
-          <Save size={13} />
+        <Button
+          size="sm"
+          onClick={save}
+          disabled={!dirty || saving}
+          className={cn(!dirty && !saving && "disabled:bg-accent/55 disabled:text-bg disabled:opacity-100")}
+        >
           {saving ? "Saving…" : dirty ? "Save" : "Saved"}
         </Button>
       </div>
@@ -147,30 +150,30 @@ export function PrdEditorView() {
             key={c.key}
             onClick={() => runAi(c.key)}
             disabled={!!aiBusy}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-[#2a2440] bg-[rgba(167,139,250,0.08)] px-2.5 py-1 text-[11.5px] text-purple-2 transition-colors hover:border-[#3a3358] disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-purple/20 bg-purple/10 px-2.5 py-1 text-[11.5px] text-purple-2 transition-colors hover:border-purple/40 disabled:opacity-50"
           >
-            <Sparkles size={12} />
+            <span aria-hidden>✦</span>
             {aiBusy === c.key ? "…" : c.label}
           </button>
         ))}
         <button
           onClick={() => setRightTab("grill")}
           title="Interactively grill this PRD — the agent asks clarifying questions to sharpen it before building"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-[#1c2620] bg-[rgba(198,242,78,0.08)] px-2.5 py-1 text-[11.5px] text-accent transition-colors hover:border-[#2a3320]"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-accent/15 bg-accent/10 px-2.5 py-1 text-[11.5px] text-accent transition-colors hover:border-accent/30"
         >
-          <MessageCircleQuestion size={12} />
+          <span aria-hidden>✦</span>
           Grill
         </button>
         <div className="ml-auto flex items-center gap-2">
-          <LinkItemsMenu prdId={id} linked={prd.linked} requestCount={linkedReqs.length} requestVotes={linkedReqs.reduce((n, r) => n + r.votes, 0)} onChange={refresh} onOpenRequests={() => setRightTab("requests")} />
+          <LinkedButton itemCount={prd.linked.length} requestCount={linkedReqs.length} requestVotes={linkedReqs.reduce((n, r) => n + r.votes, 0)} onClick={() => setRightTab("requests")} />
           <div className="flex items-center gap-1 rounded-lg border border-line-2 bg-surface-2 p-0.5" data-testid="prd-editor-tabs">
-            <TabBtn id="preview" active={rightTab === "preview"} onClick={() => setRightTab("preview")} icon={<Eye size={12} />} label="Preview" />
-            <TabBtn id="requests" active={rightTab === "requests"} onClick={() => setRightTab("requests")} icon={<MessagesSquare size={12} />} label={`Requests · ${linkedReqs.length}`} />
-            <TabBtn id="assistant" active={rightTab === "assistant"} onClick={() => setRightTab("assistant")} icon={<Sparkles size={12} />} label="Assistant" />
-            <TabBtn id="grill" active={rightTab === "grill"} onClick={() => setRightTab("grill")} icon={<MessageCircleQuestion size={12} />} label="Grill" />
-            <TabBtn id="coverage" active={rightTab === "coverage"} onClick={() => setRightTab("coverage")} icon={<ListChecks size={12} />} label="Coverage" />
-            <TabBtn id="acceptance" active={rightTab === "acceptance"} onClick={() => setRightTab("acceptance")} icon={<ShieldQuestion size={12} />} label="Acceptance" />
-            <TabBtn id="history" active={rightTab === "history"} onClick={() => setRightTab("history")} icon={<History size={12} />} label="History" />
+            <TabBtn id="preview" active={rightTab === "preview"} onClick={() => setRightTab("preview")} label="Preview" />
+            <TabBtn id="requests" active={rightTab === "requests"} onClick={() => setRightTab("requests")} label={`Requests · ${linkedReqs.length}`} />
+            <TabBtn id="assistant" active={rightTab === "assistant"} onClick={() => setRightTab("assistant")} label="Assistant" />
+            <TabBtn id="grill" active={rightTab === "grill"} onClick={() => setRightTab("grill")} label="Grill" />
+            <TabBtn id="coverage" active={rightTab === "coverage"} onClick={() => setRightTab("coverage")} label="Coverage" />
+            <TabBtn id="acceptance" active={rightTab === "acceptance"} onClick={() => setRightTab("acceptance")} label="Acceptance" />
+            <TabBtn id="history" active={rightTab === "history"} onClick={() => setRightTab("history")} label="History" />
           </div>
         </div>
       </div>
@@ -189,7 +192,12 @@ export function PrdEditorView() {
           {rightTab === "preview" ? (
             <Markdown source={body} />
           ) : rightTab === "requests" ? (
-            <PrdRequestsPanel prdId={id} projectId={prd.project_id} />
+            <div className="space-y-3">
+              <div className="flex justify-end">
+                <LinkItemsMenu prdId={id} linked={prd.linked} onChange={refresh} />
+              </div>
+              <PrdRequestsPanel prdId={id} projectId={prd.project_id} />
+            </div>
           ) : rightTab === "assistant" ? (
             <AssistantPanel entityType="prd" entityId={id} projectId={prd.project_id} />
           ) : rightTab === "grill" ? (
@@ -220,18 +228,17 @@ export function PrdEditorView() {
   );
 }
 
-function TabBtn({ id, active, onClick, icon, label }: { id: RightTab; active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
+function TabBtn({ id, active, onClick, label }: { id: RightTab; active: boolean; onClick: () => void; label: string }) {
   return (
     <button
       onClick={onClick}
       data-testid="prd-editor-tab"
       data-tab={id}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11.5px] transition-colors",
+        "rounded-md px-2 py-1 text-[11.5px] transition-colors",
         active ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
       )}
     >
-      {icon}
       {label}
     </button>
   );
@@ -275,33 +282,41 @@ function StatusMenu({
   );
 }
 
-function LinkItemsMenu({
-  prdId,
-  linked,
+function LinkedButton({
+  itemCount,
   requestCount,
   requestVotes,
-  onChange,
-  onOpenRequests,
+  onClick,
 }: {
-  prdId: string;
-  linked: string[];
+  itemCount: number;
   requestCount: number;
   requestVotes: number;
-  onChange: () => void;
-  onOpenRequests: () => void;
+  onClick: () => void;
 }) {
+  return (
+    <button
+      onClick={onClick}
+      data-testid="prd-linked-button"
+      title={`${requestCount} linked requests · ${requestVotes} votes`}
+      className="inline-flex items-center gap-1.5 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted hover:text-fg"
+    >
+      <Link2 size={12} />
+      Linked · {itemCount} items · {requestCount} requests
+    </button>
+  );
+}
+
+function LinkItemsMenu({ prdId, linked, onChange }: { prdId: string; linked: string[]; onChange: () => void }) {
   const { data: items = [] } = useItems();
   async function toggle(itemId: string, add: boolean) {
     await api.linkPrd(prdId, itemId, add);
     onChange();
   }
   return (
-    <div className="flex items-center gap-1">
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button className="inline-flex items-center gap-1.5 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted hover:text-fg">
-          <Link2 size={12} />
-          Linked · {linked.length} items
+          Link items · {linked.length}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="max-h-[320px] w-[300px] overflow-y-auto">
@@ -324,15 +339,6 @@ function LinkItemsMenu({
         })}
       </DropdownMenuContent>
     </DropdownMenu>
-    <button
-      onClick={onOpenRequests}
-      data-testid="prd-linked-requests-button"
-      title={`${requestCount} linked requests · ${requestVotes} votes`}
-      className="inline-flex items-center gap-1.5 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted hover:text-fg"
-    >
-      {requestCount} requests
-    </button>
-    </div>
   );
 }
 
@@ -447,12 +453,12 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
             </div>
           )}
           {cov.shaped && cov.empty_sections.length > 0 && (
-            <div className="mt-1.5 font-mono text-[10.5px] text-[#e0b34a]">
+            <div className="mt-1.5 font-mono text-[10.5px] text-st-review">
               {cov.empty_sections.length} empty — not a task gap
             </div>
           )}
           {cov.open_high_fidelity > 0 && (
-            <div className="mt-1.5 font-mono text-[10.5px] text-[#e0b34a]">
+            <div className="mt-1.5 font-mono text-[10.5px] text-st-review">
               {cov.open_high_fidelity} open · needs a prototype (grill → prototype → grill)
             </div>
           )}
@@ -488,8 +494,8 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
                     className={cn(
                       "rounded border px-1.5 py-px font-mono text-[9px] uppercase tracking-wide transition-colors",
                       open
-                        ? "border-[#e0b34a] text-[#f0c95f]"
-                        : "border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] text-[#e0b34a] hover:border-[#5a4a2a]",
+                        ? "border-st-review text-st-review"
+                        : "border-st-review/25 bg-st-review/10 text-st-review hover:border-st-review/40",
                     )}
                     title="High-fidelity work here needs a prototype — start the handoff"
                   >
@@ -497,12 +503,12 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
                   </button>
                 )}
                 {s.empty && (
-                  <span className="rounded border border-[rgba(224,179,74,0.3)] px-1.5 py-px font-mono text-meta uppercase tracking-wide text-[#e0b34a]">
+                  <span className="rounded border border-st-review/30 px-1.5 py-px font-mono text-meta uppercase tracking-wide text-st-review">
                     empty
                   </span>
                 )}
                 {s.gap ? (
-                  <span className="rounded border border-[rgba(224,179,74,0.3)] px-1.5 py-px font-mono text-meta uppercase tracking-wide text-[#e0b34a]">
+                  <span className="rounded border border-st-review/30 px-1.5 py-px font-mono text-meta uppercase tracking-wide text-st-review">
                     no tasks
                   </span>
                 ) : (
@@ -512,7 +518,7 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
                 )}
               </div>
               {open && (
-                <div className="ml-4 space-y-2 border-l border-[#3a2f1a] pl-3">
+                <div className="ml-4 space-y-2 border-l border-st-review/25 pl-3">
                   {high.map((it) => (
                     <PrototypeRow key={it.id} prdId={prdId} item={it} />
                   ))}
@@ -620,7 +626,7 @@ export function PrototypeRow({ prdId, item }: { prdId: string; item: Item }) {
   return (
     <div className="rounded-[10px] border border-line-2 bg-surface-2 p-2.5">
       <div className="flex items-center gap-2">
-        <FlaskConical size={13} className="flex-none text-[#e0b34a]" />
+        <FlaskConical size={13} className="flex-none text-st-review" />
         <span className="min-w-0 flex-1 truncate text-body text-fg-2">{item.title}</span>
         <span className="font-mono text-[10px] text-faint">{item.id}</span>
       </div>

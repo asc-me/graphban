@@ -959,6 +959,15 @@ export function useTriageQueue(projectId: string) {
   });
 }
 
+/** The unified triage feed. Not polled: the queue under a keyboard must not shift mid-press. */
+export function useTriageFeed(projectId: string) {
+  return useQuery({
+    queryKey: ["triage-feed", projectId],
+    queryFn: () => api.projectTriage(projectId),
+    enabled: !!projectId,
+  });
+}
+
 export function useAcceptRequest(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -1013,12 +1022,23 @@ export function useUnpublishRequest() {
   });
 }
 
+export function useRequestComments(id: string) {
+  return useQuery({
+    queryKey: ["request-comments", id],
+    queryFn: () => api.requestComments(id),
+    enabled: !!id,
+  });
+}
+
 export function useCreateRequestComment() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, body, visibility }: { id: string; body: string; visibility: "public" | "private" }) =>
       api.createRequestComment(id, body, visibility),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.requests }),
+    onSuccess: (_d, { id }) => {
+      void qc.invalidateQueries({ queryKey: ["request-comments", id] });
+      void qc.invalidateQueries({ queryKey: keys.requests });
+    },
   });
 }
 
