@@ -66,6 +66,7 @@ import type {
   StackHealth,
   RecommendedRules,
   RulesFlow,
+  UnmappedRefusals,
   StackTopology,
   Prd,
   PrdCoverage,
@@ -1054,6 +1055,9 @@ export const api = {
     request<StackTopology>(`/platform/stack${projectQuery(projectId)}`),
   /** The rule registry placed on the Rules map's fixed stages (GRPH-1156). */
   rulesFlow: (projectId: string) => request<RulesFlow>(`/rules/flow${projectQuery(projectId)}`),
+  /** Unmapped refusals grouped and ranked over the last `days` by the server (GRPH-1195). */
+  unmappedRefusals: (projectId: string, days = 7) =>
+    request<UnmappedRefusals>(`/rules/refusals/unmapped${projectQuery(projectId)}&days=${days}`),
   /** Suggestions from the project's own evidence; `sources` says what was and wasn't read (GRPH-1160). */
   recommendedRules: (projectId: string) =>
     request<RecommendedRules>(`/rules/recommended${projectQuery(projectId)}`),

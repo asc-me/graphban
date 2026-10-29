@@ -15,7 +15,7 @@ import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { stepIndex } from "@/lib/graph/useGraphKeyboard";
 import { useGraphViewport, zoomAbout } from "@/lib/graph/useGraphViewport";
-import { useRulesFlow } from "@/lib/queries";
+import { useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
 import { adminPath, projectPath, tagFromPath } from "@/lib/routes";
 import type { RuleFlowRule, RuleStage, RuleSuggestion, RulesFlow } from "@/lib/types";
 
@@ -88,6 +88,8 @@ export function RulesView() {
   const { activeId, active } = useProjectCtx();
   const scope = active?.tag || active?.name || activeId;
   const q = useRulesFlow(activeId);
+  const unmapped = useUnmappedRefusals(activeId);
+  const unmappedCount = unmapped.data?.groups.reduce((n, g) => n + g.count, 0);
   const flow = q.data;
   const narrow = useNarrow();
   const [params] = useSearchParams();
@@ -141,7 +143,7 @@ export function RulesView() {
                 pulse && "animate-[pulse_1s_ease-in-out_1] border-accent text-accent",
               )}
             >
-              Unmapped refusals
+              Unmapped refusals{unmappedCount !== undefined && <span data-testid="rules-unmapped-count"> · {unmappedCount}</span>}
             </button>
             <button
               type="button"

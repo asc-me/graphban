@@ -1722,6 +1722,24 @@ class RulesOut(BaseModel):
     rules: list[RuleOut]
 
 
+class UnmappedGroupOut(BaseModel):
+    where: str
+    status: int | None = None
+    #: True for a refusal that named no project at all (the platform bucket, owners only).
+    platform: bool = False
+    count: int
+    last_at: datetime | None = None
+    #: `days` counts, oldest day first.
+    daily: list[int]
+
+
+class UnmappedRefusalsOut(BaseModel):
+    days: int
+    #: Earliest refusal event recorded; None = none ever, which is not "zero since".
+    recording_since: datetime | None = None
+    groups: list[UnmappedGroupOut]
+
+
 class RuleFlowRuleOut(RuleOut):
     used: bool
     label: str | None = None

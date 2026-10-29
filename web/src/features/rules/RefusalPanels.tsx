@@ -1,8 +1,8 @@
 /**
  * Rules side sheets (GRPH-1164, frames 5a–5e): Unmapped refusals and Recommended rules.
  *
- * Unmapped groups are read from the ledger's `refusal_unmapped` events by route template or MCP
- * tool plus status. The "N of M refusal sites name their rule" coverage line is the number a
+ * Unmapped groups are aggregated by the server (GRPH-1195) from `refusal_unmapped` events by route
+ * template or MCP tool plus status, over the last 7 days — the browser only draws them. The "N of M refusal sites name their rule" coverage line is the number a
  * green main build publishes — the browser never computes it, so until the API serves it the
  * line says it is unknown, never zero.
  */
@@ -13,37 +13,14 @@ import { absTime } from "@/features/activity/model";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { useCreateItem, useDismissRecommendedRule, useEvents, useRecommendedRules } from "@/lib/queries";
-import type { Event, RuleSuggestion, SuggestionSource } from "@/lib/types";
+import { useCreateItem, useDismissRecommendedRule, useRecommendedRules, useUnmappedRefusals } from "@/lib/queries";
+import type { RuleSuggestion, SuggestionSource, UnmappedGroup } from "@/lib/types";
 
 const MONO = "font-mono";
-const DAY_MS = 86_400_000;
 const WINDOW_DAYS = 7;
-const EVENT_LIMIT = 500;
 
-export interface UnmappedGroup {
-  key: string;
-  where: string;
-  status: number | null;
-  count: number;
-  /** Oldest day first, `WINDOW_DAYS` buckets. */
-  days: number[];
-}
-
-/** Groups `refusal_unmapped` events by `meta.where` + `meta.status`, most-refused first. */
-export function groupUnmapped(events: Event[], now = Date.now()): UnmappedGroup[] {
-  const groups = new Map<string, UnmappedGroup>();
-  for (const e of events) {
-    const where = typeof e.meta?.where === "string" && e.meta.where ? e.meta.where : "(site not recorded)";
-    const status = typeof e.meta?.status === "number" ? e.meta.status : null;
-    const key = `${where}|${status ?? ""}`;
-    const g = groups.get(key) ?? { key, where, status, count: 0, days: Array(WINDOW_DAYS).fill(0) };
-    g.count += 1;
-    const age = e.ts ? Math.floor((now - Date.parse(e.ts)) / DAY_MS) : NaN;
-    if (age >= 0 && age < WINDOW_DAYS) g.days[WINDOW_DAYS - 1 - age] += 1;
-    groups.set(key, g);
-  }
-  return [...groups.values()].sort((a, b) => b.count - a.count || a.where.localeCompare(b.where));
+function groupKey(g: UnmappedGroup) {
+  return `${g.platform ? "platform|" : ""}${g.where}|${g.status ?? ""}`;
 }
 
 function Sheet({
@@ -52,6 +29,7 @@ function Sheet({
   title,
   onClose,
   children,
+  footer,
   testId,
 }: {
   label: string;
@@ -59,6 +37,7 @@ function Sheet({
   title: string;
   onClose: () => void;
   children: React.ReactNode;
+  footer?: React.ReactNode;
   testId: string;
 }) {
   return (
@@ -83,6 +62,7 @@ function Sheet({
         </button>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3">{children}</div>
+      {footer && <div className="border-t border-line px-4 py-3 text-[11.5px] leading-snug text-muted-2">{footer}</div>}
     </aside>
   );
 }
@@ -114,11 +94,12 @@ function Spark({ days }: { days: number[] }) {
 
 export function UnmappedSheet({ onClose }: { onClose: () => void }) {
   const { activeId } = useProjectCtx();
-  const q = useEvents({ projectId: activeId, action: "refusal_unmapped", limit: EVENT_LIMIT });
+  const q = useUnmappedRefusals(activeId);
   const createItem = useCreateItem(activeId);
   const [filed, setFiled] = React.useState<Record<string, string>>({});
   const [copied, setCopied] = React.useState<string | null>(null);
-  const groups = React.useMemo(() => groupUnmapped(q.data?.results ?? []), [q.data]);
+  const groups = q.data?.groups ?? [];
+  const since = q.data?.recording_since;
 
   function fileAsItem(g: UnmappedGroup) {
     createItem.mutate(
@@ -126,53 +107,69 @@ export function UnmappedSheet({ onClose }: { onClose: () => void }) {
         title: `Name the rule for the ${g.status ?? ""} refusal at ${g.where}`.replace("  ", " "),
         description: `Refused ${g.count} time(s) with no rule_id: ${g.where}${g.status ? ` (${g.status})` : ""}.\n\n## Acceptance\n- The refusal is raised as Refused(..., rule_id=<registered rule>).`,
       },
-      { onSuccess: (item) => setFiled((f) => ({ ...f, [g.key]: item.id })) },
+      { onSuccess: (item) => setFiled((f) => ({ ...f, [groupKey(g)]: item.id })) },
     );
   }
 
   function copy(g: UnmappedGroup) {
     void navigator.clipboard?.writeText(g.where);
-    setCopied(g.key);
+    setCopied(groupKey(g));
   }
 
   return (
-    <Sheet label="Unmapped refusals" kicker="REFUSALS WITH NO RULE" title="Unmapped refusals" onClose={onClose} testId="rules-unmapped">
+    <Sheet
+      label="Unmapped refusals"
+      kicker={`REFUSAL_UNMAPPED · LAST ${WINDOW_DAYS} DAYS`}
+      title="Unmapped refusals"
+      onClose={onClose}
+      testId="rules-unmapped"
+      footer={<span data-testid="rules-unmapped-footer">Mapping a refusal is a code change: raise it as Refused(..., rule_id=…) with a registered rule. Nothing here maps one for you.</span>}
+    >
       <Note testId="rules-unmapped-coverage">
         Coverage unknown: the “N of M refusal sites name their rule” number is published by green main builds and this server is not
         serving it yet. That is not zero.
       </Note>
       {q.isError ? (
         <Note tone="red" testId="rules-unmapped-error">
-          Could not read unmapped refusals: {errorDetail(q.error, "request failed")}. The count is unknown, not zero.
+          <div>
+            Could not read unmapped refusals: {errorDetail(q.error, "request failed")}. The count is unknown, not zero.
+          </div>
+          <div className={cn(MONO, "mt-1 break-all text-meta")} data-testid="rules-unmapped-request">
+            GET /api/rules/refusals/unmapped?project_id={activeId}&days={WINDOW_DAYS}
+          </div>
+          <Button size="sm" variant="outline" className="mt-2" onClick={() => void q.refetch()}>
+            Retry
+          </Button>
         </Note>
       ) : q.isLoading ? (
         <Note>Loading unmapped refusals…</Note>
       ) : groups.length === 0 ? (
         <Note testId="rules-unmapped-empty">
-          No unmapped refusals recorded for this project{q.data?.total === 0 ? "" : ""}. Nothing has been refused without naming a rule
-          since the ledger began recording refusals.
+          {since
+            ? `No unmapped refusals recorded since ${absTime(since)}. Nothing in the last ${WINDOW_DAYS} days was refused without naming a rule.`
+            : "No refusals of any kind have been recorded yet, so this is not a clean result — nothing has been checked."}
         </Note>
       ) : (
         <>
-          {q.data?.has_more && (
-            <Note testId="rules-unmapped-partial">Showing the latest {EVENT_LIMIT} unmapped refusals; older ones are not counted here.</Note>
-          )}
           <ul className="flex flex-col gap-2" data-testid="rules-unmapped-list">
-            {groups.map((g) => (
-              <li key={g.key} className="flex flex-col gap-2 rounded-[12px] border border-[#2a333a] p-3" data-testid="rules-unmapped-row">
+            {groups.map((g, i) => (
+              <li key={groupKey(g)} className="flex flex-col gap-2 rounded-[12px] border border-[#2a333a] p-3" data-testid="rules-unmapped-row">
                 <div className="flex items-start gap-2">
+                  <span className={cn(MONO, "w-5 flex-none text-[12px] text-muted-2")} data-testid="rules-unmapped-rank">#{i + 1}</span>
                   <span className={cn(MONO, "min-w-0 flex-1 break-all text-[12px] text-fg")}>{g.where}</span>
+                  {g.platform && <span className={cn(MONO, "text-[10px] tracking-[0.05em] text-muted-2")}>PLATFORM</span>}
                   {g.status !== null && <span className={cn(MONO, "text-small text-muted")}>{g.status}</span>}
                 </div>
                 <div className="flex items-center gap-3">
                   <span className={cn(MONO, "text-[12px] font-semibold")}>{g.count}×</span>
-                  <Spark days={g.days} />
+                  <Spark days={g.daily} />
+                  {g.last_at && <span className="text-small text-muted" data-testid="rules-unmapped-last">last {absTime(g.last_at)}</span>}
                   <span className="flex-1" />
                   <Button size="sm" variant="outline" onClick={() => copy(g)}>
-                    {copied === g.key ? "Copied" : "Copy route"}
+                    {copied === groupKey(g) ? "Copied" : "Copy route"}
                   </Button>
-                  {filed[g.key] ? (
-                    <span className={cn(MONO, "text-small text-accent")}>Filed {filed[g.key]}</span>
+                  {filed[groupKey(g)] ? (
+                    <span className={cn(MONO, "text-small text-accent")}>Filed {filed[groupKey(g)]}</span>
                   ) : (
                     <Button size="sm" variant="outline" disabled={createItem.isPending} onClick={() => fileAsItem(g)}>
                       File as item
