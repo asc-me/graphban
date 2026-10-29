@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 191 of the 270 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 192 of the 271 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -60,6 +60,12 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | GET | `/api/orgs/{id}/gitops` | JWT (org member) | House process + every org project (identity only). Calls `resolve_org` |
 | PATCH | `/api/orgs/{id}/gitops` | JWT (org admin) | House process. Overlay is the project PATCH |
 | GET | `/api/sync/gitops` | MCP (sync key) | Cloud receiver. `resolve_local` of `targets[0]` — never outbound, never a query-string project |
+
+## Rules (PRD-61)
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/rules` | JWT (project reader) | The rule registry (`services/rules.py`): every delivery rule with its enforcement, typed enforcer and truth. Gitops rows carry the effective value and `source` from `gitops.resolve`; a gitops rule is `advisory` (or `unmeasured`), never `enforced` |
 
 ## Items (tracker)
 
