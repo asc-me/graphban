@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 202 of the 281 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 203 of the 282 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -68,6 +68,7 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | --- | --- | --- | --- |
 | GET | `/api/rules` | JWT (project reader) | The rule registry (`services/rules.py`): every delivery rule with its enforcement, typed enforcer and truth. Gitops rows carry the effective value and `source` from `gitops.resolve`; a gitops rule is `advisory` (or `unmeasured`), never `enforced` |
 | GET | `/api/rules/flow` | JWT (project reader) | The registry placed on the Rules map's seven fixed stages (`rules.flow`): each stage's `state` is the weakest of its used rules, `not_used` only when every rule on it is unused under the project's gitops `model`, and `unmeasured` when no rule is registered. Unused rules stay listed with `used: false` |
+| GET | `/api/rules/refusal-coverage` | JWT (project reader) | The "N of M refusal sites name their rule" number the build of this package published (`rules.refusal_coverage`, GRPH-1192): `{published, n, m, commit, published_at}`. Read from package data, never computed at request time; a build that did not publish returns `published: false` with null `n`, `m`, `commit` and `published_at` — not zero |
 | GET | `/api/rules/recommended` | JWT (project reader) | Recommended-rules suggestions (`services/rules_recommend.py`): `suggestions[]` (`kind` value\|code, `evidence[]`, `fingerprint`) and an always-present `sources[]` (`read` or `not_available` + reason such as `not_connected`). Computed on open, cached ~60s per project; never writes a rule, and a saved value suggestion is advisory |
 | POST | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Dismiss a suggestion for the project, keyed on id + evidence fingerprint; it returns when the evidence changes. 204, or 404 for an unknown id |
 
