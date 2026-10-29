@@ -7,6 +7,7 @@ its entry here.
 """
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,7 +33,8 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 class Enforcer:
     kind: str
     ref: str
-    #: For `graphban_source`: a name that must appear in the file's refusal path (tested).
+    #: For `graphban_source`: the refusal — an exception class the file raises, or a function
+    #: in it that raises (tested by `raises_symbol`, not by a substring match).
     symbol: str = ""
 
 
@@ -77,6 +79,16 @@ _GITOPS_RULES = (
     Rule("gitops.reviewer_bar", "review", "Reviewer bar",
          "What counts as a review: a Graphban sign-off, a forge approval, or both.",
          "advisory", _GITOPS_CONTEXT, "db", channel="context", gitops_field="reviewer_bar"),
+    Rule("gitops.model", "branching", "Gitops model",
+         "The branching model the project runs (which of the gitops presets).",
+         "advisory", _GITOPS_CONTEXT, "db", channel="context", gitops_field="model"),
+    Rule("release.version_from", "release", "Version source",
+         "Where the release version comes from (tag, semver or calver).",
+         "advisory", _GITOPS_CONTEXT, "db", channel="context", gitops_field="version_from"),
+    Rule("release.release_defined_in", "release", "Release process location",
+         "The single path or URL where the project's release process is written.",
+         "advisory", _GITOPS_CONTEXT, "db", channel="context",
+         gitops_field="release_defined_in"),
 )
 
 RULES: tuple[Rule, ...] = _GITOPS_RULES + (
@@ -88,16 +100,13 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "enforced", _src("app/services/prds.py", "DecomposeRequiresApproval"), "code"),
     Rule("review.not_own_work", "review", "Not your own work",
          "The agent that built an item cannot sign it off.",
-         "enforced", _src("app/services/items.py", "built_by"), "code"),
+         "enforced", _src("app/services/fleet.py", "SelfReview"), "code"),
     Rule("review.role_gated_tools", "review", "Role-gated tools",
          "MCP tools outside an agent's role are refused.",
-         "enforced", _src("app/mcp_server.py", "role_refused"), "code"),
+         "enforced", _src("app/services/fleet.py", "check_tool_role"), "code"),
     Rule("review.reviewer_diversity", "review", "Reviewer diversity",
          "Review should come from a different vendor than the builder.",
          "advisory", _src("app/services/fleet.py"), "code", channel="doc"),
-    Rule("release.version_from", "release", "Version source",
-         "Where the release version comes from (tag, semver or calver).",
-         "advisory", _GITOPS_CONTEXT, "db", channel="context"),
     Rule("ci.backend_suite_both_engines", "merge", "Backend suite on both engines",
          "CI runs the backend tests on SQLite and Postgres.",
          "checked", Enforcer("ci_job", ".github/workflows/ci.yml"), "repo_file"),
@@ -125,10 +134,42 @@ def _enforcer_out(e: Enforcer) -> dict:
     return {"kind": e.kind, "ref": e.ref, "url": url}
 
 
+def _raise_names(node: ast.Raise) -> set[str]:
+    exc = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
+    if isinstance(exc, ast.Name):
+        return {exc.id}
+    if isinstance(exc, ast.Attribute):
+        return {exc.attr}
+    return set()
+
+
+def raises_symbol(source: str, symbol: str) -> bool:
+    """True when `symbol` is a refusal in `source`: `raise symbol(...)`, or a function named
+    `symbol` whose body raises. A name that only appears in a comment or string is not one."""
+    if not symbol:
+        return False
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Raise) and node.exc is not None and symbol in _raise_names(node):
+            return True
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == symbol
+                and any(isinstance(n, ast.Raise) for n in ast.walk(node))):
+            return True
+    return False
+
+
+def gitops_view_fields() -> set[str]:
+    """Every value the gitops view resolves, read from its schema — a field added there
+    without a registry entry fails `test_gitops_rules_cover_the_view`."""
+    from app.schemas import GitopsField, GitopsFields, GitopsView
+    top = {n for n, f in GitopsView.model_fields.items() if f.annotation is GitopsField}
+    return top | set(GitopsFields.model_fields)
+
+
 def _db_value(rule: Rule, view) -> dict:
     if rule.gitops_field is None:
         return {"value": None, "source": "unmeasured"}
-    f = getattr(view.fields, rule.gitops_field)
+    holder = view.fields if rule.gitops_field in gitops.FIELDS else view
+    f = getattr(holder, rule.gitops_field)
     return {"value": f.value, "source": f.source}
 
 

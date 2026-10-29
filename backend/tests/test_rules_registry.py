@@ -27,15 +27,53 @@ def test_enforced_rules_have_a_refusal_path():
             continue
         assert r.enforcer.kind == "graphban_source", r.id
         text = (R.BACKEND_ROOT / r.enforcer.ref).read_text()
-        assert r.enforcer.symbol and r.enforcer.symbol in text, r.id
-        assert re.search(r"\braise\b", text), r.id
+        assert R.raises_symbol(text, r.enforcer.symbol), r.id
 
 
-def test_gitops_rules_never_enforced_and_cover_fields():
-    from app.services import gitops
+def test_raises_symbol_ties_the_name_to_a_raise():
+    # A name in a comment, a string, or an unrelated raise is not a refusal path.
+    assert not R.raises_symbol("# SelfReview\nraise ValueError('x')\n", "SelfReview")
+    assert not R.raises_symbol("x = 'SelfReview'\nclass SelfReview(Exception): pass\n",
+                               "SelfReview")
+    assert R.raises_symbol("raise SelfReview('own work')\n", "SelfReview")
+    assert R.raises_symbol("raise authz.Forbidden\n", "Forbidden")
+    assert R.raises_symbol("def gate():\n    if 1:\n        raise X()\n", "gate")
+    assert not R.raises_symbol("def gate():\n    return 1\n", "gate")
+
+
+def test_gitops_rules_cover_the_view():
     g = [r for r in R.RULES if r.gitops_field]
-    assert {r.gitops_field for r in g} == set(gitops.FIELDS)
+    assert {r.gitops_field for r in g} == R.gitops_view_fields()
+    assert {"version_from", "release_defined_in"} <= R.gitops_view_fields()
     assert all(r.enforcement == "advisory" and r.channel == "context" for r in g)
+
+
+def test_db_values_read_from_the_gitops_view(client):
+    from app.db import SessionLocal
+    from app.services import gitops
+    from app.models import Project
+    db = SessionLocal()
+    try:
+        # A measured value must render as itself, not as `unmeasured` (the bounce on 7909e932).
+        p = db.get(Project, "core")
+        p.gitops_version_scheme, p.gitops_release_defined_in = "calver", "docs/release.md"
+        db.commit()
+        view = gitops.resolve(db, "core")
+        assert view.version_from.source == "project"
+        out = {x["id"]: x for x in R.registry(db, "core")}
+    finally:
+        db.close()
+    for r in R.RULES:
+        if not r.gitops_field:
+            continue
+        holder = view.fields if r.gitops_field in gitops.FIELDS else view
+        f = getattr(holder, r.gitops_field)
+        assert (out[r.id]["value"], out[r.id]["source"]) == (f.value, f.source), r.id
+        expected = "unmeasured" if f.source == "unmeasured" else "advisory"
+        assert out[r.id]["enforcement"] == expected, r.id
+    assert out["release.version_from"]["value"] == "calver"
+    assert out["release.version_from"]["enforcement"] == "advisory"
+    assert out["release.release_defined_in"]["value"] == "docs/release.md"
 
 
 def test_source_url_uses_release_tag():
