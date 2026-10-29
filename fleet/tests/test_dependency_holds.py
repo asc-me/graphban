@@ -112,7 +112,8 @@ BRIEF = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by":
 class Server:
     """Enough of Graphban.call for `_delegate_next`, `_recheck_holds` and `plan`."""
 
-    def __init__(self, clusters, details, related):
+    def __init__(self, clusters, details, related, *, rows_carry_blocker=True):
+        self.rows_carry_blocker = rows_carry_blocker
         self.clusters = clusters
         self.details = details
         self.related = related
@@ -135,10 +136,12 @@ class Server:
             return {}
         if tool == "search_items":
             # Lean rows (the server default) carry id/title/status only — no `blocker`.
-            full = kw.get("fields") == "full"
+            # `rows_carry_blocker=False` is the server GRPH-1182 was found on: full rows without it.
+            full = kw.get("fields") == "full" and self.rows_carry_blocker
             return {"results": [{"id": k, **({"blocker": v.get("blocker", "")} if full else {})}
                                 for k, v in self.details.items()
-                                if kw["query"] in (v.get("blocker") or "")]}
+                                if kw["query"] in (v.get("blocker") or "")
+                                + (v.get("description") or "")]}
         raise AssertionError(tool)
 
 
@@ -243,6 +246,48 @@ def test_a_hold_an_earlier_wave_wrote_is_adopted():
     until._adopt_holds(server, held, delegated)
 
     assert list(held) == ["SIB"] and delegated == {"SIB"}
+
+
+def test_the_next_run_lifts_a_hold_an_earlier_run_wrote_on_its_first_tick(tmp_path, monkeypatch):
+    """GRPH-1182, THE CALL. Run A holds SIB on #397; #397 merges; run B — a fresh process with
+    an empty `held` — adopts the hold and lifts it before its first tick, emitting
+    `hold_lifted`. On the server it was found on, whose full search rows carry no `blocker`.
+
+    Sabotage: read `row.get("blocker")` as empty again → nothing adopted, SIB stays held."""
+    repo = _repo(tmp_path)
+    _forge(monkeypatch, "OPEN")
+    server = _cluster_server()
+    server.rows_carry_blocker = False
+    until._delegate_next(server, "GRPH-A1", "w", set(), None, repo=repo, base="main", held={})
+    assert deps.is_hold(server.details["SIB"]["blocker"])
+
+    _forge(monkeypatch, "MERGED")
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(until.observe, "emit", lambda ev, **kw: events.append((ev, kw)))
+    held: dict[str, list[str]] = {}
+    delegated: set[str] = set()
+    until._resume_holds(server, held, delegated, repo, "main")
+
+    assert server.details["SIB"]["blocker"] == ""
+    assert held == {} and "SIB" not in delegated
+    assert [kw["item"] for ev, kw in events if ev == "hold_lifted"] == ["SIB"]
+
+
+def test_a_search_row_without_a_blocker_is_confirmed_not_trusted():
+    """GRPH-1182. A row that does not carry `blocker` says nothing about it: confirmed against
+    `get_item_details`, neither dropped as clean nor adopted on the search hit alone."""
+    server = _cluster_server()
+    server.rows_carry_blocker = False
+    server.details["SIB"]["blocker"] = f"waiting on #397 (SA-558) to merge {deps.HOLD_MARK}"
+    # The search matches description text too: a hit, but not a hold.
+    server.details["SEED"]["description"] = f"what {deps.HOLD_MARK} means"
+    held: dict[str, list[str]] = {}
+
+    until._adopt_holds(server, held, set())
+
+    assert list(held) == ["SIB"]
+    assert until._held_on_server(server) == [
+        ("SIB", f"waiting on #397 (SA-558) to merge {deps.HOLD_MARK}")]
 
 
 # ---- visible before a wave spends anything ---------------------------------------------------------
