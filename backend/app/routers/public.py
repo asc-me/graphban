@@ -37,6 +37,7 @@ from app.schemas import (
     PublicRequestIn,
     PublicRequestOut,
     RequestOut,
+    SubmitterCommentIn,
 )
 from app.services import attachments as att_svc
 from app.services import duplicates as dup_svc
@@ -329,6 +330,24 @@ def tracking_page(track_token: str, request: FastAPIRequest, db: Session = Depen
             data["linked_status"] = item.status
     data["merged_into"] = req_svc.merged_target_key(db, req)
     return data
+
+
+@router.post("/t/{track_token}/comments", status_code=201)
+def submitter_comment(track_token: str, body: SubmitterCommentIn, request: FastAPIRequest, db: Session = Depends(get_db)):
+    """PRD-60 D9: the submitter replies on their own request. The tracking token is the
+    credential; an unknown token is a 404, same as the tracking page."""
+    _rate_or_429(db, request, None)
+    req = req_svc.resolve_track_token(db, track_token)
+    if req is None:
+        raise HTTPException(404, "not found")
+    try:
+        comment = req_svc.create_comment(
+            db, request_id=req.id, author_user_id=None,
+            body=body.body, author_kind="submitter",
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"id": comment.id, "body": comment.body, "created_at": comment.created_at.isoformat()}
 
 
 # ---- PRD-43: public boards ----
