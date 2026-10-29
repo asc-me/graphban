@@ -161,6 +161,14 @@ describe("the PRD editor's six tabs (PRD-47 S4)", () => {
     expect(tabIds()).toEqual(TAB_IDS);
   });
 
+  it("draws the Linked control without an icon and the Grill button without ✦ (GRPH-1207)", async () => {
+    await show();
+    const linked = screen.getByTestId("prd-linked-button");
+    expect(linked.querySelector(".lucide-link-2")).toBeNull();
+    const grill = screen.getAllByRole("button", { name: /^Grill/ }).find((b) => b.hasAttribute("title"))!;
+    expect(grill.textContent).not.toContain("✦");
+  });
+
   it("mounts the acceptance panel on the acceptance tab", async () => {
     await show();
     await openTab("acceptance");

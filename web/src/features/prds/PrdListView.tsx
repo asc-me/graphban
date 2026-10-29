@@ -77,7 +77,7 @@ export function PrdListView() {
       )}
 
       {showing && (
-        <div className="flex flex-wrap gap-1.5 px-4 pt-3" role="group" aria-label="Filter by status">
+        <div className="flex flex-wrap gap-1.5 border-b border-line px-6 py-2.5" role="group" aria-label="Filter by status">
           {["all", ...PRD_STATUS_ORDER].map((st) => {
             const label = st === "all" ? "All" : prdStatusMeta(st).label;
             return (
@@ -86,10 +86,10 @@ export function PrdListView() {
                 aria-pressed={chip === st}
                 onClick={() => setChip(st)}
                 className={
-                  "inline-flex items-center gap-1.5 rounded-[7px] border px-2 py-0.5 text-small transition-colors " +
+                  "inline-flex items-center gap-1.5 rounded-[7px] border px-2.5 py-1 text-[12px] transition-colors " +
                   (chip === st
                     ? "border-control-hover bg-surface-4 text-fg"
-                    : "border-control text-muted hover:text-fg-2")
+                    : "border-control bg-surface-2 text-muted hover:text-fg-2")
                 }
               >
                 {st !== "all" && (
