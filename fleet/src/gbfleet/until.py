@@ -83,6 +83,8 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
     # cut from main and lost the work. The planner has the standing (it minted the seat);
     # the server bounds what `release_item` may do by role, not this set.
     "release_item",
+    # GRPH-1190: `--prd` is resolved ONCE to the PRD's canonical key. A read, like the rest.
+    "get_prd",
 })
 
 EMPTY_TICKS = 3
@@ -295,6 +297,14 @@ def run(
                 "--max-workers 0 cannot be combined with pre-minted seats: every child this "
                 "supervisor spawns is a reviewer, and only the server can mint a seat that may "
                 "review but not claim. Drop --seats and let the loop mint review-only seats")
+        # GRPH-1190. An old key after a retag, a legacy key, or the frozen internal id all
+        # name the same PRD to the server, but a review row's `prd_id` is its CURRENT key.
+        # Resolved once here and used for every comparison below, so the PRD's own rows are
+        # not read as outside it. Inside the try: a refusal is a config error, never a
+        # fallback to the raw string.
+        if prd:
+            prd = resolve_prd(planner, prd)
+            observe.emit("prd", detail=prd)
         # GRPH-1012. Resolved ONCE for the wave, before anything is cut from it or
         # published against it: the operator's `--base`, else the project's MEASURED
         # gitops base, else the remote's default ref — fetched, and never this checkout's
@@ -1936,6 +1946,24 @@ def _review_rows(planner: Graphban) -> list[dict]:
     if not isinstance(rows, list):
         raise ToolFailed("search_items", "error", "review listing carried no results list")
     return [r for r in rows if isinstance(r, dict) and r.get("id")]
+
+
+def resolve_prd(planner: Graphban, prd: str) -> str:
+    """The canonical key of the PRD `--prd` names (GRPH-1190).
+
+    `get_prd` resolves any spelling the server accepts and answers with the current key as
+    `id`. A refusal, or a server that cannot be reached, ends the run with the server's
+    reason: comparing against the raw string instead is how the PRD's own review rows came
+    to be listed outside it while the run exited idle.
+    """
+    try:
+        got = planner.call("get_prd", prd_id=prd)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        raise ConfigError(f"--prd {prd} could not be resolved: {exc}") from exc
+    key = str(got.get("id") or "")
+    if not key:
+        raise ConfigError(f"--prd {prd} could not be resolved: get_prd answered with no id")
+    return key
 
 
 def _split_by_prd(rows: list[dict], prd: str | None) -> tuple[list[dict], list[dict]]:
