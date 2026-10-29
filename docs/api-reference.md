@@ -62,6 +62,12 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | PATCH | `/api/orgs/{id}/gitops` | JWT (org admin) | House process. Overlay is the project PATCH |
 | GET | `/api/sync/gitops` | MCP (sync key) | Cloud receiver. `resolve_local` of `targets[0]` — never outbound, never a query-string project |
 
+## Rules (PRD-61)
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/rules` | JWT (project reader) | The rule registry (`services/rules.py`): every delivery rule with its enforcement, typed enforcer and truth. Gitops rows carry the effective value and `source` from `gitops.resolve`; a gitops rule is `advisory` (or `unmeasured`), never `enforced` |
+
 ## Items (tracker)
 
 | Method | Path | Auth |
