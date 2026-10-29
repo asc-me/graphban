@@ -1,28 +1,47 @@
+import { AlertTriangle } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { BOARD_COLUMNS } from "@/lib/meta";
 
-/** Named fetch failure with retry — Home's counts-unavailable pattern. */
+/**
+ * Named fetch failure with retry. Red-tinted card: the title names what failed
+ * ("Items unavailable"), the line says the failure is not an empty project.
+ */
 export function PlannerError({
-  message,
+  title = "Could not load this",
+  message = FETCH_FAILED,
   onRetry,
 }: {
-  message: string;
+  /** What failed — "<Page> unavailable". */
+  title?: string;
+  /** Defaults to the shared "nothing here means empty" line. */
+  message?: string;
   onRetry: () => void;
 }) {
   return (
-    <div className="flex flex-col items-center gap-3 px-8 py-12 text-center" role="alert">
-      <p className="text-[13px] text-st-blocked">{message}</p>
-      <Button type="button" variant="outline" size="sm" onClick={onRetry}>
-        Retry
-      </Button>
+    <div className="flex justify-center px-6 py-10">
+      <div
+        role="alert"
+        className="flex w-full max-w-md items-start gap-3 rounded-[12px] border border-st-blocked/40 bg-[rgba(255,107,107,0.06)] p-4"
+      >
+        <div className="flex h-8 w-8 flex-none items-center justify-center rounded-lg bg-[rgba(255,107,107,0.14)] text-st-blocked">
+          <AlertTriangle size={16} aria-hidden="true" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-[13.5px] font-semibold text-fg">{title}</h2>
+          <p className="mt-0.5 text-body leading-relaxed text-muted">{message}</p>
+          <Button type="button" variant="outline" size="sm" className="mt-3" onClick={onRetry}>
+            Retry
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
 
-/** True empty — invitation, not a failed search. */
+/** True empty — invitation, not a failed search. A dashed tile with a lime square. */
 export function PlannerEmpty({
   title,
   description,
@@ -34,6 +53,12 @@ export function PlannerEmpty({
 }) {
   return (
     <div className="flex flex-col items-center gap-3 px-8 py-16 text-center">
+      <div
+        aria-hidden="true"
+        className="flex h-10 w-10 items-center justify-center rounded-[10px] border border-dashed border-control"
+      >
+        <span className="h-3 w-3 rounded-[3px] bg-accent" />
+      </div>
       <h2 className="text-[15px] font-semibold text-fg">{title}</h2>
       <p className="max-w-md text-[13px] leading-relaxed text-muted">{description}</p>
       {action}

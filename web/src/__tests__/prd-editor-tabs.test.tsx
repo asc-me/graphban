@@ -197,3 +197,15 @@ describe("the PRD editor's six tabs (PRD-47 S4)", () => {
     expect(screen.getByText("3 / 4 answered")).toBeInTheDocument();
   });
 });
+
+describe("the Linked control (GRPH-1171)", () => {
+  it("is one button that opens the Requests tab", async () => {
+    await show();
+    const user = userEvent.setup();
+    const btn = screen.getByTestId("prd-linked-button");
+    expect(btn).toHaveTextContent("Linked · 0 items · 0 requests");
+    await user.click(btn);
+    const requests = within(screen.getByTestId("prd-editor-tabs")).getByRole("button", { name: /Requests/ });
+    expect(requests.className).toContain("bg-surface-4");
+  });
+});
