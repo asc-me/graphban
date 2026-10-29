@@ -32,6 +32,8 @@ export const keys = {
   prds: ["prds"] as const,
   prd: (id: string) => ["prd", id] as const,
   prdVersions: (id: string) => ["prd-versions", id] as const,
+  prdRequests: (id: string) => ["prd-requests", id] as const,
+  prdSuggestions: (id: string) => ["prd-request-suggestions", id] as const,
   closeReport: (id: string) => ["close-report", id] as const,
   prdEvidence: (id: string) => ["prd-evidence", id] as const,
   auditCoverage: (id: string) => ["audit-coverage", id] as const,
@@ -372,6 +374,28 @@ export function usePrd(id: string) {
 
 export function usePrdVersions(id: string) {
   return useQuery({ queryKey: keys.prdVersions(id), queryFn: () => api.prdVersions(id), enabled: !!id });
+}
+
+export function usePrdRequests(id: string) {
+  return useQuery({ queryKey: keys.prdRequests(id), queryFn: () => api.prdRequests(id), enabled: !!id });
+}
+
+export function usePrdRequestSuggestions(id: string) {
+  return useQuery({ queryKey: keys.prdSuggestions(id), queryFn: () => api.prdRequestSuggestions(id), enabled: !!id });
+}
+
+/** Link or unlink a request; the counts on the list and the suggestions both move. */
+export function usePrdRequestLink(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { requestId: string; add: boolean }) =>
+      v.add ? api.linkPrdRequest(id, v.requestId) : api.unlinkPrdRequest(id, v.requestId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.prdRequests(id) });
+      qc.invalidateQueries({ queryKey: keys.prdSuggestions(id) });
+      qc.invalidateQueries({ queryKey: keys.prds });
+    },
+  });
 }
 
 export function useDashboard(projectId?: string) {

@@ -65,8 +65,8 @@ vi.mock("@/lib/publicApi", () => ({
 
 const { PrdEditorView } = await import("@/features/prds/PrdEditorView");
 
-/** The six S4 names, in the order the spec lists them. */
-const TAB_IDS = ["preview", "assistant", "grill", "coverage", "acceptance", "history"];
+/** The S4 names plus Requests (GRPH-1150), in the order the spec lists them. */
+const TAB_IDS = ["preview", "requests", "assistant", "grill", "coverage", "acceptance", "history"];
 
 function grillState() {
   return {
@@ -147,7 +147,7 @@ async function openTab(id: string) {
 }
 
 function labelFor(id: string) {
-  return { preview: "Preview", assistant: "Assistant", grill: "Grill", coverage: "Coverage",
+  return { preview: "Preview", requests: "Requests", assistant: "Assistant", grill: "Grill", coverage: "Coverage",
            acceptance: "Acceptance", history: "History" }[id] as string;
 }
 
@@ -156,7 +156,7 @@ beforeEach(() => {
 });
 
 describe("the PRD editor's six tabs (PRD-47 S4)", () => {
-  it("renders the six ids, in the order the spec lists them", async () => {
+  it("renders the seven ids, in the order the spec lists them", async () => {
     await show();
     expect(tabIds()).toEqual(TAB_IDS);
   });

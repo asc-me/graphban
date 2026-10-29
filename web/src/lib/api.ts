@@ -67,6 +67,8 @@ import type {
   Prd,
   PrdCoverage,
   PrdEval,
+  PrdLinkedRequest,
+  PrdRequestSuggestions,
   PrdStatus,
   PrdSummary,
   PrdVersion,
@@ -809,6 +811,13 @@ export const api = {
     request<Prd>(`/prds/${id}/versions`, { method: "POST", body: JSON.stringify({ note }) }),
   linkPrd: (id: string, itemId: string, add: boolean) =>
     request<Prd>(`/prds/${id}/link`, { method: "POST", body: JSON.stringify({ item_id: itemId, add }) }),
+  prdRequests: (id: string) => request<PrdLinkedRequest[]>(`/prds/${id}/requests`),
+  prdRequestSuggestions: (id: string) =>
+    request<PrdRequestSuggestions>(`/prds/${id}/request-suggestions`),
+  linkPrdRequest: (id: string, requestId: string) =>
+    request<unknown>(`/prds/${id}/requests`, { method: "POST", body: JSON.stringify({ request_id: requestId }) }),
+  unlinkPrdRequest: (id: string, requestId: string) =>
+    request<unknown>(`/prds/${id}/requests/${requestId}`, { method: "DELETE" }),
   prdAi: (id: string, command: string) =>
     request<{ text: string }>(`/prds/${id}/ai`, {
       method: "POST",
