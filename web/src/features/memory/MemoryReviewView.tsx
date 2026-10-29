@@ -253,7 +253,10 @@ export function MemoryReviewView() {
   }
 
   const decisions = decisionsFor(activeRow);
-  const bulk = decisionsFor(selected[0] ?? null).filter((d) => !d.disabled && d.id !== "keep");
+  // Bulk acts on one queue at a time: the same verb means different things across queues
+  // (a "Reject" on a published stale row would skip its 14-day retire path).
+  const selQueues = [...new Set(selected.map((r) => QUEUE_BY_ID[r.queue].label))];
+  const bulk = selQueues.length === 1 ? decisionsFor(selected[0]).filter((d) => !d.disabled && d.id !== "keep") : [];
 
   async function run(id: string, rows: Row[]) {
     if (!rows.length || busy.current) return;
@@ -443,7 +446,7 @@ export function MemoryReviewView() {
                   <button
                     key={id}
                     aria-pressed={scope === id}
-                    onClick={() => { setScope(id); setActiveRowId(null); }}
+                    onClick={() => { setScope(id); setSel(new Set()); setActiveRowId(null); }}
                     className={cn("h-[30px] px-2.5 text-small", scope === id ? "bg-surface-3 text-fg" : "text-faint hover:text-fg-2")}
                   >
                     {label}
@@ -487,10 +490,15 @@ export function MemoryReviewView() {
             {selected.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5 border-b border-line-2 bg-surface-3/60 px-3 py-2" role="toolbar" aria-label="Bulk actions">
                 <span className="mr-1.5 text-[12px] font-semibold text-fg">{selected.length} selected</span>
+                {selQueues.length > 1 && (
+                  <span className="text-small text-muted" data-testid="bulk-mixed">
+                    Spans {selQueues.join(", ")} — select rows from one queue to act in bulk.
+                  </span>
+                )}
                 {bulk.map((d) => (
                   <button
                     key={d.id}
-                    onClick={() => void run(d.id, selected)}
+                    onClick={() => void run(d.id, selected.filter((r) => r.queue === selected[0].queue))}
                     className={cn("h-7 rounded-[7px] border px-2.5 text-small hover:brightness-125", TONE[d.tone], d.tone === "neutral" && "border-control")}
                   >
                     {d.label.split(" · ")[0]}

@@ -226,6 +226,39 @@ describe("bulk", () => {
     expect(await screen.findByText("Published 2 notes")).toBeInTheDocument();
   });
 
+  it("in Everywhere, a selection across queues offers no bulk action — a stale row is never rejected", async () => {
+    const user = userEvent.setup();
+    renderView();
+    await ready();
+    await user.click(screen.getByRole("button", { name: "Everywhere" }));
+    await user.type(screen.getByRole("textbox", { name: "Search memory" }), "e");
+    await screen.findByRole("listbox", { name: "Search results" });
+    await user.click(screen.getByRole("button", { name: "Select s1" }));
+    await user.click(screen.getByRole("button", { name: "Select st1" }));
+    const bar = screen.getByRole("toolbar", { name: "Bulk actions" });
+    expect(within(bar).getByText("2 selected")).toBeInTheDocument();
+    expect(within(bar).getByTestId("bulk-mixed")).toHaveTextContent(/Needs a decision, Stale or wrong/);
+    expect(within(bar).queryByRole("button", { name: "Reject" })).toBeNull();
+    expect(within(bar).queryByRole("button", { name: "Publish" })).toBeNull();
+    expect(spies.reject).not.toHaveBeenCalled();
+    // Unchecking the stale row brings the needs-row actions back, scoped to that row alone.
+    await user.click(screen.getByRole("button", { name: "Select st1" }));
+    await user.click(within(bar).getByRole("button", { name: "Reject" }));
+    await waitFor(() => expect(spies.reject).toHaveBeenCalledTimes(1));
+    expect(spies.reject).toHaveBeenCalledWith("s1");
+    expect(spies.reject).not.toHaveBeenCalledWith("st1");
+  });
+
+  it("switching search scope clears the selection", async () => {
+    const user = userEvent.setup();
+    renderView();
+    await ready();
+    await user.click(screen.getByRole("button", { name: "Select s1" }));
+    expect(screen.getByRole("toolbar", { name: "Bulk actions" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Everywhere" }));
+    expect(screen.queryByRole("toolbar", { name: "Bulk actions" })).toBeNull();
+  });
+
   it("the cleanup banner publishes only grounded, ready rows at ≥ 0.85", async () => {
     const user = userEvent.setup();
     renderView();
