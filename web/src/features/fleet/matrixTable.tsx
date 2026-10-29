@@ -33,7 +33,7 @@ export function MatrixTable({ rows, harnessHref }: {
           className="shrink-0 text-[12px] text-fg-2 underline-offset-2 hover:underline"
           data-testid="fleet-matrix-observe"
         >
-          Performance and rankings
+          Performance and rankings →
         </Link>
       </div>
       {rows.length === 0 ? (
@@ -114,12 +114,6 @@ function picklist(cell: FleetTierCell): string[] {
   return inOrder([...cell.models, cell.packaged_model]);
 }
 
-/** The draft's own answer to "what will run", which is the server's `effective_model` while
- *  nothing is pending and the edit the operator is looking at while something is. */
-function effectiveOf(cell: FleetTierCell, draft: string | null): string {
-  return draft ?? cell.packaged_model;
-}
-
 /**
  * Tier map — which model each harness runs when (GRPH-1003, design `Build.dc.html`).
  *
@@ -171,13 +165,6 @@ export function TierMapPanel({ projectId, harnessHref }: {
             data-testid="tier-map-grading-link"
           >
             Grading rules →
-          </Link>
-          <Link
-            to={harnessHref}
-            className="text-fg-2 underline-offset-2 hover:underline"
-            data-testid="tier-map-performance-link"
-          >
-            Performance and rankings →
           </Link>
         </div>
       </div>
@@ -361,80 +348,71 @@ function TierMapForm({ cells, saving, clearing, saveError, clearError, onSave, o
                   const choices = picklist(cell);
                   return (
                     <td key={tier} className="px-3 py-2">
-                      <div className="flex min-w-[13rem] flex-col gap-1">
-                        <select
-                          aria-label={`Model for ${harness} at ${tier}`}
-                          data-testid="tier-map-select"
-                          className={cn(
-                            "w-full rounded-[8px] border bg-surface-2 px-2 py-1 font-mono text-[11.5px] outline-none",
-                            "[@media(hover:hover)_and_(pointer:fine)]:hover:border-control-hover",
-                            "focus-visible:border-control-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
-                            // An overridden cell is the one thing on this panel that is not the
-                            // committed default, so it gets the accent border rather than a dot.
-                            overridden ? "border-accent text-fg" : "border-control text-muted",
-                          )}
-                          value={value ?? USE_PACKAGED}
-                          onChange={(e) => choose(harness, tier, e.target.value)}
-                        >
-                          <option value={USE_PACKAGED}>
-                            packaged · {cell.packaged_model || "nothing committed"}
-                          </option>
-                          {choices.map((model) => (
-                            <option key={model} value={model}>{model}</option>
-                          ))}
-                          {value !== null && !choices.includes(value) && (
-                            // The draft holds a model this cell's picklist does not name: a saved
-                            // override the catalog stopped serving, or a graded model Inherit just
-                            // wrote. Without this option the select paints its FIRST entry while
-                            // the effective line beside it says something else, and the operator
-                            // can neither see nor undo the value they are looking at.
-                            <option value={value}>{value} · not in this catalog</option>
-                          )}
-                        </select>
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span
-                            className={cn("font-mono text-small", overridden ? "text-accent" : "text-fg-2")}
-                            data-testid="tier-map-effective"
-                          >
-                            {effectiveOf(cell, value) || "—"}
-                          </span>
-                          {unsaved && (
-                            <span className="rounded-md border border-control px-1 font-mono text-meta text-muted">
-                              unsaved
-                            </span>
-                          )}
-                        </div>
-                        <span
-                          className={cn("text-[10.5px]", cell.graded_model ? "text-faint" : "text-muted")}
-                          data-testid="tier-map-graded"
-                        >
-                          {cell.graded_model ? `graded · ${cell.graded_model}` : "not measured"}
-                        </span>
+                      <div className="flex min-w-[13rem] items-start gap-2">
                         {/* The tier-map payload carries no grade letter, pass rate or run count
                             (backend gap), so the badge and the figures read "–" rather than a
                             number nobody measured. */}
-                        <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted">
-                          <span
-                            className="rounded-md border border-line-2 px-1 font-mono text-meta"
-                            data-testid="tier-map-grade"
-                            title="Grade letter is not served by the tier-map endpoint"
+                        <span
+                          className="mt-0.5 rounded-md border border-line-2 px-1.5 font-mono text-meta text-muted"
+                          data-testid="tier-map-grade"
+                          title="Grade letter is not served by the tier-map endpoint"
+                        >
+                          –
+                        </span>
+                        <div className="flex min-w-0 flex-1 flex-col gap-1">
+                          <select
+                            aria-label={`Model for ${harness} at ${tier}`}
+                            data-testid="tier-map-select"
+                            className={cn(
+                              "w-full rounded-[8px] border bg-surface-2 px-2 py-1 font-mono text-[11.5px] outline-none",
+                              "[@media(hover:hover)_and_(pointer:fine)]:hover:border-control-hover",
+                              "focus-visible:border-control-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
+                              // An overridden cell is the one thing on this panel that is not the
+                              // committed default, so it gets the accent border rather than a dot.
+                              overridden ? "border-accent text-fg" : "border-control text-muted",
+                            )}
+                            value={value ?? USE_PACKAGED}
+                            onChange={(e) => choose(harness, tier, e.target.value)}
                           >
-                            –
-                          </span>
-                          <span className="rounded-md border border-line-2 px-1 font-mono text-meta" data-testid="tier-map-state">
-                            {overridden ? "override" : cell.graded_model ? "graded" : "unresolved"}
-                          </span>
-                          <span data-testid="tier-map-rate">– pass · – runs</span>
-                          {overridden && (
-                            <button
-                              type="button"
-                              className="text-fg-2 underline-offset-2 hover:underline"
-                              onClick={() => choose(harness, tier, USE_PACKAGED)}
-                              data-testid="tier-map-cell-reset"
-                            >
-                              reset
-                            </button>
-                          )}
+                            <option value={USE_PACKAGED}>
+                              packaged · {cell.packaged_model || "nothing committed"}
+                            </option>
+                            {choices.map((model) => (
+                              <option key={model} value={model}>{model}</option>
+                            ))}
+                            {value !== null && !choices.includes(value) && (
+                              // The draft holds a model this cell's picklist does not name: a saved
+                              // override the catalog stopped serving, or a graded model Inherit just
+                              // wrote. Without this option the select paints its FIRST entry while
+                              // the operator can neither see nor undo the value they are looking at.
+                              <option value={value}>{value} · not in this catalog</option>
+                            )}
+                          </select>
+                          <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted" data-testid="tier-map-meta">
+                            <span data-testid="tier-map-graded">
+                              {cell.graded_model ? "graded" : "not measured"} – pass · – runs
+                            </span>
+                            {overridden && (
+                              <span className="rounded-md border border-line-2 px-1 font-mono text-meta" data-testid="tier-map-state">
+                                override
+                              </span>
+                            )}
+                            {unsaved && (
+                              <span className="rounded-md border border-control px-1 font-mono text-meta">
+                                unsaved
+                              </span>
+                            )}
+                            {overridden && (
+                              <button
+                                type="button"
+                                className="text-fg-2 underline-offset-2 hover:underline"
+                                onClick={() => choose(harness, tier, USE_PACKAGED)}
+                                data-testid="tier-map-cell-reset"
+                              >
+                                reset
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </td>
