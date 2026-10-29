@@ -71,8 +71,13 @@ def _clients(
     sticky_clusters: bool = False,
     gitops: dict | None = None,
     drop_delegated: bool = False,
+    prds: dict | None = None,
 ):
-    """Planner + supervisor clients sharing one mock Graphban."""
+    """Planner + supervisor clients sharing one mock Graphban.
+
+    `prds` maps each spelling `get_prd` accepts to the PRD's canonical key (GRPH-1190); a
+    spelling it does not name is refused as the server refuses it. None answers every
+    spelling with itself."""
     # GRPH-885: `_delegate_next` only seeds a cluster that names an item. Fixtures that
     # used `clusters=1` with an empty `items` list used to spawn an unbound drain child;
     # that is the skip-ahead path this item closes. Default a seed so spawn-path tests
@@ -118,6 +123,13 @@ def _clients(
             # process — so every other test here exercises the unmeasured path whether it
             # knows it or not.
             return _mcp({"project_id": "core", "gitops": dict(gitops or {})}, rid)
+        if tool == "get_prd":
+            asked = str(args.get("prd_id"))
+            if prds is None:
+                return _mcp({"id": asked, "project_id": "core"}, rid)
+            if asked not in prds:
+                return _error("not_found", f"prd not found: {asked}", rid)
+            return _mcp({"id": prds[asked], "project_id": "core"}, rid)
         if tool == "get_item_details":
             return _mcp({"id": args.get("id"), "title": "seed", "status": "next", "brief": {
                 "lane": {"value": "backend", "basis": ["backend/app/x.py"]},
@@ -692,6 +704,70 @@ def test_a_scoped_wave_still_spawns_a_reviewer_for_review_inside_its_prd(
     assert result.spawned >= 1
     assert result.review == ["GRPH-9"]
     assert result.as_json()["review_outside_prd"] == []
+
+
+def test_a_scoped_wave_named_by_an_old_key_reviews_its_own_rows(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1190. `--prd` given as a key the PRD no longer carries (a retag, a legacy key);
+    the server resolves it, and the review row carries the CURRENT key. The row is this
+    PRD's: a reviewer is spawned, scoped to the canonical key, and nothing is outside.
+
+    Sabotage: compare review rows against the raw `--prd` again and the row is listed under
+    `review_outside_prd` with no spawn."""
+    workspace = tmp_path / "ws"
+    mints: list[dict] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "", "prd_id": "GRPH-P11"}],
+        minted_args=mints,
+        prds={"SA-P11": "GRPH-P11", "GRPH-P11": "GRPH-P11"},
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        prd="SA-P11",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert result.as_json()["review_outside_prd"] == [], result.as_json()
+    assert result.review == ["GRPH-9"]
+    assert mints, result.as_json()
+    assert mints[0].get("review_only") is True, mints
+    assert mints[0].get("scope") == "GRPH-P11", mints
+    assert result.spawned >= 1
+
+
+def test_a_scoped_wave_refuses_a_prd_the_server_does_not_know(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1190. An unknown `--prd` ends the run with the server's refusal before anything
+    is minted or spawned — not a fallback to the raw string."""
+    workspace = tmp_path / "ws"
+    mints: list[dict] = []
+    calls: list[str] = []
+    planner, supervisor = _clients(
+        workspace, clusters=1,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "", "prd_id": "SA-P99"}],
+        minted_args=mints, calls=calls,
+        prds={"GRPH-P11": "GRPH-P11"},
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        prd="SA-P99",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert result.reason == "config", result.as_json()
+    assert result.exit == 2
+    assert result.ok is False
+    assert "prd not found: SA-P99" in result.detail, result.detail
+    assert mints == []
+    assert result.spawned == 0
+    assert "delegate" not in calls and "mint_enrolment" not in calls, calls
 
 
 def test_a_review_only_supervisor_mints_seats_that_cannot_claim(
