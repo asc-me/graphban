@@ -959,6 +959,15 @@ export function useTriageQueue(projectId: string) {
   });
 }
 
+/** The unified triage feed. Not polled: the queue under a keyboard must not shift mid-press. */
+export function useTriageFeed(projectId: string) {
+  return useQuery({
+    queryKey: ["triage-feed", projectId],
+    queryFn: () => api.projectTriage(projectId),
+    enabled: !!projectId,
+  });
+}
+
 export function useAcceptRequest(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
