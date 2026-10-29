@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
+from app.errors import Refused
 from app.models import MemoryShard, User
 from app.schemas import (
     CandidateJudgeOut,
@@ -442,7 +443,7 @@ def _writable_shard(db: Session, user: User, shard_id: str) -> MemoryShard:
     if existing.project_id is not None:
         authz.require_writable(db, user.id, existing.project_id, "shard")
     elif not authz.writable_project_ids(db, user.id):
-        raise HTTPException(403, "no write access to any project")
+        raise Refused(403, "no write access to any project", rule_id="memory.write_access")
     return existing
 
 
@@ -453,7 +454,7 @@ def retire_shard(shard_id: str, db: Session = Depends(get_db), user: User = Depe
     try:
         shard = mem_svc.retire_shard(db, shard_id)
     except mem_svc.RetireRefused as exc:
-        raise HTTPException(409, str(exc))
+        raise Refused(409, str(exc), rule_id="memory.retire_window") from exc
     events_svc.record_user(db, user, action="retire_shard", target_type="shard",
                            target_id=shard_id, project_id=existing.project_id)
     return shard
@@ -466,7 +467,7 @@ def restore_shard(shard_id: str, db: Session = Depends(get_db), user: User = Dep
     try:
         shard = mem_svc.restore_shard(db, shard_id)
     except mem_svc.RetireRefused as exc:
-        raise HTTPException(409, str(exc))
+        raise Refused(409, str(exc), rule_id="memory.retire_window") from exc
     events_svc.record_user(db, user, action="restore_shard", target_type="shard",
                            target_id=shard_id, project_id=existing.project_id)
     return shard

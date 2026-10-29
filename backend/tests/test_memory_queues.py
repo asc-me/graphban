@@ -117,6 +117,7 @@ def test_restore_refused_after_14_days(client, auth):
     r = client.post(f"/api/memory/shards/{sid}/restore", headers=auth)
     assert r.status_code == 409
     assert "final" in r.json()["detail"]
+    assert r.json()["rule_id"] == "memory.retire_window"
 
 
 def test_apply_recommendations_honours_the_floor(client, auth, monkeypatch):
