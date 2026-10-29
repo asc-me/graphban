@@ -123,6 +123,7 @@ class Report:
     minted: int = 0
     waits: list[str] = field(default_factory=list)
     review: list[str] = field(default_factory=list)
+    review_outside_prd: list[str] = field(default_factory=list)
     detail: str = ""
     wave: Wave | None = None
 
@@ -135,6 +136,11 @@ class Report:
             "minted": self.minted,
             "waits": list(self.waits),
             "review": list(self.review),
+            # GRPH-1188: with `--prd`, items in review that belong to another PRD or to none.
+            # Informational only — this run neither spawns for them nor fails on them, since
+            # the PRD-scoped seat it would mint cannot claim them. Listed so a person sees
+            # they are waiting. Always empty without `--prd`.
+            "review_outside_prd": list(self.review_outside_prd),
             # GRPH-834. Always present, including when nothing was measured: an absent key
             # reads as "this build has no spend reporting", and a zeroed block with
             # `reported: 0` reads as "nobody told us", which is the true statement.
@@ -526,8 +532,8 @@ def _loop(
     # changes the answer, so these are lifted out of `delegated` when one lands.
     held: dict[str, list[str]] = {}
     # GRPH-950: holds are blockers on the server, so they outlive the wave that wrote them.
-    _adopt_holds(planner, held, delegated)
-    rechecked = 0.0
+    _resume_holds(planner, held, delegated, repo, base)
+    rechecked = time.monotonic()
 
     while True:
         # GRPH-1056. This loop IS the supervisor working. An `mcp` that merely stays
@@ -557,7 +563,7 @@ def _loop(
             # S6 (PRD-39 D-i): re-keyed off the fact it measures — a child exited
             # and there are still unheld review rows. Not off a role.
             try:
-                rows_for_reap = _review_rows(planner)
+                rows_for_reap, _ = _split_by_prd(_review_rows(planner), prd)
             except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
                 watchdog_mod.current.retry("review_rows(reap)", exc)
                 rows_for_reap = []
@@ -582,15 +588,20 @@ def _loop(
             persist()
             if any("handoff-failed" in f for f in wave.failures):
                 wave.reason = "handoff-failed"
-                return _finish(wave, "handoff-failed", 1, minted, planner)
+                return _finish(wave, "handoff-failed", 1, minted, planner, prd=prd)
 
         live = [c for c in children if c.running]
         wd = watchdog_mod.current
         wd.check(bool(live))
         holdings = _any_holdings(supervisor)
         try:
-            rows = _review_rows(planner)
+            # GRPH-1188: with `--prd`, only this PRD's review rows can trigger a spawn or fail
+            # the run. The reviewer seat minted below is PRD-scoped and cannot claim any other
+            # row, so a project-wide trigger spawned children that could only exit, and ended
+            # the run `review-unsigned` over an item it was never able to review.
+            rows, rows_outside = _split_by_prd(_review_rows(planner), prd)
             reviews = [str(r["id"]) for r in rows]
+            outside = [str(r["id"]) for r in rows_outside]
             waits = _wait_ids(planner)
         except NotPermitted as exc:
             raise ConfigError(f"cannot classify review/waits: {exc}") from exc
@@ -818,7 +829,7 @@ def _loop(
             if review_fails >= REVIEWER_FAILS:
                 wave.reason = "review-unsigned"
                 return _finish(wave, "review-unsigned", 1, minted, planner,
-                               review=reviews, waits=waits)
+                               review=reviews, waits=waits, outside=outside)
             seat, minted_one = _take_seat(
                 pool, planner, agent_id, wave_name, server, api_key,
                 mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
@@ -849,21 +860,23 @@ def _loop(
         if unheld:
             wave.reason = "review-unsigned"
             return _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
-                           waits=waits)
+                           waits=waits, outside=outside)
 
         empty += 1
         if empty >= empty_ticks:
             if waits:
                 wave.reason = "idle-with-waits"
-                return _finish(wave, "idle-with-waits", 0, minted, planner, waits=waits)
+                return _finish(wave, "idle-with-waits", 0, minted, planner, waits=waits,
+                               review=reviews, outside=outside)
             wave.reason = "idle"
-            return _finish(wave, "idle", 0, minted, planner)
+            return _finish(wave, "idle", 0, minted, planner, review=reviews, outside=outside)
         sleep(poll)
 
 
 def _finish(
     wave: Wave, reason: str, exit_code: int, minted: int, planner: Graphban,
     *, review: list[str] | None = None, waits: list[str] | None = None,
+    outside: list[str] | None = None, prd: str | None = None,
 ) -> Report:
     if waits is None:
         try:
@@ -872,7 +885,9 @@ def _finish(
             waits = []
     if review is None:
         try:
-            review = _review_ids(planner)
+            inside, beyond = _split_by_prd(_review_rows(planner), prd)
+            review = [str(r["id"]) for r in inside]
+            outside = [str(r["id"]) for r in beyond]
         except (NotPermitted, ToolFailed, ServerUnreachable):
             review = []
     return Report(
@@ -883,6 +898,7 @@ def _finish(
         minted=minted,
         waits=waits,
         review=review,
+        review_outside_prd=list(outside or []),
         wave=wave,
     )
 
@@ -1244,16 +1260,9 @@ def _dependency_holds(planner: Graphban, free: list[dict], repo: Path | None,
     """The GRPH-950 holds a wave would write now, and the ones already written. READS ONLY."""
     out: list[dict] = []
     seen: set[str] = set()
-    try:
-        got = planner.call("search_items", query=deps.HOLD_MARK, limit=200, fields="full") or {}
-    except (ToolFailed, NotPermitted, ServerUnreachable):
-        got = {}
-    for row in (got.get("results") if isinstance(got, dict) else None) or []:
-        if isinstance(row, dict) and deps.is_hold(str(row.get("blocker") or "")):
-            item_id = str(row.get("id") or "")
-            seen.add(item_id)
-            out.append({"item": item_id, "waiting_on": str(row.get("blocker") or ""),
-                        "already_held": True})
+    for item_id, blocker in _held_on_server(planner):
+        seen.add(item_id)
+        out.append({"item": item_id, "waiting_on": blocker, "already_held": True})
     if repo is None or not base:
         return out
     for cluster in free:
@@ -1454,17 +1463,52 @@ def _adopt_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[s
     A blocker nobody re-checks strands its item after the merge it waits on — worse than the
     duplicate it prevented, because it looks deliberate.
     """
+    for item_id, _blocker in _held_on_server(planner):
+        if item_id not in held:
+            held[item_id] = []
+            delegated.add(item_id)
+
+
+def _resume_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str],
+                  repo: Path | None, base: str) -> None:
+    """Adopt the holds earlier runs wrote and re-check them NOW, before the first tick.
+
+    GRPH-1182: not a recheck period later. Under `gbfleet service` every run is a fresh
+    process that may exit idle well inside that period, so a hold whose dependency an
+    earlier run merged was lifted by nobody.
+    """
+    _adopt_holds(planner, held, delegated)
+    _recheck_holds(planner, held, delegated, repo, base)
+
+
+def _held_on_server(planner: Graphban) -> list[tuple[str, str]]:
+    """Every GRPH-950 hold the server carries, as (item, blocker). Empty when unreadable.
+
+    The search matches on blocker text, but a row that does not carry `blocker` says nothing
+    about it (GRPH-1182): `search_items` full rows omitted the field, so every hit read as
+    unheld and no later run ever adopted, re-checked or lifted a hold. Such a row is confirmed
+    against `get_item_details`, the read that does carry it, never dropped as clean.
+    """
     try:
         got = planner.call("search_items", query=deps.HOLD_MARK, limit=200, fields="full") or {}
     except (ToolFailed, NotPermitted, ServerUnreachable):
-        return
+        return []
+    out: list[tuple[str, str]] = []
     for row in (got.get("results") if isinstance(got, dict) else None) or []:
-        if not isinstance(row, dict) or not deps.is_hold(str(row.get("blocker") or "")):
+        item_id = str(row.get("id") or "") if isinstance(row, dict) else ""
+        if not item_id:
             continue
-        item_id = str(row.get("id") or "")
-        if item_id and item_id not in held:
-            held[item_id] = []
-            delegated.add(item_id)
+        if "blocker" in row:
+            blocker = str(row["blocker"] or "")
+        else:
+            try:
+                details = planner.call("get_item_details", id=item_id) or {}
+            except (ToolFailed, NotPermitted, ServerUnreachable):
+                continue
+            blocker = str(details.get("blocker") or "") if isinstance(details, dict) else ""
+        if deps.is_hold(blocker):
+            out.append((item_id, blocker))
+    return out
 
 
 def _recheck_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str],
@@ -1888,8 +1932,13 @@ def _review_rows(planner: Graphban) -> list[dict]:
     return [r for r in rows if isinstance(r, dict) and r.get("id")]
 
 
-def _review_ids(planner: Graphban) -> list[str]:
-    return [str(r["id"]) for r in _review_rows(planner)]
+def _split_by_prd(rows: list[dict], prd: str | None) -> tuple[list[dict], list[dict]]:
+    """(this PRD's review rows, everyone else's) — GRPH-1188. Without `--prd` every row is
+    this run's, as before. With it, a row with another `prd_id` or none is outside."""
+    if not prd:
+        return rows, []
+    return ([r for r in rows if r.get("prd_id") == prd],
+            [r for r in rows if r.get("prd_id") != prd])
 
 
 def _wait_ids(planner: Graphban) -> list[str]:

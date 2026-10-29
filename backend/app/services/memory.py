@@ -35,6 +35,7 @@ def _includes_global(db: Session, project_id: str) -> bool:
 
 REACHES = ("project", "org")
 LESSON_CLASSES = ("correction", "drift", "preference", "observation")  # "" is unclassified
+SHARD_CLASSES = ("pitfall", "convention", "principle")  # "" is unclassified
 UNCLASSIFIED_FILTER = "unclassified"
 CAUGHT_STATES = ("caught", "missed", "unknown", "mixed")
 ELIGIBILITIES = ("ineligible", "eligible", "unverifiable", "promoted")
@@ -1586,14 +1587,24 @@ def set_status(db: Session, shard_id: str, status: str) -> MemoryShard | None:
     return shard
 
 
-def update_shard(db: Session, shard_id: str, *, text_body: str) -> MemoryShard | None:
-    """Edit a shard's text and RE-EMBED it (fixes stale-embedding-after-edit, R-27)."""
+def update_shard(
+    db: Session, shard_id: str, *, text_body: str | None = None, shard_class: str | None = None
+) -> MemoryShard | None:
+    """Edit a shard's text (RE-EMBEDS, R-27) and/or its class ("" clears it).
+
+    Changing the class alone never re-embeds: the vector is of the text.
+    """
+    if shard_class is not None and shard_class not in ("", *SHARD_CLASSES):
+        raise ValueError(f"shard_class must be one of {', '.join(SHARD_CLASSES)} or empty")
     shard = db.get(MemoryShard, shard_id)
     if shard is None:
         return None
-    shard.text = text_body
-    # An edit is a write too — don't lose the user's text to a down embedder.
-    shard.embedding = safe_embed(text_body)
+    if text_body is not None:
+        shard.text = text_body
+        # An edit is a write too — don't lose the user's text to a down embedder.
+        shard.embedding = safe_embed(text_body)
+    if shard_class is not None:
+        shard.shard_class = shard_class
     db.commit()
     db.refresh(shard)
     return shard

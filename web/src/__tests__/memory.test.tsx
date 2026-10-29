@@ -14,7 +14,7 @@ const hits: ShardHit[] = [
     shard: {
       id: "m1", text: "Decided: use pgvector to keep self-host to one Postgres container.",
       scope: "global", source: "from AL-08", status: "published", origin: "user:ascme",
-      item_id: null, project_id: "core", fresh: false, scoring_source: "", auto_confidence: null,
+      item_id: null, project_id: "core", fresh: false, scoring_source: "", shard_class: "", auto_confidence: null,
       created_at: "",
     },
     score: 0.83,
@@ -32,6 +32,7 @@ const staleCooldown: Shard = {
   project_id: "core",
   fresh: false,
   scoring_source: "",
+  shard_class: "",
   auto_confidence: null,
   created_at: "",
 };

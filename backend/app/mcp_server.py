@@ -2726,7 +2726,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             tags=args.get("tags"), limit=10_000,
         )
         lean = not _full(args)
-        shape = _lean_item if lean else _item_dict
+        # GRPH-1182: the full row carries `blocker`, the field this search matches on. Without
+        # it a hit on blocker text read as unblocked, and `gbfleet until` adopted no hold.
+        shape = _lean_item if lean else (lambda i: {**_item_dict(i), "blocker": i.blocker or ""})
         return _paginate([shape(i) for i in rows], args,
                          fields=LEAN_FIELDS if lean else None)
     if name == "add_memory":

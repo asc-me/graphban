@@ -626,6 +626,68 @@ def test_until_does_not_spawn_for_held_review(
     assert result.spawned == 0
 
 
+def test_a_scoped_wave_does_not_spawn_for_review_outside_its_prd(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1188. `--prd P` with one unheld review row that belongs to no PRD. The reviewer
+    seat this loop mints is scoped to P and cannot claim it, so spawning for it only starts
+    children that exit — seven of them across two drain runs, each run ending
+    `review-unsigned` and cutting short P's own build work. The row is named as outside the
+    PRD, and the run ends idle.
+
+    Sabotage: drop the `prd_id` filter in `_split_by_prd` and a spawn happens."""
+    workspace = tmp_path / "ws"
+    mints: list[dict] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "", "prd_id": None}],
+        minted_args=mints,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        prd="SA-P11",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert mints == [], mints
+    assert result.spawned == 0
+    assert result.minted == 0
+    assert result.reason == "idle", result.as_json()
+    assert result.exit == 0
+    assert result.review == []
+    assert result.as_json()["review_outside_prd"] == ["GRPH-9"]
+
+
+def test_a_scoped_wave_still_spawns_a_reviewer_for_review_inside_its_prd(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1188, the other half: a row whose `prd_id` is the wave's PRD is reviewed as
+    before — a review-only seat scoped to the PRD, and a child started on it."""
+    workspace = tmp_path / "ws"
+    mints: list[dict] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "", "prd_id": "SA-P11"}],
+        minted_args=mints,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        prd="SA-P11",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert mints, result.as_json()
+    assert mints[0].get("review_only") is True, mints
+    assert mints[0].get("scope") == "SA-P11", mints
+    assert result.spawned >= 1
+    assert result.review == ["GRPH-9"]
+    assert result.as_json()["review_outside_prd"] == []
+
+
 def test_a_review_only_supervisor_mints_seats_that_cannot_claim(
     git_repo: Path, tmp_path: Path, scripts, state: Path,
 ):

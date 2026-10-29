@@ -137,3 +137,17 @@ def test_windows_pytest_is_not_an_interactive_shell_wrapper():
             f"step {step.get('name')!r} leaves pytest stdin attached — a TTY or a "
             "cmd.exe Y/N prompt can hang the runner. Redirect from /dev/null."
         )
+
+
+def test_no_ci_step_pushes():
+    """CI checks; it does not write to the repo (GRPH-1185).
+
+    A step that committed refusal coverage and ran `git push origin HEAD:main` was refused by
+    main's branch protection and turned main red on every merge. Coverage is built into the
+    package instead (`scripts/graphban_pack.py`), so no step in this workflow pushes."""
+    steps = [(name, step) for name, job in _workflow()["jobs"].items()
+             for step in job.get("steps", [])]
+    assert steps
+    pushing = [f"{name}: {step.get('name') or step['run'][:40]}" for name, step in steps
+               if "git push" in (step.get("run") or "")]
+    assert pushing == [], pushing

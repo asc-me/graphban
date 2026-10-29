@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
-import type { EventsQuery, FleetPolicy, GitopsPatch, Item, LessonFilters, LogExportPatch, RequestItem } from "./types";
+import type { EventsQuery, FleetPolicy, GitopsPatch, Item, LessonFilters, LogExportPatch, RequestItem, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -902,6 +902,14 @@ export function useStaleShards(projectId?: string) {
 
 /** Retire a published shard (restorable for 14 days), restore it, keep it (resets staleness), or apply the judge's
  *  recommendations in bulk. Each re-reads the queues: a retire moves a row out of Stale. */
+export function useSetShardClass() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; shardClass: ShardClass | "" }) => api.setShardClass(v.id, v.shardClass),
+    onSuccess: () => invalidateReview(qc),
+  });
+}
+
 export function useStaleActions() {
   const qc = useQueryClient();
   const invalidate = () => invalidateReview(qc);

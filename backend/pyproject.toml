@@ -56,6 +56,11 @@ build-backend = "hatchling.build"
 # metadata. The guard that the installed wheel ships them is the
 # `backend-packaging` job in ci.yml.
 packages = ["app"]
+# Refusal coverage is a build artefact (GRPH-1185): `scripts/refusal_ratchet.py publish` writes
+# it before the build and .gitignore keeps it out of git — which would also keep it out of this
+# wheel, since hatchling honours .gitignore. `artifacts` ships it when present; absent, the
+# install reports `published: false`. Guarded by the `backend-packaging` job in ci.yml.
+artifacts = ["app/data/refusal_coverage.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

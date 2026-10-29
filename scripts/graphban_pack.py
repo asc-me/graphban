@@ -7,6 +7,8 @@ A Graphban *release* is not a git tag and is not GitHub's source zip. Native
 - backend + Alembic
 - prebuilt `web/dist`, or an explicit `SPA` file saying `n/a`
 - a `GIT_SHA` file (short sha of the packed commit)
+- `backend/app/data/refusal_coverage.json`, computed from the packed tree by its own
+  `scripts/refusal_ratchet.py publish` — a tree that fails the ratchet is not packed (GRPH-1185)
 - **no** `.env`
 
 Packing a ref uses a detached worktree, for the same reason `deploy.sh` does:
@@ -45,6 +47,8 @@ BACKEND_DROP = frozenset({
     ".mypy_cache", ".ruff_cache", ".mine", "tests",
     "Dockerfile", "railway.json", ".dockerignore",
 })
+#: Package data written here, never committed (GRPH-1185). `services/rules` reads it.
+COVERAGE = pathlib.Path("backend/app/data/refusal_coverage.json")
 _VERSION_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.M)
 
 
@@ -136,6 +140,26 @@ def dematerialize(repo: pathlib.Path, tree: pathlib.Path) -> None:
     shutil.rmtree(tree, ignore_errors=True)
 
 
+def publish_coverage(src: pathlib.Path, dest: pathlib.Path, sha: str) -> str | None:
+    """Run the packed tree's ratchet into `dest`'s package data; the failure, or None.
+
+    The tree's own script and BASELINE, against the tree's own `backend/app` — what ships is
+    what is measured. `publish` writes nothing when the ratchet fails, and a stale copy from
+    `src` (a hand-run publish in a working tree) is removed first, so the only number a
+    package can carry is one this pack computed."""
+    out = dest / COVERAGE
+    out.unlink(missing_ok=True)
+    script = src / "scripts" / "refusal_ratchet.py"
+    if not script.is_file():
+        return "scripts/refusal_ratchet.py is missing — cannot measure refusal coverage"
+    ran = subprocess.run([sys.executable, str(script), "publish", str(out), sha])
+    if ran.returncode != 0 or not out.is_file():
+        out.unlink(missing_ok=True)
+        return ("the refusal ratchet failed on this tree — a failing tree ships no "
+                "coverage number and no release")
+    return None
+
+
 def _fail(dest: pathlib.Path | None, msg: str) -> tuple[int, None]:
     if dest is not None and dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
@@ -189,6 +213,10 @@ def pack(src: pathlib.Path, out: pathlib.Path, *, sha: str, version: str,
         shutil.copy2(path, scripts_dest / name)
 
     (dest / "GIT_SHA").write_text(sha + "\n", encoding="utf-8")
+
+    problem = publish_coverage(src, dest, sha)
+    if problem:
+        return _fail(dest, problem)
 
     if api_only:
         (dest / "SPA").write_text("n/a\n", encoding="utf-8")
