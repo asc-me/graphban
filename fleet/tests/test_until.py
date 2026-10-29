@@ -70,6 +70,7 @@ def _clients(
     bound_refused: bool = False,
     sticky_clusters: bool = False,
     gitops: dict | None = None,
+    drop_delegated: bool = False,
 ):
     """Planner + supervisor clients sharing one mock Graphban."""
     # GRPH-885: `_delegate_next` only seeds a cluster that names an item. Fixtures that
@@ -79,6 +80,8 @@ def _clients(
     if cluster_items is None and clusters:
         cluster_items = [[f"GRPH-{i+1}"] for i in range(clusters)]
     seen_agents = {"yes": False}
+    # GRPH-1189: what the real server does — an item a child holds leaves `collision_clusters`.
+    taken: set[str] = set()
 
     def handler(request: httpx.Request) -> httpx.Response:
         ack = telemetry_ack(request)
@@ -122,6 +125,7 @@ def _clients(
                 "text": "Item seed",
             }}, rid)
         if tool == "delegate":
+            taken.add(str(args.get("id")))
             if delegate_fails:
                 return _error(delegate_fails, f"refused ({delegate_fails})", rid)
             if bound_refused and args.get("seat"):
@@ -143,6 +147,8 @@ def _clients(
             total = clusters if sticky_clusters else (0 if seen_agents["yes"] else clusters)
             rows = [{"items": list(cluster_items[i]) if cluster_items and i < len(cluster_items) else []}
                     for i in range(total)]
+            if drop_delegated:
+                rows = [r for r in rows if not taken.intersection(r["items"])]
             return _mcp({
                 "clusters": rows,
                 "total": total,
@@ -1805,3 +1811,90 @@ def test_an_unmeasured_project_base_falls_to_the_remote_default_and_says_it_was_
     assert "BASE origin/main" in printed
     assert "[remote_default]" in printed
     assert "unmeasured" in printed, "the summary must keep saying no project rule named it"
+
+
+class _SizingStub:
+    """`planner`/`supervisor` for `_wanted_workers` alone: one dict per tool."""
+
+    def __init__(self, replies: dict):
+        self.replies = replies
+
+    def call(self, tool: str, **_args):
+        return self.replies[tool]
+
+
+def _sizing(*, free: int, live: int, workers: int | None = None) -> dict:
+    agents = [{"id": f"GRPH-A{i}"} for i in range(live)]
+    n = live if workers is None else workers
+    return {
+        "collision_clusters": {"clusters": [{"items": [f"GRPH-{i}"]} for i in range(free)]},
+        "fleet_status": {"agents": agents},
+        "propose_allocation": {"workers": n, "reviewers": 0, "rationale": "stub",
+                               "mapping": [{"agent_id": a["id"]} for a in agents]},
+    }
+
+
+def test_a_live_child_does_not_hide_a_free_cluster():
+    """GRPH-1189. `collision_clusters` already leaves out what a running child claimed, so
+    the one free cluster here is work nobody has. Subtracting the live child from it as well
+    returned 0, and the cluster sat unclaimed with two slots spare. The roster holds only the
+    live child — this loop's planner never heartbeats — so `propose_allocation` says one
+    worker, and that is the roster, not a bound."""
+    from gbfleet.until import _wanted_workers
+
+    stub = _SizingStub(_sizing(free=1, live=1))
+    assert _wanted_workers(stub, stub, live_n=1, max_workers=3) == 1
+
+
+def test_a_live_child_with_no_slot_left_spawns_nothing():
+    from gbfleet.until import _wanted_workers
+
+    stub = _SizingStub(_sizing(free=1, live=1, workers=3))
+    assert _wanted_workers(stub, stub, live_n=1, max_workers=1) == 0
+
+
+def test_live_children_and_no_free_cluster_spawn_nothing():
+    """Ready work still bounds everything (the PRD-39 runaway): the roster's two live
+    children and a proposal of three workers are not work."""
+    from gbfleet.until import _wanted_workers
+
+    stub = _SizingStub(_sizing(free=0, live=2, workers=3))
+    assert _wanted_workers(stub, stub, live_n=2, max_workers=3) == 0
+
+
+def test_free_clusters_fill_the_slots_live_children_leave():
+    from gbfleet.until import _wanted_workers
+
+    stub = _SizingStub(_sizing(free=5, live=1))
+    assert _wanted_workers(stub, stub, live_n=1, max_workers=3) == 2
+
+
+def test_the_loop_spawns_beside_a_live_child_for_a_free_cluster(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1189, end to end: with one child still running and one cluster nobody holds,
+    the loop starts a second child rather than waiting out the first. Two clusters; the
+    first child's leaves the read, as on the real server, so one free cluster remains.
+    Spawning twice is not enough — the bug spawned the second once the first was reaped —
+    so the second launch must land inside the first child's wall clock."""
+    import time
+
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=2, workers=1, sticky_clusters=True,
+                                   drop_delegated=True)
+    inner = _factory(scripts, "sleeper")
+    launched: list[float] = []
+
+    def factory(*args, **kwargs):
+        launched.append(time.monotonic())
+        return inner(*args, **kwargs)
+
+    wall = 4.0
+    result = run(
+        git_repo, factory,
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0.05, empty_ticks=3,
+        limits=Limits(max_workers=3, max_children=2, child_wall_clock=wall),
+    )
+    assert result.spawned == 2, result.detail
+    assert launched[1] - launched[0] < wall / 2, "the second child waited out the first"

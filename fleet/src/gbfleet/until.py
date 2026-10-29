@@ -39,7 +39,7 @@ from .spawn import VendorLimit
 from .headroom import Headroom
 from .supervisor import (
     _declared_into,
-    DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Merger, Wave, WaveBase,
+    DEFAULT_MAX_WORKERS, LaunchFactory, Limits, Merger, Wave, WaveBase,
     _reap_all, _rooted, _report_exits, _start, item_status, publish_salvaged,
     resolve_wave_base, watch_tick,
 )
@@ -1788,7 +1788,7 @@ def _wanted_workers(
     planner: Graphban, supervisor: Graphban, *, live_n: int, max_workers: int,
     prd: str | None = None,
 ) -> int:
-    """How many more workers to start. Cold start reads clusters; a live roster reads the mix."""
+    """How many more workers to start: free clusters, bounded by the slots live children leave."""
     # READY WORK BOUNDS EVERYTHING. `propose_allocation` describes the roster, not the
     # backlog: with zero free clusters it still maps every idle registered agent as a worker
     # "pulling from the review queue", and a child this loop spawned ten seconds ago is still
@@ -1823,14 +1823,20 @@ def _wanted_workers(
             _contention.clear()
         return 0
     _contention.clear()
-    roster = supervisor.call("fleet_status")
-    agents = [a for a in (roster.get("agents") or []) if a.get("id")]
-    if not agents:
-        return max(0, min(max_workers, total) - live_n)
-    alloc = AllocationRead.of(planner.call("propose_allocation"))
-    if alloc.uninformative:
-        return max(0, min(max_workers, total) - live_n)
-    return max(0, min(max_workers, alloc.workers, total) - live_n)
+    # SLOTS AND WORK ARE BOUNDED SEPARATELY (GRPH-1189). `collision_clusters` already leaves
+    # out what the running children claimed, so `total` is work NO child has; subtracting
+    # `live_n` from it counted every child twice, and each one hid a free cluster — a wave of
+    # N free clusters ran about one at a time. `live_n` comes off the slots, not the work.
+    #
+    # `propose_allocation` is NOT a bound here. Its `workers` is the count of online agents on
+    # the roster — every one of them, live children included — never a demand for more, so
+    # `alloc.workers - live_n` is just "online agents that are not our children". This loop's
+    # planner registers once and does not heartbeat, so a drain alone on its project soon has
+    # only its children online, that term reads 0, and the free cluster hides again. Ghosts on
+    # the roster can only inflate it, which `total` already bounds (the PRD-39 runaway).
+    # The roster is still read: `fleet_status` is what requeues an offline child's items.
+    supervisor.call("fleet_status")
+    return max(0, min(max_workers - live_n, total))
 
 
 def _take_seat(
