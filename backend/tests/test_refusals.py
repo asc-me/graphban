@@ -148,6 +148,7 @@ def test_a_refusal_built_for_the_mcp_path_is_a_site():
 @pytest.mark.parametrize("rule", [
     "review.adversarial_evidence", "review.attest_the_head", "review.predicates_compared",
     "review.clause_capability", "review.acceptance_covered", "memory.independent_adjudication",
+    "memory.write_access", "memory.retire_window",
 ])
 def test_the_converted_gates_are_registered_and_cited(rule):
     assert rule in R.RULES_BY_ID
