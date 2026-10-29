@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, ChevronDown, Copy, FlaskConical, Link2, ListChecks } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Copy, FlaskConical, ListChecks } from "lucide-react";
 import * as React from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
@@ -161,7 +161,6 @@ export function PrdEditorView() {
           title="Interactively grill this PRD — the agent asks clarifying questions to sharpen it before building"
           className="inline-flex items-center gap-1.5 rounded-lg border border-accent/15 bg-accent/10 px-2.5 py-1 text-[11.5px] text-accent transition-colors hover:border-accent/30"
         >
-          <span aria-hidden>✦</span>
           Grill
         </button>
         <div className="ml-auto flex items-center gap-2">
@@ -300,7 +299,6 @@ function LinkedButton({
       title={`${requestCount} linked requests · ${requestVotes} votes`}
       className="inline-flex items-center gap-1.5 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted hover:text-fg"
     >
-      <Link2 size={12} />
       Linked · {itemCount} items · {requestCount} requests
     </button>
   );

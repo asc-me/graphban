@@ -53,3 +53,24 @@ describe("PRD status chips (GRPH-1170)", () => {
     expect(screen.queryByText("Spec P-4")).not.toBeInTheDocument();
   });
 });
+
+describe("PRD status chip row matches the design (GRPH-1207)", () => {
+  it("has a bottom rule and 12px surface chips", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <ProjectProvider>
+            <PrdListView />
+          </ProjectProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByText("Spec P-1");
+    const group = screen.getByRole("group", { name: "Filter by status" });
+    expect(group.className).toContain("border-b");
+    const btn = group.querySelectorAll("button")[1]!; // "All" is the active chip
+    expect(btn.className).toContain("text-[12px]");
+    expect(btn.className).toContain("bg-surface-2");
+  });
+});
