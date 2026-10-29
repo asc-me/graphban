@@ -60,16 +60,8 @@ function assertLineNoMono(src: string, marker: string, label: string): void {
 }
 
 describe("shell chrome uses Sans, not Mono (GRPH-938)", () => {
-  it("TopBar product subtitle is not font-mono", () => {
-    const src = readShell("TopBar.tsx");
-    assertLineNoMono(src, "Agent memory", "TopBar subtitle");
-  });
-
-  it("TopBar MCP live indicator is not font-mono", () => {
-    const src = readShell("TopBar.tsx");
-    assertLineNoMono(src, "tools live", "TopBar MCP indicator");
-  });
-
+  // GRPH-1174: the design sets the brand subline and MCP pill in mono uppercase; they are
+  // asserted positively in top-bar-header.test.tsx, so no no-mono guard for them here.
   it("AppFrame loading text is not font-mono", () => {
     const src = readShell("AppFrame.tsx");
     assertLineNoMono(src, "loading…", "AppFrame loading");
@@ -104,9 +96,9 @@ describe("shell chrome uses Sans, not Mono (GRPH-938)", () => {
     assertLineNoMono(src, "thinking…", "AgentSidebar thinking");
   });
 
-  it("PlaceHeader project name is not font-mono", () => {
+  it("PlaceHeader page title is not font-mono", () => {
     const src = readShell("PlaceHeader.tsx");
-    assertLineNoMono(src, "{projectName}", "PlaceHeader project name");
+    assertLineNoMono(src, "{viewName}", "PlaceHeader title");
   });
 
   it("identifiers still use font-mono (sabotage guard)", () => {

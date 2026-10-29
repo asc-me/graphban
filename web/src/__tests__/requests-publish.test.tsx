@@ -24,7 +24,9 @@ const makeReq = (overrides: Partial<RequestItem> = {}): RequestItem => ({
   published_at: null, ...overrides,
 });
 
-const { publishSpy, unpublishSpy, commentSpy, voteSpy } = vi.hoisted(() => ({
+const { publishSpy, unpublishSpy, commentSpy, voteSpy, requestsMock, codeMock } = vi.hoisted(() => ({
+  requestsMock: vi.fn(async () => [] as unknown[]),
+  codeMock: vi.fn(async () => [] as unknown[]),
   publishSpy: vi.fn(async () => ({ published: true, published_at: "2026-01-01T00:00:00Z" })),
   unpublishSpy: vi.fn(async () => ({ published: false })),
   commentSpy: vi.fn(async () => ({ id: "c1", body: "test", visibility: "private", created_at: "2026-01-01T00:00:00Z" })),
@@ -34,7 +36,7 @@ const { publishSpy, unpublishSpy, commentSpy, voteSpy } = vi.hoisted(() => ({
 vi.mock("@/lib/api", () => ({
   api: {
     projects: vi.fn(async () => [core]),
-    requests: vi.fn(async () => [makeReq()]),
+    requests: requestsMock,
     voteRequest: voteSpy,
     publishRequest: publishSpy,
     unpublishRequest: unpublishSpy,
@@ -44,10 +46,17 @@ vi.mock("@/lib/api", () => ({
     // The expanded row mounts `LinkedCode`, which reads the request's code links. Served
     // as an empty list so the no-links copy is asserted against a real answer rather than
     // against a query that threw because nothing was mocked.
-    codeForRef: vi.fn(async () => []),
+    codeForRef: codeMock,
     fleet: vi.fn(async () => ({ agents: [], online: 0, total: 0, by_role: {}, posture: "single-agent", roles: [], presence_ttl_seconds: 90, heartbeat_interval_seconds: 30, review_queue: [], clusters: [], seats: [], waves: [] })),
   },
 }));
+
+beforeEach(() => {
+  requestsMock.mockReset();
+  requestsMock.mockImplementation(async () => [makeReq()]);
+  codeMock.mockReset();
+  codeMock.mockImplementation(async () => []);
+});
 
 function renderRequests() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -117,7 +126,27 @@ describe("the request row (PRD-47 S3)", () => {
     // Scoped to the row: the filter bar above the list carries a "BUG" chip of its own,
     // and matching either one would not show that the row is typed.
     const row = vote.closest<HTMLDivElement>("div[class*='rounded-[12px]']")!;
-    expect(within(row).getByText("BUG")).toBeInTheDocument();
+    expect(within(row).getByText("Bug")).toBeInTheDocument();
+    expect(within(row).queryByText("BUG")).not.toBeInTheDocument();
+  });
+
+  it("shows the short age, not '… ago'", async () => {
+    requestsMock.mockResolvedValueOnce([makeReq({ ago: "6h ago" })]);
+    renderRequests();
+    expect(await screen.findByText("6h")).toBeInTheDocument();
+    expect(screen.queryByText("6h ago")).not.toBeInTheDocument();
+  });
+
+  it("renders existing code links as chips with add-link collapsed behind Link", async () => {
+    codeMock.mockResolvedValueOnce([
+      { path: "backend/app/x.py", relation: "affects", node: null },
+    ]);
+    renderRequests();
+    await userEvent.click(await screen.findByTitle(/show detail/i));
+    expect(await screen.findByText("backend/app/x.py")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("backend/app/services/x.py")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /^Link$/ }));
+    expect(screen.getByPlaceholderText("backend/app/services/x.py")).toBeInTheDocument();
   });
 
   it("counts a vote from the row's vote control", async () => {

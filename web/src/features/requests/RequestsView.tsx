@@ -24,6 +24,16 @@ const STATUS_COLOR: Record<string, string> = {
   linked: "#7ca2ff",
 };
 
+/** "BUG" / "new" → "Bug" / "New": the design shows sentence case, whatever casing the data carries. */
+export function sentenceCase(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+
+/** "6h ago" → "6h": the row shows the short form. */
+export function shortAge(ago: string): string {
+  return ago.replace(/\s+ago$/, "");
+}
+
 type Filter = "all" | RequestType;
 
 export function RequestsView() {
@@ -47,6 +57,7 @@ export function RequestsView() {
         purpose="Triage queue from the public form. Auto-duplicate detection links submissions to existing items & memory."
       />
 
+      {!isLoading && !isError && requests.length > 0 && (
       <div className="flex flex-none flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
         <Chip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={requests.length} />
         {(Object.keys(TYPE_META) as RequestType[]).map((t) => (
@@ -60,12 +71,13 @@ export function RequestsView() {
           />
         ))}
       </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading ? (
           <RequestsListSkeleton rows={requests.length > 0 ? requests.length : 6} />
         ) : isError ? (
-          <PlannerError message="Requests unavailable" onRetry={() => refetch()} />
+          <PlannerError title="Requests unavailable" onRetry={() => refetch()} />
         ) : requests.length === 0 ? (
           <PlannerEmpty
             title="No requests yet"
@@ -129,10 +141,10 @@ function RequestRow({
         </button>
 
         <span
-          className="flex-none rounded-md border px-1.5 py-0.5 font-mono text-meta uppercase tracking-wide"
+          className="flex-none rounded-md border px-1.5 py-0.5 font-mono text-meta"
           style={{ color: meta.color, background: meta.bg, borderColor: meta.border }}
         >
-          {meta.label}
+          {sentenceCase(meta.label)}
         </span>
 
         <button
@@ -152,24 +164,24 @@ function RequestRow({
         {request.source_url && <SourceLink url={request.source_url} />}
 
         <span className="flex-none font-mono text-[10.5px] text-faint">{request.by}</span>
-        <span className="hidden flex-none font-mono text-[10px] text-faint-2 sm:inline">{request.ago}</span>
+        <span className="hidden flex-none font-mono text-[10px] text-faint-2 sm:inline">{shortAge(request.ago)}</span>
 
         <span
-          className="flex flex-none items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide"
+          className="flex flex-none items-center gap-1.5 font-mono text-[10px]"
           style={{ color: STATUS_COLOR[request.status] ?? "#8b949e" }}
         >
           <span
             className="h-1.5 w-1.5 rounded-full"
             style={{ background: STATUS_COLOR[request.status] ?? "#8b949e" }}
           />
-          {request.status}
+          {sentenceCase(request.status)}
         </span>
 
         <button
           onClick={handlePublishToggle}
           disabled={publish.isPending || unpublish.isPending}
           className={cn(
-            "flex flex-none items-center gap-1 rounded-md border px-2 py-1 font-mono text-[10px] uppercase tracking-wide transition-colors",
+            "flex flex-none items-center gap-1 rounded-md border px-2 py-1 font-mono text-[10px] transition-colors",
             isPublished
               ? "border-green-500/30 bg-green-500/10 text-green-400 hover:border-green-500/50"
               : "border-control bg-surface text-muted hover:border-control-hover hover:text-fg-2",
@@ -189,8 +201,8 @@ function RequestRow({
             <p className="whitespace-pre-wrap text-body leading-relaxed text-fg-2">{request.detail}</p>
           )}
           <div>
-            <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">Linked code</div>
-            <LinkedCode refId={request.id} projectId={activeId} />
+            <div className="mb-1.5 font-mono text-[10px] text-faint">Linked code</div>
+            <LinkedCode refId={request.id} projectId={activeId} variant="chips" />
           </div>
           <CommentThread requestId={request.id} />
         </div>

@@ -1687,3 +1687,25 @@ class RuleOut(BaseModel):
 class RulesOut(BaseModel):
     version: str
     rules: list[RuleOut]
+
+
+class RuleFlowRuleOut(RuleOut):
+    used: bool
+    label: str | None = None
+    #: Only the collapsed skills node; None means the gban package was not readable here.
+    skills: list[str] | None = None
+
+
+class RuleStageOut(BaseModel):
+    id: str
+    title: str
+    summary: str
+    state: str
+    rules: list[RuleFlowRuleOut]
+
+
+class RulesFlowOut(BaseModel):
+    version: str
+    model: str | None = None
+    stages: list[RuleStageOut]
+    edges: list[list[str]]
