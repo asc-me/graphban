@@ -470,3 +470,187 @@ def holds(db: Session, project_id: str | None) -> list[dict]:
                         if expires is not None else None),
         })
     return out
+
+
+# --- Decisions (PRD-60 D8 / GRPH-1138) ---------------------------------------------------
+#
+# Clustering above is computed on every read and never decided. A decision is a persisted
+# answer keyed by the cluster's member set; it lives only while that exact set is a cluster.
+
+DECISIONS = ("serialize", "parallel", "hold", "override", "snooze")
+# Who may override. A worker credential is refused: overlapping claims are the one decision
+# that removes the protection every other path relies on, so it stays with the people who
+# planned the work or own the project.
+OVERRIDE_AUTHORITY = ("planner", "owner")
+
+
+class DecisionError(ValueError):
+    """A decision that cannot be made as asked (unknown cluster, bad order, bad kind)."""
+
+
+class OverrideRefused(PermissionError):
+    """Override attempted without planner or project-owner authority."""
+
+
+def member_key(ids: list[str]) -> str:
+    return ",".join(sorted(ids))
+
+
+def _aware(dt):
+    from datetime import timezone
+
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def open_clusters(db: Session, project_id: str | None) -> list[dict]:
+    """Collision clusters over every NOT-DONE item, claimed ones included.
+
+    A decision has to survive its own first claim: after `serialize`, the leader is taken and
+    leaves the claimable pool, and a cluster computed over the claimable pool alone would then
+    be a different member set and expire the decision it just made. Decisions are therefore
+    judged against this wider partition, and only an item joining, leaving or finishing changes
+    the set."""
+    pool = [it for it in items_svc.list_items(db, project_id=project_id) if it.status != "done"]
+    areas, predicted = _areas_for(db, pool, project_id)
+    return _partition([it.id for it in pool], areas, predicted)
+
+
+def _live(db: Session, project_id: str | None, *, clusters: list[dict] | None = None):
+    """Decisions not undone and whose member set is still a cluster; expires the rest."""
+    from sqlalchemy import select
+
+    from app.models import CollisionDecision
+
+    rows = db.scalars(select(CollisionDecision).where(
+        CollisionDecision.project_id == project_id,
+        CollisionDecision.undone_at.is_(None), CollisionDecision.expired_at.is_(None))).all()
+    if not rows:
+        return []
+    keys = {member_key(c["items"]) for c in (clusters if clusters is not None
+                                              else open_clusters(db, project_id))}
+    now = items_svc.utcnow()
+    live = []
+    for r in rows:
+        if r.member_key in keys:
+            live.append(r)
+        else:
+            r.expired_at = now
+    db.commit()
+    return live
+
+
+def _record(db: Session, project_id: str, action: str, row, actor: str, meta: dict) -> None:
+    from app.services import events as events_svc
+
+    events_svc.record(db, actor_type="system" if not actor else "user", actor_id=actor,
+                      actor_label=actor, surface="rest", action=action,
+                      target_type="collision_decision", target_id=str(row.id),
+                      project_id=project_id,
+                      meta={"decision": row.decision, "members": row.members, **meta})
+
+
+def decide(db: Session, project_id: str, members: list[str], decision: str, *,
+           authority: str, actor: str = "", order: list[str] | None = None,
+           snooze_until=None):
+    """Record a decision for the cluster whose members are exactly `members`.
+
+    `authority` is `planner`, `owner` or anything else (`writer`, `worker`). Only the first
+    two may `override`. `serialize` and `hold` add dependency links, recorded on the row so
+    `undo` removes exactly those."""
+    from app.models import CollisionDecision
+    from app.services import keys as keys_svc
+    from app.services import links as links_svc
+
+    if decision not in DECISIONS:
+        raise DecisionError(f"unknown decision {decision!r}; one of {', '.join(DECISIONS)}")
+    if decision == "override" and authority not in OVERRIDE_AUTHORITY:
+        raise OverrideRefused("override needs a planner or the project owner; a worker "
+                              "credential may not allow overlapping claims")
+    ids = [keys_svc.resolve_item(db, m) or m for m in members]
+    clusters = open_clusters(db, project_id)
+    if not any(c["collides"] and member_key(c["items"]) == member_key(ids) for c in clusters):
+        raise DecisionError("those items are not a current collision cluster; it may have "
+                            "changed — reload triage")
+    if decision == "snooze" and snooze_until is None:
+        raise DecisionError("snooze needs snooze_until")
+
+    by_id = {it.id: it for it in items_svc.list_items(db, project_id=project_id)}
+    seq = ([keys_svc.resolve_item(db, m) or m for m in order] if order else
+           sorted(ids, key=lambda i: (by_id[i].sort_order, by_id[i].number or 0)))
+    if sorted(seq) != sorted(ids):
+        raise DecisionError("order must list each cluster member exactly once")
+
+    # Replace an earlier answer to the same cluster rather than stacking two.
+    for old in _live(db, project_id, clusters=clusters):
+        if old.member_key == member_key(ids):
+            undo(db, old.id, actor=actor)
+
+    added: list[list[str]] = []
+    if decision in ("serialize", "hold"):
+        existing = {(lk.a, lk.b) for lk in links_svc.list_links(db, project_id)
+                    if lk.type == "dependency"}
+        pairs = ([(seq[i + 1], seq[i]) for i in range(len(seq) - 1)] if decision == "serialize"
+                 else [(f, seq[0]) for f in seq[1:]])
+        for follower, leader in pairs:
+            if (follower, leader) in existing or (leader, follower) in existing:
+                continue
+            links_svc.create_link(db, a=follower, b=leader, type_="dependency",
+                                  reason=f"collision {decision}", project_id=project_id)
+            added.append([follower, leader])
+
+    row = CollisionDecision(
+        project_id=project_id, member_key=member_key(ids), members=sorted(ids),
+        decision=decision, order=seq, links_added=added,
+        snooze_until=snooze_until if decision == "snooze" else None, decided_by=actor)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    _record(db, project_id, "collision_decide", row, actor, {"links_added": added})
+    return row
+
+
+def undo(db: Session, decision_id: int, *, actor: str = ""):
+    """Undo a decision: remove the links it added (and only those) and stamp `undone_at`."""
+    from sqlalchemy import and_, delete, or_
+
+    from app.models import CollisionDecision, Link
+
+    row = db.get(CollisionDecision, decision_id)
+    if row is None:
+        raise DecisionError("no such decision")
+    if row.undone_at is not None:
+        return row
+    pairs = [tuple(p) for p in (row.links_added or [])]
+    if pairs:
+        db.execute(delete(Link).where(
+            Link.type == "dependency", Link.project_id == row.project_id,
+            or_(*[and_(Link.a == a, Link.b == b) for a, b in pairs])))
+    row.undone_at = items_svc.utcnow()
+    db.commit()
+    _record(db, row.project_id, "collision_undo", row, actor, {"links_removed": pairs})
+    return row
+
+
+def decisions(db: Session, project_id: str) -> list:
+    """Live decisions (undone and expired ones dropped; a lapsed snooze is not live)."""
+    now = items_svc.utcnow()
+    return [r for r in _live(db, project_id)
+            if not (r.decision == "snooze" and _aware(r.snooze_until) <= now)]
+
+
+def triage(db: Session, project_id: str) -> list[dict]:
+    """Colliding clusters nobody has answered: the triage feed. A cluster reappears here when
+    its decision is undone or expires, or its snooze runs out."""
+    clusters = open_clusters(db, project_id)
+    answered = {r.member_key for r in decisions(db, project_id)}
+    return [c for c in clusters if c["collides"] and member_key(c["items"]) not in answered]
+
+
+def override_item_sets(db: Session, project_id: str | None) -> list[set[str]]:
+    """Member sets of live overrides. A claimable cluster whose members sit inside one may
+    be claimed over the reservations of the others in it — that cluster only."""
+    if not project_id:
+        return []
+    return [set(r.members) for r in decisions(db, project_id) if r.decision == "override"]
