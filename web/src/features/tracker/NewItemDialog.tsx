@@ -15,7 +15,8 @@ import { Input, Textarea } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useCreateItem } from "@/lib/queries";
 
-export function NewItemDialog() {
+/** `icon={false}` drops the plus — the empty-state card carries the label alone. */
+export function NewItemDialog({ icon = true }: { icon?: boolean } = {}) {
   const { activeId } = useProjectCtx();
   const create = useCreateItem(activeId);
   const [open, setOpen] = React.useState(false);
@@ -44,7 +45,7 @@ export function NewItemDialog() {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button size="sm">
-          <Plus size={14} />
+          {icon && <Plus size={14} />}
           New item
         </Button>
       </DialogTrigger>

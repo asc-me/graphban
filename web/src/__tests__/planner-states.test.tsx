@@ -21,6 +21,7 @@ import trackerSrc from "../features/tracker/TrackerView.tsx?raw";
 import { ProjectProvider } from "@/features/ProjectContext";
 import prdListSrc from "../features/prds/PrdListView.tsx?raw";
 import { PrdListView } from "@/features/prds/PrdListView";
+import { PlannerError, TrackerListSkeleton } from "@/components/planner/PlannerStates";
 import { TrackerView } from "@/features/tracker/TrackerView";
 import type { Item, PrdSummary } from "@/lib/types";
 
@@ -310,5 +311,56 @@ describe("accessibility floor (GRPH-915)", () => {
 
   it("sabotage: removing skip link would fail the contract", () => {
     expect(appFrameSrc).toMatch(/Skip to main content/);
+  });
+});
+
+describe("planner states match the design (GRPH-1203)", () => {
+  beforeEach(() => {
+    servedItems = [];
+    servedPrds = [];
+    itemsLoading = false;
+    itemsError = false;
+    localStorage.setItem("gb_views_tracker", JSON.stringify({ saved: [], defaultId: "all" }));
+    Element.prototype.scrollTo = Element.prototype.scrollTo ?? (() => {});
+  });
+
+  it("error card title is red with a circle-alert icon, not triangle-alert", () => {
+    const { container } = render(<PlannerError title="Items unavailable" onRetry={() => {}} />);
+    expect(screen.getByRole("heading", { name: "Items unavailable" }).className).toContain("text-ty-bug");
+    expect(container.querySelector("svg.lucide-circle-alert")).not.toBeNull();
+    expect(container.querySelector("svg.lucide-triangle-alert")).toBeNull();
+  });
+
+  it("empty-state New item and New PRD buttons carry no icon; the toolbar button keeps its plus", async () => {
+    renderTracker();
+    await screen.findByText("No items yet");
+    const [toolbar, empty] = screen.getAllByRole("button", { name: "New item" });
+    expect(toolbar.querySelector("svg.lucide-plus")).not.toBeNull();
+    expect(empty.querySelector("svg")).toBeNull();
+  });
+
+  it("empty PRD card's New PRD button carries no icon", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <ProjectProvider>
+            <PrdListView />
+          </ProjectProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByText("No PRDs yet");
+    const [toolbar, empty] = screen.getAllByRole("button", { name: "New PRD" });
+    expect(toolbar.querySelector("svg.lucide-plus")).not.toBeNull();
+    expect(empty.querySelector("svg")).toBeNull();
+  });
+
+  it("loading skeleton rows have at least two different widths", () => {
+    const { container } = render(<TrackerListSkeleton />);
+    const widths = new Set(
+      Array.from(container.querySelectorAll<HTMLElement>("[style*='width']")).map((e) => e.style.width),
+    );
+    expect(widths.size).toBeGreaterThanOrEqual(2);
   });
 });

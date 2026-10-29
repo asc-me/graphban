@@ -112,7 +112,7 @@ export function PrdListView() {
           <PlannerEmpty
             title="No PRDs yet"
             description="Product specs live here — versioned requirements with linked items and AI drafting. Write the first PRD to define what you are building."
-            action={<NewPrdDialog onCreated={(id) => navigate(`/prds/${id}`)} />}
+            action={<NewPrdDialog icon={false} onCreated={(id) => navigate(`/prds/${id}`)} />}
           />
         ) : visible.length === 0 ? (
           <PlannerFilteredEmpty
@@ -179,7 +179,8 @@ function titleFromMarkdown(md: string, fileName: string): string {
   return fileName.replace(/\.(md|markdown|txt)$/i, "").replace(/[-_]+/g, " ").trim();
 }
 
-function NewPrdDialog({ onCreated }: { onCreated: (id: string) => void }) {
+/** `icon={false}` drops the plus — the empty-state card carries the label alone. */
+function NewPrdDialog({ onCreated, icon = true }: { onCreated: (id: string) => void; icon?: boolean }) {
   const qc = useQueryClient();
   const [open, setOpen] = React.useState(false);
   const [title, setTitle] = React.useState("");
@@ -221,7 +222,7 @@ function NewPrdDialog({ onCreated }: { onCreated: (id: string) => void }) {
     <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
       <DialogTrigger asChild>
         <Button size="sm">
-          <Plus size={14} />
+          {icon && <Plus size={14} />}
           New PRD
         </Button>
       </DialogTrigger>
