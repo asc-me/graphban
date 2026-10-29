@@ -1,4 +1,4 @@
-import { Activity, BarChart3, BookMarked, Boxes, Building2, ChevronDown, ChevronRight, ChevronsUpDown, Gauge, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, PanelLeftClose, PanelLeftOpen, Plug, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
+import { Activity, BarChart3, BookMarked, Boxes, Building2, ChevronDown, ChevronRight, ChevronsUpDown, Gauge, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, PanelLeftClose, PanelLeftOpen, Plug, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound, Workflow } from "lucide-react";
 import * as React from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 
@@ -54,6 +54,7 @@ export const SECTIONS: SectionDef[] = [
       { view: "code", icon: <Network size={16} />, label: "Code graph", desc: "Modules, files and symbols agents changed", count: "code_nodes" },
       { view: "links", icon: <GitFork size={16} />, label: "Links", desc: "Typed relations between items and requests" },
       { view: "stack", icon: <Boxes size={16} />, label: "Stack", desc: "Languages, frameworks and services" },
+      { view: "rules", icon: <Workflow size={16} />, label: "Rules", desc: "How work moves, and what holds each step" },
       { view: "mcp-tools", icon: <Plug size={16} />, label: "MCP Tools", desc: "How agents connect and call tools", count: "mcp_tools", hostedOnly: true },
       { view: "fleet", icon: <Users size={16} />, label: "Fleet", desc: "Who works here and what they spawn as", count: "fleet_agents" },
       { view: "outposts", icon: <Server size={16} />, label: "Outposts", desc: "Machines your agents run on", count: "outposts" },

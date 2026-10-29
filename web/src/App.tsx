@@ -7,6 +7,7 @@ import { LoginPage } from "@/features/auth/LoginPage";
 import { ResetPasswordPage } from "@/features/auth/ResetPasswordPage";
 import { ActivityView } from "@/features/activity/ActivityView";
 import { CodeGraphView } from "@/features/code/CodeGraphView";
+import { RulesView } from "@/features/rules/RulesView";
 import { StackView } from "@/features/stack/StackView";
 import { EmbedFeedbackPage } from "@/features/feedback/EmbedFeedbackPage";
 import { FeedbackKitView } from "@/features/feedback/FeedbackKitView";
@@ -78,6 +79,7 @@ const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["links", <LinksGraphView />],
   ["code", <CodeGraphView />],
   ["stack", <StackView />],
+  ["rules", <RulesView />],
   ["roadmap", <RoadmapView />],
   ["mcp-tools", <McpToolsView />],
   ["fleet", <FleetPage />],

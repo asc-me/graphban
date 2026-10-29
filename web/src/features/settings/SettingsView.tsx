@@ -121,7 +121,14 @@ function SelfHostSettings() {
 }
 
 function SelfHostPane({ pathname }: { pathname: string }) {
-  if (pathname.startsWith(settingsPath("deployment/gitops"))) return <GitopsPanel />;
+  if (pathname.startsWith(settingsPath("deployment/gitops"))) {
+    return (
+      <>
+        <GitopsMovedCard />
+        <GitopsPanel />
+      </>
+    );
+  }
   if (pathname.startsWith(settingsPath("deployment/updates"))) return <UpdatesPanel />;
   if (pathname.startsWith(settingsPath("deployment/log-export"))) return <LogExportPanel />;
   if (pathname.startsWith(settingsPath("deployment/sync"))) return <SyncLinkPanel />;
@@ -140,6 +147,30 @@ function SelfHostPane({ pathname }: { pathname: string }) {
   }
   if (pathname.startsWith(settingsPath("account"))) return <AccountPanel />;
   return <CredentialsPanel />;
+}
+
+/**
+ * Frame 7b (GRPH-1162): gitops is the Merge and Release stages of the Rules map now. The form
+ * stays under the card until editing lands on Rules (GRPH-1163) — removing it first would leave
+ * a self-host project with no way to set its contract.
+ */
+function GitopsMovedCard() {
+  return (
+    <div
+      data-testid="gitops-moved"
+      className="mb-6 flex max-w-2xl flex-col gap-1.5 rounded-[12px] border border-line bg-surface-2 p-4"
+    >
+      <span className="font-mono text-[10px] font-semibold tracking-[0.07em] text-muted-2">MOVED</span>
+      <span className="text-[15px] font-semibold">Gitops moved into Rules.</span>
+      <span className="text-[13px] text-muted">Your delivery contract is the Merge and Release stages.</span>
+      <Link
+        to="/rules?stage=merge"
+        className="mt-1 inline-flex h-8 items-center self-start rounded-[8px] bg-accent px-3.5 text-body font-semibold text-[#0a0c0e]"
+      >
+        Open Rules · Merge
+      </Link>
+    </div>
+  );
 }
 
 /**

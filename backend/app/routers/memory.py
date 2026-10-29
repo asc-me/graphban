@@ -388,6 +388,117 @@ def undo_auto(shard_id: str, db: Session = Depends(get_db), user: User = Depends
     return shard
 
 
+class QueueCount(BaseModel):
+    count: int | None  # None only when state == "failed"; 0 is a measured zero
+    state: str  # ok | failed
+    error: str = ""
+
+
+@router.get("/queues", response_model=dict[str, QueueCount])
+def queues(
+    project_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """The five triage-queue counts in one call. A queue whose source failed says so."""
+    authz.require_readable(db, user.id, project_id)
+    return mem_svc.queue_counts(db, project_id)
+
+
+class Recommendation(BaseModel):
+    action: str  # keep | revise | retire | verify
+    confidence: float
+    reason: str
+
+
+class StaleRow(BaseModel):
+    shard: ShardOut
+    why: list[str]
+    ungraded: bool
+    ungraded_reason: str
+    recommendation: Recommendation | None
+
+
+@router.get("/stale", response_model=list[StaleRow])
+def stale(
+    project_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Published shards that are stale or reported wrong, with the judge's recommendation.
+    An ungraded judge is `ungraded: true`, never an invented recommendation."""
+    authz.require_readable(db, user.id, project_id)
+    return [
+        StaleRow(shard=ShardOut.model_validate(r["shard"]), why=r["why"], ungraded=r["ungraded"],
+                 ungraded_reason=r["ungraded_reason"], recommendation=r["recommendation"])
+        for r in mem_svc.stale_list(db, project_id)
+    ]
+
+
+def _writable_shard(db: Session, user: User, shard_id: str) -> MemoryShard:
+    existing = db.get(MemoryShard, shard_id)
+    if existing is None:
+        raise HTTPException(404, "shard not found")
+    if existing.project_id is not None:
+        authz.require_writable(db, user.id, existing.project_id, "shard")
+    elif not authz.writable_project_ids(db, user.id):
+        raise HTTPException(403, "no write access to any project")
+    return existing
+
+
+@router.post("/shards/{shard_id}/retire", response_model=ShardOut)
+def retire_shard(shard_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Retire a published shard. Out of search at once; restorable for 14 days, then final."""
+    existing = _writable_shard(db, user, shard_id)
+    try:
+        shard = mem_svc.retire_shard(db, shard_id)
+    except mem_svc.RetireRefused as exc:
+        raise HTTPException(409, str(exc))
+    events_svc.record_user(db, user, action="retire_shard", target_type="shard",
+                           target_id=shard_id, project_id=existing.project_id)
+    return shard
+
+
+@router.post("/shards/{shard_id}/restore", response_model=ShardOut)
+def restore_shard(shard_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Undo a retire. Refused (409) once 14 days have passed."""
+    existing = _writable_shard(db, user, shard_id)
+    try:
+        shard = mem_svc.restore_shard(db, shard_id)
+    except mem_svc.RetireRefused as exc:
+        raise HTTPException(409, str(exc))
+    events_svc.record_user(db, user, action="restore_shard", target_type="shard",
+                           target_id=shard_id, project_id=existing.project_id)
+    return shard
+
+
+class ApplyIn(BaseModel):
+    shard_ids: list[str]
+    min_confidence: float = mem_svc.RECOMMENDATION_FLOOR
+
+
+class ApplyResult(BaseModel):
+    shard_id: str
+    action: str | None
+    confidence: float | None
+    applied: bool
+    reason: str
+    undo: str | None  # "restore" when the UI can reverse it
+
+
+@router.post("/apply-recommendations", response_model=list[ApplyResult])
+def apply_recommendations(body: ApplyIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Apply each shard's recommendation at or above `min_confidence`; per-id outcome returned."""
+    projects = {sid: _writable_shard(db, user, sid).project_id for sid in body.shard_ids}
+    results = mem_svc.apply_recommendations(db, body.shard_ids, floor=body.min_confidence)
+    for r in results:
+        if r["applied"] and r["undo"]:
+            events_svc.record_user(db, user, action="retire_shard", target_type="shard",
+                                   target_id=r["shard_id"], project_id=projects[r["shard_id"]],
+                                   meta={"via": "apply-recommendations"})
+    return results
+
+
 @router.patch("/shards/{shard_id}", response_model=ShardOut)
 def edit_shard(shard_id: str, body: ShardEdit, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     existing = db.get(MemoryShard, shard_id)

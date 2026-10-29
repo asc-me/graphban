@@ -129,6 +129,7 @@ export function TrackerView() {
   const showHidden = () => views.patch({ window: 0, hide: 0 });
 
   const selected = items.find((i) => i.id === selectedId) ?? null;
+  const populated = !isLoading && !isError && ordered.length > 0;
   const isEmpty = !isLoading && !isError && ordered.length === 0;
   const isFilteredEmpty = !isLoading && !isError && ordered.length > 0 && visible.length === 0;
   const clearFilter = () => views.select(views.views.find((v) => v.id === "all") ?? views.current);
@@ -211,6 +212,7 @@ export function TrackerView() {
         condensed={condensed}
       />
 
+      {populated && (
       <ViewBar
         condensed={condensed}
         onToggleCondense={toggleCondensed}
@@ -226,8 +228,9 @@ export function TrackerView() {
           </>
         }
       />
+      )}
 
-      {layout === "list" && (
+      {populated && layout === "list" && (
         <Collapsible collapsed={condensed}>
         <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
           <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={scoped.shown.length} />
@@ -262,7 +265,7 @@ export function TrackerView() {
         isLoading ? (
           <TrackerBoardSkeleton />
         ) : isError ? (
-          <PlannerError message="Items unavailable" onRetry={() => refetch()} />
+          <PlannerError title="Items unavailable" onRetry={() => refetch()} />
         ) : isEmpty ? (
           emptyState
         ) : isFilteredEmpty ? (
@@ -287,7 +290,7 @@ export function TrackerView() {
           {isLoading ? (
             <TrackerListSkeleton rows={items.length > 0 ? items.length : 8} />
           ) : isError ? (
-            <PlannerError message="Items unavailable" onRetry={() => refetch()} />
+            <PlannerError title="Items unavailable" onRetry={() => refetch()} />
           ) : isEmpty ? (
             emptyState
           ) : isFilteredEmpty ? (

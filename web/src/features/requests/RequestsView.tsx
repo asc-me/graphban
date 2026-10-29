@@ -57,6 +57,7 @@ export function RequestsView() {
         purpose="Triage queue from the public form. Auto-duplicate detection links submissions to existing items & memory."
       />
 
+      {!isLoading && !isError && requests.length > 0 && (
       <div className="flex flex-none flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
         <Chip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={requests.length} />
         {(Object.keys(TYPE_META) as RequestType[]).map((t) => (
@@ -70,12 +71,13 @@ export function RequestsView() {
           />
         ))}
       </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading ? (
           <RequestsListSkeleton rows={requests.length > 0 ? requests.length : 6} />
         ) : isError ? (
-          <PlannerError message="Requests unavailable" onRetry={() => refetch()} />
+          <PlannerError title="Requests unavailable" onRetry={() => refetch()} />
         ) : requests.length === 0 ? (
           <PlannerEmpty
             title="No requests yet"
