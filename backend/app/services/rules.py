@@ -191,3 +191,113 @@ def registry(db: Session, project_id: str | None) -> list[dict]:
                 d["enforcement"], d["channel"] = "unmeasured", None
         out.append(d)
     return out
+
+
+# --- Flow model (GRPH-1156 / PRD-P61 §4) -------------------------------------------------
+# The nodes are fixed in v1 and so are the edges: the flow is always drawn whole. The
+# registry's own `stage` is finer-grained than the map, so each rule is placed explicitly.
+
+STAGES = (
+    ("spec", "Spec", "PRD, grill, approval"),
+    ("plan", "Plan", "Decompose, allocate, seat"),
+    ("build", "Build", "Claim, branch, naming"),
+    ("review", "Review", "Authorship, diversity, reviewer bar, sign-off"),
+    ("merge", "Merge", "Base branch, push rules, CI"),
+    ("release", "Release", "Version source, release definition"),
+    ("learn", "Learn", "Scans, lessons"),
+)
+STAGE_IDS = tuple(s[0] for s in STAGES)
+EDGES = tuple((a, b) for a, b in zip(STAGE_IDS, STAGE_IDS[1:]))
+
+#: strongest first; a stage takes the weakest of its used rules.
+ENFORCEMENT_ORDER = ("enforced", "checked", "external", "advisory", "unmeasured")
+
+RULE_STAGE = {
+    "gate.approval_earned_by_grill": "spec",
+    "gate.decompose_requires_approval": "plan",
+    "gitops.branch_name_pattern": "build",
+    "budget.cap": "build",
+    "agents.operating_loop": "build",
+    "review.not_own_work": "review",
+    "review.role_gated_tools": "review",
+    "review.reviewer_diversity": "review",
+    "gitops.reviewer_bar": "review",
+    "gitops.base_branch": "merge",
+    "gitops.no_push_to_base": "merge",
+    "gitops.model": "merge",
+    "gitops.pr_title_pattern": "merge",
+    "ci.backend_suite_both_engines": "merge",
+    "forge.branch_protection": "merge",
+    "release.version_from": "release",
+    "release.release_defined_in": "release",
+}
+
+NOT_USED_LABEL = "not used by this project's model"
+
+#: Rules that apply to a model only in part, beyond the registry's `models` field.
+_PR_STEP_MODELS = ("push_to_base",)
+
+
+def shipped_skills() -> list[str] | None:
+    """Skills the `gban` package ships at the running version. None when the package is not
+    installed here: the server cannot read a project's `.claude/skills`, and a guessed list
+    would read as a measured one."""
+    try:
+        from importlib import resources
+        root = resources.files("gban") / "skills"
+        return sorted(p.name for p in root.iterdir() if p.is_dir())
+    except (ImportError, FileNotFoundError, NotADirectoryError, ModuleNotFoundError):
+        return None
+
+
+def rule_used(rule: dict, model: str | None) -> bool:
+    """Per rule, from the registry's `models`: an unknown model (unmeasured) uses everything."""
+    if model is None:
+        return True
+    if model not in rule["models"]:
+        return False
+    # The reviewer bar is a PR-step rule only when it asks the forge.
+    if rule["id"] == "gitops.reviewer_bar" and model in _PR_STEP_MODELS:
+        return rule["value"] != "forge"
+    return True
+
+
+def weakest(enforcements: list[str]) -> str:
+    return max(enforcements, key=ENFORCEMENT_ORDER.index)
+
+
+def flow(db: Session, project_id: str | None) -> dict:
+    """The project's process as stages in fixed order. Unused rules stay on their stage,
+    flagged; a stage is `not_used` only when every rule on it is, and a stage with no rules
+    registered is `unmeasured` — nothing was looked at, which is not the same as clean."""
+    rules = registry(db, project_id)
+    model = gitops.resolve(db, project_id).model.value
+    nodes = [dict(r, stage=RULE_STAGE[r["id"]]) for r in rules]
+    skills = shipped_skills()
+    nodes.append({
+        "id": "agents.skills_pack", "stage": "build",
+        "title": "Agent instructions (Graphban pack)",
+        "summary": "Skills the agents read, shipped in the gban package.",
+        "enforcement": "advisory", "channel": "skill", "truth": "repo_file",
+        "scope": "platform", "models": list(GITOPS_ALL_MODELS), "value": None,
+        "source": None, "enforcer": {"kind": "skill", "ref": "gban skills", "url": ""},
+        "skills": skills,
+    })
+    stages = []
+    for sid, title, summary in STAGES:
+        on = []
+        for n in nodes:
+            if n["stage"] != sid:
+                continue
+            used = rule_used(n, model)
+            on.append(dict(n, used=used, label=None if used else NOT_USED_LABEL))
+        used_rules = [n for n in on if n["used"]]
+        if not on:
+            state = "unmeasured"
+        elif not used_rules:
+            state = "not_used"
+        else:
+            state = weakest([n["enforcement"] for n in used_rules])
+        stages.append({"id": sid, "title": title, "summary": summary, "state": state,
+                       "rules": on})
+    return {"model": model, "stages": stages, "edges": [list(e) for e in EDGES]}
