@@ -456,6 +456,24 @@ describe("Harness tabs", () => {
     expect(tabs[2]).toHaveAttribute("data-tab", "changes");
   });
 
+  it("shows the SERVED badge on Guidance when routing was served", async () => {
+    show();
+    await screen.findByTestId("harness-cell");
+    const guidanceTab = screen.getAllByTestId("harness-tab")[1];
+    expect(await within(guidanceTab).findByTestId("harness-tab-badge")).toHaveTextContent("SERVED");
+  });
+
+  it("shows no SERVED badge on Guidance when nothing has been served", async () => {
+    harnessGuidance.mockResolvedValueOnce(guidanceData({ routing: [], fleet_status_text: "" }));
+    show();
+    await screen.findByTestId("harness-cell");
+    const guidanceTab = screen.getAllByTestId("harness-tab")[1];
+    await userEvent.setup().click(guidanceTab);
+    // The guidance payload has loaded (empty-state copy is rendered) before asserting absence.
+    expect(await screen.findByText(/No measured routing served yet/)).toBeInTheDocument();
+    expect(within(guidanceTab).queryByTestId("harness-tab-badge")).toBeNull();
+  });
+
   it("switches to the Guidance tab and shows the routing table and grading rules", async () => {
     show();
     const user = userEvent.setup();

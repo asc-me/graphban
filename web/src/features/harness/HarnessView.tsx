@@ -39,6 +39,8 @@ export function HarnessView() {
   const harnessQ = useHarness(activeId, { versions });
   const { data, isLoading } = harnessQ;
   const { data: guidance } = useHarnessGuidance(activeId);
+  // SERVED is a status claim: only show it when routing or fleet_status text was served.
+  const guidanceServed = !!guidance && (guidance.routing.length > 0 || !!guidance.fleet_status_text);
   const { data: cards } = useHarnessCards(activeId);
   const { data: fleetData, refetch: refetchFleet } = useFleet(activeId);
 
@@ -106,7 +108,7 @@ export function HarnessView() {
             }`}
           >
             {t.label}
-            {t.id === "guidance" && guidance && (
+            {t.id === "guidance" && guidanceServed && (
               <span className="ml-1.5 rounded-md border border-line-2 px-1 font-mono text-meta text-muted" data-testid="harness-tab-badge">
                 SERVED
               </span>
