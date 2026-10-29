@@ -77,7 +77,34 @@ def test_db_values_read_from_the_gitops_view(client):
 
 
 def test_source_url_uses_release_tag():
-    assert R.source_url("app/x.py", "1.2.3").endswith("/blob/v1.2.3/backend/app/x.py")
+    url = R.source_url("app/x.py", "2026.10.24")
+    assert url == f"{R.REPO_URL}/blob/2026.10.24/backend/app/x.py"
+    assert "/blob/v" not in url
+
+
+def test_url_tag_matches_release_script_tag_format():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    import graphban_release as rel
+
+    tag = rel.format_calver(2026, 10, 24)
+    assert rel.normalize_tag(tag) == tag  # the script publishes the tag unprefixed
+    assert R.source_url("app/x.py", tag).split("/blob/")[1].split("/")[0] == tag
+    assert R.repo_file_url("AGENTS.md", tag).split("/blob/")[1].split("/")[0] == tag
+
+
+def test_ci_job_and_doc_enforcers_have_urls():
+    seen = set()
+    for r in R.RULES:
+        if r.enforcer.kind in ("ci_job", "doc"):
+            seen.add(r.enforcer.kind)
+            out = R._enforcer_out(r.enforcer)
+            assert out["url"].startswith(R.REPO_URL + "/blob/"), r.id
+            assert out["url"].endswith("/" + r.enforcer.ref), r.id
+        elif r.enforcer.kind in ("forge", "supervisor"):
+            assert R._enforcer_out(r.enforcer)["url"] == "", r.id
+    assert seen == {"ci_job", "doc"}
 
 
 def test_endpoint(client, auth):
