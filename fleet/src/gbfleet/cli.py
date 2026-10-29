@@ -32,6 +32,7 @@ from .state import repo_root
 from .supervisor import DEFAULT_MAX_WORKERS, Limits, Merger, Wave, resolve_wave_base, up
 from .tiers import TierTable
 from . import matrix as matrix_mod
+from .watchdog import STALL_AFTER_S
 from .until import PLANNER_TOOLS, emit as emit_until, run as run_until
 from .worktree import BaseBranchNotFound, Worktree, default_ref, remote_for
 
@@ -373,6 +374,12 @@ def build_parser() -> argparse.ArgumentParser:
     until.add_argument(
         "--quiet-after", type=float, default=Limits.quiet_after,
         help="seconds of no output before a child is REPORTED as quiet",
+    )
+    until.add_argument(
+        "--stall-after", type=float, default=STALL_AFTER_S, metavar="SECONDS",
+        help="exit non-zero with a `stall` event when nothing has progressed for this long "
+             "and no child is live, so the service manager restarts the process; 0 disables "
+             "(GRPH-1179). `kill -USR1 <pid>` dumps every thread's stack to the log",
     )
     until.add_argument("--merge", action="store_true", default=False, help=_MERGE_HELP)
     until.add_argument(
@@ -742,6 +749,7 @@ def _until(args) -> int:
             matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
             merge=bool(args.merge),
             base_branch=args.base,
+            stall_after=args.stall_after,
         )
     except RepoLocked as exc:
         print(f"gbfleet until: {exc}", file=sys.stderr)
