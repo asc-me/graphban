@@ -7,7 +7,7 @@
  * `docs/design/rules-view-design.md`. Editing is UI 2/3; refusals and Recommended are UI 3/3.
  */
 import * as React from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -16,7 +16,8 @@ import { errorDetail } from "@/lib/errors";
 import { stepIndex } from "@/lib/graph/useGraphKeyboard";
 import { useGraphViewport, zoomAbout } from "@/lib/graph/useGraphViewport";
 import { useRulesFlow } from "@/lib/queries";
-import type { RuleFlowRule, RuleStage, RulesFlow } from "@/lib/types";
+import { projectPath, tagFromPath } from "@/lib/routes";
+import type { RuleFlowRule, RuleStage, RuleSuggestion, RulesFlow } from "@/lib/types";
 
 import {
   CHIP_H,
@@ -51,6 +52,7 @@ import {
   type Level,
   type MapLayout,
 } from "./levels";
+import { RecommendedSheet, UnmappedSheet } from "./RefusalPanels";
 import { BudgetCapEditor, GITOPS_RULE_FIELDS, GitopsRuleEditor } from "./RuleEditors";
 import { RuleLevelIcon } from "./RuleLevelIcon";
 
@@ -91,6 +93,27 @@ export function RulesView() {
   const [params] = useSearchParams();
   const linked = params.get("stage");
   const [sel, setSel] = React.useState<string | null>(linked ? stageKey(linked) : null);
+  const { pathname } = useLocation();
+  // Following a refusal (frames 4a1–4b2): `?rule=` focuses one rule, `?from=` is the event to
+  // go back to, `?pulse=unmapped` is "see all rules" for a refusal that names no rule.
+  const ruleParam = params.get("rule");
+  const fromEvent = params.get("from");
+  const [focusRule, setFocusRule] = React.useState<string | null>(ruleParam);
+  const [prefill, setPrefill] = React.useState<{ rule: string; value: string } | null>(null);
+  const [sheet, setSheet] = React.useState<"unmapped" | "recommended" | null>(null);
+  const [pulse, setPulse] = React.useState(params.get("pulse") === "unmapped");
+  const focusedRule = flow && focusRule ? flow.stages.flatMap((s) => s.rules).find((r) => r.id === focusRule) ?? null : null;
+  const focusedStage = focusedRule?.stage ?? null;
+  React.useEffect(() => {
+    if (focusedStage) setSel(stageKey(focusedStage));
+  }, [focusedStage]);
+
+  function openValueSuggestion(s: RuleSuggestion) {
+    if (s.rule_id && s.value !== null) setPrefill({ rule: s.rule_id, value: s.value });
+    setFocusRule(s.rule_id);
+    if (!s.rule_id) setSel(stageKey(s.stage));
+    setSheet(null);
+  }
 
   // A ?stage= that names no stage on this payload selects nothing, rather than an empty inspector.
   React.useEffect(() => {
@@ -105,8 +128,50 @@ export function RulesView() {
       <PlaceHeader
         viewName={`Rules ${scope}`}
         purpose={`How work moves through ${scope}, and what holds each step.`}
-        action={<ModelPill flow={flow} loading={q.isLoading} />}
+        action={
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => { setPulse(false); setSheet("unmapped"); }}
+              onAnimationEnd={() => setPulse(false)}
+              data-testid="rules-open-unmapped"
+              data-pulse={pulse ? "true" : "false"}
+              className={cn(
+                "h-7 rounded-[8px] border border-control px-2.5 text-small text-fg-2 hover:text-fg",
+                pulse && "animate-[pulse_1s_ease-in-out_1] border-accent text-accent",
+              )}
+            >
+              Unmapped refusals
+            </button>
+            <button
+              type="button"
+              onClick={() => setSheet("recommended")}
+              data-testid="rules-open-recommended"
+              className="h-7 rounded-[8px] border border-control px-2.5 text-small text-fg-2 hover:text-fg"
+            >
+              Recommended
+            </button>
+            <ModelPill flow={flow} loading={q.isLoading} />
+          </div>
+        }
       />
+      {fromEvent && (
+        <nav aria-label="Breadcrumb" data-testid="rules-breadcrumb" className="mx-5 mt-3 flex items-center gap-2 text-small text-muted">
+          <Link
+            to={`${tagFromPath(pathname) ? projectPath(tagFromPath(pathname)!, "activity") : "/activity"}?event=${encodeURIComponent(fromEvent)}`}
+            className="text-accent hover:underline"
+          >
+            ← Refusal (event {fromEvent})
+          </Link>
+          <span aria-hidden>/</span>
+          <span className={MONO}>{focusRule ?? "all rules"}</span>
+        </nav>
+      )}
+      {focusRule && flow && !focusedRule && (
+        <div role="status" data-testid="rules-focus-missing" className="mx-5 mt-3 rounded-[8px] px-3 py-2 text-body text-fg-2" style={{ border: "1.5px dashed #ff6b6b" }}>
+          The refusal names {focusRule}, which is not in this project's registry on this server. The rule exists in the refusal's record; the map can't show it.
+        </div>
+      )}
       {fresh && (
         <div
           role="status"
@@ -138,8 +203,10 @@ export function RulesView() {
           <RulesCanvas flow={flow} sel={sel} onSelect={setSel} />
         )}
         {flow && sel && (
-          <Inspector flow={flow} sel={sel} sheet={narrow} onClose={() => setSel(null)} />
+          <Inspector flow={flow} sel={sel} sheet={narrow} focusRule={focusRule} prefill={prefill} onClose={() => setSel(null)} />
         )}
+        {sheet === "unmapped" && <UnmappedSheet onClose={() => setSheet(null)} />}
+        {sheet === "recommended" && <RecommendedSheet onClose={() => setSheet(null)} onOpenValue={openValueSuggestion} />}
       </div>
     </div>
   );
@@ -802,11 +869,15 @@ function Inspector({
   flow,
   sel,
   sheet,
+  focusRule,
+  prefill,
   onClose,
 }: {
   flow: RulesFlow;
   sel: string;
   sheet: boolean;
+  focusRule: string | null;
+  prefill: { rule: string; value: string } | null;
   onClose: () => void;
 }) {
   const pack = sel === PACK_KEY ? packOf(flow) : null;
@@ -878,7 +949,14 @@ function Inspector({
           </div>
         )}
         {rules.map((r) => (
-          <RuleRow key={r.id} rule={r} version={flow.version} model={flow.model} />
+          <RuleRow
+            key={r.id}
+            rule={r}
+            version={flow.version}
+            model={flow.model}
+            focused={focusRule === r.id}
+            prefill={prefill?.rule === r.id ? prefill.value : undefined}
+          />
         ))}
       </div>
     </aside>
@@ -904,16 +982,36 @@ function PackBody({ pack }: { pack: RuleFlowRule }) {
   );
 }
 
-function RuleRow({ rule, version, model }: { rule: RuleFlowRule; version: string; model: string | null }) {
+function RuleRow({
+  rule,
+  version,
+  model,
+  focused = false,
+  prefill,
+}: {
+  rule: RuleFlowRule;
+  version: string;
+  model: string | null;
+  focused?: boolean;
+  prefill?: string;
+}) {
   const level = ruleLevel(rule);
+  const ref = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    if (focused) ref.current?.scrollIntoView?.({ block: "center" });
+  }, [focused]);
   const quiet = quietLine(rule);
   const enforcer = enforcerText(rule, version);
   const value = valueText(rule.value);
   return (
     <div
+      ref={ref}
       data-testid={`rules-row-${rule.id}`}
       data-level={level}
+      data-focused={focused ? "true" : undefined}
+      aria-current={focused ? "true" : undefined}
       className="grid grid-cols-[100px_minmax(0,1fr)] gap-2.5 rounded-[12px] border border-[#2a333a] p-3"
+      style={focused ? { borderLeft: "4px solid #c6f24e" } : undefined}
     >
       <span className="pt-0.5" style={{ opacity: rule.used ? 1 : 0.55 }}>
         <LevelWord level={level} size={13} className="text-[10px]" />
@@ -970,7 +1068,7 @@ function RuleRow({ rule, version, model }: { rule: RuleFlowRule; version: string
           </div>
         )}
         {rule.truth === "db" && (
-          <ValueBox rule={rule} value={value} />
+          <ValueBox rule={rule} value={value} prefill={prefill} />
         )}
         {rule.id === "budget.cap" && rule.used && <BudgetCapEditor />}
       </div>
@@ -978,7 +1076,7 @@ function RuleRow({ rule, version, model }: { rule: RuleFlowRule; version: string
   );
 }
 
-function ValueBox({ rule, value }: { rule: RuleFlowRule; value: string | null }) {
+function ValueBox({ rule, value, prefill }: { rule: RuleFlowRule; value: string | null; prefill?: string }) {
   const box = (
           <div className="flex flex-col gap-2 rounded-[8px] border border-[#2a333a] bg-bg p-2.5">
             <div className="flex items-center gap-2">
@@ -1005,7 +1103,7 @@ function ValueBox({ rule, value }: { rule: RuleFlowRule; value: string | null })
           </div>
   );
   const field = GITOPS_RULE_FIELDS[rule.id];
-  return field ? <GitopsRuleEditor rule={rule} field={field} fallback={box} /> : box;
+  return field ? <GitopsRuleEditor rule={rule} field={field} fallback={box} prefill={prefill} /> : box;
 }
 
 function EnforcerLink({ kind, text, url }: { kind: string; text: string; url: string }) {

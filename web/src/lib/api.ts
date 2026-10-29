@@ -64,6 +64,7 @@ import type {
   Member,
   PlatformConfig,
   StackHealth,
+  RecommendedRules,
   RulesFlow,
   StackTopology,
   Prd,
@@ -1049,6 +1050,13 @@ export const api = {
     request<StackTopology>(`/platform/stack${projectQuery(projectId)}`),
   /** The rule registry placed on the Rules map's fixed stages (GRPH-1156). */
   rulesFlow: (projectId: string) => request<RulesFlow>(`/rules/flow${projectQuery(projectId)}`),
+  /** Suggestions from the project's own evidence; `sources` says what was and wasn't read (GRPH-1160). */
+  recommendedRules: (projectId: string) =>
+    request<RecommendedRules>(`/rules/recommended${projectQuery(projectId)}`),
+  dismissRecommendedRule: (projectId: string, suggestionId: string) =>
+    request<void>(`/rules/recommended/${encodeURIComponent(suggestionId)}/dismiss${projectQuery(projectId)}`, {
+      method: "POST",
+    }),
   /** Per-deployable code-health overlay (GRPH-1035). */
   stackHealth: (projectId: string) =>
     request<StackHealth>(`/platform/stack/health${projectQuery(projectId)}`),

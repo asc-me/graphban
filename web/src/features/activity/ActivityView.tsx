@@ -1,5 +1,6 @@
 import { Download, Radio, X } from "lucide-react";
 import * as React from "react";
+import { useSearchParams } from "react-router-dom";
 
 import {
   EventListSkeleton,
@@ -51,7 +52,12 @@ export function ActivityView() {
   const [groupBy, setGroupBy] = React.useState<GroupBy>("time");
   const [limit, setLimit] = React.useState(PAGE);
   const [focused, setFocused] = React.useState(0);
-  const [openId, setOpenId] = React.useState<number | null>(null);
+  // `?event=` reopens a refusal from the Rules breadcrumb (GRPH-1164).
+  const [searchParams] = useSearchParams();
+  const [openId, setOpenId] = React.useState<number | null>(() => {
+    const n = Number(searchParams.get("event"));
+    return Number.isInteger(n) && n > 0 ? n : null;
+  });
 
   const query: EventsQuery = React.useMemo(
     () => ({ projectId: activeId, limit, lens, range, actor, surface, targetType, targetId, bucket }),

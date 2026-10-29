@@ -2807,3 +2807,37 @@ export interface RulesFlow {
   stages: RuleStage[];
   edges: [string, string][];
 }
+
+// ── Recommended rules (GRPH-1160, GRPH-1164) ──────────────────────────────────
+export interface SuggestionEvidence {
+  text: string;
+  source: string;
+  link: string;
+}
+
+export interface RuleSuggestion {
+  id: string;
+  stage: string;
+  level: string;
+  title: string;
+  why: string;
+  /** `value` is a gitops value the editor can prefill; `code` needs a change that has not shipped. */
+  kind: "value" | "code" | string;
+  rule_id: string | null;
+  value: string | null;
+  evidence: SuggestionEvidence[];
+  fingerprint: string;
+}
+
+export interface SuggestionSource {
+  source: string;
+  /** `not_available` carries a `reason`; an empty suggestion list never stands in for it. */
+  state: "read" | "not_available" | string;
+  read_at: string | null;
+  reason: string | null;
+}
+
+export interface RecommendedRules {
+  suggestions: RuleSuggestion[];
+  sources: SuggestionSource[];
+}

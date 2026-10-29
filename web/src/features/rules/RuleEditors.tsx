@@ -78,10 +78,13 @@ export function GitopsRuleEditor({
   rule,
   field,
   fallback,
+  prefill,
 }: {
   rule: RuleFlowRule;
   field: FieldKey;
   fallback: React.ReactNode;
+  /** A Recommended value suggestion (frame 5d): opens the editor with this typed in, unsaved. */
+  prefill?: string;
 }) {
   const { activeId } = useProjectCtx();
   const { data: view } = useGitops(activeId);
@@ -116,7 +119,7 @@ export function GitopsRuleEditor({
       </div>
     );
   }
-  return <GitopsFieldForm key={rule.id} projectId={activeId} view={view} field={field} fallback={fallback} />;
+  return <GitopsFieldForm key={`${rule.id}:${prefill ?? ""}`} projectId={activeId} view={view} field={field} fallback={fallback} prefill={prefill} />;
 }
 
 function GitopsFieldForm({
@@ -124,15 +127,17 @@ function GitopsFieldForm({
   view,
   field,
   fallback,
+  prefill,
 }: {
   projectId: string;
   view: GitopsView;
   field: FieldKey;
   fallback: React.ReactNode;
+  prefill?: string;
 }) {
   const saved = currentValue(view, field);
-  const [editing, setEditing] = React.useState(false);
-  const [draft, setDraft] = React.useState(saved);
+  const [editing, setEditing] = React.useState(prefill !== undefined);
+  const [draft, setDraft] = React.useState(prefill ?? saved);
   const [error, setError] = React.useState("");
   const [done, setDone] = React.useState(false);
   const save = useUpdateGitops(projectId);

@@ -1,7 +1,9 @@
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
+import { Link, useLocation } from "react-router-dom";
 
 import { cn } from "@/lib/cn";
+import { projectPath, tagFromPath } from "@/lib/routes";
 import type { Event } from "@/lib/types";
 
 import { VerdictChip } from "./EventRow";
@@ -71,6 +73,8 @@ export function EventPanel({
             ))}
           </ol>
         </Section>
+
+        <RefusalRule event={e} />
 
         <Section title="Record">
           <dl className="flex flex-col gap-1">
@@ -255,5 +259,40 @@ function NotRecorded({ label, detail }: { label: string; detail: string }) {
         Not recorded. {detail}
       </p>
     </div>
+  );
+}
+
+/**
+ * Refusal → rule (GRPH-1164, frames 4a1–4b2). A mapped refusal links to its rule on the Rules
+ * map; an unmapped one says so plainly and links to the unfocused map — it must never read as
+ * a broken link or as "no rule applies".
+ */
+function RefusalRule({ event: e }: { event: Event }) {
+  const { pathname } = useLocation();
+  if (e.action !== "refusal" && e.action !== "refusal_unmapped") return null;
+  const tag = tagFromPath(pathname);
+  const base = tag ? projectPath(tag, "rules") : "/rules";
+  const ruleId = typeof e.meta?.rule_id === "string" && e.meta.rule_id ? e.meta.rule_id : null;
+  return (
+    <Section title="Rule">
+      {ruleId && e.action === "refusal" ? (
+        <div className="flex flex-col gap-1.5" data-testid="refusal-rule">
+          <span className="font-mono text-[12px] text-fg">{ruleId}</span>
+          <Link
+            to={`${base}?rule=${encodeURIComponent(ruleId)}&from=${e.id}`}
+            className="self-start text-small text-accent hover:underline"
+          >
+            see rule
+          </Link>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1.5" data-testid="refusal-unmapped">
+          <span className="text-[12px] leading-snug text-muted">This refusal isn't mapped to a rule yet.</span>
+          <Link to={`${base}?pulse=unmapped`} className="self-start text-small text-accent hover:underline">
+            see all rules
+          </Link>
+        </div>
+      )}
+    </Section>
   );
 }
