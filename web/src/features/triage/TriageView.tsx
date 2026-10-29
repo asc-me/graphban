@@ -276,24 +276,24 @@ export function TriageView() {
           </div>
 
           {processed.length > 0 && (
-          <div className="border-t border-line px-3.5 py-2.5">
-            <div className="flex items-center gap-2 font-mono text-micro uppercase tracking-[0.07em] text-faint-2">
-              <span className="flex-1">Processed</span>
-              <button
-                onClick={() => void undo()}
-                                className="rounded border border-control px-1.5 py-px normal-case tracking-normal text-muted hover:text-fg"
+            <div className="border-t border-line px-3.5 py-2.5">
+              <div className="flex items-center gap-2 font-mono text-micro uppercase tracking-[0.07em] text-faint-2">
+                <span className="flex-1">Processed</span>
+                <button
+                  onClick={() => void undo()}
+                  className="rounded border border-control px-1.5 py-px normal-case tracking-normal text-muted hover:text-fg"
               >
-                Undo last <Kbd>⌫</Kbd>
-              </button>
+                  Undo last <Kbd>⌫</Kbd>
+                </button>
+              </div>
+              <ul className="mt-1.5 space-y-1">
+                {processed.slice(-5).reverse().map((p) => (
+                  <li key={p.row.id} className="truncate text-small text-muted">
+                    <span className="font-mono text-faint-2">{p.row.id}</span> {p.result}
+                  </li>
+                ))}
+              </ul>
             </div>
-            <ul className="mt-1.5 space-y-1">
-              {processed.slice(-5).reverse().map((p) => (
-                <li key={p.row.id} className="truncate text-small text-muted">
-                  <span className="font-mono text-faint-2">{p.row.id}</span> {p.result}
-                </li>
-              ))}
-            </ul>
-          </div>
           )}
         </div>
 
