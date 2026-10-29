@@ -35,7 +35,7 @@ export function FleetV2View() {
         action={
           <div className="flex items-center gap-3 text-[12px]">
             <Link to={viewHref("harness")} className="text-muted transition-colors hover:text-fg-2">
-              Harness
+              Harness performance
             </Link>
             <Link to={viewHref("outposts")} className="text-muted transition-colors hover:text-fg-2">
               Outposts
@@ -45,14 +45,16 @@ export function FleetV2View() {
       />
       <FleetPageTabs active="harness" />
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
-        <TierMapPanel
-          projectId={activeId}
-          harnessHref={viewHref("harness")}
-        />
-        <MatrixTable
-          rows={data?.matrix?.rows ?? []}
-          harnessHref={viewHref("harness")}
-        />
+        <div className="mx-auto max-w-[980px]" data-testid="fleet-v2-content">
+          {/* Design order: Harness catalog → Tier map → Allocation. */}
+          <MatrixTable
+            rows={data?.matrix?.rows ?? []}
+            harnessHref={viewHref("harness")}
+          />
+          <TierMapPanel
+            projectId={activeId}
+            harnessHref={viewHref("harness")}
+          />
         <MixAllocation
           projectId={activeId}
           profile={data?.profile ?? null}
@@ -60,6 +62,7 @@ export function FleetV2View() {
           recent={data?.mix}
           onSaved={() => { void refetch(); }}
         />
+        </div>
       </div>
     </div>
   );

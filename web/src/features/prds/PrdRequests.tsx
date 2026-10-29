@@ -8,7 +8,11 @@ import type { PrdSummary, RequestType } from "@/lib/types";
 const EMPTY_COPY =
   "No bugs or feature requests are linked to this PRD yet. Link them from Requests, or accept a suggestion below.";
 
-const STATUS_COLOR: Record<string, string> = { new: "#8b949e", triaging: "#e0b34a", linked: "#7ca2ff" };
+const STATUS_COLOR: Record<string, string> = {
+  new: "var(--color-muted)",
+  triaging: "var(--color-st-review)",
+  linked: "var(--color-st-next)",
+};
 
 /** The list row's pill: a dot per request type with its count, or "no requests". */
 export function RequestDots({ prd, onOpen }: { prd: PrdSummary; onOpen: () => void }) {
@@ -31,7 +35,12 @@ export function RequestDots({ prd, onOpen }: { prd: PrdSummary; onOpen: () => vo
           onOpen();
         }
       }}
-      className="flex flex-none items-center gap-1.5 rounded-md border border-line-2 px-1.5 py-0.5 font-mono text-meta text-muted hover:border-control-hover"
+      className={cn(
+        "flex w-[112px] flex-none items-center justify-end gap-1.5 rounded-md border px-1.5 py-0.5 font-mono text-meta",
+        count === 0
+          ? "border-transparent text-faint"
+          : "border-line-2 text-muted hover:border-control-hover",
+      )}
     >
       {count === 0 ? (
         "no requests"
@@ -43,6 +52,7 @@ export function RequestDots({ prd, onOpen }: { prd: PrdSummary; onOpen: () => vo
           </span>
         ))
       )}
+      {count > 0 && <span className="text-faint">req</span>}
     </span>
   );
 }
@@ -117,9 +127,9 @@ export function PrdRequestsPanel({ prdId, projectId }: { prdId: string; projectI
               <span className="min-w-0 flex-1 truncate text-[13px] text-fg-2">{r.title}</span>
               <span
                 className="flex items-center gap-1.5 font-mono text-meta uppercase tracking-wide"
-                style={{ color: STATUS_COLOR[r.status] ?? "#8b949e" }}
+                style={{ color: STATUS_COLOR[r.status] ?? "var(--color-muted)" }}
               >
-                <span className="h-1.5 w-1.5 rounded-full" style={{ background: STATUS_COLOR[r.status] ?? "#8b949e" }} />
+                <span className="h-1.5 w-1.5 rounded-full" style={{ background: STATUS_COLOR[r.status] ?? "var(--color-muted)" }} />
                 {r.status}
               </span>
             </div>
@@ -130,14 +140,14 @@ export function PrdRequestsPanel({ prdId, projectId }: { prdId: string; projectI
                 </span>
               )}
               {full?.linked_to && (
-                <span className="rounded-[5px] border border-[rgba(124,162,255,0.3)] px-1.5 py-px font-mono text-meta text-[#7ca2ff]">
+                <span className="rounded-[5px] border border-st-next/30 px-1.5 py-px font-mono text-meta text-st-next">
                   → {full.linked_to}
                 </span>
               )}
               <button
                 onClick={() => link.mutate({ requestId: r.id, add: false })}
                 disabled={link.isPending}
-                className="ml-auto h-6 rounded-md px-2 text-small text-faint hover:bg-surface-4 hover:text-[#ff8f8f]"
+                className="ml-auto h-6 rounded-md px-2 text-small text-faint hover:bg-surface-4 hover:text-ty-bug"
               >
                 Unlink
               </button>
@@ -163,13 +173,13 @@ export function PrdRequestsPanel({ prdId, projectId }: { prdId: string; projectI
               <TypeBadge type={s.type} />
               <span className="font-mono text-[10.5px] text-faint">{s.request_id}</span>
               <span className="min-w-0 flex-1 truncate text-body text-fg-2">{s.title}</span>
-              <span title="Similarity to this PRD's goals" className="font-mono text-[10px] text-[#e0b34a]">
+              <span title="Similarity to this PRD's goals" className="font-mono text-[10px] text-st-review">
                 {Math.round(s.score * 100)}% match
               </span>
               <button
                 onClick={() => link.mutate({ requestId: s.request_id, add: true })}
                 disabled={link.isPending}
-                className="h-6 rounded-md border border-[rgba(198,242,78,0.35)] bg-[rgba(198,242,78,0.08)] px-2 text-small text-accent hover:bg-[rgba(198,242,78,0.16)]"
+                className="h-6 rounded-md border border-accent/35 bg-accent/10 px-2 text-small text-accent hover:bg-accent/15"
               >
                 Link
               </button>

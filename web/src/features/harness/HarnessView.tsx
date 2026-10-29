@@ -8,7 +8,7 @@ import { Recommendations } from "@/features/harness/Recommendations";
 import { GuidanceTab } from "@/features/harness/GuidanceTab";
 import { SurfaceReport } from "@/features/harness/Surface";
 import { useProjectCtx } from "@/features/ProjectContext";
-import { useFleet, useHarness, useHarnessGuidance, useHarnessProbeCandidates, useStartHarnessProbeRun } from "@/lib/queries";
+import { useFleet, useHarness, useHarnessCards, useHarnessGuidance, useHarnessProbeCandidates, useStartHarnessProbeRun } from "@/lib/queries";
 import type {
   HarnessCell,
   HarnessCost,
@@ -39,6 +39,9 @@ export function HarnessView() {
   const harnessQ = useHarness(activeId, { versions });
   const { data, isLoading } = harnessQ;
   const { data: guidance } = useHarnessGuidance(activeId);
+  // SERVED is a status claim: only show it when routing or fleet_status text was served.
+  const guidanceServed = !!guidance && (guidance.routing.length > 0 || !!guidance.fleet_status_text);
+  const { data: cards } = useHarnessCards(activeId);
   const { data: fleetData, refetch: refetchFleet } = useFleet(activeId);
 
   if (harnessQ.isError && !data) {
@@ -105,6 +108,16 @@ export function HarnessView() {
             }`}
           >
             {t.label}
+            {t.id === "guidance" && guidanceServed && (
+              <span className="ml-1.5 rounded-md border border-line-2 px-1 font-mono text-meta text-muted" data-testid="harness-tab-badge">
+                SERVED
+              </span>
+            )}
+            {t.id === "changes" && cards && (
+              <span className="ml-1.5 rounded-md border border-line-2 px-1 font-mono text-meta text-muted" data-testid="harness-tab-badge">
+                {cards.cards.length}
+              </span>
+            )}
           </button>
         ))}
       </div>

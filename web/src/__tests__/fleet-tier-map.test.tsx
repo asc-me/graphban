@@ -89,10 +89,10 @@ describe("tier map panel", () => {
     show();
     await loaded();
     expect(screen.getByRole("heading", { name: "Tier map" })).toBeInTheDocument();
-    expect(screen.getByText("Which model each harness runs when")).toBeInTheDocument();
+    expect(screen.getByText(/Which model each harness runs when/)).toBeInTheDocument();
     expect(api.fleetTierMap).toHaveBeenCalledWith("core");
 
-    expect(screen.getByRole("button", { name: /Inherit from performance grading/ })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /Inherit from performance grading/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Clear overrides/ })).toBeInTheDocument();
     // Nothing has been edited, so there is nothing to write.
     expect(screen.getByRole("button", { name: /Save tier map/ })).toBeDisabled();
@@ -197,7 +197,7 @@ describe("tier map panel", () => {
     // Captured before the click: the panel re-renders in place, so this is still the square.
     const codexSquare = screen.getByLabelText(CODEX).closest("td") as HTMLElement;
 
-    await user.click(screen.getByRole("button", { name: /Inherit from performance grading/ }));
+    await user.click(screen.getByRole("checkbox", { name: /Inherit from performance grading/ }));
 
     // gbagent was graded to haiku, so haiku is what it will run.
     expect(screen.getByLabelText(CHEAP)).toHaveValue("haiku");
@@ -215,7 +215,7 @@ describe("tier map panel", () => {
     const user = userEvent.setup();
     show();
     await loaded();
-    await user.click(screen.getByRole("button", { name: /Inherit from performance grading/ }));
+    await user.click(screen.getByRole("checkbox", { name: /Inherit from performance grading/ }));
     expect(screen.getByTestId("tier-map-note")).toHaveTextContent(/no cell in this catalog is measured yet/);
     expect(screen.getByLabelText(CHEAP)).toHaveValue("");
     expect(screen.getByTestId("tier-map-effective")).toHaveTextContent("qwen3.6");

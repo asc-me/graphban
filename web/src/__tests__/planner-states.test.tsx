@@ -224,7 +224,7 @@ describe("PRD list recency (GRPH-922)", () => {
         </MemoryRouter>
       </QueryClientProvider>,
     );
-    expect(await screen.findByText("3h ago")).toBeInTheDocument();
+    expect(await screen.findByText("3h")).toBeInTheDocument();
   });
 
   it("sabotage: preferring the stored updated string would fail", () => {

@@ -157,7 +157,12 @@ export function TierMapPanel({ projectId, harnessHref }: {
       <div className="mb-3 flex items-end justify-between gap-3">
         <div>
           <h2 className="text-lead font-semibold tracking-tight">Tier map</h2>
-          <p className="mt-0.5 text-[12px] text-muted">Which model each harness runs when</p>
+          <p className="mt-0.5 text-[12px] text-muted">
+            Which model each harness runs when{" "}
+            <code className="font-mono text-small">spawn(tier=)</code> lands on it. Each cell takes
+            the top-graded model for that harness and tier. Pick a model to pin an override; pick
+            Inherit to drop it.
+          </p>
         </div>
         <div className="flex shrink-0 items-center gap-3 text-[12px]">
           <Link
@@ -279,8 +284,50 @@ function TierMapForm({ cells, saving, clearing, saveError, clearError, onSave, o
     })));
   }
 
+  const measured = cells.filter((c) => c.graded_model !== null);
+  const inheriting = measured.length > 0
+    && measured.every((c) => draft[cellKey(c.harness, c.tier)] === c.graded_model);
+
+  /** Unchecking drops the measured cells back to packaged; it never invents another value. */
+  function toggleInherit(on: boolean) {
+    if (on) { inheritGrading(); return; }
+    setDraft((prev) => {
+      const next = { ...prev };
+      for (const c of measured) next[cellKey(c.harness, c.tier)] = null;
+      return next;
+    });
+    setNote("");
+  }
+
   return (
     <>
+      <div
+        className="mb-2 flex flex-wrap items-center justify-end gap-3 text-[12px]"
+        data-testid="tier-map-controls"
+      >
+        <label className="flex items-center gap-1.5 text-fg-2">
+          <input
+            type="checkbox"
+            checked={inheriting}
+            onChange={(e) => toggleInherit(e.target.checked)}
+            data-testid="tier-map-inherit"
+          />
+          Inherit from performance grading
+        </label>
+        <span className="text-muted" data-testid="tier-map-override-count">
+          {savedOverrides} override{savedOverrides === 1 ? "" : "s"} on top of grading
+        </span>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onClear}
+          disabled={clearing}
+          loading={clearing}
+          data-testid="tier-map-clear"
+        >
+          Clear overrides
+        </Button>
+      </div>
       <div className="overflow-x-auto rounded-[11px] border border-line-2">
         <table className="w-full text-left text-body">
           <thead className="border-b border-line-2 bg-surface-2 font-mono text-[10px] uppercase tracking-wide text-faint">
@@ -351,11 +398,6 @@ function TierMapForm({ cells, saving, clearing, saveError, clearError, onSave, o
                           >
                             {effectiveOf(cell, value) || "—"}
                           </span>
-                          {overridden && (
-                            <span className="rounded-md border border-accent/40 px-1 font-mono text-meta text-accent">
-                              override
-                            </span>
-                          )}
                           {unsaved && (
                             <span className="rounded-md border border-control px-1 font-mono text-meta text-muted">
                               unsaved
@@ -368,6 +410,32 @@ function TierMapForm({ cells, saving, clearing, saveError, clearError, onSave, o
                         >
                           {cell.graded_model ? `graded · ${cell.graded_model}` : "not measured"}
                         </span>
+                        {/* The tier-map payload carries no grade letter, pass rate or run count
+                            (backend gap), so the badge and the figures read "–" rather than a
+                            number nobody measured. */}
+                        <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted">
+                          <span
+                            className="rounded-md border border-line-2 px-1 font-mono text-meta"
+                            data-testid="tier-map-grade"
+                            title="Grade letter is not served by the tier-map endpoint"
+                          >
+                            –
+                          </span>
+                          <span className="rounded-md border border-line-2 px-1 font-mono text-meta" data-testid="tier-map-state">
+                            {overridden ? "override" : cell.graded_model ? "graded" : "unresolved"}
+                          </span>
+                          <span data-testid="tier-map-rate">– pass · – runs</span>
+                          {overridden && (
+                            <button
+                              type="button"
+                              className="text-fg-2 underline-offset-2 hover:underline"
+                              onClick={() => choose(harness, tier, USE_PACKAGED)}
+                              data-testid="tier-map-cell-reset"
+                            >
+                              reset
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </td>
                   );
@@ -379,19 +447,6 @@ function TierMapForm({ cells, saving, clearing, saveError, clearError, onSave, o
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="outline" onClick={inheritGrading} data-testid="tier-map-inherit">
-          Inherit from performance grading
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={onClear}
-          disabled={clearing}
-          loading={clearing}
-          data-testid="tier-map-clear"
-        >
-          Clear overrides
-        </Button>
         <Button
           size="sm"
           onClick={save}

@@ -127,12 +127,12 @@ export function AssistantPanel({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-none items-center gap-2 pb-2">
-        <Sparkles size={13} className="text-[#a78bfa]" />
-        <span className="text-[12px] font-medium text-fg-2">Assistant</span>
+        <Sparkles size={13} className="flex-none text-[#a78bfa]" />
+        <span className="flex-none text-[12px] font-medium text-fg-2">Assistant</span>
         <select
           value={`${provider}::${model || providers.find((p) => p.id === provider)?.chat_model || ""}`}
           onChange={(e) => pickModel(e.target.value)}
-          className="ml-auto rounded-md border border-control bg-surface-2 px-2 py-1 text-small text-muted"
+          className="ml-auto min-w-0 max-w-full flex-1 truncate rounded-md border border-control bg-surface-2 px-2 py-1 text-small text-muted"
         >
           {providers.length === 0 && <option value="::">no provider configured</option>}
           {providers.flatMap((p) =>
