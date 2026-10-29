@@ -229,6 +229,30 @@ describe("Project home", () => {
     expect(link(/^Live/)).toHaveTextContent("0 on now");
   });
 
+  it("colours Jump-to labels fg, a live count accent and a zero count muted", async () => {
+    renderHome();
+    await screen.findByText("1 in flight");
+    const jump = screen.getByRole("region", { name: "Jump to" });
+    const link = (name: RegExp) => within(jump).getByRole("link", { name });
+
+    expect(within(link(/Tracker/)).getByText("Tracker")).toHaveClass("text-fg");
+    expect(within(link(/Tracker/)).getByText("Tracker")).not.toHaveClass("text-accent");
+    expect(within(link(/Tracker/)).getByText("1 in flight")).toHaveClass("text-accent");
+    expect(within(link(/Fleet/)).getByText("0 online")).toHaveClass("text-muted");
+    expect(within(link(/Fleet/)).getByText("0 online")).not.toHaveClass("text-accent");
+  });
+
+  it("draws each requests bar inside a track element", async () => {
+    renderHome();
+    await screen.findByText("1 in flight");
+    const tracks = screen.getAllByTestId("request-track");
+    expect(tracks).toHaveLength(4);
+    for (const track of tracks) {
+      expect(track).toHaveClass("bg-surface-2");
+      expect(track.children).toHaveLength(1);
+    }
+  });
+
   it("placeholds the counts while a read is in flight rather than rendering 0", async () => {
     const { api } = await import("@/lib/api");
     // Never settles. The map answers 40, which is the point: an outstanding read used
