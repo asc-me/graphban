@@ -1,7 +1,7 @@
 import { Check, Link2 } from "lucide-react";
 import * as React from "react";
 
-import { PlannerEmpty, RoadmapBoardSkeleton } from "@/components/planner/PlannerStates";
+import { PlannerEmpty, PlannerError, RoadmapBoardSkeleton } from "@/components/planner/PlannerStates";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Button } from "@/components/ui/button";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -12,7 +12,7 @@ import { RoadmapBoard } from "./RoadmapBoard";
 
 export function RoadmapView() {
   const { activeId } = useProjectCtx();
-  const { data: phases = [], isLoading } = useRoadmap(activeId);
+  const { data: phases = [], isLoading, isError, refetch } = useRoadmap(activeId);
   const [copied, setCopied] = React.useState(false);
 
   async function copyPublic() {
@@ -37,6 +37,8 @@ export function RoadmapView() {
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         {isLoading ? (
           <RoadmapBoardSkeleton />
+        ) : isError ? (
+          <PlannerError title="Roadmap unavailable" onRetry={() => refetch()} />
         ) : phases.length === 0 ? (
           <PlannerEmpty
             title="No milestones in this project"
