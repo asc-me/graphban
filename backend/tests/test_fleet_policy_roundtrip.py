@@ -39,3 +39,18 @@ def test_an_invalid_ceiling_still_surfaces_the_profile_invalid_message(client, a
                    json={"project_id": proj, "cluster_ceiling": {"sideways": 2}}, headers=auth)
     assert r.status_code == 422, r.text
     assert "unknown cluster_ceiling lane 'sideways'" in r.json()["detail"]
+
+
+def test_policy_read_reports_whether_the_caller_may_write(client, auth):
+    """GRPH-1183: a read-only member gets `writable: false`; the project owner gets `true`."""
+    ops = client.post("/api/auth/login", json={"email": "ops@ascme-labs.com", "password": "graphban"})
+    assert ops.status_code == 200
+    ops_auth = {"Authorization": f"Bearer {ops.json()['access_token']}"}
+    # ops holds a read-only membership on the seeded `core` project (see test_authz).
+    r = client.get("/api/fleet/policy?project_id=core", headers=ops_auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["writable"] is False
+
+    proj = client.post("/api/projects", json={"name": "Mine"}, headers=auth).json()["id"]
+    r = client.get(f"/api/fleet/policy?project_id={proj}", headers=auth)
+    assert r.json()["writable"] is True

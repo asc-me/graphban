@@ -121,6 +121,15 @@ describe("budget cap editing", () => {
     });
   });
 
+  it("with writable false there is no Edit button or input, only the read-only copy", async () => {
+    vi.mocked(api.fleetPolicy).mockResolvedValue({ project_id: "core", policy: stored, writable: false });
+    renderIt(<BudgetCapEditor />);
+    expect(await screen.findByText("100 tokens per item")).toBeTruthy();
+    expect(screen.getByText("You don't have write access to this project")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByLabelText("per_item_tokens")).toBeNull();
+  });
+
   it("policyWithItemCap with no stored policy sends defaults plus the cap", () => {
     expect(policyWithItemCap(null, 7)).toEqual({
       local_only: false, reviewer_cross_vendor: false, allowed_harnesses: [], caps: { per_item_tokens: 7 },

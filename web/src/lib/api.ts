@@ -345,7 +345,7 @@ export const api = {
     request<{ cleared: boolean }>(`/fleet/profile${projectId ? `?project_id=${projectId}` : ""}`,
                                   { method: "DELETE" }),
   fleetPolicy: (projectId: string) =>
-    request<{ project_id: string; policy: FleetPolicy | null }>(`/fleet/policy?project_id=${encodeURIComponent(projectId)}`),
+    request<{ project_id: string; policy: FleetPolicy | null; writable?: boolean }>(`/fleet/policy?project_id=${encodeURIComponent(projectId)}`),
   saveFleetPolicy: (body: { project_id: string } & FleetPolicy) =>
     request<{ project_id: string; policy: FleetPolicy | null }>(
       "/fleet/policy", { method: "PUT", body: JSON.stringify(body) }),
