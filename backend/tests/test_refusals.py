@@ -211,8 +211,25 @@ def test_coverage_reads_what_publish_wrote(tmp_path):
 
 
 def test_no_coverage_is_committed_by_a_pr():
-    """Only the main build writes it; a tree that carries one was hand-written or copied."""
-    assert not R.REFUSAL_COVERAGE_FILE.exists() or R.refusal_coverage()["commit"]
+    """It is a build artefact (GRPH-1185): gitignored, and nothing tracks it. A tracked copy
+    would be a number no build of THIS tree computed, shipped by every package after it."""
+    import subprocess
+
+    repo = SCRIPT.parents[1]
+    rel = R.REFUSAL_COVERAGE_FILE.relative_to(repo)
+    tracked = subprocess.run(["git", "ls-files", "--error-unmatch", str(rel)], cwd=repo,
+                             capture_output=True)
+    ignored = subprocess.run(["git", "check-ignore", "-q", "--no-index", str(rel)], cwd=repo)
+    assert tracked.returncode != 0, f"{rel} is committed"
+    assert ignored.returncode == 0, f"{rel} is not gitignored"
+
+
+def test_a_source_tree_reports_unpublished_never_zero():
+    """A dev tree or editable install has no file: `published: False`, not 0 of M."""
+    if R.REFUSAL_COVERAGE_FILE.exists():
+        pytest.skip("a hand-run publish left a file in this checkout")
+    got = R.refusal_coverage()
+    assert got["published"] is False and got["n"] is None
 
 
 def test_a_refused_shard_retire_lands_in_the_shards_project(client, auth):
