@@ -9,6 +9,8 @@ A Graphban *release* is not a git tag and is not GitHub's source zip. Native
 - a `GIT_SHA` file (short sha of the packed commit)
 - `backend/app/data/refusal_coverage.json`, computed from the packed tree by its own
   `scripts/refusal_ratchet.py publish` — a tree that fails the ratchet is not packed (GRPH-1185)
+- `backend/app/data/gban_skills.json`, the skill names and version from the packed tree's
+  `cli/` (GRPH-1194)
 - **no** `.env`
 
 Packing a ref uses a detached worktree, for the same reason `deploy.sh` does:
@@ -49,6 +51,7 @@ BACKEND_DROP = frozenset({
 })
 #: Package data written here, never committed (GRPH-1185). `services/rules` reads it.
 COVERAGE = pathlib.Path("backend/app/data/refusal_coverage.json")
+GBAN_SKILLS = pathlib.Path("backend/app/data/gban_skills.json")
 _VERSION_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.M)
 
 
@@ -160,6 +163,23 @@ def publish_coverage(src: pathlib.Path, dest: pathlib.Path, sha: str) -> str | N
     return None
 
 
+def publish_skills(src: pathlib.Path, dest: pathlib.Path) -> str | None:
+    """Write the gban skill names and version, read from the packed tree's `cli/`; the failure."""
+    import json
+    import tomllib
+
+    try:
+        version = tomllib.loads((src / "cli" / "pyproject.toml").read_text())["project"]["version"]
+        names = sorted(p.name for p in (src / "cli" / "src" / "gban" / "skills").iterdir()
+                       if p.is_dir())
+    except (OSError, KeyError, ValueError):
+        return "cli/pyproject.toml or cli/src/gban/skills is missing — cannot list shipped skills"
+    out = dest / GBAN_SKILLS
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"version": version, "skills": names}, indent=2) + "\n")
+    return None
+
+
 def _fail(dest: pathlib.Path | None, msg: str) -> tuple[int, None]:
     if dest is not None and dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
@@ -214,7 +234,7 @@ def pack(src: pathlib.Path, out: pathlib.Path, *, sha: str, version: str,
 
     (dest / "GIT_SHA").write_text(sha + "\n", encoding="utf-8")
 
-    problem = publish_coverage(src, dest, sha)
+    problem = publish_coverage(src, dest, sha) or publish_skills(src, dest)
     if problem:
         return _fail(dest, problem)
 

@@ -48,6 +48,11 @@ def make_src(tmp_path: pathlib.Path, *, version: str = VER) -> pathlib.Path:
     (src / "backend" / "pyproject.toml").write_text(
         '[project]\nname = "graphban-api"\n', encoding="utf-8")
     (src / "backend" / "alembic.ini").write_text("[alembic]\n", encoding="utf-8")
+    skill = src / "cli" / "src" / "gban" / "skills" / "graphban-work"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# work\n", encoding="utf-8")
+    (src / "cli" / "pyproject.toml").write_text(
+        '[project]\nname = "gban"\nversion = "9.9.9"\n', encoding="utf-8")
     (src / "backend" / "alembic" / "versions" / "0001_initial.py").write_text(
         "revision = '0001'\n", encoding="utf-8")
     (src / "backend" / ".env").write_text("JWT_SECRET=packer-secret\n", encoding="utf-8")
