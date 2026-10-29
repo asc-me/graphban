@@ -140,7 +140,7 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "project when the shard has none.",
          "enforced", _src("app/routers/memory.py", "Refused"), "code"),
     Rule("memory.retire_window", "learn", "Retire and restore follow the shard's state",
-         "Only a published shard can be retired, and a retired shard can be restored for "
+         "Only a published shard can be retired or kept, and a retired shard can be restored for "
          "14 days; after that the retirement is final.",
          "enforced", _src("app/services/memory.py", "RetireRefused"), "code"),
     Rule("review.role_gated_tools", "review", "Role-gated tools",

@@ -900,7 +900,7 @@ export function useStaleShards(projectId?: string) {
   });
 }
 
-/** Retire a published shard (restorable for 14 days), restore it, or apply the judge's
+/** Retire a published shard (restorable for 14 days), restore it, keep it (resets staleness), or apply the judge's
  *  recommendations in bulk. Each re-reads the queues: a retire moves a row out of Stale. */
 export function useStaleActions() {
   const qc = useQueryClient();
@@ -908,6 +908,7 @@ export function useStaleActions() {
   return {
     retire: useMutation({ mutationFn: (id: string) => api.retireShard(id), onSuccess: invalidate }),
     restore: useMutation({ mutationFn: (id: string) => api.restoreShard(id), onSuccess: invalidate }),
+    keep: useMutation({ mutationFn: (id: string) => api.keepShard(id), onSuccess: invalidate }),
     apply: useMutation({
       mutationFn: (ids: string[]) => api.applyRecommendations(ids),
       onSuccess: invalidate,

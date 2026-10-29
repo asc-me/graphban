@@ -665,6 +665,8 @@ export const api = {
     request<StaleShardRow[]>(`/memory/stale?project_id=${encodeURIComponent(projectId)}`),
   retireShard: (id: string) =>
     request<Shard>(`/memory/shards/${id}/retire`, { method: "POST" }),
+  keepShard: (id: string) =>
+    request<Shard>(`/memory/shards/${id}/keep`, { method: "POST" }),
   restoreShard: (id: string) =>
     request<Shard>(`/memory/shards/${id}/restore`, { method: "POST" }),
   applyRecommendations: (shard_ids: string[]) =>
