@@ -99,4 +99,36 @@ describe("GRPH-1173 sidebar icons", () => {
     expect(iconOf(kit)).toContain("lucide-message-square");
     expect(iconOf(usage)).not.toContain("lucide-chart-column");
   });
+  it("GRPH-1208 sizes the project card 42px with a mono 9px subline", async () => {
+    wrap(<LeftNav />, "/tracker");
+    const nav = within(document.querySelector<HTMLElement>('[data-layer="expanded"]')!);
+    const card = await nav.findByRole("button", { name: "Switch project" });
+    expect(card.className).toContain("h-[42px]");
+    const sub = card.querySelector("span.block.font-mono");
+    expect(sub?.className).toContain("text-[9px]");
+    expect(sub?.className).toContain("tracking-[0.4px]");
+  });
+
+  it("GRPH-1208 shows a CLOUD pill and no building icon on the unlinked Organization row", async () => {
+    wrap(<LeftNav />, "/tracker");
+    const nav = within(document.querySelector<HTMLElement>('[data-layer="expanded"]')!);
+    const pill = await nav.findByText("CLOUD");
+    const row = pill.closest("button") as HTMLElement;
+    expect(row).toHaveTextContent("Organization");
+    expect(row.querySelector(".lucide-building-2")).toBeNull();
+    expect(row.querySelector("svg")).toBeNull();
+  });
+
+  it("GRPH-1208 draws the rail project tile at 30px", async () => {
+    wrap(<LeftNav />, "/tracker");
+    const rail = within(document.querySelector<HTMLElement>('[data-layer="rail"]')!);
+    const btn = await rail.findByRole("button", { name: "Switch project", hidden: true });
+    expect(btn.querySelector("span")?.className).toContain("h-[30px]");
+  });
+
+  it("GRPH-1208 orders Build and Observe pages as the design does", () => {
+    const order = (key: string) => SECTIONS.find((s) => s.key === key)!.pages.map((p) => p.label);
+    expect(order("build")).toEqual(["Links", "Code graph", "Stack", "MCP Tools", "Rules", "Fleet", "Outposts"]);
+    expect(order("observe")).toEqual(["Memory", "Lessons", "Activity", "Live", "Harness"]);
+  });
 });

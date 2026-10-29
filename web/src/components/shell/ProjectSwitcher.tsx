@@ -52,7 +52,7 @@ export function ProjectTile({ project }: { project: Pick<Project, "name" | "acce
   const accent = project?.accent ?? "#c6f24e";
   return (
     <span
-      className="flex h-6 w-6 flex-none items-center justify-center rounded-md border font-mono text-small font-semibold"
+      className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg border font-mono text-small font-semibold"
       style={{ color: accent, borderColor: `${accent}4d`, background: `${accent}24` }}
     >
       {(project?.name ?? "?").slice(0, 1).toUpperCase()}

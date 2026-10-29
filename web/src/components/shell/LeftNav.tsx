@@ -1,4 +1,4 @@
-import { Activity, BarChart3, BookOpen, Brain, Building2, ChartLine, ChevronDown, ChevronRight, ChevronsUpDown, ClipboardCheck, Gauge, Hammer, History, Layers, LayoutGrid, Link as LinkIcon, ListChecks, Map, MessageSquare, PanelLeftClose, PanelLeftOpen, Plug, Radar, Radio, Scale, Server, Settings, ShieldCheck, Star, Users, UsersRound, Workflow } from "lucide-react";
+import { Activity, BarChart3, BookOpen, Brain, ChartLine, ChevronDown, ChevronRight, ChevronsUpDown, ClipboardCheck, Gauge, Hammer, History, Layers, LayoutGrid, Link as LinkIcon, ListChecks, Map, MessageSquare, PanelLeftClose, PanelLeftOpen, Plug, Radar, Radio, Scale, Server, Settings, ShieldCheck, Star, Users, UsersRound, Workflow } from "lucide-react";
 import * as React from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 
@@ -42,31 +42,31 @@ type SectionDef = { key: Section; label: string; icon: React.ReactNode; pages: P
 export const SECTIONS: SectionDef[] = [
   {
     key: "plan", label: "Plan", icon: <ClipboardCheck size={16} />, pages: [
-      { view: "triage", icon: <Radar size={16} />, label: "Triage", desc: "Overlaps and duplicates before work starts" },
-      { view: "tracker", icon: <ListChecks size={16} />, label: "Tracker", desc: "One linear stream of work", count: "items_open" },
-      { view: "requests", icon: <Star size={16} />, label: "Requests", desc: "Submissions from the public form", count: "requests_untriaged" },
-      { view: "prds", icon: <BarChart3 size={16} />, label: "PRDs", desc: "Versioned specs with linked items" },
-      { view: "roadmap", icon: <Map size={16} />, label: "Roadmap", desc: "MVP → Post-MVP → Later" },
+      { view: "triage", icon: <Radar size={15} />, label: "Triage", desc: "Overlaps and duplicates before work starts" },
+      { view: "tracker", icon: <ListChecks size={15} />, label: "Tracker", desc: "One linear stream of work", count: "items_open" },
+      { view: "requests", icon: <Star size={15} />, label: "Requests", desc: "Submissions from the public form", count: "requests_untriaged" },
+      { view: "prds", icon: <BarChart3 size={15} />, label: "PRDs", desc: "Versioned specs with linked items" },
+      { view: "roadmap", icon: <Map size={15} />, label: "Roadmap", desc: "MVP → Post-MVP → Later" },
     ],
   },
   {
     key: "build", label: "Build", icon: <Hammer size={16} />, pages: [
-      { view: "code", icon: <Workflow size={16} />, label: "Code graph", desc: "Modules, files and symbols agents changed", count: "code_nodes" },
-      { view: "links", icon: <LinkIcon size={16} />, label: "Links", desc: "Typed relations between items and requests" },
-      { view: "stack", icon: <Layers size={16} />, label: "Stack", desc: "Languages, frameworks and services" },
-      { view: "rules", icon: <Scale size={16} />, label: "Rules", desc: "How work moves, and what holds each step" },
-      { view: "mcp-tools", icon: <Plug size={16} />, label: "MCP Tools", desc: "How agents connect and call tools", count: "mcp_tools", hostedOnly: true },
-      { view: "fleet", icon: <Users size={16} />, label: "Fleet", desc: "Who works here and what they spawn as", count: "fleet_agents" },
-      { view: "outposts", icon: <Server size={16} />, label: "Outposts", desc: "Machines your agents run on", count: "outposts" },
+      { view: "links", icon: <LinkIcon size={15} />, label: "Links", desc: "Typed relations between items and requests" },
+      { view: "code", icon: <Workflow size={15} />, label: "Code graph", desc: "Modules, files and symbols agents changed", count: "code_nodes" },
+      { view: "stack", icon: <Layers size={15} />, label: "Stack", desc: "Languages, frameworks and services" },
+      { view: "mcp-tools", icon: <Plug size={15} />, label: "MCP Tools", desc: "How agents connect and call tools", count: "mcp_tools", hostedOnly: true },
+      { view: "rules", icon: <Scale size={15} />, label: "Rules", desc: "How work moves, and what holds each step" },
+      { view: "fleet", icon: <Users size={15} />, label: "Fleet", desc: "Who works here and what they spawn as", count: "fleet_agents" },
+      { view: "outposts", icon: <Server size={15} />, label: "Outposts", desc: "Machines your agents run on", count: "outposts" },
     ],
   },
   {
     key: "observe", label: "Observe", icon: <Activity size={16} />, pages: [
-      { view: "live", icon: <Radio size={16} />, label: "Live", desc: "Who is on the project right now", count: "live_agents", live: true },
-      { view: "activity", icon: <History size={16} />, label: "Activity", desc: "Every accepted mutation, attributed" },
-      { view: "memory", icon: <Brain size={16} />, label: "Memory", desc: "Candidates waiting to be published", count: "review" },
-      { view: "lessons", icon: <BookOpen size={16} />, label: "Lessons", desc: "Published memory, scored for usefulness" },
-      { view: "harness", icon: <Gauge size={16} />, label: "Harness", desc: "Which agent can review which change" },
+      { view: "memory", icon: <Brain size={15} />, label: "Memory", desc: "Candidates waiting to be published", count: "review" },
+      { view: "lessons", icon: <BookOpen size={15} />, label: "Lessons", desc: "Published memory, scored for usefulness" },
+      { view: "activity", icon: <History size={15} />, label: "Activity", desc: "Every accepted mutation, attributed" },
+      { view: "live", icon: <Radio size={15} />, label: "Live", desc: "Who is on the project right now", count: "live_agents", live: true },
+      { view: "harness", icon: <Gauge size={15} />, label: "Harness", desc: "Which agent can review which change" },
     ],
   },
 ];
@@ -295,7 +295,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
                     key={p.view}
                     to={viewPath(p.view)}
                     label={p.label}
-                    icon={p.icon}
+                    icon={React.cloneElement(p.icon as React.ReactElement<{ size?: number }>, { size: 16 })}
                     current={p.view === view}
                     tipProps={tipProps({
                       group: s.label.toUpperCase(),
@@ -412,17 +412,17 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
 
           <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-2.5">
             {hosted ? (
-              <NavItem href={consoleHref(orgPath())} icon={<Building2 size={16} />} label="Organization" />
+              <NavItem href={consoleHref(orgPath())} label="Organization" utility />
             ) : (
               <OrgRailItem onOpenDialog={() => setOrgDialogOpen(true)} />
             )}
             {canAdminister && (
-              <NavItem href={consoleHref(adminPath())} icon={<UsersRound size={16} />} label="Admin" />
+              <NavItem href={consoleHref(adminPath())} icon={<UsersRound size={15} />} label="Admin" utility />
             )}
-            <NavItem to="/usage" icon={<ChartLine size={16} />} label="Usage" />
-            {isPlatformAdmin && <NavItem href={consoleHref("/operator")} icon={<ShieldCheck size={16} />} label="Operator" />}
-            <NavItem to={viewPath("feedback-kit")} icon={<MessageSquare size={16} />} label="Feedback Kit" />
-            <NavItem to="/settings" icon={<Settings size={16} />} label="Settings" />
+            <NavItem to="/usage" icon={<ChartLine size={15} />} label="Usage" utility />
+            {isPlatformAdmin && <NavItem href={consoleHref("/operator")} icon={<ShieldCheck size={15} />} label="Operator" utility />}
+            <NavItem to={viewPath("feedback-kit")} icon={<MessageSquare size={15} />} label="Feedback Kit" utility />
+            <NavItem to="/settings" icon={<Settings size={15} />} label="Settings" utility />
             <div className="my-1.5 border-t border-line" />
             <button
               type="button"
@@ -430,7 +430,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
               title="Collapse to icons"
               className="flex items-center gap-2.5 rounded-[9px] h-[29px] flex-none px-2.5 leading-[15px] text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
             >
-              <PanelLeftClose size={16} />
+              <PanelLeftClose size={15} />
               <span className="flex-1">Collapse sidebar</span>
               <kbd className="rounded border border-line-2 px-1.5 font-mono text-[10px] text-faint">[</kbd>
             </button>
@@ -574,7 +574,7 @@ const SectionFlyout = React.forwardRef<HTMLDivElement, {
         transition: reduce ? "none" : `opacity 120ms ${EASE}, transform 180ms ${EASE}`,
       }}
       className={cn(
-        "absolute left-full z-50 ml-2 flex w-[264px] origin-top-left flex-col rounded-xl border border-line-2 bg-surface-2 shadow-2xl",
+        "absolute left-full z-50 ml-2 flex w-[264px] origin-top-left flex-col rounded-xl border border-line-flyout bg-surface-2 shadow-2xl",
         !open && "pointer-events-none",
       )}
     >
@@ -595,7 +595,7 @@ const SectionFlyout = React.forwardRef<HTMLDivElement, {
               <span className="mt-px flex-none text-muted">{p.icon}</span>
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <span className="text-[13px] font-medium">{p.label}</span>
-                <span className="text-small leading-[1.4] text-muted">{p.desc}</span>
+                <span className="text-small leading-[1.4] text-muted [text-wrap:pretty]">{p.desc}</span>
               </span>
               {n != null && (
                 <span className={cn("mt-0.5 font-mono text-[10px]", p.live ? "text-st-done" : "text-faint")}>
@@ -640,20 +640,20 @@ function ProjectEntry({
             aria-label="Switch project"
             {...t}
             className={cn(
-              "flex h-11 w-full items-center gap-2.5 rounded-[10px] border bg-surface-2 px-2.5 transition-colors hover:border-control-hover",
+              "flex h-[42px] w-full items-center gap-2.5 rounded-[10px] border bg-surface px-2.5 transition-colors hover:border-control-hover",
               t["aria-expanded"] ? "border-control-hover" : "border-control",
             )}
           >
             <ProjectTile project={active} />
             <span className="min-w-0 flex-1 text-left">
-              <span className="block truncate text-[13px] font-semibold leading-tight">
+              <span className="block truncate text-body font-semibold leading-tight">
                 {active?.name ?? "—"}
               </span>
-              <span className="mt-0.5 block truncate font-mono text-[10px] uppercase text-faint">
+              <span className="mt-0.5 block truncate font-mono text-[9px] uppercase tracking-[0.4px] text-[#5c656e]">
                 {[orgName, active?.tag].filter(Boolean).join(" · ")}
               </span>
             </span>
-            <ChevronsUpDown size={12} className="flex-none text-faint" />
+            <ChevronsUpDown size={12} className="flex-none text-[#5c656e]" />
           </button>
         )
       }
@@ -699,7 +699,7 @@ function OrgRailItem({ onOpenDialog }: { onOpenDialog: () => void }) {
   const navigate = useNavigate();
   const url = usableHttpUrl(status?.cloud_url);
   if (isLoading && !status) {
-    return <NavItem to={settingsPath("deployment/sync")} icon={<Building2 size={16} />} label="Organization" />;
+    return <NavItem to={settingsPath("deployment/sync")} label="Organization" utility />;
   }
   if (url) {
     return (
@@ -707,9 +707,8 @@ function OrgRailItem({ onOpenDialog }: { onOpenDialog: () => void }) {
         href={url}
         target="_blank"
         rel="noreferrer noopener"
-        className="flex items-center gap-2.5 rounded-[9px] h-[29px] flex-none px-2.5 leading-[15px] text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
+        className="flex items-center gap-2.5 rounded-[9px] h-[31px] flex-none px-2.5 leading-[15px] text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
       >
-        <Building2 size={16} />
         <span className="flex-1">Organization</span>
       </a>
     );
@@ -719,19 +718,22 @@ function OrgRailItem({ onOpenDialog }: { onOpenDialog: () => void }) {
     <button
       type="button"
       onClick={() => (isMalformed ? navigate(`${settingsPath("deployment/sync")}?reason=malformed`) : onOpenDialog())}
-      className="flex items-center gap-2.5 rounded-[9px] h-[29px] flex-none px-2.5 leading-[15px] text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
+      className="flex items-center gap-2.5 rounded-[9px] h-[31px] flex-none px-2.5 leading-[15px] text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
     >
-      <span className="relative flex-none">
-        <Building2 size={16} />
-        {!isMalformed && (
-          <span
-            className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-st-blocked"
-            aria-label="Not linked"
-          />
-        )}
-      </span>
       <span className="flex-1">Organization</span>
+      {!isMalformed && <CloudPill />}
     </button>
+  );
+}
+
+const CLOUD_PILL =
+  "rounded-[4px] border border-[rgba(167,139,250,.35)] px-1.5 py-px font-mono text-micro leading-[12px] tracking-normal text-[#c9b8ff]";
+
+function CloudPill() {
+  return (
+    <span data-cloud-pill className={CLOUD_PILL}>
+      CLOUD
+    </span>
   );
 }
 
@@ -744,6 +746,7 @@ function NavItem({
   live,
   end,
   dashboard,
+  utility,
 }: {
   to?: string;
   /** Console origin. Those screens are not routes in this app. */
@@ -752,6 +755,8 @@ function NavItem({
   label: string;
   /** Dashboard is a text-only row, styled like a section header (Sidebar Nav design). */
   dashboard?: boolean;
+  /** Bottom utility row: 31px in the design, page rows stay 29px. */
+  utility?: boolean;
   /** Badge text from `badgeText`; undefined renders no badge. */
   count?: string;
   /** Presence ("2 live") reads green. */
@@ -762,7 +767,7 @@ function NavItem({
   const base = cn(
     "relative flex flex-none items-center gap-2.5 rounded-[9px] px-2.5 text-[13px] leading-[15px] transition-colors",
     // Fixed heights, not padding + line-height: the 16px icon would push a page row to 30px.
-    dashboard ? "h-[33px] font-medium" : "h-[29px]",
+    dashboard ? "h-[33px] font-medium" : utility ? "h-[31px]" : "h-[29px]",
   );
   const badge = count != null && (
     <span data-badge className={cn("font-mono text-[10px]", live ? "text-st-done" : "text-faint")}>
