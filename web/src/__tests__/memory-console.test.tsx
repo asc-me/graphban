@@ -446,7 +446,7 @@ describe("empty queue", () => {
   it("renders queue counts in the sans display style, not mono", async () => {
     renderView();
     const card = await screen.findByTestId("queue-needs");
-    const num = await within(card).findByTitle("");
+    const num = await within(card).findByText("3");
     expect(num.className).not.toMatch(/font-mono/);
     expect(num.className).toMatch(/text-\[22px\]/);
   });
