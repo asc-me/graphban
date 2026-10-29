@@ -657,12 +657,6 @@ export function FleetView() {
             >
               Harness performance
             </Link>
-            <Link
-              to={settingsPath("project/api-keys")}
-              className="text-[12px] text-muted transition-colors hover:text-fg-2"
-            >
-              Looking for MCP?
-            </Link>
             {waves.length > 0 && (
               <Button onClick={askEndWave}>End wave</Button>
             )}
@@ -981,6 +975,9 @@ export function FleetView() {
                 one question — who can reach this project, and who is here now. It used
                 to live beside a per-wave action, which put a once-per-machine job next
                 to one you do every run. */}
+        <details className="mb-7 rounded-[11px] border border-line-2 px-4 py-3" data-testid="connections-advanced">
+          <summary className="cursor-pointer text-body font-medium text-fg-2">Advanced</summary>
+          <div className="mt-4">
         <Section
           title="API keys that reach this project"
           desc={
@@ -1105,6 +1102,8 @@ export function FleetView() {
           </>
           )}
         </Section>
+          </div>
+          </details>
           </>
         )}
 

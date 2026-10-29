@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -127,8 +127,22 @@ describe("Fleet view", () => {
     // Settings → API keys. Linking to /mcp-tools or the MCP catalog would send the
     // person who asked "how do I connect" to a tool list with no key on it.
     renderView();
-    expect(screen.getByRole("link", { name: /looking for mcp\?/i }))
+    expect(screen.getByRole("link", { name: /Settings → API keys/ }))
       .toHaveAttribute("href", settingsPath("project/api-keys"));
+  });
+
+  it("tucks API keys and the legacy wave key into a collapsed Advanced disclosure", () => {
+    // Both are working features the design does not show. They stay, below the roster,
+    // closed until someone opens them.
+    renderView();
+    const advanced = screen.getByTestId("connections-advanced");
+    expect(advanced.tagName).toBe("DETAILS");
+    expect(advanced).not.toHaveAttribute("open");
+    expect(within(advanced).getByText("Advanced").tagName).toBe("SUMMARY");
+    expect(within(advanced).getByRole("heading", { name: "API keys that reach this project" })).toBeInTheDocument();
+    expect(within(advanced).getByRole("heading", { name: "Legacy: wave key" })).toBeInTheDocument();
+    const roster = screen.getByRole("heading", { name: "Roster" });
+    expect(roster.compareDocumentPosition(advanced) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("breaks the count down by role rather than totalling it", () => {

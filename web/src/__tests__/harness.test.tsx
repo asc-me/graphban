@@ -456,6 +456,24 @@ describe("Harness tabs", () => {
     expect(tabs[2]).toHaveAttribute("data-tab", "changes");
   });
 
+  it("shows the SERVED badge on Guidance when routing was served", async () => {
+    show();
+    await screen.findByTestId("harness-cell");
+    const guidanceTab = screen.getAllByTestId("harness-tab")[1];
+    expect(await within(guidanceTab).findByTestId("harness-tab-badge")).toHaveTextContent("SERVED");
+  });
+
+  it("shows no SERVED badge on Guidance when nothing has been served", async () => {
+    harnessGuidance.mockResolvedValueOnce(guidanceData({ routing: [], fleet_status_text: "" }));
+    show();
+    await screen.findByTestId("harness-cell");
+    const guidanceTab = screen.getAllByTestId("harness-tab")[1];
+    await userEvent.setup().click(guidanceTab);
+    // The guidance payload has loaded (empty-state copy is rendered) before asserting absence.
+    expect(await screen.findByText(/No measured routing served yet/)).toBeInTheDocument();
+    expect(within(guidanceTab).queryByTestId("harness-tab-badge")).toBeNull();
+  });
+
   it("switches to the Guidance tab and shows the routing table and grading rules", async () => {
     show();
     const user = userEvent.setup();
@@ -469,7 +487,7 @@ describe("Harness tabs", () => {
 
   it("switches to the Changes tab and shows recommendations and the probe panel", async () => {
     probeCandidates.mockResolvedValueOnce(probeData());
-    harnessRecommendations.mockResolvedValueOnce({
+    harnessRecommendations.mockResolvedValue({
       project_id: "core",
       cards: [{
         rule: "R1", key: "R1:test", evidence_hash: "abc",
@@ -487,6 +505,10 @@ describe("Harness tabs", () => {
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[2]);
     expect(await screen.findByTestId("harness-cards")).toBeInTheDocument();
+    harnessRecommendations.mockResolvedValue({
+      project_id: "core", cards: [], rules: ["R1", "R2", "R3", "R4", "R5", "R6"],
+      lessons_drafted: [], window_days: 90, floor: 5,
+    });
     expect(screen.getByTestId("harness-probe-panel")).toBeInTheDocument();
     expect(screen.getByText(/This page changes nothing/)).toBeInTheDocument();
   });

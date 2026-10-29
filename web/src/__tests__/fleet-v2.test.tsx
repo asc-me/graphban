@@ -142,12 +142,42 @@ describe("Fleet.v2 catalog and allocation", () => {
     expect(within(panel).getByRole("heading", { name: "Tier map" })).toBeInTheDocument();
     // The read-only catalog is still there beside it — the panel is an addition, not a swap.
     expect(screen.getByTestId("fleet-matrix")).toHaveTextContent("gbagent");
-    expect(within(panel).getByRole("button", { name: /Inherit from performance grading/ }))
+    expect(within(panel).getByRole("checkbox", { name: /Inherit from performance grading/ }))
       .toBeInTheDocument();
+    expect(within(panel).getByTestId("tier-map-override-count"))
+      .toHaveTextContent("0 overrides on top of grading");
+    // Controls sit ABOVE the table; Save and the status footnote come after it.
+    const table = within(panel).getByRole("table");
+    const above = (a: Node, b: Node) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(above(within(panel).getByTestId("tier-map-controls"), table)).toBe(true);
+    expect(above(table, within(panel).getByTestId("tier-map-save"))).toBe(true);
+    expect(above(table, within(panel).getByTestId("tier-map-status"))).toBe(true);
+    // Subtitle is the whole sentence, not cut off mid-way.
+    expect(panel).toHaveTextContent(/lands on it\. Each cell takes the top-graded model/);
+    const subtitle = within(panel).getByText(/Which model each harness runs when/).closest("p")!;
+    expect(subtitle).toHaveTextContent(
+      /Each cell takes the top-graded model for that harness and tier\. Pick a model to pin an override; pick Inherit to drop it\.$/,
+    );
+    expect(within(panel).getByTestId("tier-map-grade")).toHaveTextContent("–");
     expect(within(panel).getByRole("button", { name: /Clear overrides/ })).toBeInTheDocument();
     expect(within(panel).getByRole("button", { name: /Save tier map/ })).toBeInTheDocument();
     expect(within(panel).getByLabelText("Model for gbagent at cheap")).toBeInTheDocument();
     expect(within(panel).getByTestId("tier-map-grading-link")).toHaveAttribute("href", "/harness");
     expect(within(panel).getByTestId("tier-map-performance-link")).toHaveAttribute("href", "/harness");
+  });
+
+  it("orders sections Harness catalog → Tier map → Allocation", () => {
+    fleet.data = { ...BASE, matrix: { rows } };
+    tierMap.data = { rows: [], overridden: false, cells: [] };
+    renderView();
+    const catalog = screen.getByTestId("fleet-matrix");
+    const map = screen.getByTestId("fleet-tier-map");
+    const alloc = screen.getByTestId("fleet-v2-content").lastElementChild!;
+    const follows = (a: Node, b: Node) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(catalog, map)).toBe(true);
+    expect(follows(map, alloc)).toBe(true);
+    expect(screen.getByRole("link", { name: "Harness performance" })).toBeInTheDocument();
   });
 });
