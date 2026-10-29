@@ -108,6 +108,10 @@ def create_request(
     derived_by = _derive_by(account, email) if (account or email) else by
 
     meta = dict(meta or {})
+    # PRD-60 D9: where a public reply is mailed. Kept out of every public serializer.
+    contact = email or (account or {}).get("email", "")
+    if contact:
+        meta["contact_email"] = contact
     # PRD-43 D2: store account in meta.account if provided.
     if account:
         meta["account"] = {k: v for k, v in account.items() if v}
@@ -277,32 +281,102 @@ def unpublish_request(db: Session, request_id: str) -> Request | None:
     return req
 
 
+def comment_role(c: RequestComment) -> str:
+    """PRD-60 D9: submitter | team (public operator reply) | internal (private note)."""
+    if c.author_kind == "submitter":
+        return "submitter"
+    return "team" if c.visibility == "public" else "internal"
+
+
 def create_comment(
     db: Session,
     *,
     request_id: str,
-    author_user_id: str,
+    author_user_id: str | None,
     body: str,
     visibility: str = "private",
+    author_kind: str = "operator",
 ) -> RequestComment:
-    """PRD-43 D7: operator comment. Default private; must be explicitly tagged public."""
+    """PRD-43 D7: operator comment. Default private; must be explicitly tagged public.
+
+    PRD-60 D9: a public operator reply notifies the submitter once; an internal note and a
+    submitter's own comment notify no one (voters are never notified in v1). Every comment
+    writes an event."""
     from app.services import keys as _keys
     req_id = _keys.resolve_request(db, request_id) or request_id
     if db.get(Request, req_id) is None:
         raise ValueError(f"request not found: {request_id}")
     if visibility not in ("private", "public"):
         raise ValueError(f"invalid visibility: {visibility}")
+    if author_kind not in ("operator", "submitter"):
+        raise ValueError(f"invalid author_kind: {author_kind}")
+    if author_kind == "submitter":
+        visibility = "public"  # a submitter cannot write an internal note
+    elif author_user_id is None:
+        raise ValueError("operator comment needs an author")
+    if not (body or "").strip():
+        raise ValueError("comment body is required")
     comment = RequestComment(
         id=f"rcom_{token_urlsafe(12)}",
         request_id=req_id,
         author_user_id=author_user_id,
+        author_kind=author_kind,
         body=body,
         visibility=visibility,
     )
     db.add(comment)
     db.commit()
     db.refresh(comment)
+
+    req = db.get(Request, req_id)
+    role = comment_role(comment)
+    notified = False
+    if role == "team":
+        notified = _notify_submitter(req, comment)
+    events_svc.record(
+        db,
+        actor_type="user" if author_user_id else "system",
+        actor_id=author_user_id or "",
+        actor_label="submitter" if author_kind == "submitter" else "",
+        surface="public" if author_kind == "submitter" else "rest",
+        action="request_comment",
+        target_type="request",
+        target_id=req_id,
+        project_id=req.project_id,
+        meta={"comment_id": comment.id, "role": role, "notified": notified},
+    )
     return comment
+
+
+def _notify_submitter(req: Request, comment: RequestComment) -> bool:
+    """Mail the submitter a public reply. No address -> no mail; the reply is still on the
+    tracking page and the event records `notified: false`."""
+    to = (req.meta or {}).get("contact_email", "")
+    if not to:
+        return False
+    return email_svc.send_email(
+        to,
+        f"Update on your request: {req.title}",
+        f"The team replied to your request \"{req.title}\":\n\n{comment.body}\n\n"
+        "Open your tracking link to read the thread and reply.",
+    )
+
+
+def list_comment_thread(db: Session, request_id: str) -> list[dict]:
+    """PRD-60 D9: operator thread — every comment with author display name and role."""
+    out = []
+    for c in list_comments(db, request_id):
+        if c.author_kind == "submitter":
+            req = db.get(Request, c.request_id)
+            author = (req.by if req else "") or "Submitter"
+        else:
+            u = db.get(User, c.author_user_id) if c.author_user_id else None
+            author = u.name if u else ""
+        out.append({
+            "id": c.id, "body": c.body, "visibility": c.visibility,
+            "role": comment_role(c), "author": author, "created_at": c.created_at,
+        })
+    return out
 
 
 def list_comments(db: Session, request_id: str, *, visibility: str | None = None) -> list[RequestComment]:

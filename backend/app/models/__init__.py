@@ -1961,7 +1961,12 @@ class RequestComment(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)  # rcom_...
     request_id: Mapped[str] = mapped_column(ForeignKey("requests.id"), index=True)
-    author_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    # NULL for a submitter comment: the submitter has no user row, the tracking token is
+    # their credential (PRD-60 D9 / GRPH-1139).
+    author_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    author_kind: Mapped[str] = mapped_column(
+        String, default="operator", server_default="operator", nullable=False
+    )  # operator | submitter
     body: Mapped[str] = mapped_column(Text, default="")
     visibility: Mapped[str] = mapped_column(
         String, default="private", server_default="private", nullable=False

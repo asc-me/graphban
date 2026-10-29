@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 189 of the 268 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 191 of the 270 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -564,6 +564,8 @@ These share the public router so the Feedback Kit and Settings can share one ori
 | POST | `/api/public/requests/{request_id}/publish` | Put a request on the matching public board |
 | POST | `/api/public/requests/{request_id}/unpublish` | Take it off; tracking URL still works |
 | POST | `/api/public/requests/{request_id}/comments` | Operator comment. Default `visibility=private` |
+| POST | `/api/public/t/{track_token}/comments` | Submitter reply, authenticated by the tracking token (404 without it). Always public; notifies no one |
+| GET | `/api/requests/{request_id}/comments` | Operator thread: public and internal comments with `author`, `role` (`submitter`, `team` or `internal`) and `created_at`. A public operator reply emails the submitter once when a contact email was given; every comment writes a `request_comment` event |
 | POST | `/api/public/slugs/org-host` | Claim `{org}.graphban.dev` (enterprise; org admin) |
 | POST | `/api/public/slugs/project-path` | Claim the `{project_id}` path segment |
 | GET | `/api/public/slugs/redirect` | Resolve upgrade 301: old host → new host |

@@ -1,7 +1,7 @@
 """`prd_request_links`: many-to-many PRD <-> request (PRD-60 D10 / GRPH-1140).
 
-Revision ID: 0149
-Revises: 0148
+Revision ID: 0150
+Revises: 0149
 """
 
 from typing import Sequence, Union
@@ -9,8 +9,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0149"
-down_revision: Union[str, None] = "0148"
+revision: str = "0150"
+down_revision: Union[str, None] = "0149"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

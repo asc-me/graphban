@@ -1362,6 +1362,11 @@ class TrackingOut(BaseModel):
     comments: list["PublicCommentOut"] = []
 
 
+class SubmitterCommentIn(BaseModel):
+    """PRD-60 D9: a submitter's reply on the tracking page. Capped: anyone holding the token can post."""
+    body: str = Field(min_length=1, max_length=5000)
+
+
 class PublicCommentOut(BaseModel):
     """PRD-43 D7: public operator comment. Only visibility=public appear here."""
     id: str
