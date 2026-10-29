@@ -190,11 +190,22 @@ def refusal_coverage(path: Path | None = None) -> dict:
 
 def source_url(path: str, version: str | None = None) -> str:
     """Graphban's own repo at the running release tag — not the tenant's code graph."""
-    return f"{REPO_URL}/blob/v{version or __version__}/backend/{path}"
+    # The tag is the bare CalVer (`2026.10.24`) — scripts/graphban_release.py publishes no `v`.
+    return f"{REPO_URL}/blob/{version or __version__}/backend/{path}"
+
+
+def repo_file_url(path: str, version: str | None = None) -> str:
+    """A repo-root file (ci.yml, AGENTS.md, docs/…) at the running release tag."""
+    return f"{REPO_URL}/blob/{version or __version__}/{path}"
 
 
 def _enforcer_out(e: Enforcer) -> dict:
-    url = source_url(e.ref) if e.kind == "graphban_source" else ""
+    if e.kind == "graphban_source":
+        url = source_url(e.ref)
+    elif e.kind in ("ci_job", "doc"):
+        url = repo_file_url(e.ref)
+    else:
+        url = ""
     return {"kind": e.kind, "ref": e.ref, "url": url}
 
 
