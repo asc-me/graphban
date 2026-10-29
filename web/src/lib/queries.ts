@@ -488,6 +488,23 @@ export function useRulesFlow(projectId: string) {
   });
 }
 
+/** Recommended rules (GRPH-1164). Fetched when the panel opens; the server caches briefly. */
+export function useRecommendedRules(projectId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["rules-recommended", projectId],
+    queryFn: () => api.recommendedRules(projectId),
+    enabled: !!projectId && enabled,
+  });
+}
+
+export function useDismissRecommendedRule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (suggestionId: string) => api.dismissRecommendedRule(projectId, suggestionId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["rules-recommended", projectId] }),
+  });
+}
+
 export function useFleetPolicy(projectId: string) {
   return useQuery({
     queryKey: ["fleet-policy", projectId],
