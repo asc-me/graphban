@@ -116,6 +116,25 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("review.not_own_work", "review", "Not your own work",
          "The agent that built an item cannot sign it off.",
          "enforced", _src("app/services/fleet.py", "SelfReview"), "code"),
+    Rule("review.adversarial_evidence", "review", "Sign-off needs adversarial evidence",
+         "Work above the effort threshold is signed off only with a sabotage receipt.",
+         "enforced", _src("app/services/fleet.py", "MissingAdversarialEvidence"), "code"),
+    Rule("review.attest_the_head", "review", "Attest the head, not the base",
+         "A sign-off names the commit reviewed, never the commit the branch was cut from.",
+         "enforced", _src("app/services/fleet.py", "AttestedTheBase"), "code"),
+    Rule("review.predicates_compared", "review", "Predicates must have run",
+         "A check that could not run is not a pass; it needs a comparison or a recorded waiver.",
+         "enforced", _src("app/services/fleet.py", "UncomparedPredicate"), "code"),
+    Rule("review.clause_capability", "review", "Reviewer holds the clause's capability",
+         "An acceptance clause needing a tool or a human is signed off only by a reviewer "
+         "who declared it.",
+         "enforced", _src("app/services/fleet.py", "ClauseCapability"), "code"),
+    Rule("review.acceptance_covered", "review", "Every acceptance clause is tested",
+         "Sign-off names a test for each clause under ## Acceptance.",
+         "enforced", _src("app/services/fleet.py", "MissingAcceptanceCoverage"), "code"),
+    Rule("memory.independent_adjudication", "learn", "Agents do not publish their own memory",
+         "An agent may discard its candidate shard; only an independent judge publishes one.",
+         "enforced", _src("app/services/memory.py", "agent_publish"), "code"),
     Rule("review.role_gated_tools", "review", "Role-gated tools",
          "MCP tools outside an agent's role are refused.",
          "enforced", _src("app/services/fleet.py", "check_tool_role"), "code"),
@@ -137,6 +156,26 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
 )
 
 RULES_BY_ID = {r.id: r for r in RULES}
+
+#: Written only by a passing build on main (`scripts/refusal_ratchet.py publish`, GRPH-1158).
+REFUSAL_COVERAGE_FILE = Path(__file__).resolve().parents[1] / "data" / "refusal_coverage.json"
+
+
+def refusal_coverage(path: Path | None = None) -> dict:
+    """"N of M refusal sites name their rule", as the last green main build published it.
+
+    Read, never computed: a number worked out at runtime would come from whatever tree is
+    deployed, failing or not. No file is `published: False` — nobody measured — and never a
+    zero, which would read as "no refusal names its rule"."""
+    import json
+
+    try:
+        data = json.loads((path or REFUSAL_COVERAGE_FILE).read_text())
+    except (FileNotFoundError, ValueError):
+        return {"published": False, "n": None, "m": None, "commit": None,
+                "published_at": None}
+    return {"published": True, "n": data["n"], "m": data["m"],
+            "commit": data.get("commit") or None, "published_at": data.get("published_at")}
 
 
 def source_url(path: str, version: str | None = None) -> str:
@@ -240,6 +279,12 @@ RULE_STAGE = {
     "agents.operating_loop": "build",
     "review.not_own_work": "review",
     "review.role_gated_tools": "review",
+    "review.adversarial_evidence": "review",
+    "review.attest_the_head": "review",
+    "review.predicates_compared": "review",
+    "review.clause_capability": "review",
+    "review.acceptance_covered": "review",
+    "memory.independent_adjudication": "learn",
     "review.reviewer_diversity": "review",
     "gitops.reviewer_bar": "review",
     "gitops.base_branch": "merge",

@@ -90,14 +90,19 @@ class Refused(HTTPException):
     malformed input stay plain `HTTPException` and are not refusals. `rule_id` names the
     registry rule (`services/rules.py`) that refused; `None` means "not mapped to a rule
     yet", which the UI says out loud rather than staying silent — silence would read as "no
-    rule applies". The REST handler in `main.py` and the MCP dispatcher both record it.
+    rule applies". The REST handler in `main.py` and the MCP dispatcher both record it, once:
+    a raise site never records its own event. `meta` rides into that event (a gate's own
+    audit fields), and `target` overrides the item/PRD the handler would otherwise infer.
     """
 
     def __init__(self, status_code: int, detail: str, *, rule_id: str | None = None,
-                 hint: str | None = None):
+                 hint: str | None = None, meta: dict | None = None,
+                 target: tuple[str, str] | None = None):
         super().__init__(status_code, detail)
         self.rule_id = rule_id
         self.hint = hint
+        self.meta = meta or {}
+        self.target = target
 
     @property
     def mcp_code(self) -> str:

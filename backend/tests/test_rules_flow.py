@@ -46,11 +46,17 @@ def test_flow_is_whole_and_ordered(db):
     f = _flow_for(db, "prs_to_base", reviewer_bar="both")
     assert [s["id"] for s in f["stages"]] == list(R.STAGE_IDS)
     assert len(f["edges"]) == 6
-    # Plan has one gate (enforced) but Learn has no rules: unmeasured, not clean.
-    assert _stage(f, "learn")["state"] == "unmeasured"
     assert _stage(f, "plan")["state"] == "enforced"
     # Review mixes enforced and advisory rules -> weakest.
     assert _stage(f, "review")["state"] == "advisory"
+
+
+def test_a_stage_with_no_rules_is_unmeasured_not_clean(db, monkeypatch):
+    monkeypatch.setattr(R, "RULE_STAGE", dict(R.RULE_STAGE))
+    # Learn's only rule moved off it: nothing on the stage was looked at.
+    R.RULE_STAGE["memory.independent_adjudication"] = "build"
+    f = _flow_for(db, "prs_to_base", reviewer_bar="both")
+    assert _stage(f, "learn")["rules"] == [] and _stage(f, "learn")["state"] == "unmeasured"
 
 
 def test_unset_gitops_value_makes_its_stage_unmeasured(db):
@@ -84,7 +90,8 @@ def test_stage_not_used_only_when_every_rule_is(db, monkeypatch):
     # Merge keeps base_branch and CI, so it is not NOT_USED.
     assert _stage(f, "merge")["state"] != "not_used"
     # Force a stage whose only rules are unused.
-    only = {"gitops.pr_title_pattern": "learn", "gitops.no_push_to_base": "learn"}
+    only = {"gitops.pr_title_pattern": "learn", "gitops.no_push_to_base": "learn",
+            "memory.independent_adjudication": "build"}
     R.RULE_STAGE.update(only)
     f = R.flow(db, "flowp")
     assert _stage(f, "learn")["state"] == "not_used"

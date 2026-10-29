@@ -324,13 +324,15 @@ async def _refused_handler(request: Request, exc: Refused):
         target_type, target_id = "prd", params["prd_id"]
     elif params.get("item_id"):
         target_type, target_id = "item", params["item_id"]
+    if exc.target:
+        target_type, target_id = exc.target
     db = SessionLocal()
     try:
         events_svc.record_refusal(
             db, rule_id=exc.rule_id, surface="rest", where=where, status=exc.status_code,
             detail=str(exc.detail),
             actor=getattr(request.state, "actor", ("system", "", "")),
-            target_type=target_type, target_id=target_id,
+            target_type=target_type, target_id=target_id, meta=exc.meta,
             project_id=params.get("project_id"))
     finally:
         db.close()

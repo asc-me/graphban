@@ -385,6 +385,9 @@ jobs:
     # GitHub-hosted runners cannot reach it. cloud.graphban.dev is a different
     # database — pointing there 404s every GRPH-* item.
     runs-on: [self-hosted, graphban-ledger]
+    # `write` for the one step that commits refusal coverage on a main push (GRPH-1158).
+    permissions:
+      contents: write
     steps:
       - name: Fail if anything that ran did not pass
         # `skipped` is a pass here and `failure`/`cancelled` are not. Checking the results
@@ -409,19 +412,6 @@ jobs:
       - name: Check out (the gate job has no source yet)
         if: always()
         uses: actions/checkout@v4
-      # The refusal coverage line ("N of M refusal sites name their rule", GRPH-1158) is
-      # published ONLY here: a push to main, after the gate step above passed. A PR build,
-      # green or red, never writes a count. The release build packages the artifact into
-      # `app/data/`; the UI reads it and never computes it.
-      - name: Publish refusal coverage
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: python3 scripts/refusal_ratchet.py publish refusal_coverage.json
-      - name: Upload refusal coverage
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
-        with:
-          name: refusal-coverage
-          path: refusal_coverage.json
       # BEFORE the attestation and unconditionally, which is the whole point (GRPH-555).
       # A failing run writes no receipt — but it must still move the head, or the last
       # PASSING attestation goes on opening the gate for code that has since broken. That is
@@ -468,3 +458,24 @@ jobs:
             --branch "$HEAD_REF" \
             --run-url "$RUN_URL" \
             --text "$PR_TITLE $PR_BODY"
+      # The refusal coverage line ("N of M refusal sites name their rule", GRPH-1158) is
+      # written into package data ONLY here: a push to main, after the gate step above passed
+      # (steps stop at the first failure). A PR build, green or red, never writes a count, so a
+      # failing tree cannot produce a number. Committed back to main so the next build ships
+      # it in `app/data/`; `services/rules.refusal_coverage` reads it and the UI never computes
+      # it. LAST, after the attestations: a refused push must not cost the receipt.
+      # `[skip ci]` because the commit changes one JSON file and nothing it would test.
+      - name: Publish refusal coverage into package data
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          python3 scripts/refusal_ratchet.py publish backend/app/data/refusal_coverage.json "$HEAD_SHA"
+          git add backend/app/data/refusal_coverage.json
+          if git diff --cached --quiet -I '"published_at"' -I '"commit"'; then
+            echo "refusal coverage unchanged"; exit 0
+          fi
+          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
+            commit -m "Publish refusal coverage for $HEAD_SHA [skip ci]"
+          git pull --rebase origin main
+          git push origin HEAD:main
