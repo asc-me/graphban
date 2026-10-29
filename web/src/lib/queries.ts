@@ -829,6 +829,8 @@ function invalidateReview(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ["shard-scored"] });
   qc.invalidateQueries({ queryKey: ["shard-auto-actions"] });
   qc.invalidateQueries({ queryKey: ["memory-judge-status"] });
+  qc.invalidateQueries({ queryKey: ["memory-queues"] });
+  qc.invalidateQueries({ queryKey: ["memory-stale"] });
   qc.invalidateQueries({ queryKey: keys.shards });
 }
 
@@ -861,6 +863,39 @@ export function useJudgeShard() {
     mutationFn: (id: string) => api.judgeShard(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["memory-judge-status"] }),
   });
+}
+
+/** GRPH-1175: the five queue counts. A queue whose source failed arrives as `failed`. */
+export function useMemoryQueues(projectId?: string) {
+  return useQuery({
+    queryKey: ["memory-queues", projectId],
+    queryFn: () => api.memoryQueues(projectId!),
+    enabled: !!projectId,
+  });
+}
+
+/** GRPH-1175: published shards that are stale or reported wrong, with the judge's call. */
+export function useStaleShards(projectId?: string) {
+  return useQuery({
+    queryKey: ["memory-stale", projectId],
+    queryFn: () => api.staleShards(projectId!),
+    enabled: !!projectId,
+  });
+}
+
+/** Retire a published shard (restorable for 14 days), restore it, or apply the judge's
+ *  recommendations in bulk. Each re-reads the queues: a retire moves a row out of Stale. */
+export function useStaleActions() {
+  const qc = useQueryClient();
+  const invalidate = () => invalidateReview(qc);
+  return {
+    retire: useMutation({ mutationFn: (id: string) => api.retireShard(id), onSuccess: invalidate }),
+    restore: useMutation({ mutationFn: (id: string) => api.restoreShard(id), onSuccess: invalidate }),
+    apply: useMutation({
+      mutationFn: (ids: string[]) => api.applyRecommendations(ids),
+      onSuccess: invalidate,
+    }),
+  };
 }
 
 export function usePromoteCluster() {

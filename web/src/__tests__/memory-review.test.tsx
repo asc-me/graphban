@@ -8,7 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { ProjectProvider } from "@/features/ProjectContext";
 import { settingsPath } from "@/lib/routes";
-import type { CandidateJudge, JudgeStatus, Shard } from "@/lib/types";
+import type { CandidateJudge, JudgeStatus, ScoredCandidate, Shard } from "@/lib/types";
 
 const candidate: Shard = {
   id: "m9", text: "Agent guess: batch writes for perf.", scope: "item", source: "lesson from AL-12",
@@ -16,7 +16,12 @@ const candidate: Shard = {
   fresh: true, scoring_source: "", auto_confidence: null, created_at: "",
 };
 
-// An auto-rejected near-duplicate — the "recent auto-actions" lane (AL-227).
+const plain: ScoredCandidate = {
+  shard: candidate, suggestion: "review", confidence: 0.4, reasons: [], duplicate_of: null,
+  judged: false, grounded: null, ready: null, conflicts: [], judge_reason: "", ungraded_reason: "",
+};
+
+// An auto-rejected near-duplicate: the scorer's call, not a published row nobody looked at.
 const autoRejected: Shard = {
   id: "m10", text: "Duplicate: batch writes for perf.", scope: "item", source: "",
   status: "rejected", origin: "agent:loop-agent", item_id: "AL-12", project_id: "core",
@@ -29,8 +34,7 @@ const autoDecider: Shard = {
   fresh: true, scoring_source: "decider", auto_confidence: 0.91, created_at: "",
 };
 
-// Published with NO human involved (AL-280 trusted / AL-282 agent). Once agents run the
-// loop these are the reviewer's actual job, so they get their own label and filter.
+// Published with NO human involved (AL-280 trusted / AL-282 agent).
 const unvetted: Shard = {
   id: "m11", text: "Published by the agent while you were away.", scope: "global", source: "",
   status: "published", origin: "agent:loop-agent", item_id: null, project_id: "core",
@@ -64,14 +68,19 @@ const project = {
   memory_auto_reject: true, memory_write_mode: "review", memory_llm_judge: false, agent_adjudication: false, allow_self_review: false,
 };
 
+const ok = (count: number) => ({ count, state: "ok", error: "" });
+
 vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
   api: {
     projects: vi.fn(async () => [project]),
     counts: vi.fn(async () => ({ items: 0, items_in_progress: 0, requests: 0, review: 1 })),
-    candidateShards: vi.fn(async () => [candidate]),
+    memoryQueues: vi.fn(async () => ({
+      needs_decision: ok(1), conflicts: ok(0), duplicate_clusters: ok(0), stale_or_wrong: ok(0), published_unreviewed: ok(2),
+    })),
+    scoredCandidates: vi.fn(),
     candidateClusters: vi.fn(async () => []),
-    scoredCandidates: vi.fn(async () => []),
+    staleShards: vi.fn(async () => []),
     autoActions: vi.fn(async () => [autoRejected, unvetted, autoDecider]),
     publishShard: publishSpy,
     rejectShard: vi.fn(async () => ({ ...candidate, status: "rejected" })),
@@ -95,9 +104,11 @@ function renderView() {
   );
 }
 
+const panel = () => screen.getByTestId("memory-detail");
+
 // Reset OUTSIDE every describe, so a test that makes the judge mute cannot leak into the next
 // one. The banner is the assertion here, and a leaked banner reads as a passing test.
-beforeEach(() => {
+beforeEach(async () => {
   judgeStatusSpy.mockResolvedValue({
     judge_on: true,
     judge: "decider",
@@ -106,179 +117,126 @@ beforeEach(() => {
     falling_back: false,
     reason: "",
   });
+  const { api } = await import("@/lib/api");
+  vi.mocked(api.scoredCandidates).mockResolvedValue([plain]);
 });
 
 describe("Memory review queue", () => {
-  beforeEach(async () => {
-    const { api } = await import("@/lib/api");
-    vi.mocked(api.candidateShards).mockResolvedValue([candidate]);
-  });
-
   it("shows retry when the queue fetch fails instead of an endless skeleton (GRPH-916)", async () => {
     const { api } = await import("@/lib/api");
-    vi.mocked(api.candidateShards).mockRejectedValue(
-      new Error("Memory review queue timed out after 30s"),
-    );
+    vi.mocked(api.scoredCandidates).mockRejectedValue(new Error("timed out"));
     renderView();
-    expect(await screen.findByText(/taking too long to load/i)).toBeInTheDocument();
+    expect(await screen.findByText("Needs a decision unavailable")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Loading memory review")).not.toBeInTheDocument();
   });
 
-  it("shows candidates and publishes one", async () => {
+  it("shows candidates and publishes one from the detail panel", async () => {
     const user = userEvent.setup();
     renderView();
 
-    expect(await screen.findByText(/Agent guess: batch writes/)).toBeInTheDocument();
-    expect(screen.getByText("agent:loop-agent")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Ask the judge/ })).not.toBeInTheDocument();
+    expect((await screen.findAllByText(/Agent guess: batch writes/)).length).toBeGreaterThan(0);
+    expect(within(panel()).getByText("agent:loop-agent")).toBeInTheDocument();
+    // The judge is off for this project: asking it is disabled, and says why.
+    expect(within(panel()).getByRole("button", { name: /Ask the judge/ })).toBeDisabled();
 
-    await user.click(screen.getByRole("button", { name: /Publish/ }));
+    await user.click(within(panel()).getByRole("button", { name: /^Publish/ }));
     expect(publishSpy).toHaveBeenCalledWith("m9");
   });
 
-  it("shows the recent auto-actions lane and undoes one (AL-227)", async () => {
+  it("Undo after a publish returns the shard to the queue", async () => {
     const user = userEvent.setup();
     renderView();
-
-    expect(await screen.findByText(/Recent auto-actions/)).toBeInTheDocument();
-    expect(screen.getByText("auto-rejected")).toBeInTheDocument();
-    expect(screen.getByText("97%")).toBeInTheDocument();
-
-    // Scope to THIS shard's row: the lane now also carries unvetted publishes (AL-287),
-    // so a bare getByRole(/Undo/) matches more than one button.
-    const row = screen.getByText(/Duplicate: batch writes/).closest("div")!;
-    await user.click(within(row).getByRole("button", { name: /Undo/ }));
-    expect(undoSpy).toHaveBeenCalledWith("m10");
+    await screen.findAllByText(/Agent guess: batch writes/);
+    await user.click(within(panel()).getByRole("button", { name: /^Publish/ }));
+    await user.click(await screen.findByRole("button", { name: "Undo" }));
+    expect(undoSpy).toHaveBeenCalledWith("m9");
   });
 });
-
 
 describe("review judge signals (GRPH-79)", () => {
   it("shows ungrounded and not-ready without looking like a publish", async () => {
     const { api } = await import("@/lib/api");
-    vi.mocked(api.scoredCandidates).mockResolvedValueOnce([
-      {
-        shard: candidate,
-        suggestion: "review",
-        confidence: 0.4,
-        reasons: ["review judge: contradicts published memory"],
-        duplicate_of: null,
-        judged: true,
-        grounded: false,
-        ready: false,
-        conflicts: ["published m1: we never batch writes"],
-        judge_reason: "contradicts published memory",
-        ungraded_reason: "",
-      },
+    vi.mocked(api.scoredCandidates).mockResolvedValue([
+      { ...plain, judged: true, grounded: false, ready: false, conflicts: ["published m1: we never batch writes"] },
     ]);
     renderView();
-    expect(await screen.findByText("ungrounded")).toBeInTheDocument();
-    expect(screen.getByText("not ready")).toBeInTheDocument();
-    expect(screen.getByText(/Conflicts:/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "published m1: we never batch writes" })).toBeInTheDocument();
-    expect(screen.queryByText("not judged")).not.toBeInTheDocument();
+    const list = await screen.findByRole("listbox", { name: "Needs a decision" });
+    expect(within(list).getByText("ungrounded")).toBeInTheDocument();
+    expect(within(list).getByText("not ready")).toBeInTheDocument();
+    expect(within(panel()).getByText("ungrounded · not ready")).toBeInTheDocument();
+    expect(screen.queryByText(/not judged/)).not.toBeInTheDocument();
+  });
+
+  it("lists what a conflicting candidate contradicts in the Conflicts queue", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.scoredCandidates).mockResolvedValue([
+      { ...plain, judged: true, grounded: false, ready: true, conflicts: ["published m1: we never batch writes"] },
+    ]);
+    const user = userEvent.setup();
+    renderView();
+    await screen.findAllByText(/Agent guess: batch writes/);
+    await user.click(screen.getByTestId("queue-conflicts"));
+    expect(within(panel()).getByText(/Contradicts published/i)).toBeInTheDocument();
+    expect(within(panel()).getByText("published m1: we never batch writes")).toBeInTheDocument();
   });
 
   it("names an ungraded judge rather than showing a quiet zero", async () => {
     const { api } = await import("@/lib/api");
-    vi.mocked(api.scoredCandidates).mockResolvedValueOnce([
-      {
-        shard: candidate,
-        suggestion: "review",
-        confidence: 0.3,
-        reasons: ["novel — no strong signal either way"],
-        duplicate_of: null,
-        judged: false,
-        grounded: null,
-        ready: null,
-        conflicts: [],
-        judge_reason: "",
-        ungraded_reason: "stub cannot judge substance",
-      },
+    vi.mocked(api.scoredCandidates).mockResolvedValue([
+      { ...plain, confidence: 0.3, ungraded_reason: "stub cannot judge substance" },
     ]);
     renderView();
     expect(await screen.findByText(/not judged — stub cannot judge substance/)).toBeInTheDocument();
     expect(screen.queryByText("ungrounded")).not.toBeInTheDocument();
-    expect(screen.queryByText("grounded")).not.toBeInTheDocument();
   });
 
   it("renders unscored_budget as not scored yet, not a low score (PRD-45 D9)", async () => {
     const { api } = await import("@/lib/api");
-    vi.mocked(api.scoredCandidates).mockResolvedValueOnce([
-      {
-        shard: candidate,
-        suggestion: "review",
-        confidence: 0.3,
-        reasons: ["novel — no strong signal either way"],
-        duplicate_of: null,
-        judged: false,
-        grounded: null,
-        ready: null,
-        conflicts: [],
-        judge_reason: "",
-        ungraded_reason: "not scored yet — the decider queue budget ran out this pass",
-        judge_source: "",
-      },
+    vi.mocked(api.scoredCandidates).mockResolvedValue([
+      { ...plain, ungraded_reason: "not scored yet — the decider queue budget ran out this pass" },
     ]);
     renderView();
-    expect(await screen.findByText("not scored yet")).toBeInTheDocument();
+    expect((await screen.findAllByText("not scored yet")).length).toBeGreaterThan(0);
     expect(screen.queryByText(/not judged/)).not.toBeInTheDocument();
-    expect(screen.queryByText("ungrounded")).not.toBeInTheDocument();
   });
 
-  it("badges a decider verdict on the review card (PRD-45 D5)", async () => {
+  it("badges a decider verdict (PRD-45 D5)", async () => {
     const { api } = await import("@/lib/api");
-    vi.mocked(api.scoredCandidates).mockResolvedValueOnce([
-      {
-        shard: candidate,
-        suggestion: "accept",
-        confidence: 0.8,
-        reasons: ["decider: grounded 0.91 · ready 0.84"],
-        duplicate_of: null,
-        judged: true,
-        grounded: true,
-        ready: true,
-        conflicts: ["m_abc123"],
-        judge_reason: "decider: grounded 0.91 · ready 0.84",
-        ungraded_reason: "",
-        judge_source: "decider",
-      },
+    vi.mocked(api.scoredCandidates).mockResolvedValue([
+      { ...plain, judged: true, grounded: true, ready: true, judge_source: "decider", confidence: 0.8 },
     ]);
     renderView();
-    expect(await screen.findByRole("link", { name: "m_abc123" })).toHaveAttribute("href", "/memory");
-    const card = screen.getByText(/Agent guess: batch writes/).closest("div")!;
-    expect(within(card).getByText("decider")).toBeInTheDocument();
-    expect(within(card).getByText("grounded")).toBeInTheDocument();
+    const list = await screen.findByRole("listbox", { name: "Needs a decision" });
+    expect(within(list).getByText("decider")).toBeInTheDocument();
+    expect(within(panel()).getByText("decider · grounded · ready")).toBeInTheDocument();
   });
 });
 
 describe("unreviewed shards (AL-287)", () => {
   it("labels a shard nobody reviewed differently from a scorer decision", async () => {
+    const user = userEvent.setup();
     renderView();
-    // The scorer's own decision and an unvetted publish must not read the same — the
-    // whole point is telling apart "the scorer was confident" from "nobody looked".
-    expect(await screen.findByText("agent + judge")).toBeInTheDocument();
-    expect(screen.getByText("similarity")).toBeInTheDocument();
-    expect(screen.getByText("decider")).toBeInTheDocument();
+    await screen.findAllByText(/Agent guess: batch writes/);
+    await user.click(screen.getByTestId("queue-unvetted"));
+    const list = await screen.findByRole("listbox", { name: "Published, unreviewed" });
+    // "the scorer was confident" and "nobody looked" must not read the same.
+    expect(within(list).getByText("agent + judge")).toBeInTheDocument();
+    expect(within(list).getByText("decider")).toBeInTheDocument();
+    // An auto-REJECT is not published, so it is not in this queue.
+    expect(within(list).queryByText(/Duplicate: batch writes/)).not.toBeInTheDocument();
   });
 
-  it("filters to only what nobody reviewed, in one click", async () => {
+  it("retracts an unreviewed publish back to the queue", async () => {
+    const user = userEvent.setup();
     renderView();
-    const toggle = await screen.findByRole("button", { name: /nobody reviewed/i });
-    expect(screen.getByText(/Duplicate: batch writes/)).toBeInTheDocument();
-
-    await userEvent.click(toggle);
-    expect(screen.getByText(/Published by the agent while you were away/)).toBeInTheDocument();
-    expect(screen.queryByText(/Duplicate: batch writes/)).not.toBeInTheDocument();
-  });
-
-  it("counts unreviewed shards in the header, not just candidates", async () => {
-    renderView();
-    expect(await screen.findByText("1 UNREVIEWED")).toBeInTheDocument();
+    await screen.findAllByText(/Agent guess: batch writes/);
+    await user.click(screen.getByTestId("queue-unvetted"));
+    await screen.findByRole("listbox", { name: "Published, unreviewed" });
+    await user.keyboard("r");
+    expect(undoSpy).toHaveBeenCalledWith("m11");
   });
 });
-
 
 describe("on-demand LLM judge (GRPH-650)", () => {
   beforeEach(() => {
@@ -291,15 +249,16 @@ describe("on-demand LLM judge (GRPH-650)", () => {
 
   it("does not show a keep/quality score before anyone asks", async () => {
     renderView();
-    const ask = await screen.findByRole("button", { name: /Ask the judge/ });
-    expect(ask).toHaveAttribute("title", expect.stringMatching(/keep\/quality/i));
+    await screen.findAllByText(/Agent guess: batch writes/);
+    expect(within(panel()).getByRole("button", { name: /Ask the judge/ })).toBeEnabled();
     expect(screen.queryByText(/^Judge:/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Judge unavailable/)).not.toBeInTheDocument();
   });
 
   it("shows unavailable copy, not a quality number, when the judge cannot run", async () => {
     renderView();
-    await userEvent.click(await screen.findByRole("button", { name: /Ask the judge/ }));
+    await screen.findAllByText(/Agent guess: batch writes/);
+    await userEvent.click(within(panel()).getByRole("button", { name: /Ask the judge/ }));
     expect(await screen.findByText(/Judge unavailable/)).toBeInTheDocument();
     expect(screen.queryByText(/Judge: 0%/)).not.toBeInTheDocument();
     expect(judgeSpy).toHaveBeenCalledWith("m9");
@@ -313,7 +272,8 @@ describe("on-demand LLM judge (GRPH-650)", () => {
       cause_detail: "",
     });
     renderView();
-    await userEvent.click(await screen.findByRole("button", { name: /Ask the judge/ }));
+    await screen.findAllByText(/Agent guess: batch writes/);
+    await userEvent.click(within(panel()).getByRole("button", { name: /Ask the judge/ }));
     expect(await screen.findByText(/Judge: 90%/)).toBeInTheDocument();
     expect(screen.getByText(/durable specific convention/)).toBeInTheDocument();
   });
@@ -350,19 +310,18 @@ describe("a judge that cannot answer (GRPH-995)", () => {
 
   it("says so over an EMPTY queue — an empty queue is not a clean one", async () => {
     const { api } = await import("@/lib/api");
-    vi.mocked(api.candidateShards).mockResolvedValueOnce([]);
-    vi.mocked(api.autoActions).mockResolvedValueOnce([]);
+    vi.mocked(api.scoredCandidates).mockResolvedValue([]);
     judgeStatusSpy.mockResolvedValue(MUTE);
     renderView();
 
-    expect(await screen.findByText(/Nothing to review/)).toBeInTheDocument();
+    expect(await screen.findByText(/Queue clear/)).toBeInTheDocument();
     expect(screen.getByTestId("judge-falling-back")).toBeInTheDocument();
   });
 
   it("renders nothing when the judge can answer", async () => {
     renderView();
 
-    expect(await screen.findByText(/Agent guess: batch writes/)).toBeInTheDocument();
+    await screen.findAllByText(/Agent guess: batch writes/);
     expect(screen.queryByTestId("judge-falling-back")).not.toBeInTheDocument();
   });
 
@@ -377,7 +336,7 @@ describe("a judge that cannot answer (GRPH-995)", () => {
     });
     renderView();
 
-    expect(await screen.findByText(/Agent guess: batch writes/)).toBeInTheDocument();
+    await screen.findAllByText(/Agent guess: batch writes/);
     expect(screen.queryByTestId("judge-falling-back")).not.toBeInTheDocument();
   });
 });
