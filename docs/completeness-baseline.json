@@ -69,7 +69,6 @@
       "/api/public/attachments/{}",
       "/api/public/widget-config",
       "/api/requests/triage",
-      "/api/requests/{}/accept",
       "/api/sync/code-graph",
       "/api/sync/export",
       "/api/sync/import",

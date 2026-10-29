@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 178 of the 258 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 183 of the 262 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -87,6 +87,11 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | POST | `/api/requests` | JWT |
 | POST | `/api/requests/{id}/vote` | JWT |
 | POST | `/api/requests/{id}/link` | JWT |
+| POST | `/api/requests/{id}/accept` | JWT. Body `{status: backlog\|next, prd_id?}`; returns `action_id` for undo |
+| POST | `/api/requests/{id}/merge` | JWT. Body `{target_id}` (item or request); carries votes, follows merge chains, 409 on a cycle |
+| POST | `/api/requests/{id}/decline` | JWT. Body `{reason?}`; emails the submitter when an address is held |
+| POST | `/api/requests/{id}/snooze` | JWT. Body `{until}`; hidden from triage until then |
+| POST | `/api/requests/{id}/undo` | JWT. Body `{action_id}`; 409 with the reason if the record changed since |
 
 ## Memory & agent chat
 

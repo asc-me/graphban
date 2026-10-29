@@ -849,6 +849,27 @@ class RequestLinkIn(BaseModel):
     item_id: str | None = None
 
 
+class RequestAcceptIn(BaseModel):
+    status: str = "backlog"  # backlog | next
+    prd_id: str | None = None
+
+
+class RequestMergeIn(BaseModel):
+    target_id: str
+
+
+class RequestDeclineIn(BaseModel):
+    reason: str = ""
+
+
+class RequestSnoozeIn(BaseModel):
+    until: datetime
+
+
+class RequestUndoIn(BaseModel):
+    action_id: str
+
+
 class RequestVoteIn(BaseModel):
     delta: int = 1
 
@@ -878,6 +899,7 @@ class RequestAcceptOut(BaseModel):
 
     request: RequestOut
     item: ItemOut
+    action_id: str | None = None  # pass to /undo
 
 
 class RequestOut(ORMModel):
@@ -896,6 +918,9 @@ class RequestOut(ORMModel):
     attachment_ids: list[str] = []
     created_at: datetime
     published_at: datetime | None = None
+    snoozed_until: datetime | None = None
+    merged_into: str | None = None  # rendered key of the merge target (filled by the router)
+    action_id: str | None = None  # the triage action just taken, for undo
 
     # Rows created before these columns existed can hold NULL; coerce to the default.
     @field_validator("meta", mode="before")
@@ -1325,6 +1350,7 @@ class TrackingOut(BaseModel):
     type: str
     status: str  # new / triaging / linked
     linked_status: str | None = None  # item status when linked
+    merged_into: str | None = None  # key of the request/item this was merged into
     votes: int
     comments: list["PublicCommentOut"] = []
 
@@ -1344,6 +1370,7 @@ class PublicBoardRow(BaseModel):
     votes: int
     created_at: datetime
     linked_status: str | None = None  # absent when unlinked
+    merged_into: str | None = None  # key of the merge target; the row points there
     comments: list[PublicCommentOut] = []
 
 
