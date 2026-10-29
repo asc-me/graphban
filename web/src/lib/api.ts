@@ -64,6 +64,7 @@ import type {
   Member,
   PlatformConfig,
   StackHealth,
+  RulesFlow,
   StackTopology,
   Prd,
   PrdCoverage,
@@ -1024,6 +1025,8 @@ export const api = {
   /** Derived architecture map of the running system (GRPH-1034). */
   stack: (projectId: string) =>
     request<StackTopology>(`/platform/stack${projectQuery(projectId)}`),
+  /** The rule registry placed on the Rules map's fixed stages (GRPH-1156). */
+  rulesFlow: (projectId: string) => request<RulesFlow>(`/rules/flow${projectQuery(projectId)}`),
   /** Per-deployable code-health overlay (GRPH-1035). */
   stackHealth: (projectId: string) =>
     request<StackHealth>(`/platform/stack/health${projectQuery(projectId)}`),

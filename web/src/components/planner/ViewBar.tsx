@@ -145,9 +145,9 @@ export function ViewBar({
           onClick={() => setOpen((o) => !o)}
           className="inline-flex h-[30px] items-center gap-2 whitespace-nowrap rounded-lg border border-control bg-surface-2 px-2.5 font-mono text-[10.5px] text-fg-2 hover:border-control-hover"
         >
-          {!condensed && <Clock size={13} className="text-muted" />}
+          <Clock size={13} className="text-muted" />
           {scopeSummary(state, doneWord)}
-          {!condensed && <ChevronDown size={10} className="text-faint" />}
+          <ChevronDown size={10} className="text-faint" />
         </button>
         {open && (
           <div
@@ -182,7 +182,7 @@ export function ViewBar({
         className={cn(
           "relative inline-flex h-[30px] w-[30px] items-center justify-center rounded-lg border transition-colors",
           condensed
-            ? "border-accent bg-accent text-black"
+            ? "border-accent/35 bg-accent/10 text-accent"
             : "border-control bg-surface-2 text-muted hover:border-control-hover hover:text-fg-2",
         )}
       >

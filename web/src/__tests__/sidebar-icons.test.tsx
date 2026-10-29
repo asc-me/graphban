@@ -64,9 +64,9 @@ describe("GRPH-1173 sidebar icons", () => {
 
   it("gives each section and page the design's icon", () => {
     const want: Record<string, string> = {
-      Plan: "clipboard-check", Build: "hammer", Observe: "radio",
+      Plan: "clipboard-check", Build: "hammer", Observe: "activity",
       "Code graph": "workflow", Links: "link", Stack: "layers", Live: "radio",
-      Activity: "history", Memory: "brain", Lessons: "book-open",
+      Activity: "history", Memory: "brain", Lessons: "book-open", Rules: "scale",
     };
     const seen: Record<string, string> = {};
     for (const s of SECTIONS) {
@@ -76,8 +76,19 @@ describe("GRPH-1173 sidebar icons", () => {
     const names: Record<string, string> = {
       ClipboardCheck: "clipboard-check", Hammer: "hammer", Radio: "radio", Workflow: "workflow",
       Link: "link", Layers: "layers", History: "history", Brain: "brain", BookOpen: "book-open",
+      Activity: "activity", Scale: "scale",
     };
     for (const [label, icon] of Object.entries(want)) expect(names[seen[label]], label).toBe(icon);
     expect(iconOf(document.body)).toBe("");
+  });
+
+  it("gives Usage a chart-line and Feedback Kit a message-square, distinct from PRDs", async () => {
+    wrap(<LeftNav />, "/p/CORE/tracker");
+    const nav = within(document.querySelector<HTMLElement>('[data-layer="expanded"]')!);
+    const usage = (await nav.findByRole("link", { name: "Usage" })) as HTMLElement;
+    const kit = nav.getByRole("link", { name: "Feedback Kit" }) as HTMLElement;
+    expect(iconOf(usage)).toContain("lucide-chart-line");
+    expect(iconOf(kit)).toContain("lucide-message-square");
+    expect(iconOf(usage)).not.toContain("lucide-chart-column");
   });
 });
