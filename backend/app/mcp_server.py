@@ -2527,9 +2527,17 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         meta = {"tool": name, "agent_id": _agent_id, "consecutive_refusals": count}
         if _agent_id and count >= fleet_svc.QUARANTINE_AFTER_REFUSALS:
             meta["quarantine"] = fleet_svc.quarantine(db, _agent_id)
+        # The refusal attaches to what the call targets (PRD §6: "when the request targets an
+        # item or PRD, the event attaches to it"); the agent stays in meta. Only a call that
+        # names neither falls back to the agent.
+        if args.get("prd_id"):
+            target = ("prd", str(args["prd_id"]))
+        elif args.get("item_id") or args.get("id"):
+            target = ("item", str(args.get("item_id") or args.get("id")))
+        else:
+            target = ("agent", _agent_id or "")
         raise errors.Refused(403, str(refusal), rule_id="review.role_gated_tools",
-                             hint=refusal.hint, meta=meta,
-                             target=("agent", _agent_id or "")) from refusal
+                             hint=refusal.hint, meta=meta, target=target) from refusal
     # Consecutive is the property that matters: three refusals spread across a productive hour
     # is one stale code path, not an agent that has stopped listening.
     fleet_svc.clear_refusals(db, _agent_id)

@@ -257,3 +257,80 @@ def test_a_refused_shard_retire_lands_in_the_shards_project(client, auth):
         db.close()
     assert [(x["action"], x["target_type"], x["target_id"]) for x in out["results"]] == [
         ("refusal", "shard", sid)]
+
+
+# ---- GRPH-1197: where a role refusal lands, the delegation gate, templates, the ratchet ----
+
+def _mcp(client, key, name, args=None):
+    r = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                      "params": {"name": name, "arguments": args or {}}},
+                    headers={"X-API-Key": key})
+    assert r.status_code == 200, r.text
+    return r.json()["result"]
+
+
+@pytest.fixture()
+def _worker(client, auth):
+    """A project, a shared key, a registered WORKER agent, and a `next` item."""
+    from app.services import fleet
+
+    pid = client.post("/api/projects", json={"name": "Refusals"}, headers=auth).json()["id"]
+    key = client.post("/api/api-keys", json={"name": "k", "project_id": pid,
+                                             "scopes": ["read", "write", "gate"]},
+                      headers=auth).json()["plaintext"]
+    db = SessionLocal()
+    try:
+        _, code = fleet.issue_enrolment(db, project_id=pid, role="worker")
+    finally:
+        db.close()
+    me = _mcp(client, key, "register_agent",
+              {"branch": "gb/t", "label": "w", "enrolment_code": code})["structuredContent"]
+    item = _mcp(client, key, "create_item", {"title": "t", "status": "next",
+                                             "touchpoints": ["a.py"]})["structuredContent"]["id"]
+    return key, me["agent_id"], item
+
+
+def test_a_role_refused_call_attaches_to_the_item_it_targeted(client, _worker):
+    key, agent, item = _worker
+    # `mint_enrolment` is planner-only; the worker's call targets the item.
+    res = _mcp(client, key, "update_item", {"id": item, "status": "done", "agent_id": agent})
+    assert res["isError"]
+    [ev] = _events("refusal")
+    assert (ev.target_type, ev.target_id) == ("item", item)
+    assert ev.meta["agent_id"] == agent and ev.meta["rule_id"] == "review.role_gated_tools"
+
+
+def test_a_delegation_role_refusal_names_its_rule_and_is_recorded(client, _worker):
+    key, agent, item = _worker
+    res = _mcp(client, key, "delegate", {"id": item, "lane": "backend", "tier": "cheap",
+                                         "agent_id": agent, "seat": True})
+    err = res["structuredContent"]["error"]
+    assert res["isError"] and err["rule_id"] == "review.role_gated_tools"
+    [ev] = _events("refusal")
+    assert ev.meta["rule_id"] == "review.role_gated_tools"
+    assert (ev.target_type, ev.target_id) == ("item", item)
+
+
+def test_a_path_value_equal_to_a_literal_segment_records_the_right_template(client, auth):
+    from app.main import app
+
+    @app.get("/api/_t/things/{thing_id}/things")
+    def _boom(thing_id: str):
+        raise errors.Refused(403, "policy", rule_id="gate.approval_earned_by_grill")
+
+    assert client.get("/api/_t/things/things/things").status_code == 403
+    assert client.get("/api/_t/things/a%2Fb/things").status_code in (403, 404)
+    [ev, *_] = _events("refusal")
+    assert ev.meta["where"] == "GET /api/_t/things/{thing_id}/things"
+
+
+def test_ratchet_counts_a_bare_conflict_forbidden_and_their_subclasses(tmp_path):
+    m = _ratchet()
+    (tmp_path / "a.py").write_text(
+        "class PrdClosed(errors.Conflict): pass\n"
+        "raise errors.Conflict('x')\n"
+        "raise authz.Forbidden('x')\n"
+        "raise PrdClosed('x')\n"
+        "raise errors.NotFound('x')\n"
+        "raise Refused(409, 'x', rule_id='a.b')\n")
+    assert m.scan(tmp_path)["bare_403_409"] == 3

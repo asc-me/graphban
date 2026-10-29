@@ -44,6 +44,7 @@ from sqlalchemy.orm import Session
 
 from app.errors import Refused
 from app.models import Agent, Delegation, Enrolment, Item, MemoryShard, Project
+from app.security import authz
 from app.services import harness as harness_svc
 from app.services.harness import WINDOW_DAYS
 logger = logging.getLogger(__name__)
@@ -881,7 +882,14 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
     now = _now()
     if seat:
         # The mint gate is the mint gate: whoever may call mint_enrolment may bind a seat.
-        fleet_svc.check_tool_role(db, tool="mint_enrolment", api_key=api_key, agent_id=agent.id)
+        try:
+            fleet_svc.check_tool_role(db, tool="mint_enrolment", api_key=api_key,
+                                      agent_id=agent.id)
+        except authz.Forbidden as e:
+            # Typed, so the caller gets the rule and the refusal is recorded (GRPH-1197);
+            # bare, it reached the dispatcher as plain `unauthorized`.
+            raise Refused(403, str(e), rule_id="review.role_gated_tools", hint=e.hint,
+                          target=("item", item.id)) from e
         refuse_bound_collision(db, agent=agent, item=item)
     withdrew: str | None = None
     for row in _open_rows(db, item):
