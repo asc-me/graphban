@@ -159,8 +159,9 @@ export type ViewsApi = ReturnType<typeof useViews>;
 
 /** `90d · hide done >14d` — the scope button's summary. */
 export function scopeSummary(v: Pick<ViewState, "window" | "hide">, doneWord: string): string {
-  const w = v.window ? `${v.window}d` : "All time";
-  return v.hide ? `${w} · hide ${doneWord} >${v.hide}d` : w;
+  const w = v.window ? `${v.window}d` : "all time";
+  if (v.hide) return `${w} · hide ${doneWord} >${v.hide}d`;
+  return v.window ? w : "all time · nothing hidden";
 }
 
 /** The footer line's hidden-by-view bits, or "" when nothing is hidden. */

@@ -134,13 +134,31 @@ describe("TrackerView", () => {
     const row = (await screen.findByText("In progress thing")).closest("div")!;
 
     // Open the compact status menu on the row and pick "Review".
-    const statusBtn = within(row).getByRole("button", { name: /Status:/ });
+    const statusBtn = within(row).getByRole("button", { name: /Actions for/ });
     statusBtn.focus();
     await user.keyboard("{Enter}");
-    const reviewItem = await screen.findByRole("menuitem", { name: /Review/ });
+    const reviewItem = await screen.findByRole("menuitem", { name: /Set Review/ });
     await user.click(reviewItem);
 
     await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith("AL-01", { status: "review" }));
+  });
+
+  it("advances status when the ring is clicked (GRPH-1169)", async () => {
+    const user = userEvent.setup();
+    const { api } = await import("@/lib/api");
+    renderTracker();
+    const row = (await screen.findByText("In progress thing")).closest("div")!;
+    const ring = within(row).getByRole("button", { name: "Status: In Progress" });
+    expect(ring).toHaveAttribute("title", "In Progress — click to advance");
+    await user.click(ring);
+    await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith("AL-01", { status: "review" }));
+  });
+
+  it("keeps list rows at the design height and shows unassigned (GRPH-1169)", async () => {
+    renderTracker();
+    const row = (await screen.findByText("In progress thing")).closest("[aria-selected]")!;
+    expect(row.className).toMatch(/h-\[45px\]/);
+    expect(within(row as HTMLElement).getByText("unassigned")).toBeInTheDocument();
   });
 
   it("does not PATCH done on an unattested item — opens owner-close (GRPH-1030)", async () => {
@@ -148,10 +166,10 @@ describe("TrackerView", () => {
     const { api } = await import("@/lib/api");
     renderTracker();
     const row = (await screen.findByText("In progress thing")).closest("div")!;
-    const statusBtn = within(row).getByRole("button", { name: /Status:/ });
+    const statusBtn = within(row).getByRole("button", { name: /Actions for/ });
     statusBtn.focus();
     await user.keyboard("{Enter}");
-    await user.click(await screen.findByRole("menuitem", { name: /Done/ }));
+    await user.click(await screen.findByRole("menuitem", { name: /Set Done/ }));
 
     expect(await screen.findByRole("heading", { name: /Close as merged/ })).toBeInTheDocument();
     expect(api.updateItem).not.toHaveBeenCalledWith("AL-01", { status: "done" });
@@ -165,10 +183,10 @@ describe("TrackerView", () => {
       const { api } = await import("@/lib/api");
       renderTracker();
       const row = (await screen.findByText("Wait for merge")).closest("div")!;
-      const statusBtn = within(row).getByRole("button", { name: /Status:/ });
+      const statusBtn = within(row).getByRole("button", { name: /Actions for/ });
       statusBtn.focus();
       await user.keyboard("{Enter}");
-      await user.click(await screen.findByRole("menuitem", { name: /Done/ }));
+      await user.click(await screen.findByRole("menuitem", { name: /Set Done/ }));
       await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith("AL-W1", { status: "done" }));
       expect(api.ownerClose).not.toHaveBeenCalled();
     } finally {
@@ -181,10 +199,10 @@ describe("TrackerView", () => {
     const { api } = await import("@/lib/api");
     renderTracker();
     const row = (await screen.findByText("In progress thing")).closest("div")!;
-    const statusBtn = within(row).getByRole("button", { name: /Status:/ });
+    const statusBtn = within(row).getByRole("button", { name: /Actions for/ });
     statusBtn.focus();
     await user.keyboard("{Enter}");
-    await user.click(await screen.findByRole("menuitem", { name: /Done/ }));
+    await user.click(await screen.findByRole("menuitem", { name: /Set Done/ }));
     await screen.findByRole("heading", { name: /Close as merged/ });
     await user.type(screen.getByPlaceholderText(/sha that landed on the base/), "abcdef1");
     await user.click(screen.getByRole("button", { name: /^Close as merged$/ }));
@@ -508,7 +526,7 @@ describe("board columns (GRPH-1145)", () => {
     await screen.findByText("In progress thing");
     await user.click(screen.getByRole("button", { name: "Hide Done" }));
     expect(screen.queryByRole("region", { name: "Done" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Columns|hidden/ })).toHaveTextContent("1 hidden");
+    expect(screen.getByRole("button", { name: /^Columns/ })).toHaveTextContent("1 hidden");
 
     await user.click(screen.getByRole("button", { name: /List/ }));
     expect(screen.getByRole("button", { name: /^Done/ })).toHaveTextContent("1");
@@ -537,9 +555,10 @@ describe("board columns (GRPH-1145)", () => {
     renderTracker();
     await screen.findByText("In progress thing");
     expect(screen.queryByRole("region", { name: "Done" })).not.toBeInTheDocument();
-    const trigger = screen.getByRole("button", { name: "1 hidden · 1 collapsed" });
+    const trigger = screen.getByRole("button", { name: "Columns 1 hidden · 1 collapsed" });
     await user.click(trigger);
-    expect(await screen.findByText(/Board columns · only you · Alex Cain/)).toBeInTheDocument();
+    expect(await screen.findByText("Board columns")).toBeInTheDocument();
+    expect(screen.getByText(/only you · AC/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Reset" }));
     expect(screen.getByRole("region", { name: "Done" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Backlog" })).toBeInTheDocument();
