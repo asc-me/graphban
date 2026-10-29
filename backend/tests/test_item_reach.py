@@ -550,6 +550,25 @@ def test_a_platform_name_used_as_english_is_not_a_command():
     assert reach_svc.signals("render deploy"), "a real subcommand must still fire"
 
 
+def test_a_capitalised_word_after_a_platform_name_is_not_a_subcommand():
+    """GRPH-1187. Every one of these CLIs takes a lowercase subcommand. Compiling the whole
+    pattern with `re.I` let `[a-z]` match `E`, so the UI label in "render Edit" read as a CLI
+    and refused GRPH-1183. Only the platform name is case-insensitive now. An ALL-CAPS word
+    still fires: the shouted rows in the parity sweep are base hits. Sabotage: compile
+    `_PLATFORM_COMMAND` with `re.I` again and the quiet rows fail."""
+    for prose in ("show the button: render Edit regardless of writable",
+                  "Render Settings panel",
+                  "the Vercel Dashboard lists it",
+                  "docker compose Profiles are documented elsewhere"):
+        assert not _platform_command(prose), prose
+
+    for command in ("railway up", "vercel deploy --prod", "kubectl delete pod x",
+                    "Railway up", "Vercel deploy", "KUBECTL delete pod x",
+                    "docker compose down", "Docker Compose down",
+                    "RAILWAY UP", "THE VERCEL PROJECT WILL BE REMOVED"):
+        assert _platform_command(command), command
+
+
 def test_the_guard_is_not_weakened_into_uselessness():
     """The other half, and the reason the fix is a stop-list of GRAMMAR rather than a longer
     exception list: every command shape that mattered before must still refuse. Sabotage: add

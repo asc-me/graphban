@@ -159,11 +159,21 @@ _FLAG = r"--?[\w.-]+"
 #: for. It does not treat a declared `reach=repo` as a reason to stay quiet: every
 #: item this fires on is already declared `repo`, and the incident was one of those
 #: whose prose was a real command. Weighting the declaration would delete the guard.
+#:
+#: Only the names are case-insensitive. The subcommand is matched as written:
+#: every one of these CLIs takes a lowercase subcommand, so a Title-case word
+#: after the name is prose — a UI label (`render Edit`), a proper noun
+#: (`Render Settings`), or the start of a sentence (GRPH-1187). Compiling the
+#: whole pattern with `re.I` let `[a-z]` match `E`. An ALL-CAPS word still
+#: fires: a shouted line (`THE VERCEL PROJECT WILL BE REMOVED`) is a base hit
+#: the parity sweep holds, and dropping it would fail open. This narrows
+#: nothing a shell would run, so it is not an allowlist; `Railway up` fires.
+_SUBCOMMAND = r"(?:[a-z][\w-]+|[A-Z][A-Z0-9_-]+\b)"
 _PLATFORM_COMMAND = (
-    rf"\b(?:{_PLATFORMS})\s+"
-    rf"(?!(?:{_NOT_SUBCOMMANDS}|{_EXEMPT_SUBCOMMANDS})\b)[a-z][\w-]+"
-    rf"|\bdocker(?:\s+|-)compose(?:\s+{_FLAG}(?:\s+\S+)?)*\s+"
-    rf"(?!(?:{_NOT_SUBCOMMANDS})\b)[a-z][\w-]+"
+    rf"\b(?i:{_PLATFORMS})\s+"
+    rf"(?!(?i:{_NOT_SUBCOMMANDS}|{_EXEMPT_SUBCOMMANDS})\b){_SUBCOMMAND}"
+    rf"|\b(?i:docker(?:\s+|-)compose)(?:\s+{_FLAG}(?:\s+\S+)?)*\s+"
+    rf"(?!(?i:{_NOT_SUBCOMMANDS})\b){_SUBCOMMAND}"
 )
 
 #: Verbs that CHANGE a running system. Reading verbs are absent on purpose: `vercel logs` and
@@ -182,7 +192,7 @@ _SECRETS = r"key|keys|secret|secrets|token|tokens|credential|credentials|passwor
 _RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
         "platform-command",
-        re.compile(_PLATFORM_COMMAND, re.I),
+        re.compile(_PLATFORM_COMMAND),
         "names an infrastructure CLI with a subcommand",
     ),
     (
