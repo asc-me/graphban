@@ -1,12 +1,11 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useTriageFeed } from "@/lib/queries";
-import { TYPE_META } from "@/lib/meta";
-import type { RequestType, TriageFeedRow } from "@/lib/types";
+import type { TriageFeedRow } from "@/lib/types";
 
 import { TABS, actionsFor, formatAge, inTab, type TriageAction, type Undo } from "./actions";
 import { TriageDetail } from "./TriageDetail";
@@ -27,12 +26,17 @@ interface Processed {
   undo: Undo;
 }
 
-const KIND_COLOR: Record<string, string> = {
-  blocker: "#ff6b6b",
-  collision: "#e0b34a",
+const KIND_TEXT: Record<string, string> = {
+  blocker: "text-st-blocked",
+  collision: "text-st-review",
 };
-const kindColor = (r: TriageFeedRow) => KIND_COLOR[r.kind] ?? (r.kind in TYPE_META ? TYPE_META[r.kind as RequestType].color : undefined) ?? "#8b949e";
-const kindLabel = (r: TriageFeedRow) => r.kind.toUpperCase();
+const KIND_DOT: Record<string, string> = {
+  blocker: "bg-st-blocked",
+  collision: "bg-st-review",
+};
+const kindText = (r: TriageFeedRow) => KIND_TEXT[r.kind] ?? "text-muted";
+const kindDot = (r: TriageFeedRow) => KIND_DOT[r.kind] ?? "bg-faint-2";
+const kindWord = (r: TriageFeedRow) => r.kind[0].toUpperCase() + r.kind.slice(1);
 
 function metaOf(r: TriageFeedRow): string {
   if (r.kind === "blocker")
@@ -177,10 +181,11 @@ export function TriageView() {
         }
       />
 
-      <div className="flex flex-wrap items-center gap-4 border-b border-line px-6 py-2.5 font-mono text-meta text-muted">
-        <span>
-          <span className="text-fg-2">{loading || failedRead ? "—" : live.length}</span> waiting ·{" "}
-          <span className="text-fg-2">{processed.length}</span> processed this session
+      <div className="flex flex-wrap items-center gap-4 border-b border-line px-6 py-2.5 text-muted">
+        <span className="flex items-baseline gap-2">
+          <span className="text-[22px] font-semibold leading-none text-fg">{loading || failedRead ? "—" : live.length}</span>
+          <span className="text-small">waiting</span>
+          <span className="font-mono text-meta text-faint-2">{processed.length} processed this session</span>
         </span>
         <div
           className="h-1 w-40 overflow-hidden rounded-full bg-surface-3"
@@ -196,7 +201,9 @@ export function TriageView() {
           />
         </div>
         <span className="flex-1" />
-        <span className="text-faint-2">J K move · 1–5 tabs · A…Z act · ⌫ undo</span>
+        <span className="flex items-center gap-1.5 font-mono text-meta text-faint-2">
+          <Kbd>J</Kbd><Kbd>K</Kbd> move · <Kbd>1–5</Kbd> tabs · <Kbd>A…Z</Kbd> act · <Kbd>⌫</Kbd> undo
+        </span>
       </div>
 
       {failedSources.length > 0 && (
@@ -211,29 +218,29 @@ export function TriageView() {
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1 lg:grid-cols-[360px_1fr]">
-        <div className="flex min-h-0 flex-col border-r border-line">
-          <div className="flex gap-1 border-b border-line px-3 py-2">
-            {TABS.map((t) => {
-              const n = feedQ.data?.counts[t.id];
-              const on = tab === t.id;
-              return (
-                <button
-                  key={t.id}
-                  onClick={() => { setTab(t.id); setSelId(null); }}
-                  aria-pressed={on}
-                  className={`flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-meta ${
-                    on ? "border-control bg-surface-3 text-fg" : "border-transparent text-muted hover:text-fg-2"
-                  }`}
-                >
-                  {t.dot && <span className="h-1.5 w-1.5 rounded-full" style={{ background: t.dot }} />}
-                  {t.label}
-                  <span className="text-faint-2">{n ?? "·"}</span>
-                </button>
-              );
-            })}
-          </div>
+      <div className="flex gap-1.5 px-6 pt-3" role="group" aria-label="Triage tabs">
+        {TABS.map((t) => {
+          const n = feedQ.data?.counts[t.id];
+          const on = tab === t.id;
+          return (
+            <button
+              key={t.id}
+              onClick={() => { setTab(t.id); setSelId(null); }}
+              aria-pressed={on}
+              className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-small ${
+                on ? "border-control bg-surface-3 text-fg" : "border-control text-muted hover:text-fg-2"
+              }`}
+            >
+              {t.dot && <span className="h-1.5 w-1.5 rounded-full" style={{ background: t.dot }} />}
+              {t.label}
+              <span className="font-mono text-meta text-faint-2">{n ?? "·"}</span>
+            </button>
+          );
+        })}
+      </div>
 
+      <div className="grid min-h-0 flex-1 gap-3 p-6 pt-3 lg:grid-cols-[360px_1fr]">
+        <div className="flex min-h-0 flex-col overflow-hidden rounded-[13px] border border-line bg-surface">
           <div className="min-h-0 flex-1 overflow-y-auto" role="listbox" aria-label="Triage queue">
             {failedRead ? (
               <PlannerError message={FETCH_FAILED} onRetry={() => void feedQ.refetch()} />
@@ -252,20 +259,15 @@ export function TriageView() {
                     role="option"
                     aria-selected={on}
                     onClick={() => setSelId(r.id)}
-                    className={`cursor-pointer border-b border-line px-3.5 py-2.5 ${on ? "bg-surface-3" : "hover:bg-surface-2"}`}
+                    className={`m-1.5 cursor-pointer rounded-lg border px-3 py-2 ${on ? "border-control bg-surface-2" : "border-transparent hover:bg-surface-2"}`}
                   >
                     <div className="flex items-start gap-2.5">
-                      <span
-                        className="mt-0.5 shrink-0 rounded border px-1.5 py-px font-mono text-micro uppercase tracking-[0.04em]"
-                        style={{ color: kindColor(r), borderColor: `${kindColor(r)}44` }}
-                      >
-                        {kindLabel(r)}
-                      </span>
+                      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${kindDot(r)}`} aria-hidden />
                       <span className={`min-w-0 flex-1 text-body leading-snug ${on ? "text-fg" : "text-fg-2"}`}>{r.title}</span>
                       <span className="shrink-0 font-mono text-meta text-faint-2">{formatAge(r.age_seconds)}</span>
                     </div>
-                    <div className="mt-1 font-mono text-meta text-faint-2">
-                      {r.kind} · {r.id} · {metaOf(r)}
+                    <div className="mt-1 pl-[18px] font-mono text-meta text-faint-2">
+                      <span className={kindText(r)}>{kindWord(r)}</span> · {r.id} · {metaOf(r)}
                     </div>
                   </div>
                 );
@@ -273,15 +275,15 @@ export function TriageView() {
             )}
           </div>
 
+          {processed.length > 0 && (
           <div className="border-t border-line px-3.5 py-2.5">
             <div className="flex items-center gap-2 font-mono text-micro uppercase tracking-[0.07em] text-faint-2">
               <span className="flex-1">Processed</span>
               <button
                 onClick={() => void undo()}
-                disabled={!processed.length}
-                className="rounded border border-control px-1.5 py-px normal-case tracking-normal text-muted enabled:hover:text-fg disabled:opacity-40"
+                                className="rounded border border-control px-1.5 py-px normal-case tracking-normal text-muted hover:text-fg"
               >
-                Undo last <kbd>⌫</kbd>
+                Undo last <Kbd>⌫</Kbd>
               </button>
             </div>
             <ul className="mt-1.5 space-y-1">
@@ -292,9 +294,10 @@ export function TriageView() {
               ))}
             </ul>
           </div>
+          )}
         </div>
 
-        <div className="min-h-0 overflow-y-auto">
+        <div className="min-h-0 overflow-y-auto rounded-[13px] border border-line bg-surface">
           {sel ? (
             <TriageDetail row={sel} actions={actions} onAction={trigger} />
           ) : (
@@ -331,16 +334,31 @@ function EmptyState({ tab, processed, partial }: { tab: string; processed: numbe
     const name = TABS.find((t) => t.id === tab)?.label.toLowerCase();
     return <p className="px-4 py-6 text-small text-muted">No {name} waiting.</p>;
   }
+  if (partial) {
+    return (
+      <div className="px-4 py-8 text-center">
+        <div className="text-[13px] font-semibold text-fg-2">Nothing to show</div>
+        <p className="mx-auto mt-1.5 max-w-[34ch] text-[11.5px] leading-relaxed text-muted">
+          Some sources did not answer, so this is not a clear queue.
+        </p>
+      </div>
+    );
+  }
   return (
-    <div className="px-4 py-8 text-center">
-      <div className="text-[13px] font-semibold text-fg-2">{partial ? "Nothing to show" : "Triage clear"}</div>
+    <div className="m-3 rounded-[13px] border border-st-done/30 bg-st-done/[0.07] px-4 py-8 text-center">
+      <div className="mx-auto flex h-8 w-8 items-center justify-center rounded-full border border-st-done/40 text-st-done" aria-hidden>
+        ✓
+      </div>
+      <div className="mt-3 text-[13px] font-semibold text-fg">Triage clear</div>
       <p className="mx-auto mt-1.5 max-w-[34ch] text-[11.5px] leading-relaxed text-muted">
-        {partial
-          ? "Some sources did not answer, so this is not a clear queue."
-          : processed
-            ? `You processed ${processed} this session. Nothing else is waiting.`
-            : "Nothing is waiting. History lives in the tracker."}
+        {processed
+          ? `You processed ${processed} this session. Nothing else is waiting.`
+          : "Nothing waiting. Everything reported has been triaged and nothing in flight overlaps — history lives in the tracker."}
       </p>
     </div>
   );
+}
+
+function Kbd({ children }: { children: ReactNode }) {
+  return <kbd className="rounded border border-control bg-surface-3 px-1 font-mono text-micro text-muted">{children}</kbd>;
 }

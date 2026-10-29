@@ -5,10 +5,11 @@ import type { TriageFeedRow } from "@/lib/types";
 
 import { formatAge, type TriageAction } from "./actions";
 
-const STATUS_COLOR: Record<string, string> = {
-  in_progress: "#7ca2ff", review: "#e0b34a", blocked: "#ff6b6b", next: "#c9b8ff",
-  backlog: "#8b949e", done: "#6ee7a0",
+const STATUS_TEXT: Record<string, string> = {
+  in_progress: "text-st-next", review: "text-st-review", blocked: "text-st-blocked", next: "text-purple",
+  backlog: "text-muted", done: "text-st-done",
 };
+const statusText = (s: string) => STATUS_TEXT[s] ?? "text-muted";
 
 function Label({ children }: { children: ReactNode }) {
   return (
@@ -50,17 +51,18 @@ export function TriageDetail({
 
   return (
     <div className="px-6 py-5">
-      <div className="flex items-center gap-2 font-mono text-meta text-faint-2">
-        <span className="uppercase text-fg-2">{row.kind}</span>
+      <div className="flex flex-wrap items-center gap-2 font-mono text-meta text-faint-2">
+        <span className="rounded-full border border-control px-2 py-px uppercase text-fg-2">{row.kind}</span>
         <span>{row.id}</span>
         {row.kind === "collision" && row.predicted && (
           <span className="rounded border border-purple/30 px-1.5 py-px text-micro uppercase text-purple">predicted</span>
         )}
+        <span className="flex-1" />
+        <span className="text-muted">{metaLine}</span>
       </div>
-      <div className="mt-1 font-mono text-meta text-muted">{metaLine}</div>
       <h2 className="mt-2 text-[18px] font-semibold leading-snug">{row.title}</h2>
 
-      <div className="mt-4 flex flex-wrap gap-2" role="toolbar" aria-label="Actions">
+      <div className="mt-4 flex flex-wrap gap-2 border-t border-line pt-4" role="toolbar" aria-label="Actions">
         {actions.map((a) => (
           <button
             key={a.key}
@@ -73,37 +75,37 @@ export function TriageDetail({
               {a.key.toUpperCase()}
             </kbd>
             {a.label}
-            {a.primary && <span className="font-mono text-micro opacity-60">↵</span>}
           </button>
         ))}
       </div>
 
       {row.kind === "blocker" && (
         <>
-          <Label>{row.decision ? "AGENT ASKED" : "WHY IT'S BLOCKED"}</Label>
-          <p className="mt-1.5 text-body leading-relaxed text-fg-2">
-            {row.decision?.question ?? (row.reason || "No reason was recorded.")}
-          </p>
+          <div className="mt-5 rounded-lg border border-st-blocked/30 bg-st-blocked/[0.07] px-3 py-2.5">
+            <div className="font-mono text-micro uppercase tracking-[0.07em] text-st-blocked">
+              {row.decision ? "AGENT ASKED" : "WHY IT'S BLOCKED"}
+            </div>
+            <p className="mt-1.5 text-body leading-relaxed text-fg-2">
+              {row.decision?.question ?? (row.reason || "No reason was recorded.")}
+            </p>
+            {row.decision && (
+              <div className="mt-2 flex flex-wrap gap-1.5" aria-label="Agent's options">
+                {row.decision.options.map((o) => (
+                  <span key={o} className="rounded-full border border-st-blocked/30 px-2.5 py-0.5 text-small text-fg-2">{o}</span>
+                ))}
+              </div>
+            )}
+          </div>
           {row.waiting_on && (
             <>
               <Label>WAITING ON</Label>
               <div className="mt-1.5 flex items-center gap-2 rounded-md border border-line bg-surface px-3 py-2">
                 <span className="font-mono text-meta text-fg-2">{row.waiting_on.id}</span>
                 <span className="min-w-0 flex-1 truncate text-small text-muted">{row.waiting_on.title}</span>
-                <span className="font-mono text-micro uppercase" style={{ color: STATUS_COLOR[row.waiting_on.status] ?? "#8b949e" }}>
+                <span className={`font-mono text-micro uppercase ${statusText(row.waiting_on.status)}`}>
                   {row.waiting_on.status.replace("_", " ")}
                 </span>
               </div>
-            </>
-          )}
-          {row.decision && (
-            <>
-              <Label>AGENT'S OPTIONS</Label>
-              <ul className="mt-1.5 space-y-1">
-                {row.decision.options.map((o) => (
-                  <li key={o} className="text-small text-fg-2">{o}</li>
-                ))}
-              </ul>
             </>
           )}
           <Paths label="CODE TOUCH-AREA" paths={row.paths} />
@@ -112,22 +114,26 @@ export function TriageDetail({
 
       {row.kind === "collision" && (
         <>
-          <Label>MEMBERS, IN ORDER</Label>
-          <ol className="mt-1.5 space-y-1.5">
+          <Label>ITEMS IN THIS CLUSTER</Label>
+          <ol className="mt-1.5 divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
             {row.members.map((m, i) => (
-              <li key={m.id} className="flex items-center gap-2 rounded-md border border-line bg-surface px-3 py-2">
+              <li key={m.id} className="flex items-center gap-2 px-3 py-2">
                 <span className="font-mono text-meta text-faint-2">{i + 1}</span>
                 <span className="font-mono text-meta text-fg-2">{m.id}</span>
                 <span className="min-w-0 flex-1 truncate text-small text-muted">{m.title}</span>
                 <span className="font-mono text-micro text-faint-2">{m.owner ?? "unclaimed"}</span>
-                <span className="font-mono text-micro uppercase" style={{ color: STATUS_COLOR[m.status] ?? "#8b949e" }}>
+                <span className={`font-mono text-micro uppercase ${statusText(m.status)}`}>
                   {m.status.replace("_", " ")}
                 </span>
               </li>
             ))}
           </ol>
-          <Label>RECOMMENDATION · {row.risk.toUpperCase()}</Label>
-          <p className="mt-1.5 text-body leading-relaxed text-fg-2">{row.recommendation}</p>
+          <div className="mt-4 rounded-lg border border-st-review/30 bg-st-review/[0.07] px-3 py-2.5">
+            <div className="font-mono text-micro uppercase tracking-[0.07em] text-st-review">
+              RECOMMENDATION · {row.risk.toUpperCase()}
+            </div>
+            <p className="mt-1.5 text-body leading-relaxed text-fg-2">{row.recommendation}</p>
+          </div>
           <Paths label="SHARED PATHS" paths={row.paths} />
         </>
       )}
@@ -137,12 +143,16 @@ export function TriageDetail({
           {row.body && <p className="mt-5 text-body leading-relaxed text-fg-2">{row.body}</p>}
           {row.duplicate && (
             <>
-              <Label>LIKELY DUPLICATE</Label>
-              <div className="mt-1.5 flex items-center gap-2 rounded-md border border-st-next/30 bg-st-next/[0.05] px-3 py-2">
-                <span className="font-mono text-meta text-st-next">{row.duplicate.id}</span>
-                <span className="min-w-0 flex-1 truncate text-small text-muted">{row.duplicate.title}</span>
-                <span className="font-mono text-micro text-faint-2">{row.duplicate.status}</span>
-                <span className="font-mono text-meta text-st-next">{Math.round(row.duplicate.score * 100)}% similar</span>
+              <div className="mt-4 rounded-lg border border-st-next/30 bg-st-next/[0.07] px-3 py-2.5">
+                <div className="flex items-center gap-1.5 font-mono text-micro uppercase tracking-[0.07em] text-st-next">
+                  <span aria-hidden>⧉</span>
+                  LIKELY DUPLICATE · {Math.round(row.duplicate.score * 100)}%
+                </div>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <span className="font-mono text-meta text-st-next">{row.duplicate.id}</span>
+                  <span className="min-w-0 flex-1 truncate text-small text-fg-2">{row.duplicate.title}</span>
+                  <span className="font-mono text-micro text-faint-2">{row.duplicate.status}</span>
+                </div>
               </div>
             </>
           )}
