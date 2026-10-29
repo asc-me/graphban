@@ -62,6 +62,14 @@ describe("GRPH-1173 sidebar icons", () => {
     expect(row.querySelector("svg")).toBeNull();
   });
 
+  it("gives the collapsed rail's Dashboard the design's grid icon, not a letter", async () => {
+    wrap(<LeftNav />, "/p/CORE/tracker");
+    const rail = within(document.querySelector<HTMLElement>('[data-layer="rail"]')!);
+    const link = (await rail.findByRole("link", { name: "Dashboard", hidden: true })) as HTMLElement;
+    expect(iconOf(link)).toContain("lucide-layout-grid");
+    expect(link.textContent?.trim()).toBe("");
+  });
+
   it("gives each section and page the design's icon", () => {
     const want: Record<string, string> = {
       Plan: "clipboard-check", Build: "hammer", Observe: "activity",

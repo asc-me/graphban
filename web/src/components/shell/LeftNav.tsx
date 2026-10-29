@@ -1,4 +1,4 @@
-import { Activity, BarChart3, BookOpen, Brain, Building2, ChartLine, ChevronDown, ChevronRight, ChevronsUpDown, ClipboardCheck, Gauge, Hammer, History, Layers, Link as LinkIcon, ListChecks, Map, MessageSquare, PanelLeftClose, PanelLeftOpen, Plug, Radar, Radio, Scale, Server, Settings, ShieldCheck, Star, Users, UsersRound, Workflow } from "lucide-react";
+import { Activity, BarChart3, BookOpen, Brain, Building2, ChartLine, ChevronDown, ChevronRight, ChevronsUpDown, ClipboardCheck, Gauge, Hammer, History, Layers, LayoutGrid, Link as LinkIcon, ListChecks, Map, MessageSquare, PanelLeftClose, PanelLeftOpen, Plug, Radar, Radio, Scale, Server, Settings, ShieldCheck, Star, Users, UsersRound, Workflow } from "lucide-react";
 import * as React from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 
@@ -284,7 +284,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
         >
           <ProjectEntry variant="tile" orgName={org?.name} hosted={hosted} onOpenChange={onMenu} tipProps={tipProps({ label: "Switch project" })} />
           {dashboardPath && (
-            <RailLink to={dashboardPath} end label="Dashboard" icon={<span aria-hidden className="text-small font-medium">D</span>} tipProps={tipProps({ label: "Dashboard" })} />
+            <RailLink to={dashboardPath} end label="Dashboard" icon={<LayoutGrid size={16} />} tipProps={tipProps({ label: "Dashboard" })} />
           )}
           {sections.map((s) =>
             s.key === current ? (
