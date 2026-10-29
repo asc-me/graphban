@@ -151,8 +151,8 @@ function SelfHostPane({ pathname }: { pathname: string }) {
 
 /**
  * Frame 7b (GRPH-1162): gitops is the Merge and Release stages of the Rules map now. The form
- * stays under the card until editing lands on Rules (GRPH-1163) — removing it first would leave
- * a self-host project with no way to set its contract.
+ * stays under the card on purpose: the `gitops.model` row is read-only on Rules (a preset rewrites
+ * other fields) and links here, so this panel is the only place a self-host project sets its model.
  */
 function GitopsMovedCard() {
   return (
