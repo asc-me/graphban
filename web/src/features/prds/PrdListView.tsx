@@ -9,7 +9,7 @@ import {
   PrdListSkeleton,
 } from "@/components/planner/PlannerStates";
 import { ViewBar, ViewFooter } from "@/components/planner/ViewBar";
-import { hiddenSummary, scopeRows, statusMatches, useViews } from "@/components/planner/viewScope";
+import { hiddenSummary, scopeRows, statusMatches, useCondensed, useViews } from "@/components/planner/viewScope";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,6 +35,7 @@ export function PrdListView() {
   const { data: prds = [], isLoading, isError, refetch } = usePrds(activeId);
   const navigate = useNavigate();
   const views = useViews("prds");
+  const [condensed, toggleCondensed] = useCondensed();
 
   const scopeOf = (v: { window: number; hide: number }) =>
     scopeRows(prds, v, {
@@ -53,11 +54,14 @@ export function PrdListView() {
         viewName="PRDs"
         purpose="Product specs with version history, linked items, and AI drafting commands."
         action={<NewPrdDialog onCreated={(id) => navigate(`/prds/${id}`)} />}
+        condensed={condensed}
       />
 
       <ViewBar
         views={views}
         doneWord="closed"
+        condensed={condensed}
+        onToggleCondense={toggleCondensed}
         countFor={(v) => scopeOf(v).shown.filter((p) => statusMatches(p.status, v.status, [])).length}
       />
 

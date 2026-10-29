@@ -174,3 +174,27 @@ export function hiddenSummary(
   if (s.doneHidden) bits.push(`${s.doneHidden} ${doneWord} more than ${v.hide}d ago`);
   return bits.join(" · ");
 }
+
+const CONDENSE_KEY = "gb_condensed";
+
+/** Whether the page header and filter rows are collapsed. One flag for Tracker and PRDs; per user via localStorage. */
+export function useCondensed(): [boolean, () => void] {
+  const [condensed, setCondensed] = React.useState<boolean>(() => {
+    try {
+      return localStorage.getItem(CONDENSE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggle = React.useCallback(() => {
+    setCondensed((c) => {
+      try {
+        localStorage.setItem(CONDENSE_KEY, c ? "0" : "1");
+      } catch {
+        /* storage unavailable — lasts this session */
+      }
+      return !c;
+    });
+  }, []);
+  return [condensed, toggle];
+}
