@@ -31,6 +31,8 @@ import {
   QUEUE_BY_ID,
   SOURCE_LABEL,
   UNVETTED_SOURCES,
+  AUTO_PUBLISH_MIN,
+  AUTO_REJECT_DUPE_MIN,
   buildRows,
   confBand,
   everywhere,
@@ -359,6 +361,11 @@ export function MemoryReviewView() {
     if (c.state === "failed" || c.count == null) return { text: "failed", failed: true, title: c.error || "This queue's source failed" };
     return { text: c.count.toLocaleString(), failed: false };
   };
+  const hintOf = (id: QueueId, hint: string) => {
+    if (id !== "dupes" || !clustersQ.data) return hint;
+    const n = clustersQ.data.reduce((sum, c) => sum + c.size, 0);
+    return hint.replace(/^Notes/, `${n} ${n === 1 ? "note" : "notes"}`);
+  };
   const queueTotal = (() => {
     const c = counts?.[def.key];
     return c && c.state === "ok" && c.count != null ? c.count : null;
@@ -414,11 +421,11 @@ export function MemoryReviewView() {
                 </span>
                 <span
                   title={c.title}
-                  className={cn("font-mono text-[22px] font-medium tracking-tight", c.failed ? "text-st-blocked" : "text-fg")}
+                  className={cn("text-[22px] font-semibold leading-none tracking-tight", c.failed ? "text-st-blocked" : "text-fg")}
                 >
                   {c.text}
                 </span>
-                <span className="text-small text-faint">{c.failed ? c.title : q.hint}</span>
+                <span className="text-small text-faint">{c.failed ? c.title : hintOf(q.id, q.hint)}</span>
               </button>
             );
           })}
@@ -721,8 +728,8 @@ function ListSkeleton() {
 function PolicyStrip({ judgeStatus }: { judgeStatus?: JudgeStatus }) {
   const { active } = useProjectCtx();
   const policy: [string, string][] = [
-    ["Write mode", active?.memory_write_mode ?? "—"],
-    ["Auto-reject dupes", active ? (active.memory_auto_reject ? "on" : "off") : "—"],
+    ["Auto-publish ≥", active ? (active.memory_write_mode === "auto" ? AUTO_PUBLISH_MIN.toFixed(2) : "off") : "—"],
+    ["Auto-reject dupes ≥", active ? (active.memory_auto_reject ? AUTO_REJECT_DUPE_MIN.toFixed(2) : "off") : "—"],
     ["LLM judge", active ? (active.memory_llm_judge ? "on" : "off") : "—"],
     ["Grading", judgeStatus ? (judgeStatus.falling_back ? `${judgeStatus.judge} (fallback)` : judgeStatus.judge) : "—"],
   ];
