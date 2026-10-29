@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 192 of the 271 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 194 of the 273 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -66,6 +66,8 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | GET | `/api/rules` | JWT (project reader) | The rule registry (`services/rules.py`): every delivery rule with its enforcement, typed enforcer and truth. Gitops rows carry the effective value and `source` from `gitops.resolve`; a gitops rule is `advisory` (or `unmeasured`), never `enforced` |
+| GET | `/api/rules/recommended` | JWT (project reader) | Recommended-rules suggestions (`services/rules_recommend.py`): `suggestions[]` (`kind` value\|code, `evidence[]`, `fingerprint`) and an always-present `sources[]` (`read` or `not_available` + reason such as `not_connected`). Computed on open, cached ~60s per project; never writes a rule, and a saved value suggestion is advisory |
+| POST | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Dismiss a suggestion for the project, keyed on id + evidence fingerprint; it returns when the evidence changes. 204, or 404 for an unknown id |
 
 ## Items (tracker)
 

@@ -3268,3 +3268,18 @@ class LogExportBatch(Base):
     __table_args__ = (
         Index("ix_log_export_batches_kind_ts", "kind", "ts"),
     )
+
+
+class RuleSuggestionDismissal(Base):
+    """A Recommended-rules suggestion a person dismissed for one project (GRPH-1160).
+
+    Keyed on (project, suggestion id); `fingerprint` hashes the evidence the suggestion was
+    dismissed against, so it comes back when the evidence changes. Outlives the on-open cache.
+    """
+
+    __tablename__ = "rule_suggestion_dismissals"
+
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    suggestion_id: Mapped[str] = mapped_column(String, primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String, default="")
+    dismissed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
