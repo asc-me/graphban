@@ -21,7 +21,6 @@ import { MixAllocation } from "./MixAllocation";
  */
 export function FleetV2View() {
   const { activeId, active } = useProjectCtx();
-  const scope = active?.tag || active?.name || activeId;
   const { data: config } = useConfig();
   const { data, refetch } = useFleet(activeId);
   const viewHref = (view: string) =>
@@ -30,7 +29,7 @@ export function FleetV2View() {
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="fleet-v2">
       <PlaceHeader
-        viewName={`Fleet ${scope}`}
+        viewName="Fleet"
         purpose="What can run, which model each harness runs, and how you allocate it. Roster and waves are on the Fleet management tab."
         action={
           <div className="flex items-center gap-3 text-[12px]">
@@ -45,7 +44,7 @@ export function FleetV2View() {
       />
       <FleetPageTabs active="harness" />
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
-        <div className="mx-auto max-w-[980px]" data-testid="fleet-v2-content">
+        <div className="max-w-[930px]" data-testid="fleet-v2-content">
           {/* Design order: Harness catalog → Tier map → Allocation. */}
           <MatrixTable
             rows={data?.matrix?.rows ?? []}

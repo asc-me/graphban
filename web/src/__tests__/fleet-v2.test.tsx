@@ -75,7 +75,7 @@ describe("Fleet.v2 catalog and allocation", () => {
     fleet.data = { ...BASE, matrix: { rows } };
     renderView();
     expect(screen.getByTestId("fleet-v2")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toMatch(/Fleet\s*core/);
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Fleet");
     expect(screen.queryByRole("button", { name: /^Work/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Wave/ })).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Fleet management/ })).toHaveAttribute("aria-selected", "false");
@@ -164,7 +164,10 @@ describe("Fleet.v2 catalog and allocation", () => {
     expect(within(panel).getByRole("button", { name: /Save tier map/ })).toBeInTheDocument();
     expect(within(panel).getByLabelText("Model for gbagent at cheap")).toBeInTheDocument();
     expect(within(panel).getByTestId("tier-map-grading-link")).toHaveAttribute("href", "/harness");
-    expect(within(panel).getByTestId("tier-map-performance-link")).toHaveAttribute("href", "/harness");
+    expect(within(panel).queryByTestId("tier-map-performance-link")).not.toBeInTheDocument();
+    const content = screen.getByTestId("fleet-v2-content");
+    expect(content.className).toContain("max-w-[930px]");
+    expect(content.className).not.toContain("mx-auto");
   });
 
   it("orders sections Harness catalog → Tier map → Allocation", () => {
