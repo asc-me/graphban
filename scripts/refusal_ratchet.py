@@ -18,13 +18,15 @@ constant holds, not only literals. A `rule_id` the scan cannot resolve is listed
 `unresolved` and does not count as naming a rule.
 
     refusal_ratchet.py check                       exit 1 if a count went up (every build)
-    refusal_ratchet.py publish [OUT.json] [SHA]    write the numbers (a passing main build ONLY)
+    refusal_ratchet.py publish [OUT.json] [SHA]    write the numbers (a package build ONLY)
 
-`publish` re-runs `check` first and writes nothing on failure. CI calls it only from the gate
-job on a push to main, after every suite passed, and commits the result into package data
-(`backend/app/data/refusal_coverage.json`, read by `services/rules.refusal_coverage`): a PR
-build, green or red, never publishes, so a failing tree can never produce a number. Lower a
-BASELINE in the PR that lowers the count; raising one is the review comment.
+`publish` re-runs `check` first and writes nothing on failure. It scans the tree this script
+sits in, and is called by what builds the thing we ship (GRPH-1185): `graphban_pack.py` runs
+the PACKED tree's copy into `backend/app/data/refusal_coverage.json` and refuses the cut if it
+fails, so a failing tree can never produce a number. The file is a build artefact — gitignored,
+never committed (main's branch protection rejects a CI push anyway) — and
+`services/rules.refusal_coverage` reads it from package data. Lower a BASELINE in the PR that
+lowers the count; raising one is the review comment.
 """
 from __future__ import annotations
 

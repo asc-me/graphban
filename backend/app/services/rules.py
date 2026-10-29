@@ -165,12 +165,14 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
 
 RULES_BY_ID = {r.id: r for r in RULES}
 
-#: Written only by a passing build on main (`scripts/refusal_ratchet.py publish`, GRPH-1158).
+#: Package data written by the build of what ships — `graphban_pack.py` runs
+#: `scripts/refusal_ratchet.py publish`, which writes nothing for a failing tree (GRPH-1185).
+#: Gitignored: a source tree or editable install has none and reports unpublished.
 REFUSAL_COVERAGE_FILE = Path(__file__).resolve().parents[1] / "data" / "refusal_coverage.json"
 
 
 def refusal_coverage(path: Path | None = None) -> dict:
-    """"N of M refusal sites name their rule", as the last green main build published it.
+    """"N of M refusal sites name their rule", as the build of this package measured it.
 
     Read, never computed: a number worked out at runtime would come from whatever tree is
     deployed, failing or not. No file is `published: False` — nobody measured — and never a
