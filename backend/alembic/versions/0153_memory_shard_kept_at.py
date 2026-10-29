@@ -1,7 +1,7 @@
 """`memory_shards.kept_at`: a person confirmed a stale shard is still right (GRPH-1180).
 
-Revision ID: 0152
-Revises: 0151
+Revision ID: 0153
+Revises: 0152
 """
 
 from typing import Sequence, Union
@@ -9,8 +9,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0152"
-down_revision: Union[str, None] = "0151"
+revision: str = "0153"
+down_revision: Union[str, None] = "0152"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

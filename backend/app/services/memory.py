@@ -2626,16 +2626,21 @@ def restore_shard(db: Session, shard_id: str, *, now: datetime | None = None) ->
     return shard
 
 
-def _wrong_reports(db: Session, shard_ids: list[str]) -> dict[str, int]:
-    """Count of missed/contradicted outcomes per shard — someone said it was wrong."""
-    return {sid: sum(1 for o in outs if o.kind in _MISS_KINDS)
-            for sid, outs in _outcomes_for(db, shard_ids).items()}
+def _wrong_reports(db: Session, shards: list[MemoryShard]) -> dict[str, int]:
+    """Count of missed/contradicted outcomes per shard — someone said it was wrong.
+
+    A Keep answers every report filed before it (GRPH-1180): only reports after `kept_at`
+    count, so a kept shard leaves the queue until someone reports it wrong again."""
+    kept = {s.id: _aware(s.kept_at) for s in shards if s.kept_at is not None}
+    return {sid: sum(1 for o in outs if o.kind in _MISS_KINDS
+                     and (sid not in kept or _aware(o.created_at) > kept[sid]))
+            for sid, outs in _outcomes_for(db, [s.id for s in shards]).items()}
 
 
 def stale_or_wrong(db: Session, project_id: str | None) -> list[tuple[MemoryShard, list[str]]]:
     """Published shards that are stale or reported wrong, each with WHY. Cheap: no judge."""
     shards = list_shards(db, project_id=project_id, status="published")
-    wrong = _wrong_reports(db, [s.id for s in shards])
+    wrong = _wrong_reports(db, shards)
     out: list[tuple[MemoryShard, list[str]]] = []
     for s in shards:
         why: list[str] = []
@@ -2643,7 +2648,8 @@ def stale_or_wrong(db: Session, project_id: str | None) -> list[tuple[MemoryShar
             why.append(f"nothing has corroborated it in {PUBLISHED_STALE_DAYS}+ days")
         if wrong.get(s.id):
             why.append(f"reported wrong or contradicted {wrong[s.id]}x")
-        if origin_path_state(db, s) == "gone":
+        # A person who kept it already saw the origin was gone and stood behind it anyway.
+        if s.kept_at is None and origin_path_state(db, s) == "gone":
             why.append("the code it came from no longer exists")
         if why:
             out.append((s, why))

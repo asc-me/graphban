@@ -189,3 +189,51 @@ def test_apply_recommendations_keep_uses_the_keep_path(client, auth, monkeypatch
     assert r[0]["applied"] is True and r[0]["action"] == "keep"
     assert client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json() == []
     assert [e[1] for e in _events("keep_shard")] == [sid]
+
+
+def _report_wrong(shard_id, *, days_ago=0):
+    from app.models import LessonOutcome
+    db = SessionLocal()
+    try:
+        db.add(LessonOutcome(shard_id=shard_id, kind="contradicted", source="human",
+                             created_at=datetime.now(timezone.utc) - timedelta(days=days_ago)))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_keep_clears_a_reported_wrong_shard_until_reported_again(client, auth):
+    """Bounce: Keep must clear the wrong-report reason too, not only the age clock."""
+    pid = _proj(client, auth, "KeepWrong")
+    sid = _published(client, auth, pid)
+    _report_wrong(sid, days_ago=1)
+    stale = client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json()
+    assert [r["shard"]["id"] for r in stale] == [sid]
+    assert client.post(f"/api/memory/shards/{sid}/keep", headers=auth).status_code == 200
+    assert client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json() == []
+    assert client.get(f"/api/memory/queues?project_id={pid}", headers=auth).json()["stale_or_wrong"]["count"] == 0
+    _report_wrong(sid)  # a fresh report after the Keep puts it back
+    stale = client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json()
+    assert [r["shard"]["id"] for r in stale] == [sid]
+    assert stale[0]["why"] == ["reported wrong or contradicted 1x"]
+
+
+def test_keep_clears_a_shard_whose_origin_code_is_gone(client, auth):
+    from app.models import CodeNode
+    from app.services import items as items_svc
+    pid = _proj(client, auth, "KeepGone")
+    sid = _published(client, auth, pid)
+    db = SessionLocal()
+    try:
+        item = items_svc.create_item(db, title="origin", project_id=pid,
+                                     touchpoints=["app/services/memory.py"])
+        db.add(CodeNode(id="cn_keepgone", project_id=pid, path="web/src/App.tsx",
+                        kind="file", name="App"))
+        db.get(MemoryShard, sid).item_id = item.id
+        db.commit()
+    finally:
+        db.close()
+    stale = client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json()
+    assert stale[0]["why"] == ["the code it came from no longer exists"]
+    assert client.post(f"/api/memory/shards/{sid}/keep", headers=auth).status_code == 200
+    assert client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json() == []
