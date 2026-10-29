@@ -19,6 +19,7 @@ from app.services import events as events_svc
 from app.services import gitops
 from app.services import projects as projects_svc
 from app.services import quotas
+from app.services import triage as triage_svc
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -158,6 +159,18 @@ def project_counts(project_id: str, db: Session = Depends(get_db),
     the sidebar's badges ride along as `projects.BADGE_FIELDS` (GRPH-1132)."""
     authz.require_readable(db, user.id, project_id)
     return projects_svc.shell_counts(db, project_id)
+
+
+@router.get("/{project_id}/triage")
+def project_triage(project_id: str, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """One inbox: requests, blockers and collisions, blockers first, with per-tab counts.
+
+    A source that fails is named in `failed_sources` and the others are still returned — an
+    empty `rows` with a non-empty `failed_sources` means "could not look", not "nothing
+    waiting"."""
+    authz.require_readable(db, user.id, project_id)
+    return triage_svc.feed(db, project_id)
 
 
 def _load_project(db: Session, project_id: str) -> Project:

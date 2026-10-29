@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 192 of the 271 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 193 of the 272 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -48,6 +48,7 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | POST | `/api/projects/{id}/retag` | JWT (write) | Move the project's tag. One UPDATE + one tag-history row + one audit event; **no other row in the database changes**. Retired tags are never reusable |
 | PATCH | `/api/projects/{id}` | JWT | Update project config. **Not** the tag — changing that has to record tag history |
 | GET | `/api/projects/{id}/members` | JWT | List members (role/access) |
+| GET | `/api/projects/{id}/triage` | JWT | Unified triage inbox: untriaged requests (bug/feature/enhancement, with likely duplicate and suggested PRD), blocked items (decision question/options or `waiting_on`) and unanswered collision clusters (`id` keyed by member set, `risk` serialize\|blocked). Blockers sort first; `counts` per tab (all/bugs/requests/blockers/collisions). Snoozed and decided rows are absent. A failing source is named in `failed_sources` while the others still return |
 | GET | `/api/projects/{id}/gitops` | JWT | Live delivery contract (fetches the org when this box is linked). Unset is unmeasured, not `main` |
 | PATCH | `/api/projects/{id}/gitops` | JWT | Project overlay / local columns. Omit = no change; JSON `null` = clear. Linked self-host is **403** |
 
