@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, ChevronDown, Copy, Eye, FlaskConical, History, Link2, ListChecks, MessageCircleQuestion, Save, ShieldQuestion, Sparkles } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Copy, Eye, FlaskConical, History, Link2, ListChecks, MessageCircleQuestion, MessagesSquare, Save, ShieldQuestion, Sparkles } from "lucide-react";
 import * as React from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { NoModelBanner } from "@/components/NoModelBanner";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,7 @@ import { cn } from "@/lib/cn";
 import { lineDiff } from "@/lib/diff";
 import { Markdown } from "@/lib/markdown";
 import { publicApi } from "@/lib/publicApi";
-import { keys, useGrillState, useIntentDiff, useItems, usePrd, usePrdVersions, useUpdateItem } from "@/lib/queries";
+import { keys, useGrillState, useIntentDiff, useItems, usePrd, usePrdRequests, usePrdVersions, useUpdateItem } from "@/lib/queries";
 import type { Item, PrdStatus, PrdVersion, PrototypeVerdictOut } from "@/lib/types";
 
 import { AssistantPanel } from "@/features/assistant/AssistantPanel";
@@ -25,6 +25,7 @@ import { GrillPanel } from "./GrillPanel";
 import { PRD_SETTABLE_STATUSES, PRD_STATUS_META, prdStatusMeta } from "./meta";
 import { ApprovalEval } from "./ApprovalEval";
 import { ApprovedIsEarned, GrillProgress } from "./GrillProgress";
+import { PrdRequestsPanel } from "./PrdRequests";
 import { AcceptancePanel } from "./AcceptancePanel";
 import { IntentDiff } from "./IntentDiff";
 
@@ -34,10 +35,10 @@ const AI_COMMANDS = [
   { key: "summarize", label: "Summarize" },
 ];
 
-/** PRD-47 S4 — six tabs over the existing editor. The ids are what the tab strip is
+/** PRD-47 S4 — seven tabs over the existing editor. The ids are what the tab strip is
  *  asserted on, so they travel into the DOM as `data-tab` rather than being reachable
  *  only through the labels. */
-type RightTab = "preview" | "assistant" | "grill" | "coverage" | "acceptance" | "history";
+type RightTab = "preview" | "requests" | "assistant" | "grill" | "coverage" | "acceptance" | "history";
 
 export function PrdEditorView() {
   const { id = "" } = useParams();
@@ -50,7 +51,10 @@ export function PrdEditorView() {
 
   const [title, setTitle] = React.useState("");
   const [body, setBody] = React.useState("");
-  const [rightTab, setRightTab] = React.useState<RightTab>("preview");
+  // The list's request dots open the editor on `?tab=requests`.
+  const [params] = useSearchParams();
+  const [rightTab, setRightTab] = React.useState<RightTab>(params.get("tab") === "requests" ? "requests" : "preview");
+  const { data: linkedReqs = [] } = usePrdRequests(id);
   const [diffVersion, setDiffVersion] = React.useState<PrdVersion | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [aiBusy, setAiBusy] = React.useState<string | null>(null);
@@ -158,9 +162,10 @@ export function PrdEditorView() {
           Grill
         </button>
         <div className="ml-auto flex items-center gap-2">
-          <LinkItemsMenu prdId={id} linked={prd.linked} onChange={refresh} />
+          <LinkItemsMenu prdId={id} linked={prd.linked} requestCount={linkedReqs.length} requestVotes={linkedReqs.reduce((n, r) => n + r.votes, 0)} onChange={refresh} onOpenRequests={() => setRightTab("requests")} />
           <div className="flex items-center gap-1 rounded-lg border border-line-2 bg-surface-2 p-0.5" data-testid="prd-editor-tabs">
             <TabBtn id="preview" active={rightTab === "preview"} onClick={() => setRightTab("preview")} icon={<Eye size={12} />} label="Preview" />
+            <TabBtn id="requests" active={rightTab === "requests"} onClick={() => setRightTab("requests")} icon={<MessagesSquare size={12} />} label={`Requests · ${linkedReqs.length}`} />
             <TabBtn id="assistant" active={rightTab === "assistant"} onClick={() => setRightTab("assistant")} icon={<Sparkles size={12} />} label="Assistant" />
             <TabBtn id="grill" active={rightTab === "grill"} onClick={() => setRightTab("grill")} icon={<MessageCircleQuestion size={12} />} label="Grill" />
             <TabBtn id="coverage" active={rightTab === "coverage"} onClick={() => setRightTab("coverage")} icon={<ListChecks size={12} />} label="Coverage" />
@@ -183,6 +188,8 @@ export function PrdEditorView() {
         <div className="min-h-0 overflow-y-auto p-5">
           {rightTab === "preview" ? (
             <Markdown source={body} />
+          ) : rightTab === "requests" ? (
+            <PrdRequestsPanel prdId={id} projectId={prd.project_id} />
           ) : rightTab === "assistant" ? (
             <AssistantPanel entityType="prd" entityId={id} projectId={prd.project_id} />
           ) : rightTab === "grill" ? (
@@ -268,18 +275,33 @@ function StatusMenu({
   );
 }
 
-function LinkItemsMenu({ prdId, linked, onChange }: { prdId: string; linked: string[]; onChange: () => void }) {
+function LinkItemsMenu({
+  prdId,
+  linked,
+  requestCount,
+  requestVotes,
+  onChange,
+  onOpenRequests,
+}: {
+  prdId: string;
+  linked: string[];
+  requestCount: number;
+  requestVotes: number;
+  onChange: () => void;
+  onOpenRequests: () => void;
+}) {
   const { data: items = [] } = useItems();
   async function toggle(itemId: string, add: boolean) {
     await api.linkPrd(prdId, itemId, add);
     onChange();
   }
   return (
+    <div className="flex items-center gap-1">
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button className="inline-flex items-center gap-1.5 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted hover:text-fg">
           <Link2 size={12} />
-          Linked · {linked.length}
+          Linked · {linked.length} items
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="max-h-[320px] w-[300px] overflow-y-auto">
@@ -302,6 +324,15 @@ function LinkItemsMenu({ prdId, linked, onChange }: { prdId: string; linked: str
         })}
       </DropdownMenuContent>
     </DropdownMenu>
+    <button
+      onClick={onOpenRequests}
+      data-testid="prd-linked-requests-button"
+      title={`${requestCount} linked requests · ${requestVotes} votes`}
+      className="inline-flex items-center gap-1.5 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted hover:text-fg"
+    >
+      {requestCount} requests
+    </button>
+    </div>
   );
 }
 

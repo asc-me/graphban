@@ -29,6 +29,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { relTime } from "@/lib/relTime";
 
 import { prdStatusMeta } from "./meta";
+import { RequestDots } from "./PrdRequests";
 
 export function PrdListView() {
   const { activeId } = useProjectCtx();
@@ -100,6 +101,7 @@ export function PrdListView() {
                         {id}
                       </span>
                     ))}
+                    <RequestDots prd={p} onOpen={() => navigate(`/prds/${p.id}?tab=requests`)} />
                   </div>
                   <span className="flex-none rounded-md bg-surface-4 px-1.5 py-0.5 font-mono text-[10px] text-muted-2">
                     {p.version}

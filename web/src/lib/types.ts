@@ -1300,6 +1300,33 @@ export interface PrdSummary {
   updated_at: string;
   /** When the PRD closed; the list falls back to updated_at while the API omits it. */
   closed_at?: string | null;
+  /** GRPH-1140 rollup of linked requests; absent on older servers. */
+  request_count?: number;
+  request_votes?: number;
+  request_types?: Partial<Record<RequestType, number>>;
+}
+
+/** One request linked to a PRD (GET /prds/{id}/requests). */
+export interface PrdLinkedRequest {
+  id: string;
+  title: string;
+  type: RequestType;
+  votes: number;
+  status: string;
+}
+
+export interface PrdRequestSuggestion {
+  request_id: string;
+  title: string;
+  type: RequestType;
+  votes: number;
+  score: number;
+}
+
+/** `available: false` means the embedder failed — NOT "nothing matches". */
+export interface PrdRequestSuggestions {
+  available: boolean;
+  suggestions: PrdRequestSuggestion[];
 }
 
 export interface Prd extends PrdSummary {
