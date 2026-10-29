@@ -1654,3 +1654,29 @@ class TrackerLinkOut(ORMModel):
     write_back_comment: bool
     created_at: datetime
     updated_at: datetime
+
+
+class RuleEnforcerOut(BaseModel):
+    kind: str
+    ref: str
+    url: str = ""
+
+
+class RuleOut(BaseModel):
+    id: str
+    stage: str
+    title: str
+    summary: str
+    enforcement: str
+    channel: str | None = None
+    enforcer: RuleEnforcerOut
+    truth: str
+    scope: str
+    models: list[str]
+    value: str | bool | None = None
+    source: str | None = None
+
+
+class RulesOut(BaseModel):
+    version: str
+    rules: list[RuleOut]

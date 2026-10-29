@@ -37,6 +37,7 @@ from app.routers import (
     public,
     reports,
     requests,
+    rules,
     slice_pull,
     sync,
     tracker_links,
@@ -335,6 +336,7 @@ app.include_router(prds.router, prefix=API)
 app.include_router(analytics.router, prefix=API)
 app.include_router(usage.router, prefix=API)
 app.include_router(platform.router, prefix=API)
+app.include_router(rules.router, prefix=API)
 # Deployment settings with no project to be scoped by (PRD-47 S15). Aliased because the
 # module name `settings` is already this process's configuration object, and shadowing it
 # here would turn every `settings.foo` below into an AttributeError at import time.
