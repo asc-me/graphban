@@ -222,6 +222,30 @@ describe("Triage inbox", () => {
     expect(screen.getByText(/Nothing waiting\. Everything reported has been triaged/)).toBeInTheDocument();
   });
 
+  it("renders the empty queue as a card outside the list, with no 'Nothing selected.' pane", async () => {
+    m.projectTriage.mockResolvedValue(feed([]));
+    renderTriage();
+    const card = (await screen.findByText("Triage clear")).closest("div.max-w-\\[720px\\]");
+    expect(card).not.toBeNull();
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.queryByText("Nothing selected.")).not.toBeInTheDocument();
+  });
+
+  it("puts the action rule after the action buttons, not before them", async () => {
+    renderTriage();
+    const toolbar = await screen.findByRole("toolbar", { name: "Actions" });
+    const rule = screen.getByTestId("triage-rule");
+    expect(toolbar).not.toHaveClass("border-t");
+    expect(toolbar.compareDocumentPosition(rule) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("colours the blocker kind pill with the danger token", async () => {
+    m.projectTriage.mockResolvedValue(feed([blocker]));
+    renderTriage();
+    const pill = (await screen.findAllByText("blocker")).find((e) => e.className.includes("rounded-full"));
+    expect(pill).toHaveClass("text-st-blocked");
+  });
+
   it("puts the tab row above both columns, not inside the list", async () => {
     renderTriage();
     await screen.findByText("Crash on empty project");

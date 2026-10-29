@@ -11,6 +11,13 @@ const STATUS_TEXT: Record<string, string> = {
 };
 const statusText = (s: string) => STATUS_TEXT[s] ?? "text-muted";
 
+const KIND_PILL: Record<string, string> = {
+  blocker: "border-st-blocked/40 text-st-blocked",
+  collision: "border-st-review/40 text-st-review",
+  feature: "border-accent/40 text-accent",
+};
+const kindPill = (k: string) => KIND_PILL[k] ?? "border-control text-fg-2";
+
 function Label({ children }: { children: ReactNode }) {
   return (
     <div className="mt-5 font-mono text-micro uppercase tracking-[0.07em] text-faint-2">{children}</div>
@@ -52,7 +59,7 @@ export function TriageDetail({
   return (
     <div className="px-6 py-5">
       <div className="flex flex-wrap items-center gap-2 font-mono text-meta text-faint-2">
-        <span className="rounded-full border border-control px-2 py-px uppercase text-fg-2">{row.kind}</span>
+        <span className={`rounded-full border px-2 py-px uppercase ${kindPill(row.kind)}`}>{row.kind}</span>
         <span>{row.id}</span>
         {row.kind === "collision" && row.predicted && (
           <span className="rounded border border-purple/30 px-1.5 py-px text-micro uppercase text-purple">predicted</span>
@@ -62,7 +69,7 @@ export function TriageDetail({
       </div>
       <h2 className="mt-2 text-[18px] font-semibold leading-snug">{row.title}</h2>
 
-      <div className="mt-4 flex flex-wrap gap-2 border-t border-line pt-4" role="toolbar" aria-label="Actions">
+      <div className="mt-4 flex flex-wrap gap-2" role="toolbar" aria-label="Actions">
         {actions.map((a) => (
           <button
             key={a.key}
@@ -78,6 +85,7 @@ export function TriageDetail({
           </button>
         ))}
       </div>
+      <div data-testid="triage-rule" className="mt-4 border-t border-line" />
 
       {row.kind === "blocker" && (
         <>

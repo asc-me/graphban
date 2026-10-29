@@ -167,6 +167,28 @@ export function TriageView() {
   const failedSources = feedQ.data?.failed_sources ?? [];
   const total = live.length + processed.length;
 
+  const queueClear = !loading && !failedRead && tab === "all" && shown.length === 0 && failedSources.length === 0;
+  const processedCard = processed.length > 0 && (
+    <div className="border-t border-line px-3.5 py-2.5">
+      <div className="flex items-center gap-2 font-mono text-micro uppercase tracking-[0.07em] text-faint-2">
+        <span className="flex-1">Processed</span>
+        <button
+          onClick={() => void undo()}
+          className="rounded border border-control px-1.5 py-px normal-case tracking-normal text-muted hover:text-fg"
+        >
+          Undo last <Kbd>⌫</Kbd>
+        </button>
+      </div>
+      <ul className="mt-1.5 space-y-1">
+        {processed.slice(-5).reverse().map((p) => (
+          <li key={p.row.id} className="truncate text-small text-muted">
+            <span className="font-mono text-faint-2">{p.row.id}</span> {p.result}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PlaceHeader
@@ -239,9 +261,15 @@ export function TriageView() {
         })}
       </div>
 
-      <div className="grid min-h-0 flex-1 gap-3 p-6 pt-3 lg:grid-cols-[360px_1fr]">
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-[13px] border border-line bg-surface">
-          <div className="min-h-0 flex-1 overflow-y-auto" role="listbox" aria-label="Triage queue">
+      {queueClear ? (
+        <div className="min-h-0 flex-1 overflow-y-auto p-6 pt-3">
+          <ClearCard processed={processed.length} />
+          {processedCard}
+        </div>
+      ) : (
+      <div className="grid min-h-0 flex-1 content-start items-start gap-3 p-6 pt-3 lg:grid-cols-[360px_1fr]">
+        <div className="flex max-h-full min-h-0 flex-col overflow-hidden rounded-[13px] border border-line bg-surface">
+          <div className="min-h-0 overflow-y-auto" role="listbox" aria-label="Triage queue">
             {failedRead ? (
               <PlannerError message={FETCH_FAILED} onRetry={() => void feedQ.refetch()} />
             ) : loading ? (
@@ -249,7 +277,7 @@ export function TriageView() {
                 Loading the triage queue…
               </p>
             ) : shown.length === 0 ? (
-              <EmptyState tab={tab} processed={processed.length} partial={failedSources.length > 0} />
+              <EmptyState tab={tab} partial={failedSources.length > 0} />
             ) : (
               shown.map((r) => {
                 const on = r.id === sel?.id;
@@ -275,36 +303,16 @@ export function TriageView() {
             )}
           </div>
 
-          {processed.length > 0 && (
-            <div className="border-t border-line px-3.5 py-2.5">
-              <div className="flex items-center gap-2 font-mono text-micro uppercase tracking-[0.07em] text-faint-2">
-                <span className="flex-1">Processed</span>
-                <button
-                  onClick={() => void undo()}
-                  className="rounded border border-control px-1.5 py-px normal-case tracking-normal text-muted hover:text-fg"
-              >
-                  Undo last <Kbd>⌫</Kbd>
-                </button>
-              </div>
-              <ul className="mt-1.5 space-y-1">
-                {processed.slice(-5).reverse().map((p) => (
-                  <li key={p.row.id} className="truncate text-small text-muted">
-                    <span className="font-mono text-faint-2">{p.row.id}</span> {p.result}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          {processedCard}
         </div>
 
-        <div className="min-h-0 overflow-y-auto rounded-[13px] border border-line bg-surface">
-          {sel ? (
+        {sel && (
+          <div className="max-h-full min-h-0 overflow-y-auto rounded-[13px] border border-line bg-surface">
             <TriageDetail row={sel} actions={actions} onAction={trigger} />
-          ) : (
-            <p className="px-6 py-10 text-small text-muted">Nothing selected.</p>
-          )}
-        </div>
+          </div>
+        )}
       </div>
+      )}
 
       {confirming && (
         <div role="dialog" aria-modal="true" aria-label={`Confirm ${confirming.label}`}
@@ -329,7 +337,7 @@ export function TriageView() {
   );
 }
 
-function EmptyState({ tab, processed, partial }: { tab: string; processed: number; partial: boolean }) {
+function EmptyState({ tab, partial }: { tab: string; partial: boolean }) {
   if (tab !== "all") {
     const name = TABS.find((t) => t.id === tab)?.label.toLowerCase();
     return <p className="px-4 py-6 text-small text-muted">No {name} waiting.</p>;
@@ -344,17 +352,23 @@ function EmptyState({ tab, processed, partial }: { tab: string; processed: numbe
       </div>
     );
   }
+  return null;
+}
+
+function ClearCard({ processed }: { processed: number }) {
   return (
-    <div className="m-3 rounded-[13px] border border-st-done/30 bg-st-done/[0.07] px-4 py-8 text-center">
-      <div className="mx-auto flex h-8 w-8 items-center justify-center rounded-full border border-st-done/40 text-st-done" aria-hidden>
+    <div className="flex max-w-[720px] items-center gap-4 rounded-[13px] border border-st-done/30 bg-st-done/[0.07] px-5 py-4">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-st-done/40 text-st-done" aria-hidden>
         ✓
       </div>
-      <div className="mt-3 text-[13px] font-semibold text-fg">Triage clear</div>
-      <p className="mx-auto mt-1.5 max-w-[34ch] text-[11.5px] leading-relaxed text-muted">
-        {processed
-          ? `You processed ${processed} this session. Nothing else is waiting.`
-          : "Nothing waiting. Everything reported has been triaged and nothing in flight overlaps — history lives in the tracker."}
-      </p>
+      <div className="min-w-0">
+        <div className="text-[13px] font-semibold text-st-done">Triage clear</div>
+        <p className="mt-1 text-[11.5px] leading-relaxed text-st-done/80">
+          {processed
+            ? `You processed ${processed} this session. Nothing else is waiting.`
+            : "Nothing waiting. Everything reported has been triaged and nothing in flight overlaps — history lives in the tracker."}
+        </p>
+      </div>
     </div>
   );
 }
