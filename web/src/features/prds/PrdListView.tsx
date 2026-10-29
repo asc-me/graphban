@@ -28,8 +28,13 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { relTime } from "@/lib/relTime";
 
-import { prdStatusMeta } from "./meta";
+import { PRD_STATUS_ORDER, prdStatusMeta } from "./meta";
 import { RequestDots } from "./PrdRequests";
+
+/** "2h ago" -> "2h"; absence stays a dash. */
+function shortAgo(rel: string | null): string {
+  return rel ? rel.replace(/ ago$/, "") : "—";
+}
 
 export function PrdListView() {
   const { activeId } = useProjectCtx();
@@ -44,7 +49,10 @@ export function PrdListView() {
       finishedAt: (p) => (p.status === "closed" ? p.closed_at ?? p.updated_at : null),
     });
   const scoped = scopeOf(views.state);
-  const visible = scoped.shown.filter((p) => statusMatches(p.status, views.state.status, []));
+  const [chip, setChip] = React.useState<string>("all");
+  const inView = scoped.shown.filter((p) => statusMatches(p.status, views.state.status, []));
+  const chipCount = (st: string) => inView.filter((p) => st === "all" || p.status === st).length;
+  const visible = inView.filter((p) => chip === "all" || p.status === chip);
   const hidden = hiddenSummary(scoped, views.state, "closed");
   const showHidden = () => views.patch({ window: 0, hide: 0 });
   const showing = !isLoading && !isError && prds.length > 0;
@@ -68,6 +76,33 @@ export function PrdListView() {
         />
       )}
 
+      {showing && (
+        <div className="flex flex-wrap gap-1.5 px-4 pt-3" role="group" aria-label="Filter by status">
+          {["all", ...PRD_STATUS_ORDER].map((st) => {
+            const label = st === "all" ? "All" : prdStatusMeta(st).label;
+            return (
+              <button
+                key={st}
+                aria-pressed={chip === st}
+                onClick={() => setChip(st)}
+                className={
+                  "inline-flex items-center gap-1.5 rounded-[7px] border px-2 py-0.5 text-small transition-colors " +
+                  (chip === st
+                    ? "border-control-hover bg-surface-4 text-fg"
+                    : "border-control text-muted hover:text-fg-2")
+                }
+              >
+                {st !== "all" && (
+                  <span className="h-1.5 w-1.5 rounded-full" style={{ background: prdStatusMeta(st).color }} />
+                )}
+                {label}
+                <span className="font-mono text-meta text-faint">{chipCount(st)}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading ? (
           <PrdListSkeleton rows={prds.length > 0 ? prds.length : 6} />
@@ -89,13 +124,21 @@ export function PrdListView() {
             {visible.map((p) => {
               const meta = prdStatusMeta(p.status);
               return (
-                <button
+                <div
                   key={p.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => navigate(`/prds/${p.id}`)}
-                  className="flex w-full items-center gap-3 rounded-[12px] border border-control bg-surface-2 px-4 py-3 text-left transition-colors hover:border-control-hover"
+                  onKeyDown={(e) => {
+                    if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                      e.preventDefault();
+                      navigate(`/prds/${p.id}`);
+                    }
+                  }}
+                  className="flex w-full cursor-pointer items-center gap-3 rounded-[12px] border border-line-2 bg-surface-2 px-4 py-3 text-left transition-colors hover:border-line-hover"
                 >
                   <FileText size={16} className="flex-none text-muted" />
-                  <span className="w-[52px] flex-none font-mono text-small text-faint">{p.id}</span>
+                  <span className="w-14 flex-none font-mono text-small text-faint">{p.id}</span>
                   <span className="min-w-0 flex-1 truncate text-[13.5px] text-fg-2">{p.title}</span>
                   <div className="flex flex-none items-center gap-1.5">
                     {p.linked.slice(0, 4).map((id) => (
@@ -109,16 +152,16 @@ export function PrdListView() {
                     {p.version}
                   </span>
                   <span
-                    className="flex flex-none items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide"
+                    className="flex w-[86px] flex-none items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide"
                     style={{ color: meta.color }}
                   >
                     <span className="h-1.5 w-1.5 rounded-full" style={{ background: meta.color }} />
                     {meta.label}
                   </span>
                   <span className="w-[52px] flex-none text-right font-mono text-[10px] text-faint-2">
-                    {relTime(p.updated_at) ?? "—"}
+                    {shortAgo(relTime(p.updated_at))}
                   </span>
-                </button>
+                </div>
               );
             })}
           </div>
