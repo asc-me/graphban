@@ -27,7 +27,9 @@ GATE = "ci"
 # only the fleet merge into the release ref through its `scans_clean` attestation; in
 # `ci.needs` it would block every feature PR at the forge. Named, so adding to this set is a
 # visible decision rather than a quiet widening of the guard below.
-NOT_GATED = {"security-scans"}
+# `publish-refusal-coverage` (GRPH-1158) runs AFTER the gate (`needs: ci`), on main pushes only,
+# to measure a tree the gate already passed — it cannot be one of the gate's own dependencies.
+NOT_GATED = {"security-scans", "publish-refusal-coverage"}
 
 
 def _workflow() -> dict:
@@ -137,3 +139,16 @@ def test_windows_pytest_is_not_an_interactive_shell_wrapper():
             f"step {step.get('name')!r} leaves pytest stdin attached — a TTY or a "
             "cmd.exe Y/N prompt can hang the runner. Redirect from /dev/null."
         )
+
+
+def test_only_the_coverage_publisher_holds_a_write_token():
+    """`ci` runs PR code (scripts/attest_ci.py from the PR head), so it must never be handed
+    write scopes. The coverage publisher is the one job that writes, and it runs only on a
+    push to main after the gate (GRPH-1158)."""
+    jobs = _workflow()["jobs"]
+    writers = {name for name, job in jobs.items()
+               if any(v == "write" for v in (job.get("permissions") or {}).values())}
+    assert writers == {"publish-refusal-coverage"}, writers
+    pub = jobs["publish-refusal-coverage"]
+    assert pub["needs"] == GATE or pub["needs"] == [GATE]
+    assert "push" in pub["if"] and "refs/heads/main" in pub["if"]

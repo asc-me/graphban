@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Only for `publish-refusal-coverage`: a PR or push made with the workflow token never
+  # triggers `pull_request`/`push` runs, so the bot's coverage PR would never get the required
+  # `CI` check. A dispatch is the one event that token may start (diffed against main below).
+  workflow_dispatch:
 
 jobs:
   # What actually changed. Every other job gates on this, so a web-only PR does not pay
@@ -38,7 +42,8 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: python3 scripts/stamp_only.py --base "$BASE" --head "$HEAD"
+        # A dispatch has neither a PR base nor a `before`: diff against main, as paths-filter does.
+        run: python3 scripts/stamp_only.py --base "${BASE:-origin/main}" --head "$HEAD"
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -385,9 +390,9 @@ jobs:
     # GitHub-hosted runners cannot reach it. cloud.graphban.dev is a different
     # database — pointing there 404s every GRPH-* item.
     runs-on: [self-hosted, graphban-ledger]
-    # `write` for the one step that commits refusal coverage on a main push (GRPH-1158).
+    # Read-only: this job runs PR code. Coverage publishing (the one writer) is its own job.
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Fail if anything that ran did not pass
         # `skipped` is a pass here and `failure`/`cancelled` are not. Checking the results
@@ -458,39 +463,63 @@ jobs:
             --branch "$HEAD_REF" \
             --run-url "$RUN_URL" \
             --text "$PR_TITLE $PR_BODY"
-      # The refusal coverage line ("N of M refusal sites name their rule", GRPH-1158) is
-      # written into package data ONLY here: a push to main, after the gate step above passed
-      # (steps stop at the first failure). A PR build, green or red, never writes a count, so a
-      # failing tree cannot produce a number. Committed back to main so the next build ships
-      # it in `app/data/`; `services/rules.refusal_coverage` reads it and the UI never computes
-      # it. LAST, after the attestations: a refused push must not cost the receipt.
-      # `[skip ci]` because the commit changes one JSON file and nothing it would test.
-      #
-      # The identity is the step's ENV, not `git -c` on the commit: `pull --rebase` rewrites
-      # that commit and needs a committer too, and this runner (self-hosted) has no global
-      # identity — every main build failed there. `continue-on-error`: this step runs AFTER the
-      # gate decided, so a refused push (main requires the CI check, and the workflow token is
-      # read-only) must not turn a green build into a red `CI` check. The refusal is not
-      # silent — it is a ::warning on the run — and the app already reads a missing file as
-      # `published: False`, never as a count.
-      - name: Publish refusal coverage into package data
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        continue-on-error: true
-        env:
-          HEAD_SHA: ${{ github.sha }}
-          GIT_AUTHOR_NAME: github-actions
-          GIT_AUTHOR_EMAIL: github-actions@users.noreply.github.com
-          GIT_COMMITTER_NAME: github-actions
-          GIT_COMMITTER_EMAIL: github-actions@users.noreply.github.com
+
+  # The refusal coverage line ("N of M refusal sites name their rule", GRPH-1158) is measured
+  # ONLY here: a push to main whose `ci` gate passed. A PR build, green or red, never writes a
+  # count, so a failing tree cannot produce a number. `services/rules.refusal_coverage` reads
+  # the published file and the UI never computes it; no file reads as `published: False`.
+  #
+  # It cannot be committed straight to main: main requires the `CI` check, which a bot commit
+  # never has. So it goes to ONE standing PR (branch `bot/refusal-coverage`, force-updated each
+  # time), CI is dispatched on it — the workflow token's own pushes and PRs start no runs — and
+  # auto-merge lands it once that run is green. Merging it pushes main again, which measures
+  # the same counts and stops at "unchanged": no loop.
+  #
+  # A JOB, not a step of `ci`, for the token: `ci` runs PR code (scripts/attest_ci.py from the
+  # PR head) and must keep a read-only token. This job checks out main only, on GitHub's runner,
+  # and is the only place that holds write. Outside `ci.needs` by construction (it runs after
+  # the gate); named in test_ci_shape.NOT_GATED.
+  publish-refusal-coverage:
+    name: Publish refusal coverage
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # push bot/refusal-coverage
+      pull-requests: write   # open the PR, enable auto-merge
+      actions: write         # dispatch CI on the branch
+    concurrency:
+      group: publish-refusal-coverage
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HEAD_SHA: ${{ github.sha }}
+      BRANCH: bot/refusal-coverage
+      GIT_AUTHOR_NAME: github-actions
+      GIT_AUTHOR_EMAIL: github-actions@users.noreply.github.com
+      GIT_COMMITTER_NAME: github-actions
+      GIT_COMMITTER_EMAIL: github-actions@users.noreply.github.com
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Measure, and open or update the coverage PR
         run: |
+          set -euo pipefail
           python3 scripts/refusal_ratchet.py publish backend/app/data/refusal_coverage.json "$HEAD_SHA"
           git add backend/app/data/refusal_coverage.json
           if git diff --cached --quiet -I '"published_at"' -I '"commit"'; then
             echo "refusal coverage unchanged"; exit 0
           fi
-          git commit -m "Publish refusal coverage for $HEAD_SHA [skip ci]"
-          git pull --rebase origin main
-          if ! git push origin HEAD:main; then
-            echo "::warning title=Refusal coverage not published::push to main was refused (protected branch / read-only token); the app keeps reporting coverage as unpublished"
-            exit 1
+          git switch -c "$BRANCH"
+          git commit -m "Publish refusal coverage measured at $HEAD_SHA"
+          git push --force origin "HEAD:refs/heads/$BRANCH"
+          if ! gh pr view "$BRANCH" --json state -q .state 2>/dev/null | grep -q OPEN; then
+            gh pr create --base main --head "$BRANCH" \
+              --title "Publish refusal coverage" \
+              --body "Automated (GRPH-1158): the refusal coverage line measured by the last green build on main. Only \`backend/app/data/refusal_coverage.json\` changes. Opened by the \`publish-refusal-coverage\` job in ci.yml; force-updated by each later main build." \
+              || { echo "::error title=Coverage PR not opened::enable Settings → Actions → General → 'Allow GitHub Actions to create and approve pull requests'"; exit 1; }
           fi
+          gh workflow run ci.yml --ref "$BRANCH"
+          gh pr merge "$BRANCH" --auto --squash \
+            || echo "::warning title=Auto-merge not enabled::the coverage PR is open but must be merged by hand"
