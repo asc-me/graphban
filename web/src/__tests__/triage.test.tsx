@@ -66,6 +66,9 @@ const m = vi.hoisted(() => ({
   answerBlocker: vi.fn(async () => ({})),
   decideCollision: vi.fn(async () => ({ id: 7 })),
   undoCollisionDecision: vi.fn(async () => ({})),
+  requestComments: vi.fn(),
+  createRequestComment: vi.fn(async () => ({ id: "rcom_new", body: "", visibility: "public", created_at: "" })),
+  me: vi.fn(async () => ({ id: "u1", name: "Alex Smith", handle: "alex", email: "", avatar: "", initials: "AS" })),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -90,6 +93,7 @@ const selected = () => document.querySelector('[role="option"][aria-selected="tr
 beforeEach(() => {
   vi.clearAllMocks();
   m.projectTriage.mockResolvedValue(feed([blocker, bug, dupBug, collision]));
+  m.requestComments.mockResolvedValue([]);
 });
 
 describe("Triage inbox", () => {
@@ -215,5 +219,91 @@ describe("Triage inbox", () => {
     m.projectTriage.mockResolvedValue(feed([]));
     renderTriage();
     expect(await screen.findByText("Triage clear")).toBeInTheDocument();
+  });
+});
+
+/** GRPH-1149, PRD-60 D9: the comment thread on a request in the detail pane. */
+describe("Triage request comments", () => {
+  const thread = [
+    { id: "c1", body: "Owner = whoever's key it runs under.", visibility: "public", role: "submitter", author: "dana", created_at: "2026-10-28T10:00:00Z" },
+    { id: "c2", body: "Any preference on the key?", visibility: "public", role: "team", author: "Alex Smith", created_at: "2026-10-28T11:00:00Z" },
+    { id: "c3", body: "Overlaps PRD-47 — fold in there?", visibility: "private", role: "internal", author: "Kim Lee", created_at: "2026-10-28T12:00:00Z" },
+  ];
+
+  async function openBug() {
+    m.projectTriage.mockResolvedValue(feed([bug]));
+    renderTriage();
+    return screen.findByRole("textbox", { name: "Comment" });
+  }
+
+  it("lists comments with role tags, 'You' for self, and internal notes in amber", async () => {
+    m.requestComments.mockResolvedValue(thread);
+    await openBug();
+    expect(await screen.findByText(/Comments · 3/)).toBeInTheDocument();
+    expect(m.requestComments).toHaveBeenCalledWith("CORE-R1");
+    expect(screen.getByText("SUBMITTER")).toBeInTheDocument();
+    expect(screen.getByText("TEAM")).toBeInTheDocument();
+    expect(screen.getByText("You")).toBeInTheDocument();
+    const note = document.querySelector('[data-role="internal"]')!;
+    expect(note).toHaveTextContent("INTERNAL");
+    expect(note.querySelector(".border-st-review\\/25")).not.toBeNull();
+    expect(document.querySelector('[data-role="team"] .border-st-review\\/25')).toBeNull();
+  });
+
+  it("shows the empty copy when there are no comments", async () => {
+    await openBug();
+    expect(await screen.findByText(/No comments yet. Ask the submitter for detail, or leave a note for the team./)).toBeInTheDocument();
+  });
+
+  it("C focuses the composer, and letter keys are inert while it has focus", async () => {
+    const box = await openBug();
+    const user = userEvent.setup();
+    await user.keyboard("c");
+    expect(box).toHaveFocus();
+    await user.keyboard("ad");
+    expect(box).toHaveValue("ad");
+    expect(m.acceptRequestTo).not.toHaveBeenCalled();
+    expect(m.mergeRequest).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(box).not.toHaveFocus();
+  });
+
+  it("⌘↵ posts a public reply that notifies the submitter, and never mentions voters", async () => {
+    const box = await openBug();
+    expect(screen.getByText("notifies the submitter")).toBeInTheDocument();
+    expect(screen.queryByText(/voter/i)).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(box);
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(m.createRequestComment).not.toHaveBeenCalled(); // empty draft cannot post
+    expect(screen.getByRole("button", { name: /Comment/ })).toBeDisabled();
+    await user.keyboard("Thanks, on it");
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    await waitFor(() => expect(m.createRequestComment).toHaveBeenCalledWith("CORE-R1", "Thanks, on it", "public"));
+    await waitFor(() => expect(box).toHaveValue(""));
+  });
+
+  it("an internal note posts private, with its own hint and an amber box", async () => {
+    const box = await openBug();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Internal note" }));
+    expect(screen.getByText("only your team sees this")).toBeInTheDocument();
+    expect(box).toHaveAttribute("placeholder", "Note for the team — not visible to the submitter");
+    expect(box.parentElement).toHaveClass("border-st-review/30");
+    await user.click(box);
+    await user.keyboard("   ");
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(m.createRequestComment).not.toHaveBeenCalled(); // whitespace is not a draft
+    await user.keyboard("dup of PRD-47");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(m.createRequestComment).toHaveBeenCalledWith("CORE-R1", "dup of PRD-47", "private"));
+  });
+
+  it("does not mount a thread on blockers", async () => {
+    m.projectTriage.mockResolvedValue(feed([blocker]));
+    renderTriage();
+    await screen.findByText("Needs the key API");
+    expect(screen.queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    expect(m.requestComments).not.toHaveBeenCalled();
   });
 });

@@ -796,6 +796,17 @@ export interface RequestItem {
   published_at: string | null;
 }
 
+/** One comment on a request's operator thread (PRD-60 D9). `internal` is a private note. */
+export interface RequestComment {
+  id: string;
+  body: string;
+  visibility: "public" | "private";
+  role: "submitter" | "team" | "internal";
+  /** Display name; empty when the operator account is gone. */
+  author: string;
+  created_at: string;
+}
+
 /** A request or item that looks like this one. Advisory — never auto-merged. */
 export interface DuplicateHint {
   kind: "request" | "item";

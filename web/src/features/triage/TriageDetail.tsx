@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { CommentThread } from "@/features/requests/CommentThread";
 import type { TriageFeedRow } from "@/lib/types";
 
 import { formatAge, type TriageAction } from "./actions";
@@ -152,6 +153,11 @@ export function TriageDetail({
             </p>
           )}
           <Paths label="CODE TOUCH-AREA" paths={row.paths} />
+          {row.kind !== "feedback" && (
+            <div className="mt-5">
+              <CommentThread requestId={row.id} triageKey />
+            </div>
+          )}
         </>
       )}
     </div>
