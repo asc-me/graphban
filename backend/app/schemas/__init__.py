@@ -1684,6 +1684,37 @@ class RuleOut(BaseModel):
     source: str | None = None
 
 
+class SuggestionEvidenceOut(BaseModel):
+    text: str
+    source: str
+    link: str = ""
+
+
+class RuleSuggestionOut(BaseModel):
+    id: str
+    stage: str
+    level: str
+    title: str
+    why: str
+    kind: str
+    rule_id: str | None = None
+    value: str | None = None
+    evidence: list[SuggestionEvidenceOut]
+    fingerprint: str
+
+
+class SuggestionSourceOut(BaseModel):
+    source: str
+    state: str  # read | not_available
+    read_at: str | None = None
+    reason: str | None = None
+
+
+class RecommendedRulesOut(BaseModel):
+    suggestions: list[RuleSuggestionOut]
+    sources: list[SuggestionSourceOut]
+
+
 class RulesOut(BaseModel):
     version: str
     rules: list[RuleOut]
