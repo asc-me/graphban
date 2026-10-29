@@ -19,6 +19,7 @@ from app.schemas import (
     PrdAiOut,
     PrdCreate,
     PrdLinkIn,
+    PrdRequestLinkIn,
     CloseIn,
     PromoteIn,
     PrdOut,
@@ -62,7 +63,47 @@ def _require_readable_prd(db: Session, user: User, prd_id: str):
 @router.get("", response_model=list[PrdSummary])
 def list_prds(project_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     authz.require_readable(db, user.id, project_id)
-    return prd_svc.list_prds(db, project_id=project_id)
+    prds = prd_svc.list_prds(db, project_id=project_id)
+    roll = prd_svc.request_rollups(db, [p.id for p in prds])
+    return [PrdSummary.model_validate(p).model_copy(update=roll[p.id]) for p in prds]
+
+
+def _request_link(db: Session, user: User, prd_id: str, request_id: str, add: bool):
+    _require_writable_prd(db, user, prd_id)
+    prd = prd_svc.get_prd(db, prd_id)
+    try:
+        prd_svc.link_request(db, prd, request_id, add)
+    except prd_svc.PrdClosed as e:
+        raise HTTPException(409, str(e))
+    except prd_svc.RequestNotInProject as e:
+        raise HTTPException(404, str(e))
+    return {"linked": add, **prd_svc.request_rollups(db, [prd.id])[prd.id]}
+
+
+@router.post("/{prd_id}/requests")
+def link_prd_request(prd_id: str, body: PrdRequestLinkIn, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    return _request_link(db, user, prd_id, body.request_id, True)
+
+
+@router.delete("/{prd_id}/requests/{request_id}")
+def unlink_prd_request(prd_id: str, request_id: str, db: Session = Depends(get_db),
+                       user: User = Depends(get_current_user)):
+    return _request_link(db, user, prd_id, request_id, False)
+
+
+@router.get("/{prd_id}/requests")
+def list_prd_requests(prd_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    prd = _require_readable_prd(db, user, prd_id)
+    return [{"id": r.key, "title": r.title, "type": r.type, "votes": r.votes, "status": r.status}
+            for r in prd_svc.linked_requests(db, prd)]
+
+
+@router.get("/{prd_id}/request-suggestions")
+def prd_request_suggestions(prd_id: str, db: Session = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+    prd = _require_readable_prd(db, user, prd_id)
+    return prd_svc.request_suggestions(db, prd)
 
 
 @router.post("", response_model=PrdOut, status_code=201)

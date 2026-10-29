@@ -1272,6 +1272,13 @@ class PrdSummary(ORMModel):
     version: str
     linked: list[str] = _key("linked_keys", default_factory=list)
     updated_at: datetime
+    request_count: int = 0
+    request_votes: int = 0
+    request_types: dict[str, int] = {}
+
+
+class PrdRequestLinkIn(BaseModel):
+    request_id: str
 
 
 class PrdCreate(BaseModel):
