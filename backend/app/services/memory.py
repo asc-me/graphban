@@ -1507,6 +1507,11 @@ def agent_adjudication_enabled(db: Session, project_id: str | None) -> bool:
     return bool(project and project.agent_adjudication)
 
 
+#: The rule an `agent_reject_shard` event names (GRPH-1158): an agent holds only the "no" side
+#: of the memory gate — it may discard a candidate, but publishing is the judge's call.
+ADJUDICATION_RULE = "memory.independent_adjudication"
+
+
 def agent_reject(db: Session, shard: MemoryShard, *, origin: str) -> MemoryShard:
     """An agent discards its own candidate. Kept for provenance, never surfaced."""
     shard.status = "rejected"
@@ -1516,7 +1521,7 @@ def agent_reject(db: Session, shard: MemoryShard, *, origin: str) -> MemoryShard
     events_svc.record(
         db, actor_type="agent", actor_label=origin, surface="mcp",
         action="agent_reject_shard", target_type="shard", target_id=shard.id,
-        project_id=shard.project_id, meta={"source": "agent"},
+        project_id=shard.project_id, meta={"source": "agent", "rule_id": ADJUDICATION_RULE},
     )
     return shard
 
@@ -1552,7 +1557,8 @@ def agent_publish(db: Session, shard: MemoryShard, *, origin: str) -> tuple[Memo
         action="agent_publish_shard" if keep else "agent_reject_shard",
         target_type="shard", target_id=shard.id, project_id=shard.project_id,
         meta={"source": "agent", "confidence": verdict["quality"],
-              "reason": verdict.get("reason", ""), "kept": keep},
+              "reason": verdict.get("reason", ""), "kept": keep,
+              **({} if keep else {"rule_id": ADJUDICATION_RULE})},
     )
     if keep:
         maybe_record_recurrence_miss(db, shard)

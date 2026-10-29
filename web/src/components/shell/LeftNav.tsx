@@ -1,4 +1,4 @@
-import { Activity, BarChart3, BookMarked, Boxes, Building2, ChevronDown, ChevronRight, ChevronsUpDown, Gauge, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, PanelLeftClose, PanelLeftOpen, Plug, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound, Workflow } from "lucide-react";
+import { Activity, BarChart3, BookOpen, Brain, Building2, ChartLine, ChevronDown, ChevronRight, ChevronsUpDown, ClipboardCheck, Gauge, Hammer, History, Layers, Link as LinkIcon, ListChecks, Map, MessageSquare, PanelLeftClose, PanelLeftOpen, Plug, Radar, Radio, Scale, Server, Settings, ShieldCheck, Star, Users, UsersRound, Workflow } from "lucide-react";
 import * as React from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 
@@ -41,7 +41,7 @@ type SectionDef = { key: Section; label: string; icon: React.ReactNode; pages: P
  */
 export const SECTIONS: SectionDef[] = [
   {
-    key: "plan", label: "Plan", icon: <ListChecks size={16} />, pages: [
+    key: "plan", label: "Plan", icon: <ClipboardCheck size={16} />, pages: [
       { view: "triage", icon: <Radar size={16} />, label: "Triage", desc: "Overlaps and duplicates before work starts" },
       { view: "tracker", icon: <ListChecks size={16} />, label: "Tracker", desc: "One linear stream of work", count: "items_open" },
       { view: "requests", icon: <Star size={16} />, label: "Requests", desc: "Submissions from the public form", count: "requests_untriaged" },
@@ -50,11 +50,11 @@ export const SECTIONS: SectionDef[] = [
     ],
   },
   {
-    key: "build", label: "Build", icon: <Network size={16} />, pages: [
-      { view: "code", icon: <Network size={16} />, label: "Code graph", desc: "Modules, files and symbols agents changed", count: "code_nodes" },
-      { view: "links", icon: <GitFork size={16} />, label: "Links", desc: "Typed relations between items and requests" },
-      { view: "stack", icon: <Boxes size={16} />, label: "Stack", desc: "Languages, frameworks and services" },
-      { view: "rules", icon: <Workflow size={16} />, label: "Rules", desc: "How work moves, and what holds each step" },
+    key: "build", label: "Build", icon: <Hammer size={16} />, pages: [
+      { view: "code", icon: <Workflow size={16} />, label: "Code graph", desc: "Modules, files and symbols agents changed", count: "code_nodes" },
+      { view: "links", icon: <LinkIcon size={16} />, label: "Links", desc: "Typed relations between items and requests" },
+      { view: "stack", icon: <Layers size={16} />, label: "Stack", desc: "Languages, frameworks and services" },
+      { view: "rules", icon: <Scale size={16} />, label: "Rules", desc: "How work moves, and what holds each step" },
       { view: "mcp-tools", icon: <Plug size={16} />, label: "MCP Tools", desc: "How agents connect and call tools", count: "mcp_tools", hostedOnly: true },
       { view: "fleet", icon: <Users size={16} />, label: "Fleet", desc: "Who works here and what they spawn as", count: "fleet_agents" },
       { view: "outposts", icon: <Server size={16} />, label: "Outposts", desc: "Machines your agents run on", count: "outposts" },
@@ -62,10 +62,10 @@ export const SECTIONS: SectionDef[] = [
   },
   {
     key: "observe", label: "Observe", icon: <Activity size={16} />, pages: [
-      { view: "live", icon: <Activity size={16} />, label: "Live", desc: "Who is on the project right now", count: "live_agents", live: true },
-      { view: "activity", icon: <ScrollText size={16} />, label: "Activity", desc: "Every accepted mutation, attributed" },
-      { view: "memory", icon: <Inbox size={16} />, label: "Memory", desc: "Candidates waiting to be published", count: "review" },
-      { view: "lessons", icon: <BookMarked size={16} />, label: "Lessons", desc: "Published memory, scored for usefulness" },
+      { view: "live", icon: <Radio size={16} />, label: "Live", desc: "Who is on the project right now", count: "live_agents", live: true },
+      { view: "activity", icon: <History size={16} />, label: "Activity", desc: "Every accepted mutation, attributed" },
+      { view: "memory", icon: <Brain size={16} />, label: "Memory", desc: "Candidates waiting to be published", count: "review" },
+      { view: "lessons", icon: <BookOpen size={16} />, label: "Lessons", desc: "Published memory, scored for usefulness" },
       { view: "harness", icon: <Gauge size={16} />, label: "Harness", desc: "Which agent can review which change" },
     ],
   },
@@ -278,13 +278,13 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
           inert={!collapsed}
           style={{ opacity: collapsed ? 1 : 0, transition: fade }}
           className={cn(
-            "absolute inset-y-0 left-0 flex w-[60px] flex-col items-center gap-1 overflow-y-auto py-4",
+            "absolute inset-y-0 left-0 flex w-[60px] flex-col items-center gap-0.5 overflow-y-auto py-3",
             !collapsed && "pointer-events-none",
           )}
         >
           <ProjectEntry variant="tile" orgName={org?.name} hosted={hosted} onOpenChange={onMenu} tipProps={tipProps({ label: "Switch project" })} />
           {dashboardPath && (
-            <RailLink to={dashboardPath} end label="Dashboard" icon={<LayoutGrid size={16} />} tipProps={tipProps({ label: "Dashboard" })} />
+            <RailLink to={dashboardPath} end label="Dashboard" icon={<span aria-hidden className="text-small font-medium">D</span>} tipProps={tipProps({ label: "Dashboard" })} />
           )}
           {sections.map((s) =>
             s.key === current ? (
@@ -320,12 +320,11 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
             ),
           )}
           <div className="mt-auto" />
-          <RailDivider />
           {canAdminister && (
             <RailLink href={consoleHref(adminPath())} label="Admin" icon={<UsersRound size={16} />} tipProps={tipProps({ label: "Admin" })} />
           )}
-          <RailLink to="/usage" label="Usage" icon={<BarChart3 size={16} />} tipProps={tipProps({ label: "Usage" })} />
-          <RailLink to={viewPath("feedback-kit")} label="Feedback Kit" icon={<Sparkles size={16} />} tipProps={tipProps({ label: "Feedback Kit" })} />
+          <RailLink to="/usage" label="Usage" icon={<ChartLine size={16} />} tipProps={tipProps({ label: "Usage" })} />
+          <RailLink to={viewPath("feedback-kit")} label="Feedback Kit" icon={<MessageSquare size={16} />} tipProps={tipProps({ label: "Feedback Kit" })} />
           <RailLink to="/settings" label="Settings" icon={<Settings size={16} />} tipProps={tipProps({ label: "Settings" })} />
           <RailDivider />
           <button
@@ -358,7 +357,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
 
           <nav aria-label="Project" className="mt-4 flex flex-col gap-0.5">
             {dashboardPath && (
-              <NavItem to={dashboardPath} icon={<LayoutGrid size={16} />} label="Dashboard" end />
+              <NavItem to={dashboardPath} label="Dashboard" end dashboard />
             )}
             {sections.map((s) =>
               s.key === current ? (
@@ -402,7 +401,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
                   key={s.key}
                   type="button"
                   {...trigger(s)}
-                  className="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2 data-[open=true]:bg-surface-3 data-[open=true]:text-fg"
+                  className="flex items-center gap-2.5 rounded-[9px] h-[31px] flex-none px-2.5 leading-[15px] text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2 data-[open=true]:bg-surface-3 data-[open=true]:text-fg"
                 >
                   <span className="flex-1 font-medium">{s.label}</span>
                   <ChevronRight size={12} className="text-faint" />
@@ -411,7 +410,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
             )}
           </nav>
 
-          <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-3">
+          <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-2.5">
             {hosted ? (
               <NavItem href={consoleHref(orgPath())} icon={<Building2 size={16} />} label="Organization" />
             ) : (
@@ -420,16 +419,16 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
             {canAdminister && (
               <NavItem href={consoleHref(adminPath())} icon={<UsersRound size={16} />} label="Admin" />
             )}
-            <NavItem to="/usage" icon={<BarChart3 size={16} />} label="Usage" />
+            <NavItem to="/usage" icon={<ChartLine size={16} />} label="Usage" />
             {isPlatformAdmin && <NavItem href={consoleHref("/operator")} icon={<ShieldCheck size={16} />} label="Operator" />}
-            <NavItem to={viewPath("feedback-kit")} icon={<Sparkles size={16} />} label="Feedback Kit" />
+            <NavItem to={viewPath("feedback-kit")} icon={<MessageSquare size={16} />} label="Feedback Kit" />
             <NavItem to="/settings" icon={<Settings size={16} />} label="Settings" />
             <div className="my-1.5 border-t border-line" />
             <button
               type="button"
               onClick={toggle}
               title="Collapse to icons"
-              className="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
+              className="flex items-center gap-2.5 rounded-[9px] h-[29px] flex-none px-2.5 leading-[15px] text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
             >
               <PanelLeftClose size={16} />
               <span className="flex-1">Collapse sidebar</span>
@@ -448,12 +447,12 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
           transform: tipOn ? "translate(4px,-50%)" : "translate(-2px,-50%)",
           transition: reduce ? undefined : `opacity 120ms ${EASE}, transform 120ms ${EASE}`,
         }}
-        className="pointer-events-none absolute left-full z-50 ml-2 flex items-center gap-1.5 whitespace-nowrap rounded-md border border-line-2 bg-surface-3 px-2 py-1 text-[12px] text-fg shadow-lg"
+        className="pointer-events-none absolute left-full z-50 ml-2 flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-line-2 bg-surface-3 px-2.5 py-1.5 text-body text-fg shadow-lg"
       >
         <span className="absolute -left-[5px] top-1/2 h-2 w-2 -translate-y-1/2 rotate-45 border-b border-l border-line-2 bg-surface-3" />
         {tipOn && (
           <>
-            {tip.group && <span className="text-[10px] font-medium text-faint">{tip.group}</span>}
+            {tip.group && <span className="font-mono text-meta font-medium text-faint">{tip.group}</span>}
             <span>{tip.label}</span>
             {tip.meta && (
               <span className={cn("font-mono text-[10px]", tip.live ? "text-st-done" : "text-faint")}>{tip.meta}</span>
@@ -489,10 +488,10 @@ type TipHandlers = {
 };
 
 const RAIL_BTN =
-  "relative flex h-9 w-9 flex-none items-center justify-center rounded-[9px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2";
+  "relative flex h-9 w-10 flex-none items-center justify-center rounded-[9px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2";
 
 function RailDivider() {
-  return <div className="my-1 h-px w-6 flex-none bg-line" />;
+  return <div className="my-1.5 h-px w-6 flex-none bg-line" />;
 }
 
 /** The lime bar that marks the current page, in the rail and in the expanded list. */
@@ -596,7 +595,7 @@ const SectionFlyout = React.forwardRef<HTMLDivElement, {
               <span className="mt-px flex-none text-muted">{p.icon}</span>
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <span className="text-[13px] font-medium">{p.label}</span>
-                <span className="text-small text-muted">{p.desc}</span>
+                <span className="text-small leading-[1.4] text-muted">{p.desc}</span>
               </span>
               {n != null && (
                 <span className={cn("mt-0.5 font-mono text-[10px]", p.live ? "text-st-done" : "text-faint")}>
@@ -679,7 +678,7 @@ function SectionHeader({
       aria-expanded={expanded}
       aria-controls={expanded ? controls : undefined}
       onClick={onToggle}
-      className="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[13px] text-fg-2 transition-colors hover:bg-surface-3"
+      className="flex items-center gap-2.5 rounded-[9px] h-[31px] flex-none px-2.5 text-left text-[13px] leading-[17px] text-fg-2 transition-colors hover:bg-surface-3"
     >
       <span className="flex-1 font-medium">{label}</span>
       <ChevronDown
@@ -708,7 +707,7 @@ function OrgRailItem({ onOpenDialog }: { onOpenDialog: () => void }) {
         href={url}
         target="_blank"
         rel="noreferrer noopener"
-        className="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
+        className="flex items-center gap-2.5 rounded-[9px] h-[29px] flex-none px-2.5 leading-[15px] text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
       >
         <Building2 size={16} />
         <span className="flex-1">Organization</span>
@@ -720,7 +719,7 @@ function OrgRailItem({ onOpenDialog }: { onOpenDialog: () => void }) {
     <button
       type="button"
       onClick={() => (isMalformed ? navigate(`${settingsPath("deployment/sync")}?reason=malformed`) : onOpenDialog())}
-      className="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
+      className="flex items-center gap-2.5 rounded-[9px] h-[29px] flex-none px-2.5 leading-[15px] text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
     >
       <span className="relative flex-none">
         <Building2 size={16} />
@@ -744,12 +743,15 @@ function NavItem({
   count,
   live,
   end,
+  dashboard,
 }: {
   to?: string;
   /** Console origin. Those screens are not routes in this app. */
   href?: string;
-  icon: React.ReactNode;
+  icon?: React.ReactNode;
   label: string;
+  /** Dashboard is a text-only row, styled like a section header (Sidebar Nav design). */
+  dashboard?: boolean;
   /** Badge text from `badgeText`; undefined renders no badge. */
   count?: string;
   /** Presence ("2 live") reads green. */
@@ -757,8 +759,11 @@ function NavItem({
   /** Match this path exactly. A prefix would light the parent on every child page. */
   end?: boolean;
 }) {
-  const base =
-    "relative flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13px] transition-colors";
+  const base = cn(
+    "relative flex flex-none items-center gap-2.5 rounded-[9px] px-2.5 text-[13px] leading-[15px] transition-colors",
+    // Fixed heights, not padding + line-height: the 16px icon would push a page row to 30px.
+    dashboard ? "h-[33px] font-medium" : "h-[29px]",
+  );
   const badge = count != null && (
     <span data-badge className={cn("font-mono text-[10px]", live ? "text-st-done" : "text-faint")}>
       {count}

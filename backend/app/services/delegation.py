@@ -42,6 +42,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.errors import Refused
 from app.models import Agent, Delegation, Enrolment, Item, MemoryShard, Project
 from app.services import harness as harness_svc
 from app.services.harness import WINDOW_DAYS
@@ -786,19 +787,21 @@ def _refuse_by_reach(item: Item, acknowledged: bool) -> None:
     from app.services import reach as reach_svc
 
     if (item.reach or reach_svc.REPO) == reach_svc.DEPLOY:
-        raise DelegationRefused(
+        raise Refused(
+            409,
             f"{item.key} is declared `reach=deploy`: it acts on a running system, and a "
             "delegated child gets a worktree and a shell. Do this one yourself.",
-            code="validation",
+            rule_id="reach.deploy_not_delegable",
             hint="a person set this field and only a person can clear it; if the item is "
                  "really repository work, change its reach in the UI")
     if acknowledged:
         return
     found = reach_svc.signals(item.description)
     if found:
-        raise DelegationRefused(reach_svc.refusal(item.key, found), code="validation",
-                                hint="pass acknowledge_reach=true, or set the item's reach "
-                                     "to deploy in the UI")
+        raise Refused(409, reach_svc.refusal(item.key, found),
+                      rule_id="reach.acknowledge_signals",
+                      hint="pass acknowledge_reach=true, or set the item's reach "
+                           "to deploy in the UI")
 
 
 def refuse_bound_collision(db: Session, *, agent: Agent, item: Item) -> None:

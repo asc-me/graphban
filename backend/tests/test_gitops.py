@@ -363,7 +363,7 @@ def test_linked_patch_is_403_real_json(client, auth, monkeypatch, how):
     _mock_cloud(monkeypatch, _cloud_body())
     r = _patch(client, auth, {"base_branch": "stage"})
     assert r.status_code == 403
-    assert r.json() == {"detail": LINKED_403_DETAIL}
+    assert r.json() == {"detail": LINKED_403_DETAIL, "rule_id": "gitops.owned_by_org"}
     from app.db import SessionLocal
     from app.models import Project
     db = SessionLocal()
@@ -489,7 +489,7 @@ def test_linked_unreachable_patch_still_403(client, auth, monkeypatch):
     _mock_cloud(monkeypatch, error=httpx.TimeoutException("x"))
     r = _patch(client, auth, {"base_branch": "stage"})
     assert r.status_code == 403
-    assert r.json() == {"detail": LINKED_403_DETAIL}
+    assert r.json() == {"detail": LINKED_403_DETAIL, "rule_id": "gitops.owned_by_org"}
 
 
 # ---- GET /api/sync/gitops is resolve_local, no outbound ----------------------------------
@@ -1009,7 +1009,7 @@ def test_linked_model_patch_is_still_403(client, auth, monkeypatch):
     _mock_cloud(monkeypatch, _cloud_body())
     r = _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"})
     assert r.status_code == 403
-    assert r.json() == {"detail": LINKED_403_DETAIL}
+    assert r.json() == {"detail": LINKED_403_DETAIL, "rule_id": "gitops.owned_by_org"}
 
 
 def test_gitops_models_are_not_product_versions():
@@ -1337,7 +1337,7 @@ def test_observe_none_unblocks_siblings(client, auth):
     assert remote["blocker"] == ""
 
 
-def test_observe_review_without_an_answer_is_422(client, auth):
+def test_observe_review_without_an_answer_is_409(client, auth):
     assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
     observe = _plan_row(client, auth, "Observe the repo")
     r = client.patch(
@@ -1345,12 +1345,12 @@ def test_observe_review_without_an_answer_is_422(client, auth):
         json={"status": "review"},
         headers=auth,
     )
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
     assert "remote" in r.text and "unknown" in r.text
     assert _plan_row(client, auth, "Observe the repo")["status"] == "next"
 
 
-def test_parent_review_while_observe_is_unknown_is_422(client, auth):
+def test_parent_review_while_observe_is_unknown_is_409(client, auth):
     assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
     observe = _plan_row(client, auth, "Observe the repo")
     assert client.patch(
@@ -1363,7 +1363,7 @@ def test_parent_review_while_observe_is_unknown_is_422(client, auth):
         if gitops_svc.plan_tag("prs_to_base") in p["tags"]
     )
     r = client.patch(f"/api/items/{parent['id']}", json={"status": "review"}, headers=auth)
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
     assert "unknown" in r.text
     assert _plan_row(client, auth, "Confirm the remote")["status"] == "blocked"
 
@@ -1425,7 +1425,7 @@ def test_already_evidence_does_not_auto_complete(client, auth):
     assert any(d.lower().startswith("already") for d in details)
 
 
-def test_already_child_review_without_evidence_is_422(client, auth):
+def test_already_child_review_without_evidence_is_409(client, auth):
     assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
     _unblock_observe(client, auth)
     remote = _plan_row(client, auth, "Confirm the remote")
@@ -1434,7 +1434,7 @@ def test_already_child_review_without_evidence_is_422(client, auth):
         json={"status": "review"},
         headers=auth,
     )
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
     assert "already" in r.text
     assert _plan_row(client, auth, "Confirm the remote")["status"] == "next"
 

@@ -11,11 +11,21 @@ const RELATIONS: CodeRelation[] = ["affects", "implements", "fixes", "tests", "r
  * The work→code side of the bridge: shows the code paths a tracker item/request is explicitly
  * linked to, and lets you add (path + relation) or remove links. Reused by items and requests.
  */
-export function LinkedCode({ refId, projectId }: { refId: string; projectId?: string }) {
+export function LinkedCode({
+  refId,
+  projectId,
+  variant = "list",
+}: {
+  refId: string;
+  projectId?: string;
+  /** "chips": compact path chips with the add-link form collapsed behind a Link button. */
+  variant?: "list" | "chips";
+}) {
   const qc = useQueryClient();
   const qkey = ["code-for", projectId, refId];
   const { data: rows = [] } = useQuery({ queryKey: qkey, queryFn: () => api.codeForRef(refId, projectId) });
   const [path, setPath] = React.useState("");
+  const [adding, setAdding] = React.useState(false);
   const [relation, setRelation] = React.useState<CodeRelation>("affects");
 
   const invalidate = () => qc.invalidateQueries({ queryKey: qkey });
@@ -28,9 +38,31 @@ export function LinkedCode({ refId, projectId }: { refId: string; projectId?: st
     onSuccess: invalidate,
   });
 
+  const chips = variant === "chips";
+
   return (
     <div>
-      {rows.length === 0 ? (
+      {chips && rows.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {rows.map((r) => (
+            <span
+              key={r.path + r.relation}
+              className="group inline-flex max-w-full items-center gap-1.5 rounded-md border border-line-2 bg-surface-2 px-2 py-0.5"
+              title={r.node?.summary ?? "not described yet"}
+            >
+              <span className="flex-none font-mono text-[9px] text-purple-2">{r.relation}</span>
+              <span className="min-w-0 truncate font-mono text-small text-fg-2">{r.path}</span>
+              <button
+                onClick={() => unlink.mutate(r.path)}
+                className="flex-none text-faint hover:text-st-blocked"
+                aria-label="Unlink"
+              >
+                <X size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : rows.length === 0 ? (
         <p className="text-body text-faint">No code linked yet.</p>
       ) : (
         <div className="space-y-1.5">
@@ -59,6 +91,15 @@ export function LinkedCode({ refId, projectId }: { refId: string; projectId?: st
         </div>
       )}
 
+      {chips && !adding && (
+        <button
+          onClick={() => setAdding(true)}
+          className="mt-2 inline-flex items-center gap-1 text-small text-muted hover:text-fg-2"
+        >
+          <Plus size={12} /> Link
+        </button>
+      )}
+      {(!chips || adding) && (
       <form
         onSubmit={(e) => { e.preventDefault(); if (path.trim() && !link.isPending) link.mutate(); }}
         className="mt-2 flex items-center gap-1.5"
@@ -86,6 +127,7 @@ export function LinkedCode({ refId, projectId }: { refId: string; projectId?: st
           <Plus size={13} /> Link
         </button>
       </form>
+      )}
     </div>
   );
 }
