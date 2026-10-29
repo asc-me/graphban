@@ -63,6 +63,7 @@ const m = vi.hoisted(() => ({
   mergeRequest: vi.fn(async () => ({ action_id: "act2" })),
   blockerAction: vi.fn(async () => ({})),
   undoBlocker: vi.fn(async () => ({})),
+  answerBlocker: vi.fn(async () => ({})),
   decideCollision: vi.fn(async () => ({ id: 7 })),
   undoCollisionDecision: vi.fn(async () => ({})),
 }));
@@ -129,6 +130,22 @@ describe("Triage inbox", () => {
     await waitFor(() =>
       expect(m.acceptRequestTo).toHaveBeenCalledWith("CORE-R1", "next", "PRD-46"));
     expect(await screen.findByText(/Accepted → Next as CORE-9 · linked PRD-46/)).toBeInTheDocument();
+  });
+
+  it("answers a decision's third option on its own letter", async () => {
+    const decide: TriageFeedRow = {
+      ...blocker, id: "GRPH-906",
+      decision: { question: "Which store?", options: ["Postgres", "SQLite", "Both", "Neither"] },
+    };
+    m.projectTriage.mockResolvedValue(feed([decide, bug]));
+    renderTriage();
+    await screen.findByText("Crash on empty project");
+    // Option keys are A B D F G H — C is the comment box, so the third option is D.
+    const user = userEvent.setup();
+    await user.keyboard("c");
+    expect(m.answerBlocker).not.toHaveBeenCalled();
+    await user.keyboard("d");
+    await waitFor(() => expect(m.answerBlocker).toHaveBeenCalledWith("GRPH-906", "Both"));
   });
 
   it("asks before Merge and Override, ↵ confirms, and nothing else asks", async () => {

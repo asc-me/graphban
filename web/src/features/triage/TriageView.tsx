@@ -149,8 +149,7 @@ export function TriageView() {
       }
       if (k === "c") {
         const ta = document.querySelector<HTMLTextAreaElement>("textarea[data-triage-comment]");
-        if (ta) { ta.focus(); e.preventDefault(); }
-        return;
+        if (ta) { ta.focus(); e.preventDefault(); return; }
       }
       const hit = actions.find((a) => a.key === k);
       if (hit) { e.preventDefault(); trigger(hit); }

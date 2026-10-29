@@ -41,8 +41,11 @@ export function formatAge(seconds: number): string {
 const iso = (ms: number) => new Date(Date.now() + ms).toISOString();
 const HOUR = 3_600_000;
 
-/** Letters for a decision wait's options. `e` and `s` are Escalate and Snooze. */
-const OPTION_KEYS = "abcdfg";
+/**
+ * Letters for a decision wait's options. `e` and `s` are Escalate and Snooze; `c` focuses the
+ * comment box and `j`/`k`/`z` move and undo, so none of those can name an option.
+ */
+const OPTION_KEYS = "abdfgh";
 
 export function actionsFor(row: TriageFeedRow, projectId: string): TriageAction[] {
   if (row.kind === "blocker") {
