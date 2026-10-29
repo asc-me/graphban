@@ -13,6 +13,7 @@ import type {
   Galaxy,
   OrgProjectAccess,
   TriageRow,
+  TriageFeed,
   AdminInvite,
   AdminOrg,
   AdminUser,
@@ -722,6 +723,65 @@ export const api = {
   /** What is waiting to be triaged, each row carrying its closest duplicate. */
   triageQueue: (projectId: string) =>
     request<TriageRow[]>(`/requests/triage?project_id=${encodeURIComponent(projectId)}`),
+  /** The unified triage feed: requests, blockers and collisions in one queue (GRPH-1135). */
+  projectTriage: (projectId: string) =>
+    request<TriageFeed>(`/projects/${encodeURIComponent(projectId)}/triage`),
+  /** Accept a request into `backlog` or `next`; `action_id` is what `undoRequestAction` takes. */
+  acceptRequestTo: (id: string, status: "backlog" | "next", prdId?: string) =>
+    request<{ request: RequestItem; item: Item; action_id: string | null }>(
+      `/requests/${encodeURIComponent(id)}/accept`,
+      { method: "POST", body: JSON.stringify({ status, prd_id: prdId ?? null }) },
+    ),
+  mergeRequest: (id: string, targetId: string) =>
+    request<RequestItem & { action_id: string | null }>(
+      `/requests/${encodeURIComponent(id)}/merge`,
+      { method: "POST", body: JSON.stringify({ target_id: targetId }) },
+    ),
+  declineRequest: (id: string) =>
+    request<RequestItem & { action_id: string | null }>(
+      `/requests/${encodeURIComponent(id)}/decline`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  snoozeRequest: (id: string, until: string) =>
+    request<RequestItem & { action_id: string | null }>(
+      `/requests/${encodeURIComponent(id)}/snooze`,
+      { method: "POST", body: JSON.stringify({ until }) },
+    ),
+  undoRequestAction: (id: string, actionId: string) =>
+    request<RequestItem>(`/requests/${encodeURIComponent(id)}/undo`, {
+      method: "POST",
+      body: JSON.stringify({ action_id: actionId }),
+    }),
+  /** Blocker actions (GRPH-1137). `undoBlocker` reverses the newest one on the item. */
+  answerBlocker: (itemId: string, option: string) =>
+    request<unknown>(`/items/${encodeURIComponent(itemId)}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ option }),
+    }),
+  blockerAction: (itemId: string, action: "unblock" | "escalate" | "release-claim") =>
+    request<unknown>(`/items/${encodeURIComponent(itemId)}/${action}`, { method: "POST" }),
+  snoozeBlocker: (itemId: string, until: string) =>
+    request<unknown>(`/items/${encodeURIComponent(itemId)}/snooze`, {
+      method: "POST",
+      body: JSON.stringify({ until }),
+    }),
+  undoBlocker: (itemId: string) =>
+    request<unknown>(`/items/${encodeURIComponent(itemId)}/undo`, { method: "POST" }),
+  /** Collision decisions (GRPH-1138). Override is the project owner's alone. */
+  decideCollision: (
+    projectId: string,
+    members: string[],
+    decision: "serialize" | "parallel" | "hold" | "override" | "snooze",
+    snoozeUntil?: string,
+  ) =>
+    request<{ id: number }>(`/items/collision-decisions`, {
+      method: "POST",
+      body: JSON.stringify({
+        project_id: projectId, members, decision, snooze_until: snoozeUntil ?? null,
+      }),
+    }),
+  undoCollisionDecision: (decisionId: number) =>
+    request<unknown>(`/items/collision-decisions/${decisionId}`, { method: "DELETE" }),
   /** Turn a request into tracked work. One transaction — item and link land together. */
   acceptRequest: (id: string) =>
     request<{ request: RequestItem; item: Item }>(`/requests/${id}/accept`, { method: "POST" }),
