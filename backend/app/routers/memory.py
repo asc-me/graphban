@@ -1,3 +1,5 @@
+from typing import NoReturn
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -436,14 +438,24 @@ def stale(
     ]
 
 
+def refuse_memory_write(detail: str, shard_id: str) -> NoReturn:
+    """The `memory.write_access` refusal, raised only here so the registry's drift test fails
+    if it goes away; `target` puts it in the shard's project's Activity."""
+    raise Refused(403, detail, rule_id="memory.write_access", target=("shard", shard_id))
+
+
 def _writable_shard(db: Session, user: User, shard_id: str) -> MemoryShard:
     existing = db.get(MemoryShard, shard_id)
     if existing is None:
         raise HTTPException(404, "shard not found")
     if existing.project_id is not None:
-        authz.require_writable(db, user.id, existing.project_id, "shard")
-    elif not authz.writable_project_ids(db, user.id):
-        raise Refused(403, "no write access to any project", rule_id="memory.write_access")
+        if authz.can_write(db, user.id, existing.project_id):
+            return existing
+        if not authz.can_read(db, user.id, existing.project_id):
+            raise HTTPException(404, "shard not found")  # hide existence
+        refuse_memory_write("read-only access to this shard's project", shard_id)
+    if not authz.writable_project_ids(db, user.id):
+        refuse_memory_write("no write access to any project", shard_id)
     return existing
 
 
