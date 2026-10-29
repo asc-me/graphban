@@ -337,10 +337,10 @@ describe("RulesView", () => {
 });
 
 describe("Rules nav entry", () => {
-  it("sits in Build after Stack", () => {
+  it("sits in Build after MCP Tools (design order)", () => {
     const build = SECTIONS.find((s) => s.key === "build")!;
     const views = build.pages.map((p) => p.view);
-    expect(views.indexOf("rules")).toBe(views.indexOf("stack") + 1);
+    expect(views.indexOf("rules")).toBe(views.indexOf("mcp-tools") + 1);
     expect(build.pages.find((p) => p.view === "rules")?.label).toBe("Rules");
   });
 });

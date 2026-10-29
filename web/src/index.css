@@ -69,6 +69,7 @@
   --color-line-2: #1e242a;
   --color-line-hover: #2f3a42;
   --color-line-3: #3a444c;
+  --color-line-flyout: #232a30;
 
   /* Control borders. An input's boundary IS the thing that identifies the control, so these
      hold ≥3:1 against every surface a control actually sits on (1.4.11). Solved against

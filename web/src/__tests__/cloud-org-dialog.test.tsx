@@ -247,10 +247,10 @@ describe("OrgRailItem dialog integration", () => {
     expect(await screen.findByText("Link to a cloud org")).toBeInTheDocument();
   });
 
-  it("shows red dot badge when unlinked", async () => {
+  it("shows the CLOUD pill when unlinked", async () => {
     wrap(<LeftNav />);
-    await screen.findByRole("button", { name: /Organization/ });
-    expect(screen.getByLabelText("Not linked")).toBeInTheDocument();
+    const btn = await screen.findByRole("button", { name: /Organization/ });
+    expect(btn).toHaveTextContent("CLOUD");
   });
 
   it("navigates to sync settings with ?reason=malformed for bad cloud_url", async () => {
