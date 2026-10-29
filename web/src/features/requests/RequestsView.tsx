@@ -1,4 +1,4 @@
-import { ChevronRight, ChevronUp, ExternalLink, Globe, Lock } from "lucide-react";
+import { ChevronRight, ChevronUp, ExternalLink } from "lucide-react";
 import * as React from "react";
 
 import {
@@ -24,7 +24,7 @@ const STATUS_COLOR: Record<string, string> = {
   linked: "#7ca2ff",
 };
 
-/** "BUG" / "new" → "Bug" / "New": the design shows sentence case, whatever casing the data carries. */
+/** "BUG" → "Bug": the filter chips show sentence case, whatever casing the data carries. */
 export function sentenceCase(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }
@@ -65,7 +65,7 @@ export function RequestsView() {
             key={t}
             active={filter === t}
             onClick={() => setFilter(t)}
-            label={TYPE_META[t].label}
+            label={sentenceCase(TYPE_META[t].label)}
             count={counts[t] ?? 0}
             color={TYPE_META[t].color}
           />
@@ -141,10 +141,10 @@ function RequestRow({
         </button>
 
         <span
-          className="flex-none rounded-md border px-1.5 py-0.5 font-mono text-meta"
+          className="flex-none rounded-md border px-1.5 py-0.5 font-mono text-meta uppercase"
           style={{ color: meta.color, background: meta.bg, borderColor: meta.border }}
         >
-          {sentenceCase(meta.label)}
+          {meta.label}
         </span>
 
         <button
@@ -167,29 +167,28 @@ function RequestRow({
         <span className="hidden flex-none font-mono text-[10px] text-faint-2 sm:inline">{shortAge(request.ago)}</span>
 
         <span
-          className="flex flex-none items-center gap-1.5 font-mono text-[10px]"
+          className="flex w-[82px] flex-none items-center gap-1.5 font-mono text-[10px] uppercase"
           style={{ color: STATUS_COLOR[request.status] ?? "#8b949e" }}
         >
           <span
             className="h-1.5 w-1.5 rounded-full"
             style={{ background: STATUS_COLOR[request.status] ?? "#8b949e" }}
           />
-          {sentenceCase(request.status)}
+          {request.status}
         </span>
 
         <button
           onClick={handlePublishToggle}
           disabled={publish.isPending || unpublish.isPending}
           className={cn(
-            "flex flex-none items-center gap-1 rounded-md border px-2 py-1 font-mono text-[10px] transition-colors",
+            "flex flex-none items-center gap-1 rounded-md border px-2 py-1 font-mono text-[10px] uppercase transition-colors",
             isPublished
-              ? "border-green-500/30 bg-green-500/10 text-green-400 hover:border-green-500/50"
+              ? "border-st-done/30 bg-st-done/10 text-st-done hover:border-st-done/50"
               : "border-control bg-surface text-muted hover:border-control-hover hover:text-fg-2",
           )}
           title={isPublished ? "Unpublish (remove from public board)" : "Publish (show on public board)"}
         >
-          {isPublished ? <Globe size={11} /> : <Lock size={11} />}
-          {isPublished ? "Published" : "Publish"}
+          {isPublished ? "● Published" : "Publish"}
         </button>
 
         <LinkDialog request={request} />
@@ -201,7 +200,7 @@ function RequestRow({
             <p className="whitespace-pre-wrap text-body leading-relaxed text-fg-2">{request.detail}</p>
           )}
           <div>
-            <div className="mb-1.5 font-mono text-[10px] text-faint">Linked code</div>
+            <div className="mb-1.5 font-mono text-meta uppercase text-faint">Linked code</div>
             <LinkedCode refId={request.id} projectId={activeId} variant="chips" />
           </div>
           <CommentThread requestId={request.id} />
