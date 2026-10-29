@@ -1,6 +1,7 @@
 import { ArrowDown, ArrowUp, Github, GitPullRequest, GripVertical, MoreHorizontal } from "lucide-react";
 import * as React from "react";
 
+import { Dot } from "@/components/ui/badge";
 import { Avatar } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -9,10 +10,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/cn";
-import { CHECK_COLOR, PR_STATE_COLOR } from "@/lib/meta";
+import { CHECK_COLOR, PR_STATE_COLOR, STATUS_META, STATUS_ORDER } from "@/lib/meta";
 import type { Item, Status } from "@/lib/types";
 
-import { StatusMenu } from "./StatusMenu";
 
 /** "#42" for an issue/PR URL, else the hostname. */
 function ghRef(url: string): string {
@@ -23,6 +23,13 @@ function ghRef(url: string): string {
   } catch {
     return "link";
   }
+}
+
+/** What clicking the ring does: the next stage of the flow; Blocked rejoins at In Progress. */
+export function nextStatus(s: Status): Status {
+  if (s === "blocked") return "in_progress";
+  if (s === "done") return "done";
+  return STATUS_ORDER[STATUS_ORDER.indexOf(s) + 1];
 }
 
 export function ItemRow({
@@ -62,7 +69,7 @@ export function ItemRow({
       onClick={onSelect}
       aria-selected={selected}
       className={cn(
-        "group relative flex cursor-pointer items-center gap-3 border-b border-line/70 px-4 py-3 transition-colors",
+        "group relative flex cursor-pointer items-center gap-3 border-b border-line/70 h-[45px] px-4 transition-colors",
         selected
           ? "border-l-2 border-l-accent bg-surface-3 pl-[calc(1rem-2px)]"
           : "border-l-2 border-l-transparent hover:bg-surface/60",
@@ -72,14 +79,28 @@ export function ItemRow({
     >
       <GripVertical
         size={14}
-        className="flex-none text-faint-2 opacity-0 transition-opacity group-hover:opacity-100"
+        className="flex-none text-faint-2"
       />
 
-      <div className="flex-none" onClick={(e) => e.stopPropagation()}>
-        <StatusMenu status={item.status} onChange={onStatus} compact />
-      </div>
+      <button
+        type="button"
+        aria-label={`Status: ${STATUS_META[item.status].label}`}
+        title={`${STATUS_META[item.status].label} — click to advance`}
+        onClick={(e) => {
+          e.stopPropagation();
+          const next = nextStatus(item.status);
+          if (next !== item.status) onStatus(next);
+        }}
+        className="flex size-[18px] flex-none items-center justify-center rounded-full border-2"
+        style={{ borderColor: STATUS_META[item.status].color }}
+      >
+        <span
+          className="size-1.5 rounded-full"
+          style={{ background: item.status === "backlog" ? "transparent" : STATUS_META[item.status].color }}
+        />
+      </button>
 
-      <span className="w-[52px] flex-none font-mono text-small text-faint">{item.id}</span>
+      <span className="w-16 flex-none font-mono text-small text-faint">{item.id}</span>
 
       <span className="min-w-0 flex-1 truncate text-[13.5px] text-fg-2">{item.title}</span>
 
@@ -155,7 +176,11 @@ export function ItemRow({
         >
           {item.assignee}
         </span>
-      ) : null}
+      ) : (
+        <span className="flex-none rounded-md border border-line px-1.5 py-0.5 font-mono text-meta text-faint-2">
+          unassigned
+        </span>
+      )}
 
       <span className="w-[52px] flex-none text-right font-mono text-[10px] text-faint-2">
         {item.date}
@@ -169,7 +194,7 @@ export function ItemRow({
         />
       )}
 
-      <div className="flex-none opacity-0 transition-opacity group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
+      <div className="w-7 flex-none opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
@@ -189,6 +214,12 @@ export function ItemRow({
               <ArrowDown size={14} className="text-muted" />
               Move down
             </DropdownMenuItem>
+            {STATUS_ORDER.filter((st) => st !== item.status).map((st) => (
+              <DropdownMenuItem key={st} onSelect={() => onStatus(st)}>
+                <Dot color={STATUS_META[st].color} />
+                Set {STATUS_META[st].label}
+              </DropdownMenuItem>
+            ))}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

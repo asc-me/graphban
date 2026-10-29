@@ -58,19 +58,21 @@ export function PrdListView() {
         condensed={condensed}
       />
 
-      <ViewBar
-        views={views}
-        doneWord="closed"
-        condensed={condensed}
-        onToggleCondense={toggleCondensed}
-        countFor={(v) => scopeOf(v).shown.filter((p) => statusMatches(p.status, v.status, [])).length}
-      />
+      {showing && (
+        <ViewBar
+          views={views}
+          doneWord="closed"
+          condensed={condensed}
+          onToggleCondense={toggleCondensed}
+          countFor={(v) => scopeOf(v).shown.filter((p) => statusMatches(p.status, v.status, [])).length}
+        />
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading ? (
           <PrdListSkeleton rows={prds.length > 0 ? prds.length : 6} />
         ) : isError ? (
-          <PlannerError message="PRDs unavailable" onRetry={() => refetch()} />
+          <PlannerError title="PRDs unavailable" onRetry={() => refetch()} />
         ) : prds.length === 0 ? (
           <PlannerEmpty
             title="No PRDs yet"

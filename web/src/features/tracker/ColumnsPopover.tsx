@@ -14,6 +14,11 @@ const MODES: { mode: ColumnMode; label: string }[] = [
   { mode: "hide", label: "Hide" },
 ];
 
+function initials(name?: string): string {
+  const i = (name ?? "").split(/\s+/).filter(Boolean).map((p) => p[0]).slice(0, 2).join("");
+  return (i || "you").toUpperCase();
+}
+
 /** View-bar button + popover: per-user show / collapse / hide for each board column. */
 export function ColumnsPopover({ prefs, items }: { prefs: ColumnPrefsApi; items: Item[] }) {
   const [open, setOpen] = React.useState(false);
@@ -49,7 +54,10 @@ export function ColumnsPopover({ prefs, items }: { prefs: ColumnPrefsApi; items:
         )}
       >
         <SlidersHorizontal size={12} />
-        {columnsSummary(prefs.hidden, prefs.collapsed)}
+        Columns
+        {(prefs.hidden > 0 || prefs.collapsed > 0) && (
+          <span className="font-mono text-[10.5px]">{columnsSummary(prefs.hidden, prefs.collapsed).slice("Columns ".length)}</span>
+        )}
       </button>
       {open && (
         <div
@@ -57,8 +65,11 @@ export function ColumnsPopover({ prefs, items }: { prefs: ColumnPrefsApi; items:
           aria-label="Board columns"
           className="absolute left-0 top-full z-20 mt-1.5 w-[320px] rounded-[12px] border border-line-2 bg-surface-2 p-3 shadow-lg"
         >
-          <div className="pb-2 font-mono text-[10.5px] uppercase tracking-wide text-faint">
-            Board columns · only you · {me?.name ?? "you"}
+          <div className="flex items-center justify-between pb-2">
+            <span className="text-body font-semibold text-fg">Board columns</span>
+            <span className="font-mono text-[10px] uppercase tracking-wide text-faint">
+              only you · {initials(me?.name)}
+            </span>
           </div>
           <div className="flex flex-col gap-1">
             {BOARD_COLUMNS.map((status) => {
@@ -79,7 +90,7 @@ export function ColumnsPopover({ prefs, items }: { prefs: ColumnPrefsApi; items:
                         aria-pressed={current === mode}
                         onClick={() => prefs.setMode(status, mode)}
                         className={cn(
-                          "rounded px-1.5 py-px text-[12px]",
+                          "h-5 rounded px-1.5 font-mono text-[10px]",
                           current === mode ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
                         )}
                       >
@@ -95,7 +106,7 @@ export function ColumnsPopover({ prefs, items }: { prefs: ColumnPrefsApi; items:
             <span className="flex-1 text-[12px] text-faint">
               Hidden columns still count toward views. Their cards don't move.
             </span>
-            <button type="button" onClick={prefs.reset} className="text-[12px] text-muted hover:text-fg">
+            <button type="button" onClick={prefs.reset} className="h-6 rounded-md border border-control px-2.5 text-[12px] text-muted hover:text-fg">
               Reset
             </button>
           </div>

@@ -39,7 +39,7 @@ export function TopBar({
         <LogoMark />
         <div className="leading-none">
           <div className="text-[15px] font-bold tracking-tight">Graphban</div>
-          <div className="mt-0.5 text-[10px] text-faint">
+          <div className="mt-0.5 font-mono text-meta uppercase text-faint">
             Agent memory · linear execution
           </div>
         </div>
@@ -71,9 +71,9 @@ export function TopBar({
 
       <div className="flex-1" />
 
-      <div className="flex items-center gap-1.5 rounded-lg border border-[#1c2620] bg-[rgba(95,208,122,0.05)] px-2.5 py-1.5 text-small text-st-done">
+      <div className="flex items-center gap-1.5 rounded-lg border border-[#1c2620] bg-[rgba(95,208,122,0.05)] px-2.5 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-st-done">
         <span className="blink h-1.5 w-1.5 rounded-full bg-st-done shadow-[0_0_8px_#5fd07a]" />
-        {liveTools} tools live
+        MCP · {liveTools} tools live
         {keys && keys.length > 0 && <span className="text-muted-2">· {keys.length} keys</span>}
       </div>
 

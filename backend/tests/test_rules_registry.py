@@ -90,3 +90,17 @@ def test_endpoint(client, auth):
     assert gi["enforcement"] in ("advisory", "unmeasured")
     assert gi["source"] in ("project", "org", "unmeasured")
     assert client.get("/api/rules").status_code in (401, 403)
+
+
+def test_flow_endpoint(client, auth):
+    r = client.get("/api/rules/flow?project_id=core", headers=auth)
+    assert r.status_code == 200
+    body = r.json()
+    assert [s["id"] for s in body["stages"]] == list(R.STAGE_IDS)
+    assert body["edges"] == [list(e) for e in R.EDGES]
+    placed = {x["id"] for s in body["stages"] for x in s["rules"]}
+    assert set(R.RULES_BY_ID) <= placed and "agents.skills_pack" in placed
+    for s in body["stages"]:
+        assert s["state"] in R.ENFORCEMENT_ORDER + ("not_used",)
+        assert all(isinstance(x["used"], bool) for x in s["rules"])
+    assert client.get("/api/rules/flow").status_code in (401, 403)
