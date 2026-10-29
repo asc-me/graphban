@@ -2143,6 +2143,8 @@ export interface FleetPolicy {
   allowed_harnesses: string[];
   /** PRD-41 D20: a FILTER. Absent / empty is no cap. */
   caps?: FleetPolicyCaps | null;
+  /** Stored by `normalise_policy`; PUT replaces the whole policy, so it must be sent back. */
+  cluster_ceiling?: Record<string, unknown> | null;
 }
 
 export interface FleetProfileRead {

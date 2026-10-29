@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
-import type { EventsQuery, GitopsPatch, Item, LessonFilters, LogExportPatch, RequestItem } from "./types";
+import type { EventsQuery, FleetPolicy, GitopsPatch, Item, LessonFilters, LogExportPatch, RequestItem } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -488,6 +488,26 @@ export function useRulesFlow(projectId: string) {
   });
 }
 
+export function useFleetPolicy(projectId: string) {
+  return useQuery({
+    queryKey: ["fleet-policy", projectId],
+    queryFn: () => api.fleetPolicy(projectId),
+    enabled: !!projectId,
+  });
+}
+
+/** PUT replaces the whole policy: the caller passes the full `FleetPolicy` it read. */
+export function useSaveFleetPolicy(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (policy: FleetPolicy) => api.saveFleetPolicy({ project_id: projectId, ...policy }),
+    onSuccess: (data) => {
+      qc.setQueryData(["fleet-policy", projectId], data);
+      qc.invalidateQueries({ queryKey: ["rules-flow"] });
+    },
+  });
+}
+
 export function useStack(projectId: string) {
   return useQuery({
     queryKey: ["stack", projectId],
@@ -623,7 +643,11 @@ export function useUpdateGitops(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: GitopsPatch) => api.updateGitops(projectId, body),
-    onSuccess: (data) => qc.setQueryData(keys.gitops(projectId), data),
+    onSuccess: (data) => {
+      qc.setQueryData(keys.gitops(projectId), data);
+      // The Rules map draws the saved value and recomputes the stage pill from the server.
+      qc.invalidateQueries({ queryKey: ["rules-flow"] });
+    },
   });
 }
 
