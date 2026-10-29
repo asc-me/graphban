@@ -268,6 +268,9 @@ export function BudgetCapEditor() {
         <span className={cn(MONO, "text-[13px] font-semibold")}>
           {saved != null ? `${saved} tokens per item` : "— no per-item cap"}
         </span>
+        {data.writable === false ? (
+          <span className={note} data-testid="rules-budget-readonly">You don't have write access to this project</span>
+        ) : (
         <Button
           size="sm"
           variant="outline"
@@ -280,6 +283,7 @@ export function BudgetCapEditor() {
         >
           Edit
         </Button>
+        )}
       </div>
     );
   }

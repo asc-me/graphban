@@ -372,7 +372,8 @@ def delete_profile(project_id: str | None = None, db: Session = Depends(get_db),
 def read_policy(project_id: str, db: Session = Depends(get_db),
                 user: User = Depends(get_current_user)):
     authz.require_readable(db, user.id, project_id)
-    return {"project_id": project_id, "policy": fleet_profiles.policy_of(db, project_id)}
+    return {"project_id": project_id, "policy": fleet_profiles.policy_of(db, project_id),
+            "writable": authz.can_write(db, user.id, project_id)}
 
 
 @router.put("/policy")

@@ -16,7 +16,7 @@ import { errorDetail } from "@/lib/errors";
 import { stepIndex } from "@/lib/graph/useGraphKeyboard";
 import { useGraphViewport, zoomAbout } from "@/lib/graph/useGraphViewport";
 import { useRulesFlow } from "@/lib/queries";
-import { projectPath, tagFromPath } from "@/lib/routes";
+import { adminPath, projectPath, tagFromPath } from "@/lib/routes";
 import type { RuleFlowRule, RuleStage, RuleSuggestion, RulesFlow } from "@/lib/types";
 
 import {
@@ -1103,6 +1103,17 @@ function ValueBox({ rule, value, prefill }: { rule: RuleFlowRule; value: string 
           </div>
   );
   const field = GITOPS_RULE_FIELDS[rule.id];
+  if (rule.id === "gitops.model") {
+    return (
+      <div className="flex flex-col gap-1.5">
+        {box}
+        <span className="text-[11.5px] leading-snug text-muted" data-testid="rules-gitops-model-where">
+          Change the model in{" "}
+          <Link to={adminPath("gitops")} className="text-accent hover:underline">Admin → Gitops</Link>
+        </span>
+      </div>
+    );
+  }
   return field ? <GitopsRuleEditor rule={rule} field={field} fallback={box} prefill={prefill} /> : box;
 }
 
