@@ -408,6 +408,32 @@ describe("the tracker board (GRPH-1144)", () => {
     expect(within(column("In Progress")).queryByText("Drop here")).not.toBeInTheDocument();
   });
 
+  it("renders the status chip row on Board", async () => {
+    renderTracker();
+    await screen.findByText("In progress thing");
+    expect(screen.getByRole("button", { name: /^All/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Active/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Backlog/ })).toBeInTheDocument();
+  });
+
+  it("narrows the board to three columns under the In flight view", async () => {
+    const user = userEvent.setup();
+    renderTracker();
+    await screen.findByText("In progress thing");
+    await user.click(screen.getByRole("tab", { name: /In flight/ }));
+    const names = screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"));
+    expect(names).toEqual(["In Progress", "Review", "Blocked"]);
+  });
+
+  it("narrows the board when a status chip is picked", async () => {
+    const user = userEvent.setup();
+    renderTracker();
+    await screen.findByText("In progress thing");
+    await user.click(screen.getByRole("button", { name: /^Done/ }));
+    const names = screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"));
+    expect(names).toEqual(["Done"]);
+  });
+
   it("persists a switch to List across a reload", async () => {
     const user = userEvent.setup();
     const first = renderTracker();
