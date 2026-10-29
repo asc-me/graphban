@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { Collapsible } from "@/components/planner/Collapsible";
 import { useProjectCtx } from "@/features/ProjectContext";
 
 /**
@@ -16,16 +17,20 @@ export function PlaceHeader({
   viewName,
   purpose,
   action,
+  condensed = false,
 }: {
   viewName: string;
   purpose: ReactNode;
   action?: ReactNode;
+  /** Collapse the header (GRPH-1147). */
+  condensed?: boolean;
 }) {
   const { active } = useProjectCtx();
   const projectName = active?.name ?? "";
 
   return (
-    <div className="flex-none border-b border-line px-5 py-4" data-testid="place-header">
+    <Collapsible collapsed={condensed}>
+    <div className="border-b border-line px-5 py-4" data-testid="place-header">
       <div className="flex items-baseline gap-2">
         {projectName && (
           <>
@@ -45,5 +50,6 @@ export function PlaceHeader({
         {action && <div className="flex-none">{action}</div>}
       </div>
     </div>
+    </Collapsible>
   );
 }
