@@ -1603,6 +1603,15 @@ class Link(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class PrdRequestLink(Base):
+    """Many-to-many PRD <-> request link (PRD-60 D10 / GRPH-1140)."""
+    __tablename__ = "prd_request_links"
+
+    prd_id: Mapped[str] = mapped_column(ForeignKey("prds.id"), primary_key=True)
+    request_id: Mapped[str] = mapped_column(ForeignKey("requests.id"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class CollisionDecision(Base):
     """A person's (or planner's) answer to one collision cluster (PRD-60 D8 / GRPH-1138).
 
