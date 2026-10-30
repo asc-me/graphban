@@ -2410,6 +2410,9 @@ export interface LiveFeedRow {
   duration_ms?: number;
   status?: string;
   files?: string[];
+  /** Present on the project-wide stream, which spans agents. */
+  agent_id?: string;
+  agent_label?: string;
 }
 
 /** GET /api/live/{agent_id}/feed. `state: "never"` with no rows is the empty. */
@@ -2426,6 +2429,8 @@ export interface LiveBoard {
   presence_ttl_seconds: number;
   truncated: boolean;
   total_agents: number;
+  /** Agents not dismissed and inside the presence TTL — the one "live" count (same rows as ShellCounts.live_agents). */
+  online_agents: number;
   unattributed_count: number;
   by_role: Record<string, number>;
   roles: string[];

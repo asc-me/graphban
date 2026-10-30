@@ -27,10 +27,10 @@ import type { DashboardData, RequestType } from "@/lib/types";
 const { dashboardSpy } = vi.hoisted(() => ({ dashboardSpy: vi.fn() }));
 
 const countsPopulated = {
-  items: 11, items_in_progress: 4, requests: 5, review: 2, triage_new: 1, lessons_published: 3,
+  items: 11, items_in_progress: 4, requests: 5, review: 2, triage_new: 1, lessons_published: 3, live_agents: 2,
 };
 const countsZero = {
-  items: 0, items_in_progress: 0, requests: 0, review: 0, triage_new: 0, lessons_published: 0,
+  items: 0, items_in_progress: 0, requests: 0, review: 0, triage_new: 0, lessons_published: 0, live_agents: 0,
 };
 const mapOf = (node_count: number) => ({
   nodes: [], edges: [], node_count, edge_count: 0, outbound: [],
@@ -160,7 +160,7 @@ describe("Dashboard (PRD-47 S3)", () => {
 
   it("shows a failed count as failed, not 0", async () => {
     const { api } = await import("@/lib/api");
-    vi.mocked(api.fleet).mockRejectedValue(new Error("boom"));
+    vi.mocked(api.counts).mockRejectedValue(new Error("boom"));
     renderDashboard();
     const tile = (await screen.findByText("Agents live", { selector: "span" })).parentElement!;
     expect(tile).toHaveTextContent("—");
@@ -372,7 +372,7 @@ describe("an empty project is not a measured one", () => {
     const { api } = await import("@/lib/api");
     vi.mocked(api.dashboard).mockResolvedValue(bare as never);
     await zeroTheRest();
-    vi.mocked(api.fleet).mockResolvedValue(fleetOf(1) as never);
+    vi.mocked(api.counts).mockResolvedValue({ ...countsZero, live_agents: 1 } as never);
     renderDashboard();
 
     await screen.findByText("Items", { selector: "span" });

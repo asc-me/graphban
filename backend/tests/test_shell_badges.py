@@ -227,3 +227,23 @@ def test_badges_are_aggregates_whatever_the_roster_size(db, pids, key):
     for i in range(6):
         _agent(db, key, pid, host=f"h{i}")
     assert len(measure()) == len(before)
+
+
+def test_live_board_online_is_the_sidebar_badge(db, pids, key):
+    """One definition of "live": the Live header's `online_agents` and the sidebar's
+    `live_agents` count the same rows. Seen inside the TTL counts; seen days ago, or
+    dismissed, does not."""
+    from app.services import fleet as fleet_svc
+    from app.services import live as live_svc
+
+    pid, _ = pids
+    ttl = fleet_svc.presence_ttl_seconds()
+    for _i in range(3):
+        _agent(db, key, pid, seen_ago=0)
+    for _i in range(5):
+        _agent(db, key, pid, seen_ago=7 * 24 * 3600)
+    _agent(db, key, pid, seen_ago=ttl + 5)
+    _agent(db, key, pid, seen_ago=0, dismissed=True)
+    board = live_svc.board(db, pid)
+    assert board["online_agents"] == 3
+    assert board["online_agents"] == _counts(db, pid)["live_agents"]

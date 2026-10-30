@@ -101,6 +101,7 @@ function FeedRowView({
   if (r.source === "reported") {
     return (
       <li className="flex flex-wrap items-baseline gap-x-2 text-[11.5px]">
+        {r.agent_label && <span className="font-mono text-faint">{r.agent_label}</span>}
         <span className="rounded border border-line-2 px-1 font-mono text-meta uppercase tracking-wide text-faint">
           reported
         </span>
@@ -119,6 +120,7 @@ function FeedRowView({
         !r.ok && "text-[color:var(--color-st-blocked)]",
       )}
     >
+      {r.agent_label && <span className="font-mono text-faint">{r.agent_label}</span>}
       <span className="font-mono">{r.tool}</span>
       {r.target && (
         !r.ok && ITEM_ID.test(r.target.split(/\s+/)[0] ?? "") ? (
