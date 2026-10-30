@@ -449,6 +449,19 @@ export function FleetView() {
   const [collapsedRows, setCollapsedRows] = React.useState<FleetAgent[]>([]);
   const [collapsedTotal, setCollapsedTotal] = React.useState<number | null>(null);
   const [collapsedBusy, setCollapsedBusy] = React.useState(false);
+  // Dismissed from a collapsed page. The server still counts them as collapsed (offline,
+  // holding nothing), so they are hidden here rather than spliced out: the next page's offset
+  // is the raw number of rows already fetched, and splicing would skip one per dismissal.
+  const [collapsedDismissed, setCollapsedDismissed] = React.useState<Set<string>>(() => new Set());
+  // The pages belong to one project. Switching project drops them, and a page that lands
+  // after the switch is discarded rather than appended to the next project's list.
+  const collapsedFor = React.useRef(activeId);
+  React.useEffect(() => {
+    collapsedFor.current = activeId;
+    setCollapsedRows([]);
+    setCollapsedTotal(null);
+    setCollapsedDismissed(new Set());
+  }, [activeId]);
   const [showDismissed, setShowDismissed] = React.useState(false);
   // The role-narrowed mint is the older path. Collapsed so the empty roster cannot
   // still teach "mint a credential below" after seats became the recommended onboard.
@@ -532,6 +545,7 @@ export function FleetView() {
     setError("");
     try {
       await api.dismissAgent(id, undo);
+      if (!undo) setCollapsedDismissed((ids) => new Set(ids).add(id));
       await refetch();
     } catch (e) {
       // The server refuses an agent that still holds work — surfaced verbatim, because the
@@ -641,9 +655,11 @@ export function FleetView() {
 
   const collapsedCount = data?.collapsed?.count ?? 0;
   async function loadCollapsed() {
+    const project = activeId;
     setCollapsedBusy(true);
     try {
-      const page = await api.fleetCollapsed(activeId ?? "", collapsedRows.length);
+      const page = await api.fleetCollapsed(project ?? "", collapsedRows.length);
+      if (collapsedFor.current !== project) return;
       setCollapsedRows((rows) => [...rows, ...page.agents]);
       setCollapsedTotal(page.total);
     } catch (e) {
@@ -860,7 +876,7 @@ export function FleetView() {
               )}
               {showGone && goneAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask}
                                         roles={data?.roles ?? []} />)}
-              {showGone && collapsedRows.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask}
+              {showGone && collapsedRows.filter((a) => !a.dismissed && !collapsedDismissed.has(a.id)).map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask}
                                         roles={data?.roles ?? []} />)}
               {showGone && collapsedRows.length < (collapsedTotal ?? collapsedCount) && (
                 <button onClick={() => void loadCollapsed()} disabled={collapsedBusy}

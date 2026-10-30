@@ -202,17 +202,25 @@ def _seed(db, project_id, n_gone=2000):
     for _ in range(3):
         mk(last_seen_at=now)
     orphan = mk(last_seen_at=old, branch="gb/orphan")
-    holders = [mk(last_seen_at=now) for _ in range(2)]
+    # The review holder is OFFLINE and quiet for days: an online holder is kept for being
+    # online, so only an offline one proves that holding something alone keeps a row in full.
+    # The lease holder is online because a fleet read requeues an offline agent's build lease
+    # (`requeue_offline_items`) before the roster is built; the offline-lease case is pinned
+    # on `collapse_roster` directly below.
+    lessee, reviewer = mk(last_seen_at=now), mk(last_seen_at=old)
     db.flush()
     from app.services import items as items_svc
 
-    for i, h in enumerate(holders):
-        it = items_svc.create_item(db, title=f"held {i}", project_id=project_id,
+    leased = items_svc.create_item(db, title="held 0", project_id=project_id,
                                    status="in_progress")
-        it.claimed_by = h.id
-        it.claimed_at = now
+    leased.claimed_by = lessee.id
+    leased.claimed_at = now
+    in_review = items_svc.create_item(db, title="held 1", project_id=project_id,
+                                      status="review")
+    in_review.review_claimed_by = reviewer.id
+    in_review.review_claimed_at = old
     db.commit()
-    return orphan.id
+    return orphan.id, (lessee.id, reviewer.id)
 
 
 def _proj(client, auth):
@@ -223,13 +231,17 @@ def test_roster_returns_the_live_in_full_and_the_dead_as_an_exact_count(client, 
     import json
 
     pid = _proj(client, auth)
-    orphan_id = _seed(_db, pid)
+    orphan_id, holder_ids = _seed(_db, pid)
     r = client.get(f"/api/fleet?project_id={pid}", headers=auth)
     body = r.json()
     ids = {a["id"] for a in body["agents"]}
-    # 3 online + 2 holding leases + 1 orphaned branch; nothing else is in full.
+    # 3 online + a lease holder + an offline review holder + 1 orphaned branch.
     assert len(body["agents"]) == 6
     assert orphan_id in ids, "a holder of an orphaned branch is never collapsed away"
+    for hid in holder_ids:
+        assert hid in ids, "an agent holding a lease or review claim is never collapsed"
+    reviewer = next(a for a in body["agents"] if a["id"] == holder_ids[1])
+    assert reviewer["state"] == "offline" and reviewer["holdings"][0]["hold"] == "review"
     assert body["collapsed"]["count"] == 2000
     assert body["total"] == 2006 == len(body["agents"]) + body["collapsed"]["count"]
     assert len(json.dumps(body)) < ROSTER_SIZE_CEILING
@@ -237,11 +249,28 @@ def test_roster_returns_the_live_in_full_and_the_dead_as_an_exact_count(client, 
 
 def test_the_collapsed_agents_are_listed_on_demand_in_pages(client, auth, _db):
     pid = _proj(client, auth)
-    orphan_id = _seed(_db, pid, n_gone=30)
+    orphan_id, holder_ids = _seed(_db, pid, n_gone=30)
     page = client.get(f"/api/fleet/agents/collapsed?project_id={pid}&offset=10&limit=15",
                       headers=auth).json()
     assert page["total"] == 30 and len(page["agents"]) == 15
-    assert orphan_id not in {a["id"] for a in page["agents"]}
+    listed = {a["id"] for a in page["agents"]}
+    assert orphan_id not in listed and not listed & set(holder_ids)
+
+
+@pytest.mark.parametrize("hold", ["build", "review"])
+def test_an_offline_quiet_holder_is_never_collapsed(hold):
+    from app.services import fleet
+
+    old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+
+    def row(id_, holdings):
+        return {"id": id_, "active_role": "worker", "state": "offline", "holdings": holdings,
+                "branch_orphaned": False, "last_seen_at": old}
+
+    out = fleet.collapse_roster({"agents": [row("held", [{"id": "X-1", "hold": hold}]),
+                                            row("empty", [])]})
+    assert [a["id"] for a in out["agents"]] == ["held"]
+    assert out["collapsed"]["count"] == 1
 
 
 def test_mcp_fleet_status_is_not_collapsed(_db, client, auth):
