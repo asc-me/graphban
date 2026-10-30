@@ -527,20 +527,18 @@ export interface Item {
   id: string;
   project_id: string;
   title: string;
-  description: string;
   status: Status;
   tags: string[];
   touchpoints: string[];
   effort: number;
   sort_order: number;
   blocker: string;
-  /** Why a reviewer sent it back. Survives the pin — the author reads it after reclaiming. */
-  bounce_reason: string;
   date: string;
   reporter: Reporter;
   pr: PR | null;
   github_url: string;
-  evidence: EvidenceReceipt[];
+  /** A valid attestation receipt exists, so `done` will not 409 (GRPH-1228: the list omits `evidence`). */
+  has_attestation?: boolean;
   assignee: string;
   claimed_by: string | null;
   prd_id: string | null;
@@ -552,6 +550,15 @@ export interface Item {
   updated_at: string;
   /** When it last reached `done` (GRPH-1134); null while it is not done. */
   done_at: string | null;
+}
+
+/** The full record: `GET /items/{id}`, or the list with `?fields=full`. The project list
+ * returns `Item` only — no description, evidence or bounce reason (GRPH-1228). */
+export interface ItemDetail extends Item {
+  description: string;
+  evidence: EvidenceReceipt[];
+  /** Why a reviewer sent it back. Survives the pin — the author reads it after reclaiming. */
+  bounce_reason: string;
 }
 
 /** `retired` (GRPH-1175): unpublished from Memory, restorable for 14 days. */

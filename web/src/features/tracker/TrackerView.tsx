@@ -39,9 +39,7 @@ function isHumanWait(item: Item): boolean {
 }
 
 function hasValidAttestation(item: Item): boolean {
-  return (item.evidence || []).some(
-    (e) => e.kind === "attestation" && Boolean(e.adapter) && Boolean(e.commit),
-  );
+  return Boolean(item.has_attestation);
 }
 
 /** `done` that would 409 must not be PATCHed; route through owner-close (GRPH-1030). */

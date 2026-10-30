@@ -8,9 +8,9 @@ import { ProjectProvider } from "@/features/ProjectContext";
 import { TRACKER_COLUMNS_KEY } from "@/features/tracker/columnPrefs";
 import { TRACKER_LAYOUT_KEY, TrackerView } from "@/features/tracker/TrackerView";
 import { CHECK_COLOR, PR_STATE_COLOR } from "@/lib/meta";
-import type { GraphLink, Item } from "@/lib/types";
+import type { GraphLink, Item, ItemDetail } from "@/lib/types";
 
-const items: Item[] = [
+const items: ItemDetail[] = [
   {
     id: "AL-01", project_id: "core", title: "In progress thing", description: "",
     status: "in_progress", tags: ["ai"], touchpoints: [], effort: 5, sort_order: 0, blocker: "", bounce_reason: "", date: "Jul 19",
@@ -41,6 +41,7 @@ vi.mock("@/lib/api", () => ({
     projects: vi.fn(async () => [project]),
     me: vi.fn(async () => ({ name: "Alex Cain" })),
     items: vi.fn(async () => served),
+    item: vi.fn(async (id: string) => (served.find((i) => i.id === id) ?? items[0]) as ItemDetail),
     shards: vi.fn(async () => []),
     links: vi.fn(async () => servedLinks),
     updateItem: vi.fn(async (id: string, body: Partial<Item>) => ({ ...items[0], id, ...body })),
@@ -221,8 +222,8 @@ describe("a bounced item", () => {
   it("shows why it came back", async () => {
     // GRPH-378: the reason was required of the reviewer and then discarded, so the board
     // showed an item that had silently returned from review with no account of itself.
-    served = [{ ...items[0], id: "AL-03", title: "Sent back", status: "in_progress",
-                bounce_reason: "no test covers the refusal path" }];
+    served = [{ ...items[0], id: "AL-03", title: "Sent back", status: "in_progress" as const,
+                bounce_reason: "no test covers the refusal path" } as ItemDetail];
     try {
       renderTracker();
       await userEvent.click(await screen.findByText("Sent back"));
@@ -231,6 +232,39 @@ describe("a bounced item", () => {
     } finally {
       served = items;
     }
+  });
+});
+
+describe("editing from the open drawer (GRPH-1228)", () => {
+  // The detail query (an ItemDetail object) lives under the `items` prefix, next to the
+  // lists. The optimistic updaters used to .map every entry under it, so with the drawer
+  // open onMutate threw and the PATCH never went out.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Element.prototype.scrollTo = Element.prototype.scrollTo ?? (() => {});
+  });
+
+  it("PATCHes fidelity from the drawer", async () => {
+    const user = userEvent.setup();
+    const { api } = await import("@/lib/api");
+    renderTracker();
+    await user.click(await screen.findByText("In progress thing"));
+    await waitFor(() => expect(api.item).toHaveBeenCalledWith("AL-01"));
+    await user.click(await screen.findByRole("button", { name: "high" }));
+    await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith("AL-01", { fidelity: "high" }));
+  });
+
+  it("still changes a row status once a detail is cached", async () => {
+    const user = userEvent.setup();
+    const { api } = await import("@/lib/api");
+    renderTracker();
+    await user.click(await screen.findByText("In progress thing"));
+    await waitFor(() => expect(api.item).toHaveBeenCalledWith("AL-01"));
+    // Close the drawer; its detail query stays cached under the `items` prefix.
+    await user.keyboard("{Escape}");
+    const row = (await screen.findByText("In progress thing")).closest("[aria-selected]") as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: "Status: In Progress" }));
+    await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith("AL-01", { status: "review" }));
   });
 });
 
