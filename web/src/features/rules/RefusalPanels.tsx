@@ -7,14 +7,16 @@
  * served by the API — the browser never computes it, and a build that did not publish says so, never zero.
  */
 import * as React from "react";
+import { Link, useLocation } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { absTime } from "@/features/activity/model";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { useCreateItem, useDismissRecommendedRule, useRecommendedRules, useRefusalCoverage, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
-import type { RuleSuggestion, SuggestionSource, UnmappedGroup } from "@/lib/types";
+import { useCreateItem, useDismissedRecommendedRules, useDismissRecommendedRule, useRecommendedRules, useRestoreRecommendedRule, useRefusalCoverage, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
+import { projectPath, settingsPath, tagFromPath } from "@/lib/routes";
+import type { RuleSuggestion, SuggestionEvidence, SuggestionSource, UnmappedGroup } from "@/lib/types";
 
 const MONO = "font-mono";
 const WINDOW_DAYS = 7;
@@ -213,21 +215,54 @@ export function UnmappedSheet({ onClose }: { onClose: () => void }) {
 
 const SOURCE_NAMES: Record<string, string> = { stack: "Stack", code_graph: "Code graph", github: "GitHub" };
 
+/** The server's reason slugs, as sentences. An unknown slug is shown as sent, never as "not connected". */
+const REASON_TEXT: Record<string, string> = {
+  not_connected: "GitHub is not connected",
+  fetch_failed: "couldn't read GitHub (the request failed or timed out)",
+  no_code_map: "the project has no code map yet",
+  read_failed: "couldn't read the project's stack",
+};
+const reasonText = (reason: string | null) => (reason ? REASON_TEXT[reason] ?? reason : "");
+
 function SourceLine({ s }: { s: SuggestionSource }) {
   const name = SOURCE_NAMES[s.source] ?? s.source;
   const read = s.state === "read";
+  const notConnected = !read && s.reason === "not_connected";
   return (
     <li className="flex flex-wrap items-center gap-2 text-[12px]" data-testid={`rules-source-${s.source}`}>
       <span className={cn(MONO, "w-[88px] flex-none text-fg-2")}>{name}</span>
       <span className={cn(MONO, "text-[10px] font-semibold tracking-[0.05em]")} style={{ color: read ? "#c6f24e" : "#ff6b6b" }}>
-        {read ? "READ" : s.source === "github" ? "NOT CONNECTED" : "NOT AVAILABLE"}
+        {read ? "READ" : notConnected ? "NOT CONNECTED" : "NOT AVAILABLE"}
       </span>
-      <span className="text-muted">{read ? (s.read_at ? absTime(s.read_at) : "") : s.reason ?? ""}</span>
-      {!read && s.source === "github" && (
-        <a href="/settings" className="text-accent hover:underline">Connect GitHub</a>
+      <span className="text-muted">{read ? (s.read_at ? absTime(s.read_at) : "") : reasonText(s.reason)}</span>
+      {notConnected && s.source === "github" && (
+        <Link to={settingsPath("project/integrations")} className="text-accent hover:underline">Connect GitHub</Link>
       )}
     </li>
   );
+}
+
+const ABSOLUTE_URL = /^https?:\/\//i;
+
+/** Stack and code-graph evidence carry repo paths, not URLs: send them to the view that shows them. */
+function EvidenceLink({ e }: { e: SuggestionEvidence }) {
+  const { pathname } = useLocation();
+  if (!e.link) return <>{e.text}</>;
+  const cls = "text-accent hover:underline";
+  if (ABSOLUTE_URL.test(e.link)) {
+    return <a href={e.link} target="_blank" rel="noopener noreferrer" className={cls}>{e.text}</a>;
+  }
+  const view = e.source === "stack" ? "stack" : e.source === "code_graph" ? "code" : null;
+  if (!view) return <>{e.text}</>;
+  const tag = tagFromPath(pathname);
+  return <Link to={tag ? projectPath(tag, view) : `/${view}`} className={cls}>{e.text}</Link>;
+}
+
+/** What filing a code suggestion may promise: only what its level says, never more. */
+function acceptanceLine(s: RuleSuggestion): string {
+  if (s.level === "enforced") return `- ${s.title}: the server refuses a violation with rule_id ${s.rule_id ?? s.id}.`;
+  if (s.level === "checked") return `- ${s.title} is checked in CI and reported.`;
+  return `- ${s.title} is given to agents as advisory context.`;
 }
 
 export function RecommendedSheet({
@@ -243,6 +278,11 @@ export function RecommendedSheet({
   const dismiss = useDismissRecommendedRule(activeId);
   const createItem = useCreateItem(activeId);
   const { data: flow } = useRulesFlow(activeId);
+  const dismissedQ = useDismissedRecommendedRules(activeId, true);
+  const restore = useRestoreRecommendedRule(activeId);
+  const [showDismissed, setShowDismissed] = React.useState(false);
+  const writable = flow?.control.writable !== false;
+  const dismissed = dismissedQ.data ?? [];
   // The id is a key, never copy: the sheet says the stage's title.
   const stageTitle = (id: string) => flow?.stages.find((st) => st.id === id)?.title ?? "the flow";
   const [filed, setFiled] = React.useState<Record<string, string>>({});
@@ -250,13 +290,17 @@ export function RecommendedSheet({
 
   function fileAsItem(s: RuleSuggestion) {
     createItem.mutate(
-      { title: `Rule: ${s.title}`, description: `${s.why}\n\n## Acceptance\n- ${s.title} is enforced by the server.` },
+      { title: `Rule: ${s.title}`, description: `${s.why}\n\n## Acceptance\n${acceptanceLine(s)}` },
       { onSuccess: (item) => setFiled((f) => ({ ...f, [s.id]: item.id })) },
     );
   }
 
   return (
-    <Sheet label="Recommended rules" kicker="SUGGESTED · FROM THE SOURCES BELOW" title="Recommended rules" onClose={onClose} testId="rules-recommended">
+    <Sheet label="Recommended rules" kicker="SUGGESTED · FROM THE SOURCES BELOW" title="Recommended rules" onClose={onClose} testId="rules-recommended"
+      footer="Suggestions don't change enforcement. Nothing here writes a rule until you save one yourself.">
+      <p className="px-1 text-[12px] leading-snug text-muted" data-testid="rules-recommended-subtitle">
+        Gaps your architecture implies, from what this project's own sources show.
+      </p>
       {q.isError ? (
         <Note tone="red" testId="rules-recommended-error">
           Could not read suggestions: {errorDetail(q.error, "request failed")}. That is not “nothing to suggest”.
@@ -272,7 +316,8 @@ export function RecommendedSheet({
           </ul>
           {github && github.state !== "read" && (
             <Note testId="rules-github-absent">
-              GitHub suggestions are absent: {github.reason || "GitHub is not connected"}. Connect it to see rules its history implies.
+              GitHub suggestions are absent: {reasonText(github.reason) || "GitHub could not be read"}.
+              {github.reason === "not_connected" && " Connect it to see rules its history implies."}
             </Note>
           )}
           {q.data.suggestions.length === 0 ? (
@@ -288,7 +333,7 @@ export function RecommendedSheet({
                     style={{ border: "1px dashed #ffbf47" }}
                     data-testid="rules-suggestion-chip"
                   >
-                    {s.kind === "code" ? `${s.level.toUpperCase()} ONCE BUILT` : `WOULD BE ${s.level.toUpperCase()}`}
+                    {s.kind === "code" ? `${s.level.toUpperCase()} ONCE BUILT` : !writable ? "VALUE · SET IN ADMIN" : `WOULD BE ${s.level.toUpperCase()}`}
                   </span>
                   <span className={cn(MONO, "text-[10px] text-muted-2")}>{stageTitle(s.stage).toUpperCase()}</span>
                 </div>
@@ -297,14 +342,22 @@ export function RecommendedSheet({
                 {s.kind === "code" && (
                   <span className="text-[11.5px] leading-snug text-fg-2">Needs a code change. Until it ships, nothing holds it.</span>
                 )}
+                {s.kind === "value" && (
+                  <>
+                    {!writable && s.value !== null && (
+                      <span className="text-[11.5px] leading-snug text-fg-2" data-testid="rules-suggestion-value">
+                        Suggested value: <span className={MONO}>{s.value}</span>. This project can't save it; set it in Admin.
+                      </span>
+                    )}
+                    <span className="text-[11.5px] leading-snug text-fg-2" data-testid="rules-suggestion-outcome">
+                      Agents would be told this in every get_context. Nothing would refuse a violation.
+                    </span>
+                  </>
+                )}
                 <ul className="flex flex-col gap-0.5">
                   {s.evidence.map((e, i) => (
                     <li key={i} className="text-[11.5px] text-muted-2">
-                      {e.link ? (
-                        <a href={e.link} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">{e.text}</a>
-                      ) : (
-                        e.text
-                      )}
+                      <EvidenceLink e={e} />
                       <span className={cn(MONO, "ml-1.5 text-[10px]")}>{e.source}</span>
                     </li>
                   ))}
@@ -320,7 +373,7 @@ export function RecommendedSheet({
                     )
                   ) : (
                     <Button size="sm" variant="outline" onClick={() => onOpenValue(s)}>
-                      Open in {stageTitle(s.stage)}
+                      {writable ? "Open in" : "See in"} {stageTitle(s.stage)}
                     </Button>
                   )}
                   <Button size="sm" variant="ghost" disabled={dismiss.isPending} onClick={() => dismiss.mutate(s.id)}>
@@ -330,8 +383,22 @@ export function RecommendedSheet({
               </div>
             ))
           )}
-          {(dismiss.isError || createItem.isError) && (
-            <Note tone="red">{errorDetail(dismiss.error ?? createItem.error, "That did not save.")}</Note>
+          {dismissed.length > 0 && (
+            <Button size="sm" variant="ghost" onClick={() => setShowDismissed((v) => !v)} data-testid="rules-show-dismissed">
+              {showDismissed ? "Hide" : "Show"} dismissed ({dismissed.length})
+            </Button>
+          )}
+          {showDismissed &&
+            dismissed.map((s) => (
+              <div key={s.id} className="flex items-center gap-2 rounded-[12px] border border-[#2a333a] p-3" data-testid={`rules-dismissed-${s.id}`}>
+                <span className="min-w-0 flex-1 text-[12px] text-muted">{s.title}</span>
+                <Button size="sm" variant="outline" disabled={restore.isPending} onClick={() => restore.mutate(s.id)}>
+                  Restore
+                </Button>
+              </div>
+            ))}
+          {(dismiss.isError || createItem.isError || restore.isError) && (
+            <Note tone="red">{errorDetail(dismiss.error ?? createItem.error ?? restore.error, "That did not save.")}</Note>
           )}
         </>
       )}

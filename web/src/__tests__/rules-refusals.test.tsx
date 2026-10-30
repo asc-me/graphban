@@ -10,7 +10,7 @@ import { api } from "@/lib/api";
 import type { Event, RulesFlow, UnmappedRefusals } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
-  api: { rulesFlow: vi.fn(), unmappedRefusals: vi.fn(), recommendedRules: vi.fn(), dismissRecommendedRule: vi.fn(), createItem: vi.fn(), refusalCoverage: vi.fn() },
+  api: { rulesFlow: vi.fn(), unmappedRefusals: vi.fn(), recommendedRules: vi.fn(), dismissRecommendedRule: vi.fn(), dismissedRecommendedRules: vi.fn(), restoreRecommendedRule: vi.fn(), createItem: vi.fn(), refusalCoverage: vi.fn() },
 }));
 vi.mock("@/features/ProjectContext", () => ({
   useProjectCtx: () => ({ activeId: "core", active: { id: "core", tag: "CORE", name: "Core" }, projects: [], setActiveId: () => {} }),
@@ -52,6 +52,7 @@ function renderAt(url: string) {
 beforeEach(() => {
   vi.mocked(api.rulesFlow).mockResolvedValue(flow);
   vi.mocked(api.unmappedRefusals).mockResolvedValue({ days: 7, recording_since: null, groups: [] });
+  vi.mocked(api.dismissedRecommendedRules).mockResolvedValue([]);
   vi.mocked(api.refusalCoverage).mockResolvedValue({ published: false, n: null, m: null, commit: null, published_at: null });
 });
 
@@ -155,7 +156,7 @@ describe("recommended rules", () => {
     vi.mocked(api.recommendedRules).mockResolvedValue({
       sources: [
         { source: "stack", state: "read", read_at: null, reason: null },
-        { source: "github", state: "not_available", read_at: null, reason: "GitHub is not connected" },
+        { source: "github", state: "not_available", read_at: null, reason: "not_connected" },
       ],
       suggestions: [
         { id: "a", stage: "release", level: "advisory", title: "Name the release doc", why: "w", kind: "value", rule_id: "release.release_defined_in", value: "RELEASING.md", evidence: [], fingerprint: "f" },
@@ -170,6 +171,77 @@ describe("recommended rules", () => {
     const chips = screen.getAllByTestId("rules-suggestion-chip").map((c) => c.textContent);
     expect(chips).toEqual(["WOULD BE ADVISORY", "ENFORCED ONCE BUILT"]);
     expect(screen.getByText("Needs a code change. Until it ships, nothing holds it.")).toBeTruthy();
+  });
+
+  const src = (source: string, reason: string) => ({ source, state: "not_available", read_at: null, reason });
+  const sug = (over: Record<string, unknown>) => ({
+    id: "a", stage: "release", level: "advisory", title: "T", why: "w", kind: "value", rule_id: "release.release_defined_in",
+    value: "RELEASING.md", evidence: [], fingerprint: "f", ...over,
+  });
+
+  it.each([
+    ["not_connected", /GitHub is not connected/],
+    ["fetch_failed", /couldn't read GitHub/],
+    ["no_code_map", /no code map/],
+    ["read_failed", /couldn't read the project's stack/],
+  ])("reason %s shows its sentence, and only not_connected says 'not connected'", async (reason, re) => {
+    vi.mocked(api.recommendedRules).mockResolvedValue({ sources: [src("github", reason)], suggestions: [] });
+    renderAt("/rules");
+    await userEvent.click(screen.getByTestId("rules-open-recommended"));
+    const line = await screen.findByTestId("rules-source-github");
+    expect(line.textContent).toMatch(re);
+    expect(line.textContent).not.toMatch(reason);
+    expect(/NOT CONNECTED/.test(line.textContent ?? "")).toBe(reason === "not_connected");
+    expect(!!screen.queryByText("Connect GitHub")).toBe(reason === "not_connected");
+  });
+
+  it("links stack evidence to the Stack view and absolute URLs directly", async () => {
+    vi.mocked(api.recommendedRules).mockResolvedValue({
+      sources: [],
+      suggestions: [sug({ kind: "code", rule_id: null, value: null, evidence: [
+        { text: "Deployable in .", source: "stack", link: "docs/RELEASING.md" },
+        { text: "PRs", source: "github", link: "https://github.com/o/r/pulls" },
+      ] })],
+    });
+    renderAt("/rules");
+    await userEvent.click(screen.getByTestId("rules-open-recommended"));
+    expect((await screen.findByText("Deployable in .")).closest("a")?.getAttribute("href")).toBe("/stack");
+    expect(screen.getByText("PRs").closest("a")?.getAttribute("href")).toBe("https://github.com/o/r/pulls");
+  });
+
+  it("a locked project shows SET IN ADMIN, the value, and the outcome line", async () => {
+    vi.mocked(api.rulesFlow).mockResolvedValue({ ...flow, control: { ...flow.control, writable: false } });
+    vi.mocked(api.recommendedRules).mockResolvedValue({ sources: [], suggestions: [sug({})] });
+    renderAt("/rules");
+    await userEvent.click(screen.getByTestId("rules-open-recommended"));
+    await waitFor(() => expect(screen.getByTestId("rules-suggestion-chip").textContent).toBe("VALUE · SET IN ADMIN"));
+    expect(screen.getByTestId("rules-suggestion-value").textContent).toMatch(/RELEASING\.md/);
+    expect(screen.getByTestId("rules-suggestion-outcome").textContent).toMatch(/Nothing would refuse a violation/);
+    expect(screen.getByText(/^See in/)).toBeTruthy();
+  });
+
+  it("a filed checked suggestion never claims enforcement", async () => {
+    vi.mocked(api.recommendedRules).mockResolvedValue({ sources: [], suggestions: [sug({ kind: "code", level: "checked", rule_id: null, value: null })] });
+    vi.mocked(api.createItem).mockResolvedValue({ id: "GRPH-9" } as never);
+    renderAt("/rules");
+    await userEvent.click(screen.getByTestId("rules-open-recommended"));
+    await userEvent.click(await screen.findByText("File as item"));
+    await waitFor(() => expect(api.createItem).toHaveBeenCalled());
+    const body = JSON.stringify(vi.mocked(api.createItem).mock.calls[0]);
+    expect(body).toMatch(/checked in CI and reported/);
+    expect(body).not.toMatch(/enforced/);
+  });
+
+  it("dismissed suggestions can be shown and restored", async () => {
+    vi.mocked(api.recommendedRules).mockResolvedValue({ sources: [], suggestions: [] });
+    vi.mocked(api.dismissedRecommendedRules).mockResolvedValue([sug({ title: "Gone one" })] as never);
+    vi.mocked(api.restoreRecommendedRule).mockResolvedValue(undefined);
+    renderAt("/rules");
+    await userEvent.click(screen.getByTestId("rules-open-recommended"));
+    await userEvent.click(await screen.findByText(/Show dismissed \(1\)/));
+    expect(screen.getByText("Gone one")).toBeTruthy();
+    await userEvent.click(screen.getByText("Restore"));
+    await waitFor(() => expect(api.restoreRecommendedRule).toHaveBeenCalledWith("core", "a"));
   });
 
   it("a failed read is not 'nothing to suggest'", async () => {
