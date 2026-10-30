@@ -29,7 +29,7 @@ vi.mock("@/features/ProjectContext", () => ({
                           activeId: "core", projects: [] }),
 }));
 
-const fleet = vi.hoisted(() => ({ data: null as unknown, refetch: vi.fn() }));
+const fleet = vi.hoisted(() => ({ data: null as unknown, isError: false, refetch: vi.fn() }));
 vi.mock("@/lib/queries", () => ({
   useFleet: () => fleet,
   useConfig: () => ({ data: { hosted_mode: false } }),
@@ -87,6 +87,7 @@ async function openLegacyWaveKey(user: ReturnType<typeof userEvent.setup>) {
 describe("Fleet view", () => {
   beforeEach(() => {
     fleet.data = { ...BASE };
+    fleet.isError = false;
     api.mintFleetKey.mockReset();
     api.endWavePreview.mockReset();
     api.endWave.mockReset();
@@ -1279,5 +1280,27 @@ describe("re-tasking an agent", () => {
     renderView();
     await screen.findByTestId("agent-role");
     expect(screen.queryByTestId("agent-refusal")).not.toBeInTheDocument();
+  });
+
+  it("shows a loading state, never the empty state, while the roster is in flight", () => {
+    fleet.data = undefined;
+    renderView();
+    expect(screen.queryByText(/No agents yet/)).toBeNull();
+    expect(screen.queryByText(/no agents/i)).toBeNull();
+    expect(screen.getByLabelText("Loading table")).toBeTruthy();
+  });
+
+  it("still shows the empty state for a resolved roster with zero agents", () => {
+    fleet.data = { ...BASE };
+    renderView();
+    expect(screen.getByText(/No agents yet/)).toBeTruthy();
+  });
+
+  it("shows an error state, not the empty state, when the request failed", () => {
+    fleet.data = undefined;
+    fleet.isError = true;
+    renderView();
+    expect(screen.queryByText(/No agents yet/)).toBeNull();
+    expect(screen.getByText(/retry/i)).toBeTruthy();
   });
 });

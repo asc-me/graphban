@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Preferences } from "@/features/harness/Preferences";
 import { McpInstall } from "@/features/settings/McpInstall";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
-import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
+import { FETCH_FAILED, PlannerError, TableSkeleton } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
@@ -416,7 +416,10 @@ export function FleetView() {
   const { data, refetch } = fleetQ;
   // PRD-47 S1: "No agents yet" is a claim about the roster. A failed read used to
   // reach it, so an unreachable server said the fleet was empty.
-  const fleetFailed = fleetQ.isError && data === undefined;
+  const fleetFailed = fleetQ.isError && !data;
+  // Same defect from the other side: before the first response there is no roster to call
+  // empty, so the roster and the tab badge say "loading", never "no agents".
+  const fleetLoading = !data && !fleetQ.isError;
   const viewHref = (view: string) =>
     config?.hosted_mode && active?.tag ? projectPath(active.tag, view) : `/${view}`;
   const [role, setRole] = React.useState("worker");
@@ -748,7 +751,7 @@ export function FleetView() {
             screen entirely. */}
         <div className="mb-3 flex gap-1">
           {([
-            ["connections", `Connections${agents.length ? ` (${agents.length})` : ""}`],
+            ["connections", `Connections${fleetLoading ? " (…)" : agents.length ? ` (${agents.length})` : ""}`],
             ["wave", `Wave${(data?.seats ?? []).filter((s) => s.state === "unused").length
               ? ` (${data!.seats.filter((s) => s.state === "unused").length} unused)` : ""}`],
             // The count rides the LABEL so the queue stays legible from any tab. Burying
@@ -792,6 +795,8 @@ export function FleetView() {
         <Section title="Roster" desc="Offline agents fade rather than vanish — one that died holding a branch is what you need to see.">
           {fleetFailed ? (
             <PlannerError message={FETCH_FAILED} onRetry={() => void refetch()} />
+          ) : fleetLoading ? (
+            <TableSkeleton rows={3} columns={3} />
           ) : agents.length === 0 ? (
             <Empty>
               No agents yet. One agent needs an API key in Settings and no seat.
