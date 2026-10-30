@@ -71,7 +71,7 @@ const spies = vi.hoisted(() => ({
 const project = {
   id: "core", name: "Core", tag: "CORE", accent: "#a78bfa", visibility: "private", description: "",
   share_global_memory: false, auto_extract: true, mcp_enabled: true, embed_model: "",
-  memory_auto_reject: true, memory_write_mode: "review", memory_llm_judge: true, memory_candidate_expiry_days: 30, memory_flag_on_code_change: true,
+  memory_auto_reject: true, memory_write_mode: "review", memory_llm_judge: true, memory_candidate_expiry_days: 30, memory_flag_on_code_change: true, memory_human_review_classes: ["principle"],
   agent_adjudication: false, allow_self_review: false,
 };
 
@@ -455,8 +455,8 @@ describe("empty queue", () => {
     renderView();
     const strip = await screen.findByTestId("memory-policy");
     const labels = [...strip.querySelectorAll("span.text-small")].map((e) => e.firstChild?.textContent?.trim());
-    // No design entry without a backing setting (Human review for principles) is shown.
-    expect(labels).toEqual(["Auto-publish ≥", "Auto-reject dupes ≥", "LLM judge", "Expire candidates", "Flag on code change", "Grading"]);
+    // Every design entry now has a backing setting, Human review for included (GRPH-1214).
+    expect(labels).toEqual(["Auto-publish ≥", "Auto-reject dupes ≥", "LLM judge", "Expire candidates", "Flag on code change", "Human review for", "Grading"]);
     await waitFor(() =>
       expect(within(strip).getByText("Expire candidates").parentElement?.textContent).toContain("30d"),
     );

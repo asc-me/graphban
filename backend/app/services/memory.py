@@ -1365,6 +1365,20 @@ def may_auto_publish(shard: MemoryShard) -> bool:
     return not (shard.origin or "").startswith(_UNPUBLISHABLE_ORIGINS)
 
 
+def needs_human_review(db: Session, shard: MemoryShard) -> bool:
+    """Whether this shard's class is one the project reserves for a human (GRPH-1214).
+
+    Read at decision time from the shard's current class, so reclassifying cannot launder a
+    principle past the gate. Project-less shards have no owner to have chosen; they take the
+    platform default (principles).
+    """
+    if not shard.shard_class:
+        return False
+    project = db.get(Project, shard.project_id) if shard.project_id else None
+    classes = project.memory_human_review_classes if project is not None else ["principle"]
+    return shard.shard_class in (classes or [])
+
+
 def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
     """Synchronously score a freshly-written candidate and act on it if the project
     opts in (AL-227): auto-reject near-dups / resembles-rejected, or auto-publish a
@@ -1451,6 +1465,8 @@ def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
         action, new_status = "auto_reject_shard", "rejected"
     elif not may_auto_publish(shard):
         return shard  # GRPH-358 — see below; reject above still applies
+    elif needs_human_review(db, shard):
+        return shard  # GRPH-1214 — a class the project reserves for a human
     elif mode == "trusted":
         # Provenance, not a score: `trusted` marks the shard as published without
         # anyone — human or judge — having assessed it, so a human arriving later
@@ -1560,6 +1576,11 @@ def agent_publish(db: Session, shard: MemoryShard, *, origin: str) -> tuple[Memo
 
     Raises AdjudicationUnavailable when no real chat model is configured, so an offline
     instance degrades to the human boundary instead of rubber-stamping."""
+    if needs_human_review(db, shard):
+        raise AdjudicationUnavailable(
+            f"{shard.shard_class} candidates are reserved for human review in this project, "
+            f"so an agent cannot publish this one; a human publishes it from Memory review"
+        )
     verdict, cause = judge_verdict(db, shard)
     if verdict is None:
         # Say WHICH failure (GRPH-351). This read "no independent chat model is configured"

@@ -436,6 +436,7 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     cfg.set_main_option("script_location", str(_BACKEND / "alembic"))
     cfg.set_main_option("path_separator", "os")
     script = ScriptDirectory.from_config(cfg)
+    # 0158 (GRPH-1214, memory human review classes) on
     # 0157 (GRPH-1213, memory shard cited code hashes) on
     # 0156 (GRPH-1213, memory flag on code change) on
     # 0155 (GRPH-1212, memory candidate expiry days) on 0154 (GRPH-1181, memory shard class) on
@@ -446,7 +447,8 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     # on 0146 (GRPH-1137, decision waits) on 0145 (GRPH-1134, item done_at)
     # on 0144 (GRPH-1133, per-user UI preferences) on 0143
     # (GRPH-1127, scan finding grain); linear through 0140.
-    assert script.get_heads() == ["0157"]
+    assert script.get_heads() == ["0158"]
+    assert script.get_revision("0158").down_revision == "0157"
     assert script.get_revision("0157").down_revision == "0156"
     assert script.get_revision("0156").down_revision == "0155"
     assert script.get_revision("0155").down_revision == "0154"

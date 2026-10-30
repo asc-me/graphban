@@ -37,6 +37,8 @@ export interface Project {
   memory_candidate_expiry_days?: number;
   /** Flag a published lesson when the code it cited changed (GRPH-1213); default on. */
   memory_flag_on_code_change?: boolean;
+  /** Shard classes kept out of auto-publish for a human (GRPH-1214); default ["principle"]. */
+  memory_human_review_classes?: string[];
   agent_adjudication: boolean;
   /** Danger mode: an agent may sign off its own work, but only when no independent agent exists. */
   allow_self_review: boolean;

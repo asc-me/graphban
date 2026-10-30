@@ -733,6 +733,7 @@ function PolicyStrip({ judgeStatus }: { judgeStatus?: JudgeStatus }) {
     ["LLM judge", active ? (active.memory_llm_judge ? "on" : "off") : "—"],
     ["Expire candidates", active ? `${active.memory_candidate_expiry_days ?? 45}d` : "—"],
     ["Flag on code change", active ? (active.memory_flag_on_code_change ?? true ? "on" : "off") : "—"],
+    ["Human review for", active ? ((active.memory_human_review_classes ?? ["principle"]).map((c) => `${c}s`).join(", ") || "none") : "—"],
     ["Grading", judgeStatus ? (judgeStatus.falling_back ? `${judgeStatus.judge} (fallback)` : judgeStatus.judge) : "—"],
   ];
   return (
