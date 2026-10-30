@@ -330,6 +330,32 @@ describe("RulesView", () => {
     await waitFor(() => expect(screen.queryByTestId("rules-inspector")).not.toBeInTheDocument());
   });
 
+  it("arrow keys announce the stage through the live region, and typing a stage name selects it", async () => {
+    const user = userEvent.setup();
+    renderAt();
+    const lb = await screen.findByTestId("rules-listbox");
+    lb.focus();
+    await user.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}");
+    expect(screen.getByTestId("rules-live").textContent).toBe("Review, advisory, 4 rules");
+    await user.keyboard("{Home}");
+    await user.keyboard("me");
+    expect(lb.getAttribute("aria-activedescendant")).toBe(screen.getByTestId("rules-stage-merge").id);
+    expect(screen.getByTestId("rules-live").textContent).toMatch(/^Merge, /);
+  });
+
+  it("Escape closes the inspector and returns focus to the listbox; the inspector takes focus on open", async () => {
+    const user = userEvent.setup();
+    renderAt();
+    const lb = await screen.findByTestId("rules-listbox");
+    lb.focus();
+    await user.keyboard("{ArrowRight}{Enter}");
+    const dlg = await screen.findByTestId("rules-inspector");
+    expect(dlg.contains(document.activeElement)).toBe(true);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByTestId("rules-inspector")).not.toBeInTheDocument());
+    expect(document.activeElement).toBe(lb);
+  });
+
   it("?stage=merge lands with Merge open (the Settings pointer)", async () => {
     renderAt("/rules?stage=merge");
     expect(await screen.findByRole("dialog", { name: "Merge stage inspector" })).toBeInTheDocument();

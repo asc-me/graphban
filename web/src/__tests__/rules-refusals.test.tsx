@@ -74,9 +74,39 @@ describe("refusal links", () => {
     expect(screen.getByTestId("rules-breadcrumb").textContent).toContain("event 7");
   });
 
+  it("?rule= puts keyboard focus on the rule row", async () => {
+    renderAt("/rules?rule=review.not_own_work&from=7");
+    const row = await screen.findByTestId("rules-row-review.not_own_work");
+    await waitFor(() => expect(document.activeElement).toBe(row));
+  });
+
   it("a rule the registry lacks is said, not silently ignored", async () => {
     renderAt("/rules?rule=ghost.rule&from=7");
     expect(await screen.findByTestId("rules-focus-missing")).toBeTruthy();
+  });
+});
+
+describe("side sheets are dialogs", () => {
+  it("opening a sheet closes the inspector, traps Tab, closes on Escape and returns focus to its opener", async () => {
+    const user = userEvent.setup();
+    renderAt("/rules?stage=review");
+    await screen.findByTestId("rules-inspector");
+    const opener = screen.getByTestId("rules-open-unmapped");
+    expect(opener).toHaveAttribute("aria-haspopup", "dialog");
+    expect(opener).toHaveAttribute("aria-expanded", "false");
+    await user.click(opener);
+    const sheet = await screen.findByTestId("rules-unmapped");
+    expect(screen.queryByTestId("rules-inspector")).not.toBeInTheDocument();
+    expect(sheet).toHaveAttribute("aria-modal", "true");
+    expect(opener).toHaveAttribute("aria-expanded", "true");
+    expect(sheet.contains(document.activeElement)).toBe(true);
+    for (let i = 0; i < 12; i++) {
+      await user.tab();
+      expect(sheet.contains(document.activeElement)).toBe(true);
+    }
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByTestId("rules-unmapped")).not.toBeInTheDocument());
+    expect(document.activeElement).toBe(opener);
   });
 });
 

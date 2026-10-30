@@ -13,7 +13,7 @@ import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { stepIndex } from "@/lib/graph/useGraphKeyboard";
+import { useCanvasListbox, type CanvasListNode } from "@/lib/graph/useGraphKeyboard";
 import { useGraphViewport, zoomAbout } from "@/lib/graph/useGraphViewport";
 import { useConfig, useGitops, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
 import { projectPath, settingsPath, tagFromPath } from "@/lib/routes";
@@ -52,7 +52,7 @@ import {
   type Level,
   type MapLayout,
 } from "./levels";
-import { RecommendedSheet, UnmappedSheet } from "./RefusalPanels";
+import { RecommendedSheet, UnmappedSheet, useDialogBehavior } from "./RefusalPanels";
 import { AdminGitopsLink, BudgetCapEditor, GITOPS_RULE_FIELDS, GitopsRuleEditor, useOrgName } from "./RuleEditors";
 import { RuleLevelIcon } from "./RuleLevelIcon";
 
@@ -103,6 +103,8 @@ export function RulesView() {
   const [focusRule, setFocusRule] = React.useState<string | null>(ruleParam);
   const [prefill, setPrefill] = React.useState<{ rule: string; value: string } | null>(null);
   const [sheet, setSheet] = React.useState<"unmapped" | "recommended" | null>(null);
+  const unmappedBtn = React.useRef<HTMLButtonElement | null>(null);
+  const recommendedBtn = React.useRef<HTMLButtonElement | null>(null);
   const [pulse, setPulse] = React.useState(params.get("pulse") === "unmapped");
   const focusedRule = flow && focusRule ? flow.stages.flatMap((s) => s.rules).find((r) => r.id === focusRule) ?? null : null;
   const focusedStage = focusedRule?.stage ?? null;
@@ -138,7 +140,10 @@ export function RulesView() {
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => { setPulse(false); setSheet("unmapped"); }}
+              ref={unmappedBtn}
+              aria-haspopup="dialog"
+              aria-expanded={sheet === "unmapped"}
+              onClick={() => { setPulse(false); setSel(null); setSheet("unmapped"); }}
               onAnimationEnd={() => setPulse(false)}
               data-testid="rules-open-unmapped"
               data-pulse={pulse ? "true" : "false"}
@@ -151,7 +156,10 @@ export function RulesView() {
             </button>
             <button
               type="button"
-              onClick={() => setSheet("recommended")}
+              ref={recommendedBtn}
+              aria-haspopup="dialog"
+              aria-expanded={sheet === "recommended"}
+              onClick={() => { setSel(null); setSheet("recommended"); }}
               data-testid="rules-open-recommended"
               className="h-7 rounded-[8px] border border-control px-2.5 text-small text-fg-2 hover:text-fg"
             >
@@ -212,8 +220,8 @@ export function RulesView() {
         {flow && sel && (
           <Inspector flow={flow} sel={sel} sheet={narrow} focusRule={focusRule} prefill={prefill} onClose={() => setSel(null)} />
         )}
-        {sheet === "unmapped" && <UnmappedSheet onClose={() => setSheet(null)} />}
-        {sheet === "recommended" && <RecommendedSheet onClose={() => setSheet(null)} onOpenValue={openValueSuggestion} />}
+        {sheet === "unmapped" && <UnmappedSheet returnTo={unmappedBtn} onClose={() => setSheet(null)} />}
+        {sheet === "recommended" && <RecommendedSheet returnTo={recommendedBtn} onClose={() => setSheet(null)} onOpenValue={openValueSuggestion} />}
       </div>
     </div>
   );
@@ -330,11 +338,6 @@ function RulesCanvas({
   const view = useGraphViewport(size.w, size.h, { panAnywhere: true });
   const outline = view.viewport.k < OUTLINE_ZOOM;
   const pack = packOf(flow);
-  const keys = React.useMemo(
-    () => [...flow.stages.map((s) => stageKey(s.id)), ...(pack ? [PACK_KEY] : [])],
-    [flow.stages, pack],
-  );
-  const [focus, setFocus] = React.useState<string | null>(null);
   const [hover, setHover] = React.useState<string | null>(null);
 
   // Fit never enlarges past 1:1; the legend and zoom bar keep the bottom 120px.
@@ -347,43 +350,60 @@ function RulesCanvas({
     fit();
   }, [fit]);
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    const at = focus ? keys.indexOf(focus) : -1;
-    const go = (i: number) => {
-      e.preventDefault();
-      const k = keys[i];
-      if (!k) return;
-      setFocus(k);
-      // The inspector follows focus once it is open, like the mock.
-      if (sel) onSelect(k);
-    };
-    switch (e.key) {
-      case "ArrowRight":
-      case "ArrowDown":
-        return go(stepIndex(keys.length, at, 1));
-      case "ArrowLeft":
-      case "ArrowUp":
-        return go(stepIndex(keys.length, at, -1));
-      case "Home":
-        return go(0);
-      case "End":
-        return go(keys.length - 1);
-      case "Enter":
-      case " ":
-        if (!focus) return;
-        e.preventDefault();
-        onSelect(focus);
-        return;
-      case "Escape":
-        e.preventDefault();
-        if (sel) onSelect(null);
-        else setFocus(null);
-        return;
-    }
+  // The stages and the pack node ride the same listbox hook as the code graph (GRPH-1076):
+  // live-region announcements, typeahead by stage name, Enter opens, Escape closes. The order is
+  // the flow's own, not degree order.
+  const listNodes = React.useMemo<CanvasListNode[]>(
+    () => [
+      ...flow.stages.map((s) => ({ id: stageKey(s.id), path: s.title, kind: "stage", name: s.title, degree: 0 })),
+      ...(pack ? [{ id: PACK_KEY, path: pack.title, kind: "pack", name: pack.title, degree: 0 }] : []),
+    ],
+    [flow.stages, pack],
+  );
+  const say = React.useCallback(
+    (key: string) => {
+      if (key === PACK_KEY) return pack ? `${pack.title}, ${pack.enforcement}` : "";
+      const stage = flow.stages.find((s) => stageKey(s.id) === key);
+      if (!stage) return "";
+      const level = stageLevel(stage);
+      const n = stageRules(stage).length;
+      const word = level === null ? "no rules registered" : level.replace("_", " ");
+      return `${stage.title}, ${word}, ${n} ${n === 1 ? "rule" : "rules"}`;
+    },
+    [flow.stages, pack],
+  );
+  const selRef = React.useRef(sel);
+  selRef.current = sel;
+  const sizeRef = React.useRef(size);
+  sizeRef.current = size;
+  const follow = (key: string) => {
+    // The inspector follows focus once it is open, like the mock.
+    if (selRef.current) onSelect(key);
+    // Camera follow: slide the map only when the focused node has left the screen.
+    const i = flow.stages.findIndex((s) => stageKey(s.id) === key);
+    const x = key === PACK_KEY ? layout.pack?.x : i >= 0 ? stageX(i) : undefined;
+    if (x === undefined) return;
+    const w = key === PACK_KEY ? PACK_W : STAGE_W;
+    view.setViewport((v) => {
+      const left = x * v.k + v.x;
+      const right = (x + w) * v.k + v.x;
+      if (left >= 24 && right <= sizeRef.current.w - 24) return v;
+      return { ...v, x: sizeRef.current.w / 2 - (x + w / 2) * v.k };
+    });
   };
+  const kb = useCanvasListbox({
+    nodes: listNodes,
+    selectedId: sel,
+    onSelect: (id) => onSelect(id),
+    onClearSelection: () => onSelect(null),
+    onFollow: follow,
+    idPrefix: "rules",
+    keepOrder: true,
+    announce: say,
+  });
+  const focus = kb.activeId;
 
   const pick = (key: string) => {
-    setFocus(key);
     onSelect(sel === key ? null : key);
   };
 
@@ -399,7 +419,7 @@ function RulesCanvas({
         aria-label="Rules map. Left and right move between stages, Enter opens, Escape closes."
         aria-activedescendant={focus ? optionId(focus) : undefined}
         data-testid="rules-listbox"
-        onKeyDown={onKeyDown}
+        onKeyDown={kb.onKeyDown}
         className="h-full w-full outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
       >
         <svg
@@ -450,6 +470,9 @@ function RulesCanvas({
         </svg>
       </div>
 
+      <div aria-live="polite" aria-atomic="true" data-testid="rules-live" className="sr-only">
+        {kb.live}
+      </div>
       <Legend counts={counts} />
       <ZoomControls
         pct={Math.round(view.viewport.k * 100)}
@@ -889,6 +912,7 @@ function Inspector({
   prefill: { rule: string; value: string } | null;
   onClose: () => void;
 }) {
+  const dialog = useDialogBehavior<HTMLElement>(onClose);
   const pack = sel === PACK_KEY ? packOf(flow) : null;
   const index = flow.stages.findIndex((s) => stageKey(s.id) === sel);
   const stage = index >= 0 ? flow.stages[index] : null;
@@ -903,6 +927,9 @@ function Inspector({
 
   return (
     <aside
+      ref={dialog.ref}
+      tabIndex={-1}
+      onKeyDown={dialog.onKeyDown}
       role="dialog"
       aria-label={`${title} ${pack ? "inspector" : "stage inspector"}`}
       data-testid="rules-inspector"
@@ -1009,7 +1036,9 @@ function RuleRow({
   const level = ruleLevel(rule);
   const ref = React.useRef<HTMLDivElement | null>(null);
   React.useEffect(() => {
-    if (focused) ref.current?.scrollIntoView?.({ block: "center" });
+    if (!focused) return;
+    ref.current?.scrollIntoView?.({ block: "center" });
+    ref.current?.focus({ preventScroll: true });
   }, [focused]);
   const quiet = quietLine(rule);
   const enforcer = enforcerText(rule, version);
@@ -1021,6 +1050,7 @@ function RuleRow({
       data-level={level}
       data-focused={focused ? "true" : undefined}
       aria-current={focused ? "true" : undefined}
+      tabIndex={focused ? -1 : undefined}
       className="grid grid-cols-[100px_minmax(0,1fr)] gap-2.5 rounded-[12px] border border-[#2a333a] p-3"
       style={focused ? { borderLeft: "4px solid #c6f24e" } : undefined}
     >
