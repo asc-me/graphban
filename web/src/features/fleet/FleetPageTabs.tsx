@@ -27,7 +27,7 @@ export function fleetTabFromSearch(params: URLSearchParams): FleetTab {
  */
 export function FleetPageTabs({ active }: { active: FleetTab }) {
   const { activeId } = useProjectCtx();
-  const { data } = useFleet(activeId);
+  const { data, isError } = useFleet(activeId);
   const [, setSearchParams] = useSearchParams();
   const refs = useRef<Record<string, HTMLButtonElement | null>>({});
   useEffect(() => {
@@ -48,7 +48,9 @@ export function FleetPageTabs({ active }: { active: FleetTab }) {
     ? data.total === 0
       ? "no agents"
       : `${data.online} of ${data.total} online`
-    : "no agents";
+    : isError
+      ? "unavailable"
+      : "…";
   const harnessCount = new Set((data?.matrix?.rows ?? []).map((r) => r.harness)).size;
   const harnessMeta = harnessCount ? `${harnessCount} in catalog` : "not served";
 
