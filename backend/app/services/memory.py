@@ -94,7 +94,22 @@ def _project_match_sql(include_global: bool) -> str:
     )
 
 
-def age_state(shard: MemoryShard, *, now: datetime | None = None) -> str:
+def candidate_expiry_map(db: Session, shards) -> dict[str | None, int]:
+    """`project_id -> memory_candidate_expiry_days` for the projects these shards belong to.
+    A project-less (global) shard, or an unknown project, keeps `CANDIDATE_EXPIRY_DAYS`."""
+    pids = {s.project_id for s in shards if s.project_id is not None}
+    out: dict[str | None, int] = {None: CANDIDATE_EXPIRY_DAYS}
+    if pids:
+        for pid, days in db.execute(
+            select(Project.id, Project.memory_candidate_expiry_days).where(Project.id.in_(pids))
+        ).all():
+            out[pid] = int(days or CANDIDATE_EXPIRY_DAYS)
+    return out
+
+
+def age_state(
+    shard: MemoryShard, *, now: datetime | None = None, expiry_days: int | None = None,
+) -> str:
     """`fresh` | `expired` | `stale` — the decay clock (GRPH-306 / PRD-16).
 
     Computed from `created_at` rather than stored, so it cannot drift out of step with the
@@ -102,7 +117,8 @@ def age_state(shard: MemoryShard, *, now: datetime | None = None) -> str:
 
     Two different fates, because they mean different things:
 
-    - a CANDIDATE nothing has repeated in `CANDIDATE_EXPIRY_DAYS` has gone cold — it was
+    - a CANDIDATE nothing has repeated in `expiry_days` (the project's
+      `memory_candidate_expiry_days`; `CANDIDATE_EXPIRY_DAYS` when not given) has gone cold — it was
       never corroborated and is dropped from retrieval;
     - a PUBLISHED shard with no fresh support in `PUBLISHED_STALE_DAYS` is `stale`-FLAGGED,
       never hidden. Something a human stood behind does not stop being true because nobody
@@ -120,7 +136,7 @@ def age_state(shard: MemoryShard, *, now: datetime | None = None) -> str:
     if kept is not None and kept > created:
         created = kept
     days = (now - created).days
-    if shard.status == "candidate" and days >= CANDIDATE_EXPIRY_DAYS:
+    if shard.status == "candidate" and days >= (CANDIDATE_EXPIRY_DAYS if expiry_days is None else expiry_days):
         return "expired"
     if shard.status == "published" and days >= PUBLISHED_STALE_DAYS:
         return "stale"
@@ -146,7 +162,9 @@ def list_shards(
     stmt = stmt.order_by(MemoryShard.created_at.desc())
     rows = list(db.scalars(stmt).all())
     if not include_expired:
-        rows = [r for r in rows if age_state(r) != "expired"]
+        expiry = candidate_expiry_map(db, rows)
+        rows = [r for r in rows
+                if age_state(r, expiry_days=expiry.get(r.project_id)) != "expired"]
     # Applied AFTER the expiry filter, deliberately. `LIMIT` in SQL would cap the rows read and
     # then drop expired ones from that page, so a caller asking for 50 could receive 30 and read
     # it as "that is all there is" — the shape where an absence looks like a clean result. This
@@ -294,7 +312,7 @@ def _best_match(vec: list[float], pool: list[tuple[MemoryShard, list[float]]]) -
 
 
 # The promotion ladder (GRPH-306 / PRD-16). Named constants, deliberately, and NOT project
-# settings: we do not know the right values yet, and a slider is how you avoid finding out.
+# settings (candidate expiry has since become one, GRPH-1212): we do not know the right values yet, and a slider is how you avoid finding out.
 # Pick one number; if it is wrong somebody hits it and we learn something real.
 MIN_DISTINCT_SOURCES = 3        # independent sessions before recurrence counts as evidence
 MIN_DISTINCT_SOURCES_CORRECTION = 2  # corrections earn trust faster — they are self-punishing
@@ -2104,6 +2122,7 @@ def _lesson_row(
     origin_path: str | None = None,
     include_history: bool = False,
     overridden: bool = False,
+    expiry_days: int | None = None,
 ) -> dict:
     # Empty outcomes still go through the scorer; unknown is a result, not a skip.
     path = "unknown" if origin_path is None else origin_path
@@ -2135,7 +2154,7 @@ def _lesson_row(
         "reach": shard.reach or "project",
         "lesson_class": shard.lesson_class or "",
         "suggested_class": "correction" if _is_correction(shard) else None,
-        "age_state": age_state(shard, now=now),
+        "age_state": age_state(shard, now=now, expiry_days=expiry_days),
         "caught_state": eff["caught_state"],
         "effectiveness": effectiveness,
         "eligibility": elig,
@@ -2198,7 +2217,10 @@ def list_lessons(
         .where(published_lessons_where(db, project_id))
         .order_by(MemoryShard.created_at.desc())
     )
-    rows = [r for r in db.scalars(stmt).all() if age_state(r, now=now) != "expired"]
+    all_rows = db.scalars(stmt).all()
+    expiry = candidate_expiry_map(db, all_rows)
+    rows = [r for r in all_rows
+            if age_state(r, now=now, expiry_days=expiry.get(r.project_id)) != "expired"]
 
     wanted_class = filters.get("lesson_class")
     if wanted_class is not None:
@@ -2217,6 +2239,7 @@ def list_lessons(
         computed.append(_lesson_row(
             shard, outcomes_by.get(shard.id, []), cluster, now=now,
             overridden=shard.id in overridden_ids,
+            expiry_days=expiry.get(shard.project_id),
         ))
 
     if trend := filters.get("trend"):
@@ -2460,6 +2483,7 @@ def get_lesson(
     row = _lesson_row(
         shard, outcomes, cluster, now=now,
         origin_path=path, include_history=True, overridden=overridden,
+        expiry_days=candidate_expiry_map(db, [shard]).get(shard.project_id),
     )
     members, unread = _display_cluster(
         db, shard, cluster,
