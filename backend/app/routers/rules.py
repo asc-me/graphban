@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import User
-from app.schemas import RecommendedRulesOut, RefusalCoverageOut, RulesFlowOut, RulesOut, UnmappedRefusalsOut
+from app.schemas import RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut, RulesFlowOut, RulesOut, UnmappedRefusalsOut
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import events as events_svc
@@ -57,6 +57,23 @@ def dismiss_recommendation(suggestion_id: str, project_id: str = "core",
     authz.require_writable(db, user.id, project_id)
     if not rules_recommend.dismiss(db, project_id, suggestion_id):
         raise HTTPException(404, "No such suggestion")
+
+
+@router.get("/rules/recommended/dismissed", response_model=list[RuleSuggestionOut])
+def dismissed_recommendations(project_id: str = "core", db: Session = Depends(get_db),
+                              user: User = Depends(get_current_user)):
+    """Suggestions currently dismissed, so the panel can offer Restore."""
+    authz.require_readable(db, user.id, project_id)
+    return rules_recommend.dismissed(db, project_id)
+
+
+@router.delete("/rules/recommended/{suggestion_id}/dismiss", status_code=204)
+def restore_recommendation(suggestion_id: str, project_id: str = "core",
+                           db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user)):
+    authz.require_writable(db, user.id, project_id)
+    if not rules_recommend.restore(db, project_id, suggestion_id):
+        raise HTTPException(404, "That suggestion is not dismissed")
 
 
 @router.get("/rules/refusals/unmapped", response_model=UnmappedRefusalsOut)

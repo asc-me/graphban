@@ -186,3 +186,21 @@ def dismiss(db: Session, project_id: str, suggestion_id: str) -> bool:
         row.dismissed_at = datetime.now(timezone.utc)
     db.commit()
     return True
+
+
+def dismissed(db: Session, project_id: str) -> list[dict]:
+    """Suggestions dismissed against their CURRENT evidence — the ones Restore can bring back.
+    A dismissal whose evidence has since changed is already showing in the main list."""
+    marks = {d.suggestion_id: d.fingerprint for d in db.scalars(
+        select(RuleSuggestionDismissal).where(RuleSuggestionDismissal.project_id == project_id))}
+    return [s for s in _cached(db, project_id)[0] if marks.get(s["id"]) == s["fingerprint"]]
+
+
+def restore(db: Session, project_id: str, suggestion_id: str) -> bool:
+    """Undo a dismissal. False when that suggestion was not dismissed."""
+    row = db.get(RuleSuggestionDismissal, (project_id, suggestion_id))
+    if row is None:
+        return False
+    db.delete(row)
+    db.commit()
+    return True

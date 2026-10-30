@@ -65,6 +65,7 @@ import type {
   PlatformConfig,
   StackHealth,
   RecommendedRules,
+  RuleSuggestion,
   RefusalCoverage,
   RulesFlow,
   UnmappedRefusals,
@@ -1068,6 +1069,12 @@ export const api = {
   dismissRecommendedRule: (projectId: string, suggestionId: string) =>
     request<void>(`/rules/recommended/${encodeURIComponent(suggestionId)}/dismiss${projectQuery(projectId)}`, {
       method: "POST",
+    }),
+  dismissedRecommendedRules: (projectId: string) =>
+    request<RuleSuggestion[]>(`/rules/recommended/dismissed${projectQuery(projectId)}`),
+  restoreRecommendedRule: (projectId: string, suggestionId: string) =>
+    request<void>(`/rules/recommended/${encodeURIComponent(suggestionId)}/dismiss${projectQuery(projectId)}`, {
+      method: "DELETE",
     }),
   /** Per-deployable code-health overlay (GRPH-1035). */
   stackHealth: (projectId: string) =>
