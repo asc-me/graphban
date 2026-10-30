@@ -21,6 +21,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import pytest
+
 from gbfleet import doctor as doctor_mod
 from gbfleet.doctor import FAIL, PASS, UNKNOWN, Report, check_installed_matches_checkout
 
@@ -79,6 +81,11 @@ def test_an_editable_install_is_the_same_tree_and_says_that(tmp_path: Path):
     installed = _installed()
     # The repo whose fleet/src/gbfleet IS the installed path.
     repo = installed.parent.parent.parent
+    # Only true of an editable install. Against a wheel in site-packages the derived "repo" is
+    # not a checkout, and the release checklist verifies against exactly that (GRPH-1220).
+    if (repo / "fleet" / "src" / "gbfleet").resolve() != installed:
+        pytest.skip(f"gbfleet is not installed editable ({installed} is not a checkout's "
+                    "fleet/src/gbfleet); there is no checkout to be the same tree as")
     report = Report()
 
     check_installed_matches_checkout(report, repo)
