@@ -687,6 +687,45 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
     return out
 
 
+def finished_by_model(db: Session, project_id: str | None, *,
+                      window_days: int | None = None) -> dict[tuple[str, str], dict]:
+    """`{(vendor, model): {runs, signed_off}}` — DISTINCT finished delegations per pair.
+
+    The same rows `measured()` reads for its project layer: outcome set, inside the window,
+    probe attempts excluded, vendor taken from the agent's declared capabilities and model
+    from the delegation. `measured()` emits a cell per capability, so summing its cells
+    counts a delegation once per capability it carries; this counts it once. A pair with no
+    finished delegation is ABSENT, never a zero.
+    """
+    from app.models import AttemptTelemetry
+
+    cutoff = _now() - timedelta(days=WINDOW_DAYS if window_days is None else window_days)
+    stmt = select(Delegation).where(Delegation.outcome.is_not(None))
+    if project_id:
+        stmt = stmt.where(Delegation.project_id == project_id)
+    rows = [r for r in db.scalars(stmt).all() if (_aware(r.finished_at) or cutoff) >= cutoff]
+    if not rows:
+        return {}
+    probes = set(db.scalars(select(AttemptTelemetry.delegation_id).where(
+        AttemptTelemetry.delegation_id.in_([r.id for r in rows]),
+        AttemptTelemetry.sampled == "probe")).all())
+    agents: dict[str | None, Agent | None] = {}
+    out: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        if row.id in probes:
+            continue
+        if row.agent_id not in agents:
+            agents[row.agent_id] = db.get(Agent, row.agent_id) if row.agent_id else None
+        agent = agents[row.agent_id]
+        declared = (agent.capabilities or {}) if agent is not None else {}
+        vendor = declared.get("vendor") if isinstance(declared.get("vendor"), str) and declared.get("vendor") else UNDECLARED
+        model = row.declared_model or ("" if vendor != UNDECLARED else UNDECLARED)
+        agg = out.setdefault((vendor, model), {"runs": 0, "signed_off": 0})
+        agg["runs"] += 1
+        agg["signed_off"] += 1 if row.outcome == "signed_off" else 0
+    return out
+
+
 def measured_for_lane(db: Session, item: Item, caps: list[str]) -> list[dict]:
     """At most four compact cells for the item's capabilities, inside BRIEF_MEASURED_BOUND.
 

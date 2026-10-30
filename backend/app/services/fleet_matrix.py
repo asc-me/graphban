@@ -176,6 +176,20 @@ def _graded(db: Session | None, project_id: str | None) -> dict[str, str]:
     return {harness: model for harness, (_score, model) in best.items()}
 
 
+def _measured_by_model(db: Session | None, project_id: str | None) -> dict[tuple[str, str], dict]:
+    """`{(vendor, model): {runs, signed_off}}` over DISTINCT finished delegations.
+
+    `delegation_svc.finished_by_model()` reads the rows `measured()` reads, with its filters
+    and window, but counts each delegation once rather than once per capability. A pair with
+    no finished attempt is ABSENT, which reaches the cell as `measured: null`, never zeros.
+    """
+    if db is None:
+        return {}
+    from app.services import delegation as delegation_svc
+
+    return delegation_svc.finished_by_model(db, project_id)
+
+
 def overrides_for(db: Session | None, project_id: str | None) -> dict:
     """What rides on `fleet_status`: the stored overrides, and nothing else.
 
@@ -207,6 +221,8 @@ def payload(db: Session | None = None, project_id: str | None = None) -> dict:
     saved = {(o["harness"], o["tier"]): o["model"]
              for o in overrides_for(db, project_id)["overrides"]}
     graded = _graded(db, project_id)
+    pooled = _measured_by_model(db, project_id)
+    vendor_of = {(str(r["harness"]), str(r.get("model") or "")): str(r["vendor"]) for r in ROWS}
     cells: list[dict] = []
     for cell in _packaged():
         key = (cell["harness"], cell["tier"])
@@ -216,11 +232,20 @@ def payload(db: Session | None = None, project_id: str | None = None) -> dict:
         # catalog offers for the cell's tier: inheriting anything else would write an override
         # `set_overrides` must refuse, so the button would look like it worked and save nothing.
         best = graded.get(cell["harness"])
+        effective = packaged if override is None else override
+        agg = pooled.get((vendor_of.get((cell["harness"], effective), ""), effective)) if effective else None
+        measured = None if agg is None else {
+            "runs": agg["runs"],
+            "signed_off": agg["signed_off"],
+            "pass_rate": agg["signed_off"] / agg["runs"],
+            "below_floor": agg["runs"] < GRADE_FLOOR,
+        }
         cells.append({
             **cell,
             "packaged_model": packaged,
             "override": override,
-            "effective_model": packaged if override is None else override,
+            "effective_model": effective,
+            "measured": measured,
             "overridden": override is not None,
             "graded_model": best if best in cell["models"] else None,
         })
