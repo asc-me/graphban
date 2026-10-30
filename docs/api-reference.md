@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 205 of the 284 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 208 of the 286 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -61,6 +61,20 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | GET | `/api/orgs/{id}/gitops` | JWT (org member) | House process + every org project (identity only). Calls `resolve_org` |
 | PATCH | `/api/orgs/{id}/gitops` | JWT (org admin) | House process. Overlay is the project PATCH |
 | GET | `/api/sync/gitops` | MCP (sync key) | Cloud receiver. `resolve_local` of `targets[0]` — never outbound, never a query-string project |
+
+## Cloud link and the Organization window (GRPH-1223)
+
+Linking acts on the whole deployment, so it is a **box admin** act: on a self-host, the box's
+first account (its operator) or someone they made owner/admin of a project they own; on a hosted
+box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_needs_box_admin`
+(`code_sync.is_box_admin`). Owning a project you created yourself does not count.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| POST | `/api/sync/link` | JWT (box admin) | Link this box to a cloud org with a `sync` key (encrypted at rest; a blank key on a re-link keeps the stored one) |
+| DELETE | `/api/sync/link` | JWT (box admin) | Unlink — stops all sync; local data untouched |
+| GET | `/api/sync/org` | JWT | The Organization window: org `name`/`host`/`plan`, the linking credential's org `role`, `counts` (members, teams, org policy rules, deployments) and every deployment with `projects`, `here` and `last_sync_at`. Fetched from the cloud and cached 30 s. Unreachable → `reachable: false`, `unreachable_since` (first failure), the last known identity, **`counts: null`** and null deployment figures — never stale numbers shown as current — except this box's own `last_sync_at`. Unlinked → `{"linked": false}` and nothing else |
+| GET | `/api/sync/org-overview` | MCP (sync key) | Cloud side of the above. The org is resolved from the credential's project, never the request; `404` for a non-sync key or a project in no org. Deployments are sync keys grouped by name ("one key is one deployment") |
 
 ## Rules (PRD-61)
 

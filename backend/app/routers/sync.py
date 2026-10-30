@@ -23,8 +23,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.errors import Refused
 from app.models import ApiKey, Project, User
-from app.schemas import GitopsView, SyncLinkIn, SyncStatusOut
+from app.schemas import GitopsView, SyncLinkIn, SyncOrgOverviewOut, SyncStatusOut
 from app.security import authz
 from app.security.deps import get_agent_key, get_current_user
 from app.services import code_graph
@@ -60,12 +61,50 @@ def sync_status(db: Session = Depends(get_db), user: User = Depends(get_current_
     return _status(db, user)
 
 
+LINK_RULE = "sync.link_needs_box_admin"
+
+
+def refuse_unless_box_admin(db: Session, user: User, action: str) -> None:
+    """Linking, re-pointing and unlinking act on the whole deployment, so they need a box
+    admin (GRPH-1223) — not merely a signed-in member. See `code_sync.is_box_admin`."""
+    if not code_sync.is_box_admin(db, user):
+        raise Refused(
+            403, f"only an admin of this box can {action} it to a cloud org",
+            rule_id=LINK_RULE,
+            hint="ask the box's operator, or an owner/admin of one of their projects",
+            target=("instance", "sync_link"),
+        )
+
+
+@router.get("/org", response_model=SyncOrgOverviewOut, response_model_exclude_unset=True)
+def org_overview(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The Organization window (GRPH-1223): the linked org's identity, the linking
+    credential's org role, member/team/policy/deployment counts and every deployment, read
+    from the cloud and cached briefly. Unreachable is `reachable: false` with
+    `unreachable_since` and null counts; unlinked is `linked: false` and nothing else."""
+    return SyncOrgOverviewOut(**code_sync.org_overview(db))
+
+
+@router.get("/org-overview")
+def cloud_org_overview(db: Session = Depends(get_db), key: ApiKey = Depends(get_agent_key)):
+    """CLOUD side of `GET /sync/org`: the org this sync credential pushes into. The org is
+    resolved from the credential, never the request. 404 when the credential is not a sync
+    key or its project belongs to no org — either way there is no org it can see."""
+    out = code_sync.cloud_org_overview(db, key)
+    if out is None:
+        raise HTTPException(404, "no organization for this credential (needs a 'sync' key "
+                                 "on an org project)")
+    return out
+
+
 @router.post("/link", response_model=SyncStatusOut)
 def link_instance(
     body: SyncLinkIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
     """Link this instance to a cloud tenant (AL-141). The sync key is encrypted at rest and
-    overrides any env-baked link; a blank key on a re-link keeps the stored one."""
+    overrides any env-baked link; a blank key on a re-link keeps the stored one. Box admins
+    only (GRPH-1223)."""
+    refuse_unless_box_admin(db, user, "link")
     url = body.cloud_url.strip()
     if not url:
         raise HTTPException(422, "cloud_url is required")
@@ -82,7 +121,9 @@ def link_instance(
 
 @router.delete("/link", response_model=SyncStatusOut)
 def unlink_instance(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Unlink — stops all sync. Local data is untouched; cloud items remain (AL-141)."""
+    """Unlink — stops all sync. Local data is untouched; cloud items remain (AL-141). Box
+    admins only (GRPH-1223)."""
+    refuse_unless_box_admin(db, user, "unlink")
     code_sync.clear_link(db)
     events_svc.record_user(db, user, action="unlink_cloud_sync", target_type="instance",
                            target_id="sync_link")

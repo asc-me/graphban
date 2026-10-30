@@ -1117,6 +1117,42 @@ class SyncStatusOut(BaseModel):
     projects: list[SyncProjectState] = []
 
 
+class SyncOrgIdentity(BaseModel):
+    name: str
+    host: str | None = None  # `<slug>.graphban.dev` label; None when the org has not claimed one
+    plan: str | None = None
+
+
+class SyncOrgCounts(BaseModel):
+    members: int
+    teams: int
+    policy_rules: int  # org-level gitops fields the org has set (what Rules shows as org-sourced)
+    deployments: int
+
+
+class SyncOrgDeployment(BaseModel):
+    name: str
+    projects: int | None = None  # None while the cloud is unreachable — not zero
+    here: bool = False
+    last_sync_at: datetime | None = None
+
+
+class SyncOrgOverviewOut(BaseModel):
+    """The Organization window (GRPH-1223). Unlinked is `linked: false` and nothing else.
+
+    Unreachable keeps the last known identity and role but `counts` is null and every other
+    deployment's numbers are null — never the last numbers presented as current. The one
+    exception is THIS deployment's `last_sync_at`, which is local truth."""
+    linked: bool
+    reachable: bool | None = None
+    unreachable_since: datetime | None = None
+    fetched_at: datetime | None = None
+    org: SyncOrgIdentity | None = None
+    role: str | None = None  # the linking credential's owner's org role (owner | admin | member)
+    counts: SyncOrgCounts | None = None
+    deployments: list[SyncOrgDeployment] | None = None
+
+
 class GitopsField(BaseModel):
     value: str | bool | None = None
     source: str
