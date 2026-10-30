@@ -596,6 +596,50 @@ def test_the_pr_selector_prefers_the_item_pr_then_the_receipt_then_the_branch():
     assert propose_mod.pr_selector({}) == ""
 
 
+def _opened(n: int, branch: str) -> dict:
+    """The receipt the server writes for a `pr_opened` observation."""
+    return {"kind": "url", "url": f"https://github.com/o/r/pull/{n}",
+            "detail": f"draft PR opened by gbfleet for {branch}"}
+
+
+def test_a_rework_on_a_new_branch_selects_that_branchs_pr_not_the_first(gh):
+    """GRPH-1218. Reworked onto `gb/new`, the item carries the old PR's receipt first and the
+    new one after it. Signed off at the new PR's head, the merge must check the new PR.
+
+    Sabotage: return the first `/pull/` receipt again — this selects #8 and fails."""
+    item = {"pr": None, "branch": "gb/new",
+            "evidence": [_opened(8, "gb/old"), _opened(9, "gb/new")]}
+
+    selector = propose_mod.pr_selector(item)
+    assert selector.endswith("/pull/9")
+
+    forge = _Forge(draft=True)
+    got = _merge(forge, gh, selector=selector)
+
+    assert got.ok and got.commit == MERGE_OID
+    assert forge.calls[0][3].endswith("/pull/9"), "viewed the superseded PR"
+    assert forge.calls[3][1:3] == ["pr", "merge"] and forge.calls[3][3].endswith("/pull/9")
+
+
+def test_the_branchs_receipt_wins_even_when_it_is_not_the_latest():
+    item = {"branch": "gb/new", "evidence": [_opened(9, "gb/new"), _opened(8, "gb/old")]}
+
+    assert propose_mod.pr_selector(item).endswith("/pull/9")
+
+
+def test_two_receipts_and_no_branch_selects_the_latest():
+    """A signed-off item's `branch` is routinely empty; the newest receipt is the live PR."""
+    item = {"branch": "", "evidence": [_opened(8, "gb/old"), _opened(9, "gb/new")]}
+
+    assert propose_mod.pr_selector(item).endswith("/pull/9")
+
+
+def test_a_branch_no_receipt_names_falls_back_to_the_latest_receipt():
+    item = {"branch": "gb/other", "evidence": [_opened(8, "gb/old"), _opened(9, "gb/new")]}
+
+    assert propose_mod.pr_selector(item).endswith("/pull/9")
+
+
 # --- GRPH-869: the receipt must land on the item ----------------------------------------
 
 

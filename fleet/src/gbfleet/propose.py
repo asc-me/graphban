@@ -501,23 +501,43 @@ def _scans_refusal(head: str, ref: str, scans) -> str:
     return f"CI has not attested {SCANS_PREDICATE} on {head[:12] or '?'} (release ref {ref}){tail}"
 
 
+def _receipt_branch(detail: str) -> str:
+    """The branch a `pr_opened` receipt names, or "". The server writes the detail as
+    "draft PR opened by gbfleet for <branch>" (services/fleet.py `_observation_receipt`)."""
+    head, sep, tail = (detail or "").rpartition(" for ")
+    if not sep or "PR opened" not in head:
+        return ""
+    return tail.strip().strip("`")
+
+
 def pr_selector(item: dict) -> str:
     """What to hand `gh pr view`: the item's PR if it names one, else the PR receipt the
-    supervisor wrote when it proposed the branch, else the branch itself.
+    supervisor wrote when it proposed the item's branch, else the LATEST PR receipt, else
+    the branch itself.
 
     A signed-off item's `branch` is routinely empty, which is why the receipt is consulted
     before it — the URL `propose_branch` recorded is the one thing that reliably survives.
+
+    Evidence only appends. An item reworked on a new branch gets a second receipt for its
+    new PR while the first still names the old one, and taking the first match checked the
+    stale PR forever (GRPH-1218). So the receipt for `branch` wins, and without one the
+    newest receipt does.
     """
     pr = item.get("pr")
     if isinstance(pr, str) and pr.strip():
         return pr.strip()
+    branch = str(item.get("branch") or "").strip()
+    latest = ""
     for e in item.get("evidence") or []:
         if not isinstance(e, dict) or e.get("kind") != "url":
             continue
         url = str(e.get("url") or "").strip()
-        if "/pull/" in url:
+        if "/pull/" not in url:
+            continue
+        latest = url
+        if branch and _receipt_branch(str(e.get("detail") or "")) == branch:
             return url
-    return str(item.get("branch") or "").strip()
+    return latest or branch
 
 
 def _url_for_ref(repo: Path, selector: str) -> str:
