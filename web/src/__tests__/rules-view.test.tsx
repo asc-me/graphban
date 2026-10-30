@@ -219,6 +219,7 @@ describe("RulesView", () => {
     ] as const) {
       const row = screen.getByTestId(`rules-legend-${level}`);
       expect(row).toHaveTextContent(word);
+      if (level === "not_used") expect(row).toHaveTextContent("not used by this project's model");
       expect(row).toHaveTextContent(String(expected[level]));
       expect(row.querySelector("svg")).not.toBeNull();
     }
@@ -251,8 +252,9 @@ describe("RulesView", () => {
     const ci = within(ins).getByTestId("rules-row-ci.backend_suite_both_engines");
     expect(within(ci).getByTestId("rules-no-result")).toHaveTextContent("NO RESULT RECORDED");
     expect(ci).toHaveTextContent("That is not a pass.");
-    // Read-only map: no inputs anywhere (editing is UI 2/3).
-    expect(within(ins).queryByRole("textbox")).not.toBeInTheDocument();
+    // Only db-truth gitops rows carry an editor; external and checked rows never do.
+    expect(within(forge).queryByRole("textbox")).not.toBeInTheDocument();
+    expect(within(ci).queryByRole("textbox")).not.toBeInTheDocument();
   });
 
   it("links a source enforcer with its kind prefix and says code rules are held in code", async () => {
@@ -340,7 +342,7 @@ describe("RulesView", () => {
     const banner = await screen.findByTestId("rules-fresh-banner");
     expect(banner).toHaveTextContent("Your delivery contract is unmeasured.");
     expect(screen.getByTestId("rules-model")).toHaveTextContent("unmeasured");
-    await user.click(within(banner).getByRole("button", { name: "Open Merge" }));
+    await user.click(within(banner).getByRole("button", { name: "Set it up in Merge" }));
     expect(await screen.findByRole("dialog", { name: "Merge stage inspector" })).toBeInTheDocument();
   });
 

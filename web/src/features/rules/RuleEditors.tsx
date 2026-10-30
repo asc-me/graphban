@@ -12,16 +12,18 @@ import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  GITOPS_BASE_CHIPS,
+  BaseBranchChips,
   GITOPS_NAMING_TOKENS,
+  NamingTokenChips,
   RELEASE_DEFINED_PLACEHOLDER,
   UNMEASURED_PLACEHOLDER,
+  unknownNamingTokens,
 } from "@/features/settings/GitopsPanel";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { useConfig, useFleetPolicy, useGitops, useSaveFleetPolicy, useSyncStatus, useUpdateGitops } from "@/lib/queries";
-import { adminPath, consoleHref } from "@/lib/routes";
+import { adminPath, consoleHref, projectPath } from "@/lib/routes";
 import type { FleetPolicy, GitopsPatch, GitopsView, RuleFlowRule } from "@/lib/types";
 
 const MONO = "font-mono";
@@ -41,7 +43,6 @@ export const GITOPS_RULE_FIELDS: Record<string, FieldKey> = {
 };
 
 const SELECTS: Partial<Record<FieldKey, readonly (readonly [string, string])[]>> = {
-  no_push_to_base: [["", "Unmeasured"], ["true", "Yes"], ["false", "No"]],
   reviewer_bar: [
     ["", "Unmeasured"], ["sign_off", "Graphban sign_off"], ["forge", "Forge approvals"], ["both", "Both"],
   ],
@@ -108,7 +109,8 @@ export function GitopsRuleEditor({
   const { activeId } = useProjectCtx();
   const { data: view } = useGitops(activeId);
   const orgName = useOrgName(view);
-  if (!view) return <>{fallback}</>;
+  // A rule the project's model does not use is shown, never edited.
+  if (!view || !rule.used) return <>{fallback}</>;
 
   const { state, message } = view.control;
   if (state === "linked_unreachable") {
@@ -160,45 +162,26 @@ function GitopsFieldForm({
   prefill?: string;
 }) {
   const saved = currentValue(view, field);
-  const [editing, setEditing] = React.useState(prefill !== undefined);
   const [draft, setDraft] = React.useState(prefill ?? saved);
   const [error, setError] = React.useState("");
-  const [done, setDone] = React.useState(false);
+  const [done, setDone] = React.useState<{ kind: "saved" | "cleared"; draft: string } | null>(null);
   const save = useUpdateGitops(projectId);
   const options = SELECTS[field];
   const dirty = draft !== saved;
-
-  if (!editing) {
-    return (
-      <div className="flex flex-col gap-1.5">
-        {fallback}
-        {done && (
-          <span className={note} data-testid="rules-gitops-saved">
-            Saved. Told to agents in every get_context. Nothing refuses a violation.
-          </span>
-        )}
-        <Button
-          size="sm"
-          variant="outline"
-          className="self-start"
-          onClick={() => {
-            setDraft(saved);
-            setError("");
-            setDone(false);
-            setEditing(true);
-          }}
-        >
-          Edit
-        </Button>
-      </div>
-    );
-  }
+  const model = typeof view.model.value === "string" ? view.model.value : "";
 
   function onSave() {
+    if (PATTERN_FIELDS.includes(field)) {
+      const bad = unknownNamingTokens(draft);
+      if (bad.length > 0) {
+        setError(`Unknown token ${bad.map((t) => `{${t}}`).join(", ")}. Allowed: ${GITOPS_NAMING_TOKENS.map((t) => `{${t}}`).join(" ")}.`);
+        return;
+      }
+    }
+    const cleared = draft === "";
     save.mutate(toPatch(field, draft), {
       onSuccess: () => {
-        setEditing(false);
-        setDone(true);
+        setDone({ kind: cleared ? "cleared" : "saved", draft });
         setError("");
       },
       // The server's 422 is shown as sent and the typed value stays in the input.
@@ -208,7 +191,25 @@ function GitopsFieldForm({
 
   return (
     <div className="flex flex-col gap-2" data-testid="rules-gitops-editor">
-      {options ? (
+      {fallback}
+      {field === "no_push_to_base" ? (
+        <div className="flex gap-1.5" role="group" aria-label={field}>
+          {(["true", "false"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              aria-pressed={draft === v}
+              onClick={() => setDraft(draft === v ? "" : v)}
+              className={cn(
+                "rounded-md border px-3 py-1 text-small",
+                draft === v ? "border-accent text-fg" : "border-control text-muted hover:text-fg-2",
+              )}
+            >
+              {v === "true" ? "Yes" : "No"}
+            </button>
+          ))}
+        </div>
+      ) : options ? (
         <select aria-label={field} className={inputClass} value={draft} onChange={(e) => setDraft(e.target.value)}>
           {options.map(([v, label]) => (
             <option key={v || "unmeasured"} value={v}>{label}</option>
@@ -222,42 +223,22 @@ function GitopsFieldForm({
           onChange={(e) => setDraft(e.target.value)}
         />
       )}
-      {field === "base_branch" && (
-        <div className="flex flex-wrap gap-1.5">
-          {GITOPS_BASE_CHIPS.map((c) => (
-            <TokenChip key={c} label={c} onClick={() => setDraft(c)} />
-          ))}
-        </div>
-      )}
-      {PATTERN_FIELDS.includes(field) && (
-        <div className="flex flex-wrap gap-1.5">
-          {GITOPS_NAMING_TOKENS.map((t) => (
-            <TokenChip key={t} label={`{${t}}`} onClick={() => setDraft((d) => `${d}{${t}}`)} />
-          ))}
-        </div>
-      )}
+      {field === "base_branch" && <BaseBranchChips model={model} onPick={setDraft} />}
+      {PATTERN_FIELDS.includes(field) && <NamingTokenChips value={draft} onChange={setDraft} />}
       {error && <p role="alert" className="text-[12px] text-st-blocked">{error}</p>}
+      {done && done.draft === draft && !error && (
+        <span className={note} data-testid="rules-gitops-saved">
+          {done.kind === "cleared"
+            ? "Cleared — this rule is unmeasured."
+            : "Saved. Told to agents in every get_context. Nothing refuses a violation."}
+        </span>
+      )}
       <div className="flex gap-2">
         <Button size="sm" onClick={onSave} disabled={!dirty || save.isPending}>
           {save.isPending ? "Saving…" : "Save"}
         </Button>
-        <Button size="sm" variant="outline" disabled={save.isPending} onClick={() => setEditing(false)}>
-          Cancel
-        </Button>
       </div>
     </div>
-  );
-}
-
-function TokenChip({ label, onClick }: { label: string; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="rounded-md border border-control px-2 py-0.5 font-mono text-small text-muted hover:text-fg-2"
-    >
-      {label}
-    </button>
   );
 }
 
@@ -274,7 +255,8 @@ export function policyWithItemCap(current: FleetPolicy | null, cap: number | nul
 
 /** `plan.budget_cap` — stays EXTERNAL after a save; the supervisor enforces, so the NOT VERIFIED box stays. */
 export function BudgetCapEditor() {
-  const { activeId } = useProjectCtx();
+  const { activeId, active } = useProjectCtx();
+  const tag = active?.tag ?? "";
   const { data, isLoading, isError } = useFleetPolicy(activeId);
   const save = useSaveFleetPolicy(activeId);
   const current = data?.policy ?? null;
@@ -292,6 +274,7 @@ export function BudgetCapEditor() {
         <span className={cn(MONO, "text-[13px] font-semibold")}>
           {saved != null ? `${saved} tokens per item` : "— no per-item cap"}
         </span>
+        <Link to={projectPath(tag, "fleet")} className="text-[11.5px] text-accent hover:underline">Build → Fleet ↗</Link>
         {data.writable === false ? (
           <span className={note} data-testid="rules-budget-readonly">You don't have write access to this project</span>
         ) : (
