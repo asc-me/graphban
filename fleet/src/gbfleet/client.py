@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Iterator
@@ -299,6 +300,8 @@ class Graphban:
         try:
             response = _post_within(self._client(), self.endpoint, body, self.deadline)
         except httpx.HTTPError as exc:
+            if isinstance(exc, httpx.ReadTimeout):
+                self._http = None  # GRPH-1235: the watchdog may have closed it
             raise ServerUnreachable(f"{self.endpoint}: {exc!r}", tool=label) from exc
 
         if response.status_code >= 500:
@@ -347,16 +350,40 @@ def _post_within(client: httpx.Client, url: str, body: dict, deadline: float) ->
     chunks. Raises `httpx.ReadTimeout`, so callers treat it as any other transport failure.
     """
     start = time.monotonic()
-    with client.stream("POST", url, json=body) as streamed:
-        chunks: list[bytes] = []
-        for chunk in streamed.iter_bytes():
-            chunks.append(chunk)
-            if time.monotonic() - start > deadline:
-                raise httpx.ReadTimeout(f"no complete reply within {deadline:g}s")
-        headers = [(k, v) for k, v in streamed.headers.multi_items()
-                   if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
-        return httpx.Response(streamed.status_code, headers=headers, content=b"".join(chunks),
-                              request=streamed.request)
+    # GRPH-1235: waiting for the HEADERS happens inside `stream().__enter__`, where the chunk
+    # check below cannot reach. Cap every httpx phase at the deadline so that wait is bounded
+    # too (the client's own 30s per-read timeout is the looser bound it replaces).
+    limit = min(deadline, getattr(client.timeout, "read", None) or deadline)
+    # A peer that dribbles header bytes resets every per-read timeout, so a watchdog also closes
+    # the client at the deadline. The closed client is the caller's to replace (`_rpc` does).
+    expired = threading.Event()
+
+    def _expire() -> None:
+        expired.set()
+        client.close()
+
+    watchdog = threading.Timer(deadline, _expire)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        with client.stream("POST", url, json=body, extensions={"timeout": {
+                "connect": limit, "read": limit, "write": limit, "pool": limit}}) as streamed:
+            chunks: list[bytes] = []
+            for chunk in streamed.iter_bytes():
+                chunks.append(chunk)
+                if time.monotonic() - start > deadline:
+                    raise httpx.ReadTimeout(f"no complete reply within {deadline:g}s")
+            headers = [(k, v) for k, v in streamed.headers.multi_items()
+                       if k.lower() not in ("content-encoding", "content-length",
+                                            "transfer-encoding")]
+            return httpx.Response(streamed.status_code, headers=headers,
+                                  content=b"".join(chunks), request=streamed.request)
+    except (httpx.HTTPError, RuntimeError) as exc:
+        if expired.is_set() and not isinstance(exc, httpx.ReadTimeout):
+            raise httpx.ReadTimeout(f"no complete reply within {deadline:g}s") from exc
+        raise
+    finally:
+        watchdog.cancel()
 
 
 def _text_of(result: dict) -> str:
