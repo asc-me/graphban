@@ -49,6 +49,7 @@ import type {
   Invite,
   InvitePreview,
   Item,
+  ItemDetail,
   EventPage,
   EventsQuery,
   GrillMessage,
@@ -98,6 +99,7 @@ import type {
   ShardHit,
   Status,
   SyncBundle,
+  SyncOrgOverview,
   SyncStatus,
   User,
 } from "./types";
@@ -604,15 +606,16 @@ export const api = {
 
   items: (projectId?: string) =>
     request<Item[]>(`/items${projectId ? `?project_id=${projectId}` : ""}`),
+  item: (id: string) => request<ItemDetail>(`/items/${encodeURIComponent(id)}`),
   // The shell's badge numbers. It used to fetch four whole collections to call `.length` on
   // them — 2.1 MB on every route to draw three badges and a stat (GRPH-431).
   counts: (projectId: string) => request<ShellCounts>(`/projects/${projectId}/counts`),
-  createItem: (projectId: string, body: Partial<Item>) =>
+  createItem: (projectId: string, body: Partial<ItemDetail>) =>
     request<Item>("/items", {
       method: "POST",
       body: JSON.stringify(withProject(projectId, body)),
     }),
-  updateItem: (id: string, body: Partial<Item>) =>
+  updateItem: (id: string, body: Partial<ItemDetail>) =>
     request<Item>(`/items/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   ownerClose: (id: string, body: { commit: string; pr_url?: string }) =>
     request<Item>(`/items/${id}/owner-close`, { method: "POST", body: JSON.stringify(body) }),
@@ -1170,6 +1173,7 @@ export const api = {
   syncLink: (cloud_url: string, api_key: string, org: string) =>
     request<SyncStatus>("/sync/link", { method: "POST", body: JSON.stringify({ cloud_url, api_key, org }) }),
   syncUnlink: () => request<SyncStatus>("/sync/link", { method: "DELETE" }),
+  syncOrg: () => request<SyncOrgOverview>("/sync/org"),
   syncPush: (project_id: string) =>
     request<{ project_id: string; pushed?: number; removed?: number; unchanged?: number; skipped?: boolean; reason?: string }>(
       "/sync/push", { method: "POST", body: JSON.stringify({ project_id }) }),

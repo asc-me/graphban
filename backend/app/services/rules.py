@@ -109,6 +109,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("gitops.owned_by_org", "build", "Gitops owned by the org",
          "On a linked instance the git process is set by the org admin; project edits are refused.",
          "enforced", _src("app/routers/projects.py", "Refused"), "code", scope="org"),
+    Rule("sync.link_needs_box_admin", "build", "Linking the box needs a box admin",
+         "Linking, re-pointing or unlinking this deployment's cloud org is done by the box's "
+         "operator or an owner/admin of one of their projects, not by any member.",
+         "enforced", _src("app/routers/sync.py", "refuse_unless_box_admin"), "code", scope="org"),
     Rule("reach.deploy_not_delegable", "plan", "Deploy-reach work is not delegated",
          "An item declared reach=deploy acts on a running system and is never delegated.",
          "enforced", _src("app/services/delegation.py", "Refused"), "code"),

@@ -681,6 +681,24 @@ class ItemOut(ORMModel):
         return v or []
 
 
+#: What the project list leaves out by default (GRPH-1228): the per-item fields that are large
+#: and that no list view draws. A pinned set — `test_items_list.py` fails if one comes back.
+ITEM_HEAVY_FIELDS = frozenset({"description", "evidence", "bounce_reason"})
+
+
+def item_list_row(item) -> dict:
+    """A lean list row: every `ItemOut` field but the heavy ones, plus `has_attestation` so the
+    board can still tell whether `done` would 409 without reading the evidence array."""
+    row = ItemOut.model_validate(item).model_dump(
+        mode="json", by_alias=True, exclude=ITEM_HEAVY_FIELDS
+    )
+    row["has_attestation"] = any(
+        isinstance(e, dict) and e.get("kind") == "attestation" and e.get("adapter") and e.get("commit")
+        for e in (item.evidence or [])
+    )
+    return row
+
+
 # ---- Memory ----
 class ShardCreate(BaseModel):
     text: str
@@ -1115,6 +1133,43 @@ class SyncStatusOut(BaseModel):
     last_redacted_models: int | None = None
     last_snapshot_at: str | None = None
     projects: list[SyncProjectState] = []
+
+
+class SyncOrgIdentity(BaseModel):
+    name: str
+    host: str | None = None  # `<slug>.graphban.dev` label; None when the org has not claimed one
+    plan: str | None = None
+
+
+class SyncOrgCounts(BaseModel):
+    members: int
+    teams: int
+    policy_rules: int  # org-level gitops fields the org has set (what Rules shows as org-sourced)
+    deployments: int
+
+
+class SyncOrgDeployment(BaseModel):
+    name: str
+    projects: int | None = None  # None while the cloud is unreachable — not zero
+    here: bool = False
+    last_sync_at: datetime | None = None
+
+
+class SyncOrgOverviewOut(BaseModel):
+    """The Organization window (GRPH-1223). Unlinked is `linked: false` and nothing else.
+
+    Unreachable keeps the last known identity and role but `counts` is null and every other
+    deployment's numbers are null — never the last numbers presented as current. The one
+    exception is THIS deployment's `last_sync_at`, which is local truth."""
+    linked: bool
+    reachable: bool | None = None
+    unreachable_since: datetime | None = None
+    fetched_at: datetime | None = None
+    org: SyncOrgIdentity | None = None
+    role: str | None = None  # the linking credential's owner's org role (owner | admin | member)
+    counts: SyncOrgCounts | None = None
+    deployments: list[SyncOrgDeployment] | None = None
+    can_unlink: bool | None = None  # the VIEWER is a box admin (GRPH-1225) — `role` is not theirs
 
 
 class GitopsField(BaseModel):

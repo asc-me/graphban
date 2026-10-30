@@ -72,7 +72,6 @@
       "/api/sync/code-graph",
       "/api/sync/export",
       "/api/sync/import",
-      "/api/sync/link",
       "/api/sync/purge",
       "/api/sync/push",
       "/api/sync/status",
