@@ -1740,11 +1740,19 @@ class UnmappedRefusalsOut(BaseModel):
     groups: list[UnmappedGroupOut]
 
 
+class ShippedSkillOut(BaseModel):
+    name: str
+    #: SKILL.md at `cli-v<version>` (GRPH-1194).
+    url: str
+
+
 class RuleFlowRuleOut(RuleOut):
     used: bool
     label: str | None = None
-    #: Only the collapsed skills node; None means the gban package was not readable here.
-    skills: list[str] | None = None
+    #: Only the collapsed skills node; None means the shipped skill list was not readable here.
+    skills: list[ShippedSkillOut] | None = None
+    #: The gban version those skills ship at; None with `skills`.
+    skills_version: str | None = None
 
 
 class RuleStageOut(BaseModel):

@@ -129,6 +129,45 @@ def test_pack_ships_the_coverage_its_tree_measured(tmp_path):
         assert f"graphban-{VER}/{gp.COVERAGE}" in tf.getnames()
 
 
+def test_pack_ships_the_gban_skills_its_tree_carries(tmp_path):
+    """GRPH-1194: the packed backend lists the skills and gban version of the packed `cli/`."""
+    src = make_src(tmp_path)
+    rc, tree = gp.pack(src, tmp_path / "out", sha=SHA, version=VER, api_only=True)
+    assert rc == 0
+    data = json.loads((tree / gp.GBAN_SKILLS).read_text(encoding="utf-8"))
+    assert data == {"version": "9.9.9", "skills": ["graphban-work"]}
+    with tarfile.open(tmp_path / "out" / f"graphban-{VER}.tar.gz") as tf:
+        assert f"graphban-{VER}/{gp.GBAN_SKILLS}" in tf.getnames()
+
+
+def test_a_tree_without_cli_is_not_packed(tmp_path):
+    src = make_src(tmp_path)
+    (src / "cli" / "pyproject.toml").unlink()
+    rc, tree = gp.pack(src, tmp_path / "out", sha=SHA, version=VER, api_only=True)
+    assert rc == 1 and tree is None
+
+
+def test_the_image_skills_manifest_matches_cli_and_the_dockerfile_ships_it():
+    """The image's build context is backend/ (no cli/), so it ships a checked-in manifest.
+    A gban bump or a new skill fails here until it is regenerated with
+    `python3 scripts/graphban_pack.py --skills-manifest backend/scripts/gban_skills.json`."""
+    root = pathlib.Path(__file__).resolve().parents[2]
+    manifest = root / "backend" / "scripts" / "gban_skills.json"
+    assert json.loads(manifest.read_text(encoding="utf-8")) == gp.skills_manifest(root / "cli")
+    dockerfile = (root / "backend" / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY scripts/gban_skills.json ./app/data/gban_skills.json" in dockerfile
+    assert "test -s /app/app/data/gban_skills.json" in dockerfile
+    install = dockerfile.index("pip install --no-cache-dir .")
+    assert dockerfile.index("gban_skills.json ./app/data") < install
+
+
+def test_main_writes_the_skills_manifest(tmp_path):
+    out = tmp_path / "m.json"
+    assert gp.main(["--skills-manifest", str(out)]) == 0
+    root = pathlib.Path(__file__).resolve().parents[2]
+    assert json.loads(out.read_text(encoding="utf-8")) == gp.skills_manifest(root / "cli")
+
+
 def test_a_tree_that_fails_the_ratchet_is_not_packed_and_ships_no_number(tmp_path):
     src = make_src(tmp_path)
     _refusals(src)

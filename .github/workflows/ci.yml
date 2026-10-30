@@ -58,6 +58,10 @@ jobs:
               # Host/pack/upgrade tests import scripts/*. A scripts-only PR
               # would otherwise skip the suite that exists to keep them honest.
               - 'scripts/**'
+              # The skills manifest guard (test_pack_release) reads cli/: a gban version bump
+              # or a new skill must fail it until backend/scripts/gban_skills.json is regenerated.
+              - 'cli/pyproject.toml'
+              - 'cli/src/gban/skills/**'
             frontend:
               - 'web/**'
               - '.github/workflows/ci.yml'
@@ -188,6 +192,8 @@ jobs:
       # gitignored, so hatchling ships it only as a declared `artifacts` entry. Publish it here
       # the way the packer does, and require the INSTALLED wheel to report it.
       - run: python3 ../scripts/refusal_ratchet.py publish app/data/refusal_coverage.json "$GITHUB_SHA"
+      # The gban skills manifest (GRPH-1194), written from cli/ the way the packer does.
+      - run: python3 ../scripts/graphban_pack.py --skills-manifest app/data/gban_skills.json
       - run: uv pip install .
       - name: The installed wheel ships the refusal coverage
         run: |
@@ -199,6 +205,22 @@ jobs:
           assert "site-packages" in str(rules.REFUSAL_COVERAGE_FILE), rules.REFUSAL_COVERAGE_FILE
           assert got["published"] and got["m"] and got["commit"] == os.environ["GITHUB_SHA"], got
           print(f"installed wheel: {got['n']} of {got['m']} refusal sites name their rule")
+          EOF
+      - name: The installed wheel ships the gban skills
+        run: |
+          rm app/data/gban_skills.json
+          want=$(python3 -c "import tomllib; print(tomllib.load(open('../cli/pyproject.toml','rb'))['project']['version'])")
+          n=$(find ../cli/src/gban/skills -mindepth 1 -maxdepth 1 -type d | wc -l)
+          cd /tmp && WANT="$want" WANT_N="$n" "$GITHUB_WORKSPACE/backend/.venv/bin/python" - <<'EOF'
+          import os
+          from app.services import rules
+          got = rules.shipped_skills()
+          assert "site-packages" in str(rules.GBAN_SKILLS_FILE), rules.GBAN_SKILLS_FILE
+          assert rules.GBAN_SKILLS_FILE.is_file(), rules.GBAN_SKILLS_FILE
+          assert got and got["version"] == os.environ["WANT"], got
+          assert len(got["skills"]) == int(os.environ["WANT_N"]) > 0, got
+          assert all(f"/blob/cli-v{got['version']}/" in s["url"] for s in got["skills"]), got
+          print(f"installed wheel: {len(got['skills'])} skills shipped with gban {got['version']}")
           EOF
       # The installed wheel must ship the eval fixtures, or `graphban eval`
       # reports `absent` on every install (the GRPH-224 claim). 4 is the

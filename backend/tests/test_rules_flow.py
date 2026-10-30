@@ -124,3 +124,12 @@ def test_shipped_skills_prefers_package_data_and_is_none_when_absent(tmp_path):
     assert [s["name"] for s in got["skills"]] == ["a", "b"]
     assert got["skills"][0]["url"].endswith("/blob/cli-v1.2.3/cli/src/gban/skills/a/SKILL.md")
     assert R.shipped_skills(tmp_path / "missing.json", tmp_path / "nocli") is None
+
+
+def test_flow_endpoint_serves_the_linked_skills(client, auth):
+    """The response schema carries `{name, url}` and the version, not bare names."""
+    r = client.get("/api/rules/flow?project_id=core", headers=auth)
+    assert r.status_code == 200
+    n = _rule(r.json(), "agents.skills_pack")
+    assert n["skills_version"] and len(n["skills"]) == 9
+    assert all(f"/blob/cli-v{n['skills_version']}/" in s["url"] for s in n["skills"])
