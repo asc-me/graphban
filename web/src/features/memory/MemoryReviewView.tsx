@@ -650,7 +650,7 @@ function RowView({
     >
       <Box on={checked} label={`Select ${r.id}`} onClick={(e) => { e.stopPropagation(); onToggle(); }} />
       <div className="min-w-0">
-        <p className="line-clamp-2 text-body leading-normal text-fg">{r.text}</p>
+        <p className="line-clamp-2 break-words [overflow-wrap:anywhere] text-body leading-normal text-fg">{r.text}</p>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-meta text-faint">
           <span className="text-muted">{r.id}</span>
           <span>{r.agent}{r.source ? ` · ${r.source}` : ""}</span>
