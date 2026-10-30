@@ -23,6 +23,61 @@ function groupKey(g: UnmappedGroup) {
   return `${g.platform ? "platform|" : ""}${g.where}|${g.status ?? ""}`;
 }
 
+const TABBABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
+/**
+ * What a real dialog does (GRPH-1202): focus moves in on open unless something inside already
+ * has it, Escape closes it, Tab can be kept inside, and focus returns to the opener on close.
+ * The opener is read in render — before an unmounting sibling dialog can move focus — and an
+ * explicit `returnTo` wins because Safari does not focus a clicked button.
+ */
+export function useDialogBehavior<T extends HTMLElement>(
+  onClose: () => void,
+  { trap = false, returnTo }: { trap?: boolean; returnTo?: React.RefObject<HTMLElement | null> } = {},
+) {
+  const ref = React.useRef<T | null>(null);
+  const opener = React.useRef<Element | null>(typeof document === "undefined" ? null : document.activeElement);
+  const closeRef = React.useRef(onClose);
+  closeRef.current = onClose;
+  React.useEffect(() => {
+    const el = ref.current;
+    if (el && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
+    return () => {
+      const target = returnTo?.current ?? opener.current;
+      const active = document.activeElement;
+      if (!(target instanceof HTMLElement) || !target.isConnected) return;
+      if (active && active !== document.body && !(el && el.contains(active))) return;
+      target.focus({ preventScroll: true });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeRef.current();
+      return;
+    }
+    if (e.key !== "Tab" || !trap || !ref.current) return;
+    const items = Array.from(ref.current.querySelectorAll<HTMLElement>(TABBABLE));
+    if (items.length === 0) {
+      e.preventDefault();
+      return;
+    }
+    const first = items[0];
+    const last = items[items.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || active === ref.current)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+  return { ref, onKeyDown };
+}
+
 function Sheet({
   label,
   kicker,
@@ -31,7 +86,9 @@ function Sheet({
   children,
   footer,
   testId,
+  returnTo,
 }: {
+  returnTo?: React.RefObject<HTMLElement | null>;
   label: string;
   kicker: string;
   title: string;
@@ -40,9 +97,14 @@ function Sheet({
   footer?: React.ReactNode;
   testId: string;
 }) {
+  const dialog = useDialogBehavior<HTMLElement>(onClose, { trap: true, returnTo });
   return (
     <aside
+      ref={dialog.ref}
+      tabIndex={-1}
+      onKeyDown={dialog.onKeyDown}
       role="dialog"
+      aria-modal="true"
       aria-label={label}
       data-testid={testId}
       className="absolute inset-y-4 right-4 z-20 flex w-[440px] max-w-[calc(100%-2rem)] flex-col overflow-hidden rounded-[16px] border border-line-2 bg-surface-2 shadow-2xl"
@@ -118,7 +180,7 @@ function Spark({ days }: { days: number[] }) {
 
 // ── Unmapped refusals (5a–5c) ──────────────────────────────────────────────────
 
-export function UnmappedSheet({ onClose }: { onClose: () => void }) {
+export function UnmappedSheet({ onClose, returnTo }: { onClose: () => void; returnTo?: React.RefObject<HTMLElement | null> }) {
   const { activeId } = useProjectCtx();
   const q = useUnmappedRefusals(activeId);
   const createItem = useCreateItem(activeId);
@@ -144,6 +206,7 @@ export function UnmappedSheet({ onClose }: { onClose: () => void }) {
 
   return (
     <Sheet
+      returnTo={returnTo}
       label="Unmapped refusals"
       kicker={`REFUSAL_UNMAPPED · LAST ${WINDOW_DAYS} DAYS`}
       title="Unmapped refusals"
@@ -233,8 +296,10 @@ function SourceLine({ s }: { s: SuggestionSource }) {
 export function RecommendedSheet({
   onClose,
   onOpenValue,
+  returnTo,
 }: {
   onClose: () => void;
+  returnTo?: React.RefObject<HTMLElement | null>;
   /** Opens the stage with the editor prefilled — for a value suggestion. */
   onOpenValue: (s: RuleSuggestion) => void;
 }) {
@@ -256,7 +321,7 @@ export function RecommendedSheet({
   }
 
   return (
-    <Sheet label="Recommended rules" kicker="SUGGESTED · FROM THE SOURCES BELOW" title="Recommended rules" onClose={onClose} testId="rules-recommended">
+    <Sheet returnTo={returnTo} label="Recommended rules" kicker="SUGGESTED · FROM THE SOURCES BELOW" title="Recommended rules" onClose={onClose} testId="rules-recommended">
       {q.isError ? (
         <Note tone="red" testId="rules-recommended-error">
           Could not read suggestions: {errorDetail(q.error, "request failed")}. That is not “nothing to suggest”.
