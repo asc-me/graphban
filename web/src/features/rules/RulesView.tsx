@@ -920,7 +920,7 @@ function Inspector({
             {stage && <TallyLine rules={stageRules(stage)} />}
             {pack && (
               <span className={cn(MONO, "text-[10.5px] text-muted")}>
-                {pack.skills ? `${pack.skills.length} skills shipped with gban` : "skill list not readable on this server"}
+                {pack.skills ? `${pack.skills.length} skills shipped with gban ${pack.skills_version ?? ""}`.trim() : "skill list not readable on this server"}
               </span>
             )}
           </div>
@@ -981,8 +981,10 @@ function PackBody({ pack }: { pack: RuleFlowRule }) {
   return (
     <ul className="flex flex-col gap-1" data-testid="rules-pack-skills">
       {pack.skills.map((s) => (
-        <li key={s} className={cn(MONO, "text-[11.5px] text-fg-2")}>
-          skills/{s}/SKILL.md
+        <li key={s.name} className={cn(MONO, "text-[11.5px] text-fg-2")}>
+          <a href={s.url} target="_blank" rel="noreferrer" className="underline">
+            skills/{s.name}/SKILL.md
+          </a>
         </li>
       ))}
     </ul>

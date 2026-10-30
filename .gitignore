@@ -29,6 +29,7 @@ fleet/.pytest_cache/
 # Written at package build time by `refusal_ratchet.py publish` (the packer, the wheel job),
 # never committed: a CI push to protected main is refused and turns main red (GRPH-1185).
 backend/app/data/refusal_coverage.json
+backend/app/data/gban_skills.json
 
 # Node
 web/node_modules/
