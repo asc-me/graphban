@@ -169,9 +169,11 @@ class Extractor(Protocol):
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
+    # math.sumprod runs the multiply-add loop in C; the generator form it replaced took
+    # 33s of a 45s memory-queue load on 1024-dim vectors (GRPH-1227).
+    dot = math.sumprod(a, b)
+    na = math.sqrt(math.sumprod(a, a))
+    nb = math.sqrt(math.sumprod(b, b))
     if na == 0 or nb == 0:
         return 0.0
     return dot / (na * nb)

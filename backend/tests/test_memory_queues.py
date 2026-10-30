@@ -328,3 +328,105 @@ def test_keep_clears_a_code_changed_flag(client, auth):
     # Kept against h2: a further change flags it again.
     _redescribe(pid, content_hash="h3")
     assert [r["why"] for r in _stale(client, auth, pid)] == [["cited code changed since publish"]]
+
+
+# ---- GRPH-1227: counting a queue never waits on a model, and similarity is fast ----------------
+
+def _vec(seed: int, dim: int):
+    import random
+    rng = random.Random(seed)
+    return [rng.uniform(-1, 1) for _ in range(dim)]
+
+
+def _naive_best(vec, pool):
+    """The pre-GRPH-1227 per-pair loop, kept as the oracle."""
+    best, score = None, 0.0
+    for shard, svec in pool:
+        dot = sum(x * y for x, y in zip(vec, svec))
+        na = sum(x * x for x in vec) ** 0.5
+        nb = sum(y * y for y in svec) ** 0.5
+        sim = 0.0 if na == 0 or nb == 0 else dot / (na * nb)
+        if sim > score:
+            best, score = shard, sim
+    return best, score
+
+
+def test_best_match_equals_the_per_pair_loop():
+    pool = [(MemoryShard(id=f"s{i}"), _vec(i, 64)) for i in range(40)]
+    pool.append((MemoryShard(id="zero"), [0.0] * 64))
+    for seed in (100, 101, 102):
+        q = _vec(seed, 64)
+        got, want = mem_svc._best_match(q, pool), _naive_best(q, pool)
+        assert got[0] is want[0] and abs(got[1] - want[1]) < 1e-12
+    assert mem_svc._best_match([0.0] * 64, pool) == (None, 0.0)
+    assert mem_svc._best_match(pool[0][1], []) == (None, 0.0)
+
+
+def test_similarity_pass_is_fast_at_real_scale():
+    """~1,300 published x 80 candidates at 1024 dims took ~34s in pure Python."""
+    import time
+    pool = [(MemoryShard(id=f"s{i}"), _vec(i, 1024)) for i in range(1300)]
+    cands = [_vec(10_000 + i, 1024) for i in range(80)]
+    t0 = time.monotonic()
+    for c in cands:
+        mem_svc._best_match(c, pool)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0, f"similarity pass took {elapsed:.2f}s"
+
+
+def _seed_candidates(pid):
+    """Near-duplicate, conflicting-candidate and novel rows, with chosen embeddings."""
+    db = SessionLocal()
+    try:
+        dim = len(db.scalar(__import__("sqlalchemy").select(MemoryShard.embedding)
+                            .where(MemoryShard.embedding.is_not(None)).limit(1)) or _vec(0, 384))
+        base = _vec(1, dim)
+        ids = {}
+        for name, status, emb in (
+            ("pub", "published", base),
+            ("dup", "candidate", [x + 1e-4 for x in base]),
+            ("novel", "candidate", _vec(2, dim)),
+            ("other", "candidate", _vec(3, dim)),
+        ):
+            s = mem_svc.add_memory(db, text_body=f"{name} lesson text", project_id=pid,
+                                   status=status, auto_triage=False)
+            s.embedding = emb
+            if name == "other":
+                s.review_judge_verdict = {"grounded": True, "ready": True, "reason": "x",
+                                          "conflicts": ["pub"]}
+                s.review_judge_key = "stale"
+            ids[name] = s.id
+        db.commit()
+        return ids
+    finally:
+        db.close()
+
+
+def test_queue_counts_matches_score_candidates_membership(client, auth):
+    pid = _proj(client, auth, "QSame", judge=True)
+    _seed_candidates(pid)
+    db = SessionLocal()
+    try:
+        full = mem_svc.score_candidates(db, project_id=pid)
+        counted = mem_svc.score_candidates(db, project_id=pid, judge=False)
+        key = lambda rows: sorted((r["shard"].id, r["suggestion"], r["duplicate_of"]) for r in rows)  # noqa: E731
+        assert key(full) == key(counted) and len(full) == 3
+        dup = next(r for r in counted if r["shard"].text.startswith("dup"))
+        assert dup["suggestion"] == "reject" and dup["duplicate_of"]
+        counts = mem_svc.queue_counts(db, pid)
+        assert counts["needs_decision"]["count"] == len(full)
+        assert counts["conflicts"]["count"] == 1  # the stored verdict, read without a call
+    finally:
+        db.close()
+
+
+def test_queue_counts_never_calls_the_review_judge(client, auth, monkeypatch):
+    pid = _proj(client, auth, "QNoJudge", judge=True)
+    _seed_candidates(pid)
+
+    def boom(*a, **k):
+        raise AssertionError("queue_counts must not call the review judge")
+
+    monkeypatch.setattr(mem_svc, "review_judge", boom)
+    body = client.get(f"/api/memory/queues?project_id={pid}", headers=auth).json()
+    assert body["needs_decision"] == {"count": 3, "state": "ok", "error": ""}

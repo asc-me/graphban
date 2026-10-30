@@ -5,6 +5,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 import uuid
@@ -305,9 +306,16 @@ def _corroboration_pool(db: Session, project_id: str | None) -> list[tuple[Memor
 
 def _best_match(vec: list[float], pool: list[tuple[MemoryShard, list[float]]]) -> tuple[MemoryShard | None, float]:
     """The most-similar shard in `pool` and its cosine score (0.0 if the pool is empty)."""
+    # One pass: the query's norm is computed once, not once per pool member.
+    nq = math.sqrt(math.sumprod(vec, vec))
     best, score = None, 0.0
+    if nq == 0:
+        return best, score
     for shard, svec in pool:
-        sim = cosine_similarity(vec, svec)
+        ns = math.sqrt(math.sumprod(svec, svec))
+        if ns == 0:
+            continue
+        sim = math.sumprod(vec, svec) / (nq * ns)
         if sim > score:
             best, score = shard, sim
     return best, score
@@ -476,7 +484,7 @@ def _score_shard(
     return suggestion, round(confidence, 3), reasons, duplicate_of
 
 
-def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict]:
+def score_candidates(db: Session, *, project_id: str | None = None, judge: bool = True) -> list[dict]:
     """Advisory accept/reject suggestions for the review queue (AL-151).
 
     For each candidate, compare its embedding against the trusted (`published`) and
@@ -491,7 +499,11 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
 
     Similarity always runs. When `memory_llm_judge` is on, a resolved decider scores
     non-vetoed candidates until `DECIDER_QUEUE_BUDGET_S` (D9); the chat judge is still
-    capped at `REVIEW_JUDGE_MAX`. On-demand keep/quality is `advisory_judge`."""
+    capped at `REVIEW_JUDGE_MAX`. On-demand keep/quality is `advisory_judge`.
+
+    `judge=False` never asks a model (GRPH-1227): a candidate carries only the verdict
+    already stored on it, if any. Queue membership and similarity suggestions are identical;
+    only fresh judge calls (and a stale-key cached verdict being refused) are skipped."""
     cands = [s for s in list_shards(db, project_id=project_id, status="candidate") if s.embedding is not None]
     published = [(s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="published") if s.embedding is not None]
     rejected = [(s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="rejected") if s.embedding is not None]
@@ -589,8 +601,14 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
             allow = (time.monotonic() - t0) < DECIDER_QUEUE_BUDGET_S
         else:
             allow = asked < REVIEW_JUDGE_MAX
-        verdict, cause = review_judge(db, row["shard"], published_texts=published_texts,
-                                      allow_call=allow)
+        if judge:
+            verdict, cause = review_judge(db, row["shard"], published_texts=published_texts,
+                                          allow_call=allow)
+        else:
+            verdict, cause = row["shard"].review_judge_verdict or None, "cached"
+            if verdict is None:
+                row.update(_empty_review_judge(cause="unscored_budget" if use_decider else "capped"))
+                continue
         if cause == "capped":
             if use_decider:
                 row.update(_empty_review_judge(cause="unscored_budget"))
@@ -2827,7 +2845,10 @@ def stale_list(db: Session, project_id: str | None) -> list[dict]:
 
 def queue_counts(db: Session, project_id: str | None) -> dict:
     """One call for the five queue cards. A queue whose source raised is `failed` with the
-    error and `count: None`; 0 is only ever a measured zero."""
+    error and `count: None`; 0 is only ever a measured zero.
+
+    Counts come from the similarity pass plus the review-judge verdicts ALREADY STORED on
+    candidates (`score_candidates(judge=False)`); counting never waits on a model (GRPH-1227)."""
     def counted(fn):
         try:
             return {"count": int(fn()), "state": "ok", "error": ""}
@@ -2840,7 +2861,7 @@ def queue_counts(db: Session, project_id: str | None) -> dict:
     def scored_rows() -> list[dict]:
         nonlocal scored
         if scored is None:
-            scored = score_candidates(db, project_id=project_id)
+            scored = score_candidates(db, project_id=project_id, judge=False)
         return scored
 
     def unreviewed() -> int:
