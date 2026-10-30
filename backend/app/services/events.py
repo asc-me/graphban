@@ -180,7 +180,8 @@ def unmapped_refusals(db: Session, project_id: str, *, days: int = 7,
 #: through `record_refusal` instead; `sign_off_refused` and `role_refused` stay listed
 #: because rows written before then are keyed by them. `agent_reject_shard` is not a raised
 #: refusal (the judge's "no" is a successful call), so it keeps its action and carries its
-#: `rule_id` in meta.
+#: `rule_id` in meta. That is a decision (GRPH-1197), not an oversight: there is no refusal to
+#: raise, so it stays its own action and the Rejected lens lists it with its rule.
 TYPED_REFUSAL_ACTIONS = ("refusal", "refusal_unmapped")
 REFUSAL_ACTIONS = ("sign_off_refused", "role_refused", "agent_reject_shard",
                    *TYPED_REFUSAL_ACTIONS)

@@ -4,8 +4,11 @@
 Two counts, computed by an AST scan of `backend/app`, and both must not go up:
 
   (a) `Refused` sites WITHOUT a `rule_id` — a refusal that names no rule;
-  (b) `HTTPException` raises with status 403 or 409 — a policy refusal written outside the
-      `Refused` type, which is how a new refusal would dodge (a) and the coverage line.
+  (b) policy refusals written outside the `Refused` type, which is how a new refusal would
+      dodge (a) and the coverage line: `HTTPException` raises with status 403 or 409, and
+      raises of `errors.Conflict` / `authz.Forbidden` or a class derived from them
+      (`PrdClosed`, `MissingAttestation`, `DelegationRefused`...), which the MCP dispatcher
+      maps to `conflict` / `unauthorized` with no `rule_id` (GRPH-1197).
 
 A site is every `Refused(...)` construction, raised or handed to the MCP refusal path. Coverage
 is "N of M refusal sites name their rule": M is every site, N those whose `rule_id` resolves
@@ -41,9 +44,26 @@ ROOT = Path(__file__).resolve().parents[1] / "backend" / "app"
 PUBLISHED = ROOT / "data" / "refusal_coverage.json"
 
 #: The most recent counts. Ratchets: a PR may lower these, never raise them.
-BASELINE = {"refused_without_rule_id": 0, "bare_403_409": 59}
+BASELINE = {"refused_without_rule_id": 0, "bare_403_409": 109}
 
 _POLICY_STATUS = (403, 409)
+_POLICY_BASES = {"Conflict", "Forbidden"}
+
+
+def _policy_classes(trees: dict[Path, ast.Module]) -> set[str]:
+    """`Conflict`, `Forbidden` and every class derived from them, to a fixed point."""
+    names = set(_POLICY_BASES)
+    grew = True
+    while grew:
+        grew = False
+        for tree in trees.values():
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef) and node.name not in names and any(
+                        (b.id if isinstance(b, ast.Name) else getattr(b, "attr", "")) in names
+                        for b in node.bases):
+                    names.add(node.name)
+                    grew = True
+    return names
 
 
 def _status_of(call: ast.Call) -> int | None:
@@ -102,6 +122,7 @@ class _Resolver:
 def scan(root: Path = ROOT) -> dict:
     trees = {p: ast.parse(p.read_text(), str(p)) for p in sorted(root.rglob("*.py"))}
     resolve = _Resolver(trees)
+    policy = _policy_classes(trees)
     refused = mapped = bare = 0
     rule_ids: set[str] = set()
     unresolved: list[str] = []
@@ -128,6 +149,9 @@ def scan(root: Path = ROOT) -> dict:
                   and _name(node.exc) == "HTTPException"
                   and _status_of(node.exc) in _POLICY_STATUS):
                 bare += 1
+            elif (isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call)
+                  and _name(node.exc) in policy):
+                bare += 1
     return {"refusal_sites": refused, "naming_a_rule": mapped,
             "refused_without_rule_id": refused - mapped, "bare_403_409": bare,
             "rule_ids": sorted(rule_ids), "unresolved": unresolved}
@@ -142,7 +166,7 @@ def main(argv: list[str]) -> int:
     counts = scan()
     problems = check(counts)
     print(f"{counts['naming_a_rule']} of {counts['refusal_sites']} refusal sites name their "
-          f"rule; {counts['bare_403_409']} bare 403/409 HTTPException raises")
+          f"rule; {counts['bare_403_409']} bare 403/409 policy raises")
     for p in problems:
         print("FAIL:", p, file=sys.stderr)
     if problems:

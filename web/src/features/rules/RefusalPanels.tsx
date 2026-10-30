@@ -13,7 +13,7 @@ import { absTime } from "@/features/activity/model";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { useCreateItem, useDismissRecommendedRule, useRecommendedRules, useRefusalCoverage, useUnmappedRefusals } from "@/lib/queries";
+import { useCreateItem, useDismissRecommendedRule, useRecommendedRules, useRefusalCoverage, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
 import type { RuleSuggestion, SuggestionSource, UnmappedGroup } from "@/lib/types";
 
 const MONO = "font-mono";
@@ -242,6 +242,9 @@ export function RecommendedSheet({
   const q = useRecommendedRules(activeId, true);
   const dismiss = useDismissRecommendedRule(activeId);
   const createItem = useCreateItem(activeId);
+  const { data: flow } = useRulesFlow(activeId);
+  // The id is a key, never copy: the sheet says the stage's title.
+  const stageTitle = (id: string) => flow?.stages.find((st) => st.id === id)?.title ?? "the flow";
   const [filed, setFiled] = React.useState<Record<string, string>>({});
   const github = q.data?.sources.find((s) => s.source === "github");
 
@@ -287,7 +290,7 @@ export function RecommendedSheet({
                   >
                     {s.kind === "code" ? `${s.level.toUpperCase()} ONCE BUILT` : `WOULD BE ${s.level.toUpperCase()}`}
                   </span>
-                  <span className={cn(MONO, "text-[10px] text-muted-2")}>{s.stage.toUpperCase()}</span>
+                  <span className={cn(MONO, "text-[10px] text-muted-2")}>{stageTitle(s.stage).toUpperCase()}</span>
                 </div>
                 <span className="text-[13px] font-semibold leading-snug">{s.title}</span>
                 <span className="text-[12px] leading-snug text-muted">{s.why}</span>
@@ -317,7 +320,7 @@ export function RecommendedSheet({
                     )
                   ) : (
                     <Button size="sm" variant="outline" onClick={() => onOpenValue(s)}>
-                      Open in {s.stage}
+                      Open in {stageTitle(s.stage)}
                     </Button>
                   )}
                   <Button size="sm" variant="ghost" disabled={dismiss.isPending} onClick={() => dismiss.mutate(s.id)}>
