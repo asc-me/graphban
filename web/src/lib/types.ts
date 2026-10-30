@@ -33,6 +33,8 @@ export interface Project {
   memory_auto_reject: boolean;
   memory_write_mode: string;
   memory_llm_judge: boolean;
+  /** Days an uncorroborated candidate lives before it expires (GRPH-1212); default 45. */
+  memory_candidate_expiry_days?: number;
   agent_adjudication: boolean;
   /** Danger mode: an agent may sign off its own work, but only when no independent agent exists. */
   allow_self_review: boolean;

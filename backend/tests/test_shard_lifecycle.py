@@ -235,3 +235,70 @@ def test_scored_novel_candidate_suggests_review(client, auth):
     scored = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
     assert len(scored) == 1
     assert scored[0]["suggestion"] == "review"
+
+
+# ---- candidate expiry is a project setting (GRPH-1212) ----
+
+def _backdate(shard_id, days):
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import SessionLocal
+    from app.models import MemoryShard
+
+    s = SessionLocal()
+    try:
+        s.get(MemoryShard, shard_id).created_at = datetime.now(timezone.utc) - timedelta(days=days)
+        s.commit()
+    finally:
+        s.close()
+
+
+def test_candidate_expiry_is_read_from_the_shards_project(client, auth):
+    short = _proj(client, auth, "ExpShort")
+    default = _proj(client, auth, "ExpDefault")
+    listing = client.get("/api/projects", headers=auth).json()
+    assert {p["id"]: p["memory_candidate_expiry_days"] for p in listing}[default] == 45
+    r = client.patch(f"/api/projects/{short}", json={"memory_candidate_expiry_days": 10}, headers=auth)
+    assert r.json()["memory_candidate_expiry_days"] == 10
+    ids = {}
+    for pid in (short, default):
+        key = _key(client, auth, project_id=pid)
+        ids[pid] = _mcp(client, key, "add_memory", {"text": f"expiry probe for {pid}"})["id"]
+        _backdate(ids[pid], 11)
+    from app.db import SessionLocal
+    from app.models import MemoryShard
+    from app.services import memory as mem_svc
+
+    db = SessionLocal()
+    try:
+        expiry = mem_svc.candidate_expiry_map(db, [db.get(MemoryShard, i) for i in ids.values()])
+        states = {pid: mem_svc.age_state(db.get(MemoryShard, sid), expiry_days=expiry[pid])
+                  for pid, sid in ids.items()}
+        listed = {s.id for s in mem_svc.list_shards(db, project_id=short, status="candidate")}
+        listed_default = {s.id for s in mem_svc.list_shards(db, project_id=default, status="candidate")}
+    finally:
+        db.close()
+    assert states == {short: "expired", default: "fresh"}
+    assert ids[short] not in listed
+    assert ids[default] in listed_default
+
+
+def test_a_global_shard_keeps_the_45_day_default():
+    from app.models import MemoryShard
+    from app.services import memory as mem_svc
+
+    shard = MemoryShard(id="m_glob", text="x", status="candidate", project_id=None)
+    from datetime import datetime, timedelta, timezone
+    shard.created_at = datetime.now(timezone.utc) - timedelta(days=44)
+    assert mem_svc.age_state(shard) == "fresh"
+    shard.created_at = datetime.now(timezone.utc) - timedelta(days=46)
+    assert mem_svc.age_state(shard) == "expired"
+
+
+def test_candidate_expiry_below_one_is_refused(client, auth):
+    pid = _proj(client, auth, "ExpZero")
+    for bad in (0, -3):
+        r = client.patch(f"/api/projects/{pid}", json={"memory_candidate_expiry_days": bad}, headers=auth)
+        assert r.status_code == 422
+    listing = client.get("/api/projects", headers=auth).json()
+    assert {p["id"]: p["memory_candidate_expiry_days"] for p in listing}[pid] == 45
