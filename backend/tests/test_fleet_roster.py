@@ -161,3 +161,92 @@ def test_the_prompts_keep_the_unenrolled_fallback(name):
     operator never issued seats still has to be told how to be distinguishable, or it silently
     cannot review — which is the failure `instance` was added for."""
     assert "instance" in _fleet_bodies()[name]
+
+
+# ---- GRPH-1229: the REST roster folds dead, empty agents into an exact count ---------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+#: Pinned response ceiling for 5 full rows plus the page chrome. The unfolded roster of 2,005
+#: agents is several hundred KB; this fails if every agent comes back in full.
+ROSTER_SIZE_CEILING = 60_000
+
+
+@pytest.fixture()
+def _db(_clean_database):
+    from app.db import SessionLocal
+
+    s = SessionLocal()
+    try:
+        yield s
+    finally:
+        s.close()
+
+
+def _seed(db, project_id, n_gone=2000):
+    from app.models import Agent
+
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=3)
+    nxt = [1]
+
+    def mk(**kw):
+        a = Agent(id=f"{project_id}-a{nxt[0]}", project_id=project_id, number=nxt[0],
+                  active_role="worker", state="idle", **kw)
+        nxt[0] += 1
+        db.add(a)
+        return a
+
+    for _ in range(n_gone):
+        mk(last_seen_at=old)
+    for _ in range(3):
+        mk(last_seen_at=now)
+    orphan = mk(last_seen_at=old, branch="gb/orphan")
+    holders = [mk(last_seen_at=now) for _ in range(2)]
+    db.flush()
+    from app.services import items as items_svc
+
+    for i, h in enumerate(holders):
+        it = items_svc.create_item(db, title=f"held {i}", project_id=project_id,
+                                   status="in_progress")
+        it.claimed_by = h.id
+        it.claimed_at = now
+    db.commit()
+    return orphan.id
+
+
+def _proj(client, auth):
+    return client.post("/api/projects", json={"name": "Roster"}, headers=auth).json()["id"]
+
+
+def test_roster_returns_the_live_in_full_and_the_dead_as_an_exact_count(client, auth, _db):
+    import json
+
+    pid = _proj(client, auth)
+    orphan_id = _seed(_db, pid)
+    r = client.get(f"/api/fleet?project_id={pid}", headers=auth)
+    body = r.json()
+    ids = {a["id"] for a in body["agents"]}
+    # 3 online + 2 holding leases + 1 orphaned branch; nothing else is in full.
+    assert len(body["agents"]) == 6
+    assert orphan_id in ids, "a holder of an orphaned branch is never collapsed away"
+    assert body["collapsed"]["count"] == 2000
+    assert body["total"] == 2006 == len(body["agents"]) + body["collapsed"]["count"]
+    assert len(json.dumps(body)) < ROSTER_SIZE_CEILING
+
+
+def test_the_collapsed_agents_are_listed_on_demand_in_pages(client, auth, _db):
+    pid = _proj(client, auth)
+    orphan_id = _seed(_db, pid, n_gone=30)
+    page = client.get(f"/api/fleet/agents/collapsed?project_id={pid}&offset=10&limit=15",
+                      headers=auth).json()
+    assert page["total"] == 30 and len(page["agents"]) == 15
+    assert orphan_id not in {a["id"] for a in page["agents"]}
+
+
+def test_mcp_fleet_status_is_not_collapsed(_db, client, auth):
+    from app.services import fleet
+
+    pid = _proj(client, auth)
+    _seed(_db, pid, n_gone=20)
+    assert len(fleet.fleet_status(_db, pid)["agents"]) == 26

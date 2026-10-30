@@ -2041,6 +2041,9 @@ export interface FleetPresence {
 
 export interface FleetOverview {
   agents: FleetAgent[];
+  /** Offline agents holding nothing, folded into an exact count (GRPH-1229). */
+  collapsed?: { count: number; by_state: Record<string, number>; by_role: Record<string, number>;
+                recent_seconds: number };
   online: number;
   total: number;
   /** Live agents per role, plus `all-in-one` — the unspecialised single-dev posture. */

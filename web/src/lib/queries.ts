@@ -1196,7 +1196,10 @@ export function useFleet(projectId?: string) {
     // so an ungated call renders another project's fleet for a frame before the real
     // one arrives. Harmless-looking, and exactly the class of thing D1 deleted.
     enabled: !!projectId,
-    refetchInterval: 15000,
+    // GRPH-1229: a poll never starts while one is in flight. A fixed 15s interval fired six
+    // requests in 15s once the roster took 10s to answer; the next wait starts when the last
+    // read has returned.
+    refetchInterval: (query) => (query.state.fetchStatus === "fetching" ? false : 15000),
   });
 }
 

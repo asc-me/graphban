@@ -37,7 +37,11 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
     idle worker next to review it could already be signing off on.
     """
     authz.require_readable(db, user.id, project_id)
-    status = fleet_svc.fleet_status(db, project_id, caller_user_id=user.id)
+    # Collapsed (GRPH-1229): a project with thousands of dead agents answered 4.5MB in 10s.
+    # `fleet_status` stays whole for MCP; only this payload folds offline-and-empty agents
+    # into exact counts, listed on demand by `/fleet/agents/collapsed`.
+    status = fleet_svc.collapse_roster(
+        fleet_svc.fleet_status(db, project_id, caller_user_id=user.id))
     return {
         **status,
         "review_queue": fleet_svc.review_queue(db, project_id),
@@ -59,6 +63,16 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
         # Recent matrix-launch shares for the mix sliders. n=0 is unmeasured, not 0%.
         "mix": delegation_svc.mix_counts(db, project_id),
     }
+
+
+@router.get("/agents/collapsed")
+def fleet_collapsed_agents(project_id: str | None = None, offset: int = 0, limit: int = 100,
+                           db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user)):
+    """A page of the offline agents holding nothing that `/fleet` folds into a count."""
+    authz.require_readable(db, user.id, project_id)
+    return fleet_svc.collapsed_agents(db, project_id, offset=max(offset, 0),
+                                      limit=min(max(limit, 1), 500))
 
 
 class FleetKeyIn(BaseModel):

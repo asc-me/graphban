@@ -442,6 +442,10 @@ export function FleetView() {
   const [showSpentSeats, setShowSpentSeats] = React.useState(false);
   const [showDeadCreds, setShowDeadCreds] = React.useState(false);
   const [showGone, setShowGone] = React.useState(false);
+  // GRPH-1229: pages of the offline agents the server folded into a count, fetched on demand.
+  const [collapsedRows, setCollapsedRows] = React.useState<FleetAgent[]>([]);
+  const [collapsedTotal, setCollapsedTotal] = React.useState<number | null>(null);
+  const [collapsedBusy, setCollapsedBusy] = React.useState(false);
   const [showDismissed, setShowDismissed] = React.useState(false);
   // The role-narrowed mint is the older path. Collapsed so the empty roster cannot
   // still teach "mint a credential below" after seats became the recommended onboard.
@@ -632,6 +636,20 @@ export function FleetView() {
   const expiredCreds = liveCreds.filter(
     (c) => c.expires_at !== null && new Date(c.expires_at) <= new Date());
 
+  const collapsedCount = data?.collapsed?.count ?? 0;
+  async function loadCollapsed() {
+    setCollapsedBusy(true);
+    try {
+      const page = await api.fleetCollapsed(activeId ?? "", collapsedRows.length);
+      setCollapsedRows((rows) => [...rows, ...page.agents]);
+      setCollapsedTotal(page.total);
+    } catch (e) {
+      setError(errorDetail(e, "could not load offline agents"));
+    } finally {
+      setCollapsedBusy(false);
+    }
+  }
+
   const reviewCount = (data?.review_queue ?? []).length;
 
   const liveWave = wave ?? waves[0] ?? "wave-1";
@@ -792,7 +810,7 @@ export function FleetView() {
         <Section title="Roster" desc="Offline agents fade rather than vanish — one that died holding a branch is what you need to see.">
           {fleetFailed ? (
             <PlannerError message={FETCH_FAILED} onRetry={() => void refetch()} />
-          ) : agents.length === 0 ? (
+          ) : agents.length === 0 && collapsedCount === 0 ? (
             <Empty>
               No agents yet. One agent needs an API key in Settings and no seat.
               A fleet issues seats on Wave — a seat is the role, not a second key.
@@ -825,14 +843,26 @@ export function FleetView() {
                                         roles={data?.roles ?? []} />)}
                 </>
               )}
-              {goneAgents.length > 0 && (
-                <button onClick={() => setShowGone((v) => !v)}
+              {goneAgents.length + collapsedCount > 0 && (
+                <button onClick={() => {
+                          if (!showGone && collapsedCount > 0 && collapsedRows.length === 0) void loadCollapsed();
+                          setShowGone((v) => !v);
+                        }}
                         className="w-full pt-1 text-left text-small text-faint hover:text-fg-2">
-                  {showGone ? "Hide" : "Show"} {goneAgents.length} gone
+                  {showGone ? "Hide" : "Show"} {goneAgents.length + collapsedCount} gone
+                  {collapsedCount > 0 ? ` (${collapsedCount} offline holding nothing, older than ${Math.round((data?.collapsed?.recent_seconds ?? 86400) / 3600)}h)` : ""}
                 </button>
               )}
               {showGone && goneAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask}
                                         roles={data?.roles ?? []} />)}
+              {showGone && collapsedRows.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask}
+                                        roles={data?.roles ?? []} />)}
+              {showGone && collapsedRows.length < (collapsedTotal ?? collapsedCount) && (
+                <button onClick={() => void loadCollapsed()} disabled={collapsedBusy}
+                        className="w-full text-left text-small text-faint hover:text-fg-2">
+                  {collapsedBusy ? "Loading…" : `Load more (${collapsedRows.length} of ${collapsedTotal ?? collapsedCount})`}
+                </button>
+              )}
               {dismissed.length > 0 && (
                 <button onClick={() => setShowDismissed((v) => !v)}
                         className="w-full text-left text-small text-faint hover:text-fg-2">
