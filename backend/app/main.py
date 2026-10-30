@@ -313,12 +313,24 @@ async def _refused_handler(request: Request, exc: Refused):
     from app.services import events as events_svc
 
     params = request.path_params
-    # The route template, rebuilt from the concrete path: the matched route's own `.path`
-    # omits the include prefix, and a concrete path would count one gap once per id.
-    by_value = {str(v): k for k, v in params.items()}
-    segs = [f"{{{by_value[s]}}}" if s in by_value else s
-            for s in request.url.path.split("/")]
-    where = f"{request.method} {'/'.join(segs)}"
+    # The matched route's own template (`path_format`), never rebuilt by substituting
+    # parameter values back out of the concrete path, which broke when a value equalled a
+    # literal segment or contained `/` (GRPH-1197). The route omits the include prefix, so
+    # that is recovered as whatever the concrete path carries in front of the route's own
+    # rendering. No matched route falls back to the concrete path.
+    route = request.scope.get("route")
+    template = getattr(route, "path_format", None)
+    if template is None:
+        template = request.url.path
+    else:
+        concrete = request.scope["path"]
+        try:
+            rendered = template.format(**params)
+        except (KeyError, IndexError, ValueError):
+            rendered = ""
+        if rendered and concrete.endswith(rendered):
+            template = concrete[: len(concrete) - len(rendered)] + template
+    where = f"{request.method} {template}"
     target_type, target_id = "", ""
     if params.get("prd_id"):
         target_type, target_id = "prd", params["prd_id"]
