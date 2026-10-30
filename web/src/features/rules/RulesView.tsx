@@ -195,7 +195,7 @@ export function RulesView() {
             onClick={() => setSel(stageKey("merge"))}
             className="h-[30px] rounded-[8px] bg-accent px-3 text-body font-semibold text-[#0a0c0e]"
           >
-            Open Merge
+            Set it up in Merge
           </button>
         </div>
       )}
@@ -709,6 +709,7 @@ function Legend({ counts }: { counts: Record<Level, number> | null }) {
       {LEVEL_ORDER.map((l) => (
         <span key={l} data-testid={`rules-legend-${l}`} className="flex items-center gap-2">
           <LevelWord level={l} className="text-[10px]" />
+          {l === "not_used" && <span className="text-[10px] text-muted">not used by this project's model</span>}
           <span className="flex-1" />
           <span className={cn(MONO, "min-w-4 text-right text-[10px] text-fg-2")}>
             {counts ? counts[l] : ""}
@@ -862,6 +863,7 @@ function NarrowList({
         {LEVEL_ORDER.map((l) => (
           <span key={l} data-testid={`rules-legend-${l}`} className="flex items-center gap-1.5">
             <LevelWord level={l} className="text-[10px]" />
+            {l === "not_used" && <span className="text-[10px] text-muted">not used by this project's model</span>}
             <span className={cn(MONO, "text-[10px] text-fg-2")}>{counts[l]}</span>
           </span>
         ))}
@@ -894,7 +896,7 @@ function Inspector({
 
   const title = pack ? pack.title : stage!.title;
   const kicker = pack
-    ? `OFF THE MAIN FLOW · LINKED TO ${(flow.stages.find((s) => s.id === pack.stage)?.title ?? pack.stage).toUpperCase()}`
+    ? `OFF THE MAIN FLOW · LINKED TO ${(flow.stages.find((s) => s.id === pack.stage)?.title ?? pack.stage).toUpperCase()}, REVIEW`
     : `STAGE ${String(index + 1).padStart(2, "0")} · ${stage!.title.toUpperCase()}`;
   const level = pack ? ruleLevel(pack) : stageLevel(stage!);
   const rules = stage ? weakestFirst(stageRules(stage)) : [];

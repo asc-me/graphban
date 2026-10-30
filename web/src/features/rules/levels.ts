@@ -165,9 +165,13 @@ export function enforcerText(rule: RuleFlowRule, version: string): string {
  */
 export function quietLine(rule: RuleFlowRule): string | null {
   if (!rule.used) return null;
-  if (rule.enforcement === "external" || rule.enforcement === "checked") return null;
+  if (rule.enforcement === "external") return null;
+  if (rule.enforcement === "checked" && rule.truth !== "repo_file") return null;
   if (rule.channel === "context" && rule.enforcement === "advisory") {
     return "Told to agents in every get_context. Nothing refuses a violation.";
+  }
+  if (rule.truth === "repo_file" && rule.enforcement === "checked") {
+    return `Checked from ${rule.enforcer.ref || "a repo file"}, so it is changed there, not here.`;
   }
   if (rule.truth === "code") return "Held in code. Change it with a PR, not here.";
   if (rule.truth === "repo_file" && rule.enforcement === "advisory") {

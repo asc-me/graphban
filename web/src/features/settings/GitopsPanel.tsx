@@ -220,6 +220,51 @@ function Clear({ disabled, onClick }: { disabled: boolean; onClick: () => void }
   );
 }
 
+/** Base-branch chips for a model: `prs_to_integration` offers the integration branches. */
+export function BaseBranchChips({
+  model,
+  disabled = false,
+  onPick,
+}: {
+  model: string;
+  disabled?: boolean;
+  onPick: (branch: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {(model === "prs_to_integration" ? GITOPS_INTEGRATION_CHIPS : GITOPS_BASE_CHIPS).map((chip) => (
+        <Chip key={chip} label={chip} disabled={disabled} onClick={() => onPick(chip)} />
+      ))}
+    </div>
+  );
+}
+
+/** The five naming tokens as chips; each appends `{token}` to the current pattern. */
+export function NamingTokenChips({
+  value,
+  disabled = false,
+  onChange,
+}: {
+  value: string;
+  disabled?: boolean;
+  onChange: (next: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {GITOPS_NAMING_TOKENS.map((token) => (
+        <Chip key={token} label={`{${token}}`} disabled={disabled} onClick={() => onChange(`${value}{${token}}`)} />
+      ))}
+    </div>
+  );
+}
+
+/** Tokens in a naming pattern that are not one of the five allowed; empty means it is valid. */
+export function unknownNamingTokens(pattern: string): string[] {
+  const allowed: readonly string[] = GITOPS_NAMING_TOKENS;
+  const bad = [...pattern.matchAll(/\{([^{}]*)\}/g)].map((m) => m[1]).filter((t) => !allowed.includes(t));
+  return [...new Set(bad)];
+}
+
 const selectClass =
   "h-9 w-full rounded-[9px] border border-control bg-surface-2 px-3 text-[13px] text-fg outline-none disabled:cursor-not-allowed";
 
@@ -390,15 +435,12 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
             />
             <Clear disabled={!writable} onClick={() => setDraft((d) => ({ ...d, base_branch: "" }))} />
           </div>
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {(draft.model === "prs_to_integration" ? GITOPS_INTEGRATION_CHIPS : GITOPS_BASE_CHIPS).map((chip) => (
-              <Chip
-                key={chip}
-                label={chip}
-                disabled={!writable}
-                onClick={() => setDraft((d) => ({ ...d, base_branch: chip }))}
-              />
-            ))}
+          <div className="mt-1.5">
+            <BaseBranchChips
+              model={draft.model}
+              disabled={!writable}
+              onPick={(chip) => setDraft((d) => ({ ...d, base_branch: chip }))}
+            />
           </div>
         </Field>
 
@@ -544,15 +586,8 @@ function PatternField({
         />
         <Clear disabled={!writable} onClick={() => onChange("")} />
       </div>
-      <div className="mt-1.5 flex flex-wrap gap-1.5">
-        {GITOPS_NAMING_TOKENS.map((token) => (
-          <Chip
-            key={token}
-            label={`{${token}}`}
-            disabled={!writable}
-            onClick={() => onChange(`${value}{${token}}`)}
-          />
-        ))}
+      <div className="mt-1.5">
+        <NamingTokenChips value={value} disabled={!writable} onChange={onChange} />
       </div>
     </Field>
   );

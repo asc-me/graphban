@@ -15,7 +15,7 @@ vi.mock("@/features/ProjectContext", () => ({
   useProjectCtx: () => ({ activeId: "core", active: { id: "core", tag: "CORE", name: "Core" }, projects: [], setActiveId: () => {} }),
 }));
 
-const rule = { id: "gitops.base_branch" } as RuleFlowRule;
+const rule = { id: "gitops.base_branch", used: true } as RuleFlowRule;
 const box = <div>current box</div>;
 
 function view(over: Partial<GitopsView["control"]> = {}, org_id: string | null = null): GitopsView {
@@ -43,12 +43,52 @@ beforeEach(() => {
 });
 
 describe("gitops row editing", () => {
+  it("clearing a value shows the cleared copy, not the ADVISORY copy", async () => {
+    vi.mocked(api.gitops).mockResolvedValue(view());
+    vi.mocked(api.updateGitops).mockResolvedValue(view());
+    renderIt(<GitopsRuleEditor rule={rule} field="base_branch" fallback={box} />);
+    await userEvent.clear(await screen.findByLabelText("base_branch"));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.updateGitops).toHaveBeenCalledWith("core", { base_branch: null }));
+    const msg = await screen.findByTestId("rules-gitops-saved");
+    expect(msg).toHaveTextContent("Cleared — this rule is unmeasured");
+    expect(msg).not.toHaveTextContent("Nothing refuses");
+  });
+
+  it("a not-used rule has no editor", async () => {
+    vi.mocked(api.gitops).mockResolvedValue(view());
+    renderIt(<GitopsRuleEditor rule={{ ...rule, used: false } as RuleFlowRule} field="base_branch" fallback={box} />);
+    // The fallback shows while the view loads, so wait for the view to settle first.
+    await waitFor(() => expect(api.gitops).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByText("current box")).toBeInTheDocument();
+    expect(screen.queryByLabelText("base_branch")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  });
+
+  it("prs_to_integration offers the integration chips", async () => {
+    const v = view();
+    v.model = { value: "prs_to_integration", source: "project" };
+    vi.mocked(api.gitops).mockResolvedValue(v);
+    renderIt(<GitopsRuleEditor rule={rule} field="base_branch" fallback={box} />);
+    const chips = (await screen.findAllByRole("button")).map((b) => b.textContent).filter((t) => t !== "Save");
+    expect(chips).toEqual(["stage", "develop", "test", "main"]);
+  });
+
+  it("an unknown naming token is flagged before save", async () => {
+    vi.mocked(api.gitops).mockResolvedValue(view());
+    renderIt(<GitopsRuleEditor rule={rule} field="branch_name_pattern" fallback={box} />);
+    await userEvent.type(await screen.findByLabelText("branch_name_pattern"), "x/{{bogus}");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("{bogus}");
+    expect(api.updateGitops).not.toHaveBeenCalled();
+  });
+
   it("saves through PATCH and shows ADVISORY copy, never enforced", async () => {
     vi.mocked(api.gitops).mockResolvedValue(view());
     vi.mocked(api.updateGitops).mockResolvedValue(view());
     renderIt(<GitopsRuleEditor rule={rule} field="base_branch" fallback={box} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
-    const input = screen.getByLabelText("base_branch");
+    const input = await screen.findByLabelText("base_branch");
     await userEvent.clear(input);
     await userEvent.type(input, "stage");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -58,13 +98,12 @@ describe("gitops row editing", () => {
 
   it("shows the server 422 verbatim and keeps the typed value", async () => {
     vi.mocked(api.gitops).mockResolvedValue(view());
-    vi.mocked(api.updateGitops).mockRejectedValue(new Error("unknown token {bogus}"));
+    vi.mocked(api.updateGitops).mockRejectedValue(new Error("pattern must contain {item_id}"));
     renderIt(<GitopsRuleEditor rule={rule} field="branch_name_pattern" fallback={box} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
-    await userEvent.type(screen.getByLabelText("branch_name_pattern"), "x/{{bogus}");
+    await userEvent.type(await screen.findByLabelText("branch_name_pattern"), "x/{{slug}");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("unknown token {bogus}");
-    expect(screen.getByLabelText("branch_name_pattern")).toHaveValue("x/{bogus}");
+    expect(await screen.findByRole("alert")).toHaveTextContent("pattern must contain {item_id}");
+    expect(screen.getByLabelText("branch_name_pattern")).toHaveValue("x/{slug}");
   });
 
   it("renders no input when not writable, with the org-aware copy", async () => {
