@@ -889,6 +889,14 @@ def failing_predicates(evidence, *, commit: str | None = None) -> set[str]:
     return names
 
 
+#: Refusal kinds that are an expected wait rather than a lesson: the evidence note is
+#: written, a memory shard is not. `pr_cooldown` resolves itself, and a shard saying "the
+#: cooldown had 18s left" would ride every later brief as a lesson (GRPH-1234). Every other
+#: kind (`attestation_missing`, the failed-predicate refusals) names something to change, so
+#: it still writes.
+_NO_SHARD_REFUSALS = frozenset({"pr_cooldown"})
+
+
 def record_refusal(db: Session, item: Item, *, predicate: str, detail: str) -> None:
     """Write a gate refusal where the next agent will meet it (GRPH-550).
 
@@ -924,6 +932,9 @@ def record_refusal(db: Session, item: Item, *, predicate: str, detail: str) -> N
     receipt = {"kind": "note",
                "detail": f"refused at `done` ({predicate}): {detail}"}
     item.evidence = append_evidence(item.evidence, [receipt])
+    if predicate in _NO_SHARD_REFUSALS:
+        db.commit()
+        return
 
     # Keyed on (item, predicate) — NOT on the commit. A non-functional refactor changes the
     # SHA, so including it would re-emit the same unresolved refusal as a fresh shard and
