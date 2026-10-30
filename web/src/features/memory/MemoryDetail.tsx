@@ -76,12 +76,12 @@ export function MemoryDetail({
           <span className="flex-1" />
           <span className="font-mono text-meta text-faint">{pos}</span>
         </div>
-        <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-fg">{text}</p>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-small">
+        <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[13.5px] leading-relaxed text-fg">{text}</p>
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-small">
           {meta.map(([k, v]) => (
             <div key={k} className="contents">
               <dt className="pt-px font-mono text-micro tracking-wide text-faint">{k}</dt>
-              <dd className="m-0 text-fg-2">{v}</dd>
+              <dd className="m-0 break-words [overflow-wrap:anywhere] text-fg-2">{v}</dd>
             </div>
           ))}
           <dt className="pt-1 font-mono text-micro tracking-wide text-faint">CLASS</dt>
@@ -110,7 +110,7 @@ export function MemoryDetail({
         <div className="flex flex-col gap-2 border-b border-line-2 px-4 py-3">
           <Label className="text-ty-bug">Contradicts published</Label>
           {(s.conflicts ?? []).map((c) => (
-            <div key={c} className="rounded-[10px] border border-st-blocked/25 bg-st-blocked/[0.04] px-3 py-2 text-body leading-relaxed text-fg-2">
+            <div key={c} className="rounded-[10px] border border-st-blocked/25 bg-st-blocked/[0.04] px-3 py-2 text-body leading-relaxed text-fg-2 [overflow-wrap:anywhere]">
               {c}
             </div>
           ))}

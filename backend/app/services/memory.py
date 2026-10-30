@@ -10,6 +10,8 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+import numpy as np
+
 from sqlalchemy import and_, bindparam, func, or_, select, text
 from sqlalchemy.orm import Session
 
@@ -295,22 +297,64 @@ _AUTO_ACCEPT_MIN = 0.9
 _UNVETTED_SOURCES = ("trusted", "agent")
 
 
-def _corroboration_pool(db: Session, project_id: str | None) -> list[tuple[MemoryShard, list[float]]]:
-    return [
+class VecPool(list):
+    """A `[(shard, vector)]` pool that normalises its vectors ONCE (GRPH-1227).
+
+    `score_candidates` compares every candidate against the same published and rejected
+    pools. Rebuilding each pool member's norm per candidate was 80 × 1,300 × 1024-dim
+    passes on the deployed instance; the matrix here is built on first use and reused.
+    It is a list so every existing caller that iterates or appends still works — and an
+    append drops the cached matrix rather than leaving it a member short."""
+
+    _mat: np.ndarray | None = None
+
+    def append(self, item):  # noqa: D401 — list API
+        self._mat = None
+        super().append(item)
+
+    def matrix(self) -> np.ndarray:
+        if self._mat is None or len(self._mat) != len(self):
+            self._mat = _unit_rows([v for _, v in self])
+        return self._mat
+
+
+def _unit_rows(vectors: list[list[float]]) -> np.ndarray:
+    """Rows scaled to unit length; a zero row stays zero, so it can never be the best match."""
+    if not vectors:
+        return np.zeros((0, 0))
+    mat = np.asarray(vectors, dtype=np.float64)
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return mat / norms
+
+
+def _corroboration_pool(db: Session, project_id: str | None) -> VecPool:
+    return VecPool(
         (s, list(s.embedding))
         for s in list_shards(db, project_id=project_id, status="published")
         if s.embedding is not None and s.scoring_source not in _UNVETTED_SOURCES
-    ]
+    )
 
 
 def _best_match(vec: list[float], pool: list[tuple[MemoryShard, list[float]]]) -> tuple[MemoryShard | None, float]:
-    """The most-similar shard in `pool` and its cosine score (0.0 if the pool is empty)."""
-    best, score = None, 0.0
-    for shard, svec in pool:
-        sim = cosine_similarity(vec, svec)
-        if sim > score:
-            best, score = shard, sim
-    return best, score
+    """The most-similar shard in `pool` and its cosine score (0.0 if the pool is empty).
+
+    One matrix product against the unit-normalised pool, not a Python loop per member.
+    Same answer as the loop it replaced: the first member with the highest score wins, and
+    nothing at or below 0.0 is a match."""
+    if not pool:
+        return None, 0.0
+    q = np.asarray(vec, dtype=np.float64)
+    nq = float(np.linalg.norm(q))
+    if nq == 0:
+        return None, 0.0
+    mat = pool.matrix() if isinstance(pool, VecPool) else _unit_rows([v for _, v in pool])
+    sims = mat @ (q / nq)
+    i = int(np.argmax(sims))
+    score = float(sims[i])
+    if score <= 0.0:
+        return None, 0.0
+    return pool[i][0], score
 
 
 # The promotion ladder (GRPH-306 / PRD-16). Named constants, deliberately, and NOT project
@@ -476,7 +520,7 @@ def _score_shard(
     return suggestion, round(confidence, 3), reasons, duplicate_of
 
 
-def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict]:
+def score_candidates(db: Session, *, project_id: str | None = None, judge: bool = True) -> list[dict]:
     """Advisory accept/reject suggestions for the review queue (AL-151).
 
     For each candidate, compare its embedding against the trusted (`published`) and
@@ -491,10 +535,14 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
 
     Similarity always runs. When `memory_llm_judge` is on, a resolved decider scores
     non-vetoed candidates until `DECIDER_QUEUE_BUDGET_S` (D9); the chat judge is still
-    capped at `REVIEW_JUDGE_MAX`. On-demand keep/quality is `advisory_judge`."""
+    capped at `REVIEW_JUDGE_MAX`. On-demand keep/quality is `advisory_judge`.
+
+    `judge=False` never asks a model (GRPH-1227): a candidate carries only the verdict
+    already stored on it, if any. Queue membership and similarity suggestions are identical;
+    only fresh judge calls (and a stale-key cached verdict being refused) are skipped."""
     cands = [s for s in list_shards(db, project_id=project_id, status="candidate") if s.embedding is not None]
-    published = [(s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="published") if s.embedding is not None]
-    rejected = [(s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="rejected") if s.embedding is not None]
+    published = VecPool((s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="published") if s.embedding is not None)
+    rejected = VecPool((s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="rejected") if s.embedding is not None)
     corroborating = _corroboration_pool(db, project_id)
 
     # Recurrence: how many candidates each one clusters with (reuse AL-50 clustering).
@@ -589,8 +637,14 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
             allow = (time.monotonic() - t0) < DECIDER_QUEUE_BUDGET_S
         else:
             allow = asked < REVIEW_JUDGE_MAX
-        verdict, cause = review_judge(db, row["shard"], published_texts=published_texts,
-                                      allow_call=allow)
+        if judge:
+            verdict, cause = review_judge(db, row["shard"], published_texts=published_texts,
+                                          allow_call=allow)
+        else:
+            verdict, cause = row["shard"].review_judge_verdict or None, "cached"
+            if verdict is None:
+                row.update(_empty_review_judge(cause="unscored_budget" if use_decider else "capped"))
+                continue
         if cause == "capped":
             if use_decider:
                 row.update(_empty_review_judge(cause="unscored_budget"))
@@ -1416,8 +1470,8 @@ def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
     if mode == "review" and not auto_reject:
         return shard  # nothing may act; skip the scoring work entirely
 
-    published = [(s, list(s.embedding)) for s in list_shards(db, project_id=shard.project_id, status="published") if s.embedding is not None]
-    rejected = [(s, list(s.embedding)) for s in list_shards(db, project_id=shard.project_id, status="rejected") if s.embedding is not None]
+    published = VecPool((s, list(s.embedding)) for s in list_shards(db, project_id=shard.project_id, status="published") if s.embedding is not None)
+    rejected = VecPool((s, list(s.embedding)) for s in list_shards(db, project_id=shard.project_id, status="rejected") if s.embedding is not None)
     # Recurrence: the size of the candidate cluster this shard belongs to (AL-50).
     support, distinct_sources = 1, None
     for group in cluster_candidates(db, project_id=shard.project_id):
@@ -2827,7 +2881,10 @@ def stale_list(db: Session, project_id: str | None) -> list[dict]:
 
 def queue_counts(db: Session, project_id: str | None) -> dict:
     """One call for the five queue cards. A queue whose source raised is `failed` with the
-    error and `count: None`; 0 is only ever a measured zero."""
+    error and `count: None`; 0 is only ever a measured zero.
+
+    Counts come from the similarity pass plus the review-judge verdicts ALREADY STORED on
+    candidates (`score_candidates(judge=False)`); counting never waits on a model (GRPH-1227)."""
     def counted(fn):
         try:
             return {"count": int(fn()), "state": "ok", "error": ""}
@@ -2840,7 +2897,7 @@ def queue_counts(db: Session, project_id: str | None) -> dict:
     def scored_rows() -> list[dict]:
         nonlocal scored
         if scored is None:
-            scored = score_candidates(db, project_id=project_id)
+            scored = score_candidates(db, project_id=project_id, judge=False)
         return scored
 
     def unreviewed() -> int:

@@ -1,38 +1,55 @@
+import { ArrowUpRight, Cloud, Globe, MessageSquare, ShieldCheck, SquareCheckBig, Users } from "lucide-react";
 import * as React from "react";
-import { useNavigate } from "react-router-dom";
 
-import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
-import { settingsPath } from "@/lib/routes";
+import { ORG_SIGNUP_URL } from "@/lib/routes";
 
-type Step = "plan" | "account" | "review";
+/** `Org Link.dc.html`, intro view. "Feedback on your own domain" spans the full width. */
+const BENEFITS: { title: string; body: string; icon: React.ReactNode; wide?: boolean }[] = [
+  {
+    title: "People and teams in one place",
+    body: "Invite once and use the same members and teams on every linked deployment.",
+    icon: <Users size={14} />,
+  },
+  {
+    title: "Roles and access (RBAC)",
+    body: "Owner, admin, member and viewer roles, scoped to the org or a single project. Agents and API keys get roles too.",
+    icon: <ShieldCheck size={14} />,
+  },
+  {
+    title: "Policy rules for every project",
+    body: "Set rules once at org level and every project inherits them in Rules, read-only. Projects can add their own on top.",
+    icon: <SquareCheckBig size={14} />,
+  },
+  {
+    title: "Galaxy",
+    body: "See every project, agent and plan across deployments in a single map.",
+    icon: <Globe size={14} />,
+  },
+  {
+    title: "Feedback on your own domain",
+    body: "Relay Feedback Kit through the org so reports land in the right project from anywhere.",
+    icon: <MessageSquare size={14} />,
+    wide: true,
+  },
+];
 
-const TIERS = [
-  { id: "starter", label: "Starter", price: { monthly: 0, annual: 0 }, note: "Up to 3 seats" },
-  { id: "pro", label: "Pro", price: { monthly: 29, annual: 24 }, note: "Up to 10 seats" },
-  { id: "team", label: "Team", price: { monthly: 79, annual: 66 }, note: "Up to 25 seats" },
-  { id: "enterprise", label: "Enterprise", price: { monthly: -1, annual: -1 }, note: "Contact sales" },
-] as const;
+const STAYS = ["Code and repos", "Memory shards", "Item content"];
 
-const WORK_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const FREE_EMAIL_DOMAINS = new Set(["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com"]);
+const ACTION = "inline-flex h-[34px] flex-none items-center gap-2 whitespace-nowrap rounded-[9px] text-body transition-colors";
 
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-}
-
+/**
+ * The not-linked explainer (`Org Link - Hi-fi.dc.html` frame 2a): what an org adds, what stays
+ * on this box, and the two ways in. Neither way in is built yet, so both are Coming soon links
+ * to the waitlist in a new tab — nothing here calls `POST /api/sync/link` (GRPH-1224).
+ */
 export function CloudOrgLinkDialog({
   open,
   onOpenChange,
@@ -40,373 +57,91 @@ export function CloudOrgLinkDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
-  const navigate = useNavigate();
-  const [step, setStep] = React.useState<Step>("plan");
-  const [billing, setBilling] = React.useState<"monthly" | "annual">("monthly");
-  const [tier, setTier] = React.useState("pro");
-  const [orgName, setOrgName] = React.useState("");
-  const [contactName, setContactName] = React.useState("");
-  const [email, setEmail] = React.useState("");
-  const [emailTouched, setEmailTouched] = React.useState(false);
-
-  React.useEffect(() => {
-    if (open) {
-      setStep("plan");
-      setBilling("monthly");
-      setTier("pro");
-      setOrgName("");
-      setContactName("");
-      setEmail("");
-      setEmailTouched(false);
-    }
-  }, [open]);
-
-  const slug = slugify(orgName);
-  const emailError = emailTouched && email.length > 0
-    ? (!WORK_EMAIL_RE.test(email)
-      ? "Enter a valid email address"
-      : FREE_EMAIL_DOMAINS.has(email.split("@")[1]?.toLowerCase() ?? "")
-        ? "Use a work email"
-        : null)
-    : null;
-
-  const selectedTier = TIERS.find((t) => t.id === tier)!;
-  const isEnterprise = tier === "enterprise";
-
-  function goSyncSettings() {
-    onOpenChange(false);
-    navigate(settingsPath("deployment/sync"));
-  }
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Link to a cloud org</DialogTitle>
-          <DialogDescription>
-            {step === "plan" && "Choose a plan for your cloud org."}
-            {step === "account" && "Tell us about your organization."}
-            {step === "review" && "Review and confirm what gets linked."}
-          </DialogDescription>
-        </DialogHeader>
+      <DialogContent className="flex max-h-[calc(100vh-48px)] w-[min(720px,calc(100%-48px))] max-w-none flex-col overflow-hidden p-0">
+        <div className="flex flex-none items-start gap-3.5 px-[22px] pb-4 pt-5 pr-12">
+          <span className="flex size-[34px] flex-none items-center justify-center rounded-[9px] border border-[rgba(167,139,250,.35)] bg-[rgba(167,139,250,.1)] text-[#c9b8ff]">
+            <Cloud size={16} aria-hidden />
+          </span>
+          <div className="min-w-0 flex-1">
+            <span className="font-mono text-meta text-faint">ORGANIZATIONS · GRAPHBAN CLOUD</span>
+            <DialogTitle className="mt-1 text-[17px] tracking-[-.01em]">One org across every deployment</DialogTitle>
+            <DialogDescription className="mt-1.5 max-w-[62ch] text-body">
+              An organization lives in Graphban Cloud and sits above your deployments. It holds people, roles, policy
+              rules and the cross-project view, while each deployment keeps running and storing data where it is.
+            </DialogDescription>
+          </div>
+        </div>
 
-        <StepIndicator step={step} />
+        <div className="flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-[22px] pb-5 pt-1">
+          <ul
+            aria-label="What an organization adds"
+            className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,290px),1fr))] gap-px overflow-hidden rounded-xl border border-line-2 bg-line-2"
+          >
+            {BENEFITS.map((b) => (
+              <li
+                key={b.title}
+                data-benefit
+                className={cn("flex gap-3 bg-surface-2 p-3.5", b.wide && "col-span-full")}
+              >
+                <span className="flex size-[26px] flex-none items-center justify-center rounded-[7px] border border-line bg-surface text-accent" aria-hidden>
+                  {b.icon}
+                </span>
+                <div className="flex min-w-0 flex-col gap-[3px]">
+                  <span className="text-[13px] font-semibold text-fg">{b.title}</span>
+                  <span className="text-[12px] leading-normal text-muted">{b.body}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+          <div className="flex flex-wrap gap-x-[18px] gap-y-2 rounded-[10px] border border-line-2 bg-surface px-3.5 py-[11px]">
+            <span id="org-stays" className="self-center whitespace-nowrap font-mono text-meta text-faint">
+              STAYS ON THIS BOX
+            </span>
+            <ul aria-labelledby="org-stays" className="contents">
+              {STAYS.map((s) => (
+                <li key={s} data-stays className="flex items-center gap-1.5 text-[12px] text-fg-2">
+                  <span className="text-st-done" aria-hidden>✓</span>
+                  {s}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
 
-        {step === "plan" && (
-          <PlanStep
-            billing={billing}
-            onBillingChange={setBilling}
-            tier={tier}
-            onTierChange={setTier}
-            onNext={() => setStep("account")}
+        <div className="flex flex-none flex-wrap items-center gap-2.5 border-t border-line-2 bg-surface px-[22px] py-3.5">
+          <DialogClose className="text-[12px] text-muted transition-colors hover:text-fg">Not now</DialogClose>
+          <span className="flex-1" />
+          <ComingSoonLink
+            label="Link to an existing org"
+            className={cn(ACTION, "border border-line bg-surface-2 px-3.5 text-fg-2 hover:border-line-3 hover:text-fg")}
           />
-        )}
-        {step === "account" && (
-          <AccountStep
-            orgName={orgName}
-            onOrgNameChange={setOrgName}
-            contactName={contactName}
-            onContactNameChange={setContactName}
-            email={email}
-            onEmailChange={setEmail}
-            onEmailBlur={() => setEmailTouched(true)}
-            emailError={emailError}
-            slug={slug}
-            onBack={() => setStep("plan")}
-            onNext={() => setStep("review")}
+          <ComingSoonLink
+            label="Create a cloud org"
+            className={cn(ACTION, "bg-accent px-4 font-semibold text-bg hover:bg-accent/90")}
+            icon={<ArrowUpRight size={12} strokeWidth={2.2} aria-hidden />}
           />
-        )}
-        {step === "review" && (
-          <ReviewStep
-            tier={selectedTier}
-            billing={billing}
-            orgName={orgName}
-            contactName={contactName}
-            email={email}
-            slug={slug}
-            isEnterprise={isEnterprise}
-            onBack={() => setStep("account")}
-            onOpenDialog={goSyncSettings}
-          />
-        )}
+        </div>
       </DialogContent>
     </Dialog>
   );
 }
 
-function StepIndicator({ step }: { step: Step }) {
-  const steps: { id: Step; label: string }[] = [
-    { id: "plan", label: "Plan" },
-    { id: "account", label: "Account" },
-    { id: "review", label: "Review" },
-  ];
-  const idx = steps.findIndex((s) => s.id === step);
+function ComingSoonLink({ label, className, icon }: { label: string; className: string; icon?: React.ReactNode }) {
   return (
-    <div className="mb-4 flex items-center gap-2">
-      {steps.map((s, i) => (
-        <React.Fragment key={s.id}>
-          <span
-            className={cn(
-              "flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold",
-              i <= idx ? "bg-accent text-bg" : "bg-surface-4 text-faint",
-            )}
-          >
-            {i + 1}
-          </span>
-          <span className={cn("text-small", i <= idx ? "text-fg-2" : "text-faint")}>{s.label}</span>
-          {i < steps.length - 1 && <span className="mx-1 h-px flex-1 bg-line-2" />}
-        </React.Fragment>
-      ))}
-    </div>
-  );
-}
-
-function PlanStep({
-  billing,
-  onBillingChange,
-  tier,
-  onTierChange,
-  onNext,
-}: {
-  billing: "monthly" | "annual";
-  onBillingChange: (b: "monthly" | "annual") => void;
-  tier: string;
-  onTierChange: (t: string) => void;
-  onNext: () => void;
-}) {
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          className={cn(
-            "rounded-[8px] border px-2.5 py-1 text-[12px] transition-colors",
-            billing === "monthly" ? "border-accent/40 bg-accent/[0.08] text-accent" : "border-control text-muted",
-          )}
-          onClick={() => onBillingChange("monthly")}
-        >
-          Monthly
-        </button>
-        <button
-          type="button"
-          className={cn(
-            "rounded-[8px] border px-2.5 py-1 text-[12px] transition-colors",
-            billing === "annual" ? "border-accent/40 bg-accent/[0.08] text-accent" : "border-control text-muted",
-          )}
-          onClick={() => onBillingChange("annual")}
-        >
-          Annual
-        </button>
-      </div>
-
-      <div className="grid grid-cols-2 gap-2">
-        {TIERS.map((t) => {
-          const selected = t.id === tier;
-          const price = billing === "monthly" ? t.price.monthly : t.price.annual;
-          return (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => onTierChange(t.id)}
-              className={cn(
-                "rounded-[10px] border p-3 text-left transition-colors",
-                selected ? "border-accent/50 bg-accent/[0.05]" : "border-control hover:border-control-hover",
-              )}
-            >
-              <div className="text-[13px] font-semibold">{t.label}</div>
-              <div className="mt-1 text-[12px] text-muted">
-                {price === -1 ? "Custom" : price === 0 ? "Free" : `$${price}/mo`}
-              </div>
-              <div className="mt-0.5 text-small text-faint">{t.note}</div>
-            </button>
-          );
-        })}
-      </div>
-
-      <p className="text-small leading-relaxed text-faint">
-        Seats are people — agents and API keys are not seats.
-      </p>
-
-      <div className="flex justify-end">
-        {tier === "enterprise" ? (
-          <a
-            href="mailto:sales@graphban.dev?subject=Graphban%20Enterprise"
-            className="inline-flex items-center rounded-[8px] bg-accent px-3 py-1.5 text-[12px] font-medium text-bg transition-colors hover:bg-accent/90"
-          >
-            Contact sales
-          </a>
-        ) : (
-          <Button size="sm" onClick={onNext}>Continue</Button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function AccountStep({
-  orgName,
-  onOrgNameChange,
-  contactName,
-  onContactNameChange,
-  email,
-  onEmailChange,
-  onEmailBlur,
-  emailError,
-  slug,
-  onBack,
-  onNext,
-}: {
-  orgName: string;
-  onOrgNameChange: (v: string) => void;
-  contactName: string;
-  onContactNameChange: (v: string) => void;
-  email: string;
-  onEmailChange: (v: string) => void;
-  onEmailBlur: () => void;
-  emailError: string | null;
-  slug: string;
-  onBack: () => void;
-  onNext: () => void;
-}) {
-  const canContinue = orgName.trim() && contactName.trim() && email.trim() && !emailError;
-  return (
-    <div className="space-y-3">
-      <div>
-        <label className="mb-1 block text-[12px] font-medium text-fg-2">Your name</label>
-        <Input value={contactName} onChange={(e) => onContactNameChange(e.target.value)} placeholder="Jane Doe" />
-      </div>
-      <div>
-        <label className="mb-1 block text-[12px] font-medium text-fg-2">Work email</label>
-        <Input
-          value={email}
-          onChange={(e) => onEmailChange(e.target.value)}
-          onBlur={onEmailBlur}
-          placeholder="jane@acme.com"
-          type="email"
-        />
-        {emailError && <p className="mt-1 text-small text-st-blocked">{emailError}</p>}
-      </div>
-      <div>
-        <label className="mb-1 block text-[12px] font-medium text-fg-2">Organization name</label>
-        <Input value={orgName} onChange={(e) => onOrgNameChange(e.target.value)} placeholder="Acme Corp" />
-      </div>
-      {slug && (
-        <div className="rounded-[9px] border border-line-2 bg-surface-2 px-3 py-2">
-          <span className="text-small text-faint">URL: </span>
-          <code className="font-mono text-[11.5px] text-fg-2">cloud.graphban.dev/{slug || "…"}</code>
-        </div>
-      )}
-      <div>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled
-          title="Cloud org creation is not yet available from self-hosted"
-          className="w-full"
-        >
-          Continue with GitHub
-        </Button>
-      </div>
-      <div className="flex justify-between">
-        <Button size="sm" variant="ghost" onClick={onBack}>Back</Button>
-        <Button size="sm" onClick={onNext} disabled={!canContinue}>Continue</Button>
-      </div>
-    </div>
-  );
-}
-
-function ReviewStep({
-  tier,
-  billing,
-  orgName,
-  contactName,
-  email,
-  slug,
-  isEnterprise,
-  onBack,
-  onOpenDialog,
-}: {
-  tier: (typeof TIERS)[number];
-  billing: "monthly" | "annual";
-  orgName: string;
-  contactName: string;
-  email: string;
-  slug: string;
-  isEnterprise: boolean;
-  onBack: () => void;
-  onOpenDialog: () => void;
-}) {
-  const price = billing === "monthly" ? tier.price.monthly : tier.price.annual;
-  const priceLabel = price === -1 ? "Contact sales" : price === 0 ? "Free" : `$${price}/mo ${billing}`;
-
-  return (
-    <div className="space-y-4">
-      <div className="rounded-[10px] border border-line-2 bg-surface-2 p-3 space-y-1.5">
-        <Row label="Organization" value={orgName || "—"} />
-        <Row label="Contact" value={contactName || "—"} />
-        <Row label="Email" value={email || "—"} />
-        <Row label="URL" value={slug ? `cloud.graphban.dev/${slug}` : "—"} />
-        <Row label="Plan" value={`${tier.label} — ${priceLabel}`} />
-      </div>
-
-      <div className="rounded-[10px] border border-line-2 bg-surface-2 p-3">
-        <div className="mb-2 text-[12px] font-medium text-fg-2">What gets linked</div>
-        <ul className="space-y-1 text-[12px] text-muted">
-          <li className="flex items-start gap-2">
-            <span className="mt-1 h-1.5 w-1.5 flex-none rounded-full bg-accent" />
-            Item keys, statuses and titles (not descriptions or content)
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="mt-1 h-1.5 w-1.5 flex-none rounded-full bg-accent" />
-            Request and PRD metadata (titles and status, not body text)
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="mt-1 h-1.5 w-1.5 flex-none rounded-full bg-st-done" />
-            <span>Code stays on this box</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="mt-1 h-1.5 w-1.5 flex-none rounded-full bg-st-done" />
-            <span>Memory shards stay on this box</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="mt-1 h-1.5 w-1.5 flex-none rounded-full bg-st-done" />
-            <span>Item content stays on this box</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="mt-1 h-1.5 w-1.5 flex-none rounded-full bg-st-done" />
-            <span>Connection is outbound only</span>
-          </li>
-        </ul>
-      </div>
-
-      <div className="flex items-center justify-between">
-        <Button size="sm" variant="ghost" onClick={onBack}>Back</Button>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onOpenDialog}
-            className="text-[11.5px] text-muted underline-offset-2 hover:underline"
-          >
-            Already have an account?
-          </button>
-          <Button
-            size="sm"
-            disabled
-            title="Cloud org creation is not yet available from self-hosted"
-          >
-            {isEnterprise ? "Contact sales" : "Create org"}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="text-small text-faint">{label}</span>
-      <span className="text-body text-fg-2">{value}</span>
-    </div>
+    <a
+      href={ORG_SIGNUP_URL}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={`${label} — coming soon, join the waitlist`}
+      className={className}
+    >
+      {label}
+      <span data-coming-soon className="rounded-[4px] border border-current/35 px-1 font-mono text-[9px] leading-[13px] tracking-[.4px] uppercase opacity-80">
+        Coming soon
+      </span>
+      {icon}
+    </a>
   );
 }

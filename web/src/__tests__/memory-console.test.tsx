@@ -462,3 +462,18 @@ describe("empty queue", () => {
     );
   });
 });
+
+describe("detail panel", () => {
+  it("wraps a 200-character unbroken token instead of overflowing the panel", async () => {
+    const { api } = await import("@/lib/api");
+    const token = "test_gbagent_adapter.py::" + "x".repeat(175);
+    expect(token).toHaveLength(200);
+    vi.mocked(api.scoredCandidates).mockResolvedValue([scoredRow(shard("long", `See ${token}`), 0.5)]);
+    renderView();
+    const detail = await screen.findByTestId("memory-detail");
+    const text = await within(detail).findByText(/test_gbagent_adapter/);
+    expect(text.className).toContain("whitespace-pre-wrap");
+    expect(text.className).toContain("[overflow-wrap:anywhere]");
+    expect(detail.closest("aside")?.className).not.toMatch(/overflow-x/);
+  });
+});

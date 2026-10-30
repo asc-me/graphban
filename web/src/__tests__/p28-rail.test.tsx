@@ -107,18 +107,20 @@ describe("P28 self-host rail", () => {
     expect(await screen.findByText("41")).toBeInTheDocument();
   });
 
-  it("opens Build as a flyout beside the sidebar without leaving the current page", async () => {
+  it("folds Build out inline, and Plan up, without leaving the current page", async () => {
     const user = userEvent.setup();
     wrap(<LeftNav />, "/tracker");
     await screen.findByText("Tracker");
     await user.click(screen.getByRole("button", { name: "Build" }));
-    const menu = await screen.findByRole("dialog", { name: "Build" });
-    expect(within(menu).getByText("Code graph")).toBeInTheDocument();
-    expect(within(menu).getByText("Fleet")).toBeInTheDocument();
+    const menu = document.getElementById("nav-build")!;
+    expect(menu).toHaveAttribute("data-inline", "open");
+    expect(within(menu).getByRole("link", { name: /Code graph/ })).toBeInTheDocument();
+    expect(within(menu).getByRole("link", { name: /Fleet/ })).toBeInTheDocument();
     expect(within(menu).queryByText("Fleet.v1")).not.toBeInTheDocument();
-    expect(within(menu).getByText("Outposts")).toBeInTheDocument();
-    // Plan stays inline: it is the section that owns the page you are on.
-    expect(document.getElementById("nav-plan")).not.toBeNull();
+    expect(within(menu).getByRole("link", { name: /Outposts/ })).toBeInTheDocument();
+    // One section at a time (GRPH-1222): Plan folds up even though it owns the page.
+    expect(document.getElementById("nav-plan")).toHaveAttribute("data-inline", "closed");
+    expect(screen.queryByRole("dialog")).toBeNull();
     // Opening a section never navigates: Build must not move you off /tracker.
     expect(screen.getByTestId("here")).toHaveTextContent("/tracker");
   });
@@ -142,13 +144,12 @@ describe("P28 self-host rail", () => {
     wrap(<LeftNav />, "/tracker");
     await screen.findByText("Tracker");
     await user.click(screen.getByRole("button", { name: "Observe" }));
-    const fly = await screen.findByRole("dialog", { name: "Observe" });
-    await user.click(within(fly).getByRole("link", { name: /Activity/ }));
+    await user.click(within(document.getElementById("nav-observe")!).getByRole("link", { name: /Activity/ }));
     // Choosing a page changes the route, and the sidebar follows the route.
     expect(screen.getByTestId("here")).toHaveTextContent("/activity");
     expect(screen.getByRole("button", { name: "Observe" })).toHaveAttribute("aria-expanded", "true");
-    expect(document.getElementById("nav-observe")).not.toBeNull();
-    expect(document.getElementById("nav-plan")).toBeNull();
+    expect(document.getElementById("nav-observe")).toHaveAttribute("data-inline", "open");
+    expect(document.getElementById("nav-plan")).toHaveAttribute("data-inline", "closed");
   });
 
   it("shows Memory and Lessons under Observe on /lessons (children are collapsed on /tracker)", async () => {
@@ -200,8 +201,9 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     expect(dash).not.toHaveAttribute("aria-current");
     expect(await screen.findByRole("link", { name: "Admin" })).toBeInTheDocument();
     expect(screen.getByText("Feedback Kit")).toBeInTheDocument();
-    // Build and Observe are closed flyouts — their pages are not in the document.
-    expect(screen.queryByText("Code graph")).not.toBeInTheDocument();
+    // Build and Observe are folded up: their rows stay mounted to animate, but hidden.
+    expect(screen.queryByRole("link", { name: /Code graph/ })).toBeNull();
+    expect(document.getElementById("nav-build")).toHaveAttribute("inert");
     expect(screen.queryByText("Memory review")).not.toBeInTheDocument();
   });
 
@@ -210,16 +212,16 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     wrap(<LeftNav hosted />, "/p/CORE/tracker");
     await screen.findByText("Tracker");
     await user.click(screen.getByRole("button", { name: "Build" }));
-    const menu = await screen.findByRole("dialog", { name: "Build" });
-    expect(within(menu).getByText("Code graph")).toBeInTheDocument();
-    expect(within(menu).getByText("MCP Tools")).toBeInTheDocument();
-    expect(within(menu).getByText("Fleet")).toBeInTheDocument();
+    const menu = document.getElementById("nav-build")!;
+    expect(within(menu).getByRole("link", { name: /Code graph/ })).toBeInTheDocument();
+    expect(within(menu).getByRole("link", { name: /MCP Tools/ })).toBeInTheDocument();
+    expect(within(menu).getByRole("link", { name: /Fleet/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-expanded", "true");
     // Opening must not navigate — same trap as self-host (GRPH-P28 rev2).
     expect(screen.getByTestId("here")).toHaveTextContent("/p/CORE/tracker");
     await user.click(within(menu).getByRole("link", { name: /Code graph/ }));
     expect(screen.getByTestId("here")).toHaveTextContent("/p/CORE/code");
-    expect(document.getElementById("nav-build")).not.toBeNull();
+    expect(menu).toHaveAttribute("data-inline", "open");
   });
 
   it("opens the owning section when the route is in another group", async () => {
@@ -229,7 +231,7 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     expect(screen.getByText("Harness")).toBeInTheDocument();
     expect(screen.getByText("Memory")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Observe" })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Tracker/ })).toBeNull();
   });
 
   it("shows hosted Harness under Observe and Usage link in the footer", async () => {
@@ -343,7 +345,7 @@ describe("GRPH-1066 /dashboard is project home and the nav entry is current ther
     expect(dash).toHaveAttribute("aria-current", "page");
     // This page owns no section, so Plan stays closed. Jump tiles still link to Tracker.
     expect(screen.getByRole("button", { name: "Plan" })).toHaveAttribute("aria-expanded", "false");
-    expect(document.getElementById("nav-plan")).toBeNull();
+    expect(document.getElementById("nav-plan")).toHaveAttribute("data-inline", "closed");
   });
 
   it("hosted flat /dashboard resolves to the same home", async () => {

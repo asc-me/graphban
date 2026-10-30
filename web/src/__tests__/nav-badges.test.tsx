@@ -12,7 +12,7 @@ import type { ShellCounts } from "@/lib/types";
 
 /**
  * GRPH-1151 (PRD GRPH-P59 §D4) — every page with a badge shows its own `ShellCounts` field,
- * inline, in the rail tooltip and on flyout rows. Absent is not zero: loading or failed, no
+ * inline (in every folded-out section, GRPH-1222), in the rail tooltip and on rail flyout rows. Absent is not zero: loading or failed, no
  * number renders; a `0` renders only when the read succeeded.
  */
 
@@ -62,11 +62,16 @@ function wrap(ui: ReactNode, path: string) {
 
 const layer = (name: "rail" | "expanded") => document.querySelector<HTMLElement>(`[data-layer="${name}"]`)!;
 const row = (label: string) => within(layer("expanded")).getByRole("link", { name: new RegExp(`^${label}`) });
+/** Every badge in the expanded layer, folded up or out. */
 const badges = () => layer("expanded").querySelectorAll("[data-badge]");
+const openBadges = () => layer("expanded").querySelectorAll('[data-inline="open"] [data-badge]');
 
-async function flyout(user: ReturnType<typeof userEvent.setup>, section: string) {
+/** Fold a section out of the expanded accordion and return its panel. */
+async function fold(user: ReturnType<typeof userEvent.setup>, section: string) {
   await user.click(within(layer("expanded")).getByRole("button", { name: section }));
-  return screen.findByRole("dialog", { name: section });
+  const panel = document.getElementById(`nav-${section.toLowerCase()}`)!;
+  await waitFor(() => expect(panel).toHaveAttribute("data-inline", "open"));
+  return panel;
 }
 
 afterEach(() => {
@@ -84,23 +89,34 @@ describe("GRPH-1151 badge counts", () => {
     expect(row("PRDs")).not.toHaveTextContent(/\d/);
   });
 
-  it("shows Build counts on its flyout rows and Live green with the live suffix", async () => {
+  it("shows Build counts in its folded-out rows and Live green with the live suffix", async () => {
     const user = userEvent.setup();
     counts.mockResolvedValue(COUNTS);
     wrap(<LeftNav hosted />, "/p/CORE/tracker");
     await waitFor(() => expect(row("Tracker")).toHaveTextContent("10"));
 
-    const build = await flyout(user, "Build");
+    const build = await fold(user, "Build");
     expect(within(build).getByRole("link", { name: /Code graph/ })).toHaveTextContent("2,184");
     expect(within(build).getByRole("link", { name: /MCP Tools/ })).toHaveTextContent("24");
     expect(within(build).getByRole("link", { name: /Fleet/ })).toHaveTextContent("3");
     expect(within(build).getByRole("link", { name: /Outposts/ })).toHaveTextContent("2");
 
-    await user.keyboard("{Escape}");
-    const observe = await flyout(user, "Observe");
+    const observe = await fold(user, "Observe");
     const live = within(observe).getByText("5 live");
     expect(live.className).toContain("text-st-done");
     expect(within(observe).getByRole("link", { name: /Memory/ })).toHaveTextContent("7");
+  });
+
+  it("shows counts on the collapsed rail's flyout rows", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, "1");
+    counts.mockResolvedValue(COUNTS);
+    wrap(<LeftNav hosted />, "/p/CORE/tracker");
+    await waitFor(() => expect(counts).toHaveBeenCalled());
+    await user.click(within(layer("rail")).getByRole("button", { name: "Build" }));
+    const build = await screen.findByRole("dialog", { name: "Build" });
+    await waitFor(() => expect(within(build).getByRole("link", { name: /Code graph/ })).toHaveTextContent("2,184"));
+    expect(within(build).getByRole("link", { name: /MCP Tools/ })).toHaveTextContent("24");
   });
 
   it("puts the count in the rail tooltip", async () => {
@@ -134,7 +150,7 @@ describe("GRPH-1151 badge counts", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(badges()).toHaveLength(0);
     expect(row("Tracker")).not.toHaveTextContent("0");
-    const observe = await flyout(user, "Observe");
+    const observe = await fold(user, "Observe");
     expect(observe).not.toHaveTextContent(/\d/);
   });
 
@@ -142,9 +158,9 @@ describe("GRPH-1151 badge counts", () => {
     const user = userEvent.setup();
     counts.mockResolvedValue({ ...COUNTS, items_open: 0, review: 0, live_agents: 0 });
     wrap(<LeftNav hosted />, "/p/CORE/tracker");
-    await waitFor(() => expect(badges()).toHaveLength(2));
+    await waitFor(() => expect(openBadges()).toHaveLength(2));
     expect(row("Tracker")).toHaveTextContent("0");
-    const observe = await flyout(user, "Observe");
+    const observe = await fold(user, "Observe");
     expect(within(observe).getByText("0 live")).toBeInTheDocument();
     expect(within(observe).getByRole("link", { name: /Memory/ })).toHaveTextContent("0");
   });
