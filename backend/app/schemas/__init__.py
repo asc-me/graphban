@@ -1756,7 +1756,16 @@ class ShippedSkillOut(BaseModel):
     url: str
 
 
+class RuleResultOut(BaseModel):
+    outcome: str  # pass | fail
+    at: str
+    item: str
+    commit: str = ""
+
+
 class RuleFlowRuleOut(RuleOut):
+    #: Only on a `checked` rule; None means no result is recorded.
+    last_result: RuleResultOut | None = None
     used: bool
     label: str | None = None
     #: Only the collapsed skills node; None means the shipped skill list was not readable here.

@@ -72,7 +72,7 @@ def test_push_to_base_marks_pr_step_rules_not_used(db):
         r = _rule(f, rid)
         assert r["used"] is False and r["label"] == R.NOT_USED_LABEL, rid
     assert _rule(f, "gitops.base_branch")["used"] is True
-    assert _rule(f, "ci.backend_suite_both_engines")["used"] is True
+    assert _rule(f, "merge.ci_green")["used"] is True
 
 
 def test_reviewer_bar_still_used_under_push_to_base_unless_forge(db):
@@ -133,3 +133,62 @@ def test_flow_endpoint_serves_the_linked_skills(client, auth):
     n = _rule(r.json(), "agents.skills_pack")
     assert n["skills_version"] and len(n["skills"]) == 9
     assert all(f"/blob/cli-v{n['skills_version']}/" in s["url"] for s in n["skills"])
+
+
+# --- merge.ci_green last_result ---------------------------------------------------------
+
+def _item(db, n, status="done", passed=True, pr=True, ago=0):
+    from datetime import timedelta
+    from app.models import Item, utcnow
+    ev = [{"kind": "attestation", "adapter": "ci", "commit": f"abc{n}234",
+           "predicates": [{"name": "suite_green", "passed": passed}]}]
+    if pr:
+        ev.append({"kind": "url", "url": f"https://github.com/o/r/pull/{n}"})
+    it = Item(id=f"ci-it-{n}", project_id="flowp", number=n, title="x", status=status,
+              evidence=ev, updated_at=utcnow() - timedelta(hours=ago))
+    db.add(it)
+    db.commit()
+    return it
+
+
+def _ci(db):
+    return _rule(R.flow(db, "flowp"), "merge.ci_green")["last_result"]
+
+
+@pytest.fixture
+def flowp(db):
+    from app.models import Item
+    db.add(Project(id="flowp", name="p", tag="FP", gitops_model="prs_to_base"))
+    db.commit()
+    yield
+    db.query(Item).filter(Item.project_id == "flowp").delete()
+    db.commit()
+
+
+def test_ci_result_pass_carries_item_commit_and_date(db, flowp):
+    _item(db, 1)
+    r = _ci(db)
+    assert r["outcome"] == "pass" and r["commit"] == "abc1234" and r["at"]
+    assert r["item"].endswith("1")
+
+
+def test_ci_result_null_when_none(db, flowp):
+    assert _ci(db) is None
+
+
+def test_ci_result_fail(db, flowp):
+    _item(db, 1, passed=False)
+    assert _ci(db)["outcome"] == "fail"
+
+
+def test_ci_result_ignores_unmerged_items(db, flowp):
+    # An attestation on an item whose PR never merged must not be read.
+    _item(db, 1, status="review")
+    _item(db, 2, pr=False)
+    assert _ci(db) is None
+
+
+def test_ci_result_is_the_latest_merged(db, flowp):
+    _item(db, 1, passed=False, ago=5)
+    _item(db, 2, passed=True, ago=1)
+    assert _ci(db)["outcome"] == "pass"
