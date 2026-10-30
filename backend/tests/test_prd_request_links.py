@@ -129,3 +129,34 @@ def test_suggestions_embed_each_section_once(client, auth, db, monkeypatch):
     n_requests = db.query(Request).filter(Request.project_id == "core").count()
     assert n_requests >= 4
     assert len(calls) == 2 + n_requests  # two sections once, plus one per candidate request
+
+
+def test_list_carries_by_created_at_and_linked_item_key(client, auth, db):
+    from app.models import Request
+
+    pid = _prd(client, auth)
+    a, b = _req(client, auth, "Dark mode"), _req(client, auth, "Crash", "bug")
+    item = client.post("/api/items", headers=auth, json={"title": "Do it", "project_id": "core"}).json()["id"]
+    ra = db.get(Request, a) or db.query(Request).filter(Request.title == "Dark mode").one()
+    ra.by = "dana"
+    db.commit()
+    assert client.post(f"/api/requests/{a}/link", headers=auth, json={"item_id": item}).status_code == 200
+    for r in (a, b):
+        assert client.post(f"/api/prds/{pid}/requests", headers=auth, json={"request_id": r}).status_code == 200
+    # Retag so the item's frozen id and rendered key DIVERGE; otherwise sending the id instead of
+    # the key passes this test (as it did on the first attempt at GRPH-1216).
+    from app.models import Item
+    from app.services import projects as proj_svc
+
+    proj_svc.retag_project(db, "core", "ZZ")
+    db.commit()
+    row = db.query(Item).filter(Item.title == "Do it").one()
+    db.refresh(row)
+    key, frozen = row.key, row.id
+    db.commit()  # end the read so the request below is not blocked by this session
+    assert key != frozen, f"the fixture did not diverge: id={frozen!r} key={key!r}"
+    # Request keys re-render under the new tag too, so match rows by title.
+    rows = {r["title"]: r for r in client.get(f"/api/prds/{pid}/requests", headers=auth).json()}
+    assert rows["Dark mode"]["by"] == "dana" and rows["Dark mode"]["created_at"]
+    assert rows["Dark mode"]["linked_to"] == key != frozen
+    assert rows["Crash"]["linked_to"] is None

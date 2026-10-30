@@ -28,7 +28,7 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
-const req = (id: string, type: string, votes: number) => ({ id, title: `Req ${id}`, type, votes, status: "new" });
+const req = (id: string, type: string, votes: number) => ({ id, title: `Req ${id}`, type, votes, status: "new", by: "", created_at: null, linked_to: null });
 
 function wrap(ui: React.ReactNode, path = "/prds") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -86,6 +86,19 @@ describe("Requests panel", () => {
     expect(order()).toEqual(["Req GRPH-R3", "Req GRPH-R1"]);
     await user.click(within(panel).getAllByText("Unlink")[0]);
     await waitFor(() => expect(mocks.unlinkPrdRequest).toHaveBeenCalledWith("GRPH-P1", "GRPH-R3"));
+  });
+
+  it("shows submitter, relative time and linked item; omits by when empty", async () => {
+    const created_at = new Date(Date.now() - 3 * 3_600_000).toISOString();
+    mocks.prdRequests.mockResolvedValue([
+      { ...req("GRPH-R1", "bug", 2), by: "dana", created_at, linked_to: "GRPH-42" },
+      { ...req("GRPH-R2", "bug", 1), created_at },
+    ]);
+    mocks.prdRequestSuggestions.mockResolvedValue({ available: true, suggestions: [] });
+    wrap(<PrdRequestsPanel prdId="GRPH-P1" projectId="core" />);
+    expect(await screen.findByText("dana · 3h ago")).toBeInTheDocument();
+    expect(screen.getByText("→ GRPH-42")).toBeInTheDocument();
+    expect(screen.getByText("3h ago")).toBeInTheDocument();
   });
 
   it("links from a suggestion and the list refetches", async () => {

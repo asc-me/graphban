@@ -1423,6 +1423,10 @@ export interface PrdLinkedRequest {
   type: RequestType;
   votes: number;
   status: string;
+  by: string;
+  created_at: string | null;
+  /** The linked item's key (e.g. GRPH-123); null when unlinked. */
+  linked_to: string | null;
 }
 
 export interface PrdRequestSuggestion {
