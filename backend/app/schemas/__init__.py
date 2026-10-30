@@ -527,6 +527,7 @@ class ProjectOut(ORMModel):
     memory_write_mode: str = "review"
     memory_auto_reject: bool = True
     memory_llm_judge: bool = False
+    memory_candidate_expiry_days: int = 45
     # May an agent operate this project's quality gates (AL-282)? Never authority gates.
     agent_adjudication: bool = False
     # Danger mode (GRPH-380): may an agent sign off its own work when nobody else can?
@@ -1215,6 +1216,7 @@ class ProjectUpdate(BaseModel):
     memory_write_mode: str | None = None
     memory_auto_reject: bool | None = None
     memory_llm_judge: bool | None = None
+    memory_candidate_expiry_days: int | None = None
     agent_adjudication: bool | None = None
     allow_self_review: bool | None = None
     # Unlike the fields above, an explicit null here CLEARS (back to unmeasured); omit the
@@ -1228,6 +1230,14 @@ class ProjectUpdate(BaseModel):
         # allowed values instead of a project silently reverting to `review`.
         if v is not None and v not in ("review", "auto", "trusted"):
             raise ValueError("memory_write_mode must be one of: review, auto, trusted")
+        return v
+
+    @field_validator("memory_candidate_expiry_days")
+    @classmethod
+    def _valid_expiry_days(cls, v: int | None) -> int | None:
+        # Refused, not clamped: 0 would expire every candidate the moment it is written.
+        if v is not None and v < 1:
+            raise ValueError("memory_candidate_expiry_days must be at least 1")
         return v
 
 
@@ -1722,11 +1732,37 @@ class RulesOut(BaseModel):
     rules: list[RuleOut]
 
 
+class UnmappedGroupOut(BaseModel):
+    where: str
+    status: int | None = None
+    #: True for a refusal that named no project at all (the platform bucket, owners only).
+    platform: bool = False
+    count: int
+    last_at: datetime | None = None
+    #: `days` counts, oldest day first.
+    daily: list[int]
+
+
+class UnmappedRefusalsOut(BaseModel):
+    days: int
+    #: Earliest refusal event recorded; None = none ever, which is not "zero since".
+    recording_since: datetime | None = None
+    groups: list[UnmappedGroupOut]
+
+
+class ShippedSkillOut(BaseModel):
+    name: str
+    #: SKILL.md at `cli-v<version>` (GRPH-1194).
+    url: str
+
+
 class RuleFlowRuleOut(RuleOut):
     used: bool
     label: str | None = None
-    #: Only the collapsed skills node; None means the gban package was not readable here.
-    skills: list[str] | None = None
+    #: Only the collapsed skills node; None means the shipped skill list was not readable here.
+    skills: list[ShippedSkillOut] | None = None
+    #: The gban version those skills ship at; None with `skills`.
+    skills_version: str | None = None
 
 
 class RuleStageOut(BaseModel):

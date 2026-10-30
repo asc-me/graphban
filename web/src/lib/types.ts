@@ -33,6 +33,8 @@ export interface Project {
   memory_auto_reject: boolean;
   memory_write_mode: string;
   memory_llm_judge: boolean;
+  /** Days an uncorroborated candidate lives before it expires (GRPH-1212); default 45. */
+  memory_candidate_expiry_days?: number;
   agent_adjudication: boolean;
   /** Danger mode: an agent may sign off its own work, but only when no independent agent exists. */
   allow_self_review: boolean;
@@ -2794,7 +2796,9 @@ export interface RuleFlowRule {
   label: string | null;
   /** Sent (as null) on every rule; a list only on the skills pack. Null on the pack: the gban
    *  package was not readable on the server. */
-  skills: string[] | null;
+  skills: { name: string; url: string }[] | null;
+  /** The gban version the skills ship at (cli-v<version> in each url); null with `skills`. */
+  skills_version?: string | null;
 }
 
 export interface RuleStage {
@@ -2858,6 +2862,24 @@ export interface SuggestionSource {
   state: "read" | "not_available" | string;
   read_at: string | null;
   reason: string | null;
+}
+
+/** One ranked group of `refusal_unmapped` events (GRPH-1195). `daily` is oldest day first. */
+export interface UnmappedGroup {
+  where: string;
+  status: number | null;
+  /** The platform bucket: a refusal that named no project, returned to the project's owner only. */
+  platform: boolean;
+  count: number;
+  last_at: string | null;
+  daily: number[];
+}
+
+export interface UnmappedRefusals {
+  days: number;
+  /** Earliest refusal event recorded; null means none ever, which is not "zero since". */
+  recording_since: string | null;
+  groups: UnmappedGroup[];
 }
 
 export interface RecommendedRules {

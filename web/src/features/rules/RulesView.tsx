@@ -15,7 +15,7 @@ import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { stepIndex } from "@/lib/graph/useGraphKeyboard";
 import { useGraphViewport, zoomAbout } from "@/lib/graph/useGraphViewport";
-import { useConfig, useGitops, useRulesFlow } from "@/lib/queries";
+import { useConfig, useGitops, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
 import { projectPath, settingsPath, tagFromPath } from "@/lib/routes";
 import type { RuleFlowRule, RuleStage, RuleSuggestion, RulesFlow } from "@/lib/types";
 
@@ -88,6 +88,8 @@ export function RulesView() {
   const { activeId, active } = useProjectCtx();
   const scope = active?.tag || active?.name || activeId;
   const q = useRulesFlow(activeId);
+  const unmapped = useUnmappedRefusals(activeId);
+  const unmappedCount = unmapped.data?.groups.reduce((n, g) => n + g.count, 0);
   const flow = q.data;
   const narrow = useNarrow();
   const [params] = useSearchParams();
@@ -145,7 +147,7 @@ export function RulesView() {
                 pulse && "animate-[pulse_1s_ease-in-out_1] border-accent text-accent",
               )}
             >
-              Unmapped refusals
+              Unmapped refusals{unmappedCount !== undefined && <span data-testid="rules-unmapped-count"> · {unmappedCount}</span>}
             </button>
             <button
               type="button"
@@ -918,7 +920,7 @@ function Inspector({
             {stage && <TallyLine rules={stageRules(stage)} />}
             {pack && (
               <span className={cn(MONO, "text-[10.5px] text-muted")}>
-                {pack.skills ? `${pack.skills.length} skills shipped with gban` : "skill list not readable on this server"}
+                {pack.skills ? `${pack.skills.length} skills shipped with gban ${pack.skills_version ?? ""}`.trim() : "skill list not readable on this server"}
               </span>
             )}
           </div>
@@ -979,8 +981,10 @@ function PackBody({ pack }: { pack: RuleFlowRule }) {
   return (
     <ul className="flex flex-col gap-1" data-testid="rules-pack-skills">
       {pack.skills.map((s) => (
-        <li key={s} className={cn(MONO, "text-[11.5px] text-fg-2")}>
-          skills/{s}/SKILL.md
+        <li key={s.name} className={cn(MONO, "text-[11.5px] text-fg-2")}>
+          <a href={s.url} target="_blank" rel="noreferrer" className="underline">
+            skills/{s.name}/SKILL.md
+          </a>
         </li>
       ))}
     </ul>

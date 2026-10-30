@@ -1,12 +1,15 @@
 """Rule registry REST (GRPH-1155). Read-only; the view renders this."""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import get_db
 from app.models import User
-from app.schemas import RecommendedRulesOut, RefusalCoverageOut, RulesFlowOut, RulesOut
+from app.schemas import RecommendedRulesOut, RefusalCoverageOut, RulesFlowOut, RulesOut, UnmappedRefusalsOut
 from app.security import authz
 from app.security.deps import get_current_user
+from app.services import events as events_svc
+from app.services import quotas
 from app.services import rules as rules_svc
 from app.services import rules_recommend
 from app.version import __version__
@@ -54,3 +57,17 @@ def dismiss_recommendation(suggestion_id: str, project_id: str = "core",
     authz.require_writable(db, user.id, project_id)
     if not rules_recommend.dismiss(db, project_id, suggestion_id):
         raise HTTPException(404, "No such suggestion")
+
+
+@router.get("/rules/refusals/unmapped", response_model=UnmappedRefusalsOut)
+def unmapped_refusals(project_id: str = "core", days: int = Query(7, ge=1, le=90),
+                      db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Unmapped refusals grouped and ranked over the whole window (GRPH-1195).
+
+    The platform bucket — refusals that named no project — is cross-tenant data, so it goes
+    only to a platform admin, or, on a self-hosted instance (one tenant), to the project's
+    owner. A hosted owner is not enough: anyone who creates a project owns it."""
+    authz.require_readable(db, user.id, project_id)
+    owner = authz.project_role(db, user.id, project_id) == "owner"
+    include_platform = (not settings.hosted_mode and owner) or quotas.is_platform_admin(user)
+    return events_svc.unmapped_refusals(db, project_id, days=days, include_platform=include_platform)

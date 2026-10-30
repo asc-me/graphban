@@ -9,6 +9,8 @@ A Graphban *release* is not a git tag and is not GitHub's source zip. Native
 - a `GIT_SHA` file (short sha of the packed commit)
 - `backend/app/data/refusal_coverage.json`, computed from the packed tree by its own
   `scripts/refusal_ratchet.py publish` — a tree that fails the ratchet is not packed (GRPH-1185)
+- `backend/app/data/gban_skills.json`, the skill names and version from the packed tree's
+  `cli/` (GRPH-1194)
 - **no** `.env`
 
 Packing a ref uses a detached worktree, for the same reason `deploy.sh` does:
@@ -25,6 +27,7 @@ attaches the tarball is `python3 scripts/graphban_release.py publish`
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pathlib
 import re
@@ -49,6 +52,7 @@ BACKEND_DROP = frozenset({
 })
 #: Package data written here, never committed (GRPH-1185). `services/rules` reads it.
 COVERAGE = pathlib.Path("backend/app/data/refusal_coverage.json")
+GBAN_SKILLS = pathlib.Path("backend/app/data/gban_skills.json")
 _VERSION_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.M)
 
 
@@ -160,6 +164,31 @@ def publish_coverage(src: pathlib.Path, dest: pathlib.Path, sha: str) -> str | N
     return None
 
 
+def skills_manifest(cli: pathlib.Path) -> dict:
+    """`{version, skills}` from a `cli/` tree: the gban version and the skill names it ships."""
+    import tomllib
+
+    version = tomllib.loads((cli / "pyproject.toml").read_text())["project"]["version"]
+    names = sorted(p.name for p in (cli / "src" / "gban" / "skills").iterdir() if p.is_dir())
+    return {"version": version, "skills": names}
+
+
+def write_skills_manifest(cli: pathlib.Path, out: pathlib.Path) -> str | None:
+    """Write `skills_manifest(cli)` to `out`; the failure, or None."""
+    try:
+        data = skills_manifest(cli)
+    except (OSError, KeyError, ValueError):
+        return "cli/pyproject.toml or cli/src/gban/skills is missing — cannot list shipped skills"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(data, indent=2) + "\n")
+    return None
+
+
+def publish_skills(src: pathlib.Path, dest: pathlib.Path) -> str | None:
+    """Write the gban skill names and version, read from the packed tree's `cli/`; the failure."""
+    return write_skills_manifest(src / "cli", dest / GBAN_SKILLS)
+
+
 def _fail(dest: pathlib.Path | None, msg: str) -> tuple[int, None]:
     if dest is not None and dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
@@ -214,7 +243,7 @@ def pack(src: pathlib.Path, out: pathlib.Path, *, sha: str, version: str,
 
     (dest / "GIT_SHA").write_text(sha + "\n", encoding="utf-8")
 
-    problem = publish_coverage(src, dest, sha)
+    problem = publish_coverage(src, dest, sha) or publish_skills(src, dest)
     if problem:
         return _fail(dest, problem)
 
@@ -260,7 +289,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sha", default="")
     ap.add_argument("--api-only", action="store_true",
                     help="do not build the SPA; write SPA n/a instead of omitting it")
+    ap.add_argument("--skills-manifest", default="", metavar="PATH",
+                    help="only write the gban skills manifest from this checkout's cli/ to "
+                         "PATH and exit (the wheel job; regenerates "
+                         "backend/scripts/gban_skills.json for the image)")
     args = ap.parse_args(argv)
+
+    if args.skills_manifest:
+        problem = write_skills_manifest(pathlib.Path(__file__).resolve().parents[1] / "cli",
+                                        pathlib.Path(args.skills_manifest))
+        if problem:
+            print(f"pack: {problem}", file=sys.stderr)
+            return 1
+        return 0
 
     if not args.src and not args.ref:
         print("pack: need a ref (python3 scripts/graphban_pack.py 2026.09.1) "

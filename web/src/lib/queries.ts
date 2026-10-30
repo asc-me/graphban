@@ -488,6 +488,15 @@ export function useRulesFlow(projectId: string) {
   });
 }
 
+/** Unmapped refusals (GRPH-1195): aggregated on the server over a 7-day window. */
+export function useUnmappedRefusals(projectId: string) {
+  return useQuery({
+    queryKey: ["rules-unmapped", projectId],
+    queryFn: () => api.unmappedRefusals(projectId),
+    enabled: !!projectId,
+  });
+}
+
 /** Refusal coverage (GRPH-1192): read from the server, never computed from events. */
 export function useRefusalCoverage(projectId: string) {
   return useQuery({
