@@ -2142,7 +2142,11 @@ export interface FleetTierCell {
   graded_model: string | null;
   /** Finished attempts for `effective_model` over the last 30 days, or null when none finished
    *  (never zeros). `below_floor` means too few runs to call it graded. */
-  measured: { runs: number; signed_off: number; pass_rate: number; below_floor: boolean } | null;
+  measured: {
+    runs: number; signed_off: number; pass_rate: number; below_floor: boolean;
+    /** Null when below the floor: not enough data is never an F. */
+    grade: "A" | "B" | "C" | "D" | "F" | null;
+  } | null;
 }
 
 /** The catalog facts and this deployment's overrides, served together. */

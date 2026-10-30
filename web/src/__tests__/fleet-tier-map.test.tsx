@@ -89,7 +89,7 @@ describe("tier map panel", () => {
 
   it("fills the meta line from measured, and says not measured when it is null", async () => {
     api.fleetTierMap.mockResolvedValue(map([
-      cell({ measured: { runs: 212, signed_off: 199, pass_rate: 0.94, below_floor: false } }),
+      cell({ measured: { runs: 212, signed_off: 199, pass_rate: 0.94, below_floor: false, grade: "A" } }),
       cell({ harness: "codex", tier: "frontier", models: ["gpt-5"], packaged_model: "gpt-5",
              effective_model: "gpt-5", graded_model: null, measured: null }),
     ]));
@@ -98,6 +98,9 @@ describe("tier map panel", () => {
     const [first, second] = screen.getAllByTestId("tier-map-graded");
     expect(first).toHaveTextContent("94% pass · 212 runs");
     expect(second).toHaveTextContent("not measured");
+    const [g1, g2] = screen.getAllByTestId("tier-map-grade");
+    expect(g1).toHaveTextContent("A");
+    expect(g2).toHaveTextContent("–");
   });
 
   it("reads the map for the active project and offers every control", async () => {

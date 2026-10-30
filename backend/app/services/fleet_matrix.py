@@ -119,6 +119,26 @@ ROWS: tuple[dict, ...] = (
 #: distribution with its own install (PRD-22 D-e) and the backend must not depend on it.
 GRADE_FLOOR = 5
 
+#: Letter bands on pass rate (signed_off / runs), highest first. A band's bound is INCLUSIVE at
+#: its lower edge: exactly 0.90 is an A, exactly 0.80 a B. Anything under the last bound is F.
+GRADE_BANDS: tuple[tuple[float, str], ...] = (
+    (0.90, "A"),
+    (0.80, "B"),
+    (0.70, "C"),
+    (0.60, "D"),
+)
+
+
+def letter_grade(pass_rate: float, runs: int) -> str | None:
+    """The letter for a measured cell, or None below `GRADE_FLOOR` runs — an F is a verdict
+    on enough attempts, never a stand-in for "not enough data"."""
+    if runs < GRADE_FLOOR:
+        return None
+    for lower, letter in GRADE_BANDS:
+        if pass_rate >= lower:
+            return letter
+    return "F"
+
 
 class TierMapInvalid(ValueError):
     """A tier map that says something it may not — refused BEFORE anything is written, so a
@@ -239,6 +259,7 @@ def payload(db: Session | None = None, project_id: str | None = None) -> dict:
             "signed_off": agg["signed_off"],
             "pass_rate": agg["signed_off"] / agg["runs"],
             "below_floor": agg["runs"] < GRADE_FLOOR,
+            "grade": letter_grade(agg["signed_off"] / agg["runs"], agg["runs"]),
         }
         cells.append({
             **cell,
