@@ -80,6 +80,53 @@ def test_dribbled_headers_time_out_within_deadline():
     assert out["elapsed"] < 2.5
 
 
+def test_trickling_body_times_out_within_deadline():
+    """GRPH-1179: complete headers, then a body that dribbles a byte every 0.2s forever. Every
+    per-read timeout is reset, so only the total deadline can end it."""
+    def trickle(c):
+        try:
+            c.recv(65536)
+            c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\n")
+            while True:
+                time.sleep(0.2)
+                c.sendall(b"x")
+        except OSError:
+            pass
+
+    srv, _ = _server(trickle)
+    try:
+        out = _run_bounded(f"http://127.0.0.1:{srv.getsockname()[1]}/", 1, 5)
+    finally:
+        srv.close()
+    assert isinstance(out["exc"], httpx.ReadTimeout)
+    assert out["elapsed"] < 2.5
+
+
+def test_a_late_watchdog_does_not_close_the_client_after_the_call_returned(monkeypatch):
+    """If the timer fires after the reply came back, it must leave the client open."""
+    import gbfleet.client as client_mod
+
+    timers = []
+
+    class _HeldTimer:
+        def __init__(self, _interval, fn):
+            self.fn = fn
+            self.daemon = False
+            timers.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass  # too late: the timer is already running
+
+    monkeypatch.setattr(client_mod.threading, "Timer", _HeldTimer)
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    assert _post_within(client, "http://x/", {}, 1).status_code == 200
+    timers[0].fn()
+    assert not client.is_closed
+
+
 def _rpc_reply(handler_result):
     def handler(request):
         body = json.loads(request.content)

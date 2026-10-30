@@ -358,9 +358,15 @@ def _post_within(client: httpx.Client, url: str, body: dict, deadline: float) ->
     # A peer that dribbles header bytes resets every per-read timeout, so a watchdog also closes
     # the client at the deadline. The closed client is the caller's to replace (`_rpc` does).
     expired = threading.Event()
+    # Once this call is over, a late watchdog must not close the client under the NEXT call.
+    settled = threading.Lock()
+    finished = False
 
     def _expire() -> None:
-        expired.set()
+        with settled:
+            if finished:
+                return
+            expired.set()
         client.close()
 
     watchdog = threading.Timer(deadline, _expire)
@@ -384,6 +390,8 @@ def _post_within(client: httpx.Client, url: str, body: dict, deadline: float) ->
             raise httpx.ReadTimeout(f"no complete reply within {deadline:g}s") from exc
         raise
     finally:
+        with settled:
+            finished = True
         watchdog.cancel()
 
 
