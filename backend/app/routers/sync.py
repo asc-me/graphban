@@ -81,8 +81,13 @@ def org_overview(db: Session = Depends(get_db), user: User = Depends(get_current
     """The Organization window (GRPH-1223): the linked org's identity, the linking
     credential's org role, member/team/policy/deployment counts and every deployment, read
     from the cloud and cached briefly. Unreachable is `reachable: false` with
-    `unreachable_since` and null counts; unlinked is `linked: false` and nothing else."""
-    return SyncOrgOverviewOut(**code_sync.org_overview(db))
+    `unreachable_since` and null counts; unlinked is `linked: false` and nothing else.
+    `can_unlink` is whether the VIEWER is a box admin — `role` is the linking credential's,
+    not theirs, so the window cannot infer it (GRPH-1225)."""
+    out = code_sync.org_overview(db)
+    if out["linked"]:
+        out["can_unlink"] = code_sync.is_box_admin(db, user)
+    return SyncOrgOverviewOut(**out)
 
 
 @router.get("/org-overview")

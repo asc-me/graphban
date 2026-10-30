@@ -99,6 +99,7 @@ import type {
   ShardHit,
   Status,
   SyncBundle,
+  SyncOrgOverview,
   SyncStatus,
   User,
 } from "./types";
@@ -1168,6 +1169,7 @@ export const api = {
   syncLink: (cloud_url: string, api_key: string, org: string) =>
     request<SyncStatus>("/sync/link", { method: "POST", body: JSON.stringify({ cloud_url, api_key, org }) }),
   syncUnlink: () => request<SyncStatus>("/sync/link", { method: "DELETE" }),
+  syncOrg: () => request<SyncOrgOverview>("/sync/org"),
   syncPush: (project_id: string) =>
     request<{ project_id: string; pushed?: number; removed?: number; unchanged?: number; skipped?: boolean; reason?: string }>(
       "/sync/push", { method: "POST", body: JSON.stringify({ project_id }) }),

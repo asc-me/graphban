@@ -288,3 +288,12 @@ def test_the_cloud_side_overview_is_resolved_from_the_sync_credential(client, au
     client.post("/api/sync/link", json={"cloud_url": "cloud.a.dev", "api_key": key}, headers=auth)
     o = _org(client, auth)
     assert o["reachable"] is True and o["org"]["name"] == "Acme" and o["counts"]["teams"] == 0
+
+
+def test_the_overview_says_whether_the_viewer_may_unlink(client, auth, monkeypatch):
+    _cloud(monkeypatch, _CLOUD)
+    client.post("/api/sync/link", json={"cloud_url": "cloud.a.dev", "api_key": "gb_sk_k"}, headers=auth)
+    assert _org(client, auth)["can_unlink"] is True
+    # `role` is the linking credential's; a member viewing the same link may not unlink it
+    member = _org(client, _login(client, "ops@ascme-labs.com"))
+    assert member["role"] == "admin" and member["can_unlink"] is False

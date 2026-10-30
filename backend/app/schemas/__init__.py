@@ -1169,6 +1169,7 @@ class SyncOrgOverviewOut(BaseModel):
     role: str | None = None  # the linking credential's owner's org role (owner | admin | member)
     counts: SyncOrgCounts | None = None
     deployments: list[SyncOrgDeployment] | None = None
+    can_unlink: bool | None = None  # the VIEWER is a box admin (GRPH-1225) — `role` is not theirs
 
 
 class GitopsField(BaseModel):
