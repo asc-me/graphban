@@ -129,3 +129,20 @@ def test_suggestions_embed_each_section_once(client, auth, db, monkeypatch):
     n_requests = db.query(Request).filter(Request.project_id == "core").count()
     assert n_requests >= 4
     assert len(calls) == 2 + n_requests  # two sections once, plus one per candidate request
+
+
+def test_list_carries_by_created_at_and_linked_item_key(client, auth, db):
+    from app.models import Request
+
+    pid = _prd(client, auth)
+    a, b = _req(client, auth, "Dark mode"), _req(client, auth, "Crash", "bug")
+    item = client.post("/api/items", headers=auth, json={"title": "Do it", "project_id": "core"}).json()["id"]
+    ra = db.get(Request, a) or db.query(Request).filter(Request.title == "Dark mode").one()
+    ra.by = "dana"
+    db.commit()
+    assert client.post(f"/api/requests/{a}/link", headers=auth, json={"item_id": item}).status_code == 200
+    for r in (a, b):
+        assert client.post(f"/api/prds/{pid}/requests", headers=auth, json={"request_id": r}).status_code == 200
+    rows = {r["id"]: r for r in client.get(f"/api/prds/{pid}/requests", headers=auth).json()}
+    assert rows[a]["by"] == "dana" and rows[a]["linked_to"] == item and rows[a]["created_at"]
+    assert rows[b]["linked_to"] is None

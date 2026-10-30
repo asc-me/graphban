@@ -96,7 +96,9 @@ def unlink_prd_request(prd_id: str, request_id: str, db: Session = Depends(get_d
 @router.get("/{prd_id}/requests")
 def list_prd_requests(prd_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     prd = _require_readable_prd(db, user, prd_id)
-    return [{"id": r.key, "title": r.title, "type": r.type, "votes": r.votes, "status": r.status}
+    return [{"id": r.key, "title": r.title, "type": r.type, "votes": r.votes, "status": r.status,
+             "by": r.by, "created_at": r.created_at.isoformat() if r.created_at else None,
+             "linked_to": r.linked_to_key}
             for r in prd_svc.linked_requests(db, prd)]
 
 

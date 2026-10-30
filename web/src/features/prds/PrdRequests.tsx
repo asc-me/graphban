@@ -2,7 +2,8 @@ import * as React from "react";
 
 import { cn } from "@/lib/cn";
 import { TYPE_META } from "@/lib/meta";
-import { usePrdRequestLink, usePrdRequestSuggestions, usePrdRequests, useRequests } from "@/lib/queries";
+import { usePrdRequestLink, usePrdRequestSuggestions, usePrdRequests } from "@/lib/queries";
+import { relTime } from "@/lib/relTime";
 import type { PrdSummary, RequestType } from "@/lib/types";
 
 const EMPTY_COPY =
@@ -69,15 +70,12 @@ function TypeBadge({ type }: { type: RequestType }) {
   );
 }
 
-export function PrdRequestsPanel({ prdId, projectId }: { prdId: string; projectId: string }) {
+export function PrdRequestsPanel({ prdId }: { prdId: string; projectId?: string }) {
   const { data: linked = [], isLoading, isError } = usePrdRequests(prdId);
   const { data: suggestions } = usePrdRequestSuggestions(prdId);
-  // by / ago / the linked tracker item live on the request, not on the PRD link route.
-  const { data: all = [] } = useRequests(projectId);
   const link = usePrdRequestLink(prdId);
   const [filter, setFilter] = React.useState<"all" | RequestType>("all");
 
-  const byId = new Map(all.map((r) => [r.id, r]));
   const votes = linked.reduce((n, r) => n + r.votes, 0);
   const shown = linked.filter((r) => filter === "all" || r.type === filter).sort((a, b) => b.votes - a.votes);
   const typeCount = (t: RequestType) => linked.filter((r) => r.type === t).length;
@@ -114,7 +112,7 @@ export function PrdRequestsPanel({ prdId, projectId }: { prdId: string; projectI
       </div>
 
       {shown.map((r) => {
-        const full = byId.get(r.id);
+        const ago = relTime(r.created_at);
         return (
           <div key={r.id} className="flex flex-col gap-2 rounded-[11px] border border-line-2 bg-surface-2 px-3 py-2.5">
             <div className="flex items-center gap-2">
@@ -134,14 +132,12 @@ export function PrdRequestsPanel({ prdId, projectId }: { prdId: string; projectI
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-2 pl-9">
-              {full && (
-                <span className="text-[11.5px] text-muted">
-                  {full.by} · {full.ago} ago
-                </span>
+              {(r.by || ago) && (
+                <span className="text-[11.5px] text-muted">{[r.by, ago].filter(Boolean).join(" · ")}</span>
               )}
-              {full?.linked_to && (
+              {r.linked_to && (
                 <span className="rounded-[5px] border border-st-next/30 px-1.5 py-px font-mono text-meta text-st-next">
-                  → {full.linked_to}
+                  → {r.linked_to}
                 </span>
               )}
               <button
