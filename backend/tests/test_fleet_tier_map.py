@@ -134,50 +134,123 @@ def test_grading_below_the_floor_is_not_grading(client, auth, proj, monkeypatch)
 
 # ---- measured pass rate and run count (GRPH-1215) ---------------------------------------------
 
-def _fake_measured(monkeypatch, cells):
+@pytest.fixture()
+def key(client, auth, proj):
+    return client.post("/api/api-keys", json={"name": "sup", "project_id": proj,
+                                              "scopes": ["read", "write", "gate"]},
+                       headers=auth).json()["plaintext"]
+
+
+def _agent(client, key, label, **kw) -> str:
+    r = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                      "params": {"name": "register_agent",
+                                                 "arguments": {"label": label, **kw}}},
+                    headers={"X-API-Key": key}).json()["result"]
+    assert not r.get("isError"), r
+    return r["structuredContent"]["agent_id"]
+
+
+#: Two capabilities (A4 and B5) from touchpoints alone, so `measured()` files a delegation on
+#: this item under both — the case that counts one delegation twice if cells are summed.
+_MULTI_CAP = ["web/src/features/x.tsx", "backend/alembic/versions/0001.py"]
+
+
+def _finished(db, client, key, auth, proj, *, model, outcomes, touchpoints=(), vendor="gbagent"):
+    """Real finished Delegation rows inside measured()'s window, one item each."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Delegation
+
+    now = datetime.now(timezone.utc)
+    delegator = _agent(client, key, f"planner-{model}")
+    child = _agent(client, key, f"child-{model}",
+                   capabilities={"vendor": vendor, "model": model, "tier": "local"})
+    for i, outcome in enumerate(outcomes):
+        item = client.post("/api/items", json={"title": f"{model} {outcome} {i}",
+                                               "project_id": proj,
+                                               "touchpoints": list(touchpoints)},
+                           headers=auth).json()
+        db.add(Delegation(id=f"d-{item['id']}", project_id=proj, item_id=item["id"],
+                          delegated_by=delegator, agent_id=child, linked_by="seat",
+                          lane="backend", requested_tier="cheap", declared_model=model,
+                          declared_tier="local", outcome=outcome,
+                          created_at=now - timedelta(minutes=30),
+                          claimed_at=now - timedelta(minutes=20),
+                          finished_at=now - timedelta(minutes=10), lease_seconds=600))
+    db.commit()
+
+
+_QWEN36 = "qwen3.6:35b-a3b-coding-mtp-det"
+
+
+def test_a_cell_counts_distinct_finished_delegations_for_its_model(
+        client, auth, key, proj, db):
+    """Real rows: 5 signed off, 2 bounced, every one carrying two capabilities. Summing the
+    per-capability cells of measured() would say 14 runs; there were 7 delegations."""
     from app.services import delegation as delegation_svc
-    monkeypatch.setattr(delegation_svc, "measured", lambda _db, _pid: cells)
+
+    _finished(db, client, key, auth, proj, model=_QWEN36, touchpoints=_MULTI_CAP,
+              outcomes=["signed_off"] * 5 + ["bounced"] * 2)
+    caps = {c["capability"] for c in delegation_svc.measured(db, proj)
+            if c["model"] == _QWEN36 and c["layer"] == "project"}
+    assert len(caps) >= 2, caps  # the premise: each delegation sits in several cells
+
+    payload = client.get(f"/api/fleet/tier-map?project_id={proj}", headers=auth).json()
+    m = _cell(payload, "gbagent", "cheap")["measured"]
+    assert m == {"runs": 7, "signed_off": 5, "pass_rate": pytest.approx(5 / 7),
+                 "below_floor": False}
+    others = [c for c in payload["cells"] if (c["harness"], c["tier"]) != ("gbagent", "cheap")]
+    assert all(c["measured"] is None for c in others)
 
 
-def test_a_cell_reports_runs_signed_off_and_pass_rate_for_its_effective_model(
-        client, auth, proj, monkeypatch):
-    """Two capabilities pool into one figure. The override moves the numbers with the model."""
-    _fake_measured(monkeypatch, [
-        {"vendor": "gbagent", "model": "qwen3-coder:30b", "capability": "B5", "layer": "project",
-         "quality": {"value": 0.5, "n": 4}},
-        {"vendor": "gbagent", "model": "qwen3-coder:30b", "capability": "H5", "layer": "project",
-         "quality": {"value": 0.75, "n": 8}},
-        {"vendor": "gbagent", "model": "qwen3.6:35b-a3b-coding-mtp-det", "capability": "B5",
-         "layer": "project", "quality": {"value": 1.0, "n": 20}},
-    ])
+def test_a_cell_reports_its_effective_model_not_the_packaged_one(
+        client, auth, key, proj, db):
+    """The override moves the numbers with the model; clearing moves them back."""
+    _finished(db, client, key, auth, proj, model="qwen3-coder:30b",
+              outcomes=["signed_off"] * 3 + ["bounced"] * 3)
+    _finished(db, client, key, auth, proj, model=_QWEN36, outcomes=["signed_off"] * 8)
     out = _save(client, auth, proj,
                 [{"harness": "gbagent", "tier": "cheap", "model": "qwen3-coder:30b"}])
     m = _cell(out, "gbagent", "cheap")["measured"]
-    assert m["runs"] == 12 and m["signed_off"] == 8
-    assert m["pass_rate"] == pytest.approx(8 / 12)
-    assert m["below_floor"] is False
+    assert m["runs"] == 6 and m["signed_off"] == 3 and m["pass_rate"] == 0.5
 
-    # Cleared: the packaged model's numbers (20 runs), not the previous override's.
     cleared = client.delete(f"/api/fleet/tier-map?project_id={proj}", headers=auth)
     assert cleared.status_code == 200, cleared.text
     m = _cell(cleared.json(), "gbagent", "cheap")["measured"]
-    assert m["runs"] == 20 and m["pass_rate"] == 1.0
+    assert m["runs"] == 8 and m["pass_rate"] == 1.0
 
 
-def test_a_cell_with_no_finished_attempts_is_null_not_zeros(client, auth, proj, monkeypatch):
-    _fake_measured(monkeypatch, [])
+def test_a_cell_with_no_finished_attempts_is_null_not_zeros(client, auth, key, proj, db):
+    # An open delegation (no outcome) is not a finished attempt.
+    _finished(db, client, key, auth, proj, model=_QWEN36, outcomes=[None])
     payload = client.get(f"/api/fleet/tier-map?project_id={proj}", headers=auth).json()
     assert all(c["measured"] is None for c in payload["cells"])
 
 
-def test_a_cell_under_the_floor_keeps_its_counts_and_says_so(client, auth, proj, monkeypatch):
-    _fake_measured(monkeypatch, [
-        {"vendor": "gbagent", "model": "qwen3.6:35b-a3b-coding-mtp-det", "capability": "B5",
-         "layer": "project", "quality": {"value": 0.5, "n": 2}},
-    ])
+def test_a_cell_under_the_floor_keeps_its_counts_and_says_so(client, auth, key, proj, db):
+    _finished(db, client, key, auth, proj, model=_QWEN36, outcomes=["signed_off", "bounced"])
     payload = client.get(f"/api/fleet/tier-map?project_id={proj}", headers=auth).json()
     m = _cell(payload, "gbagent", "cheap")["measured"]
     assert m == {"runs": 2, "signed_off": 1, "pass_rate": 0.5, "below_floor": True}
+
+
+def test_a_probe_attempt_and_an_attempt_outside_the_window_are_not_counted(
+        client, auth, key, proj, db):
+    from datetime import timedelta
+
+    from app.models import AttemptTelemetry, Delegation
+    from app.services import delegation as delegation_svc
+
+    _finished(db, client, key, auth, proj, model=_QWEN36, outcomes=["signed_off"] * 3)
+    rows = db.query(Delegation).filter(Delegation.project_id == proj).all()
+    old, probe = rows[0], rows[1]
+    old.finished_at = old.finished_at - timedelta(days=delegation_svc.WINDOW_DAYS + 1)
+    db.add(AttemptTelemetry(id="t-probe", project_id=proj, delegation_id=probe.id,
+                            item_id=probe.item_id, sampled="probe"))
+    db.commit()
+    m = _cell(client.get(f"/api/fleet/tier-map?project_id={proj}", headers=auth).json(),
+              "gbagent", "cheap")["measured"]
+    assert m["runs"] == 1
 
 
 # ---- saving, and what survives a restart ------------------------------------------------------

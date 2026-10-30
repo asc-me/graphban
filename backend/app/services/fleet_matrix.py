@@ -177,36 +177,17 @@ def _graded(db: Session | None, project_id: str | None) -> dict[str, str]:
 
 
 def _measured_by_model(db: Session | None, project_id: str | None) -> dict[tuple[str, str], dict]:
-    """`{(vendor, model): {runs, signed_off}}` pooled over capability, project layer only.
+    """`{(vendor, model): {runs, signed_off}}` over DISTINCT finished delegations.
 
-    Same `delegation_svc.measured()` read and window `_graded` uses. A delegation tagged with
-    several capabilities sits in each capability's cell, so a pooled run count can exceed the
-    number of distinct delegations; the pass rate is unaffected in kind. A pair with no
-    finished attempt is ABSENT, which reaches the cell as `measured: null`, never zeros.
+    `delegation_svc.finished_by_model()` reads the rows `measured()` reads, with its filters
+    and window, but counts each delegation once rather than once per capability. A pair with
+    no finished attempt is ABSENT, which reaches the cell as `measured: null`, never zeros.
     """
     if db is None:
         return {}
     from app.services import delegation as delegation_svc
 
-    out: dict[tuple[str, str], dict] = {}
-    for cell in delegation_svc.measured(db, project_id) or []:
-        if cell.get("layer") != "project":
-            continue
-        quality = cell.get("quality")
-        if not isinstance(quality, dict) or quality.get("value") is None:
-            continue
-        try:
-            n = int(quality.get("n") or 0)
-            signed = int(round(float(quality["value"]) * n))
-        except (TypeError, ValueError):
-            continue
-        if n <= 0:
-            continue
-        key = (str(cell.get("vendor") or ""), str(cell.get("model") or ""))
-        agg = out.setdefault(key, {"runs": 0, "signed_off": 0})
-        agg["runs"] += n
-        agg["signed_off"] += signed
-    return out
+    return delegation_svc.finished_by_model(db, project_id)
 
 
 def overrides_for(db: Session | None, project_id: str | None) -> dict:
