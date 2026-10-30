@@ -148,7 +148,10 @@ class Graphban:
     def _client(self) -> httpx.Client:
         # One connection pool for the life of the supervisor. It polls; opening a new
         # pool per poll is the kind of waste that only shows up as latency.
-        if self._http is None:
+        # GRPH-1235: `_post_within`'s watchdog closes the client at the deadline, and it can
+        # fire after the reply was read and returned. A closed client raises RuntimeError, not
+        # an httpx error, so every caller would leak it — replace it here, once, for all.
+        if self._http is None or self._http.is_closed:
             self._http = httpx.Client(
                 timeout=self.timeout,
                 transport=self.transport,
@@ -300,8 +303,6 @@ class Graphban:
         try:
             response = _post_within(self._client(), self.endpoint, body, self.deadline)
         except httpx.HTTPError as exc:
-            if isinstance(exc, httpx.ReadTimeout):
-                self._http = None  # GRPH-1235: the watchdog may have closed it
             raise ServerUnreachable(f"{self.endpoint}: {exc!r}", tool=label) from exc
 
         if response.status_code >= 500:
