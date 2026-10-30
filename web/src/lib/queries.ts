@@ -414,6 +414,22 @@ export function useMcpTools() {
   return useQuery({ queryKey: ["mcp-tools"], queryFn: () => api.mcpTools() });
 }
 
+/**
+ * One event by id, for a `?event=` link to a row outside the loaded page or range. The server has
+ * no by-id route, so this reads the unranged ledger (no `range` is "no time filter") and finds
+ * the id; `null` means the ledger has no such event, which the caller says out loud.
+ */
+export function useEventById(projectId: string | undefined, id: number | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ["event", projectId ?? "", id] as const,
+    enabled: enabled && id !== null,
+    queryFn: async () => {
+      const page = await api.events({ projectId, limit: 500 });
+      return page.results.find((e) => e.id === id) ?? null;
+    },
+  });
+}
+
 export function useEvents(q: EventsQuery = {}) {
   return useQuery({ queryKey: keys.events(q), queryFn: () => api.events(q) });
 }

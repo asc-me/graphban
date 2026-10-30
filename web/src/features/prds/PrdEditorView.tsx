@@ -28,6 +28,7 @@ import { ApprovedIsEarned, GrillProgress } from "./GrillProgress";
 import { PrdRequestsPanel } from "./PrdRequests";
 import { AcceptancePanel } from "./AcceptancePanel";
 import { IntentDiff } from "./IntentDiff";
+import { TargetActivity } from "@/features/activity/TargetActivity";
 
 const AI_COMMANDS = [
   { key: "expand", label: "Expand" },
@@ -213,13 +214,16 @@ export function PrdEditorView() {
           ) : rightTab === "acceptance" ? (
             <AcceptancePanel prdId={id} />
           ) : (
-            <VersionHistory
-              versions={versions}
-              currentVersion={prd.version}
-              diffVersion={diffVersion}
-              onSelect={setDiffVersion}
-              draftBody={body}
-            />
+            <>
+              <VersionHistory
+                versions={versions}
+                currentVersion={prd.version}
+                diffVersion={diffVersion}
+                onSelect={setDiffVersion}
+                draftBody={body}
+              />
+              <TargetActivity projectId={prd.project_id} targetType="prd" targetId={id} />
+            </>
           )}
         </div>
       </div>

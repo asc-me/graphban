@@ -2783,6 +2783,13 @@ export interface RuleEnforcer {
   url: string;
 }
 
+export interface RuleResult {
+  outcome: "pass" | "fail";
+  at: string;
+  item: string;
+  commit: string;
+}
+
 export interface RuleFlowRule {
   id: string;
   stage: string;
@@ -2803,6 +2810,8 @@ export interface RuleFlowRule {
   skills: { name: string; url: string }[] | null;
   /** The gban version the skills ship at (cli-v<version> in each url); null with `skills`. */
   skills_version?: string | null;
+  /** Only on a `checked` rule; null when nothing has been recorded. */
+  last_result?: RuleResult | null;
 }
 
 export interface RuleStage {
