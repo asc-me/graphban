@@ -129,7 +129,7 @@ export interface LiveKpis {
 }
 
 export function computeKpis(board: LiveBoard, flat: FlatAgent[]): LiveKpis {
-  const online = flat.filter(({ agent }) => agent.state !== "offline").length;
+  const online = board.online_agents;
   const windowMin = board.window_seconds > 0 ? board.window_seconds / 60 : null;
   const touches = flat.reduce((n, { agent }) => n + (agent.calls_in_window || 0), 0);
   const touchesPerMinute = windowMin ? Math.round((touches / windowMin) * 10) / 10 : null;
