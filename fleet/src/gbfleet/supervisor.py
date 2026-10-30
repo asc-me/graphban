@@ -2687,6 +2687,7 @@ class Merger:
             paths=item.get("touchpoints") or [],
             release=release,
             scans=propose_mod.scans_clean_verdicts(item),
+            siblings=propose_mod.pr_receipts(item),
         )
         if got.ok and got.commit:
             got = self._record(wave, got)
