@@ -60,7 +60,7 @@ packages = ["app"]
 # it before the build and .gitignore keeps it out of git — which would also keep it out of this
 # wheel, since hatchling honours .gitignore. `artifacts` ships it when present; absent, the
 # install reports `published: false`. Guarded by the `backend-packaging` job in ci.yml.
-artifacts = ["app/data/refusal_coverage.json"]
+artifacts = ["app/data/refusal_coverage.json", "app/data/gban_skills.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

@@ -105,4 +105,31 @@ def test_skills_are_one_collapsed_advisory_node(db):
     n = _rule(f, "agents.skills_pack")
     assert n["enforcement"] == "advisory" and n["truth"] == "repo_file"
     assert n["title"] == "Agent instructions (Graphban pack)"
-    assert "skills" in n  # None when gban is not installed: unmeasured, not empty
+    import tomllib
+    from pathlib import Path
+    version = tomllib.loads(
+        (Path(__file__).resolve().parents[2] / "cli" / "pyproject.toml").read_text())["project"]["version"]
+    assert n["skills_version"] == version
+    assert len(n["skills"]) == 9
+    base = f"https://github.com/asc-me/graphban/blob/cli-v{version}/cli/src/gban/skills"
+    assert {"name": "graphban-work", "url": f"{base}/graphban-work/SKILL.md"} in n["skills"]
+
+
+def test_shipped_skills_prefers_package_data_and_is_none_when_absent(tmp_path):
+    from app.services import rules as R
+    f = tmp_path / "s.json"
+    f.write_text('{"version": "1.2.3", "skills": ["b", "a"]}')
+    got = R.shipped_skills(f, tmp_path / "nocli")
+    assert got["version"] == "1.2.3"
+    assert [s["name"] for s in got["skills"]] == ["a", "b"]
+    assert got["skills"][0]["url"].endswith("/blob/cli-v1.2.3/cli/src/gban/skills/a/SKILL.md")
+    assert R.shipped_skills(tmp_path / "missing.json", tmp_path / "nocli") is None
+
+
+def test_flow_endpoint_serves_the_linked_skills(client, auth):
+    """The response schema carries `{name, url}` and the version, not bare names."""
+    r = client.get("/api/rules/flow?project_id=core", headers=auth)
+    assert r.status_code == 200
+    n = _rule(r.json(), "agents.skills_pack")
+    assert n["skills_version"] and len(n["skills"]) == 9
+    assert all(f"/blob/cli-v{n['skills_version']}/" in s["url"] for s in n["skills"])

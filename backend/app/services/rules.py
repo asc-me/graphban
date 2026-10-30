@@ -326,16 +326,33 @@ NOT_USED_LABEL = "not used by this project's model"
 _PR_STEP_MODELS = ("push_to_base",)
 
 
-def shipped_skills() -> list[str] | None:
-    """Skills the `gban` package ships at the running version. None when the package is not
-    installed here: the server cannot read a project's `.claude/skills`, and a guessed list
-    would read as a measured one."""
+#: Package data written by the build (`graphban_pack.py`): the skill names and the gban version
+#: they ship at. Gitignored like the coverage file; a dev checkout reads the repo tree instead.
+GBAN_SKILLS_FILE = Path(__file__).resolve().parents[1] / "data" / "gban_skills.json"
+_CLI_ROOT = Path(__file__).resolve().parents[3] / "cli"
+
+
+def shipped_skills(path: Path | None = None, cli_root: Path | None = None) -> dict | None:
+    """The skills the `gban` package ships and its version: `{version, skills: [{name, url}]}`,
+    each url at `cli-v<version>`. Read from package data, else from a repo checkout's
+    `cli/` (pyproject.toml + src/gban/skills). None when neither exists: the server cannot read
+    a project's `.claude/skills`, and a guessed list would read as a measured one."""
+    import json
+    import tomllib
+
     try:
-        from importlib import resources
-        root = resources.files("gban") / "skills"
-        return sorted(p.name for p in root.iterdir() if p.is_dir())
-    except (ImportError, FileNotFoundError, NotADirectoryError, ModuleNotFoundError):
-        return None
+        data = json.loads((path or GBAN_SKILLS_FILE).read_text())
+        version, names = data["version"], data["skills"]
+    except (FileNotFoundError, ValueError, KeyError):
+        root = cli_root or _CLI_ROOT
+        try:
+            version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+            names = [p.name for p in (root / "src" / "gban" / "skills").iterdir() if p.is_dir()]
+        except (FileNotFoundError, NotADirectoryError, KeyError, ValueError):
+            return None
+    base = f"{REPO_URL}/blob/cli-v{version}/cli/src/gban/skills"
+    return {"version": version,
+            "skills": [{"name": n, "url": f"{base}/{n}/SKILL.md"} for n in sorted(names)]}
 
 
 def rule_used(rule: dict, model: str | None) -> bool:
@@ -361,7 +378,7 @@ def flow(db: Session, project_id: str | None) -> dict:
     rules = registry(db, project_id)
     model = gitops.resolve(db, project_id).model.value
     nodes = [dict(r, stage=RULE_STAGE[r["id"]]) for r in rules]
-    skills = shipped_skills()
+    shipped = shipped_skills()
     nodes.append({
         "id": "agents.skills_pack", "stage": "build",
         "title": "Agent instructions (Graphban pack)",
@@ -369,7 +386,8 @@ def flow(db: Session, project_id: str | None) -> dict:
         "enforcement": "advisory", "channel": "skill", "truth": "repo_file",
         "scope": "platform", "models": list(GITOPS_ALL_MODELS), "value": None,
         "source": None, "enforcer": {"kind": "skill", "ref": "gban skills", "url": ""},
-        "skills": skills,
+        "skills": shipped["skills"] if shipped else None,
+        "skills_version": shipped["version"] if shipped else None,
     })
     stages = []
     for sid, title, summary in STAGES:

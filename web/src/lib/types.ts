@@ -2798,7 +2798,9 @@ export interface RuleFlowRule {
   label: string | null;
   /** Sent (as null) on every rule; a list only on the skills pack. Null on the pack: the gban
    *  package was not readable on the server. */
-  skills: string[] | null;
+  skills: { name: string; url: string }[] | null;
+  /** The gban version the skills ship at (cli-v<version> in each url); null with `skills`. */
+  skills_version?: string | null;
 }
 
 export interface RuleStage {

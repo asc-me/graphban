@@ -71,7 +71,9 @@ function flowFixture(over: Partial<RulesFlow> = {}): RulesFlow {
           enforcer: { kind: "doc", ref: "AGENTS.md", url: "" } }),
         rule({ id: "agents.skills_pack", stage: "build", enforcement: "advisory", channel: "skill", truth: "repo_file",
           title: "Agent instructions (Graphban pack)", summary: "Skills the agents read.",
-          enforcer: { kind: "skill", ref: "gban skills", url: "" }, skills: ["graphban-review", "graphban-work"] }),
+          enforcer: { kind: "skill", ref: "gban skills", url: "" }, skills_version: "0.8.2",
+          skills: [{ name: "graphban-review", url: "https://github.com/asc-me/graphban/blob/cli-v0.8.2/cli/src/gban/skills/graphban-review/SKILL.md" },
+            { name: "graphban-work", url: "https://github.com/asc-me/graphban/blob/cli-v0.8.2/cli/src/gban/skills/graphban-work/SKILL.md" }] }),
       ]),
       stage("review", "Review", "advisory", [
         rule({ id: "review.not_own_work", stage: "review", enforcement: "enforced", title: "Not your own work" }),
@@ -291,8 +293,12 @@ describe("RulesView", () => {
     renderAt();
     await user.click(await screen.findByTestId("rules-pack"));
     const ins = await screen.findByTestId("rules-inspector");
-    expect(ins).toHaveTextContent("2 skills shipped with gban");
+    expect(ins).toHaveTextContent("2 skills shipped with gban 0.8.2");
     expect(within(ins).getByTestId("rules-pack-skills")).toHaveTextContent("skills/graphban-review/SKILL.md");
+    expect(within(ins).getByRole("link", { name: "skills/graphban-review/SKILL.md" })).toHaveAttribute(
+      "href",
+      "https://github.com/asc-me/graphban/blob/cli-v0.8.2/cli/src/gban/skills/graphban-review/SKILL.md",
+    );
     // Build tallies its own rules; the pack is not counted on the card.
     expect(screen.getByTestId("rules-stage-build")).toHaveTextContent("1 external");
     expect(screen.getByTestId("rules-stage-build")).toHaveTextContent("1 advisory");
