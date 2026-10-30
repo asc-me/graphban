@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
-import type { EventsQuery, FleetPolicy, GitopsPatch, Item, LessonFilters, LogExportPatch, RequestItem, ShardClass } from "./types";
+import type { EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -600,7 +600,7 @@ export function useStackHealth(projectId: string, enabled = true) {
 export function useFileFromStack(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (bodies: Partial<Item>[]) =>
+    mutationFn: (bodies: Partial<ItemDetail>[]) =>
       bodies.reduce<Promise<Item[]>>(
         (acc, body) => acc.then(async (done) => [...done, await api.createItem(projectId, body)]),
         Promise.resolve([]),
@@ -739,10 +739,15 @@ export function useItems(projectId?: string) {
   return useQuery({ queryKey: [...keys.items, projectId], queryFn: () => api.items(projectId), enabled: !!projectId });
 }
 
+/** One item's full record — description, evidence, bounce reason — which the list omits. */
+export function useItem(id: string | undefined, enabled = true) {
+  return useQuery({ queryKey: [...keys.items, "detail", id], queryFn: () => api.item(id!), enabled: !!id && enabled });
+}
+
 export function useUpdateItem() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, body }: { id: string; body: Partial<Item> }) => api.updateItem(id, body),
+    mutationFn: ({ id, body }: { id: string; body: Partial<ItemDetail> }) => api.updateItem(id, body),
     onMutate: async ({ id, body }) => {
       await qc.cancelQueries({ queryKey: keys.items });
       const prev = qc.getQueriesData<Item[]>({ queryKey: keys.items });
@@ -768,7 +773,7 @@ export function useOwnerClose() {
 export function useCreateItem(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Partial<Item>) => api.createItem(projectId, body),
+    mutationFn: (body: Partial<ItemDetail>) => api.createItem(projectId, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.items }),
   });
 }

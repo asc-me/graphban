@@ -681,6 +681,24 @@ class ItemOut(ORMModel):
         return v or []
 
 
+#: What the project list leaves out by default (GRPH-1228): the per-item fields that are large
+#: and that no list view draws. A pinned set — `test_items_list.py` fails if one comes back.
+ITEM_HEAVY_FIELDS = frozenset({"description", "evidence", "bounce_reason"})
+
+
+def item_list_row(item) -> dict:
+    """A lean list row: every `ItemOut` field but the heavy ones, plus `has_attestation` so the
+    board can still tell whether `done` would 409 without reading the evidence array."""
+    row = ItemOut.model_validate(item).model_dump(
+        mode="json", by_alias=True, exclude=ITEM_HEAVY_FIELDS
+    )
+    row["has_attestation"] = any(
+        isinstance(e, dict) and e.get("kind") == "attestation" and e.get("adapter") and e.get("commit")
+        for e in (item.evidence or [])
+    )
+    return row
+
+
 # ---- Memory ----
 class ShardCreate(BaseModel):
     text: str

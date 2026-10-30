@@ -7,7 +7,7 @@ import { AgentSidebar } from "@/components/shell/AgentSidebar";
 import { MemoryRouter } from "react-router-dom";
 
 import { ProjectProvider } from "@/features/ProjectContext";
-import type { Item, Shard, ShardHit } from "@/lib/types";
+import type { Item, ItemDetail, Shard, ShardHit } from "@/lib/types";
 
 const hits: ShardHit[] = [
   {
@@ -44,7 +44,7 @@ const liveCooldown: Shard = {
   text: "Still in review — cooldown applies.",
 };
 
-const doneItem: Item = {
+const doneItem: ItemDetail = {
   id: "GRPH-915",
   project_id: "core",
   title: "Done gate item",
