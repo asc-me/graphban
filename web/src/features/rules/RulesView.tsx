@@ -16,6 +16,7 @@ import { errorDetail } from "@/lib/errors";
 import { useCanvasListbox, type CanvasListNode } from "@/lib/graph/useGraphKeyboard";
 import { useGraphViewport, zoomAbout } from "@/lib/graph/useGraphViewport";
 import { useConfig, useGitops, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
+import { relTime } from "@/lib/relTime";
 import { projectPath, settingsPath, tagFromPath } from "@/lib/routes";
 import type { RuleFlowRule, RuleStage, RuleSuggestion, RulesFlow } from "@/lib/types";
 
@@ -1090,9 +1091,21 @@ function RuleRow({
             <span className="text-[11.5px] leading-snug text-fg-2">{externalText(rule)}</span>
           </div>
         )}
-        {rule.used && rule.enforcement === "checked" && (
-          // The flow payload carries no attestation for a checked rule yet, so its result is
-          // unknown — said as such, never drawn as a pass.
+        {rule.used && rule.enforcement === "checked" && (rule.last_result ? (
+          <div
+            data-testid="rules-result"
+            data-outcome={rule.last_result.outcome}
+            className="flex flex-col gap-0.5 rounded-[8px] px-2.5 py-[7px]"
+            style={{ border: "1.5px solid #626c75" }}
+          >
+            <span className={cn(MONO, "text-[10px] font-semibold tracking-[0.06em] text-fg-2")}>
+              {rule.last_result.outcome === "pass" ? "PASS" : "FAIL"} · last attested{" "}
+              {relTime(rule.last_result.at) ?? "at an unknown time"}
+            </span>
+            <span className="text-[11.5px] text-muted">{rule.last_result.item}</span>
+          </div>
+        ) : (
+          // No attestation on a merged item: said as such, never drawn as a pass.
           <div
             data-testid="rules-no-result"
             className="flex flex-col gap-0.5 rounded-[8px] px-2.5 py-[7px]"
@@ -1107,7 +1120,7 @@ function RuleRow({
             </span>
             <span className="text-[11.5px] text-muted">Nothing has reported yet. That is not a pass.</span>
           </div>
-        )}
+        ))}
         {rule.truth === "db" && rule.id !== "plan.budget_cap" && (
           <ValueBox rule={rule} value={value} prefill={prefill} />
         )}

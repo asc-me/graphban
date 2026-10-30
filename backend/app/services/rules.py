@@ -13,7 +13,8 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from app.services import gitops
+from app.models import Item
+from app.services import gitops, items
 from app.version import __version__
 
 ENFORCEMENTS = ("enforced", "checked", "external", "advisory", "unmeasured")
@@ -150,9 +151,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("review.reviewer_diversity", "review", "Reviewer diversity",
          "Review should come from a different vendor than the builder.",
          "advisory", _src("app/services/fleet.py"), "code", channel="doc"),
-    Rule("ci.backend_suite_both_engines", "merge", "Backend suite on both engines",
-         "CI runs the backend tests on SQLite and Postgres.",
-         "checked", Enforcer("ci_job", ".github/workflows/ci.yml"), "repo_file"),
+    Rule("merge.ci_green", "merge", "Merged work passed CI",
+         "CI attests suite_green on each item's branch; this reads the latest attestation on a "
+         "merged item.",
+         "checked", Enforcer("ci_job", ".github/workflows/ci.yml"), "derived"),
     Rule("forge.branch_protection", "merge", "Forge branch protection",
          "The forge refuses direct pushes to the base branch.",
          "external", Enforcer("forge", "branch protection"), "derived"),
@@ -396,6 +398,42 @@ def weakest(enforcements: list[str]) -> str:
     return max(enforcements, key=ENFORCEMENT_ORDER.index)
 
 
+def _merged(item: Item) -> bool:
+    """Done, with a PR that was linked: the work landed through a pull request."""
+    if item.status != "done":
+        return False
+    return item.pr_linked_at is not None or any(
+        isinstance(e, dict) and e.get("kind") == "url" and items.is_pr_url(e.get("url", ""))
+        for e in item.evidence or [])
+
+
+def ci_last_result(db: Session, project_id: str | None) -> dict | None:
+    """The most recent `suite_green` attestation on a merged item of this project, or None.
+
+    Read from stored receipts only — no live fetch. Receipts carry no clock of their own, so
+    `at` is when the merged item last changed (its sign-off), the nearest date the server holds.
+    A failing attestation is a result too: it reports `fail`, never silence."""
+    if not project_id:
+        return None
+    best = None
+    for it in db.query(Item).filter(Item.project_id == project_id, Item.status == "done"):
+        if not _merged(it):
+            continue
+        runs = [a for a in items.attestation_receipts(it.evidence)
+                if any(isinstance(q, dict) and q.get("name") == items.CI_PREDICATE
+                       and q.get("compared") is not False for q in a.get("predicates") or [])]
+        if not runs:
+            continue
+        last = runs[-1]
+        passed = all(q.get("passed") is True for q in last["predicates"]
+                     if q.get("name") == items.CI_PREDICATE)
+        at = items._aware(it.updated_at)
+        if best is None or at > best[0]:
+            best = (at, {"outcome": "pass" if passed else "fail", "at": at.isoformat(),
+                         "item": it.key, "commit": last.get("commit", "")})
+    return best[1] if best else None
+
+
 def flow(db: Session, project_id: str | None, user_id: str | None = None) -> dict:
     """The project's process as stages in fixed order. Unused rules stay on their stage,
     flagged; a stage is `not_used` only when every rule on it is, and a stage with no rules
@@ -406,6 +444,9 @@ def flow(db: Session, project_id: str | None, user_id: str | None = None) -> dic
     rules = registry(db, project_id, view)
     model = view.model.value
     nodes = list(rules)
+    for n in nodes:
+        if n["enforcement"] == "checked":
+            n["last_result"] = ci_last_result(db, project_id) if n["id"] == "merge.ci_green" else None
     shipped = shipped_skills()
     nodes.append({
         "id": "agents.skills_pack", "stage": "build",
