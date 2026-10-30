@@ -235,6 +235,39 @@ describe("a bounced item", () => {
   });
 });
 
+describe("editing from the open drawer (GRPH-1228)", () => {
+  // The detail query (an ItemDetail object) lives under the `items` prefix, next to the
+  // lists. The optimistic updaters used to .map every entry under it, so with the drawer
+  // open onMutate threw and the PATCH never went out.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Element.prototype.scrollTo = Element.prototype.scrollTo ?? (() => {});
+  });
+
+  it("PATCHes fidelity from the drawer", async () => {
+    const user = userEvent.setup();
+    const { api } = await import("@/lib/api");
+    renderTracker();
+    await user.click(await screen.findByText("In progress thing"));
+    await waitFor(() => expect(api.item).toHaveBeenCalledWith("AL-01"));
+    await user.click(await screen.findByRole("button", { name: "high" }));
+    await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith("AL-01", { fidelity: "high" }));
+  });
+
+  it("still changes a row status once a detail is cached", async () => {
+    const user = userEvent.setup();
+    const { api } = await import("@/lib/api");
+    renderTracker();
+    await user.click(await screen.findByText("In progress thing"));
+    await waitFor(() => expect(api.item).toHaveBeenCalledWith("AL-01"));
+    // Close the drawer; its detail query stays cached under the `items` prefix.
+    await user.keyboard("{Escape}");
+    const row = (await screen.findByText("In progress thing")).closest("[aria-selected]") as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: "Status: In Progress" }));
+    await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith("AL-01", { status: "review" }));
+  });
+});
+
 describe("a blocker in another project (GRPH-1063)", () => {
   beforeEach(() => {
     Element.prototype.scrollTo = Element.prototype.scrollTo ?? (() => {});

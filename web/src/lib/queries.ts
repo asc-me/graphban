@@ -750,10 +750,13 @@ export function useUpdateItem() {
     mutationFn: ({ id, body }: { id: string; body: Partial<ItemDetail> }) => api.updateItem(id, body),
     onMutate: async ({ id, body }) => {
       await qc.cancelQueries({ queryKey: keys.items });
-      const prev = qc.getQueriesData<Item[]>({ queryKey: keys.items });
-      qc.setQueriesData<Item[]>({ queryKey: keys.items }, (old) =>
-        old?.map((it) => (it.id === id ? { ...it, ...body } : it)),
-      );
+      // The `items` prefix holds both the project lists (Item[]) and the per-item detail
+      // (ItemDetail, see useItem) — patch each by its shape, never .map an object.
+      const prev = qc.getQueriesData<Item[] | ItemDetail>({ queryKey: keys.items });
+      qc.setQueriesData<Item[] | ItemDetail>({ queryKey: keys.items }, (old) => {
+        if (Array.isArray(old)) return old.map((it) => (it.id === id ? { ...it, ...body } : it));
+        return old && old.id === id ? { ...old, ...body } : old;
+      });
       return { prev };
     },
     onError: (_e, _v, ctx) => ctx?.prev?.forEach(([key, data]) => qc.setQueryData(key, data)),
@@ -784,9 +787,10 @@ export function useReorderItems() {
     mutationFn: (orderedIds: string[]) => api.reorderItems(orderedIds),
     onMutate: async (orderedIds) => {
       await qc.cancelQueries({ queryKey: keys.items });
-      const prev = qc.getQueriesData<Item[]>({ queryKey: keys.items });
-      qc.setQueriesData<Item[]>({ queryKey: keys.items }, (old) => {
-        if (!old) return old;
+      const prev = qc.getQueriesData<Item[] | ItemDetail>({ queryKey: keys.items });
+      // Only the lists reorder; a cached ItemDetail under the same prefix is left alone.
+      qc.setQueriesData<Item[] | ItemDetail>({ queryKey: keys.items }, (old) => {
+        if (!Array.isArray(old)) return old;
         const map = new Map(old.map((i) => [i.id, i]));
         return orderedIds.map((id, idx) => ({ ...map.get(id)!, sort_order: idx }));
       });
