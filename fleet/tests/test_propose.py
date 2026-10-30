@@ -740,7 +740,7 @@ def test_two_prs_at_the_reviewed_commit_is_a_hold_naming_both(gh):
 
     got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B, pr_c])
 
-    assert not got.ok and "2 open PRs" in got.reason
+    assert not got.ok and "2 PRs" in got.reason
     assert "#9 head" in got.reason and "#10 head" in got.reason
     assert not any(c[1:3] == ["pr", "merge"] for c in forges.calls)
 
@@ -752,6 +752,44 @@ def test_a_closed_sibling_at_the_reviewed_commit_is_not_merged(gh):
     got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
 
     assert not got.ok and "#9 head" in got.reason and "(closed)" in got.reason
+
+
+def test_a_sibling_already_merged_at_the_reviewed_commit_is_recorded(gh):
+    """The sibling's `--auto` merge was armed on an earlier tick and has since landed, while
+    the selector still picks the stale #8. That is a merge to record, not "the branch moved".
+
+    Sabotage: count only OPEN siblings as hits — this holds with #9 listed as merged."""
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED})
+    forges.prs[PR_B].pr["state"] = "MERGED"
+    forges.prs[PR_B].pr["mergeCommit"] = {"oid": MERGE_OID}
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert got.ok and got.commit == MERGE_OID, got.reason
+    assert got.selector == PR_B and "state=MERGED" in got.checked
+    assert not any(c[1:3] == ["pr", "merge"] for c in forges.calls)
+    assert got.closed == ("#8",)
+
+
+def test_a_closed_selection_still_merges_the_sibling_at_the_reviewed_commit(gh):
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED})
+    forges.prs[PR_A].pr["state"] = "CLOSED"
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert got.ok and got.selector == PR_B and got.commit == MERGE_OID, got.reason
+    assert any(c.startswith(f"sibling={PR_B}") for c in got.checked)
+    assert got.closed == ()
+
+
+def test_a_closed_selection_without_a_sibling_at_the_reviewed_commit_stays_skipped(gh):
+    forges = _Forges({PR_A: MOVED, PR_B: "d" * 40})
+    forges.prs[PR_A].pr["state"] = "CLOSED"
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert got.skipped and not got.ok and "CLOSED, not open" in got.reason
+    assert not any(c[1:3] in (["pr", "merge"], ["pr", "close"]) for c in forges.calls)
 
 
 def test_a_right_selection_closes_the_other_open_receipt(gh):

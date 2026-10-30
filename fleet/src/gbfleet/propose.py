@@ -661,9 +661,10 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
     calls `scan_status` or reads Stack.
 
     `siblings` are the item's other PRs (`pr_receipts`). When the selected PR's head is not
-    the reviewed commit, exactly one OPEN sibling at that commit is merged instead; none or
-    several is a hold naming every PR checked and its head (GRPH-1219). After a merge, any
-    other sibling still open is closed as superseded — best effort, never a failed merge.
+    the reviewed commit, the one sibling at that commit (already MERGED first, else OPEN)
+    is merged or recorded instead, also when the selected PR is closed; none or several is
+    a hold naming every PR checked and its head (GRPH-1219). After a merge, any other
+    sibling still open is closed as superseded — best effort, never a failed merge.
 
     Never raises and never fails a wave. Every path returns a `Merged` that says what it did,
     and names the release ref it used.
@@ -699,13 +700,15 @@ def _close_superseded(repo: Path, got: Merged, siblings) -> tuple[str, ...]:
 
 def _sibling_at(repo: Path, item_id: str, selector: str, url: str, head: str, reviewed: str,
                 siblings) -> tuple[str, str]:
-    """`(sibling, hold)`: the one other open PR of the item whose head is `reviewed`, or the
-    reason none can stand in, naming every PR checked with its head (GRPH-1219).
+    """`(sibling, hold)`: the one other PR of the item whose head is `reviewed` — merged
+    first, else open — or the reason none can stand in, naming every PR checked with its
+    head (GRPH-1219).
 
     Wave p61b held four signed-off, green PRs with "the branch moved after sign-off" when the
     selector had simply picked the item's other PR; the hold named only that one."""
     seen = [f"{_pr_ref({'url': url}, selector)} head {head[:12] or '?'}"]
     hits: list[str] = []
+    merged: list[str] = []
     for s in siblings:
         if s in (selector, url):
             continue
@@ -719,18 +722,44 @@ def _sibling_at(repo: Path, item_id: str, selector: str, url: str, head: str, re
         state = str(pr.get("state") or "").upper()
         seen.append(f"{_pr_ref(pr, s)} head {other[:12] or '?'}"
                     + ("" if state == "OPEN" else f" ({state.lower() or 'unknown state'})"))
-        if state == "OPEN" and same_commit(other, reviewed):
-            hits.append(s)
-    if len(hits) == 1:
+        if state in ("OPEN", "MERGED") and same_commit(other, reviewed):
+            (merged if state == "MERGED" else hits).append(s)
+    # A sibling the forge already merged at the reviewed commit is the answer, not a hold:
+    # its own auto-merge armed on an earlier tick landed, and the ledger still needs it.
+    if len(merged) == 1:
+        return merged[0], ""
+    if not merged and len(hits) == 1:
         return hits[0], ""
+    hits += merged
     checked_prs = "; ".join(seen)
     if hits:
-        return "", (f"no single PR to merge: {len(hits)} open PRs of {item_id} are at the "
+        return "", (f"no single PR to merge: {len(hits)} PRs of {item_id} are at the "
                     f"reviewed commit {reviewed[:12]} (checked {checked_prs})")
     return "", (f"PR head {head[:12] or '?'} is not the reviewed commit {reviewed[:12]}, and "
-                f"no other open PR of {item_id} is (checked {checked_prs}) — the branch "
+                f"no other open or merged PR of {item_id} is (checked {checked_prs}) — the branch "
                 "moved after sign-off or the reviewed PR is gone; it needs review again, "
                 "not a merge")
+
+
+def _via_sibling(repo: Path, item_id: str, selector: str, pr: dict, *, reviewed: str,
+                 green: set[str], paths, release: str, scans, siblings: tuple[str, ...],
+                 checked: list[str], miss: Merged | None = None) -> Merged:
+    """Merge the item's sibling PR at `reviewed` in place of the selected `pr`, or hold
+    naming every PR checked (`miss` instead, when given). The recursion gets no siblings,
+    so it cannot loop (GRPH-1219)."""
+    url = str(pr.get("url") or "")
+    head = str(pr.get("headRefOid") or "")
+    sibling, hold = _sibling_at(repo, item_id, selector, url, head, reviewed, siblings)
+    if not sibling:
+        if miss is not None:
+            return miss
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      reason=hold)
+    got = _merge(repo, item_id, sibling, reviewed=reviewed, green=green, paths=paths,
+                 release=release, scans=scans)
+    why = (f"sibling={sibling} (selected {_pr_ref(pr, selector)} head {head[:12] or '?'} "
+           "is not the reviewed commit)")
+    return replace(got, checked=tuple(checked) + (why,) + got.checked)
 
 
 def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set[str],
@@ -760,8 +789,15 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
                       ok=bool(commit), checked=("state=MERGED",),
                       reason="" if commit else "merged, but gh reported no merge commit")
     if state != "OPEN":
-        return Merged(item=item_id, selector=selector, url=url, skipped=True,
-                      reason=f"PR is {state or 'in an unknown state'}, not open")
+        not_open = Merged(item=item_id, selector=selector, url=url, skipped=True,
+                          reason=f"PR is {state or 'in an unknown state'}, not open")
+        if siblings and not same_commit(str(pr.get("headRefOid") or ""), reviewed):
+            # GRPH-1219: a closed selection may be the superseded PR; the sibling at the
+            # reviewed commit is still the one to merge. Without one, the skip stands.
+            return _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
+                                paths=paths, release=release, scans=scans,
+                                siblings=siblings, checked=checked, miss=not_open)
+        return not_open
     checked.append("open")
     if pr.get("isCrossRepository"):
         return Merged(item=item_id, selector=selector, url=url, skipped=True,
@@ -787,16 +823,9 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
             # GRPH-1219: the selector may have picked the item's other PR. One open sibling
             # at the reviewed commit is the PR the sign-off vouches for; merge that one, and
             # say which and why. The recursion gets no siblings, so it cannot loop.
-            sibling, hold = _sibling_at(repo, item_id, selector, url, head, reviewed,
-                                        siblings)
-            if not sibling:
-                return Merged(item=item_id, selector=selector, url=url,
-                              checked=tuple(checked), reason=hold)
-            got = _merge(repo, item_id, sibling, reviewed=reviewed, green=green,
-                         paths=paths, release=release, scans=scans)
-            why = (f"sibling={sibling} (selected {_pr_ref(pr, selector)} head "
-                   f"{head[:12] or '?'} is not the reviewed commit)")
-            return replace(got, checked=tuple(checked) + (why,) + got.checked)
+            return _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
+                                paths=paths, release=release, scans=scans,
+                                siblings=siblings, checked=checked)
         else:
             return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                           reason=f"PR head {head[:12] or '?'} is not the reviewed commit "
