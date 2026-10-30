@@ -2,6 +2,7 @@ import { BadgeCheck, ExternalLink, FlaskConical, GitPullRequest, Radio } from "l
 
 import { Avatar } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { TargetActivity } from "@/features/activity/TargetActivity";
 import { AssistantPanel } from "@/features/assistant/AssistantPanel";
 import { LinkedCode } from "@/features/code/LinkedCode";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -153,6 +154,8 @@ export function ItemDetailPanel({
               {item.bounce_reason}
             </div>
           )}
+
+          <TargetActivity projectId={activeId} targetType="item" targetId={item.id} />
 
           <Section label="Description">
             <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-fg-2">

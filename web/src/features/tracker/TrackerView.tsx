@@ -16,7 +16,8 @@ import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Dot } from "@/components/ui/badge";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
-import { errorDetail } from "@/lib/errors";
+import { RefusalRuleLink } from "@/features/activity/RefusalRuleLink";
+import { errorDetail, errorRuleId, isRefusal } from "@/lib/errors";
 import { BOARD_COLUMNS, STATUS_META, STATUS_ORDER } from "@/lib/meta";
 import { PALETTE_ITEM_PARAM } from "@/lib/palette-nav";
 import { useItems, useReorderItems, useUpdateItem } from "@/lib/queries";
@@ -83,7 +84,7 @@ export function TrackerView() {
   const [closing, setClosing] = React.useState<Item | null>(null);
   const [layout, setLayoutState] = React.useState<TrackerLayout>(readLayout);
   const columns = useColumnPrefs();
-  const [refusal, setRefusal] = React.useState<string | null>(null);
+  const [refusal, setRefusal] = React.useState<{ text: string; refused: boolean; ruleId: string | null } | null>(null);
 
   function setLayout(next: TrackerLayout) {
     setLayoutState(next);
@@ -143,7 +144,14 @@ export function TrackerView() {
     // A refused move (wait-dep, review gate) rolls back in useUpdateItem; say why here.
     update.mutate(
       { id: item.id, body: { status } },
-      { onError: (err) => setRefusal(errorDetail(err, `Could not move ${item.id}`)) },
+      {
+        onError: (err) =>
+          setRefusal({
+            text: errorDetail(err, `Could not move ${item.id}`),
+            refused: isRefusal(err),
+            ruleId: errorRuleId(err),
+          }),
+      },
     );
   }
 
@@ -250,7 +258,14 @@ export function TrackerView() {
           role="alert"
           className="flex flex-none items-center gap-3 border-b border-line bg-[rgba(255,107,107,0.06)] px-5 py-2 text-body text-st-blocked"
         >
-          <span className="min-w-0 flex-1">{refusal}</span>
+          <span className="min-w-0 flex-1">
+            {refusal.text}
+            {refusal.refused && (
+              <span className="ml-2">
+                <RefusalRuleLink ruleId={refusal.ruleId} />
+              </span>
+            )}
+          </span>
           <button type="button" onClick={() => setRefusal(null)} className="text-faint hover:text-fg">
             Dismiss
           </button>

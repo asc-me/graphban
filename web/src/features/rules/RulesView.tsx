@@ -101,6 +101,10 @@ export function RulesView() {
   const ruleParam = params.get("rule");
   const fromEvent = params.get("from");
   const [focusRule, setFocusRule] = React.useState<string | null>(ruleParam);
+  // A second link to this route while mounted must refocus (GRPH-1199).
+  React.useEffect(() => {
+    setFocusRule(ruleParam);
+  }, [ruleParam]);
   const [prefill, setPrefill] = React.useState<{ rule: string; value: string } | null>(null);
   const [sheet, setSheet] = React.useState<"unmapped" | "recommended" | null>(null);
   const unmappedBtn = React.useRef<HTMLButtonElement | null>(null);
