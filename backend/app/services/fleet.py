@@ -1005,12 +1005,15 @@ ROSTER_RECENT_SECONDS = 24 * 3600
 
 
 def _is_collapsible(a: dict, cutoff: datetime) -> bool:
-    """Offline, holding nothing, no orphaned branch, and quiet for longer than the window.
+    """Offline, holding nothing, no orphaned branch, not dismissed, and quiet past the window.
 
     Anything that holds something — a lease, a review claim, an orphaned branch — is NEVER
-    collapsed: that is the unfinished business the roster exists to show.
+    collapsed: that is the unfinished business the roster exists to show. A dismissed agent is
+    not collapsed either: the view lists it under "dismissed", where it can be restored, and
+    folding it in here would count it as gone while no collapsed page could show it.
     """
-    if a["state"] != "offline" or a["holdings"] or a["branch_orphaned"]:
+    if (a["state"] != "offline" or a["holdings"] or a["branch_orphaned"]
+            or a.get("dismissed")):
         return False
     seen = a["last_seen_at"]
     if seen is None:

@@ -273,6 +273,26 @@ def test_an_offline_quiet_holder_is_never_collapsed(hold):
     assert out["collapsed"]["count"] == 1
 
 
+def test_an_old_dismissed_agent_stays_in_full_and_out_of_the_collapsed_count(client, auth, _db):
+    from app.models import Agent
+
+    pid = _proj(client, auth)
+    _seed(_db, pid, n_gone=5)
+    old = datetime.now(timezone.utc) - timedelta(days=3)
+    retired = Agent(id=f"{pid}-retired", project_id=pid, number=999, active_role="worker",
+                    state="idle", last_seen_at=old, dismissed_at=old)
+    _db.add(retired)
+    _db.commit()
+    body = client.get(f"/api/fleet?project_id={pid}", headers=auth).json()
+    row = next((a for a in body["agents"] if a["id"] == retired.id), None)
+    assert row is not None and row["dismissed"] is True, \
+        "a dismissed agent stays listed, where the view can restore it"
+    assert body["collapsed"]["count"] == 5
+    assert body["total"] == len(body["agents"]) + body["collapsed"]["count"]
+    page = client.get(f"/api/fleet/agents/collapsed?project_id={pid}", headers=auth).json()
+    assert page["total"] == 5 and retired.id not in {a["id"] for a in page["agents"]}
+
+
 def test_mcp_fleet_status_is_not_collapsed(_db, client, auth):
     from app.services import fleet
 

@@ -1332,6 +1332,26 @@ describe("FleetView collapsed offline agents (GRPH-1229)", () => {
     expect(screen.getByText("gone 8")).toBeInTheDocument();
   });
 
+  it("keeps the next page's offset and the total in step after a dismissal", async () => {
+    // The server stops counting a dismissed agent as collapsed, so its list shrinks by one:
+    // the next page starts one earlier, and "Load more" must still be reachable.
+    fleet.data = { ...BASE, collapsed: { count: 3, by_state: { offline: 3 }, by_role: {},
+                                         recent_seconds: 86400 } };
+    api.fleetCollapsed.mockResolvedValueOnce({ total: 3, offset: 0, limit: 2,
+                                               agents: [gone(7), gone(8)] });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(screen.getByRole("button", { name: /Show 3 gone/ }));
+    await screen.findByRole("button", { name: /Load more \(2 of 3\)/ });
+    await user.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
+    await screen.findByRole("button", { name: /Load more \(1 of 2\)/ });
+    api.fleetCollapsed.mockResolvedValueOnce({ total: 2, offset: 1, limit: 2, agents: [gone(9)] });
+    await user.click(screen.getByRole("button", { name: /Load more/ }));
+    await screen.findByText("gone 9");
+    expect(api.fleetCollapsed).toHaveBeenLastCalledWith("core", 1);
+    expect(screen.queryByRole("button", { name: /Load more/ })).toBeNull();
+  });
+
   it("forgets the previous project's collapsed rows on a project switch", async () => {
     const user = userEvent.setup();
     const view = renderView();
