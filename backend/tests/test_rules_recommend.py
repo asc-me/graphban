@@ -139,3 +139,19 @@ def test_reading_never_writes_a_rule(client, auth, db):
     before = client.get(f"/api/rules?project_id={PID}", headers=auth).json()
     _rec(client, auth)
     assert client.get(f"/api/rules?project_id={PID}", headers=auth).json() == before
+
+
+def test_dismiss_then_restore(client, auth, db):
+    db.query(CodeNode).filter(CodeNode.project_id == PID).delete()
+    db.commit()
+    _add_release_doc(db, "docs/release.md")
+    sid = "suggest.release_defined_in"
+    base = f"/api/rules/recommended/{sid}/dismiss?project_id={PID}"
+    assert client.post(base, headers=auth).status_code == 204
+    assert sid not in _ids(_rec(client, auth))
+    gone = client.get(f"/api/rules/recommended/dismissed?project_id={PID}", headers=auth)
+    assert [s["id"] for s in gone.json()] == [sid]
+    assert client.delete(base, headers=auth).status_code == 204
+    assert sid in _ids(_rec(client, auth))
+    assert client.get(f"/api/rules/recommended/dismissed?project_id={PID}", headers=auth).json() == []
+    assert client.delete(base, headers=auth).status_code == 404

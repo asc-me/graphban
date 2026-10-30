@@ -539,6 +539,22 @@ export function useDismissRecommendedRule(projectId: string) {
   });
 }
 
+export function useDismissedRecommendedRules(projectId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["rules-recommended", projectId, "dismissed"],
+    queryFn: () => api.dismissedRecommendedRules(projectId),
+    enabled: !!projectId && enabled,
+  });
+}
+
+export function useRestoreRecommendedRule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (suggestionId: string) => api.restoreRecommendedRule(projectId, suggestionId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["rules-recommended", projectId] }),
+  });
+}
+
 export function useFleetPolicy(projectId: string) {
   return useQuery({
     queryKey: ["fleet-policy", projectId],
