@@ -207,6 +207,11 @@ class Project(Base):
     memory_candidate_expiry_days: Mapped[int] = mapped_column(
         Integer, default=45, server_default="45", nullable=False
     )
+    # Flag a published shard in the stale queue when the code its item cited changed after
+    # publish (GRPH-1213). On by default; `gone` is flagged either way.
+    memory_flag_on_code_change: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False
+    )
     # The fleet's hard constraints (PRD-37 D4): `{local_only, reviewer_cross_vendor,
     # allowed_harnesses}`. A FILTER the supervisor applies before any preference is scored, so
     # a strong taste cannot outvote a rule. NULL is no constraint — the resolver reads absence
@@ -1187,6 +1192,11 @@ class MemoryShard(Base):
     # Set when a person confirms a stale shard is still right (Keep). `age_state` measures
     # the staleness clock from the later of this and `created_at`.
     kept_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # {path: content_hash} of the code-graph nodes behind the originating item's touchpoints,
+    # taken at publish and again at Keep (GRPH-1213). `origin_path_state` reports `changed`
+    # only when a current hash differs from this. NULL means no baseline was taken (a shard
+    # published before this existed, or with nothing hashed to cite), which reads `unknown`.
+    cited_code_hashes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     @property
     def item_key(self) -> str | None:

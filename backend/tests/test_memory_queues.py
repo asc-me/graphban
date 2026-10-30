@@ -237,3 +237,94 @@ def test_keep_clears_a_shard_whose_origin_code_is_gone(client, auth):
     assert stale[0]["why"] == ["the code it came from no longer exists"]
     assert client.post(f"/api/memory/shards/{sid}/keep", headers=auth).status_code == 200
     assert client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json() == []
+
+
+def _shard_with_node(client, auth, name, *, content_hash="h1", setting=None):
+    """A published shard whose item cites app/x.py, published while the code-graph node
+    behind it carries `content_hash` — so publish takes that as the baseline."""
+    from app.services import code_graph as cg_svc
+    from app.services import items as items_svc
+    pid = _proj(client, auth, name)
+    if setting is not None:
+        client.patch(f"/api/projects/{pid}", json={"memory_flag_on_code_change": setting}, headers=auth)
+    db = SessionLocal()
+    try:
+        item = items_svc.create_item(db, title="origin", project_id=pid, touchpoints=["app/x.py"])
+        cg_svc.upsert_node(db, project_id=pid, path="app/x.py", name="x",
+                           content_hash=content_hash, revision="aaa111")
+        db.commit()
+        item_id = item.id
+    finally:
+        db.close()
+    r = client.post("/api/memory/shards", json={"text": "pin pg16 in CI", "project_id": pid,
+                                                "item_id": item_id}, headers=auth)
+    assert r.status_code == 201, r.text
+    return pid, r.json()["id"]
+
+
+def _redescribe(pid, *, content_hash, revision="bbb222", summary="re-described"):
+    from app.services import code_graph as cg_svc
+    db = SessionLocal()
+    try:
+        cg_svc.upsert_node(db, project_id=pid, path="app/x.py", name="x", summary=summary,
+                           content_hash=content_hash, revision=revision)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _state(sid):
+    db = SessionLocal()
+    try:
+        return mem_svc.origin_path_state(db, db.get(MemoryShard, sid))
+    finally:
+        db.close()
+
+
+def _stale(client, auth, pid):
+    return client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json()
+
+
+def test_code_changed_after_publish_is_flagged(client, auth):
+    pid, sid = _shard_with_node(client, auth, "ChgOn")
+    assert _state(sid) == "ok"
+    _redescribe(pid, content_hash="h2")
+    assert _state(sid) == "changed"
+    assert [r["why"] for r in _stale(client, auth, pid)] == [["cited code changed since publish"]]
+
+
+def test_redescribe_with_the_same_hash_is_not_a_change(client, auth):
+    # A describe pass at a new commit with identical source moves updated_at, revision and
+    # summary — none of which is the code changing.
+    pid, sid = _shard_with_node(client, auth, "ChgSame")
+    _redescribe(pid, content_hash="h1", revision="ccc333", summary="a new summary")
+    assert _state(sid) == "ok"
+    assert _stale(client, auth, pid) == []
+
+
+def test_code_changed_is_not_flagged_when_the_setting_is_off(client, auth):
+    pid, sid = _shard_with_node(client, auth, "ChgOff", setting=False)
+    _redescribe(pid, content_hash="h2")
+    assert _state(sid) == "changed"
+    assert _stale(client, auth, pid) == []
+
+
+def test_no_change_signal_reports_unknown_not_ok(client, auth):
+    # The node carries no content hash, so publish has no baseline to compare against.
+    pid, sid = _shard_with_node(client, auth, "ChgUnk", content_hash="")
+    assert _state(sid) == "unknown"
+    _redescribe(pid, content_hash="")
+    assert _state(sid) == "unknown"
+    assert _stale(client, auth, pid) == []
+
+
+def test_keep_clears_a_code_changed_flag(client, auth):
+    pid, sid = _shard_with_node(client, auth, "ChgKeep")
+    _redescribe(pid, content_hash="h2")
+    assert _stale(client, auth, pid) != []
+    assert client.post(f"/api/memory/shards/{sid}/keep", headers=auth).status_code == 200
+    assert _state(sid) == "ok"
+    assert _stale(client, auth, pid) == []
+    # Kept against h2: a further change flags it again.
+    _redescribe(pid, content_hash="h3")
+    assert [r["why"] for r in _stale(client, auth, pid)] == [["cited code changed since publish"]]
