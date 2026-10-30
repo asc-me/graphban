@@ -1192,6 +1192,11 @@ class MemoryShard(Base):
     # Set when a person confirms a stale shard is still right (Keep). `age_state` measures
     # the staleness clock from the later of this and `created_at`.
     kept_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # {path: content_hash} of the code-graph nodes behind the originating item's touchpoints,
+    # taken at publish and again at Keep (GRPH-1213). `origin_path_state` reports `changed`
+    # only when a current hash differs from this. NULL means no baseline was taken (a shard
+    # published before this existed, or with nothing hashed to cite), which reads `unknown`.
+    cited_code_hashes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     @property
     def item_key(self) -> str | None:

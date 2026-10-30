@@ -228,6 +228,8 @@ def add_memory(
         actor_user_id=actor_user_id,
         attributed_project_id=attributed_project_id,
     )
+    if status == "published":
+        snapshot_cited_code(db, shard)
     db.add(shard)
     db.commit()
     db.refresh(shard)
@@ -1462,6 +1464,8 @@ def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
     shard.status = new_status
     shard.scoring_source = source
     shard.auto_confidence = confidence
+    if new_status == "published":
+        snapshot_cited_code(db, shard)
     db.commit()
     db.refresh(shard)
     events_svc.record(
@@ -1573,6 +1577,8 @@ def agent_publish(db: Session, shard: MemoryShard, *, origin: str) -> tuple[Memo
     shard.status = "published" if keep else "rejected"
     shard.scoring_source = "agent"
     shard.auto_confidence = verdict["quality"]
+    if keep:
+        snapshot_cited_code(db, shard)
     db.commit()
     db.refresh(shard)
     events_svc.record(
@@ -1597,6 +1603,8 @@ def set_status(db: Session, shard_id: str, status: str) -> MemoryShard | None:
         return None
     prev = shard.status
     shard.status = status
+    if status == "published" and prev != "published":
+        snapshot_cited_code(db, shard)
     db.commit()
     db.refresh(shard)
     # A second publish of an already-published row is not a new stand-behind.
@@ -1895,24 +1903,46 @@ def origin_path_state(db: Session, shard: MemoryShard) -> str:
     if not any(_touchpoint_hits(paths, tp) > 0 for tp in item.touchpoints):
         return "gone"
     # The path exists. Did the code behind it move since the shard was published (or last
-    # kept, when later)? Only a node carrying a `content_hash` can attest to code: a node
-    # without one has an `updated_at` that a summary edit moves too. A graph that cannot say
-    # whether the code changed has not shown that it did not, so that is `unknown`, never `ok`.
-    baseline = _aware(shard.created_at)
-    if shard.kept_at is not None and _aware(shard.kept_at) > baseline:
-        baseline = _aware(shard.kept_at)
-    hashed = [
-        (p, u) for (p, h, u) in db.execute(
-            select(CodeNode.path, CodeNode.content_hash, CodeNode.updated_at)
+    # kept)? Content hashes answer that; `updated_at` cannot, because a re-describe at a new
+    # revision moves it with identical source. No baseline, or a cited node that no longer
+    # carries a hash, has not shown the code is unchanged: that is `unknown`, never `ok`.
+    baseline = shard.cited_code_hashes
+    if not baseline:
+        return "unknown"
+    current = _cited_code_nodes(db, item)
+    for path, h in baseline.items():
+        if path not in current or (current[path] and current[path] != h):
+            return "changed"
+    if any(h and p not in baseline for p, h in current.items()):
+        return "changed"
+    if any(not current[p] for p in baseline):
+        return "unknown"
+    return "ok"
+
+
+def _cited_code_nodes(db: Session, item: Item) -> dict[str, str]:
+    """{path: content_hash} of the item's project's code-graph nodes at its touchpoints."""
+    tps = item.touchpoints or []
+    return {
+        p: h or "" for (p, h) in db.execute(
+            select(CodeNode.path, CodeNode.content_hash)
             .where(CodeNode.project_id == item.project_id)
         ).all()
-        if h and any(_touchpoint_hits({p}, tp) > 0 for tp in item.touchpoints)
-    ]
-    if not hashed:
-        return "unknown"
-    if any(u is not None and _aware(u) > baseline for _, u in hashed):
-        return "changed"
-    return "ok"
+        if any(_touchpoint_hits({p}, tp) > 0 for tp in tps)
+    }
+
+
+def snapshot_cited_code(db: Session, shard: MemoryShard) -> None:
+    """Record the cited code's content hashes as the shard's `changed` baseline (GRPH-1213).
+
+    Taken at publish and at Keep; the caller commits. Only hashed nodes enter it, so a
+    shard whose code the graph cannot hash keeps no baseline and reads `unknown`."""
+    item = db.get(Item, shard.item_id) if shard.item_id else None
+    if item is None or not item.touchpoints:
+        shard.cited_code_hashes = None
+        return
+    hashed = {p: h for p, h in _cited_code_nodes(db, item).items() if h}
+    shard.cited_code_hashes = hashed or None
 
 
 def published_cluster(
@@ -2655,6 +2685,8 @@ def keep_shard(db: Session, shard_id: str, *, now: datetime | None = None) -> Me
     if shard.status != "published":
         raise RetireRefused(f"only a published shard can be kept; this one is {shard.status}")
     shard.kept_at = now or datetime.now(timezone.utc)
+    # A Keep stands behind the code as it is now, so `changed` is measured from here.
+    snapshot_cited_code(db, shard)
     db.commit()
     db.refresh(shard)
     return shard
@@ -2710,7 +2742,7 @@ def stale_or_wrong(db: Session, project_id: str | None) -> list[tuple[MemoryShar
         if wrong.get(s.id):
             why.append(f"reported wrong or contradicted {wrong[s.id]}x")
         # A person who kept it already saw the origin was gone and stood behind it anyway.
-        # `changed` is measured from the later of publish and Keep, so a Keep clears it.
+        # `changed` is measured against the hashes taken at publish or Keep, so a Keep clears it.
         # Only worth the code-graph walk when it can flag: a kept shard skips `gone`, and
         # a project that turned the rule off skips `changed`.
         check_changed = flag_changed.get(s.project_id, True)
