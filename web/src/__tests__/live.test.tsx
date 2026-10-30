@@ -676,6 +676,28 @@ describe("Live board", () => {
     expect(strip.getAllByRole("listitem")).toHaveLength(3);
   });
 
+  it("counts offline agents on the project, not in the capped payload, and says when it cannot list them all", async () => {
+    const on = Array.from({ length: 3 }, (_, i) => agent({ id: `on${i}`, label: `on-${i}` }));
+    const off = Array.from({ length: 197 }, (_, i) =>
+      agent({ id: `off${i}`, label: `off-${i}`, state: "offline", last_seen_at: "2026-08-01T12:00:00Z" }));
+    board = emptyBoard({
+      truncated: true,
+      total_agents: 6170,
+      online_agents: 3,
+      users: [user({ online: 3, total: 6170, agents: [...on, ...off] })],
+      user_counts: [{ user_id: "u_blair", label: "Blair", online: 3, total: 6170 }],
+    });
+    renderLive();
+    const strip = within(await screen.findByRole("list", { name: "Agent presence" }));
+    expect(strip.getAllByRole("listitem")).toHaveLength(3);
+    expect(strip.getByText("6167 offline")).toBeInTheDocument();
+    expect(strip.queryByTestId("offline-partial")).not.toBeInTheDocument();
+
+    fireEvent.click(strip.getByRole("button", { name: "show offline" }));
+    expect(strip.getAllByRole("listitem")).toHaveLength(200);
+    expect(strip.getByTestId("offline-partial")).toHaveTextContent("listing 197 of them");
+  });
+
   it("shows the project-wide stream with calls from several agents when none is focused", async () => {
     board = emptyBoard({
       total_agents: 2,

@@ -42,7 +42,15 @@ export function LiveView() {
   const flat = React.useMemo(() => flattenAgents(board?.users ?? []), [board?.users]);
   const [showOffline, setShowOffline] = React.useState(false);
   const online = React.useMemo(() => flat.filter(({ agent }) => agent.state !== "offline"), [flat]);
-  const offlineCount = flat.length - online.length;
+  // The project's offline count comes from the server, not from the payload: the board caps
+  // the agents it lists, so counting the listed offline rows undercounts a large fleet.
+  // A user filter narrows it to that person's groups, which carry their own totals.
+  const offlineCount = !board
+    ? 0
+    : user
+      ? board.users.reduce((n, u) => n + (u.total - u.online), 0)
+      : board.total_agents - board.online_agents;
+  const listedOffline = flat.length - online.length;
   const shown = showOffline ? flat : online;
   const focusAgent = focusId ? flat.find(({ agent }) => agent.id === focusId)?.agent : null;
   const emptyProject = !!board && board.users.length === 0 && !user;
@@ -140,6 +148,7 @@ export function LiveView() {
             <PresenceStrip
               agents={shown}
               offlineCount={offlineCount}
+              listedOffline={listedOffline}
               showOffline={showOffline}
               onToggleOffline={() => setShowOffline((s) => !s)}
               servedAt={board.served_at}

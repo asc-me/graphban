@@ -6,6 +6,7 @@ import { ROLE_TONE, agentActivity, ageLabel } from "./liveUtils";
 export function PresenceStrip({
   agents,
   offlineCount,
+  listedOffline,
   showOffline,
   onToggleOffline,
   servedAt,
@@ -15,6 +16,8 @@ export function PresenceStrip({
   agents: { agent: LiveAgent; userLabel: string }[];
   /** Offline agents on the project, whether or not they are listed in `agents`. */
   offlineCount: number;
+  /** How many of those offline agents the payload carries — fewer when the board is capped. */
+  listedOffline: number;
   showOffline: boolean;
   onToggleOffline: () => void;
   servedAt: string;
@@ -69,6 +72,9 @@ export function PresenceStrip({
       {offlineCount > 0 && (
         <div className="flex shrink-0 items-center gap-2 px-2 font-mono text-[10.5px] text-faint">
           <span>{offlineCount} offline</span>
+          {showOffline && listedOffline < offlineCount && (
+            <span data-testid="offline-partial">listing {listedOffline} of them</span>
+          )}
           <button
             type="button"
             aria-pressed={showOffline}
