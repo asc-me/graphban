@@ -42,7 +42,7 @@ ELIGIBILITIES = ("ineligible", "eligible", "unverifiable", "promoted")
 TRENDS = ("dropping", "stable", "rising", "unmeasured")
 OUTCOME_KINDS = ("caught", "missed", "applied", "contradicted")
 OUTCOME_SOURCES = ("human", "recurrence", "evidence")
-ORIGIN_PATH_STATES = ("ok", "gone", "unknown", "unindexed")
+ORIGIN_PATH_STATES = ("ok", "gone", "unknown", "unindexed", "changed")
 TRANSFERABILITY_STATES = ("unverified", "evidenced", "unverifiable", "overridden")
 CLUSTER_SCAN_STATES = ("scanned", "cluster_scope_unmeasured")
 
@@ -1872,7 +1872,7 @@ def lesson_effectiveness(
 
 
 def origin_path_state(db: Session, shard: MemoryShard) -> str:
-    """ok | gone | unknown | unindexed.
+    """ok | changed | gone | unknown | unindexed.
 
     Walks CodeNode for the originating item's project, never the viewer's.
     An empty graph is unindexed, not gone — absence of an index is not a deleted path.
@@ -1892,9 +1892,27 @@ def origin_path_state(db: Session, shard: MemoryShard) -> str:
             select(CodeNode.path).where(CodeNode.project_id == item.project_id)
         ).all()
     }
-    if any(_touchpoint_hits(paths, tp) > 0 for tp in item.touchpoints):
-        return "ok"
-    return "gone"
+    if not any(_touchpoint_hits(paths, tp) > 0 for tp in item.touchpoints):
+        return "gone"
+    # The path exists. Did the code behind it move since the shard was published (or last
+    # kept, when later)? Only a node carrying a `content_hash` can attest to code: a node
+    # without one has an `updated_at` that a summary edit moves too. A graph that cannot say
+    # whether the code changed has not shown that it did not, so that is `unknown`, never `ok`.
+    baseline = _aware(shard.created_at)
+    if shard.kept_at is not None and _aware(shard.kept_at) > baseline:
+        baseline = _aware(shard.kept_at)
+    hashed = [
+        (p, u) for (p, h, u) in db.execute(
+            select(CodeNode.path, CodeNode.content_hash, CodeNode.updated_at)
+            .where(CodeNode.project_id == item.project_id)
+        ).all()
+        if h and any(_touchpoint_hits({p}, tp) > 0 for tp in item.touchpoints)
+    ]
+    if not hashed:
+        return "unknown"
+    if any(u is not None and _aware(u) > baseline for _, u in hashed):
+        return "changed"
+    return "ok"
 
 
 def published_cluster(
@@ -2676,6 +2694,14 @@ def stale_or_wrong(db: Session, project_id: str | None) -> list[tuple[MemoryShar
     """Published shards that are stale or reported wrong, each with WHY. Cheap: no judge."""
     shards = list_shards(db, project_id=project_id, status="published")
     wrong = _wrong_reports(db, shards)
+    pids = {s.project_id for s in shards if s.project_id is not None}
+    flag_changed: dict[str | None, bool] = {}
+    if pids:
+        flag_changed = {
+            pid: bool(on) for pid, on in db.execute(
+                select(Project.id, Project.memory_flag_on_code_change).where(Project.id.in_(pids))
+            ).all()
+        }
     out: list[tuple[MemoryShard, list[str]]] = []
     for s in shards:
         why: list[str] = []
@@ -2684,8 +2710,16 @@ def stale_or_wrong(db: Session, project_id: str | None) -> list[tuple[MemoryShar
         if wrong.get(s.id):
             why.append(f"reported wrong or contradicted {wrong[s.id]}x")
         # A person who kept it already saw the origin was gone and stood behind it anyway.
-        if s.kept_at is None and origin_path_state(db, s) == "gone":
-            why.append("the code it came from no longer exists")
+        # `changed` is measured from the later of publish and Keep, so a Keep clears it.
+        # Only worth the code-graph walk when it can flag: a kept shard skips `gone`, and
+        # a project that turned the rule off skips `changed`.
+        check_changed = flag_changed.get(s.project_id, True)
+        if s.kept_at is None or check_changed:
+            path = origin_path_state(db, s)
+            if s.kept_at is None and path == "gone":
+                why.append("the code it came from no longer exists")
+            elif check_changed and path == "changed":
+                why.append("cited code changed since publish")
         if why:
             out.append((s, why))
     return out

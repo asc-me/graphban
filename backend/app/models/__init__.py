@@ -207,6 +207,11 @@ class Project(Base):
     memory_candidate_expiry_days: Mapped[int] = mapped_column(
         Integer, default=45, server_default="45", nullable=False
     )
+    # Flag a published shard in the stale queue when the code its item cited changed after
+    # publish (GRPH-1213). On by default; `gone` is flagged either way.
+    memory_flag_on_code_change: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False
+    )
     # The fleet's hard constraints (PRD-37 D4): `{local_only, reviewer_cross_vendor,
     # allowed_harnesses}`. A FILTER the supervisor applies before any preference is scored, so
     # a strong taste cannot outvote a rule. NULL is no constraint — the resolver reads absence

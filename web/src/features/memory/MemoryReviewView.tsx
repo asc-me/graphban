@@ -732,6 +732,7 @@ function PolicyStrip({ judgeStatus }: { judgeStatus?: JudgeStatus }) {
     ["Auto-reject dupes ≥", active ? (active.memory_auto_reject ? AUTO_REJECT_DUPE_MIN.toFixed(2) : "off") : "—"],
     ["LLM judge", active ? (active.memory_llm_judge ? "on" : "off") : "—"],
     ["Expire candidates", active ? `${active.memory_candidate_expiry_days ?? 45}d` : "—"],
+    ["Flag on code change", active ? (active.memory_flag_on_code_change ?? true ? "on" : "off") : "—"],
     ["Grading", judgeStatus ? (judgeStatus.falling_back ? `${judgeStatus.judge} (fallback)` : judgeStatus.judge) : "—"],
   ];
   return (

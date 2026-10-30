@@ -237,3 +237,61 @@ def test_keep_clears_a_shard_whose_origin_code_is_gone(client, auth):
     assert stale[0]["why"] == ["the code it came from no longer exists"]
     assert client.post(f"/api/memory/shards/{sid}/keep", headers=auth).status_code == 200
     assert client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json() == []
+
+
+def _shard_with_node(client, auth, name, *, content_hash="h1", node_days_ago=None, setting=None):
+    """A published shard whose item cites app/x.py, with a code-graph node behind it.
+    The shard is aged 10 days; the node is stamped `node_days_ago` days ago."""
+    from app.models import CodeNode
+    from app.services import items as items_svc
+    pid = _proj(client, auth, name)
+    if setting is not None:
+        client.patch(f"/api/projects/{pid}", json={"memory_flag_on_code_change": setting}, headers=auth)
+    sid = _published(client, auth, pid)
+    _age(sid, created_days=10)
+    db = SessionLocal()
+    try:
+        item = items_svc.create_item(db, title="origin", project_id=pid, touchpoints=["app/x.py"])
+        node = CodeNode(id="cn_" + name.lower(), project_id=pid, path="app/x.py",
+                        kind="file", name="x", content_hash=content_hash)
+        db.add(node)
+        db.get(MemoryShard, sid).item_id = item.id
+        db.commit()
+        if node_days_ago is not None:
+            node.updated_at = datetime.now(timezone.utc) - timedelta(days=node_days_ago)
+            db.commit()
+        state = mem_svc.origin_path_state(db, db.get(MemoryShard, sid))
+    finally:
+        db.close()
+    return pid, sid, state
+
+
+def test_code_changed_after_publish_is_flagged(client, auth):
+    pid, sid, state = _shard_with_node(client, auth, "ChgOn", node_days_ago=1)
+    assert state == "changed"
+    stale = client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json()
+    assert [r["why"] for r in stale] == [["cited code changed since publish"]]
+
+
+def test_code_unchanged_since_publish_is_ok_and_not_flagged(client, auth):
+    pid, sid, state = _shard_with_node(client, auth, "ChgOk", node_days_ago=20)
+    assert state == "ok"
+    assert client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json() == []
+
+
+def test_code_changed_is_not_flagged_when_the_setting_is_off(client, auth):
+    pid, sid, state = _shard_with_node(client, auth, "ChgOff", node_days_ago=1, setting=False)
+    assert state == "changed"
+    assert client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json() == []
+
+
+def test_no_change_signal_reports_unknown_not_ok(client, auth):
+    pid, sid, state = _shard_with_node(client, auth, "ChgUnk", content_hash="", node_days_ago=20)
+    assert state == "unknown"
+    assert client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json() == []
+
+
+def test_keep_clears_a_code_changed_flag(client, auth):
+    pid, sid, _ = _shard_with_node(client, auth, "ChgKeep", node_days_ago=1)
+    assert client.post(f"/api/memory/shards/{sid}/keep", headers=auth).status_code == 200
+    assert client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json() == []

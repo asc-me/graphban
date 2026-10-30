@@ -528,6 +528,7 @@ class ProjectOut(ORMModel):
     memory_auto_reject: bool = True
     memory_llm_judge: bool = False
     memory_candidate_expiry_days: int = 45
+    memory_flag_on_code_change: bool = True
     # May an agent operate this project's quality gates (AL-282)? Never authority gates.
     agent_adjudication: bool = False
     # Danger mode (GRPH-380): may an agent sign off its own work when nobody else can?
@@ -1217,6 +1218,7 @@ class ProjectUpdate(BaseModel):
     memory_auto_reject: bool | None = None
     memory_llm_judge: bool | None = None
     memory_candidate_expiry_days: int | None = None
+    memory_flag_on_code_change: bool | None = None
     agent_adjudication: bool | None = None
     allow_self_review: bool | None = None
     # Unlike the fields above, an explicit null here CLEARS (back to unmeasured); omit the
