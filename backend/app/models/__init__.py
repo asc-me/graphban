@@ -1358,6 +1358,12 @@ class Prd(Base):
     def linked_keys(self) -> list[str]:
         return [_key_of(self, i, "item") for i in (self.linked or [])]
 
+    @property
+    def closed_at(self) -> datetime | None:
+        """When close_prd ran, from the close record; None if never closed (legacy rows too)."""
+        raw = (self.close_record or {}).get("closed_at")
+        return datetime.fromisoformat(raw) if raw else None
+
 
 class GrillTurn(Base):
     """One turn of a PRD's grill, owned by the SERVER (AL-296 / PRD-15 D4).

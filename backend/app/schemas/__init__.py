@@ -1291,6 +1291,7 @@ class PrdOut(ORMModel):
     updated: str
     created_at: datetime
     updated_at: datetime
+    closed_at: datetime | None = None
 
 
 class PrdSummary(ORMModel):
@@ -1300,6 +1301,7 @@ class PrdSummary(ORMModel):
     version: str
     linked: list[str] = _key("linked_keys", default_factory=list)
     updated_at: datetime
+    closed_at: datetime | None = None
     request_count: int = 0
     request_votes: int = 0
     request_types: dict[str, int] = {}
