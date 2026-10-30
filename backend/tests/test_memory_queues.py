@@ -352,20 +352,53 @@ def _naive_best(vec, pool):
 
 
 def test_best_match_equals_the_per_pair_loop():
-    pool = [(MemoryShard(id=f"s{i}"), _vec(i, 64)) for i in range(40)]
-    pool.append((MemoryShard(id="zero"), [0.0] * 64))
-    for seed in (100, 101, 102):
-        q = _vec(seed, 64)
-        got, want = mem_svc._best_match(q, pool), _naive_best(q, pool)
-        assert got[0] is want[0] and abs(got[1] - want[1]) < 1e-12
-    assert mem_svc._best_match([0.0] * 64, pool) == (None, 0.0)
-    assert mem_svc._best_match(pool[0][1], []) == (None, 0.0)
+    plain = [(MemoryShard(id=f"s{i}"), _vec(i, 64)) for i in range(40)]
+    plain.append((MemoryShard(id="zero"), [0.0] * 64))
+    for pool in (plain, mem_svc.VecPool(plain)):
+        for seed in (100, 101, 102):
+            q = _vec(seed, 64)
+            got, want = mem_svc._best_match(q, pool), _naive_best(q, pool)
+            assert got[0] is want[0] and abs(got[1] - want[1]) < 1e-12
+        assert mem_svc._best_match([0.0] * 64, pool) == (None, 0.0)
+    assert mem_svc._best_match(plain[0][1], []) == (None, 0.0)
+    assert mem_svc._best_match(plain[0][1], mem_svc.VecPool()) == (None, 0.0)
+
+
+def test_vec_pool_append_is_not_served_a_stale_matrix():
+    pool = mem_svc.VecPool([(MemoryShard(id="a"), [1.0, 0.0])])
+    assert mem_svc._best_match([0.0, 1.0], pool) == (None, 0.0)
+    b = MemoryShard(id="b")
+    pool.append((b, [0.0, 1.0]))
+    got = mem_svc._best_match([0.0, 1.0], pool)
+    assert got[0] is b and abs(got[1] - 1.0) < 1e-12
+
+
+def test_score_candidates_hands_the_scorer_cached_pools(client, auth, monkeypatch):
+    """The speed below only holds for a `VecPool`: a plain list is re-normalised on every
+    call, which on the CI runner is as slow as the loop it replaced."""
+    pid = _proj(client, auth, "QPools")
+    _seed_candidates(pid)
+    seen = []
+    real = mem_svc._score_shard
+
+    def spy(cv, published, rejected, *a, **kw):
+        seen.append((type(published), type(rejected), type(a[2] if len(a) > 2 else kw.get("corroborating"))))
+        return real(cv, published, rejected, *a, **kw)
+
+    monkeypatch.setattr(mem_svc, "_score_shard", spy)
+    db = SessionLocal()
+    try:
+        mem_svc.score_candidates(db, project_id=pid, judge=False)
+    finally:
+        db.close()
+    assert seen and all(t == (mem_svc.VecPool,) * 3 for t in seen)
 
 
 def test_similarity_pass_is_fast_at_real_scale():
-    """~1,300 published x 80 candidates at 1024 dims took ~34s in pure Python."""
+    """~1,300 published x 80 candidates at 1024 dims took ~34s in pure Python. Timed on the
+    pool type `score_candidates` actually passes (see the test above)."""
     import time
-    pool = [(MemoryShard(id=f"s{i}"), _vec(i, 1024)) for i in range(1300)]
+    pool = mem_svc.VecPool((MemoryShard(id=f"s{i}"), _vec(i, 1024)) for i in range(1300))
     cands = [_vec(10_000 + i, 1024) for i in range(80)]
     t0 = time.monotonic()
     for c in cands:
