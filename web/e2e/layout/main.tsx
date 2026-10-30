@@ -49,6 +49,8 @@ const PROVIDERS = [
 function answer(path: string): unknown {
   if (path.startsWith("/api/projects")) return [PROJECT];
   if (path.startsWith("/api/assistant/providers")) return { providers: PROVIDERS };
+  // The panel's own Activity list (GRPH-1199) reads an EventPage, not a bare array.
+  if (path.startsWith("/api/events")) return { results: [], total: 0, limit: 50, offset: 0, has_more: false };
   return [];
 }
 
