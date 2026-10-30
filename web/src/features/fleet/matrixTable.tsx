@@ -350,8 +350,8 @@ function TierMapForm({ cells, saving, clearing, saveError, clearError, onSave, o
                     <td key={tier} className="px-3 py-2">
                       <div className="flex min-w-[13rem] items-start gap-2">
                         {/* The tier-map payload carries no grade letter, pass rate or run count
-                            (backend gap), so the badge and the figures read "–" rather than a
-                            number nobody measured. */}
+                            (no grade scale exists), so the badge reads "–"; the pass rate and
+                            run count come from `measured`. */}
                         <span
                           className="mt-0.5 rounded-md border border-line-2 px-1.5 font-mono text-meta text-muted"
                           data-testid="tier-map-grade"
@@ -390,7 +390,9 @@ function TierMapForm({ cells, saving, clearing, saveError, clearError, onSave, o
                           </select>
                           <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted" data-testid="tier-map-meta">
                             <span data-testid="tier-map-graded">
-                              {cell.graded_model ? "graded" : "not measured"} – pass · – runs
+                              {cell.measured
+                                ? `${cell.measured.below_floor ? "below grading floor · " : ""}${Math.round(cell.measured.pass_rate * 100)}% pass · ${cell.measured.runs} run${cell.measured.runs === 1 ? "" : "s"}`
+                                : "not measured"}
                             </span>
                             {overridden && (
                               <span className="rounded-md border border-line-2 px-1 font-mono text-meta" data-testid="tier-map-state">

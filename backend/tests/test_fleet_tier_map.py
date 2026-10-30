@@ -132,6 +132,54 @@ def test_grading_below_the_floor_is_not_grading(client, auth, proj, monkeypatch)
     assert _cell(graded, "gbagent", "cheap")["graded_model"] == "qwen3-coder:30b"
 
 
+# ---- measured pass rate and run count (GRPH-1215) ---------------------------------------------
+
+def _fake_measured(monkeypatch, cells):
+    from app.services import delegation as delegation_svc
+    monkeypatch.setattr(delegation_svc, "measured", lambda _db, _pid: cells)
+
+
+def test_a_cell_reports_runs_signed_off_and_pass_rate_for_its_effective_model(
+        client, auth, proj, monkeypatch):
+    """Two capabilities pool into one figure. The override moves the numbers with the model."""
+    _fake_measured(monkeypatch, [
+        {"vendor": "gbagent", "model": "qwen3-coder:30b", "capability": "B5", "layer": "project",
+         "quality": {"value": 0.5, "n": 4}},
+        {"vendor": "gbagent", "model": "qwen3-coder:30b", "capability": "H5", "layer": "project",
+         "quality": {"value": 0.75, "n": 8}},
+        {"vendor": "gbagent", "model": "qwen3.6:35b-a3b-coding-mtp-det", "capability": "B5",
+         "layer": "project", "quality": {"value": 1.0, "n": 20}},
+    ])
+    out = _save(client, auth, proj,
+                [{"harness": "gbagent", "tier": "cheap", "model": "qwen3-coder:30b"}])
+    m = _cell(out, "gbagent", "cheap")["measured"]
+    assert m["runs"] == 12 and m["signed_off"] == 8
+    assert m["pass_rate"] == pytest.approx(8 / 12)
+    assert m["below_floor"] is False
+
+    # Cleared: the packaged model's numbers (20 runs), not the previous override's.
+    cleared = client.delete(f"/api/fleet/tier-map?project_id={proj}", headers=auth)
+    assert cleared.status_code == 200, cleared.text
+    m = _cell(cleared.json(), "gbagent", "cheap")["measured"]
+    assert m["runs"] == 20 and m["pass_rate"] == 1.0
+
+
+def test_a_cell_with_no_finished_attempts_is_null_not_zeros(client, auth, proj, monkeypatch):
+    _fake_measured(monkeypatch, [])
+    payload = client.get(f"/api/fleet/tier-map?project_id={proj}", headers=auth).json()
+    assert all(c["measured"] is None for c in payload["cells"])
+
+
+def test_a_cell_under_the_floor_keeps_its_counts_and_says_so(client, auth, proj, monkeypatch):
+    _fake_measured(monkeypatch, [
+        {"vendor": "gbagent", "model": "qwen3.6:35b-a3b-coding-mtp-det", "capability": "B5",
+         "layer": "project", "quality": {"value": 0.5, "n": 2}},
+    ])
+    payload = client.get(f"/api/fleet/tier-map?project_id={proj}", headers=auth).json()
+    m = _cell(payload, "gbagent", "cheap")["measured"]
+    assert m == {"runs": 2, "signed_off": 1, "pass_rate": 0.5, "below_floor": True}
+
+
 # ---- saving, and what survives a restart ------------------------------------------------------
 
 def test_a_saved_override_changes_what_the_deployment_runs(client, auth, proj):

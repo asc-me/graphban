@@ -2136,6 +2136,9 @@ export interface FleetTierCell {
   /** Best-measured model per performance grading, or null when NOT MEASURED. A null here must
    *  never be filled in by a guess (PRD-47 G3). */
   graded_model: string | null;
+  /** Finished attempts for `effective_model` over the last 30 days, or null when none finished
+   *  (never zeros). `below_floor` means too few runs to call it graded. */
+  measured: { runs: number; signed_off: number; pass_rate: number; below_floor: boolean } | null;
 }
 
 /** The catalog facts and this deployment's overrides, served together. */

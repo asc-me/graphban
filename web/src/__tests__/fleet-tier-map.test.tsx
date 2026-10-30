@@ -39,7 +39,7 @@ function cell(over: Partial<FleetTierCell> = {}): FleetTierCell {
   return {
     harness: "gbagent", tier: "cheap", packaged_model: "qwen3.6",
     override: null, effective_model: "qwen3.6", overridden: false,
-    models: ["qwen3.6", "haiku"], graded_model: "haiku",
+    models: ["qwen3.6", "haiku"], graded_model: "haiku", measured: null,
     ...over,
   };
 }
@@ -85,6 +85,19 @@ describe("tier map panel", () => {
     api.fleetTierMap.mockReset();
     api.saveFleetTierMap.mockReset();
     api.clearFleetTierMap.mockReset();
+  });
+
+  it("fills the meta line from measured, and says not measured when it is null", async () => {
+    api.fleetTierMap.mockResolvedValue(map([
+      cell({ measured: { runs: 212, signed_off: 199, pass_rate: 0.94, below_floor: false } }),
+      cell({ harness: "codex", tier: "frontier", models: ["gpt-5"], packaged_model: "gpt-5",
+             effective_model: "gpt-5", graded_model: null, measured: null }),
+    ]));
+    show();
+    await loaded();
+    const [first, second] = screen.getAllByTestId("tier-map-graded");
+    expect(first).toHaveTextContent("94% pass · 212 runs");
+    expect(second).toHaveTextContent("not measured");
   });
 
   it("reads the map for the active project and offers every control", async () => {
@@ -392,7 +405,7 @@ describe("tier map panel", () => {
     const td = screen.getByLabelText(CHEAP).closest("td") as HTMLElement;
     expect(within(td).getByTestId("tier-map-grade")).toHaveTextContent("–");
     expect(within(td).getAllByTestId("tier-map-graded")).toHaveLength(1);
-    expect(within(td).getByTestId("tier-map-graded")).toHaveTextContent("– pass · – runs");
+    expect(within(td).getByTestId("tier-map-graded")).toHaveTextContent("not measured");
     // The model name lives in the select's options only; no plain-text repeat beside it.
     const select = within(td).getByLabelText(CHEAP);
     const outside = Array.from(td.querySelectorAll("*")).filter(
