@@ -143,6 +143,20 @@ def test_list_carries_by_created_at_and_linked_item_key(client, auth, db):
     assert client.post(f"/api/requests/{a}/link", headers=auth, json={"item_id": item}).status_code == 200
     for r in (a, b):
         assert client.post(f"/api/prds/{pid}/requests", headers=auth, json={"request_id": r}).status_code == 200
-    rows = {r["id"]: r for r in client.get(f"/api/prds/{pid}/requests", headers=auth).json()}
-    assert rows[a]["by"] == "dana" and rows[a]["linked_to"] == item and rows[a]["created_at"]
-    assert rows[b]["linked_to"] is None
+    # Retag so the item's frozen id and rendered key DIVERGE; otherwise sending the id instead of
+    # the key passes this test (as it did on the first attempt at GRPH-1216).
+    from app.models import Item
+    from app.services import projects as proj_svc
+
+    proj_svc.retag_project(db, "core", "ZZ")
+    db.commit()
+    row = db.query(Item).filter(Item.title == "Do it").one()
+    db.refresh(row)
+    key, frozen = row.key, row.id
+    db.commit()  # end the read so the request below is not blocked by this session
+    assert key != frozen, f"the fixture did not diverge: id={frozen!r} key={key!r}"
+    # Request keys re-render under the new tag too, so match rows by title.
+    rows = {r["title"]: r for r in client.get(f"/api/prds/{pid}/requests", headers=auth).json()}
+    assert rows["Dark mode"]["by"] == "dana" and rows["Dark mode"]["created_at"]
+    assert rows["Dark mode"]["linked_to"] == key != frozen
+    assert rows["Crash"]["linked_to"] is None
