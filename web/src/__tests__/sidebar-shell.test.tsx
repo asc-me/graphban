@@ -286,10 +286,21 @@ describe("GRPH-1141 motion", () => {
 });
 
 /**
- * Every route mounts the one sidebar and none mounts the old accordion. The accordion's
- * signature was every section as an in-place disclosure (`hosted-nav-*` panels for the
- * closed ones too); now only the current section is inline and the rest open flyouts.
+ * Every route mounts the one sidebar and none mounts the old hosted nav (`hosted-nav-*`
+ * panels). Expanded, the sections are an accordion (GRPH-1222): one panel per section, at
+ * most one folded out, and no section header opens a flyout.
  */
+describe("GRPH-1224 the Organization entry", () => {
+  it.each([false, true])("hosted=%s: sits above the utilities with a building icon", async (hosted) => {
+    wrap(<LeftNav hosted={hosted} />);
+    const footer = within(layer("expanded")).getByRole("link", { name: "Usage" }).parentElement!;
+    const org = await within(footer).findByText("Organization");
+    const row = org.closest("a, button")!;
+    expect(row.querySelector("svg.lucide-building2")).not.toBeNull();
+    expect(footer.firstElementChild).toBe(row);
+  });
+});
+
 const VIEWS = [
   "tracker", "requests", "triage", "links", "code", "stack", "roadmap", "fleet",
   "outposts", "harness", "activity", "live", "memory", "lessons",
@@ -321,12 +332,12 @@ function expectNewSidebar(path: string) {
   expect(document.querySelectorAll("aside"), `${path}: a second nav is mounted`).toHaveLength(1);
   expect(document.querySelector('[id^="hosted-nav-"]'), path).toBeNull();
   const nav = within(layer("expanded"));
-  const inline = document.querySelectorAll('[id^="nav-"]');
-  expect(inline.length, `${path}: at most one section is inline`).toBeLessThanOrEqual(1);
-  const menus = ["Plan", "Build", "Observe"].filter(
-    (s) => nav.getByRole("button", { name: s }).getAttribute("aria-haspopup") === "dialog",
-  );
-  expect(menus.length, `${path}: the other sections open flyouts`).toBe(3 - inline.length);
+  expect(document.querySelectorAll('[id^="nav-"]'), `${path}: one panel per section`).toHaveLength(3);
+  const open = document.querySelectorAll('[id^="nav-"][data-inline="open"]');
+  expect(open.length, `${path}: at most one section is folded out`).toBeLessThanOrEqual(1);
+  for (const name of ["Plan", "Build", "Observe"]) {
+    expect(nav.getByRole("button", { name }), `${path}: ${name} opens no flyout`).not.toHaveAttribute("aria-haspopup");
+  }
   expect(layer("rail"), path).not.toBeNull();
   expect(nav.getByRole("button", { name: /Collapse sidebar/ }), path).toBeInTheDocument();
 }

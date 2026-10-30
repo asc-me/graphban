@@ -1,13 +1,15 @@
-import { Activity, BarChart3, BookOpen, Brain, ChartLine, ChevronDown, ChevronRight, ChevronsUpDown, ClipboardCheck, Gauge, Hammer, History, Layers, LayoutGrid, Link as LinkIcon, ListChecks, Map, MessageSquare, PanelLeftClose, PanelLeftOpen, Plug, Radar, Radio, Scale, Server, Settings, ShieldCheck, Star, Users, UsersRound, Workflow } from "lucide-react";
+import { Activity, BarChart3, BookOpen, Brain, Building2, ChartLine, ChevronDown, ChevronsUpDown, ClipboardCheck, Gauge, GitBranch, Hammer, History, Layers, LayoutGrid, Link as LinkIcon, ListChecks, Map, MessageSquare, PanelLeftClose, PanelLeftOpen, Plug, Radar, Radio, Server, Settings, ShieldCheck, Star, Users, UsersRound, Workflow } from "lucide-react";
 import * as React from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 
 import { ProjectSwitcher, ProjectTile } from "@/components/shell/ProjectSwitcher";
 import { useProjectCtx } from "@/features/ProjectContext";
+import { LEVELS } from "@/features/rules/levels";
 import { CloudOrgLinkDialog } from "@/features/settings/CloudOrgLinkDialog";
 import { cn } from "@/lib/cn";
 import {
   useCounts,
+  useGitops,
   useIsPlatformAdmin,
   useOrgs,
   useSyncStatus,
@@ -54,8 +56,8 @@ export const SECTIONS: SectionDef[] = [
       { view: "links", icon: <LinkIcon size={15} />, label: "Links", desc: "Typed relations between items and requests" },
       { view: "code", icon: <Workflow size={15} />, label: "Code graph", desc: "Modules, files and symbols agents changed", count: "code_nodes" },
       { view: "stack", icon: <Layers size={15} />, label: "Stack", desc: "Languages, frameworks and services" },
+      { view: "rules", icon: <GitBranch size={15} />, label: "Rules", desc: "What may move work, and what holds each rule" },
       { view: "mcp-tools", icon: <Plug size={15} />, label: "MCP Tools", desc: "How agents connect and call tools", count: "mcp_tools", hostedOnly: true },
-      { view: "rules", icon: <Scale size={15} />, label: "Rules", desc: "How work moves, and what holds each step" },
       { view: "fleet", icon: <Users size={15} />, label: "Fleet", desc: "Who works here and what they spawn as", count: "fleet_agents" },
       { view: "outposts", icon: <Server size={15} />, label: "Outposts", desc: "Machines your agents run on", count: "outposts" },
     ],
@@ -146,11 +148,12 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
   const view = viewSegment(pathname);
 
   const [collapsed, setCollapsed] = React.useState(readSidebarCollapsed);
-  const [inline, setInline] = React.useState(true);
+  // Expanded, the sections are an accordion: one folded out at a time, or none.
+  const [open, setOpen] = React.useState<Section | null>(current);
   const [tip, setTip] = React.useState<Tip | null>(null);
   // The project switcher's menu suppresses rail labels, as an open flyout does.
   const [menus, setMenus] = React.useState(0);
-  // One flyout at a time: the section it lists, where it sits, and what opened it.
+  // Collapsed rail only. One flyout at a time: the section it lists, where it sits, and what opened it.
   const [fly, setFly] = React.useState<Fly | null>(null);
   // Kept after close so the flyout fades out with its content rather than emptying first.
   const [flyShown, setFlyShown] = React.useState<Fly | null>(null);
@@ -158,8 +161,10 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
   const flyRef = React.useRef<HTMLDivElement>(null);
   const reduce = prefersReducedMotion();
 
-  // Landing in another section makes it the inline one, opened.
-  React.useEffect(() => setInline(true), [current]);
+  // Landing in a section folds it out, and the others up. Dashboard leaves the accordion as it was.
+  React.useEffect(() => {
+    if (current) setOpen(current);
+  }, [current]);
 
   const closeFly = React.useCallback(() => setFly(null), []);
 
@@ -359,26 +364,27 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
             {dashboardPath && (
               <NavItem to={dashboardPath} label="Dashboard" end dashboard />
             )}
-            {sections.map((s) =>
-              s.key === current ? (
+            {sections.map((s) => {
+              const isOpen = open === s.key;
+              return (
                 <React.Fragment key={s.key}>
                   <SectionHeader
                     label={s.label}
-                    expanded={inline}
+                    expanded={isOpen}
                     controls={`nav-${s.key}`}
                     reduce={reduce}
-                    onToggle={() => setInline((v) => !v)}
+                    onToggle={() => setOpen((o) => (o === s.key ? null : s.key))}
                   />
                   {/* Always mounted so the rows can animate; closed, it is inert. */}
                   <div
                     id={`nav-${s.key}`}
-                    data-inline={inline ? "open" : "closed"}
-                    aria-hidden={!inline}
-                    inert={!inline}
+                    data-inline={isOpen ? "open" : "closed"}
+                    aria-hidden={!isOpen}
+                    inert={!isOpen}
                     style={{
                       display: "grid",
-                      gridTemplateRows: inline ? "1fr" : "0fr",
-                      opacity: inline ? 1 : 0,
+                      gridTemplateRows: isOpen ? "1fr" : "0fr",
+                      opacity: isOpen ? 1 : 0,
                       transition: reduce ? "none" : `grid-template-rows 240ms ${EASE}, opacity 180ms ${EASE}`,
                     }}
                   >
@@ -396,25 +402,15 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
                     </div>
                   </div>
                 </React.Fragment>
-              ) : (
-                <button
-                  key={s.key}
-                  type="button"
-                  {...trigger(s)}
-                  className="flex items-center gap-2.5 rounded-[9px] h-[31px] flex-none px-2.5 leading-[15px] text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2 data-[open=true]:bg-surface-3 data-[open=true]:text-fg"
-                >
-                  <span className="flex-1 font-medium">{s.label}</span>
-                  <ChevronRight size={12} className="text-faint" />
-                </button>
-              ),
-            )}
+              );
+            })}
           </nav>
 
           <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-2.5">
             {hosted ? (
-              <NavItem href={consoleHref(orgPath())} label="Organization" utility />
+              <NavItem href={consoleHref(orgPath())} icon={<Building2 size={15} />} label="Organization" utility />
             ) : (
-              <OrgRailItem onOpenDialog={() => setOrgDialogOpen(true)} />
+              <OrgRailItem projectId={activeId} onOpenDialog={() => setOrgDialogOpen(true)} />
             )}
             {canAdminister && (
               <NavItem href={consoleHref(adminPath())} icon={<UsersRound size={15} />} label="Admin" utility />
@@ -545,9 +541,10 @@ function RailLink({
 }
 
 /**
- * A section other than the current one, listed beside the sidebar (GRPH-P59 §D2): its pages
- * with a line of description and a count. Opening it never navigates; choosing a page does,
- * and that section becomes the inline one because the route says so.
+ * A section other than the current one, listed beside the collapsed rail (GRPH-P59 §D2): its
+ * pages with a line of description and a count. Opening it never navigates; choosing a page
+ * does, and that section becomes the rail's because the route says so. The expanded sidebar
+ * has no flyouts: its sections fold out inline (GRPH-1222).
  */
 const SectionFlyout = React.forwardRef<HTMLDivElement, {
   open: boolean;
@@ -678,7 +675,10 @@ function SectionHeader({
       aria-expanded={expanded}
       aria-controls={expanded ? controls : undefined}
       onClick={onToggle}
-      className="flex items-center gap-2.5 rounded-[9px] h-[31px] flex-none px-2.5 text-left text-[13px] leading-[17px] text-fg-2 transition-colors hover:bg-surface-3"
+      className={cn(
+        "flex items-center gap-2.5 rounded-[9px] h-[31px] flex-none px-2.5 text-left text-[13px] leading-[17px] transition-colors hover:bg-surface-3",
+        expanded ? "text-fg-2" : "text-muted hover:text-fg-2",
+      )}
     >
       <span className="flex-1 font-medium">{label}</span>
       <ChevronDown
@@ -694,34 +694,54 @@ function SectionHeader({
   );
 }
 
-function OrgRailItem({ onOpenDialog }: { onOpenDialog: () => void }) {
+type OrgState = "unlinked" | "linked" | "unreachable";
+
+/** The trailing mark per state (`Org Link - Hi-fi.dc.html` 1a–1c). Amber is Advisory's in Rules. */
+const ORG_DOT: Record<Exclude<OrgState, "unlinked">, { color: string; word: string }> = {
+  linked: { color: "var(--color-st-done)", word: "Linked" },
+  unreachable: { color: LEVELS.advisory.color, word: "Org unreachable" },
+};
+
+/**
+ * Self-host's Organization entry (GRPH-1224). Unlinked it opens the explainer; linked or
+ * unreachable it stays in the app — never an external tab to `cloud_url`. Reachability is the
+ * same live probe Rules reads (`linked_unreachable`), asked only once the box is linked.
+ */
+function OrgRailItem({ projectId, onOpenDialog }: { projectId: string; onOpenDialog: () => void }) {
   const { data: status, isLoading } = useSyncStatus();
   const navigate = useNavigate();
-  const url = usableHttpUrl(status?.cloud_url);
+  const isLinked = !!usableHttpUrl(status?.cloud_url);
+  const { data: gitops } = useGitops(isLinked ? projectId : "");
   if (isLoading && !status) {
-    return <NavItem to={settingsPath("deployment/sync")} label="Organization" utility />;
+    return <NavItem to={settingsPath("deployment/sync")} icon={<Building2 size={15} />} label="Organization" utility />;
   }
-  if (url) {
-    return (
-      <a
-        href={url}
-        target="_blank"
-        rel="noreferrer noopener"
-        className="flex items-center gap-2.5 rounded-[9px] h-[31px] flex-none px-2.5 leading-[15px] text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
-      >
-        <span className="flex-1">Organization</span>
-      </a>
-    );
-  }
-  const isMalformed = !!(status && status.cloud_url.trim());
+  const isMalformed = !isLinked && !!(status && status.cloud_url.trim());
+  const state: OrgState = !isLinked
+    ? "unlinked"
+    : gitops?.control.state === "linked_unreachable" ? "unreachable" : "linked";
+  const dot = state === "unlinked" ? null : ORG_DOT[state];
+  const onClick = () => {
+    if (isMalformed) navigate(`${settingsPath("deployment/sync")}?reason=malformed`);
+    // The org overview window is GRPH-1225; until it lands, Sync link settings is the in-app home.
+    else if (dot) navigate(settingsPath("deployment/sync"));
+    else onOpenDialog();
+  };
   return (
     <button
       type="button"
-      onClick={() => (isMalformed ? navigate(`${settingsPath("deployment/sync")}?reason=malformed`) : onOpenDialog())}
+      onClick={onClick}
+      data-org-state={state}
       className="flex items-center gap-2.5 rounded-[9px] h-[31px] flex-none px-2.5 leading-[15px] text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
     >
+      <Building2 size={15} className="flex-none" />
       <span className="flex-1">Organization</span>
-      {!isMalformed && <CloudPill />}
+      {state === "unlinked" && !isMalformed && <CloudPill />}
+      {dot && (
+        <>
+          <span data-org-dot title={dot.word} aria-hidden className="size-[7px] flex-none rounded-full" style={{ background: dot.color }} />
+          <span className="sr-only">{`, ${dot.word.toLowerCase()}`}</span>
+        </>
+      )}
     </button>
   );
 }
