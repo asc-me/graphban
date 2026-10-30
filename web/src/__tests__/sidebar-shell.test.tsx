@@ -290,6 +290,17 @@ describe("GRPH-1141 motion", () => {
  * panels). Expanded, the sections are an accordion (GRPH-1222): one panel per section, at
  * most one folded out, and no section header opens a flyout.
  */
+describe("GRPH-1224 the Organization entry", () => {
+  it.each([false, true])("hosted=%s: sits above the utilities with a building icon", async (hosted) => {
+    wrap(<LeftNav hosted={hosted} />);
+    const footer = within(layer("expanded")).getByRole("link", { name: "Usage" }).parentElement!;
+    const org = await within(footer).findByText("Organization");
+    const row = org.closest("a, button")!;
+    expect(row.querySelector("svg.lucide-building2")).not.toBeNull();
+    expect(footer.firstElementChild).toBe(row);
+  });
+});
+
 const VIEWS = [
   "tracker", "requests", "triage", "links", "code", "stack", "roadmap", "fleet",
   "outposts", "harness", "activity", "live", "memory", "lessons",

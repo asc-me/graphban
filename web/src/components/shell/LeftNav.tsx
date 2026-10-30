@@ -1,13 +1,15 @@
-import { Activity, BarChart3, BookOpen, Brain, ChartLine, ChevronDown, ChevronsUpDown, ClipboardCheck, Gauge, GitBranch, Hammer, History, Layers, LayoutGrid, Link as LinkIcon, ListChecks, Map, MessageSquare, PanelLeftClose, PanelLeftOpen, Plug, Radar, Radio, Server, Settings, ShieldCheck, Star, Users, UsersRound, Workflow } from "lucide-react";
+import { Activity, BarChart3, BookOpen, Brain, Building2, ChartLine, ChevronDown, ChevronsUpDown, ClipboardCheck, Gauge, GitBranch, Hammer, History, Layers, LayoutGrid, Link as LinkIcon, ListChecks, Map, MessageSquare, PanelLeftClose, PanelLeftOpen, Plug, Radar, Radio, Server, Settings, ShieldCheck, Star, Users, UsersRound, Workflow } from "lucide-react";
 import * as React from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 
 import { ProjectSwitcher, ProjectTile } from "@/components/shell/ProjectSwitcher";
 import { useProjectCtx } from "@/features/ProjectContext";
+import { LEVELS } from "@/features/rules/levels";
 import { CloudOrgLinkDialog } from "@/features/settings/CloudOrgLinkDialog";
 import { cn } from "@/lib/cn";
 import {
   useCounts,
+  useGitops,
   useIsPlatformAdmin,
   useOrgs,
   useSyncStatus,
@@ -406,9 +408,9 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
 
           <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-2.5">
             {hosted ? (
-              <NavItem href={consoleHref(orgPath())} label="Organization" utility />
+              <NavItem href={consoleHref(orgPath())} icon={<Building2 size={15} />} label="Organization" utility />
             ) : (
-              <OrgRailItem onOpenDialog={() => setOrgDialogOpen(true)} />
+              <OrgRailItem projectId={activeId} onOpenDialog={() => setOrgDialogOpen(true)} />
             )}
             {canAdminister && (
               <NavItem href={consoleHref(adminPath())} icon={<UsersRound size={15} />} label="Admin" utility />
@@ -692,34 +694,54 @@ function SectionHeader({
   );
 }
 
-function OrgRailItem({ onOpenDialog }: { onOpenDialog: () => void }) {
+type OrgState = "unlinked" | "linked" | "unreachable";
+
+/** The trailing mark per state (`Org Link - Hi-fi.dc.html` 1a–1c). Amber is Advisory's in Rules. */
+const ORG_DOT: Record<Exclude<OrgState, "unlinked">, { color: string; word: string }> = {
+  linked: { color: "var(--color-st-done)", word: "Linked" },
+  unreachable: { color: LEVELS.advisory.color, word: "Org unreachable" },
+};
+
+/**
+ * Self-host's Organization entry (GRPH-1224). Unlinked it opens the explainer; linked or
+ * unreachable it stays in the app — never an external tab to `cloud_url`. Reachability is the
+ * same live probe Rules reads (`linked_unreachable`), asked only once the box is linked.
+ */
+function OrgRailItem({ projectId, onOpenDialog }: { projectId: string; onOpenDialog: () => void }) {
   const { data: status, isLoading } = useSyncStatus();
   const navigate = useNavigate();
-  const url = usableHttpUrl(status?.cloud_url);
+  const isLinked = !!usableHttpUrl(status?.cloud_url);
+  const { data: gitops } = useGitops(isLinked ? projectId : "");
   if (isLoading && !status) {
-    return <NavItem to={settingsPath("deployment/sync")} label="Organization" utility />;
+    return <NavItem to={settingsPath("deployment/sync")} icon={<Building2 size={15} />} label="Organization" utility />;
   }
-  if (url) {
-    return (
-      <a
-        href={url}
-        target="_blank"
-        rel="noreferrer noopener"
-        className="flex items-center gap-2.5 rounded-[9px] h-[31px] flex-none px-2.5 leading-[15px] text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
-      >
-        <span className="flex-1">Organization</span>
-      </a>
-    );
-  }
-  const isMalformed = !!(status && status.cloud_url.trim());
+  const isMalformed = !isLinked && !!(status && status.cloud_url.trim());
+  const state: OrgState = !isLinked
+    ? "unlinked"
+    : gitops?.control.state === "linked_unreachable" ? "unreachable" : "linked";
+  const dot = state === "unlinked" ? null : ORG_DOT[state];
+  const onClick = () => {
+    if (isMalformed) navigate(`${settingsPath("deployment/sync")}?reason=malformed`);
+    // The org overview window is GRPH-1225; until it lands, Sync link settings is the in-app home.
+    else if (dot) navigate(settingsPath("deployment/sync"));
+    else onOpenDialog();
+  };
   return (
     <button
       type="button"
-      onClick={() => (isMalformed ? navigate(`${settingsPath("deployment/sync")}?reason=malformed`) : onOpenDialog())}
+      onClick={onClick}
+      data-org-state={state}
       className="flex items-center gap-2.5 rounded-[9px] h-[31px] flex-none px-2.5 leading-[15px] text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
     >
+      <Building2 size={15} className="flex-none" />
       <span className="flex-1">Organization</span>
-      {!isMalformed && <CloudPill />}
+      {state === "unlinked" && !isMalformed && <CloudPill />}
+      {dot && (
+        <>
+          <span data-org-dot title={dot.word} aria-hidden className="size-[7px] flex-none rounded-full" style={{ background: dot.color }} />
+          <span className="sr-only">{`, ${dot.word.toLowerCase()}`}</span>
+        </>
+      )}
     </button>
   );
 }

@@ -44,6 +44,9 @@ export function settingsPath(sub = ""): string {
   return tail ? `/settings/${tail}` : "/settings";
 }
 
+/** The Graphban Cloud waitlist. Both org actions on a self-host box land here until cloud orgs ship (GRPH-1224). */
+export const ORG_SIGNUP_URL = "https://graphban.dev/platform#waitlist";
+
 /** A cloud console URL we will actually open. Missing/junk is not a URL (GRPH-P28 D5). */
 export function usableHttpUrl(raw: string | null | undefined): string | null {
   const s = (raw ?? "").trim();

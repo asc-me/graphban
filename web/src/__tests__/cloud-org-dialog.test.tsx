@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LeftNav } from "@/components/shell/LeftNav";
 import { CloudOrgLinkDialog } from "@/features/settings/CloudOrgLinkDialog";
 import { ProjectProvider } from "@/features/ProjectContext";
+import { ORG_SIGNUP_URL } from "@/lib/routes";
 import type { SyncStatus } from "@/lib/types";
 
 const project = {
@@ -35,7 +36,14 @@ const linked: SyncStatus = {
 
 const mocks = vi.hoisted(() => ({
   syncStatus: vi.fn(),
+  gitops: vi.fn(),
+  syncLink: vi.fn(),
 }));
+
+/** Only `control.state` is read by the nav entry. */
+const gitopsView = (state: string) => ({
+  project_id: "core", org_id: null, fields: {}, control: { state, writable: false },
+});
 
 vi.mock("@/lib/api", () => ({
   api: {
@@ -44,6 +52,8 @@ vi.mock("@/lib/api", () => ({
     adminWhoami: vi.fn(async () => ({ is_platform_admin: false })),
     config: vi.fn(async () => ({ hosted_mode: false, signup_mode: "closed" })),
     syncStatus: mocks.syncStatus,
+    gitops: mocks.gitops,
+    syncLink: mocks.syncLink,
     dashboard: vi.fn(async () => ({
       items_total: 0, items_by_status: {}, effort_total: 0, done_count: 0, in_progress_count: 0,
       blocked_count: 0, requests_total: 0, requests_by_type: {}, requests_by_status: {},
@@ -95,191 +105,131 @@ function wrapDialog(open: boolean, onOpenChange = vi.fn()) {
   );
 }
 
-describe("CloudOrgLinkDialog", () => {
+describe("CloudOrgLinkDialog — the not-linked explainer (GRPH-1224)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it("renders nothing when closed", () => {
     wrapDialog(false);
-    expect(screen.queryByText("Link to a cloud org")).not.toBeInTheDocument();
+    expect(screen.queryByText("One org across every deployment")).not.toBeInTheDocument();
   });
 
-  it("starts on the Plan step with billing toggle and four tiers", () => {
+  it("shows the kicker, title, five benefits and the three stays items", () => {
     wrapDialog(true);
-    expect(screen.getByText("Link to a cloud org")).toBeInTheDocument();
-    expect(screen.getByText("Plan")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Monthly" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Annual" })).toBeInTheDocument();
-    expect(screen.getByText("Starter")).toBeInTheDocument();
-    expect(screen.getByText("Pro")).toBeInTheDocument();
-    expect(screen.getByText("Team")).toBeInTheDocument();
-    expect(screen.getByText("Enterprise")).toBeInTheDocument();
-    expect(screen.getByText(/Seats are people/)).toBeInTheDocument();
+    const dialog = screen.getByRole("dialog", { name: "One org across every deployment" });
+    expect(within(dialog).getByText("ORGANIZATIONS · GRAPHBAN CLOUD")).toBeInTheDocument();
+    const benefits = Array.from(dialog.querySelectorAll("[data-benefit]")).map((b) => b.querySelector("span.font-semibold")?.textContent);
+    expect(benefits).toEqual([
+      "People and teams in one place",
+      "Roles and access (RBAC)",
+      "Policy rules for every project",
+      "Galaxy",
+      "Feedback on your own domain",
+    ]);
+    expect(dialog.querySelectorAll("[data-benefit]")[4]).toHaveClass("col-span-full");
+    expect(within(dialog).getByText("STAYS ON THIS BOX")).toBeInTheDocument();
+    expect(Array.from(dialog.querySelectorAll("[data-stays]")).map((s) => s.textContent?.replace("✓", ""))).toEqual([
+      "Code and repos", "Memory shards", "Item content",
+    ]);
   });
 
-  it("switches billing and updates price display", async () => {
+  it("the old create-org flow is gone: no tiers, no sales, no review step, no cloud slug", () => {
+    wrapDialog(true);
+    for (const gone of [/Starter/, /Enterprise/, /Contact sales/, /Review/, /cloud\.graphban\.dev\//, /Continue/]) {
+      expect(screen.queryByText(gone)).not.toBeInTheDocument();
+    }
+  });
+
+  it.each([
+    ["Link to an existing org", /border-line /],
+    ["Create a cloud org", /bg-accent/],
+  ])("%s is a Coming soon link to the waitlist in a new tab", (label, style) => {
+    wrapDialog(true);
+    const link = screen.getByRole("link", { name: `${label} — coming soon, join the waitlist` });
+    expect(link).toHaveAttribute("href", ORG_SIGNUP_URL);
+    expect(ORG_SIGNUP_URL).toBe("https://graphban.dev/platform#waitlist");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(within(link).getByText("Coming soon")).toBeVisible();
+    expect(link.className).toMatch(style);
+  });
+
+  it("neither org action links this box: clicking them never calls POST /api/sync/link", async () => {
     const user = userEvent.setup();
     wrapDialog(true);
-    expect(screen.getByText("$29/mo")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Annual" }));
-    expect(screen.getByText("$24/mo")).toBeInTheDocument();
+    for (const name of [/Link to an existing org/, /Create a cloud org/]) {
+      const link = screen.getByRole("link", { name });
+      link.addEventListener("click", (e) => e.preventDefault());
+      await user.click(link);
+    }
+    expect(mocks.syncLink).not.toHaveBeenCalled();
   });
 
-  it("navigates Plan → Account → Review", async () => {
+  it("Not now closes the window", async () => {
     const user = userEvent.setup();
-    wrapDialog(true);
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    expect(screen.getByText("Your name")).toBeInTheDocument();
-    expect(screen.getByText("Work email")).toBeInTheDocument();
-    expect(screen.getByText("Organization name")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Back" }));
-    expect(screen.getByText(/Seats are people/)).toBeInTheDocument();
-  });
-
-  it("validates work email inline", async () => {
-    const user = userEvent.setup();
-    wrapDialog(true);
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    const emailInput = screen.getByPlaceholderText("jane@acme.com");
-    await user.type(emailInput, "bad-email");
-    await user.tab();
-    expect(screen.getByText("Enter a valid email address")).toBeInTheDocument();
-    await user.clear(emailInput);
-    await user.type(emailInput, "jane@gmail.com");
-    await user.tab();
-    expect(screen.getByText("Use a work email")).toBeInTheDocument();
-    await user.clear(emailInput);
-    await user.type(emailInput, "jane@acme.com");
-    await user.tab();
-    expect(screen.queryByText("Use a work email")).not.toBeInTheDocument();
-  });
-
-  it("derives slug from org name and shows URL preview", async () => {
-    const user = userEvent.setup();
-    wrapDialog(true);
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    const orgInput = screen.getByPlaceholderText("Acme Corp");
-    await user.type(orgInput, "Acme Corp");
-    expect(screen.getByText("cloud.graphban.dev/acme-corp")).toBeInTheDocument();
-  });
-
-  it("disables Create org button with tooltip on Review step", async () => {
-    const user = userEvent.setup();
-    wrapDialog(true);
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await user.type(screen.getByPlaceholderText("Jane Doe"), "Jane");
-    await user.type(screen.getByPlaceholderText("jane@acme.com"), "jane@acme.com");
-    await user.type(screen.getByPlaceholderText("Acme Corp"), "Acme");
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    const btn = screen.getByRole("button", { name: "Create org" });
-    expect(btn).toBeDisabled();
-    expect(btn).toHaveAttribute("title", "Cloud org creation is not yet available from self-hosted");
-  });
-
-  it("shows what-gets-linked disclosure on Review step", async () => {
-    const user = userEvent.setup();
-    wrapDialog(true);
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await user.type(screen.getByPlaceholderText("Jane Doe"), "Jane");
-    await user.type(screen.getByPlaceholderText("jane@acme.com"), "jane@acme.com");
-    await user.type(screen.getByPlaceholderText("Acme Corp"), "Acme");
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    expect(screen.getByText("What gets linked")).toBeInTheDocument();
-    expect(screen.getByText(/Code stays on this box/)).toBeInTheDocument();
-    expect(screen.getByText(/Memory shards stay on this box/)).toBeInTheDocument();
-    expect(screen.getByText(/Item content stays on this box/)).toBeInTheDocument();
-    expect(screen.getByText(/Connection is outbound only/)).toBeInTheDocument();
-    expect(screen.getByText(/Item keys, statuses and titles/)).toBeInTheDocument();
-    expect(screen.queryByText(/bidirectionally/i)).not.toBeInTheDocument();
-  });
-
-  it("Enterprise tier routes to sales from the plan step", async () => {
-    const user = userEvent.setup();
-    wrapDialog(true);
-    await user.click(screen.getByText("Enterprise"));
-    const salesLink = screen.getByRole("link", { name: "Contact sales" });
-    expect(salesLink).toHaveAttribute("href", expect.stringContaining("mailto:"));
-    expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
-  });
-
-  it("tiers are sized by seats, not agents", () => {
-    wrapDialog(true);
-    expect(screen.getByText("Up to 3 seats")).toBeInTheDocument();
-    expect(screen.getByText("Up to 10 seats")).toBeInTheDocument();
-    expect(screen.getByText("Up to 25 seats")).toBeInTheDocument();
-    expect(screen.queryByText(/Up to \d+ agents/i)).not.toBeInTheDocument();
-  });
-
-  it("disables Continue with GitHub button with tooltip", async () => {
-    const user = userEvent.setup();
-    wrapDialog(true);
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    const btn = screen.getByRole("button", { name: "Continue with GitHub" });
-    expect(btn).toBeDisabled();
-    expect(btn).toHaveAttribute("title", "Cloud org creation is not yet available from self-hosted");
-  });
-
-  it("'Already have an account?' navigates to sync settings", async () => {
-    const user = userEvent.setup();
-    wrapDialog(true);
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await user.type(screen.getByPlaceholderText("Jane Doe"), "Jane");
-    await user.type(screen.getByPlaceholderText("jane@acme.com"), "jane@acme.com");
-    await user.type(screen.getByPlaceholderText("Acme Corp"), "Acme");
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await user.click(screen.getByText("Already have an account?"));
-    expect(screen.getByTestId("here")).toHaveTextContent("/settings/deployment/sync");
+    const onOpenChange = vi.fn();
+    wrapDialog(true, onOpenChange);
+    await user.click(screen.getByRole("button", { name: "Not now" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 });
 
-describe("OrgRailItem dialog integration", () => {
+describe("OrgRailItem — the Organization nav entry (GRPH-1224)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.syncStatus.mockResolvedValue(unlinked);
+    mocks.gitops.mockResolvedValue(gitopsView("linked_set"));
   });
 
-  it("opens the dialog when unlinked (no cloud_url)", async () => {
+  const entry = () => screen.findByRole("button", { name: /Organization/ });
+
+  it("unlinked: building icon and CLOUD, and the click opens the explainer", async () => {
     const user = userEvent.setup();
     wrap(<LeftNav />);
-    const btn = await screen.findByRole("button", { name: /Organization/ });
-    await user.click(btn);
-    expect(await screen.findByText("Link to a cloud org")).toBeInTheDocument();
-  });
-
-  it("shows the CLOUD pill when unlinked", async () => {
-    wrap(<LeftNav />);
-    const btn = await screen.findByRole("button", { name: /Organization/ });
+    const btn = await entry();
+    expect(btn.querySelector("svg.lucide-building2")).not.toBeNull();
     expect(btn).toHaveTextContent("CLOUD");
+    expect(btn.querySelector("[data-org-dot]")).toBeNull();
+    await user.click(btn);
+    const dialog = await screen.findByRole("dialog", { name: "One org across every deployment" });
+    expect(dialog.querySelectorAll("[data-benefit]")).toHaveLength(5);
+    expect(dialog.querySelectorAll("[data-stays]")).toHaveLength(3);
+    expect(screen.getByTestId("here")).toHaveTextContent("/tracker");
+    // Unlinked never asks the cloud whether it is reachable.
+    expect(mocks.gitops).not.toHaveBeenCalled();
   });
 
   it("navigates to sync settings with ?reason=malformed for bad cloud_url", async () => {
     const user = userEvent.setup();
     mocks.syncStatus.mockResolvedValue(malformed);
     wrap(<LeftNav />);
-    const btn = await screen.findByRole("button", { name: /Organization/ });
+    const btn = await entry();
+    expect(btn).not.toHaveTextContent("CLOUD");
     await user.click(btn);
     await waitFor(() => {
       expect(screen.getByTestId("here")).toHaveTextContent("/settings/deployment/sync");
     });
   });
 
-  it("renders external link when linked", async () => {
-    mocks.syncStatus.mockReset();
-    mocks.syncStatus.mockResolvedValue(linked);
-    wrap(<LeftNav />);
-    await waitFor(() => {
-      const link = screen.getByRole("link", { name: /Organization/ });
-      expect(link).toHaveAttribute("href", "https://cloud.graphban.dev/");
-    });
-  });
-
-  it("CALL sabotage: clicking unlinked OrgRailItem opens dialog, not settings nav", async () => {
+  it.each([
+    ["linked_set", "linked", "var(--color-st-done)"],
+    ["linked_unreachable", "unreachable", "rgb(224, 179, 74)"],
+  ])("gitops %s: %s dot, no CLOUD, and never an external link", async (control, state, colour) => {
     const user = userEvent.setup();
+    mocks.syncStatus.mockResolvedValue(linked);
+    mocks.gitops.mockResolvedValue(gitopsView(control));
     wrap(<LeftNav />);
-    const btn = await screen.findByRole("button", { name: /Organization/ });
+    await waitFor(() => expect(document.querySelector(`[data-org-state="${state}"]`)).not.toBeNull());
+    const btn = await entry();
+    expect(btn.tagName).toBe("BUTTON");
+    expect(btn.querySelector("svg.lucide-building2")).not.toBeNull();
+    expect(btn).not.toHaveTextContent("CLOUD");
+    expect(btn.querySelector<HTMLElement>("[data-org-dot]")!.style.background).toBe(colour);
+    expect(screen.queryByRole("link", { name: /Organization/ })).not.toBeInTheDocument();
+    expect(document.querySelector('a[href^="https://cloud.graphban.dev"]')).toBeNull();
     await user.click(btn);
-    expect(await screen.findByText("Link to a cloud org")).toBeInTheDocument();
-    expect(screen.getByTestId("here")).toHaveTextContent("/tracker");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByTestId("here")).toHaveTextContent("/settings/deployment/sync");
   });
 });

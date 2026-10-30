@@ -109,14 +109,14 @@ describe("GRPH-1173 sidebar icons", () => {
     expect(sub?.className).toContain("tracking-[0.4px]");
   });
 
-  it("GRPH-1208 shows a CLOUD pill and no building icon on the unlinked Organization row", async () => {
+  it("GRPH-1208 / GRPH-1224 shows a CLOUD pill and the building icon on the unlinked Organization row", async () => {
     wrap(<LeftNav />, "/tracker");
     const nav = within(document.querySelector<HTMLElement>('[data-layer="expanded"]')!);
     const pill = await nav.findByText("CLOUD");
     const row = pill.closest("button") as HTMLElement;
     expect(row).toHaveTextContent("Organization");
-    expect(row.querySelector(".lucide-building-2")).toBeNull();
-    expect(row.querySelector("svg")).toBeNull();
+    // `Org Link - Hi-fi.dc.html` 1a puts a building icon on the row; GRPH-1208 had none.
+    expect(row.querySelector(".lucide-building2")).not.toBeNull();
   });
 
   it("GRPH-1208 draws the rail project tile at 30px", async () => {
