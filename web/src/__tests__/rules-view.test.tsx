@@ -88,8 +88,8 @@ function flowFixture(over: Partial<RulesFlow> = {}): RulesFlow {
           enforcer: ctx, value: "main", source: "project", title: "Base branch" }),
         rule({ id: "gitops.pr_title_pattern", stage: "merge", enforcement: "unmeasured", truth: "db",
           enforcer: ctx, source: "unmeasured", title: "PR title pattern" }),
-        rule({ id: "ci.backend_suite_both_engines", stage: "merge", enforcement: "checked", truth: "repo_file",
-          enforcer: { kind: "ci_job", ref: ".github/workflows/ci.yml", url: "" }, title: "Backend suite on both engines" }),
+        rule({ id: "merge.ci_green", stage: "merge", enforcement: "checked", truth: "repo_file",
+          enforcer: { kind: "ci_job", ref: ".github/workflows/ci.yml", url: "" }, title: "Merged work passed CI" }),
         rule({ id: "forge.branch_protection", stage: "merge", enforcement: "external",
           enforcer: { kind: "forge", ref: "branch protection", url: "" }, title: "Forge branch protection" }),
       ]),
@@ -234,7 +234,7 @@ describe("RulesView", () => {
       "rules-row-gitops.pr_title_pattern",
       "rules-row-gitops.base_branch",
       "rules-row-forge.branch_protection",
-      "rules-row-ci.backend_suite_both_engines",
+      "rules-row-merge.ci_green",
     ]);
     const pr = within(ins).getByTestId("rules-row-gitops.pr_title_pattern");
     expect(pr).toHaveTextContent("UNMEASURED");
@@ -248,11 +248,27 @@ describe("RulesView", () => {
     expect(within(base).getByTestId("rules-enforcer").tagName).toBe("SPAN");
     const forge = within(ins).getByTestId("rules-row-forge.branch_protection");
     expect(forge).toHaveTextContent("NOT VERIFIED");
-    const ci = within(ins).getByTestId("rules-row-ci.backend_suite_both_engines");
+    const ci = within(ins).getByTestId("rules-row-merge.ci_green");
     expect(within(ci).getByTestId("rules-no-result")).toHaveTextContent("NO RESULT RECORDED");
     expect(ci).toHaveTextContent("That is not a pass.");
     // Read-only map: no inputs anywhere (editing is UI 2/3).
     expect(within(ins).queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["pass", "PASS · last attested"],
+    ["fail", "FAIL · last attested"],
+  ] as const)("shows a %s result with its date, not the no-result copy", async (outcome, copy) => {
+    const user = userEvent.setup();
+    const flow = flowFixture();
+    const ci = flow.stages.flatMap((s) => s.rules).find((r) => r.id === "merge.ci_green")!;
+    ci.last_result = { outcome, at: new Date(Date.now() - 2 * 3600 * 1000).toISOString(), item: "GRPH-9", commit: "abc1234" };
+    vi.mocked(api.rulesFlow).mockResolvedValue(flow);
+    renderAt();
+    await user.click(await screen.findByTestId("rules-stage-merge"));
+    const row = within(await screen.findByTestId("rules-inspector")).getByTestId("rules-row-merge.ci_green");
+    expect(within(row).getByTestId("rules-result")).toHaveTextContent(`${copy} 2h ago`);
+    expect(within(row).queryByTestId("rules-no-result")).not.toBeInTheDocument();
   });
 
   it("links a source enforcer with its kind prefix and says code rules are held in code", async () => {
