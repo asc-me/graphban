@@ -375,6 +375,8 @@ class Merged:
     #: "release ref main (project setting)" or "release ref unset, scans_clean not
     #: required". Every line names it, so drift between boxes shows in the log.
     release: str = ""
+    #: Other open PRs of the item closed as "Superseded by #n" after this merge (GRPH-1219).
+    closed: tuple[str, ...] = ()
 
     @property
     def final(self) -> bool:
@@ -540,6 +542,32 @@ def pr_selector(item: dict) -> str:
     return latest or branch
 
 
+def pr_receipts(item: dict) -> list[str]:
+    """Every PR the item names — its `pr` field, then each `/pull/` receipt — once each, in
+    ledger order. What `merge` checks when the PR `pr_selector` chose is not at the reviewed
+    commit, and what it closes as superseded once one of them lands (GRPH-1219)."""
+    urls: list[str] = []
+    pr = item.get("pr")
+    if isinstance(pr, str) and pr.strip():
+        urls.append(pr.strip())
+    for e in item.get("evidence") or []:
+        if not isinstance(e, dict) or e.get("kind") != "url":
+            continue
+        url = str(e.get("url") or "").strip()
+        if "/pull/" in url and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _pr_ref(pr: dict | None, fallback: str) -> str:
+    """`#9` when the forge gave a number or the URL ends in one, else `fallback`."""
+    number = (pr or {}).get("number")
+    if isinstance(number, int):
+        return f"#{number}"
+    m = re.search(r"/pull/(\d+)", str((pr or {}).get("url") or fallback or ""))
+    return f"#{m.group(1)}" if m else (fallback or "?")
+
+
 def _url_for_ref(repo: Path, selector: str) -> str:
     """Any-state PR URL for a branch ref, or "".
 
@@ -613,8 +641,8 @@ def same_commit(a: str, b: str) -> bool:
 
 def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
           green: set[str], paths: list[str] | tuple[str, ...] | None = None,
-          release: str = "", scans: list[ScanVerdict] | tuple[ScanVerdict, ...] = ()
-          ) -> Merged:
+          release: str = "", scans: list[ScanVerdict] | tuple[ScanVerdict, ...] = (),
+          siblings: list[str] | tuple[str, ...] = ()) -> Merged:
     """Finish one item's merge, or say exactly which precondition stopped it.
 
     `reviewed` is the commit the sign-off attestation names; `green` is every commit CI has
@@ -632,16 +660,81 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
     code the scan exists to check. Any other base, or an unset ref, skips it. Nothing here
     calls `scan_status` or reads Stack.
 
+    `siblings` are the item's other PRs (`pr_receipts`). When the selected PR's head is not
+    the reviewed commit, exactly one OPEN sibling at that commit is merged instead; none or
+    several is a hold naming every PR checked and its head (GRPH-1219). After a merge, any
+    other sibling still open is closed as superseded — best effort, never a failed merge.
+
     Never raises and never fails a wave. Every path returns a `Merged` that says what it did,
     and names the release ref it used.
     """
     got = _merge(repo, item_id, selector, reviewed=reviewed, green=green, paths=paths,
-                 release=release, scans=scans)
+                 release=release, scans=scans, siblings=tuple(siblings or ()))
+    if got.ok and siblings:
+        got = replace(got, closed=_close_superseded(repo, got, siblings))
     return replace(got, release=release_phrase(release))
 
 
+def _close_superseded(repo: Path, got: Merged, siblings) -> tuple[str, ...]:
+    """Close each other OPEN PR in `siblings` with "Superseded by #n". Best effort: a PR
+    that cannot be read or closed is left open, and the merge stays a merge (GRPH-1219)."""
+    by = _pr_ref(None, got.url)
+    closed: list[str] = []
+    for s in siblings:
+        if s in (got.url, got.selector):
+            continue
+        try:
+            pr, _ = view(repo, s)
+            if pr is None or str(pr.get("state") or "").upper() != "OPEN":
+                continue
+            if str(pr.get("url") or "") == got.url:
+                continue
+            done = _gh(repo, "pr", "close", s, "--comment", f"Superseded by {by}")
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if done.returncode == 0:
+            closed.append(_pr_ref(pr, s))
+    return tuple(closed)
+
+
+def _sibling_at(repo: Path, item_id: str, selector: str, url: str, head: str, reviewed: str,
+                siblings) -> tuple[str, str]:
+    """`(sibling, hold)`: the one other open PR of the item whose head is `reviewed`, or the
+    reason none can stand in, naming every PR checked with its head (GRPH-1219).
+
+    Wave p61b held four signed-off, green PRs with "the branch moved after sign-off" when the
+    selector had simply picked the item's other PR; the hold named only that one."""
+    seen = [f"{_pr_ref({'url': url}, selector)} head {head[:12] or '?'}"]
+    hits: list[str] = []
+    for s in siblings:
+        if s in (selector, url):
+            continue
+        pr, err = view(repo, s)
+        if pr is None:
+            seen.append(f"{s} unreadable ({err})")
+            continue
+        if str(pr.get("url") or "") == url:
+            continue
+        other = str(pr.get("headRefOid") or "")
+        state = str(pr.get("state") or "").upper()
+        seen.append(f"{_pr_ref(pr, s)} head {other[:12] or '?'}"
+                    + ("" if state == "OPEN" else f" ({state.lower() or 'unknown state'})"))
+        if state == "OPEN" and same_commit(other, reviewed):
+            hits.append(s)
+    if len(hits) == 1:
+        return hits[0], ""
+    checked_prs = "; ".join(seen)
+    if hits:
+        return "", (f"no single PR to merge: {len(hits)} open PRs of {item_id} are at the "
+                    f"reviewed commit {reviewed[:12]} (checked {checked_prs})")
+    return "", (f"PR head {head[:12] or '?'} is not the reviewed commit {reviewed[:12]}, and "
+                f"no other open PR of {item_id} is (checked {checked_prs}) — the branch "
+                "moved after sign-off or the reviewed PR is gone; it needs review again, "
+                "not a merge")
+
+
 def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set[str],
-           paths, release: str, scans) -> Merged:
+           paths, release: str, scans, siblings: tuple[str, ...] = ()) -> Merged:
     checked: list[str] = []
     if not find():
         return Merged(item=item_id, selector=selector, skipped=True,
@@ -690,6 +783,20 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
     if not same_commit(head, reviewed):
         if paths_unchanged(repo, reviewed, head, paths):
             checked.append("paths-unchanged")
+        elif siblings:
+            # GRPH-1219: the selector may have picked the item's other PR. One open sibling
+            # at the reviewed commit is the PR the sign-off vouches for; merge that one, and
+            # say which and why. The recursion gets no siblings, so it cannot loop.
+            sibling, hold = _sibling_at(repo, item_id, selector, url, head, reviewed,
+                                        siblings)
+            if not sibling:
+                return Merged(item=item_id, selector=selector, url=url,
+                              checked=tuple(checked), reason=hold)
+            got = _merge(repo, item_id, sibling, reviewed=reviewed, green=green,
+                         paths=paths, release=release, scans=scans)
+            why = (f"sibling={sibling} (selected {_pr_ref(pr, selector)} head "
+                   f"{head[:12] or '?'} is not the reviewed commit)")
+            return replace(got, checked=tuple(checked) + (why,) + got.checked)
         else:
             return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                           reason=f"PR head {head[:12] or '?'} is not the reviewed commit "

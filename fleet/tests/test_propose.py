@@ -640,6 +640,129 @@ def test_a_branch_no_receipt_names_falls_back_to_the_latest_receipt():
     assert propose_mod.pr_selector(item).endswith("/pull/9")
 
 
+# ---- the item's other PR is the reviewed one (GRPH-1219) ------------------------------------
+
+PR_A = "https://github.com/o/r/pull/8"
+PR_B = "https://github.com/o/r/pull/9"
+
+
+class _Forges:
+    """A recorded `gh` holding several PRs, keyed by URL, each moved the way `_Forge` moves
+    one. `close_ok=False` makes every `pr close` fail."""
+
+    def __init__(self, heads: dict[str, str], *, close_ok=True):
+        self.prs = {u: _Forge(draft=False, head=h, url=u) for u, h in heads.items()}
+        for u, f in self.prs.items():
+            f.pr["number"] = int(u.rsplit("/", 1)[1])
+        self.close_ok = close_ok
+        self.calls: list[list[str]] = []
+
+    def verbs(self) -> list[str]:
+        return [" ".join(c[1:3]) + " #" + c[3].rsplit("/", 1)[-1] for c in self.calls]
+
+    def __call__(self, argv, **kw):
+        self.calls.append(argv)
+        pr = self.prs[argv[3]]
+        if " ".join(argv[1:3]) == "pr close":
+            if not self.close_ok:
+                return subprocess.CompletedProcess(argv, 1, "", "could not close")
+            pr.pr["state"] = "CLOSED"
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return pr(argv, **kw)
+
+
+def _merge_siblings(forges, gh, selector, siblings, green=None):
+    gh(forges)
+    return propose_mod.merge(REPO, "SA-417", selector, reviewed=REVIEWED,
+                             green={REVIEWED} if green is None else green,
+                             siblings=siblings)
+
+
+def test_the_item_pr_receipts_are_every_pull_url_once():
+    item = {"pr": PR_B, "evidence": [_opened(8, "gb/old"), _opened(9, "gb/new"),
+                                     {"kind": "url", "url": "https://ci/run/1"}]}
+
+    assert propose_mod.pr_receipts(item) == [PR_B, PR_A]
+
+
+def test_the_sibling_at_the_reviewed_commit_is_merged_instead(gh):
+    """Receipts [#8 head MOVED, #9 head REVIEWED], selector picked #8. The sign-off vouches
+    for #9; #9 merges, and the receipt says which PR and why.
+
+    Sabotage: drop the sibling lookup in `_merge` — this holds on #8 instead."""
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED})
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert got.ok and got.commit == MERGE_OID, got.reason
+    assert got.selector == PR_B and got.url == PR_B
+    assert ["pr", "merge", PR_B] == forges.calls[[" ".join(c[1:3]) for c in forges.calls]
+                                                 .index("pr merge")][1:4]
+    assert not any(c[1:3] == ["pr", "merge"] and c[3] == PR_A for c in forges.calls)
+    assert any(c.startswith(f"sibling={PR_B}") and "#8" in c for c in got.checked)
+
+
+def test_after_the_sibling_merges_the_superseded_pr_is_closed(gh):
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED})
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    close = [c for c in forges.calls if c[1:3] == ["pr", "close"]]
+    assert len(close) == 1 and close[0][3] == PR_A
+    assert close[0][close[0].index("--comment") + 1] == "Superseded by #9"
+    assert got.closed == ("#8",)
+
+
+def test_a_failed_close_still_reports_the_merge(gh):
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED}, close_ok=False)
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert got.ok and got.commit == MERGE_OID and got.closed == ()
+    assert any(c[1:3] == ["pr", "close"] for c in forges.calls)
+
+
+def test_no_pr_at_the_reviewed_commit_names_every_pr_and_its_head(gh):
+    other = "d" * 40
+    forges = _Forges({PR_A: MOVED, PR_B: other})
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert not got.ok and not got.skipped
+    assert f"#8 head {MOVED[:12]}" in got.reason and f"#9 head {other[:12]}" in got.reason
+    assert REVIEWED[:12] in got.reason
+    assert not any(c[1:3] in (["pr", "merge"], ["pr", "close"]) for c in forges.calls)
+
+
+def test_two_prs_at_the_reviewed_commit_is_a_hold_naming_both(gh):
+    pr_c = "https://github.com/o/r/pull/10"
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED, pr_c: REVIEWED})
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B, pr_c])
+
+    assert not got.ok and "2 open PRs" in got.reason
+    assert "#9 head" in got.reason and "#10 head" in got.reason
+    assert not any(c[1:3] == ["pr", "merge"] for c in forges.calls)
+
+
+def test_a_closed_sibling_at_the_reviewed_commit_is_not_merged(gh):
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED})
+    forges.prs[PR_B].pr["state"] = "CLOSED"
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert not got.ok and "#9 head" in got.reason and "(closed)" in got.reason
+
+
+def test_a_right_selection_closes_the_other_open_receipt(gh):
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED})
+
+    got = _merge_siblings(forges, gh, PR_B, [PR_A, PR_B])
+
+    assert got.ok and got.closed == ("#8",)
+    assert not any("sibling=" in c for c in got.checked)
+
+
 # --- GRPH-869: the receipt must land on the item ----------------------------------------
 
 
