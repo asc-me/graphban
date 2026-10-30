@@ -2766,8 +2766,13 @@ def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "nex
     # evidence the guard below needs (GRPH-435).
     reserved = fleet_svc.holds_reservation(db, agent_id=agent_id, item_id=item.id)
     fleet_svc.release_reservations(db, item_id=item.id)
-    from app.services import delegation as delegation_svc
-    delegation_svc.on_outcome(db, item, "released")
+    # An item in `review` has been handed in: the attempt is finished and waits on a verdict.
+    # Handing back the build lease afterwards (gbfleet reap at child exit) must not close it as
+    # `released` — `on_outcome` keeps the FIRST outcome, so that would pre-empt the `signed_off`
+    # / `bounced` the reviewer writes (GRPH-1226). Only unfinished work handed back is released.
+    if item.status != "review":
+        from app.services import delegation as delegation_svc
+        delegation_svc.on_outcome(db, item, "released")
     # AUTHORSHIP IS NOT EARNED BY CLAIMING (GRPH-434). `built_by` is written at claim and never
     # cleared, which is right — releasing a lease must not destroy the record of who made the
     # thing (GRPH-376/377). But an agent that claimed, wrote nothing and handed the item back

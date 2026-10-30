@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
-import type { EventsQuery, FleetPolicy, GitopsPatch, Item, LessonFilters, LogExportPatch, RequestItem, ShardClass } from "./types";
+import type { EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -600,7 +600,7 @@ export function useStackHealth(projectId: string, enabled = true) {
 export function useFileFromStack(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (bodies: Partial<Item>[]) =>
+    mutationFn: (bodies: Partial<ItemDetail>[]) =>
       bodies.reduce<Promise<Item[]>>(
         (acc, body) => acc.then(async (done) => [...done, await api.createItem(projectId, body)]),
         Promise.resolve([]),
@@ -625,6 +625,26 @@ export function useMintIngestToken() {
 // is one per instance and the payload already carries every readable project's state.
 export function useSyncStatus() {
   return useQuery({ queryKey: ["sync-status"], queryFn: () => api.syncStatus() });
+}
+
+// The Organization window (GRPH-1225). The server caches the cloud's answer 30 s; Retry
+// refetches it. Asked only while the window is open on a linked box.
+export function useSyncOrg(enabled: boolean) {
+  return useQuery({ queryKey: ["sync-org"], queryFn: () => api.syncOrg(), enabled, retry: false });
+}
+
+/** `DELETE /api/sync/link` from the Organization window. The link is instance-wide, so the
+ *  gitops views drop with it rather than first-painting a pre-unlink contract. */
+export function useSyncUnlink() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.syncUnlink(),
+    onSuccess: () => {
+      qc.removeQueries({ queryKey: ["gitops"] });
+      qc.invalidateQueries({ queryKey: ["sync-status"] });
+      qc.invalidateQueries({ queryKey: ["sync-org"] });
+    },
+  });
 }
 
 export function useUpdateCheck() {
@@ -739,16 +759,24 @@ export function useItems(projectId?: string) {
   return useQuery({ queryKey: [...keys.items, projectId], queryFn: () => api.items(projectId), enabled: !!projectId });
 }
 
+/** One item's full record — description, evidence, bounce reason — which the list omits. */
+export function useItem(id: string | undefined, enabled = true) {
+  return useQuery({ queryKey: [...keys.items, "detail", id], queryFn: () => api.item(id!), enabled: !!id && enabled });
+}
+
 export function useUpdateItem() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, body }: { id: string; body: Partial<Item> }) => api.updateItem(id, body),
+    mutationFn: ({ id, body }: { id: string; body: Partial<ItemDetail> }) => api.updateItem(id, body),
     onMutate: async ({ id, body }) => {
       await qc.cancelQueries({ queryKey: keys.items });
-      const prev = qc.getQueriesData<Item[]>({ queryKey: keys.items });
-      qc.setQueriesData<Item[]>({ queryKey: keys.items }, (old) =>
-        old?.map((it) => (it.id === id ? { ...it, ...body } : it)),
-      );
+      // The `items` prefix holds both the project lists (Item[]) and the per-item detail
+      // (ItemDetail, see useItem) — patch each by its shape, never .map an object.
+      const prev = qc.getQueriesData<Item[] | ItemDetail>({ queryKey: keys.items });
+      qc.setQueriesData<Item[] | ItemDetail>({ queryKey: keys.items }, (old) => {
+        if (Array.isArray(old)) return old.map((it) => (it.id === id ? { ...it, ...body } : it));
+        return old && old.id === id ? { ...old, ...body } : old;
+      });
       return { prev };
     },
     onError: (_e, _v, ctx) => ctx?.prev?.forEach(([key, data]) => qc.setQueryData(key, data)),
@@ -768,7 +796,7 @@ export function useOwnerClose() {
 export function useCreateItem(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Partial<Item>) => api.createItem(projectId, body),
+    mutationFn: (body: Partial<ItemDetail>) => api.createItem(projectId, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.items }),
   });
 }
@@ -779,9 +807,10 @@ export function useReorderItems() {
     mutationFn: (orderedIds: string[]) => api.reorderItems(orderedIds),
     onMutate: async (orderedIds) => {
       await qc.cancelQueries({ queryKey: keys.items });
-      const prev = qc.getQueriesData<Item[]>({ queryKey: keys.items });
-      qc.setQueriesData<Item[]>({ queryKey: keys.items }, (old) => {
-        if (!old) return old;
+      const prev = qc.getQueriesData<Item[] | ItemDetail>({ queryKey: keys.items });
+      // Only the lists reorder; a cached ItemDetail under the same prefix is left alone.
+      qc.setQueriesData<Item[] | ItemDetail>({ queryKey: keys.items }, (old) => {
+        if (!Array.isArray(old)) return old;
         const map = new Map(old.map((i) => [i.id, i]));
         return orderedIds.map((id, idx) => ({ ...map.get(id)!, sort_order: idx }));
       });

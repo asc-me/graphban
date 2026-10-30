@@ -527,20 +527,18 @@ export interface Item {
   id: string;
   project_id: string;
   title: string;
-  description: string;
   status: Status;
   tags: string[];
   touchpoints: string[];
   effort: number;
   sort_order: number;
   blocker: string;
-  /** Why a reviewer sent it back. Survives the pin — the author reads it after reclaiming. */
-  bounce_reason: string;
   date: string;
   reporter: Reporter;
   pr: PR | null;
   github_url: string;
-  evidence: EvidenceReceipt[];
+  /** A valid attestation receipt exists, so `done` will not 409 (GRPH-1228: the list omits `evidence`). */
+  has_attestation?: boolean;
   assignee: string;
   claimed_by: string | null;
   prd_id: string | null;
@@ -552,6 +550,15 @@ export interface Item {
   updated_at: string;
   /** When it last reached `done` (GRPH-1134); null while it is not done. */
   done_at: string | null;
+}
+
+/** The full record: `GET /items/{id}`, or the list with `?fields=full`. The project list
+ * returns `Item` only — no description, evidence or bounce reason (GRPH-1228). */
+export interface ItemDetail extends Item {
+  description: string;
+  evidence: EvidenceReceipt[];
+  /** Why a reviewer sent it back. Survives the pin — the author reads it after reclaiming. */
+  bounce_reason: string;
 }
 
 /** `retired` (GRPH-1175): unpublished from Memory, restorable for 14 days. */
@@ -1069,6 +1076,31 @@ export interface SyncStatus {
   last_redacted_models?: number | null;
   last_snapshot_at?: string | null;
   projects: SyncProjectState[];
+}
+
+/** `GET /api/sync/org` — the Organization window (GRPH-1223/1225). Unlinked is `{linked: false}`
+ *  and nothing else. Unreachable keeps the last known identity, but `counts` is null and every
+ *  other deployment's figures are null — never the last numbers shown as current. */
+export interface SyncOrgDeployment {
+  name: string;
+  projects: number | null;
+  here: boolean;
+  last_sync_at: string | null;
+}
+
+export interface SyncOrgOverview {
+  linked: boolean;
+  reachable?: boolean;
+  unreachable_since?: string | null;
+  fetched_at?: string | null;
+  /** `host` is the org's `<slug>` (or a full host); null when it has not claimed one. */
+  org?: { name: string; host: string | null; plan: string | null } | null;
+  /** The LINKING credential's org role — not the viewer's. */
+  role?: string | null;
+  counts?: { members: number; teams: number; policy_rules: number; deployments: number } | null;
+  deployments?: SyncOrgDeployment[] | null;
+  /** Whether the viewer is a box admin, so may unlink. */
+  can_unlink?: boolean;
 }
 
 // ── Gitops delivery contract (GRPH-P31) ────────────────────────────────────

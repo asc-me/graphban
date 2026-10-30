@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
@@ -8,6 +9,7 @@ from app.db import get_db
 from app.models import User
 from app.schemas import (
     ItemCreate, ItemOut, ItemUpdate, OwnerCloseIn, ReorderIn, SnoozeIn, WaitAnswerIn,
+    item_list_row,
 )
 from app.security import authz
 from app.security.deps import get_current_user
@@ -18,15 +20,21 @@ from app.services import waits as waits_svc
 router = APIRouter(prefix="/items", tags=["items"])
 
 
-@router.get("", response_model=list[ItemOut])
+@router.get("", response_model=None)
 def list_items(
     project_id: str | None = None,
     status: str | None = None,
+    fields: Literal["lean", "full"] = "lean",
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """Lean rows by default (GRPH-1228): no description, evidence or bounce_reason — 8 MB on a
+    1,100-item project, none of it drawn by a list. `?fields=full` or `GET /items/{id}` for them."""
     authz.require_readable(db, user.id, project_id)
-    return items_svc.list_items(db, project_id=project_id, status=status)
+    rows = items_svc.list_items(db, project_id=project_id, status=status)
+    if fields == "full":
+        return [ItemOut.model_validate(r).model_dump(mode="json", by_alias=True) for r in rows]
+    return [item_list_row(r) for r in rows]
 
 
 @router.post("", response_model=ItemOut, status_code=201)

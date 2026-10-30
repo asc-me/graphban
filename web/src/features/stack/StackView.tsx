@@ -31,7 +31,7 @@ import {
   zoomAbout,
 } from "@/lib/graph/useGraphViewport";
 import type {
-  Item,
+  ItemDetail,
   ScanHealthState,
   StackComponentHealth,
   StackScanCategory,
@@ -180,7 +180,7 @@ function defragBody(
   catKey: string,
   cat: StackScanCategory,
   f: StackScanFinding,
-): Partial<Item> {
+): Partial<ItemDetail> {
   const sev = sevMeta(f.severity).label;
   const where = f.path || health.path;
   return {
@@ -200,7 +200,7 @@ function ctaBody(
   catKey: string,
   cat: StackScanCategory,
   cta: StackScanCta,
-): Partial<Item> {
+): Partial<ItemDetail> {
   const label = cat.label || catKey;
   return cta.kind === "rerun"
     ? {
@@ -1905,7 +1905,7 @@ function HealthInspector({
       .filter((f) => f.filed_key && !f.filed_item)
       .map((f) => defragBody(health, key, cat, f)),
   );
-  const file = (bodies: Partial<Item>[]) => {
+  const file = (bodies: Partial<ItemDetail>[]) => {
     if (!filing.isPending) filing.mutate(bodies);
   };
 

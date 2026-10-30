@@ -1114,7 +1114,7 @@ def test_release_defined_in_refuses_a_glob(client, auth):
 
 
 def _items(client, auth, project_id="core"):
-    return client.get("/api/items", params={"project_id": project_id}, headers=auth).json()
+    return client.get("/api/items", params={"project_id": project_id, "fields": "full"}, headers=auth).json()
 
 
 def _plan_parents(client, auth, project_id="core"):
