@@ -2814,8 +2814,17 @@ export interface RefusalCoverage {
   published_at: string | null;
 }
 
+/** Which plane holds the gitops contract; the flow carries it so the view fetches gitops once. */
+export interface RuleFlowControl {
+  state: string;
+  writable: boolean;
+  message: string;
+  org_name: string;
+}
+
 export interface RulesFlow {
   version: string;
+  control: RuleFlowControl;
   /** Null when the project's gitops model is unmeasured. */
   model: string | null;
   stages: RuleStage[];

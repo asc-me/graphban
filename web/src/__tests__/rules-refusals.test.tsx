@@ -20,6 +20,7 @@ vi.mock("@/features/ProjectContext", () => ({
 const flow: RulesFlow = {
   version: "1.0.0",
   model: "prs_to_base",
+  control: { state: "local", writable: true, message: "", org_name: "" },
   edges: [],
   stages: [
     {

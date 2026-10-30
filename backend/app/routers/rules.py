@@ -27,7 +27,7 @@ def rules_flow(project_id: str = "core", db: Session = Depends(get_db),
     """The registry placed on the seven fixed stages (GRPH-1156), for the Rules map. Stage
     state and not-used are decided here so the view never recomputes them."""
     authz.require_readable(db, user.id, project_id)
-    return {"version": __version__, **rules_svc.flow(db, project_id)}
+    return {"version": __version__, **rules_svc.flow(db, project_id, user.id)}
 
 
 @router.get("/rules/refusal-coverage", response_model=RefusalCoverageOut)

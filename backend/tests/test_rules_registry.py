@@ -27,7 +27,7 @@ def test_enforced_rules_have_a_refusal_path():
             continue
         assert r.enforcer.kind == "graphban_source", r.id
         text = (R.BACKEND_ROOT / r.enforcer.ref).read_text()
-        assert R.raises_symbol(text, r.enforcer.symbol), r.id
+        assert R.raises_symbol(text, r.enforcer.symbol, r.id), r.id
 
 
 def test_raises_symbol_ties_the_name_to_a_raise():
@@ -37,8 +37,58 @@ def test_raises_symbol_ties_the_name_to_a_raise():
                                "SelfReview")
     assert R.raises_symbol("raise SelfReview('own work')\n", "SelfReview")
     assert R.raises_symbol("raise authz.Forbidden\n", "Forbidden")
-    assert R.raises_symbol("def gate():\n    if 1:\n        raise X()\n", "gate")
+    assert R.raises_symbol("def gate():\n    if 1:\n        raise Refused(409, 'x')\n", "gate")
+    assert not R.raises_symbol("def gate():\n    if 1:\n        raise X()\n", "gate")
     assert not R.raises_symbol("def gate():\n    return 1\n", "gate")
+
+
+def test_every_stage_is_a_flow_stage_id():
+    assert {r.stage for r in R.RULES} <= set(R.STAGE_IDS)
+
+
+def test_function_enforcer_must_raise_a_refusal():
+    # An Unavailable is an error path, not a refusal (GRPH-1196, gap 17).
+    assert not R.raises_symbol("def publish():\n    raise Unavailable('x')\n", "publish")
+    assert R.raises_symbol("def gate():\n    raise Refused(409, 'x')\n", "gate")
+    assert R.raises_symbol("def gate():\n    raise authz.Forbidden('x')\n", "gate")
+
+
+def test_shared_refusal_class_must_name_the_rule():
+    src = ("def a():\n    raise Refused(409, 'x', rule_id='r.one')\n"
+           "def b():\n    raise Refused(409, 'x', rule_id='r.two')\n")
+    assert R.raises_symbol(src, "Refused", "r.one") and R.raises_symbol(src, "Refused", "r.two")
+    only_one = "raise Refused(409, 'x', rule_id='r.one')\n"
+    assert not R.raises_symbol(only_one, "Refused", "r.two")
+
+
+def test_deleting_either_reach_raise_fails():
+    text = (R.BACKEND_ROOT / "app/services/delegation.py").read_text()
+    for rid in ("reach.deploy_not_delegable", "reach.acknowledge_signals"):
+        assert R.raises_symbol(text, "Refused", rid), rid
+        gutted = text.replace(f'rule_id="{rid}"', 'rule_id="gone"')
+        assert not R.raises_symbol(gutted, "Refused", rid), rid
+
+
+def test_enforced_rules_do_not_rest_on_a_non_refusing_function(monkeypatch):
+    # Sabotage: point memory.independent_adjudication back at agent_publish while it claims
+    # enforced — the refusal-path check must fail it.
+    import dataclasses
+    r = R.RULES_BY_ID["memory.independent_adjudication"]
+    assert r.enforcement != "enforced"
+    text = (R.BACKEND_ROOT / r.enforcer.ref).read_text()
+    assert not R.raises_symbol(text, r.enforcer.symbol, r.id)
+    claimed = dataclasses.replace(r, enforcement="enforced")
+    assert not R.raises_symbol(text, claimed.enforcer.symbol, claimed.id)
+
+
+def test_budget_cap_and_forge_rules():
+    cap = R.RULES_BY_ID["plan.budget_cap"]
+    assert (cap.stage, cap.truth, cap.enforcement, cap.enforcer.kind) == (
+        "plan", "db", "external", "supervisor")
+    assert "budget.cap" not in R.RULES_BY_ID
+    checks = R.RULES_BY_ID["forge.required_checks"]
+    assert checks.enforcement == "external" and checks.enforcer.kind == "forge"
+    assert checks.truth != "code" and R.RULES_BY_ID["forge.branch_protection"].truth != "code"
 
 
 def test_gitops_rules_cover_the_view():

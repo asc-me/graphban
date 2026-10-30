@@ -41,6 +41,7 @@ class Enforcer:
 @dataclass(frozen=True)
 class Rule:
     id: str
+    #: One of `STAGE_IDS` — the node of the flow (PRD-P61 §4) the rule governs.
     stage: str
     title: str
     summary: str
@@ -61,25 +62,25 @@ def _src(path: str, symbol: str = "") -> Enforcer:
 _GITOPS_CONTEXT = Enforcer("context", "get_context.gitops")
 
 _GITOPS_RULES = (
-    Rule("gitops.base_branch", "branching", "Base branch",
+    Rule("gitops.base_branch", "merge", "Base branch",
          "Which branch work is cut from and merged back to.",
          "advisory", _GITOPS_CONTEXT, "db", channel="context", gitops_field="base_branch"),
-    Rule("gitops.no_push_to_base", "branching", "No push to base",
+    Rule("gitops.no_push_to_base", "merge", "No push to base",
          "Agents open a pull request instead of pushing to the base branch.",
          "advisory", _GITOPS_CONTEXT, "db", channel="context", gitops_field="no_push_to_base",
          models=("prs_to_base", "prs_to_integration")),
-    Rule("gitops.branch_name_pattern", "branching", "Branch naming",
+    Rule("gitops.branch_name_pattern", "build", "Branch naming",
          "Branches follow the project's naming pattern.",
          "advisory", _GITOPS_CONTEXT, "db", channel="context",
          gitops_field="branch_name_pattern"),
-    Rule("gitops.pr_title_pattern", "pull_request", "PR title pattern",
+    Rule("gitops.pr_title_pattern", "merge", "PR title pattern",
          "Pull request titles follow the project's pattern.",
          "advisory", _GITOPS_CONTEXT, "db", channel="context", gitops_field="pr_title_pattern",
          models=("prs_to_base", "prs_to_integration")),
     Rule("gitops.reviewer_bar", "review", "Reviewer bar",
          "What counts as a review: a Graphban sign-off, a forge approval, or both.",
          "advisory", _GITOPS_CONTEXT, "db", channel="context", gitops_field="reviewer_bar"),
-    Rule("gitops.model", "branching", "Gitops model",
+    Rule("gitops.model", "merge", "Gitops model",
          "The branching model the project runs (which of the gitops presets).",
          "advisory", _GITOPS_CONTEXT, "db", channel="context", gitops_field="model"),
     Rule("release.version_from", "release", "Version source",
@@ -92,10 +93,10 @@ _GITOPS_RULES = (
 )
 
 RULES: tuple[Rule, ...] = _GITOPS_RULES + (
-    Rule("gate.approval_earned_by_grill", "approval", "Approval is earned by the grill",
+    Rule("gate.approval_earned_by_grill", "spec", "Approval is earned by the grill",
          "A PRD becomes approved by finishing its grill, never by setting the field.",
          "enforced", _src("app/services/prds.py", "ApprovalNotEarned"), "code"),
-    Rule("gate.decompose_requires_approval", "approval", "Decompose needs approval",
+    Rule("gate.decompose_requires_approval", "plan", "Decompose needs approval",
          "Tasks are filed from a PRD only once it has earned approval.",
          "enforced", _src("app/services/prds.py", "DecomposeRequiresApproval"), "code"),
     Rule("gitops.observe_answer_required", "build", "Observe before the plan",
@@ -104,7 +105,7 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("gitops.checklist_needs_evidence", "build", "Checklist children need evidence",
          "A gitops checklist child cannot reach review or done without evidence.",
          "enforced", _src("app/services/gitops.py", "refuse_already_progress"), "code"),
-    Rule("gitops.owned_by_org", "branching", "Gitops owned by the org",
+    Rule("gitops.owned_by_org", "build", "Gitops owned by the org",
          "On a linked instance the git process is set by the org admin; project edits are refused.",
          "enforced", _src("app/routers/projects.py", "Refused"), "code", scope="org"),
     Rule("reach.deploy_not_delegable", "plan", "Deploy-reach work is not delegated",
@@ -134,7 +135,7 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "enforced", _src("app/services/fleet.py", "MissingAcceptanceCoverage"), "code"),
     Rule("memory.independent_adjudication", "learn", "Agents do not publish their own memory",
          "An agent may discard its candidate shard; only an independent judge publishes one.",
-         "enforced", _src("app/services/memory.py", "agent_publish"), "code"),
+         "advisory", _src("app/services/memory.py", "agent_publish"), "code", channel="doc"),
     Rule("memory.write_access", "learn", "Changing memory needs write access",
          "Retiring, restoring or applying recommendations to a shard needs write access to its "
          "project, or to at least one project when the shard has none.",
@@ -154,10 +155,13 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "checked", Enforcer("ci_job", ".github/workflows/ci.yml"), "repo_file"),
     Rule("forge.branch_protection", "merge", "Forge branch protection",
          "The forge refuses direct pushes to the base branch.",
-         "external", Enforcer("forge", "branch protection"), "code"),
-    Rule("budget.cap", "build", "Budget cap",
+         "external", Enforcer("forge", "branch protection"), "derived"),
+    Rule("forge.required_checks", "merge", "Forge required checks",
+         "Which checks the forge requires before a pull request can merge.",
+         "external", Enforcer("forge", "required status checks"), "derived"),
+    Rule("plan.budget_cap", "plan", "Budget cap",
          "The gbfleet supervisor stops a worker that exceeds its budget.",
-         "external", Enforcer("supervisor", "gbfleet budget cap"), "code", scope="org"),
+         "external", Enforcer("supervisor", "gbfleet budget cap"), "db", scope="org"),
     Rule("agents.operating_loop", "build", "Operating loop",
          "Agents follow the operating loop and invariants in AGENTS.md.",
          "advisory", Enforcer("doc", "AGENTS.md"), "repo_file", channel="doc"),
@@ -209,6 +213,14 @@ def _enforcer_out(e: Enforcer) -> dict:
     return {"kind": e.kind, "ref": e.ref, "url": url}
 
 
+#: Exception classes that ARE a refusal by policy. A function enforcer counts only when it
+#: raises one of these — a bare `raise` of anything else (an `Unavailable`, a `ValueError`)
+#: is an error path, and reporting it as enforcement would be a drawn rule read as a held one.
+REFUSAL_CLASSES = ("Refused", "Forbidden")
+#: The refusal class that carries `rule_id=`; the others cannot name a rule.
+RULE_NAMING_CLASSES = ("Refused",)
+
+
 def _raise_names(node: ast.Raise) -> set[str]:
     exc = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
     if isinstance(exc, ast.Name):
@@ -218,17 +230,48 @@ def _raise_names(node: ast.Raise) -> set[str]:
     return set()
 
 
-def raises_symbol(source: str, symbol: str) -> bool:
+def _names_rule(node: ast.Raise, rule_id: str, consts: dict[str, str]) -> bool:
+    """`raise Refused(..., rule_id="x")` — the raise carries the rule it enforces. The id may
+    be a module-level string constant (`rule_id=OBSERVE_RULE`)."""
+    call = node.exc
+    if not isinstance(call, ast.Call):
+        return False
+    for k in call.keywords:
+        if k.arg != "rule_id":
+            continue
+        v = k.value
+        if isinstance(v, ast.Constant) and v.value == rule_id:
+            return True
+        if isinstance(v, ast.Name) and consts.get(v.id) == rule_id:
+            return True
+    return False
+
+
+def raises_symbol(source: str, symbol: str, rule_id: str | None = None) -> bool:
     """True when `symbol` is a refusal in `source`: `raise symbol(...)`, or a function named
-    `symbol` whose body raises. A name that only appears in a comment or string is not one."""
+    `symbol` whose body raises a refusal class (`REFUSAL_CLASSES`). A name that only appears
+    in a comment or string is not one, and neither is a function raising something else.
+
+    With `rule_id`, a shared refusal class (`Refused`) counts only at a raise that names that
+    rule, so one rule's raise cannot vouch for another's."""
     if not symbol:
         return False
-    for node in ast.walk(ast.parse(source)):
+    tree = ast.parse(source)
+    consts = {t.id: n.value.value for n in tree.body if isinstance(n, ast.Assign)
+              and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str)
+              for t in n.targets if isinstance(t, ast.Name)}
+    for node in ast.walk(tree):
         if isinstance(node, ast.Raise) and node.exc is not None and symbol in _raise_names(node):
-            return True
-        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == symbol
-                and any(isinstance(n, ast.Raise) for n in ast.walk(node))):
-            return True
+            if (rule_id is None or symbol not in RULE_NAMING_CLASSES
+                    or _names_rule(node, rule_id, consts)):
+                return True
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == symbol:
+            for n in ast.walk(node):
+                if (isinstance(n, ast.Raise) and n.exc is not None
+                        and _raise_names(n) & set(REFUSAL_CLASSES)
+                        and (rule_id is None or not _raise_names(n) & set(RULE_NAMING_CLASSES)
+                             or _names_rule(n, rule_id, consts))):
+                    return True
     return False
 
 
@@ -248,8 +291,23 @@ def _db_value(rule: Rule, view) -> dict:
     return {"value": f.value, "source": f.source}
 
 
-def registry(db: Session, project_id: str | None) -> list[dict]:
-    view = gitops.resolve(db, project_id)
+BUDGET_CAP = "plan.budget_cap"
+
+
+def _budget_cap_value(db: Session, project_id: str | None) -> dict:
+    from app.services import fleet_profiles
+    policy = fleet_profiles.policy_of(db, project_id)
+    cap = ((policy or {}).get("caps") or {}).get("per_item_tokens")
+    if cap is None:
+        return {"value": None, "source": "unmeasured"}
+    return {"value": str(cap), "source": "project"}
+
+
+def registry(db: Session, project_id: str | None, view=None) -> list[dict]:
+    """`view` is a gitops view the caller already resolved: one fetch per request, because on
+    a linked box each resolve is an org fetch and two of them can disagree (GRPH-1196)."""
+    if view is None:
+        view = gitops.resolve(db, project_id)
     out = []
     for r in RULES:
         d = {
@@ -259,10 +317,10 @@ def registry(db: Session, project_id: str | None) -> list[dict]:
             "models": list(r.models), "value": None, "source": None,
         }
         if r.truth == "db":
-            v = _db_value(r, view)
+            v = _budget_cap_value(db, project_id) if r.id == BUDGET_CAP else _db_value(r, view)
             d["value"], d["source"] = v["value"], v["source"]
             # Setting a gitops value moves unmeasured -> advisory, never to enforced.
-            if v["source"] == "unmeasured" and r.gitops_field:
+            if v["source"] == "unmeasured" and r.gitops_field and r.id != BUDGET_CAP:
                 d["enforcement"], d["channel"] = "unmeasured", None
         out.append(d)
     return out
@@ -270,7 +328,7 @@ def registry(db: Session, project_id: str | None) -> list[dict]:
 
 # --- Flow model (GRPH-1156 / PRD-P61 §4) -------------------------------------------------
 # The nodes are fixed in v1 and so are the edges: the flow is always drawn whole. The
-# registry's own `stage` is finer-grained than the map, so each rule is placed explicitly.
+# each rule carries its own stage id, so the registry and the map share one vocabulary.
 
 STAGES = (
     ("spec", "Spec", "PRD, grill, approval"),
@@ -286,39 +344,6 @@ EDGES = tuple((a, b) for a, b in zip(STAGE_IDS, STAGE_IDS[1:]))
 
 #: strongest first; a stage takes the weakest of its used rules.
 ENFORCEMENT_ORDER = ("enforced", "checked", "external", "advisory", "unmeasured")
-
-RULE_STAGE = {
-    "gate.approval_earned_by_grill": "spec",
-    "gate.decompose_requires_approval": "plan",
-    "gitops.branch_name_pattern": "build",
-    "gitops.observe_answer_required": "build",
-    "gitops.checklist_needs_evidence": "build",
-    "gitops.owned_by_org": "build",
-    "reach.deploy_not_delegable": "plan",
-    "reach.acknowledge_signals": "plan",
-    "budget.cap": "build",
-    "agents.operating_loop": "build",
-    "review.not_own_work": "review",
-    "review.role_gated_tools": "review",
-    "review.adversarial_evidence": "review",
-    "review.attest_the_head": "review",
-    "review.predicates_compared": "review",
-    "review.clause_capability": "review",
-    "review.acceptance_covered": "review",
-    "memory.independent_adjudication": "learn",
-    "memory.write_access": "learn",
-    "memory.retire_window": "learn",
-    "review.reviewer_diversity": "review",
-    "gitops.reviewer_bar": "review",
-    "gitops.base_branch": "merge",
-    "gitops.no_push_to_base": "merge",
-    "gitops.model": "merge",
-    "gitops.pr_title_pattern": "merge",
-    "ci.backend_suite_both_engines": "merge",
-    "forge.branch_protection": "merge",
-    "release.version_from": "release",
-    "release.release_defined_in": "release",
-}
 
 NOT_USED_LABEL = "not used by this project's model"
 
@@ -354,13 +379,16 @@ def weakest(enforcements: list[str]) -> str:
     return max(enforcements, key=ENFORCEMENT_ORDER.index)
 
 
-def flow(db: Session, project_id: str | None) -> dict:
+def flow(db: Session, project_id: str | None, user_id: str | None = None) -> dict:
     """The project's process as stages in fixed order. Unused rules stay on their stage,
     flagged; a stage is `not_used` only when every rule on it is, and a stage with no rules
     registered is `unmeasured` — nothing was looked at, which is not the same as clean."""
-    rules = registry(db, project_id)
-    model = gitops.resolve(db, project_id).model.value
-    nodes = [dict(r, stage=RULE_STAGE[r["id"]]) for r in rules]
+    view = gitops.resolve(db, project_id)
+    if user_id is not None:
+        gitops.fill_writable(view, db, user_id)
+    rules = registry(db, project_id, view)
+    model = view.model.value
+    nodes = list(rules)
     skills = shipped_skills()
     nodes.append({
         "id": "agents.skills_pack", "stage": "build",
@@ -388,4 +416,14 @@ def flow(db: Session, project_id: str | None) -> dict:
             state = weakest([n["enforcement"] for n in used_rules])
         stages.append({"id": sid, "title": title, "summary": summary, "state": state,
                        "rules": on})
-    return {"model": model, "stages": stages, "edges": [list(e) for e in EDGES]}
+    return {"model": model, "stages": stages, "edges": [list(e) for e in EDGES],
+            "control": _control(db, view)}
+
+
+def _control(db: Session, view) -> dict:
+    """Which plane holds the git process, so the view needs no second gitops fetch."""
+    from app.services import code_sync
+    org = (code_sync.link_status(db).get("org") if view.control.state != "local" else "") \
+        or view.org_id or ""
+    return {"state": view.control.state, "writable": view.control.writable,
+            "message": view.control.message, "org_name": org}

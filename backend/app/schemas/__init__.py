@@ -1746,8 +1746,17 @@ class RefusalCoverageOut(BaseModel):
     published_at: str | None = None
 
 
+class RuleFlowControlOut(BaseModel):
+    """Which plane holds the gitops contract; the Rules view reads it from the flow."""
+    state: str
+    writable: bool = False
+    message: str = ""
+    org_name: str = ""
+
+
 class RulesFlowOut(BaseModel):
     version: str
     model: str | None = None
     stages: list[RuleStageOut]
     edges: list[list[str]]
+    control: RuleFlowControlOut
