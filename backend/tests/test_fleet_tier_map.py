@@ -198,7 +198,7 @@ def test_a_cell_counts_distinct_finished_delegations_for_its_model(
     payload = client.get(f"/api/fleet/tier-map?project_id={proj}", headers=auth).json()
     m = _cell(payload, "gbagent", "cheap")["measured"]
     assert m == {"runs": 7, "signed_off": 5, "pass_rate": pytest.approx(5 / 7),
-                 "below_floor": False}
+                 "below_floor": False, "grade": "C"}
     others = [c for c in payload["cells"] if (c["harness"], c["tier"]) != ("gbagent", "cheap")]
     assert all(c["measured"] is None for c in others)
 
@@ -231,7 +231,8 @@ def test_a_cell_under_the_floor_keeps_its_counts_and_says_so(client, auth, key, 
     _finished(db, client, key, auth, proj, model=_QWEN36, outcomes=["signed_off", "bounced"])
     payload = client.get(f"/api/fleet/tier-map?project_id={proj}", headers=auth).json()
     m = _cell(payload, "gbagent", "cheap")["measured"]
-    assert m == {"runs": 2, "signed_off": 1, "pass_rate": 0.5, "below_floor": True}
+    assert m == {"runs": 2, "signed_off": 1, "pass_rate": 0.5, "below_floor": True,
+                 "grade": None}
 
 
 def test_a_probe_attempt_and_an_attempt_outside_the_window_are_not_counted(
@@ -251,6 +252,39 @@ def test_a_probe_attempt_and_an_attempt_outside_the_window_are_not_counted(
     m = _cell(client.get(f"/api/fleet/tier-map?project_id={proj}", headers=auth).json(),
               "gbagent", "cheap")["measured"]
     assert m["runs"] == 1
+
+
+# ---- grade letter (GRPH-1221) -----------------------------------------------------------------
+
+def test_grade_bands_are_inclusive_at_the_lower_edge():
+    from app.services.fleet_matrix import letter_grade
+
+    for rate, letter in [(0.90, "A"), (0.8999, "B"), (0.80, "B"), (0.70, "C"),
+                         (0.60, "D"), (0.5999, "F")]:
+        assert letter_grade(rate, 100) == letter, rate
+
+
+@pytest.mark.parametrize("signed,bounced,letter", [
+    (9, 1, "A"), (4, 1, "B"), (7, 3, "C"), (3, 2, "D"), (2, 3, "F")])
+def test_a_cell_grade_comes_from_real_finished_rows(
+        client, auth, key, proj, db, signed, bounced, letter):
+    _finished(db, client, key, auth, proj, model=_QWEN36,
+              outcomes=["signed_off"] * signed + ["bounced"] * bounced)
+    m = _cell(client.get(f"/api/fleet/tier-map?project_id={proj}", headers=auth).json(),
+              "gbagent", "cheap")["measured"]
+    assert m["grade"] == letter
+
+
+def test_below_floor_and_unmeasured_cells_have_no_grade_not_f(client, auth, key, proj, db):
+    from app.services.fleet_matrix import letter_grade
+
+    assert letter_grade(0.0, 4) is None
+    _finished(db, client, key, auth, proj, model=_QWEN36, outcomes=["bounced"] * 2)
+    payload = client.get(f"/api/fleet/tier-map?project_id={proj}", headers=auth).json()
+    m = _cell(payload, "gbagent", "cheap")["measured"]
+    assert m["below_floor"] is True and m["grade"] is None
+    assert all(c["measured"] is None for c in payload["cells"]
+               if (c["harness"], c["tier"]) != ("gbagent", "cheap"))
 
 
 # ---- saving, and what survives a restart ------------------------------------------------------

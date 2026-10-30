@@ -14,6 +14,19 @@ import type { FleetMatrixRow, FleetTierCell } from "@/lib/types";
  * Facts only. The Observe → Harness page is where rates and rankings live; this table
  * names what can run, and a link is how you get to how it turned out.
  */
+const GRADE_TONE: Record<string, string> = {
+  A: "border-accent/40 text-accent",
+  B: "border-accent/40 text-accent",
+  C: "border-line-2 text-fg-2",
+  D: "border-line-2 text-fg-2",
+  F: "border-[color:var(--color-st-blocked)]/40 text-[color:var(--color-st-blocked)]",
+};
+
+/** F reads as a warning; an ungraded cell stays muted. */
+function gradeClass(grade: string | null): string {
+  return grade ? GRADE_TONE[grade] : "border-line-2 text-muted";
+}
+
 export function MatrixTable({ rows, harnessHref }: {
   rows: FleetMatrixRow[];
   harnessHref: string;
@@ -349,15 +362,16 @@ function TierMapForm({ cells, saving, clearing, saveError, clearError, onSave, o
                   return (
                     <td key={tier} className="px-3 py-2">
                       <div className="flex min-w-[13rem] items-start gap-2">
-                        {/* The tier-map payload carries no grade letter, pass rate or run count
-                            (no grade scale exists), so the badge reads "–"; the pass rate and
-                            run count come from `measured`. */}
+                        {/* `measured.grade` is the letter; null (unmeasured or below the floor) is "–". */}
                         <span
-                          className="mt-0.5 rounded-md border border-line-2 px-1.5 font-mono text-meta text-muted"
+                          className={cn(
+                            "mt-0.5 rounded-md border px-1.5 font-mono text-meta",
+                            gradeClass(cell.measured?.grade ?? null),
+                          )}
                           data-testid="tier-map-grade"
-                          title="Grade letter is not served by the tier-map endpoint"
+                          title={cell.measured?.grade ? `Grade ${cell.measured.grade}` : "Not graded"}
                         >
-                          –
+                          {cell.measured?.grade ?? "–"}
                         </span>
                         <div className="flex min-w-0 flex-1 flex-col gap-1">
                           <select
