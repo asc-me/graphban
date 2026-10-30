@@ -109,7 +109,9 @@ def test_the_refusal_reaches_the_ledger_with_the_agent_and_the_principal(client,
     assert ev is not None, "the refusal was not audited"
     # Typed and recorded once, naming its rule (GRPH-1158) — not also as `role_refused`.
     assert ev.meta["rule_id"] == "review.role_gated_tools"
-    assert (ev.target_type, ev.target_id) == ("agent", me["agent_id"])
+    # Attached to the item the call targeted (GRPH-1197); the agent rides in meta.
+    assert (ev.target_type, ev.target_id) == ("item", claimed["item"]["id"])
+    assert ev.meta["agent_id"] == me["agent_id"]
     assert db.query(Event).filter(Event.action == "role_refused").count() == 0
     assert ev.meta["agent_id"] == me["agent_id"]
     assert ev.meta["tool"] == "update_item"
