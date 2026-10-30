@@ -536,3 +536,40 @@ def test_human_review_classes_default_and_validation(client, auth):
     assert r.status_code == 422
     r = client.patch(f"/api/projects/{pid}", json={"memory_human_review_classes": []}, headers=auth)
     assert r.status_code == 200 and r.json()["memory_human_review_classes"] == []
+
+
+def test_reclassified_principle_cannot_be_agent_published(client, auth, monkeypatch):
+    """The reachable path: add_memory never sets a class, so the triage gate sees "" on write.
+    A human reclassifies the candidate afterwards, and an agent then calls agent_publish —
+    that call, not triage, is where a principle must be held for a human."""
+    from app.db import SessionLocal
+    from app.models import MemoryShard
+
+    chat = _patch_seq(monkeypatch, _SeqChat(KEEP))
+    pid = _proj(client, auth, "HumanReviewPublish")
+    db = SessionLocal()
+    try:
+        ids = {}
+        for cls, text in (("principle", "always set a timeout on outbound http"),
+                          ("pitfall", "never leave a transaction open across an await")):
+            s = mem_svc.add_memory(db, text_body=text, project_id=pid, status="candidate",
+                                   origin="agent:test", auto_triage=False)
+            assert s.shard_class == ""
+            r = client.patch(f"/api/memory/shards/{s.id}", json={"shard_class": cls}, headers=auth)
+            assert r.status_code == 200 and r.json()["shard_class"] == cls
+            ids[cls] = s.id
+
+        db.expire_all()
+        principle = db.get(MemoryShard, ids["principle"])
+        with pytest.raises(mem_svc.AdjudicationUnavailable, match="reserved for human review"):
+            mem_svc.agent_publish(db, principle, origin="agent:test")
+        assert chat.calls == 0, "a reserved class never reaches the judge"
+        db.refresh(principle)
+        assert principle.status == "candidate"
+
+        published, verdict = mem_svc.agent_publish(db, db.get(MemoryShard, ids["pitfall"]),
+                                                   origin="agent:test")
+        assert chat.calls > 0 and verdict["keep"] is True
+        assert published.status == "published"
+    finally:
+        db.close()

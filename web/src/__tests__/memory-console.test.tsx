@@ -455,7 +455,7 @@ describe("empty queue", () => {
     renderView();
     const strip = await screen.findByTestId("memory-policy");
     const labels = [...strip.querySelectorAll("span.text-small")].map((e) => e.firstChild?.textContent?.trim());
-    // No design entry without a backing setting (Human review for principles) is shown.
+    // Every design entry now has a backing setting, Human review for included (GRPH-1214).
     expect(labels).toEqual(["Auto-publish ≥", "Auto-reject dupes ≥", "LLM judge", "Expire candidates", "Flag on code change", "Human review for", "Grading"]);
     await waitFor(() =>
       expect(within(strip).getByText("Expire candidates").parentElement?.textContent).toContain("30d"),
