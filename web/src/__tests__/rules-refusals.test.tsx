@@ -1,16 +1,20 @@
+import * as React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { EventPanel } from "@/features/activity/EventPanel";
+import { RefusalRuleLink } from "@/features/activity/RefusalRuleLink";
+import { TargetActivity } from "@/features/activity/TargetActivity";
+import { errorRuleId, isRefusal } from "@/lib/errors";
 import { RulesView } from "@/features/rules/RulesView";
 import { api } from "@/lib/api";
 import type { Event, RulesFlow, UnmappedRefusals } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
-  api: { rulesFlow: vi.fn(), unmappedRefusals: vi.fn(), recommendedRules: vi.fn(), dismissRecommendedRule: vi.fn(), createItem: vi.fn(), refusalCoverage: vi.fn() },
+  api: { rulesFlow: vi.fn(), unmappedRefusals: vi.fn(), recommendedRules: vi.fn(), dismissRecommendedRule: vi.fn(), createItem: vi.fn(), refusalCoverage: vi.fn(), events: vi.fn() },
 }));
 vi.mock("@/features/ProjectContext", () => ({
   useProjectCtx: () => ({ activeId: "core", active: { id: "core", tag: "CORE", name: "Core" }, projects: [], setActiveId: () => {} }),
@@ -176,5 +180,52 @@ describe("recommended rules", () => {
     renderAt("/rules");
     await userEvent.click(screen.getByTestId("rules-open-recommended"));
     expect((await screen.findByTestId("rules-recommended-error")).textContent).toMatch(/not “nothing to suggest”/);
+  });
+});
+
+describe("refusals where the work is (GRPH-1199)", () => {
+  it("a PRD's own activity shows its refusal with a link focused on the rule", async () => {
+    vi.mocked(api.events).mockResolvedValue({
+      results: [ev({ id: 9, target_type: "prd", target_id: "GRPH-P61", meta: { rule_id: "review.not_own_work" } })],
+      total: 1, limit: 50, offset: 0, has_more: false,
+    } as never);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter><TargetActivity projectId="core" targetType="prd" targetId="GRPH-P61" /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const link = await screen.findByRole("link", { name: "see rule" });
+    expect(link.getAttribute("href")).toBe("/rules?rule=review.not_own_work&from=9");
+    expect(vi.mocked(api.events).mock.calls.at(-1)?.[0]).toMatchObject({ targetType: "prd", targetId: "GRPH-P61" });
+  });
+
+  it("an inline refusal with a rule_id gets 'see rule'; one without says unmapped", () => {
+    const mapped = new Error(JSON.stringify({ detail: "no", rule_id: "review.not_own_work" }));
+    const unmapped = new Error(JSON.stringify({ detail: "no", rule_id: null }));
+    expect(isRefusal(mapped)).toBe(true);
+    expect(errorRuleId(mapped)).toBe("review.not_own_work");
+    expect(errorRuleId(unmapped)).toBeNull();
+    render(<MemoryRouter><RefusalRuleLink ruleId={errorRuleId(mapped)} /></MemoryRouter>);
+    expect(screen.getByRole("link", { name: "see rule" }).getAttribute("href")).toBe("/rules?rule=review.not_own_work");
+    render(<MemoryRouter><RefusalRuleLink ruleId={errorRuleId(unmapped)} /></MemoryRouter>);
+    expect(screen.getByText(/isn't mapped to a rule yet/)).toBeTruthy();
+  });
+
+  it("changing ?rule= while mounted refocuses", async () => {
+    const two = structuredClone(flow);
+    two.stages[0].rules.push({ ...two.stages[0].rules[0], id: "review.other", title: "Other" });
+    vi.mocked(api.rulesFlow).mockResolvedValue(two);
+    let go: (to: string) => void = () => {};
+    function Nav() { const n = useNavigate(); go = n; return null; }
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={["/rules?rule=review.not_own_work"]}><Nav /><RulesView /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect((await screen.findByTestId("rules-row-review.not_own_work")).getAttribute("data-focused")).toBe("true");
+    React.act(() => go("/rules?rule=review.other"));
+    await waitFor(() => expect(screen.getByTestId("rules-row-review.other").getAttribute("data-focused")).toBe("true"));
   });
 });
