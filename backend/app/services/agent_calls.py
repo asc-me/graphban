@@ -282,6 +282,30 @@ def feed(db: Session, project_id: str, agent_id: str, *, limit: int = 50,
     }
 
 
+def project_feed(db: Session, project_id: str, *, limit: int = 50,
+                 now: datetime | None = None) -> dict:
+    """The project-wide stream: every attributed call across the project's agents, newest
+    first, each row naming its agent. Unattributed calls (NULL agent) are not in it — they
+    are counted per credential on the board, and there is no agent to name here."""
+    now = now or _now()
+    cutoff = _cutoff(now)
+    stmt = (select(AgentCall, Agent.label)
+            .join(Agent, Agent.id == AgentCall.agent_id)
+            .where(AgentCall.project_id == project_id))
+    if cutoff is not None:
+        stmt = stmt.where(AgentCall.ts >= cutoff)
+    found = db.execute(stmt.order_by(AgentCall.id.desc())
+                       .limit(max(1, min(int(limit), 200)))).all()
+    rows = [{**_row(c), "agent_id": c.agent_id, "agent_label": label or c.agent_id}
+            for c, label in found]
+    return {
+        "served_at": now.isoformat(),
+        "retention_days": retention_days(),
+        "state": "ok" if rows else "never",
+        "rows": rows,
+    }
+
+
 def _aware(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None

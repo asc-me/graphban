@@ -279,8 +279,8 @@ describe("P28 Home", () => {
     expect(jump).toHaveTextContent("12 nodes");
     expect(jump).toHaveTextContent("5 to review");
     expect(jump).toHaveTextContent("6 published");
-    expect(jump).toHaveTextContent("1 online");
-    expect(jump).toHaveTextContent("1 on now");
+    expect(jump).toHaveTextContent("2 online");
+    expect(jump).toHaveTextContent("2 on now");
   });
 
   it("wires jump tiles to flat self-host paths", async () => {

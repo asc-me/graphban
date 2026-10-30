@@ -15,6 +15,9 @@ export function PlannerDesk({
   trackerTo: string;
 }) {
   const heldBack = heldBackClusters(fleet);
+  // A planner with no open allocations and no decision on record has nothing to show.
+  const busy = planners.filter((p) => (p.delegations?.rows.length ?? 0) > 0 || p.last_call);
+  const idle = planners.length - busy.length;
 
   return (
     <section className="rounded-[11px] border border-line-2 bg-surface-2 p-3.5">
@@ -24,12 +27,17 @@ export function PlannerDesk({
       </p>
 
       {planners.length === 0 ? (
-        <div className="mt-3 text-[12px] text-muted">No planner registered on this project.</div>
+        <div className="mt-3 text-[12px] text-muted">No planner online on this project.</div>
       ) : (
         <div className="mt-3 space-y-3">
-          {planners.map((p) => (
+          {busy.map((p) => (
             <PlannerBlock key={p.id} planner={p} trackerTo={trackerTo} />
           ))}
+          {idle > 0 && (
+            <div className="text-[11.5px] text-faint">
+              {idle} {idle === 1 ? "planner" : "planners"} with no allocations or decisions
+            </div>
+          )}
         </div>
       )}
 
