@@ -46,7 +46,7 @@ export function PrdListView() {
   const scopeOf = (v: { window: number; hide: number }) =>
     scopeRows(prds, v, {
       activity: (p) => p.updated_at,
-      finishedAt: (p) => (p.status === "closed" ? p.closed_at ?? p.updated_at : null),
+      finishedAt: (p) => (p.status === "closed" ? p.closed_at ?? null : null),
     });
   const scoped = scopeOf(views.state);
   const [chip, setChip] = React.useState<string>("all");

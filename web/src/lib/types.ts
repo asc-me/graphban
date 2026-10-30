@@ -1408,7 +1408,7 @@ export interface PrdSummary {
   version: string;
   linked: string[];
   updated_at: string;
-  /** When the PRD closed; the list falls back to updated_at while the API omits it. */
+  /** When the PRD closed (from its close record); null if not closed. */
   closed_at?: string | null;
   /** GRPH-1140 rollup of linked requests; absent on older servers. */
   request_count?: number;

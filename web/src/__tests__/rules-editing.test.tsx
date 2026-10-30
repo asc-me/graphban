@@ -114,6 +114,15 @@ describe("gitops row editing", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 
+  it("a locked project opened from a value suggestion shows no editor (GRPH-1200)", async () => {
+    vi.mocked(api.gitops).mockResolvedValue(view({ writable: false }));
+    const r = { id: "release.release_defined_in", used: true } as RuleFlowRule;
+    renderIt(<GitopsRuleEditor rule={r} field="release_defined_in" fallback={box} prefill="RELEASING.md" />);
+    expect(await screen.findByTestId("rules-gitops-readonly")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  });
+
   it("uses the project copy for a non-org project", async () => {
     vi.mocked(api.gitops).mockResolvedValue(view({ writable: false }));
     renderIt(<GitopsRuleEditor rule={rule} field="base_branch" fallback={box} />);
