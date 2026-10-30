@@ -731,4 +731,74 @@ describe("Harness probe panel", () => {
     const group = await screen.findByTestId("harness-probe-group");
     expect(group).toHaveTextContent("family");
   });
+
+  describe("harness × function grid", () => {
+    const k = (model: string, capability: string, size_band = "M") => ({
+      ...cell().key, vendor: "claude", model, capability, size_band,
+    });
+    const g = (model: string, capability: string, finished: number, signed_off: number, size_band = "M") =>
+      cell({
+        kind: "leaf", family: capability[0], label: capability, key: k(model, capability, size_band),
+        finished, signed_off, rate: finished ? signed_off / finished : null, below_floor: finished < 5,
+      });
+    const gridReport = () =>
+      report({
+        capability_set: {
+          leaves: ["A1", "A2", "A3", "A4"], families: { A: ["A1", "A2", "A3", "A4"] },
+          labels: { A1: "UI & components", A2: "API & services", A3: "Data & migrations", A4: "Tests" },
+        },
+        cells: [
+          g("opus", "A1", 10, 9), g("opus", "A2", 8, 4), g("opus", "A3", 6, 6), g("opus", "A4", 7, 7),
+          g("sonnet", "A1", 20, 10), g("sonnet", "A2", 3, 1), g("sonnet", "A3", 9, 3), g("sonnet", "A4", 5, 5),
+          g("sonnet", "A1", 4, 4, "S"),
+          g("haiku", "A1", 12, 6), g("haiku", "A2", 12, 12), g("haiku", "A3", 5, 2), g("haiku", "A4", 6, 1),
+        ],
+        below_floor_count: 1,
+      });
+
+    it("renders one row per model and one column per catalog capability", async () => {
+      harness.mockResolvedValueOnce(gridReport());
+      show();
+      await screen.findByTestId("harness-grid");
+      expect(screen.getAllByTestId("harness-grid-row")).toHaveLength(3);
+      expect(screen.getAllByTestId("harness-grid-col").map((c) => c.textContent)).toEqual([
+        "A1UI & components", "A2API & services", "A3Data & migrations", "A4Tests",
+      ]);
+      const first = screen.getAllByTestId("harness-grid-cell")[0];
+      expect(first).toHaveTextContent("90%");
+      expect(first).toHaveTextContent("9/10");
+    });
+
+    it("marks a below-floor cell and still shows its numbers", async () => {
+      harness.mockResolvedValueOnce(gridReport());
+      show();
+      await screen.findByTestId("harness-grid");
+      const low = screen.getAllByTestId("harness-grid-cell").find((c) => c.getAttribute("data-below-floor") === "true")!;
+      expect(low).toHaveTextContent("1/3");
+      expect(low.getAttribute("aria-label")).toMatch(/below the floor/);
+    });
+
+    it("opens a detail panel naming the model, capability and x/y", async () => {
+      harness.mockResolvedValueOnce(gridReport());
+      show();
+      const user = userEvent.setup();
+      await screen.findByTestId("harness-grid");
+      await user.click(screen.getAllByTestId("harness-grid-cell")[0]);
+      const panel = await screen.findByTestId("harness-cell-panel");
+      expect(within(panel).getByTestId("harness-panel-title")).toHaveTextContent("claude:opus");
+      expect(within(panel).getByTestId("harness-panel-cap")).toHaveTextContent("A1");
+      expect(within(panel).getByTestId("harness-panel-xy")).toHaveTextContent("9/10");
+    });
+
+    it("the effort filter restricts the cell numbers to that band", async () => {
+      harness.mockResolvedValueOnce(gridReport());
+      show();
+      const user = userEvent.setup();
+      await screen.findByTestId("harness-grid");
+      const sonnetA1 = () => screen.getAllByTestId("harness-grid-row")[1].querySelectorAll("button")[0];
+      expect(sonnetA1()).toHaveTextContent("14/24");
+      await user.click(screen.getByRole("button", { name: "S" }));
+      expect(sonnetA1()).toHaveTextContent("4/4");
+    });
+  });
 });
