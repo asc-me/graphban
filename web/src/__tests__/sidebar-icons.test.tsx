@@ -74,7 +74,7 @@ describe("GRPH-1173 sidebar icons", () => {
     const want: Record<string, string> = {
       Plan: "clipboard-check", Build: "hammer", Observe: "activity",
       "Code graph": "workflow", Links: "link", Stack: "layers", Live: "radio",
-      Activity: "history", Memory: "brain", Lessons: "book-open", Rules: "scale",
+      Activity: "history", Memory: "brain", Lessons: "book-open", Rules: "git-branch",
     };
     const seen: Record<string, string> = {};
     for (const s of SECTIONS) {
@@ -84,7 +84,7 @@ describe("GRPH-1173 sidebar icons", () => {
     const names: Record<string, string> = {
       ClipboardCheck: "clipboard-check", Hammer: "hammer", Radio: "radio", Workflow: "workflow",
       Link: "link", Layers: "layers", History: "history", Brain: "brain", BookOpen: "book-open",
-      Activity: "activity", Scale: "scale",
+      Activity: "activity", GitBranch: "git-branch",
     };
     for (const [label, icon] of Object.entries(want)) expect(names[seen[label]], label).toBe(icon);
     expect(iconOf(document.body)).toBe("");
@@ -126,9 +126,9 @@ describe("GRPH-1173 sidebar icons", () => {
     expect(btn.querySelector("span")?.className).toContain("h-[30px]");
   });
 
-  it("GRPH-1208 orders Build and Observe pages as the design does", () => {
+  it("GRPH-1208 / GRPH-1222 orders Build and Observe pages as the design does", () => {
     const order = (key: string) => SECTIONS.find((s) => s.key === key)!.pages.map((p) => p.label);
-    expect(order("build")).toEqual(["Links", "Code graph", "Stack", "MCP Tools", "Rules", "Fleet", "Outposts"]);
+    expect(order("build")).toEqual(["Links", "Code graph", "Stack", "Rules", "MCP Tools", "Fleet", "Outposts"]);
     expect(order("observe")).toEqual(["Memory", "Lessons", "Activity", "Live", "Harness"]);
   });
 });
