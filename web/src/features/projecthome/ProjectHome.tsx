@@ -26,7 +26,6 @@ import {
   useCodeMap,
   useCounts,
   useDashboard,
-  useFleet,
   useGalaxy,
   useOrgs,
 } from "@/lib/queries";
@@ -91,13 +90,12 @@ export function ProjectHome() {
   const dashQ = useDashboard(projectId) as Read<DashboardData>;
   const countsQ = useCounts(projectId) as Read<ShellCounts>;
   const mapQ = useCodeMap(projectId) as Read<{ node_count?: number }>;
-  const fleetQ = useFleet(projectId) as Read<{ online?: number }>;
   const orgsQ = useOrgs(hosted);
   const galaxyQ = useGalaxy(hosted ? orgsQ.data?.[0]?.id : undefined);
 
   if (!active) return null;
 
-  const reads = [dashQ, countsQ, mapQ, fleetQ];
+  const reads = [dashQ, countsQ, mapQ];
   const settling = reads.some(waiting);
   const failed = reads.filter(missed);
   // A failed refresh after a good read. The numbers below are that read, not a new one.
@@ -107,7 +105,6 @@ export function ProjectHome() {
   const dashOk = dash !== undefined;
   const countsOk = counts !== undefined;
   const mapOk = mapQ.data !== undefined;
-  const fleetOk = fleetQ.data !== undefined;
 
   // Dashboard wins the figure. The shell count is the fallback when that field was
   // not in a successful payload, and it is also its own measurement: a dashboard 0
@@ -121,7 +118,8 @@ export function ProjectHome() {
   const blocked = num(dashOk, dash?.blocked_count);
   const shards = num(dashOk, dash?.shard_count);
   const nodes = num(mapOk, mapQ.data?.node_count);
-  const online = num(fleetOk, fleetQ.data?.online);
+  // The server's one "live" definition, the same field the sidebar badge reads.
+  const online = num(countsOk, counts?.live_agents);
   const requests = num(dashOk, dash?.requests_total);
   const prds = num(dashOk, dash?.prd_count);
   const triageNew = num(countsOk, counts?.triage_new);

@@ -4,7 +4,7 @@ import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { LiveBoardSkeleton, PlannerEmpty, PlannerError } from "@/components/planner/PlannerStates";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
-import { useConfig, useFleet, useLive, useLiveFeed } from "@/lib/queries";
+import { useConfig, useFleet, useLive, useLiveFeed, useLiveProjectFeed } from "@/lib/queries";
 import { projectPath } from "@/lib/routes";
 import type { LiveBoard } from "@/lib/types";
 
@@ -40,6 +40,10 @@ export function LiveView() {
   const [focusId, setFocusId] = React.useState<string | null>(null);
   const board = paused && snapshot ? snapshot : data;
   const flat = React.useMemo(() => flattenAgents(board?.users ?? []), [board?.users]);
+  const [showOffline, setShowOffline] = React.useState(false);
+  const online = React.useMemo(() => flat.filter(({ agent }) => agent.state !== "offline"), [flat]);
+  const offlineCount = flat.length - online.length;
+  const shown = showOffline ? flat : online;
   const focusAgent = focusId ? flat.find(({ agent }) => agent.id === focusId)?.agent : null;
   const emptyProject = !!board && board.users.length === 0 && !user;
   const emptyFilter = !!board && board.users.length === 0 && !!user;
@@ -47,7 +51,7 @@ export function LiveView() {
   const intervalMs = (board?.heartbeat_interval_seconds ?? 50) * 1000;
   const streamEnabled = !paused && !!focusId;
   const { data: focusFeed } = useLiveFeed(activeId, focusId ?? "", intervalMs, streamEnabled);
-  const { data: projectFeed } = useLiveFeed(activeId, flat[0]?.agent.id ?? "", intervalMs, !paused && !focusId && flat.length > 0);
+  const { data: projectFeed } = useLiveProjectFeed(activeId, intervalMs, !paused && !focusId && !!board);
 
   const feed = focusId ? focusFeed : projectFeed;
   const lanes = React.useMemo(
@@ -55,7 +59,7 @@ export function LiveView() {
     [flat, board?.served_at, feed?.rows],
   );
   const kpis = board ? computeKpis(board, flat) : null;
-  const planners = flat.filter(({ agent }) => agent.role === "planner").map(({ agent }) => agent);
+  const planners = shown.filter(({ agent }) => agent.role === "planner").map(({ agent }) => agent);
 
   const payloadAgents = board?.users.reduce((n, u) => n + u.agents.length, 0) ?? 0;
   const censusTotal = board?.user_counts.reduce((n, c) => n + c.total, 0) ?? 0;
@@ -72,6 +76,11 @@ export function LiveView() {
         purpose="Who is on this project right now, what they hold, and whether a PR was recorded."
         action={
           <div className="flex items-center gap-3">
+            {board && (
+              <span className="font-mono text-small text-muted" data-testid="live-online">
+                {board.online_agents} online
+              </span>
+            )}
             {board ? (
               <RoleCounts byRole={board.by_role ?? {}} roles={board.roles ?? []} />
             ) : (
@@ -129,7 +138,10 @@ export function LiveView() {
           <>
             {kpis && <KpiRow kpis={kpis} />}
             <PresenceStrip
-              agents={flat}
+              agents={shown}
+              offlineCount={offlineCount}
+              showOffline={showOffline}
+              onToggleOffline={() => setShowOffline((s) => !s)}
               servedAt={board.served_at}
               focusId={focusId}
               onFocus={setFocusId}
@@ -145,7 +157,7 @@ export function LiveView() {
                 <p className="mt-0.5 text-[11.5px] text-muted">
                   {focusId
                     ? "Filtered to the focused agent."
-                    : "Showing the first agent's feed — focus an agent above to switch."}
+                    : "The last calls across every agent — focus an agent above to narrow it."}
                 </p>
                 <div className="mt-2">
                   <LiveStreamPanel

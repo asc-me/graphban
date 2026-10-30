@@ -76,7 +76,7 @@ const homeDash = {
   recent_items: [{ id: "GRPH-1", title: "Ship the home", status: "in_progress" as const, date: "Oct 22" }],
 };
 const homeCounts = {
-  items: 4, items_in_progress: 1, requests: 1, review: 2, triage_new: 1, lessons_published: 3,
+  items: 4, items_in_progress: 1, requests: 1, review: 2, triage_new: 1, lessons_published: 3, live_agents: 1,
 };
 
 function show(ui: React.ReactElement) {

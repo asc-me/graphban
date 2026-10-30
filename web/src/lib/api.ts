@@ -370,6 +370,10 @@ export const api = {
     const q = new URLSearchParams({ project_id: projectId, limit: String(limit) });
     return request<LiveFeed>(`/live/${encodeURIComponent(agentId)}/feed?${q.toString()}`);
   },
+  liveProjectFeed: (projectId: string, limit = 50) => {
+    const q = new URLSearchParams({ project_id: projectId, limit: String(limit) });
+    return request<LiveFeed>(`/live/feed?${q.toString()}`);
+  },
   live: (projectId: string, user?: string | null) => {
     const q = new URLSearchParams({ project_id: projectId });
     if (user) q.set("user", user);

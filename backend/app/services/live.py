@@ -204,6 +204,10 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
 
     live = [a for a in roster if not a.get("dismissed")]
     total_agents = len(live)
+    # The one definition of "live": not dismissed, not offline by the presence TTL. The
+    # shell badge (`projects.badge_counts`) counts the same rows in SQL; the dashboard tile
+    # and the Live header read one of the two, never a count of their own.
+    online_agents = sum(1 for a in live if _is_online(a.get("state") or "offline"))
 
     keys = {k.id: k for k in db.scalars(select(ApiKey)).all()}
     users = {u.id: u for u in db.scalars(select(User)).all()}
@@ -368,6 +372,7 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
         "presence_ttl_seconds": fleet_svc.presence_ttl_seconds(),
         "truncated": total_agents > payload_agents,
         "total_agents": total_agents,
+        "online_agents": online_agents,
         "unattributed_count": unattributed_count,
         "by_role": _by_role(annotated),
         "roles": list(fleet_svc.ROLES),

@@ -30,6 +30,16 @@ def get_live(project_id: str, user: str | None = None,
         raise HTTPException(500, "live board could not be composed") from exc
 
 
+@router.get("/feed")
+def get_project_feed(project_id: str, limit: int = 50,
+                     db: Session = Depends(get_db),
+                     current: User = Depends(get_current_user)):
+    """The last calls across every agent on the project, newest first. Same posture as
+    the per-agent feed; the agent feed narrows this, it is not a different thing."""
+    authz.require_readable(db, current.id, project_id)
+    return calls_svc.project_feed(db, project_id, limit=limit)
+
+
 @router.get("/{agent_id}/feed")
 def get_live_feed(agent_id: str, project_id: str, limit: int = 50,
                   db: Session = Depends(get_db),

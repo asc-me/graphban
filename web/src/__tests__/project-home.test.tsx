@@ -68,7 +68,7 @@ const dash = {
 };
 
 const counts = {
-  items: 4, items_in_progress: 1, requests: 1, review: 2, triage_new: 1, lessons_published: 3,
+  items: 4, items_in_progress: 1, requests: 1, review: 2, triage_new: 1, lessons_published: 3, live_agents: 0,
 };
 
 const zeroDash = {
@@ -80,7 +80,7 @@ const zeroDash = {
 };
 
 const zeroCounts = {
-  items: 0, items_in_progress: 0, requests: 0, review: 0, triage_new: 0, lessons_published: 0,
+  items: 0, items_in_progress: 0, requests: 0, review: 0, triage_new: 0, lessons_published: 0, live_agents: 0,
 };
 
 vi.mock("@/lib/api", () => ({

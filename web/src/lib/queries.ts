@@ -1284,6 +1284,16 @@ export function useLiveFeed(projectId: string | undefined, agentId: string, inte
   });
 }
 
+/** The project-wide stream: the last calls across every agent, newest first. */
+export function useLiveProjectFeed(projectId: string | undefined, intervalMs: number, enabled: boolean) {
+  return useQuery({
+    queryKey: ["live-feed", projectId, "project"],
+    queryFn: () => api.liveProjectFeed(projectId!),
+    refetchInterval: intervalMs,
+    enabled: enabled && !!projectId,
+  });
+}
+
 /**
  * Live presence for the graph views (PRD-20 D4).
  *

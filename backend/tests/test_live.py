@@ -239,3 +239,24 @@ def test_router_does_not_query_agent():
     src = open("app/routers/live.py", encoding="utf-8").read()
     assert "live_svc.board" in src
     assert "Agent" not in src
+
+
+def test_project_feed_spans_agents_newest_first(db, proj, owner_key):
+    """The stream is project-wide: calls from several agents, each naming its agent."""
+    from app.models import AgentCall
+    from app.services import agent_calls as calls_svc
+
+    agents = [Agent(id=f"pf{i}", project_id=proj, label=f"ag{i}", number=i + 1,
+                    last_seen_at=datetime.now(timezone.utc)) for i in range(3)]
+    db.add_all(agents)
+    db.commit()
+    for a in agents:
+        db.add(AgentCall(project_id=proj, agent_id=a.id, api_key_id=owner_key.id, source="mcp",
+                         tool="get_item_details", ok=True))
+    db.commit()
+    out = calls_svc.project_feed(db, proj)
+    assert out["state"] == "ok"
+    assert {r["agent_id"] for r in out["rows"]} == {a.id for a in agents}
+    ids = [r["id"] for r in out["rows"]]
+    assert ids == sorted(ids, reverse=True)
+    assert all(r["agent_label"] for r in out["rows"])
