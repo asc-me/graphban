@@ -72,3 +72,20 @@ def test_migration_retires_only_pr_cooldown_shards_and_is_idempotent(db):
     assert db.get(MemoryShard, other).status == "published"
 
     assert mod.retire(bind) == 0
+
+
+def test_retired_pr_cooldown_shard_leaves_brief_and_item_read(db):
+    """Acceptance 3: a retired cooldown shard is no lesson and no linked memory."""
+    from app.services import delegation as delegation_svc
+
+    it = _item(db)
+    cool = _seed(db, it, "gate refusal: pr_cooldown")
+    kept = _seed(db, it, "gate refusal: attestation_missing")
+    memory_svc.retire_shard(db, cool)
+    shard = db.get(MemoryShard, cool)
+    assert shard.status == "retired"
+
+    lessons = {lesson["id"] for lesson in delegation_svc.brief(db, it)["lessons"]}
+    linked = {sh["id"] for sh in items_svc.get_item_details(db, it.id)["linked_shards"]}
+    assert cool not in lessons and cool not in linked
+    assert kept in lessons and kept in linked

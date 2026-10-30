@@ -1922,6 +1922,11 @@ def render_ref(db: Session, stored_id: str, readable: list[str] | None = None) -
     return stored_id
 
 
+# Shard statuses an item read and a brief leave out: memory a person or migration took out of
+# retrieval (GRPH-1234).
+HIDDEN_SHARD_STATUSES = ("retired", "rejected")
+
+
 def get_item_details(db: Session, item_id: str, readable: list[str] | None = None) -> dict | None:
     from app.models import Link, MemoryShard, Request
 
@@ -1933,7 +1938,11 @@ def get_item_details(db: Session, item_id: str, readable: list[str] | None = Non
     # a pre-tag legacy id — while these columns hold the frozen stored id. Using the
     # caller's string made linked memory and requests silently vanish the moment a
     # project was retagged and an agent looked the item up by its new key (PRD-13).
-    shards = db.scalars(select(MemoryShard).where(MemoryShard.item_id == item.id)).all()
+    # A retired or rejected shard is out of memory; it must not ride the item read either
+    # (GRPH-1234: retired pr_cooldown refusals kept showing up as linked memory).
+    shards = db.scalars(select(MemoryShard).where(
+        MemoryShard.item_id == item.id,
+        MemoryShard.status.notin_(HIDDEN_SHARD_STATUSES))).all()
     reqs = db.scalars(select(Request).where(Request.linked_to == item.id)).all()
     links = db.scalars(select(Link).where(or_(Link.a == item.id, Link.b == item.id))
                        .order_by(Link.id)).all()

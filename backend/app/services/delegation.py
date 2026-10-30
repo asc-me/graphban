@@ -299,8 +299,11 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     readable = authz.readable_project_ids(db, user_id) if user_id else None
     blocked_by = [items_svc.render_ref(db, d, readable)
                   for d in prioritization.blocked_by(ctx, item)]
-    shards = db.scalars(select(MemoryShard).where(MemoryShard.item_id == item.id)
-                        .order_by(MemoryShard.id).limit(LESSONS_MAX)).all()
+    # Retired/rejected shards are not lessons (GRPH-1234).
+    shards = db.scalars(select(MemoryShard).where(
+        MemoryShard.item_id == item.id,
+        MemoryShard.status.notin_(items_svc.HIDDEN_SHARD_STATUSES))
+        .order_by(MemoryShard.id).limit(LESSONS_MAX)).all()
     lessons = [{"id": s.id, "text": s.text} for s in shards]
     history = attempts_for(db, item)
     prev_row = history[-1] if history else None
