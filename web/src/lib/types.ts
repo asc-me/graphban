@@ -1071,6 +1071,31 @@ export interface SyncStatus {
   projects: SyncProjectState[];
 }
 
+/** `GET /api/sync/org` — the Organization window (GRPH-1223/1225). Unlinked is `{linked: false}`
+ *  and nothing else. Unreachable keeps the last known identity, but `counts` is null and every
+ *  other deployment's figures are null — never the last numbers shown as current. */
+export interface SyncOrgDeployment {
+  name: string;
+  projects: number | null;
+  here: boolean;
+  last_sync_at: string | null;
+}
+
+export interface SyncOrgOverview {
+  linked: boolean;
+  reachable?: boolean;
+  unreachable_since?: string | null;
+  fetched_at?: string | null;
+  /** `host` is the org's `<slug>` (or a full host); null when it has not claimed one. */
+  org?: { name: string; host: string | null; plan: string | null } | null;
+  /** The LINKING credential's org role — not the viewer's. */
+  role?: string | null;
+  counts?: { members: number; teams: number; policy_rules: number; deployments: number } | null;
+  deployments?: SyncOrgDeployment[] | null;
+  /** Whether the viewer is a box admin, so may unlink. */
+  can_unlink?: boolean;
+}
+
 // ── Gitops delivery contract (GRPH-P31) ────────────────────────────────────
 // Unset is unmeasured, never "use main". `source` is how overlay bind works:
 // only `project` is this row's overlay; `org` must render empty + inherit.

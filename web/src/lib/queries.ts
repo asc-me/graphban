@@ -627,6 +627,26 @@ export function useSyncStatus() {
   return useQuery({ queryKey: ["sync-status"], queryFn: () => api.syncStatus() });
 }
 
+// The Organization window (GRPH-1225). The server caches the cloud's answer 30 s; Retry
+// refetches it. Asked only while the window is open on a linked box.
+export function useSyncOrg(enabled: boolean) {
+  return useQuery({ queryKey: ["sync-org"], queryFn: () => api.syncOrg(), enabled, retry: false });
+}
+
+/** `DELETE /api/sync/link` from the Organization window. The link is instance-wide, so the
+ *  gitops views drop with it rather than first-painting a pre-unlink contract. */
+export function useSyncUnlink() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.syncUnlink(),
+    onSuccess: () => {
+      qc.removeQueries({ queryKey: ["gitops"] });
+      qc.invalidateQueries({ queryKey: ["sync-status"] });
+      qc.invalidateQueries({ queryKey: ["sync-org"] });
+    },
+  });
+}
+
 export function useUpdateCheck() {
   return useQuery({
     queryKey: keys.updateCheck,
