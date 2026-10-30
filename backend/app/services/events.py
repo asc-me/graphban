@@ -120,6 +120,50 @@ def _target_project(db: Session, target_type: str, target_id: str) -> str | None
         return None
 
 
+def unmapped_refusals(db: Session, project_id: str, *, days: int = 7,
+                      include_platform: bool = False, now: datetime | None = None) -> dict:
+    """`refusal_unmapped` events grouped by `where` + `status`, most-refused first (GRPH-1195).
+
+    Aggregated here, over EVERY event in the window — the browser used to group one page of
+    500 and under-counted past it. `daily` is `days` counts, oldest day first, ending today
+    (UTC). Attribution: an event belongs to the project it was recorded against (an MCP
+    refusal uses the calling key's project, or the call's `project_id`). One that names no
+    project at all is the PLATFORM bucket; it is returned only when `include_platform` is set
+    (the route sets it for a platform admin, or a self-hosted project owner) and each such
+    group says `platform: True`. `recording_since` is the earliest refusal event of any kind
+    in the SAME scope, so an empty answer can say since when it is empty without revealing
+    other projects' activity — None means nothing has ever been recorded here, not "zero since".
+    """
+    now = now or _now()
+    since = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    scope = Event.project_id == project_id
+    if include_platform:
+        scope = or_(scope, Event.project_id.is_(None))
+    rows = db.execute(
+        select(Event.ts, Event.meta, Event.project_id)
+        .where(Event.action == "refusal_unmapped", Event.ts >= since, scope)
+    ).all()
+    groups: dict[tuple, dict] = {}
+    for ts, meta, pid in rows:
+        meta = meta or {}
+        where = meta.get("where") if isinstance(meta.get("where"), str) and meta.get("where") else "(site not recorded)"
+        status = meta.get("status") if isinstance(meta.get("status"), int) else None
+        platform = pid is None
+        g = groups.setdefault((where, status, platform), {
+            "where": where, "status": status, "platform": platform, "count": 0,
+            "last_at": None, "daily": [0] * days})
+        ts = _aware(ts)
+        g["count"] += 1
+        if g["last_at"] is None or ts > g["last_at"]:
+            g["last_at"] = ts
+        age = (now.date() - ts.date()).days
+        if 0 <= age < days:
+            g["daily"][days - 1 - age] += 1
+    ranked = sorted(groups.values(), key=lambda g: (-g["count"], g["where"]))
+    first = db.scalar(select(func.min(Event.ts)).where(Event.action.in_(TYPED_REFUSAL_ACTIONS), scope))
+    return {"days": days, "recording_since": _aware(first), "groups": ranked}
+
+
 # ── Activity: lenses, facets, histogram (PRD-47 S10 / GRPH-961) ──────────────
 #
 # Every filter and aggregate below reads a COLUMN that already exists on `Event`

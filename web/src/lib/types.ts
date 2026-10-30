@@ -2853,6 +2853,24 @@ export interface SuggestionSource {
   reason: string | null;
 }
 
+/** One ranked group of `refusal_unmapped` events (GRPH-1195). `daily` is oldest day first. */
+export interface UnmappedGroup {
+  where: string;
+  status: number | null;
+  /** The platform bucket: a refusal that named no project, returned to the project's owner only. */
+  platform: boolean;
+  count: number;
+  last_at: string | null;
+  daily: number[];
+}
+
+export interface UnmappedRefusals {
+  days: number;
+  /** Earliest refusal event recorded; null means none ever, which is not "zero since". */
+  recording_since: string | null;
+  groups: UnmappedGroup[];
+}
+
 export interface RecommendedRules {
   suggestions: RuleSuggestion[];
   sources: SuggestionSource[];

@@ -5,13 +5,12 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { EventPanel } from "@/features/activity/EventPanel";
-import { groupUnmapped } from "@/features/rules/RefusalPanels";
 import { RulesView } from "@/features/rules/RulesView";
 import { api } from "@/lib/api";
-import type { Event, RulesFlow } from "@/lib/types";
+import type { Event, RulesFlow, UnmappedRefusals } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
-  api: { rulesFlow: vi.fn(), events: vi.fn(), recommendedRules: vi.fn(), dismissRecommendedRule: vi.fn(), createItem: vi.fn(), refusalCoverage: vi.fn() },
+  api: { rulesFlow: vi.fn(), unmappedRefusals: vi.fn(), recommendedRules: vi.fn(), dismissRecommendedRule: vi.fn(), createItem: vi.fn(), refusalCoverage: vi.fn() },
 }));
 vi.mock("@/features/ProjectContext", () => ({
   useProjectCtx: () => ({ activeId: "core", active: { id: "core", tag: "CORE", name: "Core" }, projects: [], setActiveId: () => {} }),
@@ -51,6 +50,8 @@ function renderAt(url: string) {
 
 beforeEach(() => {
   vi.mocked(api.rulesFlow).mockResolvedValue(flow);
+  vi.mocked(api.unmappedRefusals).mockResolvedValue({ days: 7, recording_since: null, groups: [] });
+  vi.mocked(api.refusalCoverage).mockResolvedValue({ published: false, n: null, m: null, commit: null, published_at: null });
 });
 
 describe("refusal links", () => {
@@ -78,16 +79,29 @@ describe("refusal links", () => {
   });
 });
 
+function unmappedBody(over: Partial<UnmappedRefusals> = {}): UnmappedRefusals {
+  return { days: 7, recording_since: "2026-10-01T00:00:00Z", groups: [], ...over };
+}
+
 describe("unmapped refusals", () => {
-  it("groups by site and status, ranked by count", () => {
-    const g = groupUnmapped([
-      ev({ meta: { where: "A", status: 409 } }), ev({ id: 8, meta: { where: "B", status: 403 } }), ev({ id: 9, meta: { where: "B", status: 403 } }),
-    ]);
-    expect(g.map((x) => [x.where, x.count])).toEqual([["B", 2], ["A", 1]]);
+  it("shows the server's ranking with rank, last seen, and the count on the header button", async () => {
+    vi.mocked(api.unmappedRefusals).mockResolvedValue(unmappedBody({
+      groups: [
+        { where: "B", status: 403, platform: false, count: 5, last_at: "2026-10-28T10:00:00Z", daily: [0, 0, 0, 0, 0, 2, 3] },
+        { where: "A", status: 409, platform: false, count: 1, last_at: "2026-10-27T10:00:00Z", daily: [0, 0, 0, 0, 0, 1, 0] },
+      ],
+    }));
+    renderAt("/rules");
+    await waitFor(() => expect(screen.getByTestId("rules-unmapped-count").textContent).toContain("6"));
+    await userEvent.click(screen.getByTestId("rules-open-unmapped"));
+    const rows = await screen.findAllByTestId("rules-unmapped-row");
+    expect(rows.map((r) => r.textContent)).toEqual([expect.stringContaining("#1B"), expect.stringContaining("#2A")]);
+    expect(screen.getAllByTestId("rules-unmapped-last")).toHaveLength(2);
+    expect(screen.getByTestId("rules-unmapped").textContent).toContain("LAST 7 DAYS");
+    expect(screen.getByTestId("rules-unmapped-footer").textContent).toMatch(/Mapping a refusal is a code change/);
   });
 
   it("a published build shows N of M and the commit", async () => {
-    vi.mocked(api.events).mockResolvedValue({ results: [], total: 0, limit: 500, offset: 0, has_more: false } as never);
     vi.mocked(api.refusalCoverage).mockResolvedValue({ published: true, n: 40, m: 50, commit: "abcdef1234", published_at: "2026-10-29T00:00:00+00:00" });
     renderAt("/rules");
     await userEvent.click(screen.getByTestId("rules-open-unmapped"));
@@ -97,7 +111,6 @@ describe("unmapped refusals", () => {
   });
 
   it("an unpublished build says so and shows no number", async () => {
-    vi.mocked(api.events).mockResolvedValue({ results: [{ id: 1 }], total: 1, limit: 500, offset: 0, has_more: false } as never);
     vi.mocked(api.refusalCoverage).mockResolvedValue({ published: false, n: null, m: null, commit: null, published_at: null });
     renderAt("/rules");
     await userEvent.click(screen.getByTestId("rules-open-unmapped"));
@@ -106,20 +119,33 @@ describe("unmapped refusals", () => {
     expect(line.textContent).not.toMatch(/\d/);
   });
 
-  it("empty says so, and the coverage line is unknown rather than zero", async () => {
+  it("empty says since when, and the coverage line is not published rather than zero", async () => {
     vi.mocked(api.refusalCoverage).mockResolvedValue({ published: false, n: null, m: null, commit: null, published_at: null });
-    vi.mocked(api.events).mockResolvedValue({ results: [], total: 0, limit: 500, offset: 0, has_more: false } as never);
+    vi.mocked(api.unmappedRefusals).mockResolvedValue(unmappedBody());
     renderAt("/rules");
     await userEvent.click(screen.getByTestId("rules-open-unmapped"));
-    expect(await screen.findByTestId("rules-unmapped-empty")).toBeTruthy();
-    expect(screen.getByTestId("rules-unmapped-coverage").textContent).toMatch(/not published/i);
+    expect((await screen.findByTestId("rules-unmapped-empty")).textContent).toMatch(/No unmapped refusals recorded since .*2026/);
+    await waitFor(() => expect(screen.getByTestId("rules-unmapped-coverage").textContent).toMatch(/not published/i));
   });
 
-  it("an error says unknown, never zero", async () => {
-    vi.mocked(api.events).mockRejectedValue(new Error("boom"));
+  it("empty with nothing ever recorded does not read as clean", async () => {
+    vi.mocked(api.unmappedRefusals).mockResolvedValue(unmappedBody({ recording_since: null }));
+    renderAt("/rules");
+    await userEvent.click(screen.getByTestId("rules-open-unmapped"));
+    expect((await screen.findByTestId("rules-unmapped-empty")).textContent).toMatch(/not a clean result/);
+  });
+
+  it("an error says unknown, shows the failed request, and Retry calls the route again", async () => {
+    vi.mocked(api.unmappedRefusals).mockRejectedValue(new Error("boom"));
     renderAt("/rules");
     await userEvent.click(screen.getByTestId("rules-open-unmapped"));
     expect((await screen.findByTestId("rules-unmapped-error")).textContent).toMatch(/unknown, not zero/);
+    expect(screen.getByTestId("rules-unmapped-request").textContent).toContain("/api/rules/refusals/unmapped?project_id=core");
+    const before = vi.mocked(api.unmappedRefusals).mock.calls.length;
+    vi.mocked(api.unmappedRefusals).mockResolvedValue(unmappedBody());
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(vi.mocked(api.unmappedRefusals).mock.calls.length).toBeGreaterThan(before));
+    expect(await screen.findByTestId("rules-unmapped-empty")).toBeTruthy();
   });
 });
 

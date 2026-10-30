@@ -67,6 +67,7 @@ import type {
   RecommendedRules,
   RefusalCoverage,
   RulesFlow,
+  UnmappedRefusals,
   StackTopology,
   Prd,
   PrdCoverage,
@@ -1055,6 +1056,9 @@ export const api = {
     request<StackTopology>(`/platform/stack${projectQuery(projectId)}`),
   /** The rule registry placed on the Rules map's fixed stages (GRPH-1156). */
   rulesFlow: (projectId: string) => request<RulesFlow>(`/rules/flow${projectQuery(projectId)}`),
+  /** Unmapped refusals grouped and ranked over the last `days` by the server (GRPH-1195). */
+  unmappedRefusals: (projectId: string, days = 7) =>
+    request<UnmappedRefusals>(`/rules/refusals/unmapped${projectQuery(projectId)}&days=${days}`),
   /** "N of M refusal sites name their rule", as the build published it (GRPH-1192). */
   refusalCoverage: (projectId: string) =>
     request<RefusalCoverage>(`/rules/refusal-coverage${projectQuery(projectId)}`),

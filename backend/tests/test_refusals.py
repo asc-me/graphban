@@ -283,3 +283,95 @@ def test_a_refused_shard_retire_lands_in_the_shards_project(client, auth):
         db.close()
     assert [(x["action"], x["target_type"], x["target_id"]) for x in out["results"]] == [
         ("refusal", "shard", sid)]
+
+
+def _unmapped(db, n, *, where="GET /api/x", status=403, age_days=0, project_id="core"):
+    from datetime import datetime, timedelta, timezone
+    ts = datetime.now(timezone.utc) - timedelta(days=age_days)
+    db.add_all([Event(ts=ts, actor_type="system", surface="rest", action="refusal_unmapped",
+                      project_id=project_id, meta={"where": where, "status": status})
+                for _ in range(n)])
+    db.commit()
+
+
+def test_unmapped_groups_count_past_500_and_rank(client, auth):
+    db = SessionLocal()
+    try:
+        _unmapped(db, 600, where="GET /api/big")
+        _unmapped(db, 3, where="GET /api/small")
+    finally:
+        db.close()
+    r = client.get("/api/rules/refusals/unmapped?project_id=core", headers=auth)
+    assert r.status_code == 200
+    body = r.json()
+    assert [(g["where"], g["count"]) for g in body["groups"]] == [("GET /api/big", 600), ("GET /api/small", 3)]
+    assert body["groups"][0]["daily"][-1] == 600 and len(body["groups"][0]["daily"]) == 7
+    assert body["groups"][0]["last_at"]
+
+
+def test_unmapped_window_excludes_older_and_reports_recording_since(client, auth):
+    db = SessionLocal()
+    try:
+        _unmapped(db, 2, age_days=30, where="GET /api/old")
+    finally:
+        db.close()
+    body = client.get("/api/rules/refusals/unmapped?project_id=core", headers=auth).json()
+    assert body["groups"] == [] and body["recording_since"]
+    wide = client.get("/api/rules/refusals/unmapped?project_id=core&days=60", headers=auth).json()
+    assert [g["where"] for g in wide["groups"]] == ["GET /api/old"]
+
+
+def test_unmapped_recording_since_is_null_when_nothing_recorded(client, auth):
+    body = client.get("/api/rules/refusals/unmapped?project_id=core", headers=auth).json()
+    assert body["recording_since"] is None and body["groups"] == []
+
+
+def test_projectless_refusals_are_a_platform_bucket_for_the_owner_only(client, auth):
+    from app.services import events as ev
+    db = SessionLocal()
+    try:
+        _unmapped(db, 2, where="tool_x", project_id=None)
+        _unmapped(db, 1, where="GET /api/mine")
+        owner = ev.unmapped_refusals(db, "core", include_platform=True)
+        reader = ev.unmapped_refusals(db, "core", include_platform=False)
+    finally:
+        db.close()
+    assert [(g["where"], g["platform"]) for g in owner["groups"]] == [("tool_x", True), ("GET /api/mine", False)]
+    assert [g["where"] for g in reader["groups"]] == ["GET /api/mine"]
+
+
+def _platform_wheres(client, headers, pid="core"):
+    r = client.get(f"/api/rules/refusals/unmapped?project_id={pid}", headers=headers)
+    assert r.status_code == 200, r.text
+    return [g["where"] for g in r.json()["groups"] if g["platform"]]
+
+
+def test_the_platform_bucket_is_for_platform_admins_or_a_self_hosted_owner(client, auth, monkeypatch):
+    """Project-less refusals come from every tenant. A hosted owner is anyone who made a
+    project, so owning one must not reveal them; only a platform admin sees them there."""
+    from app.config import settings
+    db = SessionLocal()
+    try:
+        _unmapped(db, 2, where="tool_x", project_id=None)
+    finally:
+        db.close()
+    assert _platform_wheres(client, auth) == ["tool_x"]  # self-hosted owner: one tenant
+    monkeypatch.setattr(settings, "hosted_mode", True)
+    monkeypatch.setattr(settings, "platform_admin_emails", "")
+    r = client.post("/api/auth/login", json={"email": "dana@ascme-labs.com", "password": "graphban"})
+    dana = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    client.post("/api/orgs", json={"name": "Dana Co"}, headers=dana)
+    pid = client.post("/api/projects", json={"name": "Dana Project"}, headers=dana).json()["id"]
+    assert _platform_wheres(client, dana, pid) == []
+    monkeypatch.setattr(settings, "platform_admin_emails", "dana@ascme-labs.com")
+    assert _platform_wheres(client, dana, pid) == ["tool_x"]
+
+def test_recording_since_does_not_see_other_projects(client, auth):
+    other = client.post("/api/projects", json={"name": "Elsewhere"}, headers=auth).json()["id"]
+    db = SessionLocal()
+    try:
+        _unmapped(db, 1, where="GET /api/elsewhere", project_id=other)
+    finally:
+        db.close()
+    body = client.get("/api/rules/refusals/unmapped?project_id=core", headers=auth).json()
+    assert body["recording_since"] is None and body["groups"] == []
