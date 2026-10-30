@@ -212,6 +212,11 @@ class Project(Base):
     memory_flag_on_code_change: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default=true(), nullable=False
     )
+    # Shard classes a human must publish (GRPH-1214): a candidate of one of these is never
+    # auto- or trusted-published, whatever its confidence. Auto-reject still applies.
+    memory_human_review_classes: Mapped[list] = mapped_column(
+        JSON, default=lambda: ["principle"], server_default='["principle"]', nullable=False
+    )
     # The fleet's hard constraints (PRD-37 D4): `{local_only, reviewer_cross_vendor,
     # allowed_harnesses}`. A FILTER the supervisor applies before any preference is scored, so
     # a strong taste cannot outvote a rule. NULL is no constraint — the resolver reads absence

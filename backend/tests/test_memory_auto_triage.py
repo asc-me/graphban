@@ -491,3 +491,48 @@ def test_every_cause_has_wording_of_its_own(cause):
 def test_the_causes_are_distinguishable_to_a_reader(client, sdb, monkeypatch):
     """Five different wordings, not five labels on one sentence."""
     assert len(set(mem_svc.JUDGE_CAUSES.values())) == len(mem_svc.JUDGE_CAUSES)
+
+
+# ---- human review for chosen classes (GRPH-1214) ----
+
+def _classed_candidates(client, auth, mode):
+    """Two identical-confidence recurring candidates, one a principle and one a pitfall."""
+    from app.db import SessionLocal
+    from app.models import MemoryShard
+
+    pid = _proj(client, auth, f"HumanReview{mode}")
+    client.patch(f"/api/projects/{pid}", json={"memory_write_mode": mode}, headers=auth)
+    out = {}
+    db = SessionLocal()
+    try:
+        for cls, text in (("principle", "always set a timeout on outbound http"),
+                          ("pitfall", "never leave a transaction open across an await")):
+            for _ in range(3):
+                s = mem_svc.add_memory(db, text_body=text, project_id=pid, status="candidate",
+                                       origin="agent:test", auto_triage=False)
+                s.shard_class = cls
+                db.commit()
+            out[cls] = s.id
+        for cls in ("principle", "pitfall"):
+            mem_svc.triage_candidate(db, db.get(MemoryShard, out[cls]))
+        return {c: db.get(MemoryShard, i).status for c, i in out.items()}
+    finally:
+        db.close()
+
+
+def test_auto_mode_keeps_principle_a_candidate(client, auth):
+    assert _classed_candidates(client, auth, "auto") == {"principle": "candidate", "pitfall": "published"}
+
+
+def test_trusted_mode_keeps_principle_a_candidate(client, auth):
+    assert _classed_candidates(client, auth, "trusted") == {"principle": "candidate", "pitfall": "published"}
+
+
+def test_human_review_classes_default_and_validation(client, auth):
+    pid = _proj(client, auth, "HumanReviewCfg")
+    created = client.post("/api/projects", json={"name": "HumanReviewDflt"}, headers=auth).json()
+    assert created["memory_human_review_classes"] == ["principle"]
+    r = client.patch(f"/api/projects/{pid}", json={"memory_human_review_classes": ["nope"]}, headers=auth)
+    assert r.status_code == 422
+    r = client.patch(f"/api/projects/{pid}", json={"memory_human_review_classes": []}, headers=auth)
+    assert r.status_code == 200 and r.json()["memory_human_review_classes"] == []

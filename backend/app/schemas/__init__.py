@@ -529,6 +529,7 @@ class ProjectOut(ORMModel):
     memory_llm_judge: bool = False
     memory_candidate_expiry_days: int = 45
     memory_flag_on_code_change: bool = True
+    memory_human_review_classes: list[str] = ["principle"]
     # May an agent operate this project's quality gates (AL-282)? Never authority gates.
     agent_adjudication: bool = False
     # Danger mode (GRPH-380): may an agent sign off its own work when nobody else can?
@@ -1219,6 +1220,7 @@ class ProjectUpdate(BaseModel):
     memory_llm_judge: bool | None = None
     memory_candidate_expiry_days: int | None = None
     memory_flag_on_code_change: bool | None = None
+    memory_human_review_classes: list[str] | None = None
     agent_adjudication: bool | None = None
     allow_self_review: bool | None = None
     # Unlike the fields above, an explicit null here CLEARS (back to unmeasured); omit the
@@ -1233,6 +1235,18 @@ class ProjectUpdate(BaseModel):
         if v is not None and v not in ("review", "auto", "trusted"):
             raise ValueError("memory_write_mode must be one of: review, auto, trusted")
         return v
+
+    @field_validator("memory_human_review_classes")
+    @classmethod
+    def _valid_review_classes(cls, v: list[str] | None) -> list[str] | None:
+        # Refused, not dropped: a typo'd class would silently leave that class auto-publishing.
+        if v is None:
+            return v
+        allowed = ("pitfall", "convention", "principle")  # services.memory.SHARD_CLASSES
+        bad = [c for c in v if c not in allowed]
+        if bad:
+            raise ValueError(f"memory_human_review_classes must be from: {', '.join(allowed)}")
+        return list(dict.fromkeys(v))
 
     @field_validator("memory_candidate_expiry_days")
     @classmethod
