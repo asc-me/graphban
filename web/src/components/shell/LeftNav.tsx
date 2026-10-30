@@ -141,6 +141,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
   const { data: adminMe } = useIsPlatformAdmin();
   const isPlatformAdmin = !!adminMe?.is_platform_admin;
   const [orgDialogOpen, setOrgDialogOpen] = React.useState(false);
+  const [orgDialogLinked, setOrgDialogLinked] = React.useState(false);
   const { pathname } = useLocation();
   // The URL is the project, and it is known before the project list answers.
   const homeTag = hosted ? (active?.tag ?? tagFromPath(pathname)) : null;
@@ -410,7 +411,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
             {hosted ? (
               <NavItem href={consoleHref(orgPath())} icon={<Building2 size={15} />} label="Organization" utility />
             ) : (
-              <OrgRailItem projectId={activeId} onOpenDialog={() => setOrgDialogOpen(true)} />
+              <OrgRailItem projectId={activeId} onOpenDialog={(linked) => { setOrgDialogLinked(linked); setOrgDialogOpen(true); }} />
             )}
             {canAdminister && (
               <NavItem href={consoleHref(adminPath())} icon={<UsersRound size={15} />} label="Admin" utility />
@@ -471,7 +472,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
         />
       )}
 
-      {!hosted && <CloudOrgLinkDialog open={orgDialogOpen} onOpenChange={setOrgDialogOpen} />}
+      {!hosted && <CloudOrgLinkDialog open={orgDialogOpen} onOpenChange={setOrgDialogOpen} linked={orgDialogLinked} />}
     </aside>
   );
 }
@@ -704,10 +705,10 @@ const ORG_DOT: Record<Exclude<OrgState, "unlinked">, { color: string; word: stri
 
 /**
  * Self-host's Organization entry (GRPH-1224). Unlinked it opens the explainer; linked or
- * unreachable it stays in the app — never an external tab to `cloud_url`. Reachability is the
+ * unreachable it opens the org overview (GRPH-1225) — never an external tab to `cloud_url`. Reachability is the
  * same live probe Rules reads (`linked_unreachable`), asked only once the box is linked.
  */
-function OrgRailItem({ projectId, onOpenDialog }: { projectId: string; onOpenDialog: () => void }) {
+function OrgRailItem({ projectId, onOpenDialog }: { projectId: string; onOpenDialog: (linked: boolean) => void }) {
   const { data: status, isLoading } = useSyncStatus();
   const navigate = useNavigate();
   const isLinked = !!usableHttpUrl(status?.cloud_url);
@@ -722,9 +723,7 @@ function OrgRailItem({ projectId, onOpenDialog }: { projectId: string; onOpenDia
   const dot = state === "unlinked" ? null : ORG_DOT[state];
   const onClick = () => {
     if (isMalformed) navigate(`${settingsPath("deployment/sync")}?reason=malformed`);
-    // The org overview window is GRPH-1225; until it lands, Sync link settings is the in-app home.
-    else if (dot) navigate(settingsPath("deployment/sync"));
-    else onOpenDialog();
+    else onOpenDialog(!!dot);
   };
   return (
     <button
