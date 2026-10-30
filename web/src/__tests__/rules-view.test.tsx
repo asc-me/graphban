@@ -53,6 +53,7 @@ function flowFixture(over: Partial<RulesFlow> = {}): RulesFlow {
   return {
     version: "1.0.0",
     model: "prs_to_base",
+    control: { state: "local", writable: true, message: "", org_name: "" },
     edges: [
       ["spec", "plan"], ["plan", "build"], ["build", "review"],
       ["review", "merge"], ["merge", "release"], ["release", "learn"],
@@ -61,12 +62,12 @@ function flowFixture(over: Partial<RulesFlow> = {}): RulesFlow {
       stage("spec", "Spec", "enforced", [
         rule({ id: "gate.approval_earned_by_grill", stage: "spec", enforcement: "enforced", title: "Approval is earned by the grill" }),
       ]),
-      stage("plan", "Plan", "enforced", [
+      stage("plan", "Plan", "external", [
         rule({ id: "gate.decompose_requires_approval", stage: "plan", enforcement: "enforced" }),
+        rule({ id: "plan.budget_cap", stage: "plan", enforcement: "external", title: "Budget cap", scope: "org", truth: "db",
+          value: "5000", source: "project", enforcer: { kind: "supervisor", ref: "gbfleet budget cap", url: "" } }),
       ]),
-      stage("build", "Build", "external", [
-        rule({ id: "budget.cap", stage: "build", enforcement: "external", title: "Budget cap", scope: "org",
-          enforcer: { kind: "supervisor", ref: "gbfleet budget cap", url: "" } }),
+      stage("build", "Build", "advisory", [
         rule({ id: "agents.operating_loop", stage: "build", enforcement: "advisory", channel: "doc", truth: "repo_file",
           enforcer: { kind: "doc", ref: "AGENTS.md", url: "" } }),
         rule({ id: "agents.skills_pack", stage: "build", enforcement: "advisory", channel: "skill", truth: "repo_file",
@@ -143,7 +144,9 @@ describe("RulesView", () => {
     ["linked_unset", "LINKED · NOT SET"],
     ["linked_unreachable", "ORG UNREACHABLE"],
   ] as const)("%s shows its banner and control pill, and no fresh banner", async (state, label) => {
-    vi.mocked(api.rulesFlow).mockResolvedValue(flowFixture({ model: null }));
+    vi.mocked(api.rulesFlow).mockResolvedValue(
+      flowFixture({ model: null, control: { state, writable: false, message: "", org_name: "Acme Co" } }),
+    );
     vi.mocked(api.gitops).mockResolvedValue(gitopsView(state));
     renderAt();
     const banner = await screen.findByTestId(`rules-control-banner-${state}`);
@@ -300,8 +303,8 @@ describe("RulesView", () => {
       "https://github.com/asc-me/graphban/blob/cli-v0.8.2/cli/src/gban/skills/graphban-review/SKILL.md",
     );
     // Build tallies its own rules; the pack is not counted on the card.
-    expect(screen.getByTestId("rules-stage-build")).toHaveTextContent("1 external");
     expect(screen.getByTestId("rules-stage-build")).toHaveTextContent("1 advisory");
+    expect(screen.getByTestId("rules-stage-plan")).toHaveTextContent("1 external");
   });
 
   it("the canvas is one keyboard listbox: arrows move, Enter opens, Escape closes", async () => {

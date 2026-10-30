@@ -126,7 +126,7 @@ export function RulesView() {
   // A null model is also what linked_unset and linked_unreachable look like; only a local
   // project with no model is new.
   const { data: gitops } = useGitops(activeId);
-  const controlState = gitops?.control.state ?? null;
+  const controlState = flow?.control.state ?? null;
   const fresh = !!flow && flow.model === null && controlState === "local";
 
   return (
@@ -894,8 +894,8 @@ function Inspector({
 
   const title = pack ? pack.title : stage!.title;
   const kicker = pack
-    ? `OFF THE MAIN FLOW · LINKED TO ${pack.stage.toUpperCase()}`
-    : `STAGE ${String(index + 1).padStart(2, "0")} · ${stage!.id.toUpperCase()}`;
+    ? `OFF THE MAIN FLOW · LINKED TO ${(flow.stages.find((s) => s.id === pack.stage)?.title ?? pack.stage).toUpperCase()}`
+    : `STAGE ${String(index + 1).padStart(2, "0")} · ${stage!.title.toUpperCase()}`;
   const level = pack ? ruleLevel(pack) : stageLevel(stage!);
   const rules = stage ? weakestFirst(stageRules(stage)) : [];
 
@@ -1076,10 +1076,10 @@ function RuleRow({
             <span className="text-[11.5px] text-muted">Nothing has reported yet. That is not a pass.</span>
           </div>
         )}
-        {rule.truth === "db" && (
+        {rule.truth === "db" && rule.id !== "plan.budget_cap" && (
           <ValueBox rule={rule} value={value} prefill={prefill} />
         )}
-        {rule.id === "budget.cap" && rule.used && <BudgetCapEditor />}
+        {rule.id === "plan.budget_cap" && rule.used && <BudgetCapEditor />}
       </div>
     </div>
   );

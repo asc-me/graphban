@@ -272,7 +272,7 @@ export function policyWithItemCap(current: FleetPolicy | null, cap: number | nul
   return { ...base, caps };
 }
 
-/** `budget.cap` — stays EXTERNAL after a save; the supervisor enforces, so the NOT VERIFIED box stays. */
+/** `plan.budget_cap` — stays EXTERNAL after a save; the supervisor enforces, so the NOT VERIFIED box stays. */
 export function BudgetCapEditor() {
   const { activeId } = useProjectCtx();
   const { data, isLoading, isError } = useFleetPolicy(activeId);

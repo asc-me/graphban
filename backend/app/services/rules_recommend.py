@@ -126,7 +126,7 @@ def _from_github(db: Session, project_id: str) -> tuple[list[dict], dict]:
     if len(titles) >= _MIN_PRS and len(ticketed) * 2 > len(titles):
         prefix = Counter(t.split("-")[0] for t in ticketed).most_common(1)[0][0]
         out.append(_suggestion(
-            "suggest.pr_title_pattern", "pull_request", "advisory", "Put the item id in PR titles",
+            "suggest.pr_title_pattern", "merge", "advisory", "Put the item id in PR titles",
             f"{len(ticketed)} of {len(titles)} recent PR titles start with an item id. "
             "Saved, it is advisory context for agents.", "value",
             [{"text": f"{len(ticketed)} of {len(titles)} recent PRs start with `{prefix}-…`",
