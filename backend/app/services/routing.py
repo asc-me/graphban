@@ -9,8 +9,12 @@ entitlements first, soonest stated reset first (use it before it is lost), then 
 every stated one and is never invented (D5).
 
 **Claim shaping (D10).** When the only entitlement with headroom belongs to another runner, the
-item is soft-reserved for that entitlement's holders for `RESERVATION_TTL`; other claimants are
-not offered it, and the reservation lapses back to the ladder. No push. The reservation ENDS AT
+item is soft-reserved for that entitlement's holders for `RESERVATION_TTL`; claimants without
+headroom of their own are not offered it, and the reservation lapses back to the ladder. No push.
+It is written only when exactly one buildable entitlement (one with headroom, a live holder and
+a review reserve) exists: with two, nobody needs the item held. And a reservation never refuses a
+claimant whose own entitlement passes the review reserve: it holds the item against the ladder's
+lower rungs, not against another runner with headroom. The reservation ENDS AT
 ONCE when its entitlement reports `limit_hit` or `spawn_failed` (`end_reservations`): the reason
 for holding the item is gone, so routing recalculates from the ledger instead of waiting out
 the TTL.
@@ -90,26 +94,33 @@ def gate(db: Session, item: Item, agent_id: str, *, now: datetime | None = None)
     mine = [e for e in ranked if e["id"] in declared]
     live = live_reservation(db, item.id, now=now)
 
-    if live is not None:
-        if live.entitlement_id in declared:
-            return {"allowed": True, "entitlement_id": live.entitlement_id,
-                    "reason": f"reserved for {live.entitlement_id}: {live.reason}"}
-        return {"allowed": False, "entitlement_id": live.entitlement_id,
-                "reason": f"reserved for {live.entitlement_id} until "
-                          f"{_aware(live.reserved_until).isoformat()}"}
+    if live is not None and live.entitlement_id in declared:
+        return {"allowed": True, "entitlement_id": live.entitlement_id,
+                "reason": f"reserved for {live.entitlement_id}: {live.reason}"}
 
     for entry in mine:
         if review_reserved(ranked, entry["vendor"]):
             return {"allowed": True, "entitlement_id": entry["id"], "reason": _why(entry, ranked)}
+    if live is not None:
+        return {"allowed": False, "entitlement_id": live.entitlement_id,
+                "reason": f"reserved for {live.entitlement_id} until "
+                          f"{_aware(live.reserved_until).isoformat()}"}
     if mine:
         return {"allowed": False, "entitlement_id": None,
                 "reason": "review reserve: building on this vendor would leave no "
                           "reviewer-eligible vendor with headroom (D7)"}
 
-    # The claimant holds nothing with headroom. If another runner does, hold the item for it;
-    # if nobody does, the ladder's next rung is the claimant's to take.
-    if ranked and not _holders_gone(db, ranked[0]["id"], org.id):
-        best = ranked[0]
+    # The claimant holds nothing with headroom. If exactly one other entitlement could take the
+    # item, hold it for that one; if several could, refuse without holding (any of them may take
+    # it); if none could, the ladder's next rung is the claimant's to take.
+    held = _held(db, org.id)
+    buildable = [e for e in ranked if e["id"] in held and review_reserved(ranked, e["vendor"])]
+    if len(buildable) > 1:
+        return {"allowed": False, "entitlement_id": None,
+                "reason": "other runners have headroom: "
+                          f"{', '.join(e['id'] for e in buildable)}"}
+    if buildable:
+        best = buildable[0]
         db.add(RoutingDecision(
             item_id=item.id, kind="reservation", entitlement_id=best["id"],
             reason=_why(best, ranked), reserved_until=now + RESERVATION_TTL,
@@ -121,12 +132,13 @@ def gate(db: Session, item: Item, agent_id: str, *, now: datetime | None = None)
             "reason": "no entitlement has headroom; next rung of the ladder"}
 
 
-def _holders_gone(db: Session, entitlement_id: str, org_id: str) -> bool:
-    """True when no runner declares the entitlement, so a reservation would hold the item for
-    nobody."""
-    return not any(entitlement_id in (a.entitlement_ids or []) for a in db.scalars(
+def _held(db: Session, org_id: str) -> set[str]:
+    """Entitlement ids some live (undismissed) runner in the org declares. An entitlement nobody
+    declares cannot take an item, so a reservation for it would hold the item for nobody."""
+    return {e for a in db.scalars(
         select(Agent).join(Project, Project.id == Agent.project_id)
-        .where(Agent.dismissed_at.is_(None), Project.org_id == org_id)).all())
+        .where(Agent.dismissed_at.is_(None), Project.org_id == org_id)).all()
+        for e in (a.entitlement_ids or [])}
 
 
 def live_reservation(db: Session, item_id: str, *, now: datetime | None = None

@@ -109,6 +109,7 @@ def test_an_item_is_held_for_the_runner_with_headroom_then_lapses_to_the_ladder(
     broke = _ent(client, world, "openai")
     x = _runner(client, world, [broke], vendor="openai")
     _report(client, world, broke, x, "spawn_failed", vendor_text="boom")
+    _ent(client, world, "google")  # reviewer reserve; no runner declares it
     item = _item()
     assert _claim(x, item) is None
     (res,) = [d for d in _decisions(item) if d["kind"] == "reservation"]
@@ -120,7 +121,6 @@ def test_an_item_is_held_for_the_runner_with_headroom_then_lapses_to_the_ladder(
     row = db.query(RoutingDecision).filter_by(kind="reservation").one()
     row.reserved_until = datetime.now(timezone.utc) - timedelta(seconds=1)
     db.commit(); db.close()
-    held_third = _ent(client, world, "google")
     # with the reservation lapsed the item is offered again: the holder's own claim works
     assert _claim(b, item) == item
 
@@ -129,19 +129,65 @@ def test_a_reserved_claim_that_fails_ends_its_reservation_at_once(client, world)
     held = _ent(client, world, "anthropic")
     b = _runner(client, world, [held])
     _report(client, world, held, b, "registered")
-    other = _ent(client, world, "openai")
-    d = _runner(client, world, [other], vendor="openai")
-    _report(client, world, other, d, "registered")
     broke = _ent(client, world, "google")
     x = _runner(client, world, [broke], vendor="google")
     _report(client, world, broke, x, "spawn_failed", vendor_text="boom")
-    _runner(client, world, [_ent(client, world, "mistral")], vendor="mistral")  # reviewer reserve
+    _ent(client, world, "mistral")  # reviewer reserve; no runner declares it, so it builds nothing
     item = _item()
-    assert _claim(x, item) is None  # reserved for `held` (first created available)
+    assert _claim(x, item) is None  # reserved for `held`, the only buildable entitlement
     assert _claim(b, item) == item
     # B's spawn then hits a vendor limit the server did not know about
     _report(client, world, held, b, "limit_hit", vendor_text="You've hit your limit")
     res = [r for r in _decisions(item) if r["kind"] == "reservation"][0]
     assert res["ended_reason"] == "limit_hit"
-    # Item released and routable at once: another runner with headroom takes it NOW, not at TTL.
+    # Released and routed again from the ledger NOW, not at TTL: nothing buildable is left, so
+    # the ladder's next rung is X's to take.
+    assert _claim(x, item) == item
+
+
+def _three_runners(client, world):
+    a_ent = _ent(client, world, "anthropic")
+    a = _runner(client, world, [a_ent])
+    _report(client, world, a_ent, a, "registered")
+    d_ent = _ent(client, world, "openai")
+    d = _runner(client, world, [d_ent], vendor="openai")
+    _report(client, world, d_ent, d, "registered")
+    x_ent = _ent(client, world, "google")
+    x = _runner(client, world, [x_ent], vendor="google")
+    _report(client, world, x_ent, x, "spawn_failed", vendor_text="boom")
+    return a, d, x
+
+
+def test_a_headroomless_claim_does_not_reserve_while_several_runners_have_headroom(client, world):
+    a, d, x = _three_runners(client, world)
+    item = _item()
+    assert _claim(x, item) is None, "X has no headroom; A and D do"
+    assert not [r for r in _decisions(item) if r["kind"] == "reservation"]
+    assert _claim(d, item) == item, "D has its own headroom and a reviewer vendor (A)"
+
+
+def test_claim_next_by_a_headroomless_runner_does_not_lock_the_queue(client, world):
+    a, d, x = _three_runners(client, world)
+    items = [_item(f"w{i}") for i in range(3)]
+    assert _claim(x) is None
+    assert not any(r["kind"] == "reservation" for i in items for r in _decisions(i))
+    assert _claim(d) in items and _claim(a) in items
+
+
+def test_a_live_reservation_still_offers_the_item_to_a_runner_with_headroom(client, world):
+    held = _ent(client, world, "anthropic")
+    b = _runner(client, world, [held])
+    _report(client, world, held, b, "registered")
+    broke = _ent(client, world, "google")
+    x = _runner(client, world, [broke], vendor="google")
+    _report(client, world, broke, x, "spawn_failed", vendor_text="boom")
+    _ent(client, world, "mistral")  # reviewer reserve; no runner declares it
+    item = _item()
+    assert _claim(x, item) is None
+    assert [r for r in _decisions(item) if r["kind"] == "reservation"]
+    # A third runner arrives with headroom while the reservation is live: it is not locked out.
+    other = _ent(client, world, "openai")
+    d = _runner(client, world, [other], vendor="openai")
+    _report(client, world, other, d, "registered")
+    assert _claim(x, item) is None, "the reservation still holds against the headroomless"
     assert _claim(d, item) == item
