@@ -196,6 +196,8 @@ class Report:
             "substituted": {k: list(v) for k, v in (self.wave.substituted.items()
                                                     if self.wave else [])},
         }
+        # GRPH-1247. Every exhausted entitlement with the vendor's own reset text, quoted.
+        payload["exhausted"] = (list(self.wave.exhausted.values()) if self.wave else [])
         if self.detail:
             payload["detail"] = self.detail
         return payload
@@ -452,6 +454,29 @@ def _item_brief(client, item_id: str | None) -> dict | None:
     return brief if isinstance(brief, dict) else None
 
 
+def _skip_exhausted(wave: Wave, check):
+    """Wrap an `installed` checker so adapters the vendor refused this wave resolve to nothing."""
+    def wrapped(row):
+        entry = wave.exhausted.get(row.harness)
+        if entry:
+            return False, f"exhausted: {entry['said']}"[:160]
+        return check(row)
+    return wrapped
+
+
+def _mark_exhausted(wave: Wave, exc: VendorLimit, chosen: str) -> None:
+    # The harness the matrix chose is the name `_skip_exhausted` matches on.
+    adapter = chosen or exc.adapter
+    wave.exhausted.setdefault(adapter, {
+        "adapter": adapter, "said": exc.said, "seen_at": int(time.time()),
+    })
+
+
+def _capacity_detail(wave: Wave, last: str) -> str:
+    names = ", ".join(sorted(wave.exhausted)) or "none recorded"
+    return f"no entitlement with headroom is left (exhausted: {names}). {last}"
+
+
 def _loop(
     wave: Wave,
     children: list[Child],
@@ -544,6 +569,69 @@ def _loop(
     # GRPH-950: holds are blockers on the server, so they outlive the wave that wrote them.
     _resume_holds(planner, held, delegated, repo, base)
     rechecked = time.monotonic()
+
+    def next_candidate(seed: str, want: str):
+        """The next matrix winner for `want`, exhausted adapters skipped; None when none is left."""
+        if not (want and want not in tiers.lanes and launch_for is not None
+                and matrix is not None):
+            return None
+        brief = _item_brief(planner, seed)
+        res = matrix.resolve(tier=want, profile=profile, policy=policy,
+                             measured=measured,
+                             installed=matrix_mod.installed_checker(),
+                             capabilities=(brief or {}).get("capabilities"),
+                             cap_measured=cap_measured,
+                             spend=(brief or {}).get("spend"),
+                             mix=(brief or {}).get("mix"))
+        if res.winner is None:
+            observe.emit("resolve_refused", item=seed, detail=res.refused)
+            return None
+        explained = res.explain()
+        observe.emit("resolved", item=seed, **{k: v for k, v in explained.items() if k in ("winner", "dropped", "eligible", "profile", "stages", "capabilities")})
+        wave.resolutions.append({"item": seed, **{k: explained[k] for k in
+                                                  ("winner", "dropped", "stages",
+                                                   "capabilities", "profile")
+                                                  if k in explained}})
+        return (launch_for(res.winner.harness, res.winner.model),
+                (res.winner.harness, res.winner.model))
+
+    def failover(seat, seed, want, factory, chosen):
+        """GRPH-1247. Spawn; on a vendor limit, mark the adapter exhausted and take the next.
+
+        Ends the wave with `capacity` (not `cap`, not `vendor_limit`) when nothing is left.
+        """
+        while True:
+            mark = (len(wave.failures), len(wave.unredeemed), wave.unused_seats)
+            exc: VendorLimit | None = None
+            if chosen[0] in wave.exhausted:
+                said = wave.exhausted[chosen[0]]["said"]
+                exc = VendorLimit(f"adapter {chosen[0]!r} is exhausted this wave: {said}",
+                                  adapter=chosen[0], said=said)
+            else:
+                try:
+                    _spawn_one(
+                        wave, children, occupied, persist, seat, factory,
+                        repo, workspace, wave_name, supervisor, limits, planner, debug,
+                        base=base,
+                    )
+                    return
+                except VendorLimit as caught:
+                    exc = caught
+                    _mark_exhausted(wave, caught, chosen[0])
+            nxt = next_candidate(seed, want)
+            if nxt is None:
+                wave.reason = "capacity"
+                raise CapError("capacity", _capacity_detail(wave, str(exc))) from exc
+            # The failed attempt is superseded by the retry, not a second failure.
+            del wave.failures[mark[0]:]
+            del wave.unredeemed[mark[1]:]
+            wave.unused_seats = mark[2]
+            prev = chosen[0]
+            factory, chosen = nxt
+            seat = replace(seat, declare=matrix_mod.declaration(
+                chosen[0], chosen[1], want or None, matrix))
+            observe.emit("failover", item=seed,
+                         detail=f"{prev} exhausted; continuing on {chosen[0]}")
 
     while True:
         # GRPH-1056. This loop IS the supervisor working. An `mcp` that merely stays
@@ -712,7 +800,7 @@ def _loop(
                     # policy read at launch, and the log says how.
                     brief = _item_brief(planner, seed)
                     res = matrix.resolve(tier=want, profile=profile, policy=policy,
-                                         measured=measured, installed=matrix_mod.installed_checker(),
+                                         measured=measured, installed=_skip_exhausted(wave, matrix_mod.installed_checker()),
                                          capabilities=(brief or {}).get("capabilities"),
                                          cap_measured=cap_measured,
                                          spend=(brief or {}).get("spend"),
@@ -746,11 +834,7 @@ def _loop(
                 if chosen[0]:
                     seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
                 _cap_children(wave, limits, item=seed)
-                _spawn_one(
-                    wave, children, occupied, persist, seat, factory,
-                    repo, workspace, wave_name, supervisor, limits, planner, debug,
-                    base=base,
-                )
+                failover(seat, seed, want, factory, chosen)
                 wd.progress(f"spawned for {seed}")
                 continue
             else:
@@ -774,7 +858,7 @@ def _loop(
                     # policy read at launch, and the log says how.
                     brief = _item_brief(planner, seed)
                     res = matrix.resolve(tier=want, profile=profile, policy=policy,
-                                         measured=measured, installed=matrix_mod.installed_checker(),
+                                         measured=measured, installed=_skip_exhausted(wave, matrix_mod.installed_checker()),
                                          capabilities=(brief or {}).get("capabilities"),
                                          cap_measured=cap_measured,
                                          spend=(brief or {}).get("spend"),
@@ -808,11 +892,7 @@ def _loop(
                 if chosen[0]:
                     seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
                 _cap_children(wave, limits, item=seed)
-                _spawn_one(
-                    wave, children, occupied, persist, seat, factory,
-                    repo, workspace, wave_name, supervisor, limits, planner, debug,
-                    base=base,
-                )
+                failover(seat, seed, want, factory, chosen)
                 wd.progress(f"spawned for {seed}")
                 continue
 
@@ -852,11 +932,7 @@ def _loop(
                 seat = replace(seat, declare=matrix_mod.declaration(adapter, "", None, matrix))
             _cap_children(wave, limits)
             before = len(wave.spawned)
-            _spawn_one(
-                wave, children, occupied, persist, seat, launch_factory,
-                repo, workspace, wave_name, supervisor, limits, planner, debug,
-                base=base,
-            )
+            failover(seat, "", "", launch_factory, (adapter, ""))
             if len(wave.spawned) == before:
                 review_fails += 1
             continue
