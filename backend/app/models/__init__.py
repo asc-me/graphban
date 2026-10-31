@@ -1148,6 +1148,12 @@ class MemoryShard(Base):
         String, default="", server_default="", nullable=False
     )
     review_judge_verdict: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The keep/quality judge's last verdict (GRPH-1242), so the stale queue can show a
+    # recommendation without asking a model on page load. Carries `key` (judge identity +
+    # text) and `text_sha` (the text alone) beside the verdict: a background pass re-asks on
+    # a key mismatch, and a read refuses a verdict about words the shard no longer says.
+    # Successful verdicts only, for the same reason as `review_judge_verdict`.
+    keep_judge_verdict: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     scope: Mapped[str] = mapped_column(String, default="global")  # global/item
     source: Mapped[str] = mapped_column(String, default="")
     # Lifecycle (AL-49): agent self-reports enter as `candidate` and only reach the

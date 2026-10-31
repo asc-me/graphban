@@ -186,9 +186,10 @@ def test_the_review_queue_alone_records_the_failure(client, auth, db, monkeypatc
 
     _judge_on(client, auth, pid)
     boom = _build(monkeypatch, MuteDecider())
-    scored = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
+    # The queue's judging runs in the background pass now (GRPH-1242), not on the GET.
+    rows = mem_svc.score_candidates(db, project_id=pid, judge=True)
 
-    row = next(r for r in scored if r["shard"]["id"] == s["id"])
+    row = next(r for r in rows if r["shard"].id == s["id"])
     assert boom.calls >= 1
     assert row["judged"] is False
     assert row["judge_source"] != "decider"
@@ -496,6 +497,7 @@ def test_a_decider_that_answers_reports_no_fallback(client, auth, db, monkeypatc
     good = _build(monkeypatch, AnsweringDecider())
 
     s = _mcp(client, key, "add_memory", {"text": "always pin the pgvector image to pg16 in CI"})
+    mem_svc.refresh_judgements(db, pid)  # the background pass (GRPH-1242)
     scored = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
 
     assert good.calls >= 1

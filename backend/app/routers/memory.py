@@ -212,7 +212,10 @@ def scored_candidates(
     """The review queue with advisory accept/reject suggestions (AL-151), plus
     groundedness/readiness when the project's LLM judge is on (GRPH-79). Similarity
     always runs. An ungraded judge is named, not a quiet zero. Advisory only —
-    publishing/rejecting is still the human's call."""
+    publishing/rejecting is still the human's call.
+
+    Reads STORED verdicts only — a page load never waits on a model (GRPH-1242). The
+    background judge refresh fills them in; an unjudged row says `not yet judged`."""
     authz.require_readable(db, user.id, project_id)
     return [
         ScoredCandidate(
@@ -229,7 +232,7 @@ def scored_candidates(
             ungraded_reason=str(r.get("ungraded_reason") or ""),
             judge_source=str(r.get("judge_source") or ""),
         )
-        for r in mem_svc.score_candidates(db, project_id=project_id)
+        for r in mem_svc.score_candidates(db, project_id=project_id, judge=False)
     ]
 
 
@@ -440,8 +443,9 @@ def stale(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Published shards that are stale or reported wrong, with the judge's recommendation.
-    An ungraded judge is `ungraded: true`, never an invented recommendation."""
+    """Published shards that are stale or reported wrong, with the judge's STORED
+    recommendation (GRPH-1242: never a model call on the request path). An ungraded judge is
+    `ungraded: true`, never an invented recommendation."""
     authz.require_readable(db, user.id, project_id)
     return [
         StaleRow(shard=ShardOut.model_validate(r["shard"]), why=r["why"], ungraded=r["ungraded"],
