@@ -2501,6 +2501,8 @@ export interface LiveAgent {
   label: string;
   role: string | null;
   state: string;
+  /** Quarantine verdict, shown apart from presence: a quiet quarantined agent is `offline`. */
+  quarantined?: boolean;
   last_seen_at: string | null;
   worktree: string | null;
   branch: string | null;

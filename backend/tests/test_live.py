@@ -260,3 +260,52 @@ def test_project_feed_spans_agents_newest_first(db, proj, owner_key):
     ids = [r["id"] for r in out["rows"]]
     assert ids == sorted(ids, reverse=True)
     assert all(r["agent_label"] for r in out["rows"])
+
+
+def _seen(seconds_ago: int) -> str:
+    from datetime import timedelta
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()
+
+
+def _board_with(db, proj, agents):
+    return live_svc.board(db, proj, list_agents=lambda _db, _pid: agents,
+                          held_areas=lambda _db, _pid: {},
+                          call_summary=lambda *a, **k: {})
+
+
+def test_quarantined_agent_last_seen_61_days_ago_is_not_online(db, proj):
+    """Live's count, its strip and the shell badge say 2 with one long-silent quarantined agent."""
+    from app.services import projects as proj_svc
+
+    agents = [
+        _agent_dict(id="a1", key="LV-A1", state="working", last_seen_at=_seen(5)),
+        _agent_dict(id="a2", key="LV-A2", state="idle", last_seen_at=_seen(5)),
+        _agent_dict(id="q1", key="LV-Q1", state="quarantined",
+                    last_seen_at=_seen(61 * 86400)),
+    ]
+    got = _board_with(db, proj, agents)
+    flat = [a for u in got["users"] for a in u["agents"]]
+    strip = [a["id"] for a in flat if a["state"] != "offline"]
+    assert got["online_agents"] == 2
+    assert sorted(strip) == ["a1", "a2"]
+    assert sum(u["online"] for u in got["users"]) == 2
+    q = next(a for a in flat if a["id"] == "q1")
+    assert q["state"] == "offline" and q["quarantined"] is True
+
+    for i, a in enumerate(agents):
+        db.add(Agent(id=f"b{i}", project_id=proj, number=i + 1, label="w",
+                     state=a["state"],
+                     last_seen_at=datetime.fromisoformat(a["last_seen_at"])))
+    db.commit()
+    assert proj_svc.badge_counts(db, proj)["live_agents"] == 2
+
+
+def test_quarantined_agent_seen_inside_the_presence_ttl_counts_as_online(db, proj):
+    agents = [
+        _agent_dict(id="a1", state="working", last_seen_at=_seen(5)),
+        _agent_dict(id="q1", key="LV-Q1", state="quarantined", last_seen_at=_seen(5)),
+    ]
+    got = _board_with(db, proj, agents)
+    assert got["online_agents"] == 2
+    flat = {a["id"]: a for u in got["users"] for a in u["agents"]}
+    assert flat["q1"]["state"] == "quarantined" and flat["q1"]["quarantined"] is True
