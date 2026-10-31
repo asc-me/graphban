@@ -838,6 +838,34 @@ describe("Harness probe panel", () => {
       expect(within(panel).getByTestId("harness-panel-xy")).toHaveTextContent("9/10");
     });
 
+    it("labels a row with no vendor or model Unattributed, last, with its runs", async () => {
+      const blank = (capability: string, finished: number) => {
+        const l = leaf("x", capability, finished, 1);
+        return { ...l, key: { ...l.key, vendor: "", model: "" } };
+      };
+      harness.mockResolvedValueOnce(
+        report({ capability_set: catalog, cells: [fam([blank("A1", 13)]), fam([leaf("opus", "A1", 10, 9)])], below_floor_count: 0 }),
+      );
+      show();
+      await screen.findByTestId("harness-grid");
+      const rows = screen.getAllByTestId("harness-grid-row");
+      expect(rows).toHaveLength(2);
+      expect(rows[1]).toHaveTextContent("Unattributed");
+      expect(rows[1]).toHaveTextContent("13 runs");
+      expect(rows[0]).not.toHaveTextContent("Unattributed");
+    });
+
+    it("a vendor-only row's panel title has no trailing colon", async () => {
+      const l = leaf("x", "A1", 10, 9);
+      const only = { ...l, key: { ...l.key, vendor: "alibaba", model: "" } };
+      harness.mockResolvedValueOnce(report({ capability_set: catalog, cells: [fam([only])], below_floor_count: 0 }));
+      show();
+      const user = userEvent.setup();
+      await screen.findByTestId("harness-grid");
+      await user.click(gridCell(/^alibaba A1:/));
+      expect(screen.getByTestId("harness-panel-title").textContent).toBe("alibaba");
+    });
+
     it("the effort filter restricts the cell numbers to that band, counted on the leaves", async () => {
       harness.mockResolvedValueOnce(gridReport());
       show();
