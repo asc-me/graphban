@@ -539,7 +539,9 @@ def score_candidates(db: Session, *, project_id: str | None = None, judge: bool 
 
     `judge=False` never asks a model (GRPH-1227): a candidate carries only the verdict
     already stored on it, if any. Queue membership and similarity suggestions are identical;
-    only fresh judge calls (and a stale-key cached verdict being refused) are skipped."""
+    only fresh judge calls (and a stale-key cached verdict being refused) are skipped. A
+    candidate with nothing stored is `not_judged`. GET /candidates/scored uses this
+    (GRPH-1242); `refresh_judgements` is what calls `judge=True`."""
     cands = [s for s in list_shards(db, project_id=project_id, status="candidate") if s.embedding is not None]
     published = VecPool((s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="published") if s.embedding is not None)
     rejected = VecPool((s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="rejected") if s.embedding is not None)
@@ -619,6 +621,7 @@ def score_candidates(db: Session, *, project_id: str | None = None, judge: bool 
         # REVIEW_JUDGE_MAX does not apply on this branch.
         out.sort(key=lambda r: -float(r["confidence"]))
     asked = 0
+    unjudged: str | None = None  # resolved once, only if some row needs it
     t0 = time.monotonic()
     for row in out:
         default_cause = "off" if not llm_judge else (
@@ -643,7 +646,9 @@ def score_candidates(db: Session, *, project_id: str | None = None, judge: bool 
         else:
             verdict, cause = row["shard"].review_judge_verdict or None, "cached"
             if verdict is None:
-                row.update(_empty_review_judge(cause="unscored_budget" if use_decider else "capped"))
+                unjudged = unjudged or ("not_judged" if use_decider
+                                        else _unjudged_cause(db, project_id))
+                row.update(_empty_review_judge(cause=unjudged))
                 continue
         if cause == "capped":
             if use_decider:
@@ -824,6 +829,8 @@ JUDGE_CAUSES = {
     "undecided": "the decider's keep probability is inside the abstain band, so this "
                  "candidate has no adjudication rather than a negative one",
     "unscored_budget": "not scored yet — the decider queue budget ran out this pass",
+    "not_judged": "not yet judged — the judge is asked by a background pass, never on page "
+                  "load; this row fills in once that pass reaches it",
 }
 
 # Extra causes the on-demand review endpoint can report (GRPH-650). Not in
@@ -1072,7 +1079,10 @@ def judge_verdict(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
 
     decider_res = _resolved_decider(db, shard.project_id)
     if decider_res is not None:
-        return _decider_judge(db, decider_res, shard)
+        verdict, cause = _decider_judge(db, decider_res, shard)
+        if verdict is not None:
+            _store_keep_verdict(shard, _keep_identity(decider_res=decider_res), verdict)
+        return verdict, cause
 
     try:
         _resolved = platform_svc.resolve_role(db, shard.project_id or "core", "memory.judge")
@@ -1108,11 +1118,93 @@ def judge_verdict(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
 
     # Agreed. Average the quality so one outlier rating cannot carry a publish on its own,
     # and keep the first reason — they concur on the verdict, so any of them explains it.
-    return {
+    agreed = {
         "keep": verdicts[0]["keep"],
         "quality": round(sum(v["quality"] for v in verdicts) / len(verdicts), 3),
         "reason": verdicts[0]["reason"],
-    }, "ok"
+    }
+    _store_keep_verdict(shard, _keep_identity(provider=provider, model=model), agreed)
+    return agreed, "ok"
+
+
+# --- Stored keep/quality verdicts (GRPH-1242) ------------------------------------------
+# The stale queue used to call `judge_verdict` for up to STALE_JUDGE_MAX rows on EVERY GET —
+# eight sequential decider calls, ~4s a page view. A verdict is now stored where it is
+# reached, the GET reads only what is stored, and `refresh_judgements` (a background pass)
+# asks the judge about rows whose stored verdict is missing or was reached by a different
+# judge or about different text.
+_KEEP_STORE_FIELDS = ("key", "text_sha")
+
+
+def _text_sha(text: str | None) -> str:
+    return hashlib.sha256(" ".join((text or "").split()).encode("utf-8")).hexdigest()
+
+
+def _keep_identity(*, decider_res=None, provider: str = "", model=None) -> str:
+    """Which judge reached a keep verdict. The chat judge's sample count rides along for
+    the reason `_judge_cache_key` gives: unanimity across three is part of the verdict."""
+    if decider_res is not None:
+        return "\x00".join(["decider", str(decider_res.model or "")])
+    return "\x00".join([provider, str(getattr(model, "model", "")), str(JUDGE_SAMPLES)])
+
+
+def _keep_key(identity: str, text: str | None) -> str:
+    return hashlib.sha256("\x00".join([identity, _text_sha(text)]).encode("utf-8")).hexdigest()
+
+
+def _keep_judge_identity(db: Session, project_id: str | None) -> str | None:
+    """The identity `judge_verdict` would stamp, resolved without asking a model. None when
+    no judge could answer — a stored verdict then cannot be confirmed current."""
+    from app.services import platform as platform_svc
+
+    decider_res = _resolved_decider(db, project_id)
+    if decider_res is not None:
+        return _keep_identity(decider_res=decider_res)
+    try:
+        resolved = platform_svc.resolve_role(db, project_id or "core", "memory.judge")
+    except Exception:  # noqa: BLE001 — unresolvable is "cannot confirm", not a crash
+        logger.exception("llm judge: provider resolution failed")
+        return None
+    if resolved.provider_id == "stub":
+        return None
+    return _keep_identity(provider=resolved.provider_id, model=resolved.chat)
+
+
+def _unjudged_cause(db: Session, project_id: str | None) -> str:
+    """Why a row with nothing stored has no verdict, found without asking a model.
+    `not_judged` only when a judge resolves — telling a project with no model that the
+    background pass will get to it would be a promise nothing keeps."""
+    if _resolved_decider(db, project_id) is not None:
+        return "not_judged"
+    return "not_judged" if _keep_judge_identity(db, project_id) is not None else "no_provider"
+
+
+def _store_keep_verdict(shard: MemoryShard, identity: str, verdict: dict) -> None:
+    # Not committed here: `judge_verdict` runs inside write paths that own their commit.
+    shard.keep_judge_verdict = {
+        **verdict, "key": _keep_key(identity, shard.text), "text_sha": _text_sha(shard.text),
+    }
+
+
+def stored_keep_verdict(shard: MemoryShard) -> dict | None:
+    """The stored keep/quality verdict, or None. A verdict about text the shard no longer
+    says is not a verdict about this shard, so it reads as not yet judged."""
+    stored = shard.keep_judge_verdict
+    if not stored or stored.get("text_sha") != _text_sha(shard.text):
+        return None
+    return {k: v for k, v in stored.items() if k not in _KEEP_STORE_FIELDS}
+
+
+def _keep_judge(db: Session, shard: MemoryShard, *, allow_call: bool) -> tuple[dict | None, str]:
+    """`judge_verdict`, unless the stored verdict was reached by this judge about this text
+    (`cached`). `allow_call=False` reports `capped` instead of asking."""
+    identity = _keep_judge_identity(db, shard.project_id)
+    stored = shard.keep_judge_verdict
+    if identity is not None and stored and stored.get("key") == _keep_key(identity, shard.text):
+        return stored_keep_verdict(shard), "cached"
+    if not allow_call:
+        return None, "capped"
+    return judge_verdict(db, shard)
 
 
 def _parse_review_judge(raw: str) -> dict | None:
@@ -2849,34 +2941,86 @@ def _recommend(verdict: dict, *, reported_wrong: bool) -> dict:
 
 def recommendations(
     db: Session, rows: list[tuple[MemoryShard, list[str]]], project_id: str | None,
+    *, judge: bool = False,
 ) -> list[dict]:
     """Attach the project's judge recommendation to each row. A judge that is off, absent,
-    capped or unsure yields `ungraded` with the cause — never an invented recommendation."""
+    capped or unsure yields `ungraded` with the cause — never an invented recommendation.
+
+    `judge=False` (the default, and every GET) reads only the STORED verdict and never asks a
+    model (GRPH-1242); a row without one is `not_judged`. `judge=True` — the background
+    refresh and the apply action — asks for rows whose stored verdict is not current, at most
+    STALE_JUDGE_MAX model calls."""
     _m, _r, judge_on = _triage_prefs(db, project_id)
     asked = 0
     out = []
+    unjudged: str | None = None  # resolved once, only if some row needs it
     for shard, why in rows:
         row = {"shard": shard, "why": why, "ungraded": True, "recommendation": None,
                "ungraded_reason": JUDGE_CAUSES["off"]}
-        if judge_on:
-            if asked >= STALE_JUDGE_MAX:
-                row["ungraded_reason"] = JUDGE_CAUSES["capped"]
-            else:
-                asked += 1
-                verdict, cause = judge_verdict(db, shard)
-                if verdict is None:
-                    row["ungraded_reason"] = JUDGE_CAUSES.get(cause, cause)
-                else:
-                    row["ungraded"] = False
-                    row["ungraded_reason"] = ""
-                    row["recommendation"] = _recommend(
-                        verdict, reported_wrong=any("wrong" in w for w in why))
         out.append(row)
+        if not judge_on:
+            continue
+        if judge:
+            verdict, cause = _keep_judge(db, shard, allow_call=asked < STALE_JUDGE_MAX)
+            if cause not in ("cached", "capped"):
+                asked += 1
+        else:
+            verdict, cause = stored_keep_verdict(shard), "cached"
+            if verdict is None:
+                unjudged = unjudged or _unjudged_cause(db, project_id)
+                cause = unjudged
+        if verdict is None:
+            row["ungraded_reason"] = JUDGE_CAUSES.get(cause, cause)
+            continue
+        row["ungraded"] = False
+        row["ungraded_reason"] = ""
+        row["recommendation"] = _recommend(
+            verdict, reported_wrong=any("wrong" in w for w in why))
+    if asked:
+        db.commit()  # keep what was paid for; a session closed without commit discards it
     return out
 
 
 def stale_list(db: Session, project_id: str | None) -> list[dict]:
+    """The stale-or-wrong queue with STORED recommendations. Never asks a model (GRPH-1242)."""
     return recommendations(db, stale_or_wrong(db, project_id), project_id)
+
+
+# Postgres advisory-lock key for the judge refresh: one runner across every API worker.
+_JUDGE_REFRESH_LOCK = 1242
+
+
+def refresh_judgements(db: Session, project_id: str | None = None) -> int:
+    """Judge what the memory pages show, off the request path (GRPH-1242). For each project
+    with the LLM judge on: stale rows get a keep/quality verdict (STALE_JUDGE_MAX calls) and
+    candidates a review verdict (the queue's own budget). Both reuse current stored verdicts,
+    so a pass over an already-judged queue costs no model calls. Returns projects visited."""
+    stmt = select(Project.id).where(Project.memory_llm_judge.is_(True))
+    if project_id:
+        stmt = stmt.where(Project.id == project_id)
+    pids = list(db.scalars(stmt).all())
+    for pid in pids:
+        recommendations(db, stale_or_wrong(db, pid), pid, judge=True)
+        score_candidates(db, project_id=pid, judge=True)
+    return len(pids)
+
+
+def run_judge_refresh(db: Session) -> int:
+    """`refresh_judgements` behind a single-runner guard. On Postgres a transaction-scoped
+    advisory lock held on its OWN connection: a second worker's pass finds it taken and does
+    nothing, and the lock cannot outlive the pass (closing the connection ends the
+    transaction) even though the judges commit on the session's connection meanwhile.
+    SQLite is one process; nothing to arbitrate."""
+    bind = db.get_bind()
+    if bind.dialect.name != "postgresql":
+        return refresh_judgements(db)
+    with bind.connect() as lock_conn, lock_conn.begin():
+        got = lock_conn.execute(
+            text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": _JUDGE_REFRESH_LOCK}
+        ).scalar()
+        if not got:
+            return 0
+        return refresh_judgements(db)
 
 
 def queue_counts(db: Session, project_id: str | None) -> dict:
@@ -2934,7 +3078,8 @@ def apply_recommendations(
         if shard.status != "published":
             res["reason"] = f"not published ({shard.status})"
             continue
-        row = recommendations(db, [(shard, [])], shard.project_id)[0]
+        # An explicit action, so it may ask — and a current stored verdict costs nothing.
+        row = recommendations(db, [(shard, [])], shard.project_id, judge=True)[0]
         rec = row["recommendation"]
         if rec is None:
             res["reason"] = f"ungraded: {row['ungraded_reason']}"

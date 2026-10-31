@@ -50,6 +50,14 @@ def _age(shard_id, *, created_days=None, retired_days=None):
         db.close()
 
 
+def _refresh(pid):
+    db = SessionLocal()
+    try:
+        return mem_svc.refresh_judgements(db, pid)
+    finally:
+        db.close()
+
+
 def test_queue_counts_in_one_call(client, auth):
     pid = _proj(client, auth, "QCounts")
     sid = _published(client, auth, pid)
@@ -79,6 +87,7 @@ def test_stale_rows_carry_recommendations(client, auth, monkeypatch):
     sid = _published(client, auth, pid)
     _age(sid, created_days=200)
     _judge(monkeypatch, '{"keep": false, "quality": 0.05, "reason": "obsolete"}')
+    _refresh(pid)  # the GET reads stored verdicts; the background pass is what asks
     rows = client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json()
     assert len(rows) == 1
     assert rows[0]["ungraded"] is False
@@ -463,3 +472,211 @@ def test_queue_counts_never_calls_the_review_judge(client, auth, monkeypatch):
     monkeypatch.setattr(mem_svc, "review_judge", boom)
     body = client.get(f"/api/memory/queues?project_id={pid}", headers=auth).json()
     assert body["needs_decision"] == {"count": 3, "state": "ok", "error": ""}
+
+
+# ---- GRPH-1242: the memory pages never wait on a model ----------------------------------
+
+# One reply both parsers accept: keep/quality for the stale queue, grounded/ready for review.
+_BOTH = ('{"keep": true, "quality": 0.95, "grounded": true, "ready": true, '
+         '"conflicts": [], "reason": "still right"}')
+
+
+class _CountingChat:
+    def __init__(self, reply: str = _BOTH, exc: Exception | None = None):
+        self.reply, self.exc, self.calls = reply, exc, 0
+
+    def chat(self, *, system, context, question, temperature=None) -> str:
+        self.calls += 1
+        if self.exc is not None:
+            raise self.exc
+        return self.reply
+
+
+def _chat(monkeypatch, chat):
+    from app.services import platform as platform_svc
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("anthropic", chat))
+
+
+def _candidate(client, auth, pid, text):
+    key = client.post("/api/api-keys", json={"name": "mem", "project_id": pid},
+                      headers=auth).json()["plaintext"]
+    body = client.post(
+        "/api/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+              "params": {"name": "add_memory", "arguments": {"text": text}}},
+        headers={"X-API-Key": key},
+    ).json()["result"]["structuredContent"]
+    assert body["status"] == "candidate"
+    return body["id"]
+
+
+def _count_judges(monkeypatch):
+    """Count every judge entry point, so a decider path is counted as well as a chat one."""
+    n = {"keep": 0, "review": 0}
+    keep, review = mem_svc.judge_verdict, mem_svc.review_judge
+
+    def counted_keep(db, shard):
+        n["keep"] += 1
+        return keep(db, shard)
+
+    def counted_review(db, shard, **k):
+        n["review"] += 1
+        return review(db, shard, **k)
+
+    monkeypatch.setattr(mem_svc, "judge_verdict", counted_keep)
+    monkeypatch.setattr(mem_svc, "review_judge", counted_review)
+    return n
+
+
+def _stale_project(client, auth, name, n=2):
+    pid = _proj(client, auth, name, judge=True)
+    sids = [_published(client, auth, pid, text=f"lesson {i}: pin pgvector to pg16 in CI job {i}")
+            for i in range(n)]
+    for sid in sids:
+        _age(sid, created_days=200)
+    return pid, sids
+
+
+def test_the_pages_answer_from_stored_verdicts_while_the_judge_raises(client, auth, monkeypatch):
+    pid, sids = _stale_project(client, auth, "JudgeDown")
+    cid = _candidate(client, auth, pid, "retry budgets reset at midnight UTC, not local time")
+    _chat(monkeypatch, _CountingChat())
+    monkeypatch.setattr(mem_svc, "STALE_JUDGE_MAX", 1)  # leave one stale row unjudged
+    _refresh(pid)
+
+    boom = _CountingChat(exc=RuntimeError("model down"))
+    _chat(monkeypatch, boom)
+    r = client.get(f"/api/memory/stale?project_id={pid}", headers=auth)
+    assert r.status_code == 200
+    rows = {row["shard"]["id"]: row for row in r.json()}
+    assert set(rows) == set(sids)
+    judged = [row for row in rows.values() if not row["ungraded"]]
+    unjudged = [row for row in rows.values() if row["ungraded"]]
+    assert len(judged) == 1 and len(unjudged) == 1
+    assert judged[0]["recommendation"]["action"] == "keep"
+    assert unjudged[0]["recommendation"] is None
+    assert "not yet judged" in unjudged[0]["ungraded_reason"]
+
+    r = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth)
+    assert r.status_code == 200
+    row = next(x for x in r.json() if x["shard"]["id"] == cid)
+    assert row["judged"] is True and row["grounded"] is True and row["ready"] is True
+    assert boom.calls == 0
+
+
+def test_the_refresh_fills_a_verdict_and_a_later_get_shows_it(client, auth, monkeypatch):
+    pid, (sid,) = _stale_project(client, auth, "JudgeFill", n=1)
+    cid = _candidate(client, auth, pid, "the ingest runner must dedupe on origin, not text")
+    _chat(monkeypatch, _CountingChat())
+
+    before = client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json()
+    assert before[0]["ungraded"] is True and "not yet judged" in before[0]["ungraded_reason"]
+    cand = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
+    assert next(x for x in cand if x["shard"]["id"] == cid)["judged"] is False
+
+    assert _refresh(pid) == 1
+
+    after = client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json()
+    assert after[0]["ungraded"] is False
+    assert after[0]["recommendation"]["action"] == "keep"
+    cand = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
+    assert next(x for x in cand if x["shard"]["id"] == cid)["judged"] is True
+
+
+def test_the_pages_make_zero_model_calls_per_request(client, auth, monkeypatch):
+    """Sabotage: put `judge_verdict` back into `recommendations` on the GET (or score the
+    queue with `judge=True`) and the counts below go non-zero."""
+    pid, _ = _stale_project(client, auth, "JudgeZero", n=3)
+    _candidate(client, auth, pid, "migrations add columns nullable first, backfill second")
+    chat = _CountingChat()
+    _chat(monkeypatch, chat)
+    n = _count_judges(monkeypatch)
+    for _ in range(3):
+        assert client.get(f"/api/memory/stale?project_id={pid}", headers=auth).status_code == 200
+        assert client.get(f"/api/memory/candidates/scored?project_id={pid}",
+                          headers=auth).status_code == 200
+    assert n == {"keep": 0, "review": 0} and chat.calls == 0
+    # The counter can count: the refresh is where the asking went.
+    _refresh(pid)
+    assert n["keep"] == 3 and n["review"] >= 1 and chat.calls > 0
+
+
+def test_a_second_refresh_over_a_judged_queue_asks_nothing(client, auth, monkeypatch):
+    pid, _ = _stale_project(client, auth, "JudgeCached")
+    _candidate(client, auth, pid, "feature flags default off in the test suite")
+    chat = _CountingChat()
+    _chat(monkeypatch, chat)
+    _refresh(pid)
+    spent = chat.calls
+    assert spent > 0
+    _refresh(pid)
+    assert chat.calls == spent
+
+
+def test_stored_verdicts_leave_queue_and_decisions_unchanged(client, auth, monkeypatch):
+    """Once verdicts are stored, the page's read-only scoring is the judging pass's answer."""
+    pid, _ = _stale_project(client, auth, "JudgeSame")
+    for t in ("dedupe candidates on origin before text", "cache keys include the model name"):
+        _candidate(client, auth, pid, t)
+    _chat(monkeypatch, _CountingChat())
+    db = SessionLocal()
+    try:
+        judged = mem_svc.score_candidates(db, project_id=pid, judge=True)
+        stored = mem_svc.score_candidates(db, project_id=pid, judge=False)
+    finally:
+        db.close()
+
+    def shape(rows):
+        return [(r["shard"].id, r["suggestion"], r["confidence"], r.get("judged"),
+                 r.get("grounded"), r.get("ready")) for r in rows]
+
+    assert shape(stored) == shape(judged)
+
+
+def test_a_verdict_about_old_text_reads_as_not_yet_judged(client, auth, monkeypatch):
+    pid, (sid,) = _stale_project(client, auth, "JudgeEdited", n=1)
+    _chat(monkeypatch, _CountingChat())
+    _refresh(pid)
+    assert client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json()[0]["ungraded"] is False
+    db = SessionLocal()
+    try:
+        db.get(MemoryShard, sid).text = "pin pgvector to pg17 now"
+        db.commit()
+    finally:
+        db.close()
+    row = client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json()[0]
+    assert row["ungraded"] is True and "not yet judged" in row["ungraded_reason"]
+
+
+def test_a_project_with_no_judge_model_says_so_rather_than_not_yet(client, auth):
+    pid, _ = _stale_project(client, auth, "JudgeStubStale", n=1)
+    row = client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json()[0]
+    assert row["ungraded"] is True
+    assert row["ungraded_reason"] == mem_svc.JUDGE_CAUSES["no_provider"]
+
+
+def test_the_refresh_is_single_runner_on_postgres(client, auth, monkeypatch):
+    from sqlalchemy import text
+
+    from app.db import engine
+    if engine.dialect.name != "postgresql":
+        import pytest
+        pytest.skip("the advisory lock is Postgres-only; SQLite is one process")
+    pid, _ = _stale_project(client, auth, "JudgeLock", n=1)
+    chat = _CountingChat()
+    _chat(monkeypatch, chat)
+    with engine.connect() as other, other.begin():
+        assert other.execute(text("SELECT pg_try_advisory_xact_lock(:k)"),
+                             {"k": mem_svc._JUDGE_REFRESH_LOCK}).scalar()
+        db = SessionLocal()
+        try:
+            assert mem_svc.run_judge_refresh(db) == 0
+        finally:
+            db.close()
+    assert chat.calls == 0
+    db = SessionLocal()
+    try:
+        assert mem_svc.run_judge_refresh(db) >= 1  # released with the holder's transaction
+    finally:
+        db.close()
+    assert chat.calls > 0

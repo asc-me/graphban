@@ -186,8 +186,19 @@ def _proj(client, auth, name):
     return client.post("/api/projects", json={"name": name}, headers=auth).json()["id"]
 
 
+def _refresh(pid):
+    from app.db import SessionLocal
+
+    s = SessionLocal()
+    try:
+        return mem_svc.refresh_judgements(s, pid)
+    finally:
+        s.close()
+
+
 def test_a_second_look_at_the_queue_judges_what_is_still_unknown(client, auth, monkeypatch):
-    """The whole point, driven through the endpoint the reviewer actually loads.
+    """The whole point, driven through the judging pass the reviewer's page reads from
+    (GRPH-1242: the GET itself asks nothing; `refresh_judgements` does the asking).
 
     The cap bounds MODEL CALLS per pass, so a queue longer than the cap used to be stuck:
     every load re-bought the same first eight verdicts and the ninth candidate was never
@@ -210,6 +221,8 @@ def test_a_second_look_at_the_queue_judges_what_is_still_unknown(client, auth, m
                                                            f"number {i} when wiring subsystem {i}"}}},
                     headers={"X-API-Key": key})
 
+    _refresh(pid)
+    assert chat.calls == mem_svc.REVIEW_JUDGE_MAX * mem_svc.JUDGE_SAMPLES
     first = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
     after_first = chat.calls
     assert after_first == mem_svc.REVIEW_JUDGE_MAX * mem_svc.JUDGE_SAMPLES, (
@@ -217,6 +230,7 @@ def test_a_second_look_at_the_queue_judges_what_is_still_unknown(client, auth, m
     )
     assert sum(1 for r in first if r["judged"]) == mem_svc.REVIEW_JUDGE_MAX
 
+    _refresh(pid)
     second = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
 
     assert chat.calls - after_first == extra * mem_svc.JUDGE_SAMPLES, (

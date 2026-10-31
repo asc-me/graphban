@@ -29,6 +29,17 @@ def _mcp(client, key, tool, args):
     ).json()["result"]["structuredContent"]
 
 
+def _refresh(pid):
+    """The background judge pass, run once (GRPH-1242). The GETs only read what it stored."""
+    from app.db import SessionLocal
+
+    s = SessionLocal()
+    try:
+        return mem_svc.refresh_judgements(s, pid)
+    finally:
+        s.close()
+
+
 @pytest.fixture()
 def db(client):
     from app.db import SessionLocal
@@ -96,10 +107,14 @@ def test_ungrounded_demotes_an_accept_to_review(client, auth, monkeypatch):
         _mcp(client, key, "add_memory", {"text": text})
 
     def ungrounded(db, shard, **k):
-        return {"grounded": False, "ready": True, "conflicts": ["published: no timeouts"],
-                "reason": "contradicts published memory", "samples": 3}, "ok"
+        verdict = {"grounded": False, "ready": True, "conflicts": ["published: no timeouts"],
+                   "reason": "contradicts published memory", "samples": 3}
+        shard.review_judge_verdict = verdict
+        db.commit()
+        return verdict, "ok"
 
     monkeypatch.setattr(mem_svc, "review_judge", ungrounded)
+    _refresh(pid)
     scored = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
     accepts = [s for s in scored if s["suggestion"] == "accept"]
     reviews = [s for s in scored if s["suggestion"] == "review" and s["judged"]]
@@ -111,8 +126,9 @@ def test_ungrounded_demotes_an_accept_to_review(client, auth, monkeypatch):
     assert scored[0]["grounded"] is False
 
 
-def test_the_scored_endpoint_calls_review_judge(client, auth, monkeypatch):
-    """Sabotage the CALL: attaching fields without asking the judge would look judged."""
+def test_the_refresh_calls_review_judge_and_the_endpoint_shows_it(client, auth, monkeypatch):
+    """Sabotage the CALL: attaching fields without asking the judge would look judged.
+    The refresh asks (GRPH-1242); the GET only shows what the asking stored."""
     pid = _proj(client, auth, "JudgeCall")
     client.patch(f"/api/projects/{pid}", json={"memory_llm_judge": True}, headers=auth)
     key = _key(client, auth, project_id=pid)
@@ -121,10 +137,19 @@ def test_the_scored_endpoint_calls_review_judge(client, auth, monkeypatch):
 
     def fake(db, shard, **k):
         called["n"] += 1
-        return {"grounded": True, "ready": True, "conflicts": [],
-                "reason": "specific and consistent", "samples": 3}, "ok"
+        verdict = {"grounded": True, "ready": True, "conflicts": [],
+                   "reason": "specific and consistent", "samples": 3}
+        shard.review_judge_verdict = verdict
+        db.commit()
+        return verdict, "ok"
 
     monkeypatch.setattr(mem_svc, "review_judge", fake)
+    scored = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
+    assert called["n"] == 0, "the GET asked the judge"
+    assert scored[0]["judged"] is False
+    assert scored[0]["ungraded_reason"]  # named, never a quiet absence
+    _refresh(pid)
+    assert called["n"] == 1
     scored = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
     assert called["n"] == 1
     assert scored[0]["judged"] is True

@@ -188,10 +188,18 @@ async def lifespan(app: FastAPI):
         logger.info("log export loop started")
         export_task = asyncio.create_task(_log_export_loop())
 
+    # The memory judge refresh (GRPH-1242) gets its own task too: the memory pages read
+    # stored verdicts only, so this is the one place a judge is asked about them, and a slow
+    # decider must not hold up credential retries. Same three properties; `0` disables it.
+    # Leader-only like the loops above; the pass's own advisory lock is the second guard.
+    judge_task = None
+    if is_leader and settings.memory_judge_refresh_seconds > 0:
+        judge_task = asyncio.create_task(_memory_judge_loop())
+
     try:
         yield
     finally:
-        for task in (retry_task, export_task):
+        for task in (retry_task, export_task, judge_task):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -305,6 +313,35 @@ def _one_log_export_pass() -> int:
     db = SessionLocal()
     try:
         return logexport.run_once(db)
+    finally:
+        db.close()
+
+
+async def _memory_judge_loop() -> None:
+    """Judge memory rows off the request path, forever, without ever raising (GRPH-1242).
+
+    The same three properties as `_credential_retry_loop`. Only the background leader starts
+    it (GRPH-1241), and `memory.run_judge_refresh` also takes its own advisory lock, so a pass
+    is single-runner even if two processes ever both believe they lead."""
+    interval = settings.memory_judge_refresh_seconds
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await asyncio.to_thread(_one_memory_judge_pass)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — silence here is the failure
+            logger.warning("memory judge refresh failed; continuing", exc_info=True)
+
+
+def _one_memory_judge_pass() -> int:
+    """One judge refresh, session included. Runs inside a worker thread; owns its session
+    for the reason `_one_background_pass` does (GRPH-535)."""
+    from app.services import memory as mem_svc
+
+    db = SessionLocal()
+    try:
+        return mem_svc.run_judge_refresh(db)
     finally:
         db.close()
 
