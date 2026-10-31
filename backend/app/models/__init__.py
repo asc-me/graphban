@@ -3394,7 +3394,7 @@ class EntitlementEvent(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     entitlement_id: Mapped[str] = mapped_column(ForeignKey("entitlements.id"), index=True)
-    #: spawn_start | registered | limit_hit | spawn_failed | spend
+    #: spawn_start | registered | limit_hit | spawn_failed | spend | declared (register_agent)
     event: Mapped[str] = mapped_column(String(16))
     agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
     #: The vendor's own words for a limit hit or a failure, verbatim (D5).

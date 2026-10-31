@@ -3265,6 +3265,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             db.commit()
         if declared:
             agent.entitlement_ids = declared
+            from app.services import headroom as headroom_svc
+            headroom_svc.note_declared(db, agent, declared)
             db.commit()
         # §7.1 (PRD-39): a seat stored as a role the server no longer has says what was
         # stored AND what it became, so the client is told rather than left to compare.

@@ -5,7 +5,8 @@ Nothing here stores a state, so there is no column that can disagree with the ev
 
 States: `available` (a child registered), `unknown` (never measured — ranked below available,
 never treated as available), `exhausted` (a VendorLimit; the vendor's text is quoted verbatim,
-D5), `broken` (failed before registering for a non-quota reason), `unreachable` (every runner
+D5), `broken` (failed before registering for a non-quota reason; a runner re-declaring it at
+register_agent lifts it to `unknown`), `unreachable` (every runner
 that declared it has lapsed — derived from presence, never stored).
 
 **No burst onto an unmeasured entitlement.** An `unknown` or `broken` entitlement admits ONE
@@ -58,16 +59,20 @@ def _in_flight(events: list[EntitlementEvent], now: datetime) -> int:
     return sum(1 for t in open_starts if now - t < INFLIGHT_TTL)
 
 
-def _unreachable(db: Session, row: Entitlement) -> bool:
-    from app.services import fleet as fleet_svc  # fleet imports widely; keep this lazy
-
+def _declarers(db: Session, row: Entitlement) -> list[Agent]:
     # Scoped to the entitlement's org in SQL: a runner can only declare its own org's
     # entitlements, so agents elsewhere are never candidates. `entitlement_ids` is JSON, so
     # the membership test stays in Python, over this org's live agents only.
-    agents = [a for a in db.scalars(
+    return [a for a in db.scalars(
         select(Agent).join(Project, Project.id == Agent.project_id)
         .where(Agent.dismissed_at.is_(None), Project.org_id == row.org_id)).all()
-              if row.id in (a.entitlement_ids or [])]
+            if row.id in (a.entitlement_ids or [])]
+
+
+def _unreachable(db: Session, row: Entitlement) -> bool:
+    from app.services import fleet as fleet_svc  # fleet imports widely; keep this lazy
+
+    agents = _declarers(db, row)
     return bool(agents) and all(fleet_svc.presence_state(a) in ("offline", "quarantined")
                                 for a in agents)
 
@@ -78,6 +83,11 @@ def headroom(db: Session, row: Entitlement, *, now: datetime | None = None) -> d
     settled = [e for e in events if e.event in _SETTLING]
     last = settled[-1] if settled else None
     state = _SETTLING[last.event] if last else "unknown"
+    # D4: a runner re-declaring a `broken` entitlement lifts it to `unknown` — still probed by
+    # one child, never `available` on a declaration alone. `limit_hit` is not lifted this way:
+    # only the vendor session working again (a `registered` report) ends `exhausted`.
+    if state == "broken" and any(e.event == "declared" and e.id > last.id for e in events):
+        state = "unknown"
     if _unreachable(db, row):
         state = "unreachable"
     spawns = sum(1 for e in events if e.event == "registered")
@@ -92,6 +102,18 @@ def headroom(db: Session, row: Entitlement, *, now: datetime | None = None) -> d
         "spend": {"tokens": sum(e.tokens for e in reported), "reported": len(reported),
                   "unreported": max(spawns - len(reported), 0)},
     }
+
+
+def note_declared(db: Session, agent: Agent, entitlement_ids: list[str]) -> None:
+    """Record that `agent` re-declared these entitlements at register_agent (D4). The caller
+    commits. Not a reportable event: it only lifts `broken` in `headroom`."""
+    for ent_id in entitlement_ids:
+        db.add(EntitlementEvent(entitlement_id=ent_id, event="declared", agent_id=agent.id,
+                                vendor_text="", tokens=None, created_at=utcnow()))
+
+
+def _runner(a: Agent) -> dict:
+    return {"agent_id": a.id, "label": a.label or "", "worktree": a.worktree or ""}
 
 
 def report(db: Session, org_id: str, entitlement_id: str, event: str, *,
@@ -193,6 +215,10 @@ def forecast(db: Session, row: Entitlement, *, now: datetime | None = None) -> d
     events = _events(db, row.id)
     base = headroom(db, row, now=now)
     week = _spend_between(events, now - WEEK, now + timedelta(seconds=1))
+    # D4: a `broken` entitlement names the runner that reported the failure and the runners
+    # that declare it, so a person knows whose login to fix. Empty otherwise.
+    reporter = db.get(Agent, last.agent_id) if (
+        base["state"] == "broken" and last and last.agent_id) else None
     return {
         "id": row.id, "vendor": row.vendor, "kind": row.kind, "plan_label": row.plan_label,
         "state": base["state"], "vendor_text": base["vendor_text"], "since": base["since"],
@@ -202,6 +228,9 @@ def forecast(db: Session, row: Entitlement, *, now: datetime | None = None) -> d
         "token_budget": row.token_budget,
         "week": week,
         "projected_exhaustion": _projection(row, events, now, week),
+        "reported_by": _runner(reporter) if reporter else None,
+        "declared_by": ([_runner(a) for a in _declarers(db, row)]
+                        if base["state"] == "broken" else []),
     }
 
 

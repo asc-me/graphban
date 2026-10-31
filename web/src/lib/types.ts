@@ -2807,6 +2807,15 @@ export interface HarnessCapacityEntitlement {
   token_budget: number | null;
   week: { tokens: number; reported: number; unreported: number; limit_hits: number };
   projected_exhaustion: { at: string | null; reason: string; basis?: string };
+  /** D4: on a `broken` entitlement, the runner that reported the failure, and who declares it. */
+  reported_by: HarnessCapacityRunner | null;
+  declared_by: HarnessCapacityRunner[];
+}
+
+export interface HarnessCapacityRunner {
+  agent_id: string;
+  label: string;
+  worktree: string;
 }
 
 export interface HarnessCapacity {
