@@ -1292,7 +1292,8 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # worker that could register an entitlement could also point routing at itself.
     "set_entitlement": ("planner",),
     # PRD-62 S3 (GRPH-1249). The runner's own report of what happened on an entitlement it
-    # holds; a reviewer has no spawn to report.
+    # holds — `headroom.report` refuses a reporter whose `entitlement_ids` does not name it;
+    # a reviewer has no spawn to report.
     "report_entitlement_event": ("worker", "planner"),
 }
 

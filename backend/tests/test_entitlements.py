@@ -324,15 +324,22 @@ def test_a_plain_member_may_read_but_not_write(client, org):
 
 # ---- PRD-62 S3 (GRPH-1249): the headroom ledger ---------------------------------------------
 
+#: The runner that declared each entitlement made by `_new_ent`: only a holder may report.
+_HOLDER: dict[str, str] = {}
+
+
 def _new_ent(client, org):
     r = client.post(_url(org), json=_subscription(org), headers=org["owner"])
     assert r.status_code == 201, r.text
-    return r.json()["id"]
+    ent = r.json()["id"]
+    _HOLDER[ent] = _ok(client, org["key"], "register_agent",
+                       {"label": "runner", "entitlements": [ent]})["agent_id"]
+    return ent
 
 
 def _ev(client, org, ent, event, **extra):
     return _ok(client, org["key"], "report_entitlement_event",
-               {"id": ent, "event": event, **extra})
+               {"id": ent, "event": event, "agent_id": _HOLDER[ent], **extra})
 
 
 def _state(client, org, ent):
@@ -388,7 +395,56 @@ def test_a_non_quota_failure_is_broken_and_probed_by_one_child(client, org):
 def test_a_failure_or_limit_without_the_vendors_text_is_refused(client, org):
     ent = _new_ent(client, org)
     assert "vendor_text" in _err(client, org["key"], "report_entitlement_event",
-                                 {"id": ent, "event": "limit_hit"})["message"]
+                                 {"id": ent, "event": "limit_hit",
+                                  "agent_id": _HOLDER[ent]})["message"]
+
+
+def test_only_a_runner_that_declared_it_may_report_on_it(client, org):
+    """Otherwise any worker in the org could post `limit_hit` and lock the entitlement out of
+    every `spawn_start` — with nobody who can see the account able to lift it."""
+    ent = _new_ent(client, org)
+    stranger = _ok(client, org["key"], "register_agent", {"label": "stranger"})["agent_id"]
+    for who in ({"agent_id": stranger}, {}):
+        err = _err(client, org["key"], "report_entitlement_event",
+                   {"id": ent, "event": "limit_hit", "vendor_text": "limit", **who})
+        assert "declared this entitlement" in err["message"]
+    assert _state(client, org, ent)["state"] == "unknown", "a refused report records nothing"
+    # The holder's own report is the way back from `exhausted`.
+    _ev(client, org, ent, "limit_hit", vendor_text="You've hit your limit")
+    assert _ev(client, org, ent, "registered")["headroom"]["state"] == "available"
+
+
+def test_unreachable_is_scoped_to_the_entitlements_org(client, org):
+    """`_unreachable` reads only this org's agents (joined through their project), so
+    `list_entitlements` is not N entitlements x every agent in the database — and a lapsed
+    runner in another org that happens to list the same id cannot mark it unreachable."""
+    from datetime import datetime, timezone
+
+    from app.db import SessionLocal
+    from app.models import Agent, Entitlement, Organization, Project
+    from app.services import headroom
+
+    ent = _new_ent(client, org)
+    db = SessionLocal()
+    try:
+        row = db.get(Entitlement, ent)
+        agent = db.get(Agent, _HOLDER[ent])
+        assert headroom._unreachable(db, row) is False, "its declaring runner is live"
+        agent.last_seen_at = datetime(2020, 1, 1, tzinfo=timezone.utc)  # lapsed
+        db.flush()
+        assert headroom._unreachable(db, row) is True, "its only declaring runner lapsed"
+        db.add(Organization(id="org_elsewhere", name="Elsewhere", plan="team"))
+        db.flush()
+        db.add(Project(id="prj_elsewhere", name="Elsewhere", tag="ELS",
+                       org_id="org_elsewhere"))
+        db.flush()
+        agent.project_id = "prj_elsewhere"
+        db.flush()
+        assert headroom._unreachable(db, row) is False, (
+            "an agent in another org was counted as declaring this org's entitlement")
+    finally:
+        db.rollback()
+        db.close()
 
 
 def test_unreported_spend_is_a_count_not_a_zero(client, org):
