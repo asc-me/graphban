@@ -1291,6 +1291,10 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # the fleet may route to — allocation input, so the planner's, like `assign_role`. A
     # worker that could register an entitlement could also point routing at itself.
     "set_entitlement": ("planner",),
+    # PRD-62 S3 (GRPH-1249). The runner's own report of what happened on an entitlement it
+    # holds — `headroom.report` refuses a reporter whose `entitlement_ids` does not name it;
+    # a reviewer has no spawn to report.
+    "report_entitlement_event": ("worker", "planner"),
 }
 
 #: Prefix marking a tool that is open because NOBODY HAS ARGUED IT, as opposed to one that is
