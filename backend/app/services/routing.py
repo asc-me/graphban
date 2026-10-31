@@ -115,16 +115,33 @@ def review_reserved(ranked: list[dict], vendor: str) -> bool:
 
 
 def reserve(ranked: list[dict]) -> dict:
-    """The reserve as the Observe page states it: which vendors hold it (reviewer-eligible,
-    available or unknown), and whether it rests only on `unknown` or is empty."""
-    held = [e for e in ranked if e["reviewer_eligible"]]
-    vendors = sorted({e["vendor"] for e in held})
-    only_unknown = bool(held) and all(e["state"] == "unknown" for e in held)
-    return {"vendors": vendors, "empty": not held, "only_unknown": only_unknown,
-            "warning": ("no reviewer-eligible vendor has headroom: nothing satisfies the review "
-                        "reserve" if not held else
-                        "the review reserve rests only on unknown entitlements" if only_unknown
-                        else None)}
+    """The reserve as the Observe page states it. D7 is per builder: a build on vendor V needs a
+    reviewer-eligible vendor OTHER than V with headroom. So for each vendor that can build (any
+    entry in `ranked`), work out what holds its reserve, and name the builders whose reserve is
+    empty or rests only on `unknown`. Fewer than two eligible vendors always leaves one empty."""
+    eligible = [e for e in ranked if e["reviewer_eligible"]]
+    builders = sorted({e["vendor"] for e in ranked})
+    empty_for, unknown_for = [], []
+    for v in builders:
+        held = [e for e in eligible if e["vendor"] != v]
+        if not held:
+            empty_for.append(v)
+        elif all(e["state"] == "unknown" for e in held):
+            unknown_for.append(v)
+    empty = not ranked or bool(empty_for)
+    if not ranked:
+        warning = "no vendor has headroom: nothing satisfies the review reserve"
+    elif empty_for:
+        warning = ("nothing satisfies the review reserve for builds on "
+                   f"{', '.join(empty_for)}: no other reviewer-eligible vendor has headroom")
+    elif unknown_for:
+        warning = ("the review reserve for builds on "
+                   f"{', '.join(unknown_for)} rests only on unknown entitlements")
+    else:
+        warning = None
+    return {"vendors": sorted({e["vendor"] for e in eligible}), "empty": empty,
+            "empty_for": empty_for, "only_unknown": bool(unknown_for),
+            "only_unknown_for": unknown_for, "warning": warning}
 
 
 def gate(db: Session, item: Item, agent_id: str, *, now: datetime | None = None) -> dict | None:
