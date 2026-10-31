@@ -64,6 +64,26 @@ def _budget_spent(db: Session, row: Entitlement, now: datetime) -> bool:
     return spent["tokens"] >= row.token_budget
 
 
+def reviewer_ineligible(db: Session, org_id: str) -> set[str]:
+    """Entitlement ids ruled out as a reviewer (D7: anything not ruled out counts). Two things
+    rule one out: a `local` model no live reviewer-capable runner declares (nobody enabled it
+    for review), and an entitlement every declaring runner of which is read-only. An API key or
+    cloud account nobody declares yet is NOT ruled out: it is unknown, and unknown counts."""
+    rows = db.scalars(select(Entitlement).where(Entitlement.org_id == org_id)).all()
+    holders: dict[str, list[bool]] = {}
+    for a in db.scalars(select(Agent).join(Project, Project.id == Agent.project_id)
+                        .where(Agent.dismissed_at.is_(None), Project.org_id == org_id)).all():
+        can_review = not (a.capabilities or {}).get("readonly")
+        for i in a.entitlement_ids or []:
+            holders.setdefault(i, []).append(can_review)
+    out = set()
+    for r in rows:
+        held = holders.get(r.id, [])
+        if (r.kind == "local" and not any(held)) or (held and not any(held)):
+            out.add(r.id)
+    return out
+
+
 def rank(db: Session, org_id: str, *, now: datetime | None = None,
          ladder: list[str] | None = None) -> list[dict]:
     """The org's entitlements with headroom, best first: available before unknown, then the
@@ -74,6 +94,7 @@ def rank(db: Session, org_id: str, *, now: datetime | None = None,
     rows = db.scalars(select(Entitlement).where(Entitlement.org_id == org_id)
                       .order_by(Entitlement.created_at, Entitlement.id)).all()
     out = []
+    ruled_out = reviewer_ineligible(db, org_id)
     for r in rows:
         rung = rung_of(r.kind)
         if rung not in ladder:
@@ -82,6 +103,7 @@ def rank(db: Session, org_id: str, *, now: datetime | None = None,
         if state in USABLE and not _budget_spent(db, r, now):
             out.append({"id": r.id, "vendor": r.vendor, "state": state, "rung": rung,
                         "rung_rank": ladder.index(rung),
+                        "reviewer_eligible": r.id not in ruled_out,
                         "next_reset_at": _aware(r.next_reset_at) if r.next_reset_at else None})
     far = datetime.max.replace(tzinfo=timezone.utc)
     out.sort(key=lambda e: (e["state"] != "available", e["rung_rank"], e["next_reset_at"] or far))
@@ -120,8 +142,39 @@ def _why(entry: dict, ranked: list[dict]) -> str:
 
 
 def review_reserved(ranked: list[dict], vendor: str) -> bool:
-    """D7: does a vendor OTHER than `vendor` still have an available or unknown entitlement?"""
-    return any(e["vendor"] != vendor for e in ranked)
+    """D7: does a reviewer-eligible vendor OTHER than `vendor` still have an available or
+    unknown entitlement?"""
+    return any(e["vendor"] != vendor and e["reviewer_eligible"] for e in ranked)
+
+
+def reserve(ranked: list[dict]) -> dict:
+    """The reserve as the Observe page states it. D7 is per builder: a build on vendor V needs a
+    reviewer-eligible vendor OTHER than V with headroom. So for each vendor that can build (any
+    entry in `ranked`), work out what holds its reserve, and name the builders whose reserve is
+    empty or rests only on `unknown`. Fewer than two eligible vendors always leaves one empty."""
+    eligible = [e for e in ranked if e["reviewer_eligible"]]
+    builders = sorted({e["vendor"] for e in ranked})
+    empty_for, unknown_for = [], []
+    for v in builders:
+        held = [e for e in eligible if e["vendor"] != v]
+        if not held:
+            empty_for.append(v)
+        elif all(e["state"] == "unknown" for e in held):
+            unknown_for.append(v)
+    empty = not ranked or bool(empty_for)
+    if not ranked:
+        warning = "no vendor has headroom: nothing satisfies the review reserve"
+    elif empty_for:
+        warning = ("nothing satisfies the review reserve for builds on "
+                   f"{', '.join(empty_for)}: no other reviewer-eligible vendor has headroom")
+    elif unknown_for:
+        warning = ("the review reserve for builds on "
+                   f"{', '.join(unknown_for)} rests only on unknown entitlements")
+    else:
+        warning = None
+    return {"vendors": sorted({e["vendor"] for e in eligible}), "empty": empty,
+            "empty_for": empty_for, "only_unknown": bool(unknown_for),
+            "only_unknown_for": unknown_for, "warning": warning}
 
 
 def gate(db: Session, item: Item, agent_id: str, *, now: datetime | None = None) -> dict | None:

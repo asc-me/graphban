@@ -304,3 +304,59 @@ def test_a_ladder_policy_is_validated():
     for bad in ([], ["gold"], ["local", "local"], "local"):
         with pytest.raises(fleet_profiles.ProfileInvalid):
             fleet_profiles.normalise_policy({"ladder": bad})
+
+
+def test_a_non_eligible_second_vendor_does_not_satisfy_the_reserve(client, world):
+    from app.db import SessionLocal
+    from app.models import Entitlement
+    from app.services import routing
+
+    mine = _ent(client, world, "anthropic")
+    a = _runner(client, world, [mine])
+    _report(client, world, mine, a, "registered")
+    local = _ent(client, world, "ollama", kind="local")  # nobody enabled it for review
+    item = _item()
+    assert _claim(a, item) is None, "an unenabled local model cannot review"
+    _ok(client, world["key"], "register_agent",
+        {"label": "ro", "entitlements": [local],
+         "capabilities": {"vendor": "ollama", "model": "m", "readonly": True}})
+    assert _claim(a, item) is None, "a read-only runner cannot review either"
+    _runner(client, world, [local], vendor="ollama")
+    assert _claim(a, item) == item
+    db = SessionLocal()
+    try:
+        res = routing.reserve(routing.rank(db, db.get(Entitlement, local).org_id))
+    finally:
+        db.close()
+    # Each now reserves the other; anthropic's builds rest only on the local model's unknown.
+    assert res["vendors"] == ["anthropic", "ollama"] and not res["empty"]
+    assert res["only_unknown_for"] == ["anthropic"]
+    assert "only on unknown" in res["warning"]
+
+
+def _e(vendor, state="available", eligible=True):
+    return {"vendor": vendor, "state": state, "reviewer_eligible": eligible}
+
+
+def test_the_reserve_is_worked_out_per_builder_vendor():
+    from app.services import routing
+
+    none = routing.reserve([])
+    assert none["empty"] and "nothing satisfies" in none["warning"]
+
+    solo = routing.reserve([_e("anthropic"), _e("anthropic")])
+    assert solo["empty"] and solo["empty_for"] == ["anthropic"] and not solo["only_unknown"]
+    assert "nothing satisfies" in solo["warning"] and "anthropic" in solo["warning"]
+
+    # A available, B unknown: A's builds rest only on B's unknown; B's builds rest on A.
+    mixed = routing.reserve([_e("anthropic"), _e("openai", "unknown")])
+    assert not mixed["empty"] and mixed["empty_for"] == []
+    assert mixed["only_unknown"] and mixed["only_unknown_for"] == ["anthropic"]
+    assert "anthropic" in mixed["warning"] and "only on unknown" in mixed["warning"]
+
+    # A second vendor that cannot review leaves the eligible vendor's builds unreserved.
+    ineligible = routing.reserve([_e("anthropic"), _e("ollama", eligible=False)])
+    assert ineligible["empty_for"] == ["anthropic"] and ineligible["vendors"] == ["anthropic"]
+
+    both = routing.reserve([_e("anthropic"), _e("openai")])
+    assert not both["empty"] and not both["only_unknown"] and both["warning"] is None

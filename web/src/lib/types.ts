@@ -2807,11 +2807,26 @@ export interface HarnessCapacityEntitlement {
   token_budget: number | null;
   week: { tokens: number; reported: number; unreported: number; limit_hits: number };
   projected_exhaustion: { at: string | null; reason: string; basis?: string };
+  /** D4: on a `broken` entitlement, the runner that reported the failure, and who declares it. */
+  reported_by: HarnessCapacityRunner | null;
+  declared_by: HarnessCapacityRunner[];
+}
+
+export interface HarnessCapacityRunner {
+  agent_id: string;
+  label: string;
+  worktree: string;
 }
 
 export interface HarnessCapacity {
   org_id: string;
   as_of: string;
+  /** D7, per builder vendor: `vendors` can review and hold headroom; `empty_for` / `only_unknown_for`
+   * name the builder vendors whose reserve (another eligible vendor) is empty or unknown-only. */
+  review_reserve: {
+    vendors: string[]; empty: boolean; empty_for: string[];
+    only_unknown: boolean; only_unknown_for: string[]; warning: string | null;
+  };
   entitlements: HarnessCapacityEntitlement[];
   utilization: {
     week_start: string;

@@ -392,6 +392,31 @@ def test_a_non_quota_failure_is_broken_and_probed_by_one_child(client, org):
     assert _ev(client, org, ent, "registered")["headroom"]["state"] == "available"
 
 
+def test_broken_names_the_reporting_and_declaring_runners(client, org):
+    ent = _new_ent(client, org)
+    _ev(client, org, ent, "spawn_failed", vendor_text="not logged in")
+    r = client.get(f"/api/harness/capacity?project_id={org['project']['id']}",
+                   headers=org["owner"])
+    (row,) = [e for e in r.json()["entitlements"] if e["id"] == ent]
+    assert row["state"] == "broken"
+    assert row["reported_by"]["agent_id"] == _HOLDER[ent] and row["reported_by"]["label"] == "runner"
+    assert [d["agent_id"] for d in row["declared_by"]] == [_HOLDER[ent]]
+
+
+def test_redeclaring_a_broken_entitlement_lifts_it_to_unknown_still_probed(client, org):
+    ent = _new_ent(client, org)
+    _ev(client, org, ent, "spawn_failed", vendor_text="not logged in")
+    assert _state(client, org, ent)["state"] == "broken"
+    _ok(client, org["key"], "register_agent", {"label": "runner", "entitlements": [ent]})
+    assert _state(client, org, ent)["state"] == "unknown"
+    assert _ev(client, org, ent, "spawn_start")["admitted"] is True
+    assert _ev(client, org, ent, "spawn_start")["admitted"] is False, "one-child probe stays"
+    # A declaration does not lift an exhausted entitlement: only the vendor session can.
+    _ev(client, org, ent, "limit_hit", vendor_text="hit your limit")
+    _ok(client, org["key"], "register_agent", {"label": "runner", "entitlements": [ent]})
+    assert _state(client, org, ent)["state"] == "exhausted"
+
+
 def test_a_failure_or_limit_without_the_vendors_text_is_refused(client, org):
     ent = _new_ent(client, org)
     assert "vendor_text" in _err(client, org["key"], "report_entitlement_event",

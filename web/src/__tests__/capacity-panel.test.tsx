@@ -13,9 +13,12 @@ vi.mock("@/lib/api", () => ({
 
 const base: HarnessCapacity = {
   org_id: "o", as_of: "2026-10-31T00:00:00Z",
+  review_reserve: { vendors: ["anthropic", "openai"], empty: false, empty_for: [], only_unknown: false,
+    only_unknown_for: [], warning: null },
   entitlements: [{
     id: "ent_1", vendor: "anthropic", kind: "subscription", plan_label: "Max", state: "unknown",
     vendor_text: "", since: null, reset_cadence: null, token_budget: null,
+    reported_by: null, declared_by: [],
     week: { tokens: 0, reported: 0, unreported: 2, limit_hits: 0 },
     projected_exhaustion: { at: null, reason: "no token_budget stated" },
   }],
@@ -33,6 +36,29 @@ function show() {
 }
 
 describe("CapacityPanel", () => {
+  it("warns when the review reserve rests only on unknown, or is empty", async () => {
+    capacity.mockResolvedValueOnce({ ...base, review_reserve: { vendors: ["anthropic", "openai"],
+      empty: false, empty_for: [], only_unknown: true, only_unknown_for: ["anthropic"],
+      warning: "the review reserve for builds on anthropic rests only on unknown entitlements" } });
+    show();
+    expect(await screen.findByTestId("capacity-reserve-warning")).toHaveTextContent("only on unknown");
+  });
+
+  it("warns when nothing satisfies the review reserve", async () => {
+    capacity.mockResolvedValueOnce({ ...base, review_reserve: { vendors: ["anthropic"],
+      empty: true, empty_for: ["anthropic"], only_unknown: false, only_unknown_for: [],
+      warning: "nothing satisfies the review reserve for builds on anthropic: no other reviewer-eligible vendor has headroom" } });
+    show();
+    expect(await screen.findByTestId("capacity-reserve-warning")).toHaveTextContent("nothing satisfies");
+  });
+
+  it("shows no reserve warning when it rests on an available entitlement", async () => {
+    capacity.mockResolvedValueOnce(base);
+    show();
+    await screen.findByTestId("capacity-rollup");
+    expect(screen.queryByTestId("capacity-reserve-warning")).toBeNull();
+  });
+
   it("never renders an unknown as zero", async () => {
     capacity.mockResolvedValueOnce(base);
     show();
@@ -73,5 +99,20 @@ describe("CapacityPanel", () => {
     const { container } = show();
     await new Promise((r) => setTimeout(r, 20));
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("names the runner that reported a broken entitlement", async () => {
+    capacity.mockResolvedValueOnce({
+      ...base,
+      entitlements: [{
+        ...base.entitlements[0], state: "broken", vendor_text: "not logged in",
+        reported_by: { agent_id: "a1", label: "mac-mini", worktree: "/w" },
+        declared_by: [{ agent_id: "a1", label: "mac-mini", worktree: "/w" },
+                      { agent_id: "a2", label: "", worktree: "" }],
+      }],
+    });
+    show();
+    const runner = await screen.findByTestId("capacity-runner");
+    expect(runner).toHaveTextContent("reported by mac-mini; declared by mac-mini, a2");
   });
 });
