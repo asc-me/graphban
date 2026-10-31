@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.errors import NotFound, Validation
 from app.models import Agent, Entitlement, OrgMembership, Project, utcnow
+from app.services import headroom as headroom_svc
 from app.services import quotas
 
 KINDS: tuple[str, ...] = ("subscription", "api_key", "cloud", "local")
@@ -216,6 +217,8 @@ def to_dict(db: Session, row: Entitlement, *, declared: dict[str, list[dict]] | 
         # field rather than leaving a reader to wonder whether it was withheld.
         "secret_ref": row.secret_ref,
         "token_budget": row.token_budget,
+        # PRD-62 S3: derived from the ledger on read, never stored (D4).
+        "headroom": headroom_svc.headroom(db, row),
         "declared_by": declared.get(row.id, []),
         "declaration": DECLARATION_TRUST,
         "created_at": row.created_at.isoformat() if row.created_at else None,

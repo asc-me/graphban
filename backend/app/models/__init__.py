@@ -3377,3 +3377,25 @@ class Entitlement(Base):
         CheckConstraint("secret_ref IS NULL OR kind IN ('api_key', 'cloud')",
                         name="ck_entitlements_secret_only_api_key_cloud"),
     )
+
+
+class EntitlementEvent(Base):
+    """One thing a runner reported about one entitlement (PRD-62 S3, the headroom ledger).
+
+    Append-only: the D4 state is DERIVED from these rows on read (`services/headroom.py`),
+    never stored, so there is no state column to drift from the events behind it. `tokens` is
+    NULL when the runner reported a spend without a number — unreported, never zero.
+    """
+
+    __tablename__ = "entitlement_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entitlement_id: Mapped[str] = mapped_column(ForeignKey("entitlements.id"), index=True)
+    #: spawn_start | registered | limit_hit | spawn_failed | spend
+    event: Mapped[str] = mapped_column(String(16))
+    agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: The vendor's own words for a limit hit or a failure, verbatim (D5).
+    vendor_text: Mapped[str] = mapped_column(String, default="", server_default="")
+    tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+

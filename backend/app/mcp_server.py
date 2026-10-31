@@ -63,6 +63,7 @@ from app.services import setup as setup_svc
 from app.services import tool_tiers
 from app.services import delegation as delegation_svc
 from app.services import entitlements as entitlements_svc
+from app.services import headroom as headroom_svc
 from app.services import quotas
 from app.services import artifacts as art_svc
 from app.services import prds as prd_svc
@@ -617,6 +618,21 @@ TOOLS: list[dict[str, Any]] = [
                 "token_budget": {"type": "integer"},
                 "project_id": {"type": "string"},
             },
+        },
+    },
+    {
+        "name": "report_entitlement_event",
+        "description": "Ledger event for an entitlement. spawn_start answers `admitted`.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "event": {"type": "string", "enum": list(headroom_svc.EVENTS)},
+                "vendor_text": {"type": "string"},
+                "tokens": {"type": "integer"},
+                "project_id": {"type": "string"},
+            },
+            "required": ["id", "event"],
         },
     },
     {
@@ -1548,6 +1564,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     },
     "list_entitlements": {"type": "object", "properties": {"entitlements": {"type": "array"}}},
     "set_entitlement": {"type": "object", "properties": {"id": {"type": "string"}}},
+    "report_entitlement_event": {"type": "object", "properties": {"admitted": {"type": "boolean"}}},
     "delegate": {
         "type": "object",
         "properties": {
@@ -2996,6 +3013,12 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "list_entitlements":
         return {"entitlements": entitlements_svc.list_entitlements(
             db, entitlements_svc.org_for_project(db, pid))}
+    if name == "report_entitlement_event":
+        me = _agent_for_call(db, key, args, session_id)
+        return headroom_svc.report(
+            db, entitlements_svc.org_for_project(db, pid), args["id"], args["event"],
+            agent_id=me, vendor_text=args.get("vendor_text") or "",
+            tokens=args.get("tokens"))
     if name == "set_entitlement":
         # Everything but routing goes to the service, unknown keys included: it refuses a
         # field it does not know rather than this dispatcher dropping it, which would answer

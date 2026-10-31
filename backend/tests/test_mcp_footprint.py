@@ -24,7 +24,7 @@ from app.services import tool_tiers
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 15380
+CEILING = 15530
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -172,7 +172,12 @@ CEILING = 15380
 # in the opt-in `fleet` tier (and premium, D8), so TIER_TOKENS["fleet"] 1100 -> 1413 is the
 # whole bill and CORE_TOKENS does not move. Same argument as GRPH-988 and GRPH-1035.
 # Headroom 11.
-MEASURED_TOKENS = 15369
+# 15369 -> 15515, and CEILING 15380 -> 15530 with it (GRPH-1249, PRD-62 S3). One tool,
+# `report_entitlement_event`: the runner's ledger report and the spawn admission check. One
+# name with an `event` enum rather than five, since five tools cost five descriptions. The
+# description is cut to one sentence; the rest is in opt-in `fleet` tier (premium, D8), so
+# TIER_TOKENS["fleet"] 1413 -> 1559 is the whole bill and CORE_TOKENS does not move. Headroom 15.
+MEASURED_TOKENS = 15515
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

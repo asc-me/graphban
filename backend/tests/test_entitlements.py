@@ -320,3 +320,90 @@ def test_a_plain_member_may_read_but_not_write(client, org):
     assert client.get(_url(org), headers=member).status_code == 200
     assert client.post(_url(org), json={"vendor": "ollama", "kind": "local"},
                        headers=member).status_code == 403
+
+
+# ---- PRD-62 S3 (GRPH-1249): the headroom ledger ---------------------------------------------
+
+def _new_ent(client, org):
+    r = client.post(_url(org), json=_subscription(org), headers=org["owner"])
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def _ev(client, org, ent, event, **extra):
+    return _ok(client, org["key"], "report_entitlement_event",
+               {"id": ent, "event": event, **extra})
+
+
+def _state(client, org, ent):
+    (row,) = [e for e in client.get(_url(org), headers=org["owner"]).json() if e["id"] == ent]
+    return row["headroom"]
+
+
+def test_an_unreported_entitlement_is_unknown_not_available(client, org):
+    ent = _new_ent(client, org)
+    h = _state(client, org, ent)
+    assert h["state"] == "unknown" and h["since"] is None
+    assert h["spend"] == {"tokens": 0, "reported": 0, "unreported": 0}
+
+
+def test_an_unknown_entitlement_admits_one_child_at_a_time(client, org):
+    ent = _new_ent(client, org)
+    assert _ev(client, org, ent, "spawn_start")["admitted"] is True
+    second = _ev(client, org, ent, "spawn_start")
+    assert second["admitted"] is False and "one child in flight" in second["reason"]
+    assert _state(client, org, ent)["in_flight"] == 1, "a refusal records nothing"
+
+
+def test_registering_moves_unknown_to_available_and_lifts_the_cap(client, org):
+    ent = _new_ent(client, org)
+    _ev(client, org, ent, "spawn_start")
+    assert _ev(client, org, ent, "registered")["headroom"]["state"] == "available"
+    assert _ev(client, org, ent, "spawn_start")["admitted"] is True
+    assert _ev(client, org, ent, "spawn_start")["admitted"] is True
+
+
+def test_a_limit_hit_exhausts_it_with_the_vendors_text_and_refuses_every_spawn(client, org):
+    ent = _new_ent(client, org)
+    _ev(client, org, ent, "spawn_start")
+    text = "You've hit your limit · resets 9pm (America/New_York)"
+    h = _ev(client, org, ent, "limit_hit", vendor_text=text)["headroom"]
+    assert h["state"] == "exhausted" and h["vendor_text"] == text
+    for _ in range(3):
+        assert _ev(client, org, ent, "spawn_start")["admitted"] is False
+    # A later successful spawn after the exhaustion makes it available again.
+    assert _ev(client, org, ent, "registered")["headroom"]["state"] == "available"
+
+
+def test_a_non_quota_failure_is_broken_and_probed_by_one_child(client, org):
+    ent = _new_ent(client, org)
+    _ev(client, org, ent, "spawn_start")
+    assert _ev(client, org, ent, "spawn_failed", vendor_text="not logged in")[
+        "headroom"]["state"] == "broken"
+    assert _ev(client, org, ent, "spawn_start")["admitted"] is True
+    assert _ev(client, org, ent, "spawn_start")["admitted"] is False
+    assert _ev(client, org, ent, "registered")["headroom"]["state"] == "available"
+
+
+def test_a_failure_or_limit_without_the_vendors_text_is_refused(client, org):
+    ent = _new_ent(client, org)
+    assert "vendor_text" in _err(client, org["key"], "report_entitlement_event",
+                                 {"id": ent, "event": "limit_hit"})["message"]
+
+
+def test_unreported_spend_is_a_count_not_a_zero(client, org):
+    ent = _new_ent(client, org)
+    for _ in range(3):
+        _ev(client, org, ent, "spawn_start")
+        _ev(client, org, ent, "registered")
+    _ev(client, org, ent, "spend", tokens=1200)
+    assert _state(client, org, ent)["spend"] == {"tokens": 1200, "reported": 1, "unreported": 2}
+
+
+def test_the_ledger_is_org_scoped_and_premium(client, org):
+    other = _err(client, org["key"], "report_entitlement_event",
+                 {"id": "ent_nope", "event": "registered"})
+    assert other["code"] == "not_found"
+    _set_plan(org["id"], "free")
+    assert _err(client, org["key"], "report_entitlement_event",
+                {"id": "ent_x", "event": "registered"})["code"] == "quota_exceeded"

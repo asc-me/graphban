@@ -127,6 +127,8 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # (the service and a CHECK constraint refuse one) — inside the key's own org, and it
         # is planner-gated in TOOL_ROLES. It grants no permission and crosses no tenant.
         "list_entitlements", "set_entitlement",
+        # PRD-62 S3 (GRPH-1249). QUALITY: appends an event to the key's own org ledger.
+        "report_entitlement_event",
         # E7. An AUTHORITY gate, and bounded twice: planner-only, so the role holding it
         # cannot build and has nothing to launder; and clamped by the minting credential's
         # own ceiling, so it reshuffles authority rather than manufacturing it.
