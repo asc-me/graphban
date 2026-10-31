@@ -51,7 +51,8 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
         # Seats ride with the roster because they are read together: "three agents online,
         # one seat still unused" is one question, and two calls would let the page render a
         # half-answer.
-        "seats": fleet_svc.list_enrolments(db, project_id),
+        # Only the actionable ones in full; consumed and revoked are counted (GRPH-1237).
+        **fleet_svc.collapse_seats(fleet_svc.list_enrolments(db, project_id)),
         # The credentials this project's agents authenticate with. Shown beside the seats
         # because the walk kept asking "which key is that agent on" and the answer lived in a
         # different screen — and because a wave-tagged key is a wave artifact somebody may
@@ -69,12 +70,15 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
 
 @router.get("/agents/collapsed")
 def fleet_collapsed_agents(project_id: str | None = None, offset: int = 0, limit: int = 100,
-                           db: Session = Depends(get_db),
+                           kind: str | None = None, db: Session = Depends(get_db),
                            user: User = Depends(get_current_user)):
-    """A page of the offline agents holding nothing that `/fleet` folds into a count."""
+    """A page of the offline agents holding nothing that `/fleet` folds into a count.
+
+    `kind` is `quiet` or `orphaned` (only an orphaned branch left); absent pages both.
+    """
     authz.require_readable(db, user.id, project_id)
     return fleet_svc.collapsed_agents(db, project_id, offset=max(offset, 0),
-                                      limit=min(max(limit, 1), 500))
+                                      limit=min(max(limit, 1), 500), kind=kind)
 
 
 class FleetKeyIn(BaseModel):

@@ -1000,25 +1000,37 @@ def fleet_status(db: Session, project_id: str | None = None, *,
     }
 
 
-#: How long an offline agent that holds nothing stays on the roster in full (GRPH-1229).
-ROSTER_RECENT_SECONDS = 24 * 3600
+#: How long an offline agent that holds nothing stays on the roster in full (GRPH-1237). One
+#: hour: long enough that an agent that just finished is still on screen when its operator
+#: looks, short enough that a day of wave churn (hundreds of short-lived children, every one
+#: offline minutes after it started) is counted rather than sent. Was 24h in GRPH-1229, which
+#: still sent ~1,000 rows on a busy project.
+ROSTER_RECENT_SECONDS = 3600
+
+#: Why an agent was folded out of the roster payload; `collapsed_agents(kind=...)` pages each.
+COLLAPSE_QUIET = "quiet"
+COLLAPSE_ORPHANED = "orphaned"
 
 
-def _is_collapsible(a: dict, cutoff: datetime) -> bool:
-    """Offline, holding nothing, no orphaned branch, not dismissed, and quiet past the window.
+def _collapse_kind(a: dict, cutoff: datetime) -> str | None:
+    """Why this agent folds into a count, or None if it stays in full.
 
-    Anything that holds something — a lease, a review claim, an orphaned branch — is NEVER
-    collapsed: that is the unfinished business the roster exists to show. A dismissed agent is
-    not collapsed either: the view lists it under "dismissed", where it can be restored, and
-    folding it in here would count it as gone while no collapsed page could show it.
+    Offline, holding nothing (no lease, no review claim), not dismissed — and then either only
+    an orphaned branch is left of it, or it has been quiet past the window. A lease or review
+    claim is NEVER collapsed: that is the unfinished business the roster exists to show. An
+    orphaned branch alone is not: gbfleet children leave one behind after every merge, so
+    keeping them all in full sent 3,429 of 4,182 rows (GRPH-1237). They have their own group,
+    exact in count and paged on demand, as Live already groups them. A dismissed agent is not
+    collapsed either: the view lists it under "dismissed", where it can be restored.
     """
-    if (a["state"] != "offline" or a["holdings"] or a["branch_orphaned"]
-            or a.get("dismissed")):
-        return False
+    if a["state"] != "offline" or a["holdings"] or a.get("dismissed"):
+        return None
+    if a["branch_orphaned"]:
+        return COLLAPSE_ORPHANED
     seen = a["last_seen_at"]
-    if seen is None:
-        return True
-    return _aware(datetime.fromisoformat(seen)) < cutoff
+    if seen is None or _aware(datetime.fromisoformat(seen)) < cutoff:
+        return COLLAPSE_QUIET
+    return None
 
 
 def collapse_roster(status: dict, *, now: datetime | None = None,
@@ -1026,15 +1038,22 @@ def collapse_roster(status: dict, *, now: datetime | None = None,
     """The REST roster: online, holding and recently-offline agents in full, the rest counted.
 
     `fleet_status` (MCP) is untouched; this narrows only the view's payload. The counts are
-    exact — `collapsed.count` plus `len(agents)` is `total` — and `collapsed.by_state` says what
-    was folded away, so nothing is truncated silently. The folded rows are listed on demand by
-    `collapsed_agents`.
+    exact — `collapsed.count` plus `len(agents)` is `total` — and `collapsed.by_kind` says how
+    many were folded for each reason, so nothing is truncated silently. The folded rows are
+    listed on demand by `collapsed_agents`. Seats are narrowed the same way: unused and expired
+    ones (actionable) stay, consumed and revoked ones are counted in `seats_collapsed`.
     """
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=recent_seconds)
     kept, gone = [], []
+    by_kind = {COLLAPSE_QUIET: 0, COLLAPSE_ORPHANED: 0}
     for a in status["agents"]:
-        (gone if _is_collapsible(a, cutoff) else kept).append(a)
+        kind = _collapse_kind(a, cutoff)
+        if kind:
+            gone.append(a)
+            by_kind[kind] += 1
+        else:
+            kept.append(a)
     by_role: dict[str, int] = {}
     for a in gone:
         by_role[a["active_role"]] = by_role.get(a["active_role"], 0) + 1
@@ -1044,18 +1063,34 @@ def collapse_roster(status: dict, *, now: datetime | None = None,
         "collapsed": {
             "count": len(gone),
             "by_state": {"offline": len(gone)},
+            "by_kind": by_kind,
             "by_role": by_role,
             "recent_seconds": recent_seconds,
         },
     }
 
 
+def collapse_seats(seats: list[dict]) -> dict:
+    """Seats for the REST roster: the ones you can act on in full, the rest as exact counts."""
+    kept = [s for s in seats if s["state"] in ("unused", "expired")]
+    by_state: dict[str, int] = {}
+    for s in seats:
+        if s not in kept:
+            by_state[s["state"]] = by_state.get(s["state"], 0) + 1
+    return {"seats": kept, "seats_collapsed": {"count": sum(by_state.values()),
+                                               "by_state": by_state}}
+
+
 def collapsed_agents(db: Session, project_id: str | None, *, offset: int = 0,
-                     limit: int = 100) -> dict:
-    """One page of the agents `collapse_roster` folded away."""
+                     limit: int = 100, kind: str | None = None) -> dict:
+    """One page of the agents `collapse_roster` folded away, optionally of one `kind`."""
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=ROSTER_RECENT_SECONDS)
-    rows = [a for a in list_agents(db, project_id, now=now) if _is_collapsible(a, cutoff)]
+    rows = []
+    for a in list_agents(db, project_id, now=now):
+        k = _collapse_kind(a, cutoff)
+        if k and (kind is None or k == kind):
+            rows.append(a)
     return {"total": len(rows), "offset": offset, "limit": limit,
             "agents": rows[offset:offset + limit]}
 

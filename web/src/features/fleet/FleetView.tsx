@@ -452,10 +452,18 @@ export function FleetView() {
   // The pages belong to one project. Switching project drops them, and a page that lands
   // after the switch is discarded rather than appended to the next project's list.
   const collapsedFor = React.useRef(activeId);
+  // GRPH-1237: offline agents whose only claim to attention is an orphaned branch are their own
+  // group — thousands after a busy wave history — with the same on-demand paging.
+  const [showOrphaned, setShowOrphaned] = React.useState(false);
+  const [orphanRows, setOrphanRows] = React.useState<FleetAgent[]>([]);
+  const [orphanTotal, setOrphanTotal] = React.useState<number | null>(null);
+  const [orphanBusy, setOrphanBusy] = React.useState(false);
   React.useEffect(() => {
     collapsedFor.current = activeId;
     setCollapsedRows([]);
     setCollapsedTotal(null);
+    setOrphanRows([]);
+    setOrphanTotal(null);
   }, [activeId]);
   const [showDismissed, setShowDismissed] = React.useState(false);
   // The role-narrowed mint is the older path. Collapsed so the empty roster cannot
@@ -547,6 +555,11 @@ export function FleetView() {
       if (undo) {
         setCollapsedRows([]);
         setCollapsedTotal(null);
+        setOrphanRows([]);
+        setOrphanTotal(null);
+      } else if (orphanRows.some((a) => a.id === id)) {
+        setOrphanRows((rows) => rows.filter((a) => a.id !== id));
+        setOrphanTotal((t) => (t === null ? t : t - 1));
       } else if (collapsedRows.some((a) => a.id === id)) {
         setCollapsedRows((rows) => rows.filter((a) => a.id !== id));
         setCollapsedTotal((t) => (t === null ? t : t - 1));
@@ -658,12 +671,27 @@ export function FleetView() {
   const expiredCreds = liveCreds.filter(
     (c) => c.expires_at !== null && new Date(c.expires_at) <= new Date());
 
-  const collapsedCount = data?.collapsed?.count ?? 0;
+  const orphanedCount = data?.collapsed?.by_kind?.orphaned ?? 0;
+  const collapsedCount = (data?.collapsed?.by_kind?.quiet ?? (data?.collapsed?.count ?? 0) - orphanedCount);
+  async function loadOrphaned() {
+    const project = activeId;
+    setOrphanBusy(true);
+    try {
+      const page = await api.fleetCollapsed(project ?? "", orphanRows.length, 100, "orphaned");
+      if (collapsedFor.current !== project) return;
+      setOrphanRows((rows) => [...rows, ...page.agents]);
+      setOrphanTotal(page.total);
+    } catch (e) {
+      setError(errorDetail(e, "could not load offline agents"));
+    } finally {
+      setOrphanBusy(false);
+    }
+  }
   async function loadCollapsed() {
     const project = activeId;
     setCollapsedBusy(true);
     try {
-      const page = await api.fleetCollapsed(project ?? "", collapsedRows.length);
+      const page = await api.fleetCollapsed(project ?? "", collapsedRows.length, 100, "quiet");
       if (collapsedFor.current !== project) return;
       setCollapsedRows((rows) => [...rows, ...page.agents]);
       setCollapsedTotal(page.total);
@@ -836,7 +864,7 @@ export function FleetView() {
             <PlannerError message={FETCH_FAILED} onRetry={() => void refetch()} />
           ) : fleetLoading ? (
             <TableSkeleton rows={3} columns={3} />
-          ) : agents.length === 0 && collapsedCount === 0 ? (
+          ) : agents.length === 0 && collapsedCount === 0 && orphanedCount === 0 ? (
             <Empty>
               No agents yet. One agent needs an API key in Settings and no seat.
               A fleet issues seats on Wave — a seat is the role, not a second key.
@@ -876,7 +904,7 @@ export function FleetView() {
                         }}
                         className="w-full pt-1 text-left text-small text-faint hover:text-fg-2">
                   {showGone ? "Hide" : "Show"} {goneAgents.length + collapsedCount} gone
-                  {collapsedCount > 0 ? ` (${collapsedCount} offline holding nothing, older than ${Math.round((data?.collapsed?.recent_seconds ?? 86400) / 3600)}h)` : ""}
+                  {collapsedCount > 0 ? ` (${collapsedCount} offline holding nothing, older than ${Math.round((data?.collapsed?.recent_seconds ?? 3600) / 3600)}h)` : ""}
                 </button>
               )}
               {showGone && goneAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask}
@@ -887,6 +915,23 @@ export function FleetView() {
                 <button onClick={() => void loadCollapsed()} disabled={collapsedBusy}
                         className="w-full text-left text-small text-faint hover:text-fg-2">
                   {collapsedBusy ? "Loading…" : `Load more (${collapsedRows.length} of ${collapsedTotal ?? collapsedCount})`}
+                </button>
+              )}
+              {orphanedCount > 0 && (
+                <button onClick={() => {
+                          if (!showOrphaned && orphanRows.length === 0) void loadOrphaned();
+                          setShowOrphaned((v) => !v);
+                        }}
+                        className="w-full pt-1 text-left text-small text-faint hover:text-fg-2">
+                  {showOrphaned ? "Hide" : "Show"} {orphanedCount} offline agent{orphanedCount === 1 ? "" : "s"} with only an orphaned branch
+                </button>
+              )}
+              {showOrphaned && orphanRows.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask}
+                                        roles={data?.roles ?? []} />)}
+              {showOrphaned && orphanRows.length < (orphanTotal ?? orphanedCount) && (
+                <button onClick={() => void loadOrphaned()} disabled={orphanBusy}
+                        className="w-full text-left text-small text-faint hover:text-fg-2">
+                  {orphanBusy ? "Loading…" : `Load more (${orphanRows.length} of ${orphanTotal ?? orphanedCount})`}
                 </button>
               )}
               {dismissed.length > 0 && (
@@ -955,8 +1000,13 @@ export function FleetView() {
               <SupervisorHandoff seats={issued} wave={wave ?? "wave-1"} />
             </div>
           )}
-          {(data?.seats ?? []).length > 0 && (
+          {((data?.seats ?? []).length > 0 || (data?.seats_collapsed?.count ?? 0) > 0) && (
             <div className="mt-3 space-y-1.5">
+              {(data?.seats_collapsed?.count ?? 0) > 0 && (
+                <div className="text-small text-faint">
+                  {data!.seats_collapsed!.count} consumed or revoked seat{data!.seats_collapsed!.count === 1 ? "" : "s"} not listed
+                </div>
+              )}
               {/* Clearing leftovers is not ending the wave. Unused seats only — a consumed one
                   records which agent took what, and a live session is stopped by End wave. */}
               {data!.seats.some((s) => s.state === "unused" || s.state === "expired") && (

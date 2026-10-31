@@ -1348,7 +1348,7 @@ describe("FleetView collapsed offline agents (GRPH-1229)", () => {
     api.fleetCollapsed.mockResolvedValueOnce({ total: 2, offset: 1, limit: 2, agents: [gone(9)] });
     await user.click(screen.getByRole("button", { name: /Load more/ }));
     await screen.findByText("gone 9");
-    expect(api.fleetCollapsed).toHaveBeenLastCalledWith("core", 1);
+    expect(api.fleetCollapsed).toHaveBeenLastCalledWith("core", 1, 100, "quiet");
     expect(screen.queryByRole("button", { name: /Load more/ })).toBeNull();
   });
 
@@ -1366,5 +1366,28 @@ describe("FleetView collapsed offline agents (GRPH-1229)", () => {
       </QueryClientProvider>,
     );
     await waitFor(() => expect(screen.queryByText("gone 7")).toBeNull());
+  });
+});
+
+describe("FleetView orphaned-branch group (GRPH-1237)", () => {
+  const orphan = (n: number) => ({ ...AGENT, id: `GB-O${n}`, key: `GB-O${n}`, label: `orphan ${n}`,
+                                   state: "offline", branch_orphaned: true });
+  beforeEach(() => {
+    ctx.activeId = "core";
+    fleet.data = { ...BASE, collapsed: { count: 3, by_state: { offline: 3 }, by_role: {},
+                                         by_kind: { quiet: 0, orphaned: 3 }, recent_seconds: 3600 } };
+    api.fleetCollapsed.mockReset().mockResolvedValue({ total: 3, offset: 0, limit: 100,
+                                                       agents: [orphan(1), orphan(2), orphan(3)] });
+  });
+
+  it("renders the group collapsed with its exact count, and expands on demand", async () => {
+    const user = userEvent.setup();
+    renderView();
+    expect(screen.queryByText("orphan 1")).toBeNull();
+    expect(api.fleetCollapsed).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /Show 3 offline agents with only an orphaned branch/ }));
+    await screen.findByText("orphan 1");
+    expect(api.fleetCollapsed).toHaveBeenCalledWith("core", 0, 100, "orphaned");
+    expect(screen.getByRole("button", { name: /Hide 3 offline agents/ })).toBeInTheDocument();
   });
 });
