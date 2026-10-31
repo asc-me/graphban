@@ -39,11 +39,10 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
     authz.require_readable(db, user.id, project_id)
     # Collapsed (GRPH-1229): a project with thousands of dead agents answered 4.5MB in 10s.
     # `fleet_status` stays whole for MCP; only this payload folds offline-and-empty agents
-    # into exact counts, listed on demand by `/fleet/agents/collapsed`. The server still builds
-    # the whole roster first: 6,000 seeded agents measured ~0.2s to build here, so this cuts
-    # the payload (2.9MB -> ~6KB at that size), not the build.
-    status = fleet_svc.collapse_roster(
-        fleet_svc.fleet_status(db, project_id, caller_user_id=user.id))
+    # into exact counts, listed on demand by `/fleet/agents/collapsed`. `collapsed=True` loads
+    # just the agents that stay in the payload and counts the rest in SQL (GRPH-1253), so the
+    # build no longer scales with the dead agents either.
+    status = fleet_svc.fleet_status(db, project_id, caller_user_id=user.id, collapsed=True)
     return {
         **status,
         "review_queue": fleet_svc.review_queue(db, project_id),

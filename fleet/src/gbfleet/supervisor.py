@@ -367,6 +367,10 @@ class Wave:
     #: still never started; `until` (D1) writes `idle-with-waits` when only typed
     #: human waits remain.
     reason: str = ""
+    #: GRPH-1247. Adapters whose vendor account said it is out of quota this wave, keyed by
+    #: adapter name: {"adapter", "said" (the vendor's own words), "seen_at" (epoch seconds)}.
+    #: Never retried before its reset; reported in the terminal JSON.
+    exhausted: dict[str, dict] = field(default_factory=dict)
     #: Child exit 75 — stuck, evidence written, item released. Visible, not a
     #: supervisor failure (P30 D6). Exit 70 is a failure and lives in `failures`.
     give_ups: list[str] = field(default_factory=list)

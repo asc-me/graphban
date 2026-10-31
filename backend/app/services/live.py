@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Agent, ApiKey, Item, User
@@ -188,6 +188,45 @@ def _sort_agents(agents: list[dict]) -> list[dict]:
     return split(True) + split(False)
 
 
+def _scoped_roster(db: Session, project_id: str, cap: int) -> tuple[list[dict], dict]:
+    """The agents the board can show, and the census of all of them (GRPH-1253).
+
+    The payload takes at most `cap` agents, online first and then most recently seen, so the
+    roster needs every online agent plus, per user, the `cap` most recently seen of the rest; the other
+    thousands only ever appear as counts. Those counts come from one grouped query, exact, and
+    they are what the group headers, `total_agents` and `by_role` read.
+
+    Quarantine and a revoked credential count as offline here, as they do on the board.
+    """
+    now = datetime.now(timezone.utc)
+    c = fleet_svc.roster_clauses(db, now=now)
+    quarantined = Agent.state == "quarantined"
+    offline = case((c["offline"], 1), (quarantined, 1), else_=0).label("off")
+    shown = Agent.dismissed_at.is_(None)
+    census_rows = db.execute(
+        select(ApiKey.user_id, Agent.active_role, offline, func.count())
+        .select_from(Agent).outerjoin(ApiKey, ApiKey.id == Agent.api_key_id)
+        .where(Agent.project_id == project_id, shown)
+        .group_by(ApiKey.user_id, Agent.active_role, offline)).all()
+    online_clause = and_(~c["offline"], Agent.state.is_distinct_from("quarantined"))
+    # The cap is filled group by group (viewer first, then label order) and `user_filter` can
+    # pick any one group, so the offline pick is the `cap` most recent of EACH user's, not of
+    # the project's: whichever group the payload reaches, its shown agents are loaded. The
+    # order is `_sort_agents`' (last seen descending, nulls last, roster order on a tie).
+    rank = func.row_number().over(
+        partition_by=ApiKey.user_id,
+        order_by=(Agent.last_seen_at.is_(None), Agent.last_seen_at.desc(), Agent.number),
+    ).label("rank")
+    ranked = (select(Agent.id.label("id"), rank)
+              .select_from(Agent).outerjoin(ApiKey, ApiKey.id == Agent.api_key_id)
+              .where(Agent.project_id == project_id, shown, ~online_clause)).subquery()
+    recent = db.scalars(select(ranked.c.id).where(ranked.c.rank <= cap)).all()
+    roster = fleet_svc.list_agents(
+        db, project_id, now=now,
+        where=and_(shown, or_(online_clause, Agent.id.in_(recent))))
+    return roster, {"rows": census_rows}
+
+
 def board(db: Session, project_id: str, *, user_filter: str | None = None,
           viewer_id: str | None = None, cap: int = AGENT_CAP,
           list_agents=None, held_areas=None, call_summary=None) -> dict:
@@ -199,7 +238,12 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
     window = interval * CALL_WINDOW_INTERVALS
     ttl = fleet_svc.presence_ttl_seconds()
 
-    roster = list_fn(db, project_id)
+    # Injected rosters (tests) are whole by definition; the real one is loaded scoped.
+    census = None
+    if list_agents is None:
+        roster, census = _scoped_roster(db, project_id, cap)
+    else:
+        roster = list_fn(db, project_id)
     areas = areas_fn(db, project_id)
 
     live = [a for a in roster if not a.get("dismissed")]
@@ -210,10 +254,10 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
 
     keys = {k.id: k for k in db.scalars(select(ApiKey)).all()}
     users = {u.id: u for u in db.scalars(select(User)).all()}
-    agent_rows = {
-        row.id: row
-        for row in db.scalars(select(Agent).where(Agent.project_id == project_id)).all()
-    }
+    agent_stmt = select(Agent).where(Agent.project_id == project_id)
+    if census is not None:
+        agent_stmt = agent_stmt.where(Agent.id.in_([a["id"] for a in live]))
+    agent_rows = {row.id: row for row in db.scalars(agent_stmt).all()}
 
     stored_ids = [h.get("stored_id") for a in live for h in (a.get("holdings") or []) if h.get("stored_id")]
     items: dict[str, Item] = {}
@@ -295,6 +339,7 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
         })
 
     online_agents = sum(1 for a in annotated if _is_online(a["state"]))
+    by_role_all = _by_role(annotated)
 
     groups: dict = {}
     for a in annotated:
@@ -328,6 +373,28 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
         g["unattributed_calls"] += int(n)
         g["unattributed_by_key"].append(
             {"key": (key.name if key is not None else None) or key_id, "calls": int(n)})
+    if census is not None:
+        # Replace the counts the loaded subset can give with the exact ones.
+        for g in groups.values():
+            g["online"] = g["total"] = 0
+        by_role_census = {r: 0 for r in fleet_svc.ROLES}
+        by_role_census[fleet_svc.ALL_IN_ONE] = 0
+        total_agents = online_agents = 0
+        for user_id, role, off, n in census["rows"]:
+            user = users.get(user_id) if user_id else None
+            meta = _user_meta(user)
+            g = groups.get(meta["user_id"])
+            if g is None:
+                g = {**meta, "online": 0, "total": 0, "agents": [],
+                     "unattributed_calls": 0, "unattributed_by_key": []}
+                groups[meta["user_id"]] = g
+            g["total"] += n
+            total_agents += n
+            if not off:
+                g["online"] += n
+                online_agents += n
+            role = fleet_svc._resolve_stored_role(role) or fleet_svc.ALL_IN_ONE
+            by_role_census[role] = by_role_census.get(role, 0) + n
     for g in groups.values():
         g["agents"] = _sort_agents(g["agents"])
 
@@ -345,6 +412,8 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
         for uid in ordered_ids
     ]
     unattributed_count = groups[None]["total"] if None in groups else 0
+    if census is not None:
+        by_role_all = by_role_census
 
     filt = (user_filter or "").strip() or None
     if filt == "unattributed":
@@ -384,7 +453,7 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
         "total_agents": total_agents,
         "online_agents": online_agents,
         "unattributed_count": unattributed_count,
-        "by_role": _by_role(annotated),
+        "by_role": by_role_all,
         "roles": list(fleet_svc.ROLES),
         "window_seconds": window,
         "retention_days": calls_svc.retention_days(),
