@@ -578,7 +578,7 @@ def _loop(
         brief = _item_brief(planner, seed)
         res = matrix.resolve(tier=want, profile=profile, policy=policy,
                              measured=measured,
-                             installed=matrix_mod.installed_checker(),
+                             installed=_skip_exhausted(wave, matrix_mod.installed_checker()),
                              capabilities=(brief or {}).get("capabilities"),
                              cap_measured=cap_measured,
                              spend=(brief or {}).get("spend"),
