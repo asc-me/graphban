@@ -26,6 +26,12 @@ interface Row {
   runs: number;
 }
 
+const isUnattributed = (r: { vendor: string; model: string }) => !r.vendor && !r.model;
+/** "vendor:model", the vendor alone when there is no model, "Unattributed" when neither. */
+const rowName = (r: { vendor: string; model: string }) =>
+  isUnattributed(r) ? "Unattributed" : r.model ? (r.vendor ? `${r.vendor}:${r.model}` : r.model) : r.vendor;
+const UNATTRIBUTED_HINT = "Finished attempts whose agent declared no vendor or model.";
+
 const pct = (r: number | null) => (r === null ? "—" : `${Math.round(r * 100)}%`);
 
 /**
@@ -124,7 +130,7 @@ export function PerformanceGrid({ data, routing }: { data: HarnessReport; routin
     for (const col of catalog?.leaves ?? []) if (used.has(col) && !ordered.includes(col)) ordered.push(col);
     const rest = [...used].filter((c) => !ordered.includes(c) && c !== "other").sort();
     const columns = [...ordered, ...rest, ...(used.has("other") ? ["other"] : [])];
-    return { rows: [...rowMap.values()], columns, grid };
+    return { rows: [...rowMap.values()].sort((a, b) => Number(isUnattributed(a)) - Number(isUnattributed(b))), columns, grid };
   }, [data.cells, data.capability_set, data.floor, effort]);
 
   const label = (cap: string) => data.capability_set?.labels[cap];
@@ -174,8 +180,16 @@ export function PerformanceGrid({ data, routing }: { data: HarnessReport; routin
                 return (
                   <tr key={row.key} data-testid="harness-grid-row" className="border-b border-line-2 last:border-b-0">
                     <th scope="row" className="px-3 py-2 font-normal">
-                      <div className="font-mono text-body">{row.vendor}</div>
-                      <div className="font-mono text-[10.5px] text-muted">{row.model}</div>
+                      {isUnattributed(row) ? (
+                        <div className="font-mono text-body text-muted" title={UNATTRIBUTED_HINT}>
+                          Unattributed
+                        </div>
+                      ) : (
+                        <>
+                          <div className="font-mono text-body">{row.vendor}</div>
+                          {row.model && <div className="font-mono text-[10.5px] text-muted">{row.model}</div>}
+                        </>
+                      )}
                       <div className="font-mono text-[10.5px] text-faint">{row.runs} runs</div>
                     </th>
                     {columns.map((cap) => {
@@ -196,7 +210,7 @@ export function PerformanceGrid({ data, routing }: { data: HarnessReport; routin
                             data-below-floor={a.below_floor ? "true" : "false"}
                             data-rollup={a.rollup ? "true" : "false"}
                             aria-pressed={isSel}
-                            aria-label={`${row.vendor} ${row.model} ${cap}${a.rollup ? " family rollup" : ""}: ${a.signed_off} of ${a.finished} signed off${
+                            aria-label={`${[row.vendor, row.model].filter(Boolean).join(" ") || "Unattributed"} ${cap}${a.rollup ? " family rollup" : ""}: ${a.signed_off} of ${a.finished} signed off${
                               a.below_floor ? ", below the floor" : ""
                             }`}
                             onClick={() => setSelected(isSel ? null : { row: row.key, col: cap })}
@@ -278,7 +292,7 @@ function CellPanel({
       <div className="flex items-start gap-2">
         <div className="min-w-0">
           <div className="font-mono text-body" data-testid="harness-panel-title">
-            {row.vendor}:{row.model}
+            {rowName(row)}
           </div>
           <div className="font-mono text-[10.5px] text-faint" data-testid="harness-panel-cap">
             {cap}{capLabel && capLabel !== cap ? ` · ${capLabel}` : ""}{agg.rollup ? " · family rollup" : ""}{effort === "All" ? "" : ` · ${effort}`}
