@@ -2,9 +2,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 
+import { PerformanceGrid } from "@/features/harness/PerformanceGrid";
 import { ProjectProvider } from "@/features/ProjectContext";
 import { ItemDetailPanel } from "@/features/tracker/ItemDetailPanel";
-import type { Item } from "@/lib/types";
+import type { HarnessCell, HarnessReport, Item } from "@/lib/types";
 import "@/index.css";
 
 /**
@@ -77,12 +78,63 @@ const item = {
   prd_id: null,
 } as unknown as Item;
 
+/**
+ * `?view=harness-grid` (GRPH-1232): the harness × function grid with a wide catalog — every
+ * leaf measured above the floor, so each gets a column — for the 1280px no-page-scroll check.
+ */
+const FAMILIES: Record<string, string[]> = {};
+for (const f of ["A", "B", "C", "D", "E"]) FAMILIES[f] = [1, 2, 3, 4, 5].map((n) => `${f}${n}`);
+FAMILIES.other = [];
+
+function leaf(model: string, capability: string, finished: number, signed_off: number): HarnessCell {
+  return {
+    key: { vendor: "anthropic", model, binary_version: "2.1.0", capability, size_band: "M" },
+    kind: "leaf", family: capability[0], label: capability,
+    finished, signed_off, bounced: finished - signed_off, rate: signed_off / finished, below_floor: false,
+    sampling: { first_choice: finished, fallback: 0, explicit: 0, unknown: 0, probe: 0 },
+    skew: null, median_seconds: 600,
+    cost: { comparable: true, reported: finished, finished, tokens_per_signed_off: 8100, tokens_in: 70000, tokens_out: 2900 },
+    versions_seen: ["2.1.0"], is_current_version: true,
+    series: [{ week: "2026-W43", finished, signed_off, rate: signed_off / finished, below_floor: false, median_seconds: 600 }],
+  };
+}
+
+function harnessReport(): HarnessReport {
+  const cells: HarnessCell[] = [];
+  for (const model of ["claude-opus-5-5", "claude-sonnet-5-5-extended-context-preview-2026-10-29", "haiku"]) {
+    for (const [family, leaves] of Object.entries(FAMILIES)) {
+      if (family === "other") continue;
+      const ls = leaves.map((cap, i) => leaf(model, cap, 10 + i, 6 + i));
+      const finished = ls.reduce((s, l) => s + l.finished, 0);
+      const signed_off = ls.reduce((s, l) => s + l.signed_off, 0);
+      cells.push({ ...ls[0], kind: "family", family, label: "family rollup", key: { ...ls[0].key, capability: family }, finished, signed_off, rate: signed_off / finished, leaves: ls });
+    }
+  }
+  return {
+    project_id: PROJECT.id, window_days: 90, versions: "current", floor: 5, skew_share: 0.8,
+    generated_at: new Date().toISOString(), cells, below_floor_count: 0,
+    capability_set: {
+      leaves: Object.values(FAMILIES).flat(),
+      families: FAMILIES,
+      labels: Object.fromEntries(Object.keys(FAMILIES).map((f) => [f, `Family ${f}`])),
+    },
+  };
+}
+
+const view = new URLSearchParams(location.search).get("view");
+
 createRoot(document.getElementById("root")!).render(
-  <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-    <MemoryRouter initialEntries={["/p/CP/tracker"]}>
-      <ProjectProvider>
-        <ItemDetailPanel item={item} open onClose={() => {}} onStatus={() => {}} />
-      </ProjectProvider>
-    </MemoryRouter>
-  </QueryClientProvider>,
+  view === "harness-grid" ? (
+    <main className="p-6">
+      <PerformanceGrid data={harnessReport()} routing={[]} />
+    </main>
+  ) : (
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <MemoryRouter initialEntries={["/p/CP/tracker"]}>
+        <ProjectProvider>
+          <ItemDetailPanel item={item} open onClose={() => {}} onStatus={() => {}} />
+        </ProjectProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  ),
 );

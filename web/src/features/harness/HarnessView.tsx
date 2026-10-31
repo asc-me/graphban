@@ -6,6 +6,7 @@ import { Preferences } from "@/features/harness/Preferences";
 import { PlannerError, TableSkeleton } from "@/components/planner/PlannerStates";
 import { Recommendations } from "@/features/harness/Recommendations";
 import { GuidanceTab } from "@/features/harness/GuidanceTab";
+import { PerformanceGrid, leafCells } from "@/features/harness/PerformanceGrid";
 import { SurfaceReport } from "@/features/harness/Surface";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useFleet, useHarness, useHarnessCards, useHarnessGuidance, useHarnessProbeCandidates, useStartHarnessProbeRun } from "@/lib/queries";
@@ -127,6 +128,7 @@ export function HarnessView() {
           <PerformanceTab
             data={data}
             fleetData={fleetData}
+            routing={guidance?.routing ?? []}
             scope={scope}
             activeId={activeId}
             onRefetchFleet={() => { void refetchFleet(); }}
@@ -146,12 +148,14 @@ export function HarnessView() {
 function PerformanceTab({
   data,
   fleetData,
+  routing,
   scope,
   activeId,
   onRefetchFleet,
 }: {
   data: import("@/lib/types").HarnessReport;
   fleetData?: import("@/lib/types").FleetOverview;
+  routing: import("@/lib/types").HarnessGuidance["routing"];
   scope: string;
   activeId: string;
   onRefetchFleet: () => void;
@@ -169,8 +173,7 @@ function PerformanceTab({
   }
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-3">
-      <SurfaceReport surface={data.surface} />
+    <div className="mx-auto flex max-w-6xl flex-col gap-3">
       {data.coverage && data.coverage.attempts > 0 && (
         <div
           data-testid="harness-coverage"
@@ -200,35 +203,44 @@ function PerformanceTab({
           as having none, not as having too few.
         </div>
       )}
+      <PerformanceGrid data={data} routing={routing} />
       <EffortCurve cells={data.cells} />
-      {(data.review_cells ?? []).map((cell) => (
-        <ReviewRow key={`f:${cell.key.vendor}:${cell.key.model}:${cell.key.capability}`} cell={cell} floor={data.floor} />
-      ))}
-      {(data.unavailable ?? []).map((row) => (
-        <div
-          key={`${row.vendor}:${row.model}:${row.capability}:${row.reason}`}
-          data-testid="harness-unavailable"
-          className="rounded-[10px] border border-dashed border-line-2 bg-surface-2 px-3.5 py-3 text-faint"
-        >
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span className="font-mono text-body">
-              {row.vendor}{row.model ? `:${row.model}` : ""}
-            </span>
-            <span className="font-mono text-[10.5px]">{row.capability}</span>
-            <span data-testid="harness-unavailable-reason" className="font-mono text-[10.5px]">
-              {row.label || row.reason}
-            </span>
-          </div>
-          <p className="mt-1 text-[12px]">
-            Greyed because it is {row.reason}, not because it is unmeasured.
-            Control: <span className="font-mono">{row.control}</span>
-            {row.drops ? ` · dropped ${row.drops} times` : ""}
-          </p>
+      <SurfaceReport surface={data.surface} />
+      <details className="rounded-[10px] border border-line-2" data-testid="harness-detail-cards">
+        <summary className="cursor-pointer px-3.5 py-2 text-body text-muted">
+          Every measured cell and verdict-quality detail ({data.cells.length} cells)
+        </summary>
+        <div className="flex flex-col gap-3 p-3">
+          {(data.review_cells ?? []).map((cell) => (
+            <ReviewRow key={`f:${cell.key.vendor}:${cell.key.model}:${cell.key.capability}`} cell={cell} floor={data.floor} />
+          ))}
+          {(data.unavailable ?? []).map((row) => (
+            <div
+              key={`${row.vendor}:${row.model}:${row.capability}:${row.reason}`}
+              data-testid="harness-unavailable"
+              className="rounded-[10px] border border-dashed border-line-2 bg-surface-2 px-3.5 py-3 text-faint"
+            >
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <span className="font-mono text-body">
+                  {row.vendor}{row.model ? `:${row.model}` : ""}
+                </span>
+                <span className="font-mono text-[10.5px]">{row.capability}</span>
+                <span data-testid="harness-unavailable-reason" className="font-mono text-[10.5px]">
+                  {row.label || row.reason}
+                </span>
+              </div>
+              <p className="mt-1 text-[12px]">
+                Greyed because it is {row.reason}, not because it is unmeasured.
+                Control: <span className="font-mono">{row.control}</span>
+                {row.drops ? ` · dropped ${row.drops} times` : ""}
+              </p>
+            </div>
+          ))}
+          {data.cells.map((cell) => (
+            <CellRow key={cellId(cell)} cell={cell} floor={data.floor} />
+          ))}
         </div>
-      ))}
-      {data.cells.map((cell) => (
-        <CellRow key={cellId(cell)} cell={cell} floor={data.floor} />
-      ))}
+      </details>
 
       <div className="mt-6">
         <Preferences
@@ -276,7 +288,8 @@ function EffortCurve({ cells }: { cells: HarnessCell[] }) {
   const agg = new Map<string, { finished: number; signed_off: number }>();
   for (const band of bands) agg.set(band, { finished: 0, signed_off: 0 });
 
-  for (const cell of cells) {
+  // Leaves out of each family rollup: the rollups themselves would count every leaf twice.
+  for (const cell of leafCells(cells)) {
     if (cell.kind === "family") continue;
     if (cell.below_floor) continue;
     const band = cell.key.size_band;
