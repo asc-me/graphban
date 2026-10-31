@@ -716,14 +716,14 @@ def finished_by_model(db: Session, project_id: str | None, *,
     probes = set(db.scalars(select(AttemptTelemetry.delegation_id).where(
         AttemptTelemetry.delegation_id.in_([r.id for r in rows]),
         AttemptTelemetry.sampled == "probe")).all())
-    agents: dict[str | None, Agent | None] = {}
+    agent_ids = {r.agent_id for r in rows if r.agent_id}
+    agents = ({a.id: a for a in db.scalars(select(Agent).where(Agent.id.in_(agent_ids))).all()}
+              if agent_ids else {})
     out: dict[tuple[str, str], dict] = {}
     for row in rows:
         if row.id in probes:
             continue
-        if row.agent_id not in agents:
-            agents[row.agent_id] = db.get(Agent, row.agent_id) if row.agent_id else None
-        agent = agents[row.agent_id]
+        agent = agents.get(row.agent_id)
         declared = (agent.capabilities or {}) if agent is not None else {}
         vendor = declared.get("vendor") if isinstance(declared.get("vendor"), str) and declared.get("vendor") else UNDECLARED
         model = row.declared_model or ("" if vendor != UNDECLARED else UNDECLARED)
