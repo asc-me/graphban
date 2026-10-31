@@ -79,6 +79,7 @@ def test_stale_rows_carry_recommendations(client, auth, monkeypatch):
     sid = _published(client, auth, pid)
     _age(sid, created_days=200)
     _judge(monkeypatch, '{"keep": false, "quality": 0.05, "reason": "obsolete"}')
+    client.post(f"/api/memory/refresh-judgments?project_id={pid}", headers=auth)
     rows = client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json()
     assert len(rows) == 1
     assert rows[0]["ungraded"] is False

@@ -643,7 +643,7 @@ def score_candidates(db: Session, *, project_id: str | None = None, judge: bool 
         else:
             verdict, cause = row["shard"].review_judge_verdict or None, "cached"
             if verdict is None:
-                row.update(_empty_review_judge(cause="unscored_budget" if use_decider else "capped"))
+                row.update(_empty_review_judge(cause="not_judged"))
                 continue
         if cause == "capped":
             if use_decider:
@@ -824,6 +824,8 @@ JUDGE_CAUSES = {
     "undecided": "the decider's keep probability is inside the abstain band, so this "
                  "candidate has no adjudication rather than a negative one",
     "unscored_budget": "not scored yet — the decider queue budget ran out this pass",
+    "not_judged": "not yet judged — page loads read stored verdicts; use Refresh judgments "
+                  "to ask the judge",
 }
 
 # Extra causes the on-demand review endpoint can report (GRPH-650). Not in
@@ -2847,11 +2849,37 @@ def _recommend(verdict: dict, *, reported_wrong: bool) -> dict:
     return {"action": action, "confidence": round(conf, 3), "reason": reason}
 
 
+def _keep_key(shard: MemoryShard) -> str:
+    return hashlib.sha256(" ".join((shard.text or "").split()).encode("utf-8")).hexdigest()
+
+
+def stored_keep_verdict(shard: MemoryShard) -> dict | None:
+    """The stored keep/quality verdict, only while it still describes the shard's text."""
+    if shard.keep_judge_verdict and shard.keep_judge_key == _keep_key(shard):
+        return dict(shard.keep_judge_verdict)
+    return None
+
+
+def refresh_keep_verdict(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
+    """Ask the judge (a model call) and store a successful verdict. Never on a page load."""
+    verdict, cause = judge_verdict(db, shard)
+    if verdict is not None:
+        shard.keep_judge_key = _keep_key(shard)
+        shard.keep_judge_verdict = verdict
+        db.commit()
+    return verdict, cause
+
+
 def recommendations(
     db: Session, rows: list[tuple[MemoryShard, list[str]]], project_id: str | None,
+    *, judge: bool = False,
 ) -> list[dict]:
     """Attach the project's judge recommendation to each row. A judge that is off, absent,
-    capped or unsure yields `ungraded` with the cause — never an invented recommendation."""
+    capped or unsure yields `ungraded` with the cause — never an invented recommendation.
+
+    Reads the STORED verdict; a row without one is `not_judged`. `judge=True` asks the model
+    for rows lacking a fresh verdict (up to `STALE_JUDGE_MAX`) and is only for explicit
+    actions, never a GET (GRPH-1242)."""
     _m, _r, judge_on = _triage_prefs(db, project_id)
     asked = 0
     out = []
@@ -2859,24 +2887,43 @@ def recommendations(
         row = {"shard": shard, "why": why, "ungraded": True, "recommendation": None,
                "ungraded_reason": JUDGE_CAUSES["off"]}
         if judge_on:
-            if asked >= STALE_JUDGE_MAX:
-                row["ungraded_reason"] = JUDGE_CAUSES["capped"]
-            else:
-                asked += 1
-                verdict, cause = judge_verdict(db, shard)
-                if verdict is None:
-                    row["ungraded_reason"] = JUDGE_CAUSES.get(cause, cause)
+            verdict, cause = stored_keep_verdict(shard), "not_judged"
+            if verdict is None and judge:
+                if asked >= STALE_JUDGE_MAX:
+                    cause = "capped"
                 else:
-                    row["ungraded"] = False
-                    row["ungraded_reason"] = ""
-                    row["recommendation"] = _recommend(
-                        verdict, reported_wrong=any("wrong" in w for w in why))
+                    asked += 1
+                    verdict, cause = refresh_keep_verdict(db, shard)
+            if verdict is None:
+                row["ungraded_reason"] = JUDGE_CAUSES.get(cause, cause)
+            else:
+                row["ungraded"] = False
+                row["ungraded_reason"] = ""
+                row["recommendation"] = _recommend(
+                    verdict, reported_wrong=any("wrong" in w for w in why))
         out.append(row)
     return out
 
 
 def stale_list(db: Session, project_id: str | None) -> list[dict]:
     return recommendations(db, stale_or_wrong(db, project_id), project_id)
+
+
+def refresh_judgments(db: Session, project_id: str | None) -> dict:
+    """The explicit, off-page-load judging action (GRPH-1242): judge stale rows and queue
+    candidates that lack a fresh verdict, within the existing budgets. A later GET shows them.
+
+    An action rather than a lifespan loop: a loop would have to stay single-runner once the
+    app has several workers (GRPH-1241), and the per-row "Re-verify" is already a user-driven
+    judge; this is the same gesture for the whole page."""
+    stale = recommendations(db, stale_or_wrong(db, project_id), project_id, judge=True)
+    scored = score_candidates(db, project_id=project_id, judge=True)
+    return {
+        "stale_judged": sum(1 for r in stale if not r["ungraded"]),
+        "stale_total": len(stale),
+        "candidates_judged": sum(1 for r in scored if r.get("judged")),
+        "candidates_total": len(scored),
+    }
 
 
 def queue_counts(db: Session, project_id: str | None) -> dict:
@@ -2934,7 +2981,7 @@ def apply_recommendations(
         if shard.status != "published":
             res["reason"] = f"not published ({shard.status})"
             continue
-        row = recommendations(db, [(shard, [])], shard.project_id)[0]
+        row = recommendations(db, [(shard, [])], shard.project_id, judge=True)[0]
         rec = row["recommendation"]
         if rec is None:
             res["reason"] = f"ungraded: {row['ungraded_reason']}"

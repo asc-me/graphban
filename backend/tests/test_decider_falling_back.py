@@ -186,13 +186,16 @@ def test_the_review_queue_alone_records_the_failure(client, auth, db, monkeypatc
 
     _judge_on(client, auth, pid)
     boom = _build(monkeypatch, MuteDecider())
+    client.post(f"/api/memory/refresh-judgments?project_id={pid}", headers=auth)
     scored = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
 
     row = next(r for r in scored if r["shard"]["id"] == s["id"])
     assert boom.calls >= 1
     assert row["judged"] is False
     assert row["judge_source"] != "decider"
-    assert row["ungraded_reason"] == mem_svc.JUDGE_CAUSES["error"], (
+    # The failed attempt is not stored (only successes are), so the page names the row as
+    # not-yet-judged; the failure itself is recorded on the credential, asserted below.
+    assert row["ungraded_reason"] == mem_svc.JUDGE_CAUSES["not_judged"], (
         "the row must name the miss, not render as an unasked question")
     db.refresh(cred)
     assert cred.state == "unreachable", "the queue path caught the failure and recorded nothing"
@@ -496,6 +499,7 @@ def test_a_decider_that_answers_reports_no_fallback(client, auth, db, monkeypatc
     good = _build(monkeypatch, AnsweringDecider())
 
     s = _mcp(client, key, "add_memory", {"text": "always pin the pgvector image to pg16 in CI"})
+    client.post(f"/api/memory/refresh-judgments?project_id={pid}", headers=auth)
     scored = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
 
     assert good.calls >= 1

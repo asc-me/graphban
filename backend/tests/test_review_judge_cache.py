@@ -210,6 +210,7 @@ def test_a_second_look_at_the_queue_judges_what_is_still_unknown(client, auth, m
                                                            f"number {i} when wiring subsystem {i}"}}},
                     headers={"X-API-Key": key})
 
+    client.post(f"/api/memory/refresh-judgments?project_id={pid}", headers=auth)
     first = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
     after_first = chat.calls
     assert after_first == mem_svc.REVIEW_JUDGE_MAX * mem_svc.JUDGE_SAMPLES, (
@@ -217,6 +218,7 @@ def test_a_second_look_at_the_queue_judges_what_is_still_unknown(client, auth, m
     )
     assert sum(1 for r in first if r["judged"]) == mem_svc.REVIEW_JUDGE_MAX
 
+    client.post(f"/api/memory/refresh-judgments?project_id={pid}", headers=auth)
     second = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
 
     assert chat.calls - after_first == extra * mem_svc.JUDGE_SAMPLES, (

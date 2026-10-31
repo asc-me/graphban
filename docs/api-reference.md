@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 210 of the 288 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 211 of the 289 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -147,6 +147,7 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | POST | `/api/memory/shards/{id}/keep` | JWT | Confirm a stale published shard is still right: stays published, staleness clock resets, records a `keep_shard` event. 409 if not published |
 | POST | `/api/memory/shards/{id}/restore` | JWT | Undo a retire; 409 once the 14-day window has closed |
 | POST | `/api/memory/apply-recommendations` | JWT | `{shard_ids, min_confidence=0.85}`: apply each shard's recommendation at/above the floor. `retire` mutates (`undo: restore`) and `keep` calls the keep path; `revise`/`verify` are left for a person. Per-id result |
+| POST | `/api/memory/refresh-judgments` | JWT (write) | `?project_id`: the only place the Memory page asks the judge. Judges stale rows and queue candidates lacking a fresh verdict, within the existing budgets, and stores the verdicts. `GET /stale` and `GET /candidates/scored` never call a model: they return stored verdicts, and a row without one is `not yet judged`. Returns `{stale_judged, stale_total, candidates_judged, candidates_total}` |
 | POST | `/api/memory/search` | JWT | Published-only semantic search |
 | POST | `/api/memory/backfill` | JWT |
 | GET | `/api/memory/export` | JWT |

@@ -231,6 +231,7 @@ def test_twelve_candidates_are_all_scored_when_the_decider_is_fast(
         _mcp(client, key, "add_memory",
              {"text": f"unique flubber-{i} sprocket: never reuse token {i}xyz when assembling gadget {i}q"})
     _patch_decider(monkeypatch, FakeDecider())
+    client.post(f"/api/memory/refresh-judgments?project_id={pid}", headers=auth)
     scored = client.get(
         f"/api/memory/candidates/scored?project_id={pid}", headers=auth,
     ).json()
@@ -258,13 +259,61 @@ def test_budget_remainder_is_named_unscored_not_silent(client, auth, monkeypatch
              {"text": f"unique lesson {i} about subsystem {i} timeouts"})
     monkeypatch.setattr(mem_svc, "DECIDER_QUEUE_BUDGET_S", 0.0)
     _patch_decider(monkeypatch, FakeDecider())
+    client.post(f"/api/memory/refresh-judgments?project_id={pid}", headers=auth)
     scored = client.get(
         f"/api/memory/candidates/scored?project_id={pid}", headers=auth,
     ).json()
     assert len(scored) == 3
     assert all(r["judged"] is False for r in scored)
-    assert all("not scored yet" in r["ungraded_reason"] for r in scored)
+    assert all("not yet judged" in r["ungraded_reason"] for r in scored)
     assert all("capped so a large queue" not in r["ungraded_reason"] for r in scored)
+
+
+def test_page_loads_never_call_the_decider_and_refresh_fills_verdicts(
+        client, auth, monkeypatch):
+    """GRPH-1242: GET /stale and /candidates/scored read stored verdicts (zero model calls,
+    rows without one say `not yet judged`); POST /refresh-judgments judges, a later GET shows it.
+    Sabotage: call `judge_verdict` from `recommendations` on the GET path and the zero-calls
+    assertion fails."""
+    pid = _proj(client, auth, "NoModelOnGet")
+    client.patch(f"/api/projects/{pid}",
+                 json={"memory_llm_judge": True, "memory_auto_reject": False}, headers=auth)
+    key = _key(client, auth, project_id=pid)
+    _mcp(client, key, "add_memory", {"text": "unique zorblax lesson about gadget timeouts"})
+    sid = _mcp(client, key, "add_memory", {"text": "another quux lesson about sprocket retries"})["id"]
+    client.post(f"/api/memory/shards/{sid}/publish", headers=auth)
+    from app.db import SessionLocal
+    from app.models import MemoryShard
+    from datetime import datetime, timedelta, timezone
+    with SessionLocal() as s:
+        sh = s.get(MemoryShard, sid)
+        sh.created_at = datetime.now(timezone.utc) - timedelta(days=400)
+        s.commit()
+
+    calls = {"n": 0}
+
+    class Counting(FakeDecider):
+        def decide(self, *, state, questions):
+            calls["n"] += 1
+            raise RuntimeError("decider is down")
+
+    _patch_decider(monkeypatch, Counting())
+    stale = client.get(f"/api/memory/stale?project_id={pid}", headers=auth)
+    scored = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth)
+    assert stale.status_code == 200 and scored.status_code == 200
+    assert calls["n"] == 0
+    assert stale.json() and all(r["ungraded"] and "not yet judged" in r["ungraded_reason"]
+                                for r in stale.json())
+    assert scored.json() and all(not r["judged"] and "not yet judged" in r["ungraded_reason"]
+                                 for r in scored.json())
+
+    _patch_decider(monkeypatch, FakeDecider())
+    done = client.post(f"/api/memory/refresh-judgments?project_id={pid}", headers=auth).json()
+    assert done["stale_judged"] == 1 and done["candidates_judged"] >= 1
+    stale = client.get(f"/api/memory/stale?project_id={pid}", headers=auth).json()
+    scored = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
+    assert all(not r["ungraded"] and r["recommendation"] for r in stale)
+    assert all(r["judged"] for r in scored)
 
 
 # ---- §13.7 naming --------------------------------------------------------------------

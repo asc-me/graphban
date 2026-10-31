@@ -56,10 +56,13 @@ def test_scored_queue_is_ungraded_on_stub_even_when_the_judge_is_on(client, auth
     client.patch(f"/api/projects/{pid}", json={"memory_llm_judge": True}, headers=auth)
     key = _key(client, auth, project_id=pid)
     _mcp(client, key, "add_memory", {"text": "the flux capacitor prefers 1.21 gigawatts"})
+    client.post(f"/api/memory/refresh-judgments?project_id={pid}", headers=auth)
     scored = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
     assert scored[0]["judged"] is False
     assert scored[0]["grounded"] is None
-    assert "no independent chat model" in scored[0]["ungraded_reason"]
+    # Page loads cannot ask a model, so the miss is named as not-yet-judged; the refresh action
+    # is what meets the missing provider.
+    assert "not yet judged" in scored[0]["ungraded_reason"]
 
 
 def test_similarity_veto_does_not_call_the_review_judge(client, auth, db, monkeypatch):
@@ -96,10 +99,14 @@ def test_ungrounded_demotes_an_accept_to_review(client, auth, monkeypatch):
         _mcp(client, key, "add_memory", {"text": text})
 
     def ungrounded(db, shard, **k):
-        return {"grounded": False, "ready": True, "conflicts": ["published: no timeouts"],
-                "reason": "contradicts published memory", "samples": 3}, "ok"
+        verdict = {"grounded": False, "ready": True, "conflicts": ["published: no timeouts"],
+                   "reason": "contradicts published memory", "samples": 3}
+        shard.review_judge_verdict = verdict  # a real judge stores it; the GET reads it
+        db.commit()
+        return verdict, "ok"
 
     monkeypatch.setattr(mem_svc, "review_judge", ungrounded)
+    client.post(f"/api/memory/refresh-judgments?project_id={pid}", headers=auth)
     scored = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
     accepts = [s for s in scored if s["suggestion"] == "accept"]
     reviews = [s for s in scored if s["suggestion"] == "review" and s["judged"]]
@@ -121,10 +128,14 @@ def test_the_scored_endpoint_calls_review_judge(client, auth, monkeypatch):
 
     def fake(db, shard, **k):
         called["n"] += 1
-        return {"grounded": True, "ready": True, "conflicts": [],
-                "reason": "specific and consistent", "samples": 3}, "ok"
+        verdict = {"grounded": True, "ready": True, "conflicts": [],
+                   "reason": "specific and consistent", "samples": 3}
+        shard.review_judge_verdict = verdict  # a real judge stores it; the GET reads it
+        db.commit()
+        return verdict, "ok"
 
     monkeypatch.setattr(mem_svc, "review_judge", fake)
+    client.post(f"/api/memory/refresh-judgments?project_id={pid}", headers=auth)
     scored = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
     assert called["n"] == 1
     assert scored[0]["judged"] is True

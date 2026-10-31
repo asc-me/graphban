@@ -1148,6 +1148,13 @@ class MemoryShard(Base):
         String, default="", server_default="", nullable=False
     )
     review_judge_verdict: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The keep/quality verdict behind the Stale-or-wrong recommendation (GRPH-1242), keyed on
+    # a digest of the text it judged. Stored so a page load reads it instead of asking a model;
+    # only successful verdicts, for the same reason as `review_judge_verdict`.
+    keep_judge_key: Mapped[str] = mapped_column(
+        String, default="", server_default="", nullable=False
+    )
+    keep_judge_verdict: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     scope: Mapped[str] = mapped_column(String, default="global")  # global/item
     source: Mapped[str] = mapped_column(String, default="")
     # Lifecycle (AL-49): agent self-reports enter as `candidate` and only reach the

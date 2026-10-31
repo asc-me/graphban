@@ -229,7 +229,7 @@ def scored_candidates(
             ungraded_reason=str(r.get("ungraded_reason") or ""),
             judge_source=str(r.get("judge_source") or ""),
         )
-        for r in mem_svc.score_candidates(db, project_id=project_id)
+        for r in mem_svc.score_candidates(db, project_id=project_id, judge=False)
     ]
 
 
@@ -434,14 +434,33 @@ class StaleRow(BaseModel):
     recommendation: Recommendation | None
 
 
+class RefreshJudgmentsOut(BaseModel):
+    stale_judged: int
+    stale_total: int
+    candidates_judged: int
+    candidates_total: int
+
+
+@router.post("/refresh-judgments", response_model=RefreshJudgmentsOut)
+def refresh_judgments(
+    project_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Ask the judge for stale rows and queue candidates without a fresh verdict. This is the
+    only place the Memory page's judging happens; GET /stale and /candidates/scored read it."""
+    authz.require_writable(db, user.id, project_id, "shard")
+    return mem_svc.refresh_judgments(db, project_id)
+
+
 @router.get("/stale", response_model=list[StaleRow])
 def stale(
     project_id: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Published shards that are stale or reported wrong, with the judge's recommendation.
-    An ungraded judge is `ungraded: true`, never an invented recommendation."""
+    """Published shards that are stale or reported wrong, with the judge's STORED recommendation
+    (no model call on this path, GRPH-1242). An ungraded judge is `ungraded: true`, never an invented recommendation."""
     authz.require_readable(db, user.id, project_id)
     return [
         StaleRow(shard=ShardOut.model_validate(r["shard"]), why=r["why"], ungraded=r["ungraded"],
