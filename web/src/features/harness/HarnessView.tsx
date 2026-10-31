@@ -4,6 +4,7 @@ import { AlertTriangle, Play, Scale } from "lucide-react";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Preferences } from "@/features/harness/Preferences";
 import { PlannerError, TableSkeleton } from "@/components/planner/PlannerStates";
+import { CapacityPanel } from "@/features/harness/CapacityPanel";
 import { Recommendations } from "@/features/harness/Recommendations";
 import { GuidanceTab } from "@/features/harness/GuidanceTab";
 import { PerformanceGrid, leafCells } from "@/features/harness/PerformanceGrid";
@@ -174,6 +175,7 @@ function PerformanceTab({
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-3">
+      <CapacityPanel projectId={activeId} />
       {data.coverage && data.coverage.attempts > 0 && (
         <div
           data-testid="harness-coverage"

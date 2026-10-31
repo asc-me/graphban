@@ -2794,6 +2794,41 @@ export interface HarnessRecommendations {
   floor: number;
 }
 
+/** PRD-62 S5: a count the supervisor does not report yet is null, never 0. */
+export interface HarnessCapacityEntitlement {
+  id: string;
+  vendor: string;
+  kind: string;
+  plan_label: string;
+  state: "available" | "unknown" | "exhausted" | "broken" | "unreachable";
+  vendor_text: string;
+  since: string | null;
+  reset_cadence: string | null;
+  token_budget: number | null;
+  week: { tokens: number; reported: number; unreported: number; limit_hits: number };
+  projected_exhaustion: { at: string | null; reason: string; basis?: string };
+}
+
+export interface HarnessCapacity {
+  org_id: string;
+  as_of: string;
+  entitlements: HarnessCapacityEntitlement[];
+  utilization: {
+    week_start: string;
+    week_end: string;
+    share_used: number | null;
+    /** True when some spend reported no token count: `share_used` is then a floor. */
+    share_is_lower_bound: boolean;
+    tokens_used: number;
+    budget: number | null;
+    entitlements_with_budget: number;
+    entitlements_without_budget: number;
+    unreported_spends: number;
+    waves_ended_by_capacity: { count: number | null; note: string };
+    items_deferred_to_reset: { count: number | null; note: string };
+  };
+}
+
 export interface HarnessGradingRule {
   id: string;
   title: string;

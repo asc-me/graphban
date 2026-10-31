@@ -19,6 +19,7 @@ export const keys = {
     ["harness", projectId, versions, windowDays ?? null] as const,
   harnessGuidance: (projectId: string, windowDays?: number) =>
     ["harness-guidance", projectId, windowDays ?? null] as const,
+  harnessCapacity: (projectId: string) => ["harness-capacity", projectId] as const,
   harnessCards: (projectId: string) => ["harness-cards", projectId] as const,
   harnessProbes: (projectId: string) => ["harness-probes", projectId] as const,
   lessons: (projectId: string, filters?: LessonFilters) =>
@@ -1030,6 +1031,17 @@ export function useHarnessGuidance(projectId?: string, opts: { windowDays?: numb
     queryKey: keys.harnessGuidance(projectId ?? "", opts.windowDays),
     queryFn: () => api.harnessGuidance(projectId!, { windowDays: opts.windowDays }),
     enabled: !!projectId,
+  });
+}
+
+/** PRD-62 S5: per-entitlement headroom and the org utilization rollup. A 402 (org off a
+ *  capacity plan) is an error the panel hides on, so it does not retry. */
+export function useHarnessCapacity(projectId?: string) {
+  return useQuery({
+    queryKey: keys.harnessCapacity(projectId ?? ""),
+    queryFn: () => api.harnessCapacity(projectId!),
+    enabled: !!projectId,
+    retry: false,
   });
 }
 

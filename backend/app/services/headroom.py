@@ -132,3 +132,145 @@ def report(db: Session, org_id: str, entitlement_id: str, event: str, *,
                             tokens=tokens if event == "spend" else None, created_at=utcnow()))
     db.commit()
     return {"admitted": admitted, "reason": reason, "headroom": headroom(db, row)}
+
+
+# ---- PRD-62 S5: forecast and utilization ------------------------------------------------------
+
+WEEK = timedelta(days=7)
+#: R7: this many whole weeks are read, and this many of them must agree before a card fires.
+CAPACITY_WEEKS, CAPACITY_MIN_WEEKS = 4, 3
+#: R7: a week that used less than this share of a stated budget "reset with headroom unused".
+UNUSED_SHARE = 0.5
+#: R7: this many of those weeks with a limit hit is "routinely runs out early".
+EARLY_MIN_WEEKS = 2
+#: Said wherever a not-recorded count is shown, so a zero is never read where nobody looked.
+NOT_RECORDED = ("not recorded: no supervisor reports it yet. This is unknown, not zero.")
+
+
+def _spend_between(events: list[EntitlementEvent], start: datetime, end: datetime) -> dict:
+    window = [e for e in events if start <= _aware(e.created_at) < end]
+    reported = [e for e in window if e.event == "spend" and e.tokens is not None]
+    spawns = sum(1 for e in window if e.event == "registered")
+    return {"tokens": sum(e.tokens for e in reported), "reported": len(reported),
+            "unreported": max(spawns - len(reported), 0),
+            "limit_hits": sum(1 for e in window if e.event == "limit_hit")}
+
+
+def _projection(row: Entitlement, events: list[EntitlementEvent], now: datetime,
+                week: dict) -> dict:
+    """When this entitlement runs out at this week's burn rate, or why that cannot be said.
+
+    `token_budget` is read as the amount per reset period; the registry holds no other
+    period, so the basis says so. No budget and no reported spend are each a stated reason,
+    never a far-off date.
+    """
+    if row.token_budget is None:
+        return {"at": None, "reason": "no token_budget stated"}
+    spend = [e for e in events if e.event == "spend" and e.tokens is not None
+             and now - WEEK <= _aware(e.created_at) <= now]
+    if not spend or week["tokens"] <= 0:
+        return {"at": None, "reason": "no reported spend this week"}
+    remaining = row.token_budget - week["tokens"]
+    if remaining <= 0:
+        return {"at": now.isoformat(), "reason": "", "basis": "this week's tokens already "
+                "meet or pass the stated token_budget"}
+    elapsed_h = max((now - min(_aware(e.created_at) for e in spend)).total_seconds() / 3600, 1.0)
+    rate = week["tokens"] / elapsed_h
+    return {"at": (now + timedelta(hours=remaining / rate)).isoformat(), "reason": "",
+            "basis": f"{week['tokens']} reported tokens over {elapsed_h:.1f}h, against a "
+                     f"token_budget of {row.token_budget} read as per reset period"}
+
+
+def forecast(db: Session, row: Entitlement, *, now: datetime | None = None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    events = _events(db, row.id)
+    base = headroom(db, row, now=now)
+    week = _spend_between(events, now - WEEK, now + timedelta(seconds=1))
+    return {
+        "id": row.id, "vendor": row.vendor, "kind": row.kind, "plan_label": row.plan_label,
+        "state": base["state"], "vendor_text": base["vendor_text"], "since": base["since"],
+        # The vendor's reset words and the owner's stated cadence, verbatim: D5 never parses
+        # a reset into a time, so there is no countdown to show.
+        "reset_cadence": row.reset_cadence or None,
+        "token_budget": row.token_budget,
+        "week": week,
+        "projected_exhaustion": _projection(row, events, now, week),
+    }
+
+
+def _capacity_rows(db: Session, org_id: str) -> list[Entitlement]:
+    return list(db.scalars(select(Entitlement).where(Entitlement.org_id == org_id)
+                           .order_by(Entitlement.vendor, Entitlement.kind,
+                                     Entitlement.created_at)).all())
+
+
+def utilization(db: Session, org_id: str, *, now: datetime | None = None) -> dict:
+    """Org level: the share of stated headroom used last week, and what is not recorded."""
+    now = now or datetime.now(timezone.utc)
+    start, end = now - 2 * WEEK, now - WEEK
+    used = budget = unreported = with_budget = without_budget = 0
+    for row in _capacity_rows(db, org_id):
+        if row.token_budget is None:
+            without_budget += 1
+            continue
+        spent = _spend_between(_events(db, row.id), start, end)
+        with_budget += 1
+        budget += row.token_budget
+        used += spent["tokens"]
+        unreported += spent["unreported"]
+    return {
+        "week_start": start.isoformat(), "week_end": end.isoformat(),
+        # None when no entitlement states a budget: nothing was measured against, so the
+        # share is unknown, not 0%.
+        "share_used": (used / budget) if budget else None,
+        # A spend with no token count is not zero tokens: with any unreported, share_used only
+        # counts what was reported, so it is a floor on the real share, never the share itself.
+        "share_is_lower_bound": bool(budget) and unreported > 0,
+        "tokens_used": used, "budget": budget or None,
+        "entitlements_with_budget": with_budget, "entitlements_without_budget": without_budget,
+        "unreported_spends": unreported,
+        "waves_ended_by_capacity": {"count": None, "note": NOT_RECORDED},
+        "items_deferred_to_reset": {"count": None, "note": NOT_RECORDED},
+    }
+
+
+def capacity(db: Session, org_id: str, *, now: datetime | None = None) -> dict:
+    """The Observe Harness capacity block: per entitlement, then the org rollup."""
+    quotas.require_capacity_routing(db, org_id)
+    now = now or datetime.now(timezone.utc)
+    return {"org_id": org_id, "as_of": now.isoformat(),
+            "entitlements": [forecast(db, r, now=now) for r in _capacity_rows(db, org_id)],
+            "utilization": utilization(db, org_id, now=now)}
+
+
+def routine_findings(db: Session, org_id: str, *, now: datetime | None = None) -> list[dict]:
+    """R7's evidence: entitlements that routinely reset with headroom unused, or run out early.
+
+    Reads the last `CAPACITY_WEEKS` whole weeks, only those that began after the entitlement
+    existed. A week with unreported spend is skipped for the "unused" reading — missing numbers
+    would look like headroom. Fewer than `CAPACITY_MIN_WEEKS` readable weeks fires nothing.
+    """
+    now = now or datetime.now(timezone.utc)
+    out: list[dict] = []
+    for row in _capacity_rows(db, org_id):
+        events = _events(db, row.id)
+        created = _aware(row.created_at)
+        weeks = []
+        for k in range(1, CAPACITY_WEEKS + 1):
+            start, end = now - k * WEEK, now - (k - 1) * WEEK
+            if start >= created:
+                weeks.append(_spend_between(events, start, end))
+        if len(weeks) < CAPACITY_MIN_WEEKS:
+            continue
+        unused = [w for w in weeks if row.token_budget and w["unreported"] == 0
+                  and w["tokens"] < UNUSED_SHARE * row.token_budget]
+        early = [w for w in weeks if w["limit_hits"]]
+        base = {"entitlement_id": row.id, "vendor": row.vendor, "kind": row.kind,
+                "plan_label": row.plan_label, "weeks_read": len(weeks)}
+        if len(unused) >= CAPACITY_MIN_WEEKS:
+            out.append({**base, "kind_of": "unused", "weeks": len(unused),
+                        "token_budget": row.token_budget,
+                        "tokens_by_week": [w["tokens"] for w in unused]})
+        if len(early) >= EARLY_MIN_WEEKS:
+            out.append({**base, "kind_of": "early", "weeks": len(early)})
+    return out

@@ -702,6 +702,9 @@ export const api = {
     if (opts.windowDays) q.set("window_days", String(opts.windowDays));
     return request<import("@/lib/types").HarnessGuidance>(`/harness/guidance?${q.toString()}`);
   },
+  harnessCapacity: (projectId: string) =>
+    request<import("@/lib/types").HarnessCapacity>(
+      `/harness/capacity?project_id=${encodeURIComponent(projectId)}`),
   harnessRecommendations: (projectId: string, opts: { windowDays?: number; orgId?: string } = {}) => {
     const q = new URLSearchParams();
     if (opts.orgId) q.set("org_id", opts.orgId);

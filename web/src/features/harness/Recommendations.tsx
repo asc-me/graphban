@@ -24,7 +24,7 @@ export function Recommendations({ projectId }: { projectId?: string }) {
         data-testid="harness-no-cards"
         className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted"
       >
-        No recommended changes. R1–R6 fire on cells above the {data.floor}-attempt
+        No recommended changes. R1–R7 fire on cells above the {data.floor}-attempt
         floor; nothing in the last {data.window_days} days met one.
       </div>
     );
