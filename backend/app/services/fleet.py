@@ -4688,11 +4688,15 @@ def cluster_board(db: Session, project_id: str | None = None) -> list[dict]:
         holders.setdefault(_normalise_area(r.area), r.agent_id)
 
     out = []
-    for c in collision_svc.clusters_for_project(db, project_id):
+    clusters = collision_svc.clusters_for_project(db, project_id)
+    wanted = {i for c in clusters for i in (c.get("items") or [])}
+    by_id = ({i.id: i for i in db.scalars(select(Item).where(Item.id.in_(wanted))).all()}
+             if wanted else {})
+    for c in clusters:
         areas = c.get("areas") or []
         blocking = [(a, holders[k]) for a in areas
                     if (k := _normalise_area(a)) in holders]
-        rows = [db.get(Item, i) for i in (c.get("items") or [])]
+        rows = [by_id.get(i) for i in (c.get("items") or [])]
         out.append({
             "items": [r.key for r in rows if r is not None],
             "areas": areas,
