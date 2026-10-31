@@ -45,16 +45,38 @@ def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def reviewer_ineligible(db: Session, org_id: str) -> set[str]:
+    """Entitlement ids ruled out as a reviewer (D7: anything not ruled out counts). Two things
+    rule one out: a `local` model no live reviewer-capable runner declares (nobody enabled it
+    for review), and an entitlement every declaring runner of which is read-only. An API key or
+    cloud account nobody declares yet is NOT ruled out: it is unknown, and unknown counts."""
+    rows = db.scalars(select(Entitlement).where(Entitlement.org_id == org_id)).all()
+    holders: dict[str, list[bool]] = {}
+    for a in db.scalars(select(Agent).join(Project, Project.id == Agent.project_id)
+                        .where(Agent.dismissed_at.is_(None), Project.org_id == org_id)).all():
+        can_review = not (a.capabilities or {}).get("readonly")
+        for i in a.entitlement_ids or []:
+            holders.setdefault(i, []).append(can_review)
+    out = set()
+    for r in rows:
+        held = holders.get(r.id, [])
+        if (r.kind == "local" and not any(held)) or (held and not any(held)):
+            out.add(r.id)
+    return out
+
+
 def rank(db: Session, org_id: str, *, now: datetime | None = None) -> list[dict]:
     """The org's entitlements with headroom, best first: available by soonest stated reset,
     then unknown. Skipped states are not returned — see `skipped` for why."""
     rows = db.scalars(select(Entitlement).where(Entitlement.org_id == org_id)
                       .order_by(Entitlement.created_at, Entitlement.id)).all()
     out = []
+    ruled_out = reviewer_ineligible(db, org_id)
     for r in rows:
         state = headroom_svc.headroom(db, r, now=now)["state"]
         if state in USABLE:
             out.append({"id": r.id, "vendor": r.vendor, "state": state,
+                        "reviewer_eligible": r.id not in ruled_out,
                         "next_reset_at": _aware(r.next_reset_at) if r.next_reset_at else None})
     far = datetime.max.replace(tzinfo=timezone.utc)
     out.sort(key=lambda e: (e["state"] != "available", e["next_reset_at"] or far))
@@ -87,8 +109,22 @@ def _why(entry: dict, ranked: list[dict]) -> str:
 
 
 def review_reserved(ranked: list[dict], vendor: str) -> bool:
-    """D7: does a vendor OTHER than `vendor` still have an available or unknown entitlement?"""
-    return any(e["vendor"] != vendor for e in ranked)
+    """D7: does a reviewer-eligible vendor OTHER than `vendor` still have an available or
+    unknown entitlement?"""
+    return any(e["vendor"] != vendor and e["reviewer_eligible"] for e in ranked)
+
+
+def reserve(ranked: list[dict]) -> dict:
+    """The reserve as the Observe page states it: which vendors hold it (reviewer-eligible,
+    available or unknown), and whether it rests only on `unknown` or is empty."""
+    held = [e for e in ranked if e["reviewer_eligible"]]
+    vendors = sorted({e["vendor"] for e in held})
+    only_unknown = bool(held) and all(e["state"] == "unknown" for e in held)
+    return {"vendors": vendors, "empty": not held, "only_unknown": only_unknown,
+            "warning": ("no reviewer-eligible vendor has headroom: nothing satisfies the review "
+                        "reserve" if not held else
+                        "the review reserve rests only on unknown entitlements" if only_unknown
+                        else None)}
 
 
 def gate(db: Session, item: Item, agent_id: str, *, now: datetime | None = None) -> dict | None:

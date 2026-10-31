@@ -245,7 +245,9 @@ def capacity(db: Session, org_id: str, *, now: datetime | None = None) -> dict:
     """The Observe Harness capacity block: per entitlement, then the org rollup."""
     quotas.require_capacity_routing(db, org_id)
     now = now or datetime.now(timezone.utc)
+    from app.services import routing  # routing imports this module
     return {"org_id": org_id, "as_of": now.isoformat(),
+            "review_reserve": routing.reserve(routing.rank(db, org_id, now=now)),
             "entitlements": [forecast(db, r, now=now) for r in _capacity_rows(db, org_id)],
             "utilization": utilization(db, org_id, now=now)}
 

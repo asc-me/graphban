@@ -2812,6 +2812,8 @@ export interface HarnessCapacityEntitlement {
 export interface HarnessCapacity {
   org_id: string;
   as_of: string;
+  /** D7: vendors that can review and hold headroom; `warning` is set when it is empty or unknown-only. */
+  review_reserve: { vendors: string[]; empty: boolean; only_unknown: boolean; warning: string | null };
   entitlements: HarnessCapacityEntitlement[];
   utilization: {
     week_start: string;

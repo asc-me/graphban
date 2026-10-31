@@ -25,6 +25,11 @@ export function CapacityPanel({ projectId }: { projectId?: string }) {
         . Waves ended by capacity: {count(u.waves_ended_by_capacity)}. Items deferred to a reset:{" "}
         {count(u.items_deferred_to_reset)}.
       </div>
+      {data.review_reserve.warning && (
+        <p data-testid="capacity-reserve-warning" role="alert" className="mt-2 text-body text-danger">
+          {data.review_reserve.warning}
+        </p>
+      )}
       {data.entitlements.length === 0 ? (
         <p className="mt-2 text-body text-muted">No entitlements registered.</p>
       ) : (
