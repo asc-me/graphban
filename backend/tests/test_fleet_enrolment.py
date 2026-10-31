@@ -382,10 +382,12 @@ def test_the_roster_call_reports_seat_state(client, auth, proj, key, db):
                         headers=auth).json()["seats"]
     _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": codes[0]["code"]})
 
-    seats = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["seats"]
+    view = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()
 
-    by_id = {s["id"]: s for s in seats}
-    assert by_id[codes[0]["id"]]["state"] == "consumed"
+    by_id = {s["id"]: s for s in view["seats"]}
+    # GRPH-1237: a consumed seat is counted, not sent.
+    assert codes[0]["id"] not in by_id
+    assert view["seats_collapsed"]["by_state"] == {"consumed": 1}
     assert by_id[codes[1]["id"]]["state"] == "unused"
 
 
@@ -424,9 +426,9 @@ def test_reissue_gives_a_fresh_code_and_keeps_the_dead_seat(client, auth, proj, 
     fresh = client.post(f"/api/fleet/seats/{first['id']}/reissue", headers=auth).json()
 
     assert fresh["code"] != first["code"] and fresh["reissued_from"] == first["id"]
-    seats = {s["id"]: s for s in client.get(f"/api/fleet?project_id={proj}",
-                                            headers=auth).json()["seats"]}
-    assert seats[first["id"]]["state"] == "consumed", "the dead seat survives"
+    view = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()
+    seats = {s["id"]: s for s in view["seats"]}
+    assert view["seats_collapsed"]["by_state"].get("consumed") == 1, "the dead seat survives"
     assert seats[fresh["id"]]["state"] == "unused"
 
 
@@ -793,9 +795,8 @@ def test_revoking_unused_seats_leaves_the_consumed_ones(client, auth, proj, key,
                       json={"project_id": proj}, headers=auth).json()
 
     assert out["revoked"] == 2
-    seats = {s["id"]: s for s in client.get(f"/api/fleet?project_id={proj}",
-                                            headers=auth).json()["seats"]}
-    assert seats[issued[0]["id"]]["state"] == "consumed", "the redeemed seat survives"
+    view = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()
+    assert view["seats_collapsed"]["by_state"].get("consumed") == 1, "the redeemed seat survives"
     # And the agent that holds it is untouched.
     assert _ok(client, key, "heartbeat", {"agent_id": me["agent_id"]})["agent_id"] == me["agent_id"]
 
