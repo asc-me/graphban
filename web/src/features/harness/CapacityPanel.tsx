@@ -1,4 +1,5 @@
 import { useHarnessCapacity } from "@/lib/queries";
+import type { HarnessCapacityRunner } from "@/lib/types";
 
 /**
  * PRD-62 S5 — per entitlement: headroom state, reset cadence, this week's tokens and a
@@ -7,6 +8,8 @@ import { useHarnessCapacity } from "@/lib/queries";
  * not record yet reads "not recorded" rather than 0. Hidden when the org is not on a plan that
  * has capacity routing (the endpoint answers 402).
  */
+const runnerName = (r: HarnessCapacityRunner) => r.label || r.agent_id;
+
 export function CapacityPanel({ projectId }: { projectId?: string }) {
   const { data } = useHarnessCapacity(projectId);
   if (!data) return null;
@@ -43,7 +46,15 @@ export function CapacityPanel({ projectId }: { projectId?: string }) {
             {data.entitlements.map((e) => (
               <tr key={e.id} data-testid="capacity-row" data-state={e.state}>
                 <td>{e.vendor} {e.plan_label || e.kind}</td>
-                <td title={e.vendor_text}>{e.state}</td>
+                <td title={e.vendor_text}>
+                  {e.state}
+                  {e.state === "broken" && (
+                    <div data-testid="capacity-runner" className="text-small text-faint">
+                      reported by {e.reported_by ? runnerName(e.reported_by) : "unknown runner"}
+                      {e.declared_by.length > 0 && `; declared by ${e.declared_by.map(runnerName).join(", ")}`}
+                    </div>
+                  )}
+                </td>
                 <td>{e.reset_cadence ?? "not stated"}</td>
                 <td>
                   {e.week.tokens}
