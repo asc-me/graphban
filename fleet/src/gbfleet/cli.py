@@ -367,6 +367,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="print what this wave WOULD delegate and exit, without minting a seat or cutting "
              "a worktree. The scoping bug existed for exactly as long as nobody could see the "
              "plan")
+    until.add_argument(
+        "--entitlement", action="append", default=[], metavar="ADAPTER=ID",
+        help="an entitlement id the adapter runs on (PRD-62); repeatable. The wave declares it "
+             "at register_agent and reports spawn_start, registered, limit_hit and spawn_failed "
+             "for it. Off a capacity-routing plan the wave runs as it does without the flag",
+    )
     until.add_argument("--max-children", type=int, default=8)
     until.add_argument("--child-wall-clock", type=float, default=3600.0)
     until.add_argument("--workspace", default=None, help="where worktrees go")
@@ -681,6 +687,14 @@ def _until(args) -> int:
             print(f"gbfleet until: {exc}", file=sys.stderr)
             return 2
 
+    entitlements: dict[str, list[str]] = {}
+    for pair in args.entitlement or []:
+        adapter_name, _, ent_id = pair.partition("=")
+        if not adapter_name.strip() or not ent_id.strip():
+            print(f"gbfleet until: --entitlement wants ADAPTER=ID, got {pair!r}", file=sys.stderr)
+            return 2
+        entitlements.setdefault(adapter_name.strip(), []).append(ent_id.strip())
+
     planner = Graphban(base_url=args.server, api_key=api_key, allowed=PLANNER_TOOLS, project_id=args.project)
     supervisor = Graphban(base_url=args.server, api_key=api_key, allowed=ALLOWED_TOOLS, project_id=args.project)
     if args.dry_run:
@@ -749,6 +763,7 @@ def _until(args) -> int:
             matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
             merge=bool(args.merge),
             base_branch=args.base,
+            entitlements=entitlements,
             stall_after=args.stall_after,
         )
     except RepoLocked as exc:
