@@ -173,18 +173,6 @@ def _user_meta(user: User | None) -> dict:
     }
 
 
-def _seen_within(value, ttl: int) -> bool:
-    if not value:
-        return False
-    try:
-        at = datetime.fromisoformat(value) if isinstance(value, str) else value
-    except ValueError:
-        return False
-    if at.tzinfo is None:
-        at = at.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - at).total_seconds() <= ttl
-
-
 def _is_online(state: str) -> bool:
     return state != "offline"
 
@@ -261,12 +249,12 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
         } for h in holdings_in]
         state = a.get("state") or "offline"
         # Quarantine is a verdict, not presence: it passes through the roster whatever the
-        # clock says. Live counts presence by the same rule as the shell badge (last contact
-        # inside the TTL), so a quarantined agent that has gone quiet is offline here and
-        # carries `quarantined` as a separate marker. One still heard from inside the TTL
-        # counts as online, as the badge counts it.
+        # clock says. Live counts by the shell badge's rule (`projects.badge_counts`: last
+        # contact inside the TTL AND not quarantined), so a quarantined agent is never
+        # online here, however recently it was heard from. It carries `quarantined` as a
+        # separate marker so the verdict stays visible on the row.
         quarantined = state == "quarantined"
-        if quarantined and not _seen_within(a.get("last_seen_at"), ttl):
+        if quarantined:
             state = "offline"
         # Only a BUILD lease speaks for files. A reviewer reserves no areas, so once the
         # roster started reporting review claims (GRPH-1001) an inclusive list would have

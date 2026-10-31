@@ -359,7 +359,7 @@ def badge_counts(db: Session, project_id: str) -> dict[str, int]:
     live = db.scalar(
         select(func.count()).select_from(Agent)
         .outerjoin(ApiKey, ApiKey.id == Agent.api_key_id)
-        .where(*roster, Agent.last_seen_at >= cutoff,
+        .where(*roster, Agent.last_seen_at >= cutoff, Agent.state != "quarantined",
                or_(ApiKey.id.is_(None), ApiKey.revoked.is_(False)))
     ) or 0
 

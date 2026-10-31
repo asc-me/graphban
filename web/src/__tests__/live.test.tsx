@@ -266,6 +266,26 @@ describe("Live board", () => {
     expect(boardEl.getByText("1/6")).toBeInTheDocument();
   });
 
+  it("shows a quarantined agent as offline with a quarantined marker, not online (GRPH-1239)", async () => {
+    const a1 = agent({ id: "a1", key: "CORE-A1", label: "busy-one", state: "working" });
+    const a2 = agent({ id: "a2", key: "CORE-A2", label: "busy-two", state: "idle" });
+    const q = agent({
+      id: "q1", key: "CORE-Q1", label: "grok-quarantined", state: "offline", quarantined: true,
+      holdings: [{ id: "CORE-9", title: "held work", status: "in_progress", phase: "building", phase_basis: "x", pr: { state: "unrecorded" } }],
+    });
+    board = emptyBoard({
+      total_agents: 3,
+      users: [user({ online: 2, total: 3, agents: [a1, a2, q] })],
+    });
+    renderLive();
+    const boardEl = await agentBoard();
+    expect(await screen.findByTestId("live-online")).toHaveTextContent("2 online");
+    expect(boardEl.getByText("2/3")).toBeInTheDocument();
+    expect(boardEl.getByText("grok-quarantined")).toBeInTheDocument();
+    expect(boardEl.getByText("quarantined")).toBeInTheDocument();
+    expect(boardEl.queryAllByText("quarantined")).toHaveLength(1);
+  });
+
   it("does not render a collapse when every offline agent holds work", async () => {
     const holder = agent({
       id: "h1", key: "CORE-H1", label: "dead-holder", state: "offline", branch_orphaned: true,

@@ -247,3 +247,26 @@ def test_live_board_online_is_the_sidebar_badge(db, pids, key):
     board = live_svc.board(db, pid)
     assert board["online_agents"] == 3
     assert board["online_agents"] == _counts(db, pid)["live_agents"]
+
+
+def test_a_quarantined_agent_is_never_live_on_board_badge_or_switcher(db, pids, key):
+    """Rule: quarantine excludes an agent from live everywhere, however recently it was
+    seen. The Live board, the sidebar badge and the project switcher agree (GRPH-1239)."""
+    from app.services import live as live_svc
+
+    pid, _ = pids
+    _agent(db, key, pid, seen_ago=0)
+    _agent(db, key, pid, seen_ago=0)
+    for ago in (0, 61 * 24 * 3600):
+        q = _agent(db, key, pid, seen_ago=ago)
+        q.state = "quarantined"
+    db.commit()
+
+    board = live_svc.board(db, pid)
+    flat = [a for u in board["users"] for a in u["agents"]]
+    assert board["online_agents"] == 2
+    assert sum(1 for a in flat if a["state"] != "offline") == 2
+    assert sum(1 for a in flat if a["quarantined"]) == 2
+    assert _counts(db, pid)["live_agents"] == board["online_agents"]
+    row = next(r for r in proj_svc.project_summaries(db, [pid]) if r["id"] == pid)
+    assert row["live_agents"] == board["online_agents"]

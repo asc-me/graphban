@@ -111,6 +111,9 @@ function AgentRow({
             )}
             {a.parent_agent_id && <span className="font-mono text-[10px] text-faint">child</span>}
             <span className="font-mono text-[10px] text-faint">{a.state}</span>
+            {a.quarantined && (
+              <span className="font-mono text-[10px] text-[color:var(--color-st-blocked)]">quarantined</span>
+            )}
           </div>
           <div className="mt-0.5 font-mono text-[10.5px] text-faint">
             {a.worktree || "no worktree"}
