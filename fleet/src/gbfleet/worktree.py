@@ -17,6 +17,7 @@ the tool this PRD refused, running slower.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field, replace
@@ -1315,6 +1316,119 @@ def merge_tree_conflicts(repo: Path | str, ref: str, branch: str) -> bool | None
     if proc.returncode == 1:
         return True
     return None
+
+
+def conflicted_paths(repo: Path | str, ref: str, branch: str) -> list[str] | None:
+    """The files `git merge-tree --write-tree ref branch` reports conflicted (GRPH-1236).
+
+    Empty on a clean merge. None when merge-tree could not be asked, for the same reason
+    `merge_tree_conflicts` returns None: "could not ask" is not "clean".
+    """
+    if not (ref or "").strip() or not (branch or "").strip():
+        return None
+    proc = subprocess.run(
+        ["git", "merge-tree", "--write-tree", "--name-only", "--no-messages", ref, branch],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    if proc.returncode == 0:
+        return []
+    if proc.returncode != 1:
+        return None
+    # The first line is the tree; the conflicted names follow it, one per line.
+    return sorted({line.strip() for line in proc.stdout.splitlines()[1:] if line.strip()})
+
+
+@dataclass
+class Merged:
+    """`ref` merged into a branch (GRPH-1236). `sha` is the new head, `ref_sha` is what merged."""
+
+    branch: str
+    ref: str
+    sha: str = ""
+    ref_sha: str = ""
+    reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.sha)
+
+
+def _checkout_of(repo: Path | str, branch: str) -> Path | None:
+    """The worktree that has `branch` checked out, or None."""
+    out = _git(repo, "worktree", "list", "--porcelain", check=False)
+    path: Path | None = None
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            path = Path(line[len("worktree "):].strip())
+        elif line.strip() == f"branch refs/heads/{branch}":
+            return path
+    return None
+
+
+def _identity_env(cwd: Path | str) -> dict[str, str]:
+    """Committer env for a repo with no identity of its own. A real one always wins."""
+    env = dict(os.environ)
+    if not _git(cwd, "config", "user.email", check=False).strip():
+        env.setdefault("GIT_AUTHOR_NAME", "gbfleet")
+        env.setdefault("GIT_AUTHOR_EMAIL", "gbfleet@localhost")
+        env.setdefault("GIT_COMMITTER_NAME", "gbfleet")
+        env.setdefault("GIT_COMMITTER_EMAIL", "gbfleet@localhost")
+    return env
+
+
+def merge_ref_into(repo: Path | str, branch: str, ref: str) -> Merged:
+    """Merge `ref` into `branch` with a real merge commit (GRPH-1236). Never a rebase.
+
+    The branch's own commits keep their shas, so nothing already pushed is rewritten and
+    the push that follows is a fast-forward. Where the branch is checked out, this is
+    `git merge --no-ff --no-edit <ref>` in that worktree, so its files follow the ref.
+    A merge that fails is aborted and reported, and the branch is left where it was.
+
+    Where nothing has the branch checked out, the same commit is built from
+    `git merge-tree --write-tree` and `git commit-tree` with both parents. The ref only
+    moves if it still points at the head the merge was built on.
+    """
+    head = _git(repo, "rev-parse", "--verify", "-q", f"refs/heads/{branch}",
+                check=False).strip()
+    ref_sha = _git(repo, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}",
+                   check=False).strip()
+    if not head or not ref_sha:
+        return Merged(branch=branch, ref=ref, reason=f"could not resolve {branch} or {ref}")
+    message = f"Merge {ref} into {branch} before proposing (gbfleet)"
+    tree = _checkout_of(repo, branch)
+    if tree is not None and tree.exists():
+        env = _identity_env(tree)
+        proc = subprocess.run(
+            ["git", "merge", "--no-ff", "--no-edit", "-m", message, ref_sha],
+            cwd=str(tree), capture_output=True, text=True, env=env,
+        )
+        if proc.returncode != 0:
+            subprocess.run(["git", "merge", "--abort"], cwd=str(tree),
+                           capture_output=True, text=True)
+            why = (proc.stderr.strip() or proc.stdout.strip())[:200]
+            return Merged(branch=branch, ref=ref, ref_sha=ref_sha,
+                          reason=f"git merge {ref} failed: {why}")
+        sha = _git(tree, "rev-parse", "HEAD").strip()
+        return Merged(branch=branch, ref=ref, sha=sha, ref_sha=ref_sha)
+    written = subprocess.run(["git", "merge-tree", "--write-tree", ref_sha, head],
+                             cwd=str(repo), capture_output=True, text=True)
+    if written.returncode != 0:
+        return Merged(branch=branch, ref=ref, ref_sha=ref_sha,
+                      reason=f"merge-tree did not merge {ref} cleanly")
+    oid = written.stdout.splitlines()[0].strip()
+    made = subprocess.run(
+        ["git", "commit-tree", oid, "-p", head, "-p", ref_sha, "-m", message],
+        cwd=str(repo), capture_output=True, text=True, env=_identity_env(repo),
+    )
+    if made.returncode != 0:
+        return Merged(branch=branch, ref=ref, ref_sha=ref_sha,
+                      reason=f"commit-tree failed: {made.stderr.strip()[:200]}")
+    sha = made.stdout.strip()
+    try:
+        _git(repo, "update-ref", f"refs/heads/{branch}", sha, head)
+    except GitError as exc:
+        return Merged(branch=branch, ref=ref, ref_sha=ref_sha, reason=str(exc)[:200])
+    return Merged(branch=branch, ref=ref, sha=sha, ref_sha=ref_sha)
 
 
 def reaches(repo: Path | str, base: str, commit: str) -> bool | None:

@@ -330,6 +330,13 @@ class Wave:
     #: shared file, a merge-tree conflict, or could not be asked. The unclassified stale
     #: case (no entry here either) still refuses, with the older "rebase before proposing".
     behind_block: dict[str, str] = field(default_factory=dict)
+    #: branch -> (commits behind, ref, shared files) for a branch that shares files with
+    #: the missed commits and still merges clean (GRPH-1236). `propose_branch` merges `ref`
+    #: in, pushes, and proposes. If that fails, the branch is refused as before.
+    behind_merge: dict[str, tuple] = field(default_factory=dict)
+    #: branch -> (ref, conflicted files) where merge-tree found a real conflict (GRPH-1236).
+    #: The PR is withheld and the item goes back to `next` with a resume brief.
+    behind_conflict: dict[str, tuple] = field(default_factory=dict)
     #: PRD-41 D21: each matrix resolution this wave made, with every stage. `until`
     #: prints the list on its report (empty = looked, none resolved — not an absence).
     resolutions: list = field(default_factory=list)
@@ -1494,18 +1501,22 @@ def _note_staleness(wave: Wave, tree: Worktree) -> None:
 
 
 def _classify_behind(wave: Wave, tree: Worktree, behind: int, ref: str) -> None:
-    """Whether being `behind` commits behind `ref` should withhold the PR (GRPH-1087).
+    """What being `behind` commits behind `ref` does to the proposal (GRPH-1087, GRPH-1236).
 
     The count in `wave.stale` stays either way — the BEHIND line is how far the trunk
     moved, and that fact does not go away because the merge is clean. What changes is
-    the proposal. Refuse when either check says the behind-ness matters:
+    the proposal:
 
-    1. the missed commits (`base`..`ref`) change a file the branch also changes, or
-    2. `git merge-tree --write-tree ref branch` reports a conflict.
+    1. `git merge-tree --write-tree ref branch` reports a conflict: refuse, and record
+       the conflicted files so `propose_branch` can send the item back to `next`.
+    2. It merges clean but the missed commits (`base`..`ref`) change a file the branch
+       also changes: `propose_branch` merges `ref` in first, so the reviewer reads the
+       head that will actually merge. Refusing this case left items `done` with no PR.
+    3. Clean and no shared files: record "N behind ref, no shared files, merges clean"
+       for the PR body and the BEHIND line, and propose as is.
 
-    Otherwise record "N behind ref, no shared files, merges clean" for the PR body and
-    the BEHIND line. A check that cannot be asked is a refusal, not a clean note: an
-    empty file list we failed to compute is how "1 behind, overlapping" would be proposed.
+    A check that cannot be asked is a refusal, not a clean note: an empty file list we
+    failed to compute is how "1 behind, overlapping" would be proposed.
     """
     shared = wt_mod.shared_with_missed(tree.repo, tree.base, ref, tree.branch)
     if shared is None:
@@ -1514,7 +1525,7 @@ def _classify_behind(wave: Wave, tree: Worktree, behind: int, ref: str) -> None:
             "commits change, so not proposing"
         )
         return
-    conflicts = wt_mod.merge_tree_conflicts(tree.repo, ref, tree.branch)
+    conflicts = wt_mod.conflicted_paths(tree.repo, ref, tree.branch)
     if conflicts is None:
         wave.behind_block[tree.branch] = (
             f"{behind} commit(s) behind {ref}; merge-tree could not be asked, "
@@ -1523,21 +1534,87 @@ def _classify_behind(wave: Wave, tree: Worktree, behind: int, ref: str) -> None:
         return
     if conflicts:
         wave.behind_block[tree.branch] = (
-            f"{behind} commit(s) behind {ref}; merge-tree conflicts"
+            f"{behind} commit(s) behind {ref}; merge-tree conflicts in {_shown(conflicts)}"
         )
+        wave.behind_conflict[tree.branch] = (ref, conflicts)
         return
     if shared:
-        shown = ", ".join(shared[:5]) + (
-            f" (+{len(shared) - 5} more)" if len(shared) > 5 else ""
-        )
-        wave.behind_block[tree.branch] = (
-            f"{behind} commit(s) behind {ref}; rebase before proposing — "
-            f"missed commits also change {shown}"
-        )
+        wave.behind_merge[tree.branch] = (behind, ref, shared)
         return
     wave.behind_clean[tree.branch] = (
         f"{behind} behind {ref}, no shared files, merges clean"
     )
+
+
+def _shown(paths: list[str]) -> str:
+    return ", ".join(paths[:5]) + (f" (+{len(paths) - 5} more)" if len(paths) > 5 else "")
+
+
+def _merge_behind(wave: Wave, repo: Path, branch: str, base: str, items: list[str], *,
+                  client: Graphban | None) -> None:
+    """Bring a clean-but-overlapping branch up to date before it is proposed (GRPH-1236).
+
+    A real merge commit, never a rebase and never a force-push. The branch's pushed commits
+    keep their shas, and the push is a fast-forward. On success the note goes where the
+    clean note goes, in the PR body and on the BEHIND line, and that is how the reviewer
+    knows the head they sign off includes `ref`. If the merge or the push fails, the branch is
+    refused with that reason, as it was before this existed.
+    """
+    pending = wave.behind_merge.pop(branch, None)
+    if pending is None:
+        return
+    behind, ref, shared = pending
+    if len(items) > 1:
+        # Split per item (GRPH-1086): each item's commits are replayed onto the current
+        # trunk, so no per-item branch is behind. A merge commit here would name no item
+        # and stop the split.
+        wave.behind_clean[branch] = (
+            f"{behind} behind {ref}, shares {_shown(shared)}, merges clean; "
+            "each item is replayed onto it"
+        )
+        return
+    refusal = (f"{behind} commit(s) behind {ref}; missed commits also change "
+               f"{_shown(shared)}")
+    merged = wt_mod.merge_ref_into(repo, branch, ref)
+    if not merged.ok:
+        wave.behind_block[branch] = f"{refusal}; {merged.reason}"
+        return
+    pushed = wt_mod.push_branch(repo, branch, base)
+    if not pushed.ok:
+        wave.behind_block[branch] = (
+            f"{refusal}; merged {ref} locally but the push failed: "
+            f"{pushed.reason or 'not pushed'}"
+        )
+        return
+    wave.published[branch] = pushed
+    note = (f"merged {ref}@{merged.ref_sha[:12]} into the branch before proposing "
+            f"({behind} behind; shared files: {_shown(shared)})")
+    wave.behind_clean[branch] = note
+    for item_id in items:
+        _observe(wave, client, item_id, "trunk merge not recorded",
+                 kind="merged_trunk", branch=branch, reason=note)
+
+
+def _send_back_conflicted(wave: Wave, client: Graphban | None, items: list[str],
+                          branch: str) -> None:
+    """A branch that conflicts with the trunk goes back to `next`, not on to `done` (GRPH-1236).
+
+    Withholding the PR on its own left the item going to review and sign-off with nothing to
+    merge. The server moves the item. This client may not call `update_item`, and the
+    observation is the route it has. The reason is the next attempt's resume brief.
+    """
+    found = wave.behind_conflict.get(branch)
+    if found is None:
+        return
+    ref, files = found
+    brief = (
+        f"Branch {branch} conflicts with {ref} ({_shown(files)}). Next attempt: resume "
+        f"from {branch}, `git merge {ref}` (no rebase, no force-push), resolve keeping "
+        "both sides, rerun tests, hand to review."
+    )
+    for item_id in items:
+        _observe(wave, client, item_id, "conflict send-back not recorded",
+                 kind="behind_conflict", branch=branch, reason=brief)
 
 
 def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) -> None:
@@ -2262,6 +2339,7 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
                 own = branch
             _record_salvage_receipt(wave, client, [item], own, _branch_head(repo, own))
         return
+    _merge_behind(wave, repo, branch, base, items, client=client)
     refused = _refuse_proposal(wave, branch)
     if refused:
         # Pushed already, so the work is readable; only the merge request is withheld.
@@ -2269,6 +2347,7 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
         wave.unproposed[branch] = refused
         wave.failures.append(f"{branch}: not proposed — {refused}")
         _record_withheld(wave, client, items, branch, refused)
+        _send_back_conflicted(wave, client, items, branch)
         return
     if len(items) > 1:
         _propose_per_item(wave, repo, branch, items, base, client=client)
