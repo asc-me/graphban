@@ -39,6 +39,17 @@ recovered; if you lose them, mint a new key in Settings → API Keys.
 Issuing that first credential is an authority gate, which is why it is a script an
 operator runs rather than something an agent does — see PRD-14.
 
+### Workers and `WEB_CONCURRENCY` (GRPH-1241)
+
+The API container runs `min(4, cpu_count)` uvicorn workers by default; set `WEB_CONCURRENCY` to
+override (`1` = single process). SQLite is always one worker. Single-process assumptions and
+how each is handled under N workers:
+
+- Migrations, `SEED_ON_START`, credential migration: serialised by a Postgres advisory lock; later workers find the work done.
+- `_credential_retry_loop`, `_log_export_loop`: only the worker holding a second advisory lock (the leader) starts them; Postgres frees it if that worker dies and a respawned worker can claim it. Check: `credential retry loop started` appears once per boot in the logs.
+- Rate limiter (`services/spam.py`), `rules_recommend` cache, `code_sync` org cache, `lru_cache`d providers: per-worker copies, accepted. Rate limits are per worker (up to N× the configured limit). Runtime LLM/embedder reconfiguration reaches only the serving worker until restart.
+- The log-export status panel reads a per-process flag, so a non-leader worker can report the exporter as not running.
+
 ### Rate limits and `TRUSTED_HOPS` (GRPH-439, GRPH-553)
 
 The compose stack puts **nginx in front of uvicorn** — the same topology as the hosted

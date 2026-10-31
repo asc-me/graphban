@@ -270,6 +270,11 @@ class Settings(BaseSettings):
     # reason `pending_validation` exists, and nothing else re-asks.
     credential_retry_seconds: int = 60
 
+    # uvicorn worker processes (GRPH-1241). Endpoints are synchronous, so one process
+    # serialises a page's parallel requests. 0 = auto: min(4, cpu_count). 1 keeps the old
+    # single-process behaviour. SQLite is forced to 1 by `serve.effective_workers`.
+    web_concurrency: int = 0
+
     # How often the OTLP log-export drain wakes (PRD-47 S15 / GRPH-966). `0` disables the loop
     # entirely — the value the TEST suite runs at, for the same reason as the retry loop above,
     # and `services/logexport.status` then reports the exporter as NOT RUNNING, which makes
