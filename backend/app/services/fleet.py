@@ -17,7 +17,7 @@ import time
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.orm import Session, object_session
 
 from app.models import Agent, AreaReservation, Enrolment, Item, Project
@@ -659,7 +659,8 @@ def status_state(agent: Agent, *, ttl_seconds: int | None = None,
 
 def list_agents(db: Session, project_id: str | None = None, *,
                 lease_seconds: int = DEFAULT_LEASE_SECONDS,
-                now: datetime | None = None) -> list[dict]:
+                now: datetime | None = None, where=None, limit: int | None = None,
+                offset: int = 0) -> list[dict]:
     """The roster: every agent with its DERIVED presence and what it is holding.
 
     Offline agents are listed rather than hidden. An agent that died holding a branch is
@@ -669,7 +670,15 @@ def list_agents(db: Session, project_id: str | None = None, *,
     stmt = select(Agent)
     if project_id:
         stmt = stmt.where(Agent.project_id == project_id)
-    agents = list(db.scalars(stmt.order_by(Agent.project_id, Agent.number)).all())
+    # `where`, `limit` and `offset` narrow WHICH agents are built (GRPH-1253): the REST roster
+    # and Live ask for the few they show and count the rest in SQL (`roster_counts`). Left
+    # out, this is the whole roster, which is what MCP `fleet_status` keeps returning.
+    if where is not None:
+        stmt = stmt.where(where)
+    stmt = stmt.order_by(Agent.project_id, Agent.number)
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
+    agents = list(db.scalars(stmt).all())
     # A revoked credential means the agent cannot act, whatever its last heartbeat said. Read
     # as offline IMMEDIATELY rather than waiting out the TTL — and derived, not written, so
     # "End wave" never has to backdate `last_seen_at` into a time we know to be false.
@@ -794,6 +803,75 @@ _FAT_AGENT_FIELDS = ("capabilities", "credential_roles", "last_refusal", "last_s
 _FAT_HOLDING_FIELDS = ("phase_basis", "bounced")
 
 
+def roster_clauses(db: Session, *, now: datetime,
+                   lease_seconds: int = DEFAULT_LEASE_SECONDS,
+                   recent_seconds: int | None = None) -> dict:
+    """The roster's derived facts as SQL predicates (GRPH-1253), so a scoped load and the
+    counts of what it leaves out never build a row just to drop it.
+
+    Each mirrors its Python twin: `offline` is `list_agents`' state rule (revoked credential,
+    else `presence_state`), `held` is any lease or review claim, `orphaned` is
+    `has_orphaned_branch` for an offline agent, and `collapsed` is `_collapse_kind` not None.
+    Every arm is NULL-safe, because `NOT (NULL)` would drop a row the Python rule keeps.
+    """
+    from app.models import ApiKey
+
+    recent = ROSTER_RECENT_SECONDS if recent_seconds is None else recent_seconds
+    dead = [kid for (kid,) in db.execute(select(ApiKey.id).where(ApiKey.revoked.is_(True)))]
+    ttl_cut = now - timedelta(seconds=presence_ttl_seconds(lease_seconds))
+    stale = and_(Agent.state.is_distinct_from("quarantined"),
+                 or_(Agent.last_seen_at.is_(None), Agent.last_seen_at < ttl_cut))
+    offline = (or_(and_(Agent.api_key_id.isnot(None), Agent.api_key_id.in_(dead)), stale)
+               if dead else stale)
+    held = or_(exists().where(Item.claimed_by == Agent.id),
+               exists().where(Item.review_claimed_by == Agent.id))
+    orphaned = and_(Agent.branch.isnot(None), Agent.branch != "")
+    quiet_cut = now - timedelta(seconds=recent)
+    collapsed = and_(offline, ~held, Agent.dismissed_at.is_(None),
+                     or_(orphaned, Agent.last_seen_at.is_(None),
+                         Agent.last_seen_at < quiet_cut))
+    return {"offline": offline, "held": held, "orphaned": orphaned, "collapsed": collapsed}
+
+
+def roster_counts(db: Session, project_id: str | None, *, now: datetime,
+                  lease_seconds: int = DEFAULT_LEASE_SECONDS,
+                  recent_seconds: int | None = None) -> dict:
+    """Totals for the whole roster from one grouped query (GRPH-1253): `total`, `online`,
+    `by_role` (online, as `fleet_status` counts it) and the `collapsed` block that
+    `collapse_roster` reports. Exact, and no Agent row is loaded."""
+    c = roster_clauses(db, now=now, lease_seconds=lease_seconds, recent_seconds=recent_seconds)
+    off = case((c["offline"], 1), else_=0).label("off")
+    col = case((c["collapsed"], case((c["orphaned"], 2), else_=1)), else_=0).label("col")
+    stmt = select(Agent.active_role, off, col, func.count()).group_by(
+        Agent.active_role, off, col)
+    if project_id:
+        stmt = stmt.where(Agent.project_id == project_id)
+    by_role = {r: 0 for r in ROLES}
+    by_role[ALL_IN_ONE] = 0
+    gone_roles: dict[str, int] = {}
+    kinds = {COLLAPSE_QUIET: 0, COLLAPSE_ORPHANED: 0}
+    total = online = 0
+    for role, is_off, kind, n in db.execute(stmt).all():
+        role = _resolve_stored_role(role)
+        total += n
+        if not is_off:
+            online += n
+            if role in by_role:
+                by_role[role] += n
+        if kind:
+            kinds[COLLAPSE_ORPHANED if kind == 2 else COLLAPSE_QUIET] += n
+            gone_roles[role] = gone_roles.get(role, 0) + n
+    gone = sum(kinds.values())
+    return {
+        "total": total, "online": online, "by_role": by_role,
+        "collapsed": {
+            "count": gone, "by_state": {"offline": gone}, "by_kind": kinds,
+            "by_role": gone_roles,
+            "recent_seconds": ROSTER_RECENT_SECONDS if recent_seconds is None else recent_seconds,
+        },
+    }
+
+
 def roster_view(payload: dict, view: str) -> dict:
     """Narrow a roster to what the caller asked for (GRPH-807).
 
@@ -914,7 +992,8 @@ def restore_on_work(db: Session, agent_id: str) -> None:
 def fleet_status(db: Session, project_id: str | None = None, *,
                  lease_seconds: int = DEFAULT_LEASE_SECONDS,
                  minted_by: str | None = None,
-                 caller_user_id: str | None = None) -> dict:
+                 caller_user_id: str | None = None,
+                 collapsed: bool = False) -> dict:
     """The roster plus the clock every member must obey.
 
     The intervals travel WITH the roster on purpose: an agent that does not know the
@@ -934,6 +1013,10 @@ def fleet_status(db: Session, project_id: str | None = None, *,
     `caller_user_id` is the API key's owner (PRD-37 D14): their harness profile and the
     project's fleet policy ride on this roster because it is the call a supervisor already
     makes on every tick — no new tool, no schema property.
+
+    `collapsed` (GRPH-1253) is the REST view: it returns what `collapse_roster` would make of
+    the full roster, but loads only the agents that stay in it and counts the rest in SQL.
+    MCP never sets it, so its output is unchanged.
     """
     from app.services import delegation as delegation_svc
     from app.services import fleet_matrix
@@ -944,23 +1027,34 @@ def fleet_status(db: Session, project_id: str | None = None, *,
     # supervisor sees the freed rows on the same tick it detects the absence. Idempotent —
     # a second call on the same tick finds nothing to release.
     requeue_offline_items(db, project_id=project_id, lease_seconds=lease_seconds)
-    agents = list_agents(db, project_id, lease_seconds=lease_seconds)
-    live = [a for a in agents if a["state"] != "offline"]
-    # Counted BY ROLE, not just totalled. "4 agents online" is the same number whether it is a
-    # balanced fleet or four workers with nobody to review them, and those need opposite
-    # actions — the second is a review queue about to back up. `all-in-one` is reported beside
-    # the roles rather than folded into one of them, because an unspecialised agent is the
-    # DEFAULT posture and showing it as a worker would misdescribe the commonest deployment.
-    # Pre-merge "reviewer" agents resolve to "worker" on read (S3 D-b).
-    by_role = {r: sum(1 for a in live
-                       if _resolve_stored_role(a["active_role"]) == r) for r in ROLES}
-    by_role[ALL_IN_ONE] = sum(1 for a in live if a["active_role"] == ALL_IN_ONE)
+    if collapsed:
+        now = datetime.now(timezone.utc)
+        counts = roster_counts(db, project_id, now=now, lease_seconds=lease_seconds)
+        agents = list_agents(db, project_id, lease_seconds=lease_seconds, now=now,
+                             where=~roster_clauses(db, now=now, lease_seconds=lease_seconds)[
+                                 "collapsed"])
+        by_role, online, total = counts["by_role"], counts["online"], counts["total"]
+    else:
+        agents = list_agents(db, project_id, lease_seconds=lease_seconds)
+        live = [a for a in agents if a["state"] != "offline"]
+        # Counted BY ROLE, not just totalled. "4 agents online" is the same number whether it
+        # is a balanced fleet or four workers with nobody to review them, and those need
+        # opposite actions — the second is a review queue about to back up. `all-in-one` is
+        # reported beside the roles rather than folded into one of them, because an
+        # unspecialised agent is the DEFAULT posture and showing it as a worker would
+        # misdescribe the commonest deployment. Pre-merge "reviewer" agents resolve to
+        # "worker" on read (S3 D-b).
+        by_role = {r: sum(1 for a in live
+                           if _resolve_stored_role(a["active_role"]) == r) for r in ROLES}
+        by_role[ALL_IN_ONE] = sum(1 for a in live if a["active_role"] == ALL_IN_ONE)
+        online, total = len(live), len(agents)
     seats = list_enrolments(db, project_id, minted_by=minted_by) if minted_by else None
     return {
         "agents": agents,
+        **({"collapsed": counts["collapsed"]} if collapsed else {}),
         **({"seats": seats} if seats is not None else {}),
-        "online": len(live),
-        "total": len(agents),
+        "online": online,
+        "total": total,
         "by_role": by_role,
         "posture": "fleet" if any(by_role[r] for r in ROLES) else "single-agent",
         "roles": list(ROLES),
@@ -1085,14 +1179,20 @@ def collapsed_agents(db: Session, project_id: str | None, *, offset: int = 0,
                      limit: int = 100, kind: str | None = None) -> dict:
     """One page of the agents `collapse_roster` folded away, optionally of one `kind`."""
     now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(seconds=ROSTER_RECENT_SECONDS)
-    rows = []
-    for a in list_agents(db, project_id, now=now):
-        k = _collapse_kind(a, cutoff)
-        if k and (kind is None or k == kind):
-            rows.append(a)
-    return {"total": len(rows), "offset": offset, "limit": limit,
-            "agents": rows[offset:offset + limit]}
+    c = roster_clauses(db, now=now)
+    want = c["collapsed"]
+    if kind == COLLAPSE_ORPHANED:
+        want = and_(want, c["orphaned"])
+    elif kind == COLLAPSE_QUIET:
+        want = and_(want, ~c["orphaned"])
+    elif kind is not None:
+        want = and_(want, False)
+    count = select(func.count()).select_from(Agent).where(want)
+    if project_id:
+        count = count.where(Agent.project_id == project_id)
+    return {"total": db.scalar(count) or 0, "offset": offset, "limit": limit,
+            "agents": list_agents(db, project_id, now=now, where=want, limit=limit,
+                                  offset=offset)}
 
 
 def review_holds(db: Session, project_id: str | None) -> list[dict]:
@@ -3519,7 +3619,10 @@ def requeue_offline_items(db: Session, *, project_id: str | None = None,
     from app.models import ApiKey
 
     now = datetime.now(timezone.utc)
-    stmt = select(Agent)
+    # Only an agent that holds a lease can have anything released, so only those are loaded
+    # (GRPH-1253): the sweep ran on every roster read and built all ~6,400 rows to find two.
+    stmt = select(Agent).where(
+        Agent.id.in_(select(Item.claimed_by).where(Item.claimed_by.isnot(None))))
     if project_id:
         stmt = stmt.where(Agent.project_id == project_id)
     agents = list(db.scalars(stmt).all())
@@ -3625,7 +3728,11 @@ def held_areas(db: Session, project_id: str | None = None, *,
     truncated = total > cap
     rows = rows[:cap]
 
-    agents = {a.id: a for a in db.scalars(select(Agent)).all()}
+    # Only the holders of the rows kept above are ever looked up (GRPH-1253); loading the
+    # whole table here built every agent on the instance to read a handful.
+    holder_ids = {r.agent_id for r in rows if r.agent_id}
+    agents = ({a.id: a for a in db.scalars(select(Agent).where(Agent.id.in_(holder_ids))).all()}
+              if holder_ids else {})
     keys = {k.id: k for k in db.scalars(select(ApiKey)).all()}
     users = {u.id: u for u in db.scalars(select(User)).all()}
     nodes = code_svc.list_nodes(db, project_id) if project_id else []
