@@ -66,6 +66,23 @@ def claim_background_leader() -> bool:
     return False
 
 
+def leader_lock_held(conn) -> bool:
+    """True if ANY session on this database holds the leader lock — this worker or another.
+
+    The answer a non-leader worker needs when it reports on loops it does not run: its own
+    process flags say nothing about the worker that does. Read from `pg_locks` on the caller's
+    connection; a bigint advisory key is stored split across `classid` (high 32 bits) and
+    `objid` (low 32 bits) with `objsubid = 1`. SQLite is one process, so there is no elsewhere.
+    """
+    if settings.is_sqlite:
+        return False
+    return bool(conn.execute(text(
+        "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted"
+        " AND objsubid = 1 AND ((classid::bigint << 32) | objid::bigint) = :k"
+        " AND database = (SELECT oid FROM pg_database WHERE datname = current_database()))"
+    ), {"k": _LEADER_KEY}).scalar())
+
+
 def release_background_leader() -> None:
     global _leader_conn
     if _leader_conn is not None:
