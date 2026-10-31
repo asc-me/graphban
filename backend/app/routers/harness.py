@@ -19,6 +19,8 @@ from app.security.deps import get_agent_key, get_current_user
 from app.services import events as events_svc
 from app.services import harness as harness_svc
 from app.services import harness_rules
+from app.services import headroom as headroom_svc
+from app.services import quotas
 from app.services import harness_surface as surface_svc
 
 router = APIRouter(prefix="/harness", tags=["harness"])
@@ -50,6 +52,17 @@ def harness_report(project_id: str | None = None, org_id: str | None = None,
     authz.require_readable(db, user.id, project_id)
     return harness_svc.report(db, project_id, window_days=window_days, versions=versions,
                               overlay=True)
+
+
+@router.get("/capacity")
+def harness_capacity(project_id: str, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """PRD-62 S5: per-entitlement headroom, this week's tokens and projected exhaustion, plus
+    the org rollup, for the org this project belongs to. 402 off team/enterprise."""
+    authz.require_readable(db, user.id, project_id)
+    org_id = quotas.org_id_for_project(db, project_id)
+    quotas.require_capacity_routing(db, org_id)
+    return headroom_svc.capacity(db, org_id)
 
 
 @router.get("/guidance")

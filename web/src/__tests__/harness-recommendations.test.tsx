@@ -138,7 +138,7 @@ describe("Harness recommendations", () => {
     cards.mockResolvedValueOnce(payload({ cards: [] }));
     show();
     expect(await screen.findByTestId("harness-no-cards")).toHaveTextContent(
-      "R1–R6 fire on cells above the 5-attempt floor",
+      "R1–R7 fire on cells above the 5-attempt floor",
     );
   });
 });

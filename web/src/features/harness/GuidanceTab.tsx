@@ -77,7 +77,7 @@ export function GuidanceTab({ guidance }: { guidance?: HarnessGuidance }) {
       <section data-testid="guidance-grading-rules">
         <h3 className="mb-2 text-[13px] font-semibold">Grading rules</h3>
         <p className="mb-3 text-[12px] text-muted">
-          R1–R6 produce the recommendation cards on the Changes tab. Each fires on cells
+          R1–R7 produce the recommendation cards on the Changes tab. Each fires on cells
           above the floor; nothing fires on a cell that has not earned its count.
         </p>
         <div className="flex flex-col gap-2">

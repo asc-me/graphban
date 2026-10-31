@@ -28,6 +28,8 @@ from sqlalchemy.orm import Session
 
 from app.models import AttemptTelemetry, FleetProfile, Project
 from app.services import harness as harness_svc
+from app.services import headroom as headroom_svc
+from app.services import quotas
 
 # ---- thresholds, in one place so the page can show them ---------------------------------------
 
@@ -46,11 +48,12 @@ REPRIOR_MIN_N, REPRIOR_MARGIN = 5, 0.3
 #: R6 (D17): this many resolutions dropped a better measured row as not installed.
 INSTALL_MIN_DROPS, INSTALL_MARGIN = 6, 0.3
 
-RULES = ("R1", "R2", "R3", "R4", "R5", "R6")
+#: R7 (PRD-62 S5): thresholds live beside the evidence in `services/headroom.py`.
+RULES = ("R1", "R2", "R3", "R4", "R5", "R6", "R7")
 
 
 def rule_catalog() -> list[dict]:
-    """R1–R6 with the thresholds the cards fire on. One place — the page reads this, not a copy."""
+    """R1–R7 with the thresholds the cards fire on. One place — the page reads this, not a copy."""
     return [
         {"id": "R1", "title": "Promote a cell",
          "detail": ("An unverified matrix row signed off at or above the threshold, often enough, "
@@ -77,6 +80,13 @@ def rule_catalog() -> list[dict]:
         {"id": "R6", "title": "Install",
          "detail": ("Enough resolutions dropped a better measured row as not installed."),
          "thresholds": {"min_drops": INSTALL_MIN_DROPS, "margin": INSTALL_MARGIN}},
+        {"id": "R7", "title": "Capacity",
+         "detail": ("An entitlement reset with most of its stated token_budget unused, or hit "
+                    "its limit before the reset, in most of the last whole weeks."),
+         "thresholds": {"weeks": headroom_svc.CAPACITY_WEEKS,
+                        "min_unused_weeks": headroom_svc.CAPACITY_MIN_WEEKS,
+                        "unused_share": headroom_svc.UNUSED_SHARE,
+                        "min_early_weeks": headroom_svc.EARLY_MIN_WEEKS}},
     ]
 
 
@@ -295,6 +305,7 @@ def cards(db: Session, project_id: str | None = None, *, org_id: str | None = No
     out += _reprior(report, rows, statuses)
     out += _availability(db, report, rows)
     out += _probe_suggestions(report)
+    out += _capacity(db, org_id or quotas.org_id_for_project(db, project_id))
     if org_id:
         for card in out:
             names = _projects_of(card, report)
@@ -302,7 +313,7 @@ def cards(db: Session, project_id: str | None = None, *, org_id: str | None = No
                 card.draft = {**card.draft, "projects": names}
                 card.detail = (card.detail.rstrip(".")
                                + f". Evidence from {', '.join(names)}.")
-    order = {"R2": 0, "R6": 1, "R4": 2, "R5": 3, "R1": 4, "R3": 5, "probe": 6}
+    order = {"R2": 0, "R6": 1, "R7": 2, "R4": 3, "R5": 4, "R1": 5, "R3": 6, "probe": 7}
     return sorted(out, key=lambda c: (order.get(c.rule, 9), c.key))
 
 
@@ -817,6 +828,35 @@ def _availability(db: Session, report: dict, rows: list[AttemptTelemetry]) -> li
                     "truncated": False, "moves": [],
                     "summary": "a refused resolution has no winner to replay"},
             thresholds={"min_drops": 1}))
+    return out
+
+
+def _capacity(db: Session, org_id: str | None) -> list[Card]:
+    """R7: a premium rule — an org off the capacity-routing plan has no entitlements to read."""
+    from app.models import Organization
+
+    org = db.get(Organization, org_id) if org_id else None
+    if org is None or not quotas.plan_of(org).capacity_routing:
+        return []
+    out: list[Card] = []
+    for f in headroom_svc.routine_findings(db, org_id):
+        label = f"{f['vendor']} {f['plan_label'] or f['kind']}".strip()
+        if f["kind_of"] == "unused":
+            title = f"{label} routinely resets with headroom unused"
+            detail = (f"{f['weeks']} of the last {f['weeks_read']} whole weeks used under "
+                      f"{int(headroom_svc.UNUSED_SHARE * 100)}% of its {f['token_budget']}-token "
+                      f"budget (reported tokens by week: {f['tokens_by_week']}). Route more "
+                      "work to it, or lower what is paid for.")
+        else:
+            title = f"{label} routinely runs out early"
+            detail = (f"{f['weeks']} of the last {f['weeks_read']} whole weeks hit a vendor "
+                      "limit before the reset. Route less work to it, or add capacity.")
+        out.append(Card(rule="R7", title=title, detail=detail,
+                        draft={"target": f"{f['entitlement_id']}:{f['kind_of']}", **f},
+                        replay={"considered": 0, "changed": 0, "skipped_no_resolution": 0,
+                                "truncated": False, "moves": [],
+                                "summary": "capacity advice has no resolution to replay"},
+                        thresholds={"weeks": headroom_svc.CAPACITY_WEEKS}))
     return out
 
 
