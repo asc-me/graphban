@@ -217,6 +217,8 @@ def forecast(db: Session, row: Entitlement, *, now: datetime | None = None) -> d
     week = _spend_between(events, now - WEEK, now + timedelta(seconds=1))
     # D4: a `broken` entitlement names the runner that reported the failure and the runners
     # that declare it, so a person knows whose login to fix. Empty otherwise.
+    failed = [e for e in events if e.event in _SETTLING]
+    last = failed[-1] if failed else None
     reporter = db.get(Agent, last.agent_id) if (
         base["state"] == "broken" and last and last.agent_id) else None
     return {
