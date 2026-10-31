@@ -207,7 +207,6 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
     # The one definition of "live": not dismissed, not offline by the presence TTL. The
     # shell badge (`projects.badge_counts`) counts the same rows in SQL; the dashboard tile
     # and the Live header read one of the two, never a count of their own.
-    online_agents = sum(1 for a in live if _is_online(a.get("state") or "offline"))
 
     keys = {k.id: k for k in db.scalars(select(ApiKey)).all()}
     users = {u.id: u for u in db.scalars(select(User)).all()}
@@ -249,6 +248,14 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
             "pr": _holding_pr(items.get(h.get("stored_id"))),
         } for h in holdings_in]
         state = a.get("state") or "offline"
+        # Quarantine is a verdict, not presence: it passes through the roster whatever the
+        # clock says. Live counts by the shell badge's rule (`projects.badge_counts`: last
+        # contact inside the TTL AND not quarantined), so a quarantined agent is never
+        # online here, however recently it was heard from. It carries `quarantined` as a
+        # separate marker so the verdict stays visible on the row.
+        quarantined = state == "quarantined"
+        if quarantined:
+            state = "offline"
         # Only a BUILD lease speaks for files. A reviewer reserves no areas, so once the
         # roster started reporting review claims (GRPH-1001) an inclusive list would have
         # moved every reviewer from `idle` to `unreserved` and attributed the item's
@@ -268,6 +275,7 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
             "label": a.get("label") or "",
             "role": a.get("active_role"),
             "state": state,
+            "quarantined": quarantined,
             "last_seen_at": a.get("last_seen_at"),
             "worktree": a.get("worktree"),
             "branch": a.get("branch"),
@@ -285,6 +293,8 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
             "_user": _user_meta(user),
             "_key_id": row.api_key_id if row is not None else None,
         })
+
+    online_agents = sum(1 for a in annotated if _is_online(a["state"]))
 
     groups: dict = {}
     for a in annotated:
