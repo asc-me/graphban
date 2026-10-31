@@ -55,6 +55,9 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
     "retire_wave",
     "fleet_status",
     "register_agent",
+    # PRD-62 S1↔S3 (GRPH-1258). The wave's own ledger events for the entitlements it declared
+    # at `register_agent`; the server refuses a reporter that did not declare the id.
+    "report_entitlement_event",
     "search_items",
     # GRPH-1012: the base this wave cuts children from. Step 2 of the three is the
     # project's MEASURED `gitops.base_branch`, and `get_context` is the only way to ask
@@ -232,6 +235,7 @@ def run(
     matrix: "matrix_mod.Matrix | None" = None,
     merge: bool = False,
     base_branch: str | None = None,
+    entitlements: dict[str, list[str]] | None = None,
     stall_after: float = watchdog_mod.STALL_AFTER_S,
     clock: Callable[[], float] = time.monotonic,
 ) -> Report:
@@ -351,7 +355,8 @@ def run(
                 adopt_mod.persist(roster_path, children)
 
             persist()
-            identity = _identify(planner, repo, adapter)
+            wave.entitlements = {a: list(ids) for a, ids in (entitlements or {}).items() if ids}
+            identity = _identify(planner, repo, adapter, wave)
             result = _loop(
                 wave, children, occupied, persist,
                 repo, workspace, wave_name, api_key, server,
@@ -403,16 +408,37 @@ def run(
                       minted=minted, spawned=len(wave.spawned))
 
 
-def _identify(planner: Graphban, repo: Path, adapter: str = "") -> dict:
-    """Register this process. A key that cannot mint is refused here, not after a wave."""
+def _identify(planner: Graphban, repo: Path, adapter: str = "",
+              wave: Wave | None = None) -> dict:
+    """Register this process. A key that cannot mint is refused here, not after a wave.
+
+    When the wave names entitlements the supervisor declares them too (GRPH-1258): the
+    ledger accepts an event only from an agent that declared the id. A plan without capacity
+    routing refuses the declaration with 402; the wave then registers plain and reports
+    nothing, exactly as S1 does.
+    """
     label = f"gbfleet until ({adapter})" if adapter else "gbfleet until"
+    ids = sorted({i for v in (wave.entitlements if wave else {}).values() for i in v})
     try:
-        payload = planner.call(
-            "register_agent",
-            label=label,
-            role_hint="planner",
-            worktree=str(repo),
-        )
+        try:
+            payload = planner.call(
+                "register_agent",
+                label=label,
+                role_hint="planner",
+                worktree=str(repo),
+                **({"entitlements": ids} if ids else {}),
+            )
+        except ToolFailed as exc:
+            if not ids or exc.code != "quota_exceeded":
+                raise
+            wave.entitlements = {}
+            observe.emit("ledger_off", detail=f"capacity routing is not on this plan: {exc}")
+            payload = planner.call(
+                "register_agent",
+                label=label,
+                role_hint="planner",
+                worktree=str(repo),
+            )
     except NotPermitted as exc:
         raise ConfigError(str(exc)) from exc
     except ToolFailed as exc:
@@ -603,6 +629,7 @@ def _loop(
         while True:
             mark = (len(wave.failures), len(wave.unredeemed), wave.unused_seats)
             exc: VendorLimit | None = None
+            seat = replace(seat, entitlements=tuple(wave.entitlements.get(chosen[0], ())))
             if chosen[0] in wave.exhausted:
                 said = wave.exhausted[chosen[0]]["said"]
                 exc = VendorLimit(f"adapter {chosen[0]!r} is exhausted this wave: {said}",
@@ -612,7 +639,7 @@ def _loop(
                     _spawn_one(
                         wave, children, occupied, persist, seat, factory,
                         repo, workspace, wave_name, supervisor, limits, planner, debug,
-                        base=base,
+                        base=base, ledger=planner,
                     )
                     return
                 except VendorLimit as caught:
@@ -1004,6 +1031,7 @@ def _spawn_one(
     planner: Graphban,
     debug: bool,
     base: str = "",
+    ledger: Graphban | None = None,
 ) -> None:
     before = len(wave.spawned)
     # No `room=` on purpose (GRPH-842). `_start`'s own gate is for `up`, which decides how
@@ -1014,7 +1042,7 @@ def _spawn_one(
         wave, [seat], launch_factory, repo, workspace, wave_name, supervisor,
         limits, debug=debug, occupied=occupied, items=_declared_into(wave,
                                                                      item_status(planner)),
-        into=children, persist=persist, base=base,
+        into=children, persist=persist, base=base, ledger=ledger,
     )
     occupied.update(c.branch for c in children)
     persist()

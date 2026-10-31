@@ -132,6 +132,11 @@ class Seat:
     #: positionally anywhere keeps its meaning. Default false: `gbfleet until` does not set
     #: it, because a wave's finished workers review each other.
     bound_only: bool = False
+    #: Entitlement ids the adapter this seat launches on runs on (PRD-62 S1↔S3, GRPH-1258).
+    #: Declared by the child at `register_agent`, which is what lets the server attribute a
+    #: ledger event to it. Empty is the default and the S1 behaviour: nothing is declared.
+    #: Last field, so a seat built positionally anywhere keeps its meaning.
+    entitlements: tuple = ()
 
     def mcp_config(self, name: str = "graphban") -> dict:
         """The vendor-neutral core of every adapter's config file.
@@ -382,15 +387,20 @@ def instruction_for(seat: Seat, worktree: Path, branch: str) -> str:
         tmpl = INSTRUCTION
     text = tmpl.format(code=seat.code, worktree=str(worktree), branch=branch,
                        item=seat.item or "")
-    if seat.declare:
+    if seat.declare or seat.entitlements:
         # Spliced into the SAME sentence as the code, worktree and branch — the one every
         # vendor's child has delivered correctly — rather than a template placeholder, so the
         # templates stay byte-identical for a seat that declares nothing (GRPH-732).
         anchor = f"and branch={branch!r}."
         if anchor not in text:
             raise RuntimeError("the register sentence moved; the declaration has nowhere to go")
-        clause = (f" and capabilities={json.dumps(seat.declare, sort_keys=True)} — declare exactly "
-                  "this; it names what you are so the ledger can attribute your outcome")
+        clause = ""
+        if seat.entitlements:
+            clause += f" and entitlements={json.dumps(list(seat.entitlements))}"
+        if seat.declare:
+            clause += (f" and capabilities={json.dumps(seat.declare, sort_keys=True)} — declare "
+                       "exactly this; it names what you are so the ledger can attribute your "
+                       "outcome")
         text = text.replace(anchor, f"and branch={branch!r}{clause}.", 1)
     return text
 
