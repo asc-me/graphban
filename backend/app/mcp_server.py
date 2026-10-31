@@ -62,6 +62,7 @@ from app.services import memory as mem_svc
 from app.services import setup as setup_svc
 from app.services import tool_tiers
 from app.services import delegation as delegation_svc
+from app.services import entitlements as entitlements_svc
 from app.services import quotas
 from app.services import artifacts as art_svc
 from app.services import prds as prd_svc
@@ -583,6 +584,40 @@ TOOLS: list[dict[str, Any]] = [
             "assign_role. Agents beyond the free clusters pull from the review queue."
         ),
         "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
+    },
+    # PRD-62 S2 (GRPH-1248). The org's entitlement registry, team/enterprise only (D8). Two
+    # names rather than one with a mode, because the read is open to every role and the write
+    # is the planner's (`fleet.TOOL_ROLES`); one tool cannot carry both gates.
+    {
+        "name": "list_entitlements",
+        "description": (
+            "The org's AI entitlements and the runners that declared each — self-declared, "
+            "not verified. Says nothing about headroom."
+        ),
+        "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
+    },
+    {
+        "name": "set_entitlement",
+        "description": (
+            "Register an org entitlement, or patch one by `id`. Never a credential: "
+            "`secret_ref` (api_key/cloud only) NAMES the secret on the runner. Unknown fields "
+            "are refused."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "vendor": {"type": "string"},
+                "kind": {"type": "string", "enum": list(entitlements_svc.KINDS)},
+                "owner_user_id": {"type": "string"},
+                "runner": {"type": "string"},
+                "plan_label": {"type": "string"},
+                "reset_cadence": {"type": "string"},
+                "secret_ref": {"type": "string"},
+                "token_budget": {"type": "integer"},
+                "project_id": {"type": "string"},
+            },
+        },
     },
     {
         "name": "assign_role",
@@ -1294,6 +1329,8 @@ _READ_ONLY = {
     "prd_coverage", "grill_prd", "get_code_map", "code_neighbors", "search_code",
     "graph_query", "scan_status", "scans_due",
     "prd_acceptance", "learning_loop", "fleet_status",
+    # PRD-62 S2: a read of the org's registry; `set_entitlement` is the write.
+    "list_entitlements",
     # Added with the tool itself missing from this set (GRPH-519 -> GRPH-48). It looks a PRD
     # up and returns fields; it writes nothing, and its own literal declared
     # `readOnlyHint: True` — which the build loop then overwrote to False, because THIS is
@@ -1509,6 +1546,8 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             "mapping": {"type": "array"}, "rationale": {"type": "string"},
         },
     },
+    "list_entitlements": {"type": "object", "properties": {"entitlements": {"type": "array"}}},
+    "set_entitlement": {"type": "object", "properties": {"id": {"type": "string"}}},
     "delegate": {
         "type": "object",
         "properties": {
@@ -1957,6 +1996,13 @@ _FLEET_ONLY_ARGS = {
         # GRPH-1127. The finding grain, advertised where record_scan is used.
         "findings": _with_finding_grain(),
     },
+    # PRD-62 S2 (GRPH-1248). Fleet-only for the reason every entry here is: a runner that
+    # declares entitlements is a supervisor's spawn, and the property should not be charged to
+    # every agent that connects. The dispatcher accepts it whether or not it was advertised.
+    "register_agent": {"entitlements": {
+        "type": "array", "items": {"type": "string"},
+        "description": "Entitlement ids this runner can run. Trusted, not verified.",
+    }},
     # GRPH-807. Measured on a live instance: 177 agents, 27,391 tokens, of which ONE was live.
     # A planner polling a wave paid nearly twice the whole manifest, per poll.
     "fleet_status": {"view": {
@@ -2947,6 +2993,17 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return out
     if name == "propose_allocation":
         return fleet_svc.propose_allocation(db, pid)
+    if name == "list_entitlements":
+        return {"entitlements": entitlements_svc.list_entitlements(
+            db, entitlements_svc.org_for_project(db, pid))}
+    if name == "set_entitlement":
+        # Everything but routing goes to the service, unknown keys included: it refuses a
+        # field it does not know rather than this dispatcher dropping it, which would answer
+        # a request to store a credential with a success (PRD-62 D2).
+        fields = {k: v for k, v in args.items() if k not in ("id", "agent_id", "project_id")}
+        return entitlements_svc.set_entitlement(
+            db, entitlements_svc.org_for_project(db, pid), fields,
+            entitlement_id=args.get("id") or None, actor=getattr(key, "id", None))
     if name == "delegate":
         item = _scoped_item(db, args["id"], readable)
         me = _agent_for_call(db, key, args, session_id)
@@ -3158,6 +3215,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return _item_dict(item)
     if name == "register_agent":
         assigned: dict = {}
+        # PRD-62 S2: checked BEFORE the agent exists, so a refused declaration (unknown id, or
+        # an org off team/enterprise) mints no agent id. Absent and [] both declare nothing.
+        declared = (entitlements_svc.validate_declaration(db, pid, args["entitlements"])
+                    if args.get("entitlements") else [])
         try:
             agent = fleet_svc.register_agent(
                 db, project_id=pid, api_key=key, label=args.get("label", ""),
@@ -3178,6 +3239,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         # exist to bind.
         if session_id:
             agent.mcp_session_id = session_id
+            db.commit()
+        if declared:
+            agent.entitlement_ids = declared
             db.commit()
         # §7.1 (PRD-39): a seat stored as a role the server no longer has says what was
         # stored AND what it became, so the client is told rather than left to compare.
@@ -3226,6 +3290,12 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             "project_id": agent.project_id,
             "assigned": assigned or {"item": None, "state": "none", "reason": None,
                                      "held_by": None},
+            # Reply-only, and only when something was declared — same footprint argument as
+            # `role_resolved`. `verified` is always false: the server checked the ids exist,
+            # and cannot check the runner holds them (PRD-62 S2).
+            **({"entitlements": {"declared": declared, "verified": False,
+                                 "note": entitlements_svc.DECLARATION_TRUST}}
+               if declared else {}),
         }
     if name == "mint_enrolment":
         # GRPH-1089. `item` is the binding for a bound_only seat, and only for that. Opening

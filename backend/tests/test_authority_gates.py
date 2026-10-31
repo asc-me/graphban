@@ -122,6 +122,11 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # grant a role the agent's CREDENTIAL is not eligible for, and credentials are minted
         # by a human. A planner reshuffles within the ceiling; it cannot raise it.
         "propose_allocation", "assign_role",
+        # PRD-62 S2 (GRPH-1248). QUALITY, not authority. `list_entitlements` is a read.
+        # `set_entitlement` writes a FACT about capacity the org holds — never a credential
+        # (the service and a CHECK constraint refuse one) — inside the key's own org, and it
+        # is planner-gated in TOOL_ROLES. It grants no permission and crosses no tenant.
+        "list_entitlements", "set_entitlement",
         # E7. An AUTHORITY gate, and bounded twice: planner-only, so the role holding it
         # cannot build and has nothing to launder; and clamped by the minting credential's
         # own ceiling, so it reshuffles authority rather than manufacturing it.

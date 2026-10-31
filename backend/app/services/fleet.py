@@ -1187,6 +1187,10 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # scanners and must not mint that badge. Reviewer-as-worker (PRD-39 S3) may still
     # report a scan it ran while reviewing; the self-review ban is authorship, not role.
     "record_scan": ("worker",),
+    # PRD-62 S2 (GRPH-1248). Editing the org's entitlement registry decides what capacity
+    # the fleet may route to — allocation input, so the planner's, like `assign_role`. A
+    # worker that could register an entitlement could also point routing at itself.
+    "set_entitlement": ("planner",),
 }
 
 #: Prefix marking a tool that is open because NOBODY HAS ARGUED IT, as opposed to one that is
@@ -1224,6 +1228,8 @@ OPEN_TOOLS: dict[str, str] = {
         # GRPH-1035: Stack health overlay reads — never mutate, and every role looking at
         # the board must see whether a component is clean / has findings / never scanned.
         "scan_status", "scans_due",
+        # PRD-62 S2: the entitlement registry read; the write is planner-gated above.
+        "list_entitlements",
     )},
     "setup_project": "a read despite the name — returns a checklist, changes nothing",
     "collision_clusters": "the divvy a planner allocates FROM; seeing the partition is not "
