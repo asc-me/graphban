@@ -567,17 +567,21 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
     for t in tel_rows:
         if t.delegation_id:
             telemetry[t.delegation_id] = t
+    agent_ids = {r.agent_id for r in rows if r.agent_id}
+    if agent_ids:
+        agents.update({a.id: a for a in db.scalars(
+            select(Agent).where(Agent.id.in_(agent_ids))).all()})
+    item_ids = {r.item_id for r in rows if r.item_id}
+    if item_ids:
+        items.update({i.id: i for i in db.scalars(
+            select(Item).where(Item.id.in_(item_ids))).all()})
     versions: dict[tuple[str, str], list[str]] = {}
     for row in rows:
-        if row.agent_id not in agents:
-            agents[row.agent_id] = db.get(Agent, row.agent_id) if row.agent_id else None
-        agent = agents[row.agent_id]
+        agent = agents.get(row.agent_id)
         declared = (agent.capabilities or {}) if agent is not None else {}
         vendor = declared.get("vendor") if isinstance(declared.get("vendor"), str) and declared.get("vendor") else UNDECLARED
         model = row.declared_model or ("" if vendor != UNDECLARED else UNDECLARED)
-        if row.item_id not in items:
-            items[row.item_id] = db.get(Item, row.item_id) if row.item_id else None
-        item = items[row.item_id]
+        item = items.get(row.item_id)
         tel = telemetry.get(row.id)
         if tel is not None and tel.sampled == "probe":
             continue
