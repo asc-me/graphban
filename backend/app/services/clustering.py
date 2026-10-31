@@ -85,16 +85,36 @@ def _links_for(db: Session, item_id: str) -> dict[str, set[str]]:
     return out
 
 
-def related_items(db: Session, item: Item, project_id: str | None) -> list[dict]:
+class ItemPool(list):
+    """A project's items plus every link between them, loaded once (two statements), so a
+    caller relating many items to the pool does not re-list or re-query links per item."""
+
+    links: dict[str, dict[str, set[str]]]
+
+
+def load_pool(db: Session, project_id: str | None) -> ItemPool:
+    pool = ItemPool(items_svc.list_items(db, project_id=project_id))
+    pool.links = {}
+    ids = [i.id for i in pool]
+    if ids:
+        for lk in db.scalars(select(Link).where(or_(Link.a.in_(ids), Link.b.in_(ids)))).all():
+            pool.links.setdefault(lk.a, {}).setdefault(lk.b, set()).add(lk.type)
+            pool.links.setdefault(lk.b, {}).setdefault(lk.a, set()).add(lk.type)
+    return pool
+
+
+def related_items(db: Session, item: Item, project_id: str | None,
+                  pool: list[Item] | None = None) -> list[dict]:
     """Items related to `item` by shared touchpoints and/or existing links, best-first.
 
     Returns [{item, score, shared, link_types}]. Touchpoint overlap weighs most; a dependency
     link adds a strong base, any other link a small one.
     """
     a_tps = item.touchpoints or []
-    links = _links_for(db, item.id)
+    links = pool.links.get(item.id, {}) if isinstance(pool, ItemPool) else _links_for(db, item.id)
     out = []
-    for other in items_svc.list_items(db, project_id=project_id):
+    candidates = pool if pool is not None else items_svc.list_items(db, project_id=project_id)
+    for other in candidates:
         if other.id == item.id:
             continue
         shared = shared_touchpoints(a_tps, other.touchpoints or [])

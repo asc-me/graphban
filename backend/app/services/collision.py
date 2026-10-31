@@ -31,7 +31,8 @@ _PREDICT_MIN_SIM = 0.15  # ignore weak semantic matches when inferring touch-are
 
 
 def predict_touch_areas(db: Session, item: Item, project_id: str | None,
-                        top_k: int = _PREDICT_TOP_K) -> list[str]:
+                        top_k: int = _PREDICT_TOP_K,
+                        pool: list[Item] | None = None) -> list[str]:
     """Predict likely-touched paths for an item that has no touchpoints yet, from two
     signals: code-map semantic inference (nearest code nodes to the item's text) and
     learned patterns (touchpoints of items linked to this one). Deduped, sorted."""
@@ -58,17 +59,18 @@ def predict_touch_areas(db: Session, item: Item, project_id: str | None,
                 areas.add(node.path)
 
     # learned: touchpoints of items already linked to this one (dependency/code/semantic)
-    for rel in clustering.related_items(db, item, project_id):
+    for rel in clustering.related_items(db, item, project_id, pool):
         areas.update(rel["item"].touchpoints or [])
 
     return sorted(areas)
 
 
-def touch_areas(db: Session, item: Item, project_id: str | None) -> tuple[list[str], str]:
+def touch_areas(db: Session, item: Item, project_id: str | None,
+                pool: list[Item] | None = None) -> tuple[list[str], str]:
     """(areas, source): the item's own touchpoints when set (`actual`), else `predicted`."""
     if item.touchpoints:
         return list(item.touchpoints), "actual"
-    return predict_touch_areas(db, item, project_id), "predicted"
+    return predict_touch_areas(db, item, project_id, pool=pool), "predicted"
 
 
 def _reasons(a: list[str], b: list[str]) -> list[dict]:
@@ -105,11 +107,16 @@ def collision_clusters(db: Session, items: list[Item], project_id: str | None) -
 
 def _areas_for(db: Session, items: list[Item],
                project_id: str | None) -> tuple[dict[str, list[str]], dict[str, bool]]:
-    """(areas, predicted) per item id — the partition's input, computed once."""
+    """(areas, predicted) per item id — the partition's input, computed once.
+
+    The project's item list is loaded once, only if some item needs a prediction, and passed
+    down so `related_items` does not re-list it per item."""
     areas: dict[str, list[str]] = {}
     predicted: dict[str, bool] = {}
+    pool = (clustering.load_pool(db, project_id)
+            if any(not it.touchpoints for it in items) else None)
     for it in items:
-        a, src = touch_areas(db, it, project_id)
+        a, src = touch_areas(db, it, project_id, pool)
         areas[it.id] = a
         predicted[it.id] = src == "predicted"
     return areas, predicted
