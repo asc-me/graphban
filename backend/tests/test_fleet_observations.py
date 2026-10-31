@@ -743,3 +743,81 @@ def test_a_setup_key_from_another_project_cannot_plant_a_base(client, auth, db):
     refused = _post(client, setup, item_id=item, kind="cut_from", branch="gb/obs", base=BASE)
     assert refused.status_code == 404, refused.text
     assert _notes(client, hand_b, item) == []
+
+
+# ---- a branch behind the trunk (GRPH-1236) ----------------------------------------------------
+
+
+def _in_review(client, hand, planner, db):
+    worker, item = _item(client, hand, title="behind")
+    row = db.get(Item, item)
+    row.claimed_by = worker["agent_id"]
+    row.built_by = worker["agent_id"]
+    row.status = "review"
+    row.branch = "gb/behind"
+    db.commit()
+    return worker, item
+
+
+def test_a_conflicting_branch_goes_back_to_next_without_a_review_verdict(client, auth, db):
+    """`behind_conflict` sends a `review` item back to `next`, keeps its branch, and stores the
+    resume brief where `choose_resume` reads it. The builder is not charged a bounce: no
+    reviewer is written and the attempt is not closed as `bounced`.
+
+    Sabotage: drop the `_send_back_behind` call in `record_observation`. The item stays in
+    `review` and this fails.
+    """
+    from app.models import Delegation
+
+    proj, hand, planner = _project(client, auth)
+    worker, item = _in_review(client, hand, planner, db)
+    _bind(db, proj, item, wave="wave-1")
+    brief = ("Branch gb/behind conflicts with origin/main (a.txt). Next attempt: resume from "
+             "gb/behind, `git merge origin/main` (no rebase, no force-push), resolve keeping "
+             "both sides, rerun tests, hand to review.")
+    got = _post(client, planner, item_id=item, kind="behind_conflict", branch="gb/behind",
+                reason=brief)
+    assert got.status_code == 200, got.text
+    db.expire_all()
+    row = db.get(Item, item)
+    assert row.status == "next"
+    assert row.claimed_by is None and row.review_claimed_by is None
+    assert row.branch == "gb/behind"
+    assert row.bounce_reason == brief
+    assert row.reviewed_by is None
+    assert row.built_by == worker["agent_id"]
+    outcomes = [d.outcome for d in db.query(Delegation).filter(Delegation.item_id == item)]
+    assert "bounced" not in outcomes
+    assert any(n["detail"] == f"gbfleet: not proposed as a PR — {brief}"
+               for n in _notes(client, hand, item))
+
+
+def test_a_conflict_note_leaves_a_done_item_where_it_is(client, auth, db):
+    """Reopening finished work is a person's call. The note still lands."""
+    proj, hand, planner = _project(client, auth)
+    _worker, item = _in_review(client, hand, planner, db)
+    _bind(db, proj, item, wave="wave-1")
+    row = db.get(Item, item)
+    row.status = "done"
+    db.commit()
+    got = _post(client, planner, item_id=item, kind="behind_conflict", branch="gb/behind",
+                reason="Branch gb/behind conflicts with origin/main (a.txt).")
+    assert got.status_code == 200, got.text
+    db.expire_all()
+    assert db.get(Item, item).status == "done"
+
+
+def test_a_trunk_merge_is_a_note_and_moves_nothing(client, auth, db):
+    proj, hand, planner = _project(client, auth)
+    _worker, item = _in_review(client, hand, planner, db)
+    _bind(db, proj, item, wave="wave-1")
+    why = ("merged origin/main@0123456789ab into the branch before proposing "
+           "(1 behind; shared files: a.txt)")
+    got = _post(client, planner, item_id=item, kind="merged_trunk", branch="gb/behind",
+                reason=why)
+    assert got.status_code == 200, got.text
+    db.expire_all()
+    assert db.get(Item, item).status == "review"
+    assert any(n["detail"] == f"gbfleet: `gb/behind`: {why}" for n in _notes(client, hand, item))
+    empty = _post(client, planner, item_id=item, kind="merged_trunk", branch="gb/behind")
+    assert empty.status_code == 422, empty.text

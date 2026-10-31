@@ -4948,8 +4948,11 @@ def park(db: Session, attempt, *, agent_id: str | None = None,
 #: What this route records today. `lease` (GRPH-1116) is a keep-alive on this same
 #: route, not a new one: the supervisor's client may not call `heartbeat`. `pushed_head`
 #: (GRPH-973) is still later — named so a post of it is a 422 that says so, not a silent
-#: no-op and not a second route somebody adds beside this one.
-OBSERVATION_KINDS = ("cut_from", "pr_opened", "salvage", "withheld")
+#: no-op and not a second route somebody adds beside this one. GRPH-1236 adds two:
+#: `merged_trunk` (the trunk was merged into the branch before it was proposed) and
+#: `behind_conflict`, the one kind that also moves the item (`_send_back_behind`).
+OBSERVATION_KINDS = ("cut_from", "pr_opened", "salvage", "withheld", "merged_trunk",
+                     "behind_conflict")
 OBSERVATION_LATER = ("pushed_head",)
 
 _CUT_BASE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -5071,12 +5074,49 @@ def _observation_receipt(kind: str, *, branch: str, base: str | None, url: str |
             raise ObservationError(422, "withheld names why the PR was not proposed")
         return {"kind": "note",
                 "detail": f"pushed `{branch}`; not proposed as a PR — {why}"}
+    if kind == "merged_trunk":
+        why = (reason or "").strip()
+        if not why:
+            raise ObservationError(422, "merged_trunk names the ref and the sha merged")
+        return {"kind": "note", "detail": f"gbfleet: `{branch}`: {why}"}
+    if kind == "behind_conflict":
+        why = (reason or "").strip()
+        if not why:
+            raise ObservationError(422, "behind_conflict names the ref and the files")
+        return {"kind": "note", "detail": f"gbfleet: not proposed as a PR — {why}"}
     raise ObservationError(
         422,
         f"unknown observation kind {kind!r}; this route records "
         f"{', '.join(OBSERVATION_KINDS)}. {', '.join(OBSERVATION_LATER)} extend this "
         "same route later and are not accepted yet",
     )
+
+
+def _send_back_behind(db: Session, item: Item, *, branch: str, reason: str) -> None:
+    """Return an item whose branch conflicts with the trunk to `next` (GRPH-1236).
+
+    The supervisor withheld the PR, and before this the item went on to `review` and
+    `done` with nothing to merge. A person then reopened it by hand. Now it goes back
+    to `next` and keeps its branch. `bounce_reason` carries the resume brief, because
+    that is what `choose_resume` reads before it resumes a branch instead of cutting a
+    new one from the base.
+
+    Not a reviewer bounce. No verdict is written and the attempt is not closed as
+    `bounced`, so the builder's vendor and model are not charged a failed review.
+    Telemetry only reads `bounce_reason` on a `bounced` outcome. A `done` item is left
+    alone: reopening finished work is a person's call.
+    """
+    if item.status not in ("in_progress", "review"):
+        return
+    release_reservations(db, item_id=item.id)
+    item.status = "next"
+    item.claimed_by = None
+    item.claimed_at = None
+    item.assignee = ""
+    item.review_claimed_by = None
+    item.review_claimed_at = None
+    item.branch = branch or item.branch
+    item.bounce_reason = reason
 
 
 def _record_lease(db: Session, item: Item, *, branch: str, agent_id: str | None,
@@ -5189,6 +5229,8 @@ def record_observation(db: Session, api_key, *, item_key: str, kind: str,
     receipt = _observation_receipt(
         kind, branch=cleaned, base=base, url=url, commit=commit, reason=reason)
     item.evidence = items_svc.append_evidence(item.evidence, [receipt])
+    if kind == "behind_conflict":
+        _send_back_behind(db, item, branch=cleaned, reason=(reason or "").strip())
     if receipt.get("kind") == "url":
         # The cooldown clock. `update_item` starts it from a url receipt; this route is
         # now the writer of that receipt, so the clock has to start here or a draft PR

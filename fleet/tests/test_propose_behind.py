@@ -1,16 +1,19 @@
-"""A branch behind the trunk is proposed when that does not matter (GRPH-1087).
+"""A branch behind the trunk is proposed when that does not matter (GRPH-1087), and
+brought up to date or sent back when it does (GRPH-1236).
 
 `_refuse_proposal` used to refuse every branch `_note_staleness` found behind the
 default ref. The count does not say whether the missed commits touch this branch.
-Refuse only when they change a file the branch also changes, or when
-`git merge-tree --write-tree` reports a conflict. Otherwise propose, and say
+No shared files and a clean `git merge-tree --write-tree`: propose as is, and say
 "N behind ref, no shared files, merges clean" in the PR body and the BEHIND line.
 
-Sabotage: in `_classify_behind`, force the overlap check to return no shared files
-(`shared = []` instead of `shared_with_missed`). The overlapping-file test must
-fail — that fixture merges clean, so only the overlap check refuses it. Leaving
-the call out and refusing every stale branch fails the disjoint test instead,
-which is the other way this gate goes blind.
+Shared files that still merge clean were refused too, and the item went on to `done`
+with no PR. Now the trunk is merged in with a real merge commit, pushed, and the PR
+opened. A real conflict withholds the PR and sends the item back to `next` with a
+resume brief. A check that could not be asked still refuses.
+
+Sabotage (GRPH-1236): in `_classify_behind`, put back the refusal for shared files
+(`wave.behind_block[...] = "... rebase before proposing"` instead of recording
+`behind_merge`). The shared-file test fails: no merge commit, no PR.
 """
 from __future__ import annotations
 
@@ -70,6 +73,17 @@ def _trunk_moves(origin: Path, tmp_path: Path, files: dict[str, str], message: s
     _git(other, "push", "-q", "origin", "main")
 
 
+class _Ledger:
+    """The observation route, recorded. The supervisor client may post nothing else."""
+
+    def __init__(self):
+        self.posted: list[dict] = []
+
+    def post_observation(self, **payload):
+        self.posted.append(payload)
+        return {"recorded": True}
+
+
 def _measured(repo: Path, base: str) -> Wave:
     wave = Wave()
     _note_staleness(wave, Worktree(path=repo, branch="gb/w-1", repo=repo, base=base))
@@ -117,46 +131,109 @@ def test_behind_with_no_shared_files_is_proposed_and_the_note_says_so(tmp_path, 
     ) in out.getvalue()
 
 
-def test_behind_touching_one_of_its_files_is_refused(tmp_path, opened):
-    """Same file, different lines: the merge is clean and the branch is still
-    refused, because the missed commit changes a file the branch also changes.
-
-    Sabotage: force the overlap check to return no shared files. This must fail.
-    The hunks do not conflict, so a gate that only asks merge-tree proposes it.
+def test_behind_touching_one_of_its_files_is_merged_up_and_proposed(tmp_path, opened):
+    """CASE (a). Same file, different lines: merge-tree is clean, and the missed commit
+    changes a file the branch also changes. The trunk is merged in with a real merge
+    commit (parents: the branch head and the ref), the branch is pushed, and the PR
+    opens. The PR body and the item's evidence name the ref and the sha merged.
     """
     origin, repo, base = _remote_repo(tmp_path)
     _on_branch(repo, {"a.txt": "BRANCH\nline2\nline3\n"}, "GRPH-1: edit line 1")
+    _git(repo, "push", "-q", "origin", "gb/w-1")
+    head = _git(repo, "rev-parse", "gb/w-1").strip()
     _trunk_moves(origin, tmp_path, {"a.txt": "line1\nline2\nMAIN\n"}, "edit line 3")
 
     wave = _measured(repo, base)
+    assert wave.stale == {"gb/w-1": (1, "origin/main")}
+    ledger = _Ledger()
+    propose_branch(wave, repo, "gb/w-1", ["GRPH-1"], client=ledger)
+
+    trunk = _git(repo, "rev-parse", "origin/main").strip()
+    tip = _git(repo, "rev-parse", "gb/w-1").strip()
+    parents = _git(repo, "rev-list", "--parents", "-n", "1", tip).split()[1:]
+    assert parents == [head, trunk], "a real merge commit, never a rebase"
+    assert _git(origin, "rev-parse", "gb/w-1").strip() == tip, "the merge was pushed"
+    assert (repo / "a.txt").read_text() == "BRANCH\nline2\nMAIN\n"
+
+    assert opened, (wave.proposed.get("gb/w-1"), wave.failures)
+    note = (f"merged origin/main@{trunk[:12]} into the branch before proposing "
+            "(1 behind; shared files: a.txt)")
+    assert note in opened[0]
+    assert wave.proposed["gb/w-1"].url
+    assert "gb/w-1" not in wave.unproposed
+    assert {"item_id": "GRPH-1", "kind": "merged_trunk", "branch": "gb/w-1",
+            "reason": note} in ledger.posted
+
+    out = io.StringIO()
+    report(wave, out=out)
+    assert "BEHIND gb/w-1: cut from a base 1 commit(s) behind origin/main; " + note \
+        in out.getvalue(), "being behind is still reported"
+
+
+def test_a_failed_merge_up_refuses_with_that_reason(tmp_path, opened, monkeypatch):
+    """The merge or the push failing falls back to the refusal, with why."""
+    import gbfleet.worktree as wt_mod
+
+    origin, repo, base = _remote_repo(tmp_path)
+    _on_branch(repo, {"a.txt": "BRANCH\nline2\nline3\n"}, "GRPH-1: edit line 1")
+    _trunk_moves(origin, tmp_path, {"a.txt": "line1\nline2\nMAIN\n"}, "edit line 3")
+    wave = _measured(repo, base)
+    monkeypatch.setattr(wt_mod, "merge_ref_into", lambda repo, branch, ref: wt_mod.Merged(
+        branch=branch, ref=ref, reason="git merge origin/main failed: boom"))
     propose_branch(wave, repo, "gb/w-1", ["GRPH-1"], client=None)
 
     assert opened == []
     reason = wave.proposed["gb/w-1"].reason
-    assert wave.proposed["gb/w-1"].skipped
-    assert "1 commit(s) behind origin/main" in reason
-    assert "rebase before proposing" in reason
-    assert "a.txt" in reason
-    assert "merge-tree conflicts" not in reason
-    assert "gb/w-1" not in wave.behind_clean
+    assert "missed commits also change a.txt" in reason
+    assert "git merge origin/main failed: boom" in reason
 
 
-def test_a_merge_tree_conflict_is_refused(tmp_path, opened):
-    """The same line, both sides. merge-tree exits 1 and the PR is withheld.
-    Dropping the merge-tree call leaves only the overlap reason, and this fails.
-    """
+def test_a_merge_tree_conflict_is_refused_and_sent_back_to_next(tmp_path, opened):
+    """CASE (b). The same line, both sides. merge-tree exits 1, the PR is withheld,
+    and the item is sent back to `next` with a brief naming the conflicted file.
+    Nothing is merged into the branch."""
     origin, repo, base = _remote_repo(tmp_path)
     _on_branch(repo, {"a.txt": "BRANCH\nline2\nline3\n"}, "GRPH-1: edit line 1")
+    head = _git(repo, "rev-parse", "gb/w-1").strip()
     _trunk_moves(origin, tmp_path, {"a.txt": "MAIN\nline2\nline3\n"}, "edit line 1 too")
 
     wave = _measured(repo, base)
-    propose_branch(wave, repo, "gb/w-1", ["GRPH-1"], client=None)
+    ledger = _Ledger()
+    propose_branch(wave, repo, "gb/w-1", ["GRPH-1"], client=ledger)
 
     assert opened == []
     reason = wave.proposed["gb/w-1"].reason
-    assert "merge-tree conflicts" in reason
+    assert "merge-tree conflicts in a.txt" in reason
     assert "1 commit(s) behind origin/main" in reason
     assert "gb/w-1" not in wave.behind_clean
+    assert _git(repo, "rev-parse", "gb/w-1").strip() == head
+    sent = [p for p in ledger.posted if p["kind"] == "behind_conflict"]
+    assert sent == [{
+        "item_id": "GRPH-1", "kind": "behind_conflict", "branch": "gb/w-1",
+        "reason": ("Branch gb/w-1 conflicts with origin/main (a.txt). Next attempt: "
+                   "resume from gb/w-1, `git merge origin/main` (no rebase, no "
+                   "force-push), resolve keeping both sides, rerun tests, hand to review."),
+    }]
+
+
+def test_a_merge_tree_that_cannot_be_asked_still_refuses(tmp_path, opened, monkeypatch):
+    """"Could not ask" is not "clean": no merge, no PR, no send-back."""
+    import gbfleet.worktree as wt_mod
+
+    origin, repo, base = _remote_repo(tmp_path)
+    _on_branch(repo, {"a.txt": "BRANCH\nline2\nline3\n"}, "GRPH-1: edit line 1")
+    head = _git(repo, "rev-parse", "gb/w-1").strip()
+    _trunk_moves(origin, tmp_path, {"a.txt": "line1\nline2\nMAIN\n"}, "edit line 3")
+    monkeypatch.setattr(wt_mod, "conflicted_paths", lambda repo, ref, branch: None)
+
+    wave = _measured(repo, base)
+    ledger = _Ledger()
+    propose_branch(wave, repo, "gb/w-1", ["GRPH-1"], client=ledger)
+
+    assert opened == []
+    assert "merge-tree could not be asked, so not proposing" in wave.proposed["gb/w-1"].reason
+    assert _git(repo, "rev-parse", "gb/w-1").strip() == head
+    assert not [p for p in ledger.posted if p["kind"] in ("behind_conflict", "merged_trunk")]
 
 
 def test_a_behind_check_that_cannot_see_the_branch_does_not_propose(tmp_path, opened):
