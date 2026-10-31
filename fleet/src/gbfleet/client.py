@@ -152,9 +152,12 @@ class Graphban:
         # fire after the reply was read and returned. A closed client raises RuntimeError, not
         # an httpx error, so every caller would leak it — replace it here, once, for all.
         if self._http is None or self._http.is_closed:
+            # GRPH-1244: keepalive so a vanished peer is noticed even between calls. Only for
+            # the real transport; a caller-supplied one (tests) is used as given.
+            transport = self.transport or httpx.HTTPTransport(socket_options=_keepalive_options())
             self._http = httpx.Client(
                 timeout=self.timeout,
-                transport=self.transport,
+                transport=transport,
                 headers={"X-API-Key": self.api_key},
             )
         return self._http
@@ -343,6 +346,19 @@ class Graphban:
         return self.call("propose_allocation", **arguments)
 
 
+def _keepalive_options() -> list[tuple[int, int, int]]:
+    """SO_KEEPALIVE plus a short idle/interval/count where the platform names them."""
+    import socket
+
+    options = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
+    idle = getattr(socket, "TCP_KEEPIDLE", None) or getattr(socket, "TCP_KEEPALIVE", None)
+    for name, value in ((idle, 30), (getattr(socket, "TCP_KEEPINTVL", None), 10),
+                        (getattr(socket, "TCP_KEEPCNT", None), 3)):
+        if name is not None:
+            options.append((socket.IPPROTO_TCP, name, value))
+    return options
+
+
 def _post_within(client: httpx.Client, url: str, body: dict, deadline: float) -> httpx.Response:
     """POST `body`, giving up after `deadline` seconds in TOTAL (GRPH-1179).
 
@@ -355,44 +371,51 @@ def _post_within(client: httpx.Client, url: str, body: dict, deadline: float) ->
     # check below cannot reach. Cap every httpx phase at the deadline so that wait is bounded
     # too (the client's own 30s per-read timeout is the looser bound it replaces).
     limit = min(deadline, getattr(client.timeout, "read", None) or deadline)
-    # A peer that dribbles header bytes resets every per-read timeout, so a watchdog also closes
-    # the client at the deadline. The closed client is the caller's to replace (`_rpc` does).
-    expired = threading.Event()
-    # Once this call is over, a late watchdog must not close the client under the NEXT call.
-    settled = threading.Lock()
-    finished = False
+    # GRPH-1244: a peer that vanished without FIN/RST (half-open, e.g. over Tailscale) leaves the
+    # request blocked in recv(), and `client.close()` from another thread does not interrupt that
+    # on macOS. So the exchange runs in a worker thread and the caller stops WAITING at the
+    # deadline instead of trying to unblock the read: nothing about the socket has to cooperate.
+    # (Shutting the socket down would need the connection, which does not exist yet while the
+    # headers are awaited inside `stream().__enter__`.) The abandoned daemon thread ends when its
+    # own read does; `client.close()` is attempted so it ends sooner where close() does work.
+    timeout = httpx.Timeout(limit)
+    outcome: dict[str, Any] = {}
+    done = threading.Event()
 
-    def _expire() -> None:
-        with settled:
-            if finished:
-                return
-            expired.set()
-        client.close()
+    def _exchange() -> None:
+        try:
+            with client.stream("POST", url, json=body, timeout=timeout) as streamed:
+                chunks: list[bytes] = []
+                for chunk in streamed.iter_bytes():
+                    chunks.append(chunk)
+                    if time.monotonic() - start > deadline:
+                        raise httpx.ReadTimeout(f"no complete reply within {deadline:g}s")
+                headers = [(k, v) for k, v in streamed.headers.multi_items()
+                           if k.lower() not in ("content-encoding", "content-length",
+                                                "transfer-encoding")]
+                outcome["response"] = httpx.Response(
+                    streamed.status_code, headers=headers, content=b"".join(chunks),
+                    request=streamed.request)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the caller's thread
+            outcome["error"] = exc
+        finally:
+            done.set()
 
-    watchdog = threading.Timer(deadline, _expire)
-    watchdog.daemon = True
-    watchdog.start()
+    threading.Thread(target=_exchange, name="gbfleet-post", daemon=True).start()
+    if not done.wait(deadline):
+        # Closing can itself block on the stuck connection; never let it hold the caller.
+        threading.Thread(target=_close_quietly, args=(client,), daemon=True).start()
+        raise httpx.ReadTimeout(f"no complete reply within {deadline:g}s")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["response"]
+
+
+def _close_quietly(client: httpx.Client) -> None:
     try:
-        with client.stream("POST", url, json=body, extensions={"timeout": {
-                "connect": limit, "read": limit, "write": limit, "pool": limit}}) as streamed:
-            chunks: list[bytes] = []
-            for chunk in streamed.iter_bytes():
-                chunks.append(chunk)
-                if time.monotonic() - start > deadline:
-                    raise httpx.ReadTimeout(f"no complete reply within {deadline:g}s")
-            headers = [(k, v) for k, v in streamed.headers.multi_items()
-                       if k.lower() not in ("content-encoding", "content-length",
-                                            "transfer-encoding")]
-            return httpx.Response(streamed.status_code, headers=headers,
-                                  content=b"".join(chunks), request=streamed.request)
-    except (httpx.HTTPError, RuntimeError) as exc:
-        if expired.is_set() and not isinstance(exc, httpx.ReadTimeout):
-            raise httpx.ReadTimeout(f"no complete reply within {deadline:g}s") from exc
-        raise
-    finally:
-        with settled:
-            finished = True
-        watchdog.cancel()
+        client.close()
+    except Exception:  # noqa: BLE001 - best effort on a connection already given up on
+        pass
 
 
 def _text_of(result: dict) -> str:

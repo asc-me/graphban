@@ -102,29 +102,82 @@ def test_trickling_body_times_out_within_deadline():
     assert out["elapsed"] < 2.5
 
 
-def test_a_late_watchdog_does_not_close_the_client_after_the_call_returned(monkeypatch):
-    """If the timer fires after the reply came back, it must leave the client open."""
-    import gbfleet.client as client_mod
+class _HalfOpenTransport(httpx.BaseTransport):
+    """A peer that vanished without FIN/RST: the read blocks and `close()` cannot wake it."""
 
-    timers = []
+    def __init__(self):
+        self.release = threading.Event()
 
-    class _HeldTimer:
-        def __init__(self, _interval, fn):
-            self.fn = fn
-            self.daemon = False
-            timers.append(self)
+    def handle_request(self, request):
+        self.release.wait(60)
+        raise httpx.ReadError("released", request=request)
 
-        def start(self):
+    def close(self):
+        pass  # what a close() that does not interrupt recv() looks like
+
+
+def test_half_open_peer_times_out_even_if_close_cannot_unblock_the_read():
+    """GRPH-1244: closing the client did not interrupt a blocked recv on macOS. The caller must
+    stop waiting at the deadline on its own."""
+    transport = _HalfOpenTransport()
+    out = {}
+
+    def go():
+        t = time.monotonic()
+        try:
+            with httpx.Client(transport=transport) as client:
+                _post_within(client, "http://x/", {}, 1)
+        except BaseException as exc:  # noqa: BLE001
+            out["exc"] = exc
+        out["elapsed"] = time.monotonic() - t
+
+    th = threading.Thread(target=go, daemon=True)
+    th.start()
+    th.join(5)
+    transport.release.set()
+    assert not th.is_alive(), "_post_within hung on a half-open peer"
+    assert isinstance(out["exc"], httpx.ReadTimeout)
+    assert out["elapsed"] < 3
+
+
+def test_per_read_timeout_applies_on_the_stream_path():
+    """Headers sent, then silence: the per-read limit (not the 30s client default) ends it."""
+    def headers_then_nothing(c):
+        try:
+            c.recv(65536)
+            c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n")
+            time.sleep(60)
+        except OSError:
             pass
 
-        def cancel(self):
-            pass  # too late: the timer is already running
+    srv, _ = _server(headers_then_nothing)
+    seen = {}
 
-    monkeypatch.setattr(client_mod.threading, "Timer", _HeldTimer)
-    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
-    assert _post_within(client, "http://x/", {}, 1).status_code == 200
-    timers[0].fn()
-    assert not client.is_closed
+    def go():
+        t = time.monotonic()
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                # deadline far above the limit: only the per-read timeout can fire in time
+                _post_within(client, f"http://127.0.0.1:{srv.getsockname()[1]}/", {}, 2)
+        except BaseException as exc:  # noqa: BLE001
+            seen["exc"] = exc
+        seen["elapsed"] = time.monotonic() - t
+
+    try:
+        th = threading.Thread(target=go, daemon=True)
+        th.start()
+        th.join(6)
+    finally:
+        srv.close()
+    assert not th.is_alive()
+    assert isinstance(seen["exc"], httpx.ReadTimeout)
+    assert seen["elapsed"] < 3.5
+
+
+def test_real_client_enables_tcp_keepalive():
+    from gbfleet.client import _keepalive_options
+
+    assert (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1) in _keepalive_options()
 
 
 def _rpc_reply(handler_result):
