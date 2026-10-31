@@ -2075,6 +2075,8 @@ export interface FleetOverview {
   agents: FleetAgent[];
   /** Offline agents holding nothing, folded into an exact count (GRPH-1229). */
   collapsed?: { count: number; by_state: Record<string, number>; by_role: Record<string, number>;
+                /** Why each was folded (GRPH-1237): quiet past the window, or only an orphaned branch. */
+                by_kind?: { quiet: number; orphaned: number };
                 recent_seconds: number };
   online: number;
   total: number;
@@ -2115,6 +2117,8 @@ export interface FleetOverview {
   /** Seats for this project. No part of the code ever comes back — a seat is named by role
    *  and wave, and lives thirty minutes. */
   seats: FleetSeat[];
+  /** Consumed and revoked seats, counted rather than sent (GRPH-1237). */
+  seats_collapsed?: { count: number; by_state: Record<string, number> };
   /** Credentials that reach this project. Display prefix only, never key material. */
   credentials: FleetCredential[];
   /** Waves that still own an un-revoked seat or key — newest first. History is not offered:
