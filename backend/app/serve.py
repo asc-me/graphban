@@ -15,11 +15,26 @@ does run. This module makes the container's boot lines match; that loop makes th
 """
 from __future__ import annotations
 
+import logging
 import os
 
 import uvicorn
 
+from app.config import settings
 from app.observability import configure_logging
+
+
+def effective_workers() -> int:
+    """`WEB_CONCURRENCY`, defaulting to min(4, cpu_count); SQLite is always 1 because
+    several writer processes on one file risk "database is locked" (GRPH-1241)."""
+    if settings.is_sqlite:
+        if settings.web_concurrency > 1:
+            logging.getLogger("graphban.serve").warning(
+                "WEB_CONCURRENCY=%d ignored: SQLite supports one worker", settings.web_concurrency)
+        return 1
+    if settings.web_concurrency > 0:
+        return settings.web_concurrency
+    return min(4, os.cpu_count() or 1)
 
 
 def main() -> None:
@@ -34,6 +49,7 @@ def main() -> None:
         host="0.0.0.0",  # noqa: S104 — a container binds all interfaces  # nosec B104
         port=int(os.environ.get("PORT", "8000")),
         log_config=None,
+        workers=effective_workers(),
     )
 
 

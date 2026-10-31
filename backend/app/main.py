@@ -56,14 +56,29 @@ async def lifespan(app: FastAPI):
     configure_logging()  # structured logs + request-id stamping (AL-56)
     check_security()  # refuse/warn on a weak JWT secret before serving (AL-44)
 
-    if settings.is_sqlite:
-        # SQLite (tests / zero-infra dev): create tables directly.
-        init_db()
-    else:
-        # Postgres: schema is owned by Alembic migrations.
-        from app.migrate import run_migrations
+    from app import leader
 
-        run_migrations()
+    # Once-per-deploy boot work runs under a Postgres advisory lock so N uvicorn workers
+    # queue instead of racing (GRPH-1241); the later ones find it all already done.
+    with leader.boot_lock():
+        if settings.is_sqlite:
+            # SQLite (tests / zero-infra dev): create tables directly.
+            init_db()
+        else:
+            # Postgres: schema is owned by Alembic migrations.
+            from app.migrate import run_migrations
+
+            run_migrations()
+
+        if settings.seed_on_start:
+            from app.seed import seed
+
+            db = SessionLocal()
+            try:
+                if seed(db):
+                    logger.info("seed: loaded Graphban prototype dataset")
+            finally:
+                db.close()
 
     # LLM span retention (GRPH-225), once before serving and never fatal: janitorial
     # work on telemetry does not justify taking the box down, and a boot that dies on
@@ -76,16 +91,6 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         logger.warning("llm span retention pass failed; spans keep accumulating until "
                        "the next boot", exc_info=True)
-
-    if settings.seed_on_start:
-        from app.seed import seed
-
-        db = SessionLocal()
-        try:
-            if seed(db):
-                logger.info("seed: loaded Graphban prototype dataset")
-        finally:
-            db.close()
 
     # GRPH-55's deferral, evaluated (GRPH-540). It parked real scaling work behind a precise
     # trigger — first project over ~5k items — and nothing checked it, so the condition could
@@ -138,7 +143,8 @@ async def lifespan(app: FastAPI):
         from app.services import credential_migration
 
         try:
-            report = credential_migration.migrate(db)
+            with leader.boot_lock():  # one worker migrates; the rest see it done (GRPH-1241)
+                report = credential_migration.migrate(db)
             if report["credentials_created"]:
                 logger.info("credential migration: %s", report)
         except Exception:  # noqa: BLE001 — see above: booting matters more
@@ -163,8 +169,13 @@ async def lifespan(app: FastAPI):
     #
     # `create_task` rather than awaiting: the loop runs FOR the app, not before it. Awaiting
     # here would mean the first probe's timeout is added to every boot.
+    # Under N uvicorn workers exactly one process owns both loops (GRPH-1241).
+    is_leader = leader.claim_background_leader()
+    if not is_leader:
+        logger.info("background loops: not the leader; another worker runs them")
     retry_task = None
-    if settings.credential_retry_seconds > 0:
+    if is_leader and settings.credential_retry_seconds > 0:
+        logger.info("credential retry loop started")
         retry_task = asyncio.create_task(_credential_retry_loop())
 
     # The log-export drain (PRD-47 S15) gets its OWN task rather than becoming a third job in
@@ -173,7 +184,8 @@ async def lifespan(app: FastAPI):
     # properties as the loop above, and `0` disables it for the same reason — the suite drives
     # `logexport.drain_once` directly instead of waiting on a timer.
     export_task = None
-    if settings.log_export_seconds > 0:
+    if is_leader and settings.log_export_seconds > 0:
+        logger.info("log export loop started")
         export_task = asyncio.create_task(_log_export_loop())
 
     try:
@@ -184,6 +196,7 @@ async def lifespan(app: FastAPI):
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+        leader.release_background_leader()
 
 
 def _one_background_pass() -> int:

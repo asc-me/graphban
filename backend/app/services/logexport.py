@@ -145,7 +145,8 @@ class SendFailed(Exception):
 # ── exporter presence ────────────────────────────────────────────────────────
 # A module flag, not a DB column: the exporter IS this process, and a column would outlive the
 # crash that stopped it — the "reads healthy for a process killed an hour ago" failure the
-# Agent model's docstring refuses to repeat.
+# Agent model's docstring refuses to repeat. Under N workers the flag is only this process's
+# half of the answer; `status` asks Postgres for the other half (`_exporter_running_anywhere`).
 
 def mark_exporter_running() -> None:
     global _exporter_running
@@ -159,6 +160,26 @@ def mark_exporter_stopped() -> None:
 
 def exporter_running() -> bool:
     return _exporter_running
+
+
+def _exporter_running_anywhere(db: Session) -> bool:
+    """Is an exporter draining in ANY worker, not just this one (GRPH-1241)?
+
+    Under N uvicorn workers only the leader runs `_log_export_loop`, so the module flag is
+    true in one process of N and the panel, served by whichever worker the request lands on,
+    would say "not running" most of the time while the leader exports normally. The leader
+    runs the loop exactly when `LOG_EXPORT_SECONDS > 0` (every worker reads the same env), so
+    "some session holds the leader lock" plus that setting is the cross-worker answer. The
+    lock is a live session in Postgres, freed when the leader dies — it does not outlive the
+    crash the way a DB column would.
+    """
+    if exporter_running():
+        return True
+    if settings.log_export_seconds <= 0:
+        return False
+    from app import leader
+
+    return leader.leader_lock_held(db.connection())
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -893,7 +914,14 @@ def status(db: Session, *, now: datetime | None = None) -> dict:
             f"The export configuration could not be read ({e.__class__.__name__}), so this "
             "panel does not know whether export is on. That is not 'off'.")
 
-    running = exporter_running()
+    try:
+        running = _exporter_running_anywhere(db)
+        presence_failed = None
+    except Exception as e:  # noqa: BLE001 — reported below; never read as "draining"
+        logger.warning("log-export exporter presence read failed: %s", e)
+        db.rollback()
+        running = exporter_running()
+        presence_failed = f"exporter presence ({e.__class__.__name__})"
     if not enabled:
         state = "paused"
         state_note = ("Export is off. Nothing is being sent, and the counters below are what "
@@ -902,7 +930,7 @@ def status(db: Session, *, now: datetime | None = None) -> dict:
         state, state_note = "exporting", ""
     else:
         state = "not_running"
-        state_note = ("Export is ON but no exporter is running in this process, so nothing is "
+        state_note = ("Export is ON but no exporter is running in any worker, so nothing is "
                       "draining. A queue depth here would be a backlog nobody is working down, "
                       "which is why it reads as unknown rather than as a number.")
 
@@ -914,7 +942,7 @@ def status(db: Session, *, now: datetime | None = None) -> dict:
         "queue_state": "draining" if running else "exporter_not_running",
         "coverage": "full", "note": "",
     }
-    failures: list[str] = []
+    failures: list[str] = [presence_failed] if presence_failed else []
 
     try:
         last = _last_batch(db)
