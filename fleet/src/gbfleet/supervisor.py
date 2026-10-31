@@ -371,6 +371,14 @@ class Wave:
     #: adapter name: {"adapter", "said" (the vendor's own words), "seen_at" (epoch seconds)}.
     #: Never retried before its reset; reported in the terminal JSON.
     exhausted: dict[str, dict] = field(default_factory=dict)
+    #: PRD-62 S1↔S3 (GRPH-1258). Entitlement ids each adapter runs on, as the operator named
+    #: them (`--entitlement ADAPTER=ID`). Empty means the wave reports nothing to the headroom
+    #: ledger, which is S1 exactly as it was.
+    entitlements: dict[str, list[str]] = field(default_factory=dict)
+    #: Why the ledger stopped being written this wave ("" while it is). Set on the first
+    #: refusal — a plan without capacity routing answers every event with 402 — so one
+    #: refusal ends the attempts instead of repeating on every spawn.
+    ledger_off: str = ""
     #: Child exit 75 — stuck, evidence written, item released. Visible, not a
     #: supervisor failure (P30 D6). Exit 70 is a failure and lives in `failures`.
     give_ups: list[str] = field(default_factory=list)
@@ -595,6 +603,39 @@ def _rooted(repo: Path | str, workspace: Path | str | None) -> tuple[Path, Path]
     root = repo_root(launched_in)
     return launched_in, (Path(workspace) if workspace
                          else root.parent / f"{root.name}-gbfleet")
+
+
+class NotAdmitted(VendorLimit):
+    """The headroom ledger refused `spawn_start` (`admitted: false`) for this adapter's
+    entitlement. A VendorLimit so S1's failover takes the next adapter, with the server's
+    own reason as the words — nothing was launched, so nothing is reported as a limit hit."""
+
+
+def _report_event(wave: Wave, ledger: Graphban | None, seat: Seat, event: str,
+                  text: str = "") -> list[str]:
+    """Report `event` for each entitlement the seat's adapter runs on; return the refusals.
+
+    Best effort, except that a `spawn_start` the server refuses (`admitted: false`) is
+    returned for the caller to honour. Any other failure — a plan without capacity routing
+    (402), an unreachable server, a revoked tool — turns the ledger off for the wave and
+    the wave goes on as S1 does without it.
+    """
+    refused: list[str] = []
+    if ledger is None or wave.ledger_off or not seat.entitlements:
+        return refused
+    for ent in seat.entitlements:
+        args = {"id": ent, "event": event}
+        if text:
+            args["vendor_text"] = text
+        try:
+            got = ledger.call("report_entitlement_event", **args)
+        except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+            wave.ledger_off = f"{event} {ent}: {exc}"
+            observe.emit("ledger_off", detail=wave.ledger_off)
+            return refused
+        if event == "spawn_start" and got.get("admitted") is False:
+            refused.append(str(got.get("reason") or "not admitted"))
+    return refused
 
 
 def _note_unredeemed(wave: Wave, seat: Seat, reason: str) -> None:
@@ -1047,6 +1088,7 @@ def _start(
     persist: Callable[[], None] | None = None,
     room: Headroom | None = None,
     base: str = "",
+    ledger: Graphban | None = None,
 ) -> Iterable[Child]:
     """Create a worktree per seat, spawn into it, and wait for it to register.
 
@@ -1189,11 +1231,24 @@ def _start(
             # BEFORE the child starts, so the base is on the record before anything it does
             # can attest against it (GRPH-970).
             _record_cut_from(wave, client, seat.item, tree.branch, tree.base)
-            start_one(
-                tree, seat, launch_factory, client, limits, wave.partition,
-                workspace=workspace, wave_name=wave_name, slot=slot,
-                on_spawned=remember, debug_file=debug_file,
-            )
+            refused = _report_event(wave, ledger, seat, "spawn_start")
+            if refused:
+                raise NotAdmitted(
+                    f"entitlement {', '.join(seat.entitlements)} not admitted: {refused[0]}",
+                    said=refused[0])
+            try:
+                start_one(
+                    tree, seat, launch_factory, client, limits, wave.partition,
+                    workspace=workspace, wave_name=wave_name, slot=slot,
+                    on_spawned=remember, debug_file=debug_file,
+                )
+            except VendorLimit as limit:
+                _report_event(wave, ledger, seat, "limit_hit", limit.said or str(limit))
+                raise
+            except LaunchFailed as failed:
+                _report_event(wave, ledger, seat, "spawn_failed", str(failed))
+                raise
+            _report_event(wave, ledger, seat, "registered")
         except (LaunchFailed, wt_mod.GitError, wt_mod.BranchExists, SetupFailed) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")
             vendor_limit = isinstance(exc, VendorLimit)
