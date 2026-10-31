@@ -31,6 +31,17 @@ def _mcp(client, key, tool, args):
     ).json()["result"]["structuredContent"]
 
 
+def _refresh(pid):
+    """The background judge pass, run once (GRPH-1242). The GETs only read what it stored."""
+    from app.db import SessionLocal
+
+    s = SessionLocal()
+    try:
+        return mem_svc.refresh_judgements(s, pid)
+    finally:
+        s.close()
+
+
 @pytest.fixture()
 def db(client):
     from app.db import SessionLocal
@@ -231,6 +242,7 @@ def test_twelve_candidates_are_all_scored_when_the_decider_is_fast(
         _mcp(client, key, "add_memory",
              {"text": f"unique flubber-{i} sprocket: never reuse token {i}xyz when assembling gadget {i}q"})
     _patch_decider(monkeypatch, FakeDecider())
+    _refresh(pid)
     scored = client.get(
         f"/api/memory/candidates/scored?project_id={pid}", headers=auth,
     ).json()
@@ -258,9 +270,13 @@ def test_budget_remainder_is_named_unscored_not_silent(client, auth, monkeypatch
              {"text": f"unique lesson {i} about subsystem {i} timeouts"})
     monkeypatch.setattr(mem_svc, "DECIDER_QUEUE_BUDGET_S", 0.0)
     _patch_decider(monkeypatch, FakeDecider())
-    scored = client.get(
-        f"/api/memory/candidates/scored?project_id={pid}", headers=auth,
-    ).json()
+    # The budget belongs to the judging pass (GRPH-1242), not the GET.
+    from app.db import SessionLocal
+    s = SessionLocal()
+    try:
+        scored = mem_svc.score_candidates(s, project_id=pid, judge=True)
+    finally:
+        s.close()
     assert len(scored) == 3
     assert all(r["judged"] is False for r in scored)
     assert all("not scored yet" in r["ungraded_reason"] for r in scored)

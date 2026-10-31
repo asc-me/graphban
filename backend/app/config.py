@@ -282,6 +282,12 @@ class Settings(BaseSettings):
     # here: a disabled exporter must not read as an empty queue.
     log_export_seconds: int = 60
 
+    # How often the memory judge refresh wakes (GRPH-1242). The memory pages read stored
+    # verdicts only; this pass is what asks the judge about rows that have none. `0`
+    # disables the loop — the value the TEST suite runs at, which drives
+    # `memory.refresh_judgements` directly. Single-runner across workers (advisory lock).
+    memory_judge_refresh_seconds: int = 300
+
     # LLM call spans (GRPH-225). How long `llm_call_spans` rows live; 0 or negative
     # keeps everything. The table is telemetry, not the ledger — unbounded growth of
     # per-call rows is the difference between a cost panel and an ops incident.
