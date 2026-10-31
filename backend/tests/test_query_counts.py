@@ -27,9 +27,12 @@ T0 = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
 MEASURED_MAX = 8
 FINISHED_BY_MODEL_MAX = 3
 FLEET_STATUS_MAX = 22
+FLEET_STATUS_REAL_MAX = 28
+FLEET_ROUTE_MAX = 66
 ITEM_SELECTS_MAX = 8
 LINK_SELECTS_MAX = 2
 SNAPSHOT = Path(__file__).parent / "snapshots" / "grph1243.json"
+SNAPSHOT_1245 = Path(__file__).parent / "snapshots" / "grph1245.json"
 
 
 @pytest.fixture()
@@ -187,6 +190,98 @@ def test_fleet_status_statement_count_is_flat_in_agents(client, auth, db, seeded
     assert small.n == big.n <= FLEET_STATUS_MAX, (small.n, big.n)
 
 
+def _seed_real_fleet(db, proj, agent_ids, minter, start):
+    """Seats, enrolments, credentials and dismissals for `agent_ids`, so every per-agent and
+    per-seat branch on the REST and minted_by paths has something to read. A third of the
+    seats are consumed by their agent, a fifth are bound to an item, every seventh agent is
+    dismissed, and the rest of the seats stay open."""
+    from app.models import Enrolment
+
+    items = list(db.scalars(select(Item).where(Item.project_id == proj)
+                            .order_by(Item.number)).all())
+    for j, aid in enumerate(agent_ids):
+        bound = items[(start + j) % len(items)].id if j % 5 == 0 else None
+        seat, _ = fleet_svc.issue_enrolment(db, project_id=proj, role="worker",
+                                            wave=f"wave-{j % 3 + 1}", minted_by=minter,
+                                            item_id=bound)
+        fleet_svc.issue_enrolment(db, project_id=proj, role="planner", wave="wave-1",
+                                  minted_by=minter)
+        agent = db.get(Agent, aid)
+        if j % 3 == 0:
+            agent.enrolment_id = seat.id
+            row = db.get(Enrolment, seat.id)
+            row.consumed_at, row.consumed_by = T0, aid
+        if j % 7 == 0:
+            agent.dismissed_at = T0
+    db.commit()
+
+
+def _without_embedding(c):
+    return sum(1 for q in c.sql if not q.startswith(("PRAGMA busy_timeout", "INSERT INTO llm_call_spans",
+                                                     "SELECT code_nodes.")))
+
+
+def _user_id(db):
+    from app.models import User
+
+    return db.scalar(select(User.id).where(User.email == "alex@ascme-labs.com"))
+
+
+def _real_path_counts(client, auth, db, seeded, call):
+    proj, delegations = seeded
+    delegations(50)
+    minter = _register(client, auth, proj, 1, 900)[0]
+    first = _register(client, auth, proj, 20, 0)
+    _diversify(db, proj, first, 0)
+    _seed_real_fleet(db, proj, first, minter, 0)
+    fleet_svc.fleet_status(db, proj)
+    db.expire_all()
+    with _Count(db) as small:
+        a = call(proj, minter)
+    more = _register(client, auth, proj, 160, 20)
+    _diversify(db, proj, more, 20)
+    _seed_real_fleet(db, proj, more, minter, 20)
+    fleet_svc.fleet_status(db, proj)
+    db.expire_all()
+    with _Count(db) as big:
+        b = call(proj, minter)
+    return small, big, a, b
+
+
+def test_fleet_status_caller_user_statement_count_is_flat_in_agents(client, auth, db, seeded):
+    uid = _user_id(db)
+    proj, _ = seeded
+    small, big, a, b = _real_path_counts(
+        client, auth, db, seeded,
+        lambda proj, minter: fleet_svc.fleet_status(db, proj, caller_user_id=uid))
+    assert b["total"] > a["total"] >= 20
+    assert small.n == big.n <= FLEET_STATUS_REAL_MAX, (small.n, big.n, big.sql)
+
+
+def test_fleet_status_minted_by_statement_count_is_flat_in_agents(client, auth, db, seeded):
+    small, big, a, b = _real_path_counts(
+        client, auth, db, seeded,
+        lambda proj, minter: fleet_svc.fleet_status(db, proj, minted_by=minter))
+    assert len(b["seats"]) > len(a["seats"]) >= 20
+    assert {s["state"] for s in b["seats"]} >= {"consumed", "unused"}
+    assert small.n == big.n <= FLEET_STATUS_REAL_MAX, (small.n, big.n, big.sql)
+
+
+def test_get_api_fleet_statement_count_is_flat_in_agents(client, auth, db, seeded):
+    def call(p, minter):
+        r = client.get("/api/fleet", params={"project_id": p}, headers=auth)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    small, big, a, b = _real_path_counts(client, auth, db, seeded, call)
+    assert b["total"] > a["total"] >= 20
+    # cluster_board's per-prediction embedding spans (llm_call_spans, busy_timeout, code_nodes)
+    # are the provider call's own bookkeeping and vary with its cache, not with agents; the
+    # roster, seat, credential and review-queue reads are what this pins.
+    sn, bn = _without_embedding(small), _without_embedding(big)
+    assert sn == bn <= FLEET_ROUTE_MAX, (sn, bn, big.sql)
+
+
 def test_cluster_board_item_and_link_reads_are_flat_in_items(client, auth, db, seeded):
     proj, _ = seeded
     with _Count(db) as small:
@@ -259,5 +354,61 @@ def test_outputs_match_the_pre_batching_snapshot(client, auth, db, seeded):
     assert want["measured"] and want["finished_by_model"]
     assert any(c["predicted"] for c in want["cluster_board"])
     assert any(a["holdings"] for a in want["fleet_status"]["agents"])
+    for part in want:
+        assert got[part] == want[part], part
+
+
+# ---- GRPH-1245: the real caller paths --------------------------------------------------------
+
+
+def _seat_rows(rows):
+    """Seat ids are random uuids, so the list is compared on what a seat says, sorted."""
+    return sorted(({k: v for k, v in r.items() if k not in ("id", "expires_at")} for r in rows),
+                  key=lambda r: json.dumps(r, sort_keys=True, default=str))
+
+
+def test_real_path_outputs_match_the_pre_batching_snapshot(client, auth, db, seeded):
+    """`tests/snapshots/grph1245.json` was written by the code BEFORE `_live_reviewer_tools`
+    read its seats in one query. Regenerate only on purpose:
+    `GRPH1245_WRITE_SNAPSHOT=1 pytest tests/test_query_counts.py`."""
+    proj, delegations = seeded
+    delegations(100)
+    minter = _register(client, auth, proj, 1, 900)[0]
+    agent_ids = _register(client, auth, proj, 30, 0)
+    _diversify(db, proj, agent_ids, 0)
+    _seed_real_fleet(db, proj, agent_ids, minter, 0)
+    for n, it in enumerate(db.scalars(select(Item).where(Item.project_id == proj,
+                                                        Item.status == "review")
+                                      .order_by(Item.number)).all()):
+        it.description = "## Acceptance\n- " + ("[needs: human-only] " if n % 2 else "") + "it works"
+    db.commit()
+    fleet_svc.fleet_status(db, proj)
+    db.expire_all()
+    names = {proj: "PROJECT", minter: "agent:minter"}
+    for a in db.scalars(select(Agent).where(Agent.project_id == proj)).all():
+        names[a.id] = f"agent:{a.key}"
+    for i in db.scalars(select(Item).where(Item.project_id == proj)).all():
+        names[i.id] = f"item:{i.key}"
+    for seat in db.scalars(select(fleet_svc.Enrolment)).all():
+        names[seat.id] = "seat"
+    route = client.get("/api/fleet", params={"project_id": proj}, headers=auth).json()
+    got = _normalise({
+        "caller_user": fleet_svc.fleet_status(db, proj, caller_user_id=_user_id(db)),
+        "minted_by": fleet_svc.fleet_status(db, proj, minted_by=minter),
+        "route": route,
+    }, names)
+    got["minted_by"]["seats"] = _seat_rows(got["minted_by"]["seats"])
+    got["route"]["seats"] = _seat_rows(got["route"]["seats"])
+    got["route"]["credentials"] = sorted(
+        ({k: v for k, v in c.items() if k not in ("id", "prefix")}
+         for c in got["route"]["credentials"]), key=lambda c: json.dumps(c, sort_keys=True))
+    got = json.loads(json.dumps(got, default=str))
+    if os.environ.get("GRPH1245_WRITE_SNAPSHOT"):
+        SNAPSHOT_1245.write_text(json.dumps(got, indent=1, sort_keys=True) + "\n")
+        pytest.skip("snapshot written")
+    want = json.loads(SNAPSHOT_1245.read_text())
+    assert want["minted_by"]["seats"] and want["route"]["review_queue"]
+    assert any(r["needs_human"] for r in want["route"]["review_queue"])
+    assert any(a["assigned"] for a in want["caller_user"]["agents"])
     for part in want:
         assert got[part] == want[part], part

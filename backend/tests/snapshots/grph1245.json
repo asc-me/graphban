@@ -1,0 +1,6183 @@
+{
+ "caller_user": {
+  "agents": [
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A1",
+    "key": "agent:COUN-A1",
+    "label": "a0",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A2",
+    "key": "agent:COUN-A2",
+    "label": "a1",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A3",
+    "key": "agent:COUN-A3",
+    "label": "a2",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A4",
+    "key": "agent:COUN-A4",
+    "label": "a3",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A5",
+    "key": "agent:COUN-A5",
+    "label": "a4",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A6",
+    "key": "agent:COUN-A6",
+    "label": "a5",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A7",
+    "key": "agent:COUN-A7",
+    "label": "a6",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A8",
+    "key": "agent:COUN-A8",
+    "label": "a7",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A9",
+    "key": "agent:COUN-A9",
+    "label": "a8",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A10",
+    "key": "agent:COUN-A10",
+    "label": "a9",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A11",
+    "key": "agent:COUN-A11",
+    "label": "a10",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A12",
+    "key": "agent:COUN-A12",
+    "label": "a11",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A13",
+    "key": "agent:COUN-A13",
+    "label": "a12",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A14",
+    "key": "agent:COUN-A14",
+    "label": "a13",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A15",
+    "key": "agent:COUN-A15",
+    "label": "a14",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A16",
+    "key": "agent:COUN-A16",
+    "label": "a15",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A17",
+    "key": "agent:COUN-A17",
+    "label": "a16",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A18",
+    "key": "agent:COUN-A18",
+    "label": "a17",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A19",
+    "key": "agent:COUN-A19",
+    "label": "a18",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A20",
+    "key": "agent:COUN-A20",
+    "label": "a19",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br900",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A21",
+    "key": "agent:COUN-A21",
+    "label": "b900",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": {
+     "held_by": null,
+     "item": "item:COUN-1",
+     "state": "taken"
+    },
+    "branch": "br0",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [],
+    "id": "agent:COUN-A22",
+    "key": "agent:COUN-A22",
+    "label": "b0",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br1",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-2",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-2",
+      "title": "item 1"
+     }
+    ],
+    "id": "agent:COUN-A23",
+    "key": "agent:COUN-A23",
+    "label": "b1",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br2",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A24",
+    "key": "agent:COUN-A24",
+    "label": "b2",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br3",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-4",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-4",
+      "title": "item 3"
+     }
+    ],
+    "id": "agent:COUN-A25",
+    "key": "agent:COUN-A25",
+    "label": "b3",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br4",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-5",
+      "phase": "stale",
+      "phase_basis": "agent offline",
+      "status": "review",
+      "stored_id": "item:COUN-5",
+      "title": "item 4"
+     }
+    ],
+    "id": "agent:COUN-A26",
+    "key": "agent:COUN-A26",
+    "label": "b4",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br5",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A27",
+    "key": "agent:COUN-A27",
+    "label": "b5",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br6",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-7",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-7",
+      "title": "item 6"
+     }
+    ],
+    "id": "agent:COUN-A28",
+    "key": "agent:COUN-A28",
+    "label": "b6",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br7",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-8",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-8",
+      "title": "item 7"
+     }
+    ],
+    "id": "agent:COUN-A29",
+    "key": "agent:COUN-A29",
+    "label": "b7",
+    "last_refusal": null,
+    "retired": true,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br8",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A30",
+    "key": "agent:COUN-A30",
+    "label": "b8",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br9",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-10",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-10",
+      "title": "item 9"
+     }
+    ],
+    "id": "agent:COUN-A31",
+    "key": "agent:COUN-A31",
+    "label": "b9",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br10",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-11",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-11",
+      "title": "item 10"
+     }
+    ],
+    "id": "agent:COUN-A32",
+    "key": "agent:COUN-A32",
+    "label": "b10",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br11",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A33",
+    "key": "agent:COUN-A33",
+    "label": "b11",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br12",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [],
+    "id": "agent:COUN-A34",
+    "key": "agent:COUN-A34",
+    "label": "b12",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br13",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-14",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-14",
+      "title": "item 13"
+     }
+    ],
+    "id": "agent:COUN-A35",
+    "key": "agent:COUN-A35",
+    "label": "b13",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br14",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A36",
+    "key": "agent:COUN-A36",
+    "label": "b14",
+    "last_refusal": null,
+    "retired": true,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": {
+     "held_by": null,
+     "item": "item:COUN-16",
+     "state": "claimed"
+    },
+    "branch": "br15",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-16",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-16",
+      "title": "item 15"
+     }
+    ],
+    "id": "agent:COUN-A37",
+    "key": "agent:COUN-A37",
+    "label": "b15",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br16",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-17",
+      "phase": "stale",
+      "phase_basis": "agent offline",
+      "status": "review",
+      "stored_id": "item:COUN-17",
+      "title": "item 16"
+     }
+    ],
+    "id": "agent:COUN-A38",
+    "key": "agent:COUN-A38",
+    "label": "b16",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br17",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A39",
+    "key": "agent:COUN-A39",
+    "label": "b17",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br18",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-19",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-19",
+      "title": "item 18"
+     }
+    ],
+    "id": "agent:COUN-A40",
+    "key": "agent:COUN-A40",
+    "label": "b18",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br19",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-20",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-20",
+      "title": "item 19"
+     }
+    ],
+    "id": "agent:COUN-A41",
+    "key": "agent:COUN-A41",
+    "label": "b19",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br20",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A42",
+    "key": "agent:COUN-A42",
+    "label": "b20",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br21",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-22",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-22",
+      "title": "item 21"
+     }
+    ],
+    "id": "agent:COUN-A43",
+    "key": "agent:COUN-A43",
+    "label": "b21",
+    "last_refusal": null,
+    "retired": true,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br22",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-23",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-23",
+      "title": "item 22"
+     }
+    ],
+    "id": "agent:COUN-A44",
+    "key": "agent:COUN-A44",
+    "label": "b22",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br23",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A45",
+    "key": "agent:COUN-A45",
+    "label": "b23",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br24",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [],
+    "id": "agent:COUN-A46",
+    "key": "agent:COUN-A46",
+    "label": "b24",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br25",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-26",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-26",
+      "title": "item 25"
+     }
+    ],
+    "id": "agent:COUN-A47",
+    "key": "agent:COUN-A47",
+    "label": "b25",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br26",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A48",
+    "key": "agent:COUN-A48",
+    "label": "b26",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br27",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-28",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-28",
+      "title": "item 27"
+     }
+    ],
+    "id": "agent:COUN-A49",
+    "key": "agent:COUN-A49",
+    "label": "b27",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br28",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-29",
+      "phase": "stale",
+      "phase_basis": "agent offline",
+      "status": "review",
+      "stored_id": "item:COUN-29",
+      "title": "item 28"
+     }
+    ],
+    "id": "agent:COUN-A50",
+    "key": "agent:COUN-A50",
+    "label": "b28",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br29",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A51",
+    "key": "agent:COUN-A51",
+    "label": "b29",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   }
+  ],
+  "by_role": {
+   "all-in-one": 43,
+   "planner": 0,
+   "worker": 0
+  },
+  "heartbeat_interval_seconds": 50,
+  "held": [],
+  "measured": [
+   {
+    "bands": {
+     "S": {
+      "n": 100,
+      "value": 1.0
+     }
+    },
+    "capability": "other",
+    "cost": {
+     "comparable": false,
+     "finished": 100,
+     "reason": "not comparable: 0 of 100 attempts reported tokens",
+     "reported": 0
+    },
+    "latency": {
+     "median_seconds": 240.0,
+     "n": 100,
+     "value": 0.933
+    },
+    "layer": "project",
+    "model": "m",
+    "quality": {
+     "n": 100,
+     "value": 1.0
+    },
+    "vendor": "v"
+   }
+  ],
+  "online": 43,
+  "policy": null,
+  "posture": "single-agent",
+  "presence_ttl_seconds": 150,
+  "probe_suggestions": [],
+  "profile": null,
+  "release_ref": {
+   "ref": null,
+   "source": "unmeasured"
+  },
+  "review_holds": [
+   {
+    "detail": "COUN-2 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-2"
+   },
+   {
+    "detail": "COUN-5 holds app/m4/x.py",
+    "holds": [
+     "app/m4/x.py"
+    ],
+    "id": "item:COUN-5"
+   },
+   {
+    "detail": "COUN-8 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-8"
+   },
+   {
+    "detail": "COUN-11 holds app/m3/x.py",
+    "holds": [
+     "app/m3/x.py"
+    ],
+    "id": "item:COUN-11"
+   },
+   {
+    "detail": "COUN-14 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-14"
+   },
+   {
+    "detail": "COUN-17 holds app/m2/x.py",
+    "holds": [
+     "app/m2/x.py"
+    ],
+    "id": "item:COUN-17"
+   },
+   {
+    "detail": "COUN-20 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-20"
+   },
+   {
+    "detail": "COUN-23 holds app/m1/x.py",
+    "holds": [
+     "app/m1/x.py"
+    ],
+    "id": "item:COUN-23"
+   },
+   {
+    "detail": "COUN-26 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-26"
+   },
+   {
+    "detail": "COUN-29 holds app/m0/x.py",
+    "holds": [
+     "app/m0/x.py"
+    ],
+    "id": "item:COUN-29"
+   }
+  ],
+  "roles": [
+   "planner",
+   "worker"
+  ],
+  "tier_map": {
+   "overridden": false,
+   "overrides": []
+  },
+  "total": 51
+ },
+ "minted_by": {
+  "agents": [
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A1",
+    "key": "agent:COUN-A1",
+    "label": "a0",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A2",
+    "key": "agent:COUN-A2",
+    "label": "a1",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A3",
+    "key": "agent:COUN-A3",
+    "label": "a2",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A4",
+    "key": "agent:COUN-A4",
+    "label": "a3",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A5",
+    "key": "agent:COUN-A5",
+    "label": "a4",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A6",
+    "key": "agent:COUN-A6",
+    "label": "a5",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A7",
+    "key": "agent:COUN-A7",
+    "label": "a6",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A8",
+    "key": "agent:COUN-A8",
+    "label": "a7",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A9",
+    "key": "agent:COUN-A9",
+    "label": "a8",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A10",
+    "key": "agent:COUN-A10",
+    "label": "a9",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A11",
+    "key": "agent:COUN-A11",
+    "label": "a10",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A12",
+    "key": "agent:COUN-A12",
+    "label": "a11",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A13",
+    "key": "agent:COUN-A13",
+    "label": "a12",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A14",
+    "key": "agent:COUN-A14",
+    "label": "a13",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A15",
+    "key": "agent:COUN-A15",
+    "label": "a14",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A16",
+    "key": "agent:COUN-A16",
+    "label": "a15",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A17",
+    "key": "agent:COUN-A17",
+    "label": "a16",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A18",
+    "key": "agent:COUN-A18",
+    "label": "a17",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A19",
+    "key": "agent:COUN-A19",
+    "label": "a18",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A20",
+    "key": "agent:COUN-A20",
+    "label": "a19",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br900",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A21",
+    "key": "agent:COUN-A21",
+    "label": "b900",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": {
+     "held_by": null,
+     "item": "item:COUN-1",
+     "state": "taken"
+    },
+    "branch": "br0",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [],
+    "id": "agent:COUN-A22",
+    "key": "agent:COUN-A22",
+    "label": "b0",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br1",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-2",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-2",
+      "title": "item 1"
+     }
+    ],
+    "id": "agent:COUN-A23",
+    "key": "agent:COUN-A23",
+    "label": "b1",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br2",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A24",
+    "key": "agent:COUN-A24",
+    "label": "b2",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br3",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-4",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-4",
+      "title": "item 3"
+     }
+    ],
+    "id": "agent:COUN-A25",
+    "key": "agent:COUN-A25",
+    "label": "b3",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br4",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-5",
+      "phase": "stale",
+      "phase_basis": "agent offline",
+      "status": "review",
+      "stored_id": "item:COUN-5",
+      "title": "item 4"
+     }
+    ],
+    "id": "agent:COUN-A26",
+    "key": "agent:COUN-A26",
+    "label": "b4",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br5",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A27",
+    "key": "agent:COUN-A27",
+    "label": "b5",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br6",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-7",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-7",
+      "title": "item 6"
+     }
+    ],
+    "id": "agent:COUN-A28",
+    "key": "agent:COUN-A28",
+    "label": "b6",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br7",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-8",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-8",
+      "title": "item 7"
+     }
+    ],
+    "id": "agent:COUN-A29",
+    "key": "agent:COUN-A29",
+    "label": "b7",
+    "last_refusal": null,
+    "retired": true,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br8",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A30",
+    "key": "agent:COUN-A30",
+    "label": "b8",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br9",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-10",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-10",
+      "title": "item 9"
+     }
+    ],
+    "id": "agent:COUN-A31",
+    "key": "agent:COUN-A31",
+    "label": "b9",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br10",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-11",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-11",
+      "title": "item 10"
+     }
+    ],
+    "id": "agent:COUN-A32",
+    "key": "agent:COUN-A32",
+    "label": "b10",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br11",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A33",
+    "key": "agent:COUN-A33",
+    "label": "b11",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br12",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [],
+    "id": "agent:COUN-A34",
+    "key": "agent:COUN-A34",
+    "label": "b12",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br13",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-14",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-14",
+      "title": "item 13"
+     }
+    ],
+    "id": "agent:COUN-A35",
+    "key": "agent:COUN-A35",
+    "label": "b13",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br14",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A36",
+    "key": "agent:COUN-A36",
+    "label": "b14",
+    "last_refusal": null,
+    "retired": true,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": {
+     "held_by": null,
+     "item": "item:COUN-16",
+     "state": "claimed"
+    },
+    "branch": "br15",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-16",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-16",
+      "title": "item 15"
+     }
+    ],
+    "id": "agent:COUN-A37",
+    "key": "agent:COUN-A37",
+    "label": "b15",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br16",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-17",
+      "phase": "stale",
+      "phase_basis": "agent offline",
+      "status": "review",
+      "stored_id": "item:COUN-17",
+      "title": "item 16"
+     }
+    ],
+    "id": "agent:COUN-A38",
+    "key": "agent:COUN-A38",
+    "label": "b16",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br17",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A39",
+    "key": "agent:COUN-A39",
+    "label": "b17",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br18",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-19",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-19",
+      "title": "item 18"
+     }
+    ],
+    "id": "agent:COUN-A40",
+    "key": "agent:COUN-A40",
+    "label": "b18",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br19",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-20",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-20",
+      "title": "item 19"
+     }
+    ],
+    "id": "agent:COUN-A41",
+    "key": "agent:COUN-A41",
+    "label": "b19",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br20",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A42",
+    "key": "agent:COUN-A42",
+    "label": "b20",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br21",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-22",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-22",
+      "title": "item 21"
+     }
+    ],
+    "id": "agent:COUN-A43",
+    "key": "agent:COUN-A43",
+    "label": "b21",
+    "last_refusal": null,
+    "retired": true,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br22",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-23",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-23",
+      "title": "item 22"
+     }
+    ],
+    "id": "agent:COUN-A44",
+    "key": "agent:COUN-A44",
+    "label": "b22",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br23",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A45",
+    "key": "agent:COUN-A45",
+    "label": "b23",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br24",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [],
+    "id": "agent:COUN-A46",
+    "key": "agent:COUN-A46",
+    "label": "b24",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br25",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-26",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-26",
+      "title": "item 25"
+     }
+    ],
+    "id": "agent:COUN-A47",
+    "key": "agent:COUN-A47",
+    "label": "b25",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br26",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A48",
+    "key": "agent:COUN-A48",
+    "label": "b26",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br27",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-28",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-28",
+      "title": "item 27"
+     }
+    ],
+    "id": "agent:COUN-A49",
+    "key": "agent:COUN-A49",
+    "label": "b27",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br28",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-29",
+      "phase": "stale",
+      "phase_basis": "agent offline",
+      "status": "review",
+      "stored_id": "item:COUN-29",
+      "title": "item 28"
+     }
+    ],
+    "id": "agent:COUN-A50",
+    "key": "agent:COUN-A50",
+    "label": "b28",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br29",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A51",
+    "key": "agent:COUN-A51",
+    "label": "b29",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   }
+  ],
+  "by_role": {
+   "all-in-one": 43,
+   "planner": 0,
+   "worker": 0
+  },
+  "heartbeat_interval_seconds": 50,
+  "held": [],
+  "measured": [
+   {
+    "bands": {
+     "S": {
+      "n": 100,
+      "value": 1.0
+     }
+    },
+    "capability": "other",
+    "cost": {
+     "comparable": false,
+     "finished": 100,
+     "reason": "not comparable: 0 of 100 attempts reported tokens",
+     "reported": 0
+    },
+    "latency": {
+     "median_seconds": 240.0,
+     "n": 100,
+     "value": 0.933
+    },
+    "layer": "project",
+    "model": "m",
+    "quality": {
+     "n": 100,
+     "value": 1.0
+    },
+    "vendor": "v"
+   }
+  ],
+  "online": 43,
+  "policy": null,
+  "posture": "single-agent",
+  "presence_ttl_seconds": 150,
+  "probe_suggestions": [],
+  "profile": null,
+  "release_ref": {
+   "ref": null,
+   "source": "unmeasured"
+  },
+  "review_holds": [
+   {
+    "detail": "COUN-2 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-2"
+   },
+   {
+    "detail": "COUN-5 holds app/m4/x.py",
+    "holds": [
+     "app/m4/x.py"
+    ],
+    "id": "item:COUN-5"
+   },
+   {
+    "detail": "COUN-8 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-8"
+   },
+   {
+    "detail": "COUN-11 holds app/m3/x.py",
+    "holds": [
+     "app/m3/x.py"
+    ],
+    "id": "item:COUN-11"
+   },
+   {
+    "detail": "COUN-14 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-14"
+   },
+   {
+    "detail": "COUN-17 holds app/m2/x.py",
+    "holds": [
+     "app/m2/x.py"
+    ],
+    "id": "item:COUN-17"
+   },
+   {
+    "detail": "COUN-20 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-20"
+   },
+   {
+    "detail": "COUN-23 holds app/m1/x.py",
+    "holds": [
+     "app/m1/x.py"
+    ],
+    "id": "item:COUN-23"
+   },
+   {
+    "detail": "COUN-26 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-26"
+   },
+   {
+    "detail": "COUN-29 holds app/m0/x.py",
+    "holds": [
+     "app/m0/x.py"
+    ],
+    "id": "item:COUN-29"
+   }
+  ],
+  "roles": [
+   "planner",
+   "worker"
+  ],
+  "seats": [
+   {
+    "consumed_by": "agent:COUN-A22",
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "consumed",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": "agent:COUN-A25",
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "consumed",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": "agent:COUN-A28",
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "consumed",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": "agent:COUN-A31",
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "consumed",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": "agent:COUN-A34",
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "consumed",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": "agent:COUN-A37",
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "consumed",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": "agent:COUN-A40",
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "consumed",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": "agent:COUN-A43",
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "consumed",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": "agent:COUN-A46",
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "consumed",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": "agent:COUN-A49",
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "consumed",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   }
+  ],
+  "tier_map": {
+   "overridden": false,
+   "overrides": []
+  },
+  "total": 51
+ },
+ "route": {
+  "agents": [
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A1",
+    "key": "agent:COUN-A1",
+    "label": "a0",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A2",
+    "key": "agent:COUN-A2",
+    "label": "a1",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A3",
+    "key": "agent:COUN-A3",
+    "label": "a2",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A4",
+    "key": "agent:COUN-A4",
+    "label": "a3",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A5",
+    "key": "agent:COUN-A5",
+    "label": "a4",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A6",
+    "key": "agent:COUN-A6",
+    "label": "a5",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A7",
+    "key": "agent:COUN-A7",
+    "label": "a6",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A8",
+    "key": "agent:COUN-A8",
+    "label": "a7",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A9",
+    "key": "agent:COUN-A9",
+    "label": "a8",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A10",
+    "key": "agent:COUN-A10",
+    "label": "a9",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A11",
+    "key": "agent:COUN-A11",
+    "label": "a10",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A12",
+    "key": "agent:COUN-A12",
+    "label": "a11",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A13",
+    "key": "agent:COUN-A13",
+    "label": "a12",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A14",
+    "key": "agent:COUN-A14",
+    "label": "a13",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A15",
+    "key": "agent:COUN-A15",
+    "label": "a14",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A16",
+    "key": "agent:COUN-A16",
+    "label": "a15",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A17",
+    "key": "agent:COUN-A17",
+    "label": "a16",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A18",
+    "key": "agent:COUN-A18",
+    "label": "a17",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A19",
+    "key": "agent:COUN-A19",
+    "label": "a18",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A20",
+    "key": "agent:COUN-A20",
+    "label": "a19",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br900",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A21",
+    "key": "agent:COUN-A21",
+    "label": "b900",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": {
+     "held_by": null,
+     "item": "item:COUN-1",
+     "state": "taken"
+    },
+    "branch": "br0",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [],
+    "id": "agent:COUN-A22",
+    "key": "agent:COUN-A22",
+    "label": "b0",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br1",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-2",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-2",
+      "title": "item 1"
+     }
+    ],
+    "id": "agent:COUN-A23",
+    "key": "agent:COUN-A23",
+    "label": "b1",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br2",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A24",
+    "key": "agent:COUN-A24",
+    "label": "b2",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br3",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-4",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-4",
+      "title": "item 3"
+     }
+    ],
+    "id": "agent:COUN-A25",
+    "key": "agent:COUN-A25",
+    "label": "b3",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br4",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-5",
+      "phase": "stale",
+      "phase_basis": "agent offline",
+      "status": "review",
+      "stored_id": "item:COUN-5",
+      "title": "item 4"
+     }
+    ],
+    "id": "agent:COUN-A26",
+    "key": "agent:COUN-A26",
+    "label": "b4",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br5",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A27",
+    "key": "agent:COUN-A27",
+    "label": "b5",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br6",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-7",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-7",
+      "title": "item 6"
+     }
+    ],
+    "id": "agent:COUN-A28",
+    "key": "agent:COUN-A28",
+    "label": "b6",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br7",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-8",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-8",
+      "title": "item 7"
+     }
+    ],
+    "id": "agent:COUN-A29",
+    "key": "agent:COUN-A29",
+    "label": "b7",
+    "last_refusal": null,
+    "retired": true,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br9",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-10",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-10",
+      "title": "item 9"
+     }
+    ],
+    "id": "agent:COUN-A31",
+    "key": "agent:COUN-A31",
+    "label": "b9",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br10",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-11",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-11",
+      "title": "item 10"
+     }
+    ],
+    "id": "agent:COUN-A32",
+    "key": "agent:COUN-A32",
+    "label": "b10",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br11",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A33",
+    "key": "agent:COUN-A33",
+    "label": "b11",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br13",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-14",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-14",
+      "title": "item 13"
+     }
+    ],
+    "id": "agent:COUN-A35",
+    "key": "agent:COUN-A35",
+    "label": "b13",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br14",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A36",
+    "key": "agent:COUN-A36",
+    "label": "b14",
+    "last_refusal": null,
+    "retired": true,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": {
+     "held_by": null,
+     "item": "item:COUN-16",
+     "state": "claimed"
+    },
+    "branch": "br15",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-16",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-16",
+      "title": "item 15"
+     }
+    ],
+    "id": "agent:COUN-A37",
+    "key": "agent:COUN-A37",
+    "label": "b15",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br16",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-17",
+      "phase": "stale",
+      "phase_basis": "agent offline",
+      "status": "review",
+      "stored_id": "item:COUN-17",
+      "title": "item 16"
+     }
+    ],
+    "id": "agent:COUN-A38",
+    "key": "agent:COUN-A38",
+    "label": "b16",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br17",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A39",
+    "key": "agent:COUN-A39",
+    "label": "b17",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br18",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-19",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-19",
+      "title": "item 18"
+     }
+    ],
+    "id": "agent:COUN-A40",
+    "key": "agent:COUN-A40",
+    "label": "b18",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br19",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-20",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-20",
+      "title": "item 19"
+     }
+    ],
+    "id": "agent:COUN-A41",
+    "key": "agent:COUN-A41",
+    "label": "b19",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br21",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-22",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-22",
+      "title": "item 21"
+     }
+    ],
+    "id": "agent:COUN-A43",
+    "key": "agent:COUN-A43",
+    "label": "b21",
+    "last_refusal": null,
+    "retired": true,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br22",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-23",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-23",
+      "title": "item 22"
+     }
+    ],
+    "id": "agent:COUN-A44",
+    "key": "agent:COUN-A44",
+    "label": "b22",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br23",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A45",
+    "key": "agent:COUN-A45",
+    "label": "b23",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br25",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-26",
+      "phase": "review",
+      "phase_basis": "status review",
+      "status": "review",
+      "stored_id": "item:COUN-26",
+      "title": "item 25"
+     }
+    ],
+    "id": "agent:COUN-A47",
+    "key": "agent:COUN-A47",
+    "label": "b25",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br26",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A48",
+    "key": "agent:COUN-A48",
+    "label": "b26",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br27",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": true,
+    "enrolment_id": "seat",
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "build",
+      "id": "item:COUN-28",
+      "phase": "building",
+      "phase_basis": "status in_progress",
+      "status": "in_progress",
+      "stored_id": "item:COUN-28",
+      "title": "item 27"
+     }
+    ],
+    "id": "agent:COUN-A49",
+    "key": "agent:COUN-A49",
+    "label": "b27",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br28",
+    "branch_orphaned": true,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": true,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [
+     {
+      "bounced": false,
+      "hold": "review",
+      "id": "item:COUN-29",
+      "phase": "stale",
+      "phase_basis": "agent offline",
+      "status": "review",
+      "stored_id": "item:COUN-29",
+      "title": "item 28"
+     }
+    ],
+    "id": "agent:COUN-A50",
+    "key": "agent:COUN-A50",
+    "label": "b28",
+    "last_refusal": null,
+    "retired": true,
+    "state": "offline",
+    "worktree": ""
+   },
+   {
+    "active_role": "all-in-one",
+    "assigned": null,
+    "branch": "br29",
+    "branch_orphaned": false,
+    "capabilities": {
+     "model": "m",
+     "vendor": "v"
+    },
+    "credential_posture": null,
+    "credential_roles": [
+     "planner",
+     "worker"
+    ],
+    "dismissed": false,
+    "enrolled": false,
+    "enrolment_id": null,
+    "holdings": [],
+    "id": "agent:COUN-A51",
+    "key": "agent:COUN-A51",
+    "label": "b29",
+    "last_refusal": null,
+    "retired": false,
+    "state": "idle",
+    "worktree": ""
+   }
+  ],
+  "by_role": {
+   "all-in-one": 43,
+   "planner": 0,
+   "worker": 0
+  },
+  "clusters": [
+   {
+    "areas": [
+     "app/m3/x.py"
+    ],
+    "blocked_on": null,
+    "held_by": null,
+    "items": [
+     "item:COUN-11",
+     "item:COUN-26"
+    ],
+    "predicted": true
+   },
+   {
+    "areas": [
+     "app/m0/x.py"
+    ],
+    "blocked_on": null,
+    "held_by": null,
+    "items": [
+     "item:COUN-2",
+     "item:COUN-29"
+    ],
+    "predicted": true
+   },
+   {
+    "areas": [
+     "app/m4/x.py"
+    ],
+    "blocked_on": null,
+    "held_by": null,
+    "items": [
+     "item:COUN-5",
+     "item:COUN-20"
+    ],
+    "predicted": true
+   },
+   {
+    "areas": [
+     "app/m5/x.py"
+    ],
+    "blocked_on": null,
+    "held_by": null,
+    "items": [
+     "item:COUN-14"
+    ],
+    "predicted": true
+   },
+   {
+    "areas": [
+     "app/m2/x.py"
+    ],
+    "blocked_on": null,
+    "held_by": null,
+    "items": [
+     "item:COUN-17"
+    ],
+    "predicted": true
+   },
+   {
+    "areas": [
+     "app/m1/x.py"
+    ],
+    "blocked_on": null,
+    "held_by": null,
+    "items": [
+     "item:COUN-23"
+    ],
+    "predicted": true
+   },
+   {
+    "areas": [
+     "app/m6/x.py"
+    ],
+    "blocked_on": null,
+    "held_by": null,
+    "items": [
+     "item:COUN-8"
+    ],
+    "predicted": true
+   }
+  ],
+  "collapsed": {
+   "by_kind": {
+    "orphaned": 4,
+    "quiet": 0
+   },
+   "by_role": {
+    "all-in-one": 4
+   },
+   "by_state": {
+    "offline": 4
+   },
+   "count": 4,
+   "recent_seconds": 3600
+  },
+  "credentials": [
+   {
+    "agents": 1,
+    "name": "k900",
+    "posture": null,
+    "revoked": false,
+    "roles": [],
+    "wave": null
+   },
+   {
+    "agents": 20,
+    "name": "sup",
+    "posture": null,
+    "revoked": false,
+    "roles": [],
+    "wave": null
+   },
+   {
+    "agents": 30,
+    "name": "k0",
+    "posture": null,
+    "revoked": false,
+    "roles": [],
+    "wave": null
+   }
+  ],
+  "heartbeat_interval_seconds": 50,
+  "held": [],
+  "matrix": {
+   "cells": [
+    {
+     "effective_model": "qwen3.6:35b-a3b-coding-mtp-det",
+     "graded_model": null,
+     "harness": "gbagent",
+     "measured": null,
+     "models": [
+      "qwen3.6:35b-a3b-coding-mtp-det",
+      "qwen3-coder:30b"
+     ],
+     "overridden": false,
+     "override": null,
+     "packaged_model": "qwen3.6:35b-a3b-coding-mtp-det",
+     "tier": "cheap"
+    },
+    {
+     "effective_model": "sonnet",
+     "graded_model": null,
+     "harness": "claude",
+     "measured": null,
+     "models": [
+      "sonnet"
+     ],
+     "overridden": false,
+     "override": null,
+     "packaged_model": "sonnet",
+     "tier": "cheap"
+    },
+    {
+     "effective_model": "",
+     "graded_model": null,
+     "harness": "qwen-code",
+     "measured": null,
+     "models": [],
+     "overridden": false,
+     "override": null,
+     "packaged_model": "",
+     "tier": "cheap"
+    },
+    {
+     "effective_model": "composer-2.5",
+     "graded_model": null,
+     "harness": "cursor-agent",
+     "measured": null,
+     "models": [
+      "composer-2.5"
+     ],
+     "overridden": false,
+     "override": null,
+     "packaged_model": "composer-2.5",
+     "tier": "cheap"
+    },
+    {
+     "effective_model": "opus",
+     "graded_model": null,
+     "harness": "claude",
+     "measured": null,
+     "models": [
+      "opus"
+     ],
+     "overridden": false,
+     "override": null,
+     "packaged_model": "opus",
+     "tier": "frontier"
+    },
+    {
+     "effective_model": "grok-4.5",
+     "graded_model": null,
+     "harness": "grok",
+     "measured": null,
+     "models": [
+      "grok-4.5"
+     ],
+     "overridden": false,
+     "override": null,
+     "packaged_model": "grok-4.5",
+     "tier": "frontier"
+    },
+    {
+     "effective_model": "",
+     "graded_model": null,
+     "harness": "codex",
+     "measured": null,
+     "models": [],
+     "overridden": false,
+     "override": null,
+     "packaged_model": "",
+     "tier": "frontier"
+    }
+   ],
+   "overridden": false,
+   "rows": [
+    {
+     "cost_class": "local",
+     "harness": "gbagent",
+     "lane": "any",
+     "local": true,
+     "model": "qwen3.6:35b-a3b-coding-mtp-det",
+     "status": "verified",
+     "tier": "cheap",
+     "vendor": "gbagent"
+    },
+    {
+     "cost_class": "local",
+     "harness": "gbagent",
+     "lane": "any",
+     "local": true,
+     "model": "qwen3-coder:30b",
+     "status": "failed",
+     "tier": "cheap",
+     "vendor": "gbagent"
+    },
+    {
+     "cost_class": "cheap",
+     "harness": "claude",
+     "lane": "any",
+     "local": false,
+     "model": "sonnet",
+     "status": "unverified",
+     "tier": "cheap",
+     "vendor": "anthropic"
+    },
+    {
+     "cost_class": "cheap",
+     "harness": "qwen-code",
+     "lane": "any",
+     "local": false,
+     "model": "",
+     "status": "verified",
+     "tier": "cheap",
+     "vendor": "alibaba"
+    },
+    {
+     "cost_class": "cheap",
+     "harness": "cursor-agent",
+     "lane": "any",
+     "local": false,
+     "model": "composer-2.5",
+     "status": "unverified",
+     "tier": "cheap",
+     "vendor": "cursor"
+    },
+    {
+     "cost_class": "frontier",
+     "harness": "claude",
+     "lane": "any",
+     "local": false,
+     "model": "opus",
+     "status": "unverified",
+     "tier": "frontier",
+     "vendor": "anthropic"
+    },
+    {
+     "cost_class": "frontier",
+     "harness": "grok",
+     "lane": "any",
+     "local": false,
+     "model": "grok-4.5",
+     "status": "unverified",
+     "tier": "frontier",
+     "vendor": "xai"
+    },
+    {
+     "cost_class": "frontier",
+     "harness": "codex",
+     "lane": "any",
+     "local": false,
+     "model": "",
+     "status": "unregistered",
+     "tier": "frontier",
+     "vendor": "openai"
+    }
+   ]
+  },
+  "measured": [
+   {
+    "bands": {
+     "S": {
+      "n": 100,
+      "value": 1.0
+     }
+    },
+    "capability": "other",
+    "cost": {
+     "comparable": false,
+     "finished": 100,
+     "reason": "not comparable: 0 of 100 attempts reported tokens",
+     "reported": 0
+    },
+    "latency": {
+     "median_seconds": 240.0,
+     "n": 100,
+     "value": 0.933
+    },
+    "layer": "project",
+    "model": "m",
+    "quality": {
+     "n": 100,
+     "value": 1.0
+    },
+    "vendor": "v"
+   }
+  ],
+  "mix": {
+   "by_harness": {},
+   "n": 0,
+   "unreported": 0
+  },
+  "online": 43,
+  "policy": null,
+  "posture": "single-agent",
+  "presence_ttl_seconds": 150,
+  "probe_suggestions": [],
+  "profile": null,
+  "release_ref": {
+   "ref": null,
+   "source": "unmeasured"
+  },
+  "review_holds": [
+   {
+    "detail": "COUN-2 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-2"
+   },
+   {
+    "detail": "COUN-5 holds app/m4/x.py",
+    "holds": [
+     "app/m4/x.py"
+    ],
+    "id": "item:COUN-5"
+   },
+   {
+    "detail": "COUN-8 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-8"
+   },
+   {
+    "detail": "COUN-11 holds app/m3/x.py",
+    "holds": [
+     "app/m3/x.py"
+    ],
+    "id": "item:COUN-11"
+   },
+   {
+    "detail": "COUN-14 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-14"
+   },
+   {
+    "detail": "COUN-17 holds app/m2/x.py",
+    "holds": [
+     "app/m2/x.py"
+    ],
+    "id": "item:COUN-17"
+   },
+   {
+    "detail": "COUN-20 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-20"
+   },
+   {
+    "detail": "COUN-23 holds app/m1/x.py",
+    "holds": [
+     "app/m1/x.py"
+    ],
+    "id": "item:COUN-23"
+   },
+   {
+    "detail": "COUN-26 declares no touchpoints; its hold is predicted",
+    "holds": [],
+    "id": "item:COUN-26"
+   },
+   {
+    "detail": "COUN-29 holds app/m0/x.py",
+    "holds": [
+     "app/m0/x.py"
+    ],
+    "id": "item:COUN-29"
+   }
+  ],
+  "review_queue": [
+   {
+    "branch": "",
+    "built_by": null,
+    "built_by_label": null,
+    "clause_needs": [],
+    "held_for_seconds": null,
+    "holder_state": null,
+    "id": "item:COUN-2",
+    "key": "item:COUN-2",
+    "lapsed_holder": "agent:COUN-A23",
+    "needs_human": false,
+    "review_takes": 0,
+    "reviewed_by": null,
+    "title": "item 1"
+   },
+   {
+    "branch": "",
+    "built_by": null,
+    "built_by_label": null,
+    "clause_needs": [
+     "human-only"
+    ],
+    "held_for_seconds": null,
+    "holder_state": null,
+    "id": "item:COUN-5",
+    "key": "item:COUN-5",
+    "lapsed_holder": "agent:COUN-A26",
+    "needs_human": true,
+    "review_takes": 0,
+    "reviewed_by": null,
+    "title": "item 4"
+   },
+   {
+    "branch": "",
+    "built_by": null,
+    "built_by_label": null,
+    "clause_needs": [],
+    "held_for_seconds": null,
+    "holder_state": null,
+    "id": "item:COUN-8",
+    "key": "item:COUN-8",
+    "lapsed_holder": "agent:COUN-A29",
+    "needs_human": false,
+    "review_takes": 0,
+    "reviewed_by": null,
+    "title": "item 7"
+   },
+   {
+    "branch": "",
+    "built_by": null,
+    "built_by_label": null,
+    "clause_needs": [
+     "human-only"
+    ],
+    "held_for_seconds": null,
+    "holder_state": null,
+    "id": "item:COUN-11",
+    "key": "item:COUN-11",
+    "lapsed_holder": "agent:COUN-A32",
+    "needs_human": true,
+    "review_takes": 0,
+    "reviewed_by": null,
+    "title": "item 10"
+   },
+   {
+    "branch": "",
+    "built_by": null,
+    "built_by_label": null,
+    "clause_needs": [],
+    "held_for_seconds": null,
+    "holder_state": null,
+    "id": "item:COUN-14",
+    "key": "item:COUN-14",
+    "lapsed_holder": "agent:COUN-A35",
+    "needs_human": false,
+    "review_takes": 0,
+    "reviewed_by": null,
+    "title": "item 13"
+   },
+   {
+    "branch": "",
+    "built_by": null,
+    "built_by_label": null,
+    "clause_needs": [
+     "human-only"
+    ],
+    "held_for_seconds": null,
+    "holder_state": null,
+    "id": "item:COUN-17",
+    "key": "item:COUN-17",
+    "lapsed_holder": "agent:COUN-A38",
+    "needs_human": true,
+    "review_takes": 0,
+    "reviewed_by": null,
+    "title": "item 16"
+   },
+   {
+    "branch": "",
+    "built_by": null,
+    "built_by_label": null,
+    "clause_needs": [],
+    "held_for_seconds": null,
+    "holder_state": null,
+    "id": "item:COUN-20",
+    "key": "item:COUN-20",
+    "lapsed_holder": "agent:COUN-A41",
+    "needs_human": false,
+    "review_takes": 0,
+    "reviewed_by": null,
+    "title": "item 19"
+   },
+   {
+    "branch": "",
+    "built_by": null,
+    "built_by_label": null,
+    "clause_needs": [
+     "human-only"
+    ],
+    "held_for_seconds": null,
+    "holder_state": null,
+    "id": "item:COUN-23",
+    "key": "item:COUN-23",
+    "lapsed_holder": "agent:COUN-A44",
+    "needs_human": true,
+    "review_takes": 0,
+    "reviewed_by": null,
+    "title": "item 22"
+   },
+   {
+    "branch": "",
+    "built_by": null,
+    "built_by_label": null,
+    "clause_needs": [],
+    "held_for_seconds": null,
+    "holder_state": null,
+    "id": "item:COUN-26",
+    "key": "item:COUN-26",
+    "lapsed_holder": "agent:COUN-A47",
+    "needs_human": false,
+    "review_takes": 0,
+    "reviewed_by": null,
+    "title": "item 25"
+   },
+   {
+    "branch": "",
+    "built_by": null,
+    "built_by_label": null,
+    "clause_needs": [
+     "human-only"
+    ],
+    "held_for_seconds": null,
+    "holder_state": null,
+    "id": "item:COUN-29",
+    "key": "item:COUN-29",
+    "lapsed_holder": "agent:COUN-A50",
+    "needs_human": true,
+    "review_takes": 0,
+    "reviewed_by": null,
+    "title": "item 28"
+   }
+  ],
+  "roles": [
+   "planner",
+   "worker"
+  ],
+  "seats": [
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "planner",
+    "state": "unused",
+    "wave": "wave-1"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-2"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   },
+   {
+    "consumed_by": null,
+    "minted_by": "agent:COUN-A21",
+    "reissued_from": null,
+    "role": "worker",
+    "state": "unused",
+    "wave": "wave-3"
+   }
+  ],
+  "seats_collapsed": {
+   "by_state": {
+    "consumed": 10
+   },
+   "count": 10
+  },
+  "tier_map": {
+   "overridden": false,
+   "overrides": []
+  },
+  "total": 51,
+  "waves": [
+   "wave-3",
+   "wave-2",
+   "wave-1"
+  ]
+ }
+}
