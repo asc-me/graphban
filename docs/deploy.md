@@ -50,6 +50,11 @@ how each is handled under N workers:
 - Rate limiter (`services/spam.py`), `rules_recommend` cache, `code_sync` org cache, `lru_cache`d providers: per-worker copies, accepted. Rate limits are per worker (up to N× the configured limit). Runtime LLM/embedder reconfiguration reaches only the serving worker until restart.
 - The log-export status panel reads a per-process flag, so a non-leader worker can report the exporter as not running.
 
+Verified 2026-10-31 against an empty `pgvector/pgvector:pg16` database with `WEB_CONCURRENCY=2`:
+one `Running upgrade  -> 0001` (the chain ran once, to head), one `credential retry loop started`,
+one `log export loop started`, and one `background loops: not the leader` from the second worker.
+`tests/test_serve_workers.py` exercises both locks against Postgres across two sessions.
+
 ### Rate limits and `TRUSTED_HOPS` (GRPH-439, GRPH-553)
 
 The compose stack puts **nginx in front of uvicorn** — the same topology as the hosted

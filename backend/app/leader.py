@@ -70,6 +70,10 @@ def release_background_leader() -> None:
     global _leader_conn
     if _leader_conn is not None:
         try:
-            _leader_conn.close()  # closing the session releases its advisory locks
+            # Unlock explicitly: `close()` only returns the connection to the pool, where the
+            # session — and the lock with it — would live on and block a successor.
+            _leader_conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _LEADER_KEY})
+            _leader_conn.commit()
         finally:
+            _leader_conn.close()
             _leader_conn = None

@@ -42,3 +42,50 @@ def test_sqlite_leader_helpers_are_noops(monkeypatch):
     with leader.boot_lock():
         pass
     assert leader.claim_background_leader() is True
+
+
+# --- Postgres: the advisory locks themselves -------------------------------------------
+# A second engine is a second session, which is what a second uvicorn worker is.
+
+import pytest  # noqa: E402
+from sqlalchemy import create_engine, text  # noqa: E402
+
+_pg = pytest.mark.skipif(leader.settings.is_sqlite, reason="advisory locks are Postgres-only")
+
+
+@_pg
+def test_only_one_session_wins_the_background_leader():
+    other = create_engine(leader.settings.database_url)
+    try:
+        assert leader.claim_background_leader() is True
+        with other.connect() as conn:
+            got = conn.execute(text("SELECT pg_try_advisory_lock(:k)"),
+                               {"k": leader._LEADER_KEY}).scalar()
+            assert got is False  # a second worker loses
+        leader.release_background_leader()
+        with other.connect() as conn:
+            got = conn.execute(text("SELECT pg_try_advisory_lock(:k)"),
+                               {"k": leader._LEADER_KEY}).scalar()
+            assert got is True  # released, so a successor can take over
+            conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": leader._LEADER_KEY})
+    finally:
+        leader.release_background_leader()
+        other.dispose()
+
+
+@_pg
+def test_boot_lock_excludes_other_sessions_while_held():
+    other = create_engine(leader.settings.database_url)
+    try:
+        with leader.boot_lock():
+            with other.connect() as conn:
+                got = conn.execute(text("SELECT pg_try_advisory_lock(:k)"),
+                                   {"k": leader._BOOT_KEY}).scalar()
+                assert got is False  # a second worker would wait here
+        with other.connect() as conn:
+            got = conn.execute(text("SELECT pg_try_advisory_lock(:k)"),
+                               {"k": leader._BOOT_KEY}).scalar()
+            assert got is True
+            conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": leader._BOOT_KEY})
+    finally:
+        other.dispose()
