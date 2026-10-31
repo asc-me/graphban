@@ -77,8 +77,9 @@ def _decisions(item_id):
 
 
 def test_the_sooner_reset_is_chosen_and_the_attempt_record_says_so(client, world):
-    soon = _ent(client, world, "anthropic", reset=datetime.now(timezone.utc) + timedelta(hours=1))
+    # `late` is created first, so creation order alone would pick it: only the reset decides
     late = _ent(client, world, "openai", reset=datetime.now(timezone.utc) + timedelta(days=3))
+    soon = _ent(client, world, "anthropic", reset=datetime.now(timezone.utc) + timedelta(hours=1))
     a = _runner(client, world, [late, soon])
     for e in (soon, late):
         _report(client, world, e, a, "registered")
@@ -89,6 +90,34 @@ def test_the_sooner_reset_is_chosen_and_the_attempt_record_says_so(client, world
     assert rec["entitlement_id"] == soon and "soonest reset" in rec["reason"]
     assert rec["agent_vendor"] == "anthropic" and rec["agent_model"] == "m"
     assert rec["matched"] is True
+
+
+def test_a_stated_reset_beats_an_earlier_created_entitlement_with_none(client, world):
+    unstated = _ent(client, world, "openai")
+    stated = _ent(client, world, "anthropic", reset=datetime.now(timezone.utc) + timedelta(days=3))
+    a = _runner(client, world, [unstated, stated])
+    for e in (unstated, stated):
+        _report(client, world, e, a, "registered")
+    _runner(client, world, [_ent(client, world, "google")], vendor="google")  # reviewer vendor
+    item = _item()
+    assert _claim(a, item) == item
+    (rec,) = [d for d in _decisions(item) if d["kind"] == "claim"]
+    assert rec["entitlement_id"] == stated
+    assert f"chosen over {unstated} by soonest reset" in rec["reason"]
+
+
+def test_the_reason_does_not_claim_soonest_reset_when_no_reset_decided(client, world):
+    first = _ent(client, world, "openai")
+    second = _ent(client, world, "anthropic")
+    a = _runner(client, world, [first, second])
+    for e in (first, second):
+        _report(client, world, e, a, "registered")
+    _runner(client, world, [_ent(client, world, "google")], vendor="google")  # reviewer vendor
+    item = _item()
+    assert _claim(a, item) == item
+    (rec,) = [d for d in _decisions(item) if d["kind"] == "claim"]
+    assert rec["entitlement_id"] == first
+    assert "soonest reset" not in rec["reason"] and "creation order decides" in rec["reason"]
 
 
 def test_a_build_that_would_leave_no_reviewer_vendor_is_not_scheduled(client, world):

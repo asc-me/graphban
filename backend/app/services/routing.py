@@ -65,12 +65,25 @@ def _why(entry: dict, ranked: list[dict]) -> str:
     if entry["state"] == "unknown":
         return f"{entry['id']} ({entry['vendor']}) is unknown: ranked below every available one"
     rivals = [e for e in ranked if e["state"] == "available" and e["id"] != entry["id"]]
-    reset = (f"resets {entry['next_reset_at'].isoformat()}" if entry["next_reset_at"]
-             else "no reset stated")
-    if rivals:
-        return (f"{entry['id']} ({entry['vendor']}) is available and {reset}; chosen over "
-                f"{', '.join(e['id'] for e in rivals)} by soonest reset")
-    return f"{entry['id']} ({entry['vendor']}) is the only available entitlement; {reset}"
+    mine = entry["next_reset_at"]
+    reset = f"resets {mine.isoformat()}" if mine else "no reset stated"
+    head = f"{entry['id']} ({entry['vendor']}) is available and {reset}"
+    if not rivals:
+        return f"{entry['id']} ({entry['vendor']}) is the only available entitlement; {reset}"
+    # Say "soonest reset" only for rivals a stated reset actually ranked below this one.
+    beaten = [e for e in rivals if mine and (e["next_reset_at"] is None or e["next_reset_at"] > mine)]
+    sooner = [e for e in rivals if e["next_reset_at"] and (mine is None or e["next_reset_at"] < mine)]
+    tied = [e for e in rivals if e not in beaten and e not in sooner]
+    parts = []
+    if beaten:
+        parts.append(f"chosen over {', '.join(e['id'] for e in beaten)} by soonest reset")
+    if tied:
+        parts.append(f"no stated reset separates it from {', '.join(e['id'] for e in tied)}"
+                     "; creation order decides")
+    if sooner:
+        parts.append(f"{', '.join(e['id'] for e in sooner)} reset sooner but were not "
+                     "usable for this claim")
+    return f"{head}; {'; '.join(parts)}"
 
 
 def review_reserved(ranked: list[dict], vendor: str) -> bool:
