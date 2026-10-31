@@ -163,8 +163,10 @@ def test_an_agent_on_a_revoked_key_reads_offline_at_once(client, auth, proj, db)
 
     client.post("/api/fleet/end-wave", json={"project_id": proj, "wave": "w1"}, headers=auth)
 
-    view = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()
-    assert view["agents"][0]["state"] == "offline"
+    # Offline with only its branch left, so the roster counts it (GRPH-1237); the page lists it.
+    page = client.get(f"/api/fleet/agents/collapsed?project_id={proj}&kind=orphaned",
+                      headers=auth).json()
+    assert page["agents"][0]["state"] == "offline"
     assert db.get(Agent, me["agent_id"]).last_seen_at == seen_before, "no falsified timestamp"
 
 

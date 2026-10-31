@@ -235,14 +235,15 @@ def test_roster_returns_the_live_in_full_and_the_dead_as_an_exact_count(client, 
     r = client.get(f"/api/fleet?project_id={pid}", headers=auth)
     body = r.json()
     ids = {a["id"] for a in body["agents"]}
-    # 3 online + a lease holder + an offline review holder + 1 orphaned branch.
-    assert len(body["agents"]) == 6
-    assert orphan_id in ids, "a holder of an orphaned branch is never collapsed away"
+    # 3 online + a lease holder + an offline review holder; the orphaned branch is counted.
+    assert len(body["agents"]) == 5
+    assert orphan_id not in ids, "an orphaned branch alone no longer keeps a row in full"
     for hid in holder_ids:
         assert hid in ids, "an agent holding a lease or review claim is never collapsed"
     reviewer = next(a for a in body["agents"] if a["id"] == holder_ids[1])
     assert reviewer["state"] == "offline" and reviewer["holdings"][0]["hold"] == "review"
-    assert body["collapsed"]["count"] == 2000
+    assert body["collapsed"]["count"] == 2001
+    assert body["collapsed"]["by_kind"] == {"quiet": 2000, "orphaned": 1}
     assert body["total"] == 2006 == len(body["agents"]) + body["collapsed"]["count"]
     assert len(json.dumps(body)) < ROSTER_SIZE_CEILING
 
@@ -252,9 +253,9 @@ def test_the_collapsed_agents_are_listed_on_demand_in_pages(client, auth, _db):
     orphan_id, holder_ids = _seed(_db, pid, n_gone=30)
     page = client.get(f"/api/fleet/agents/collapsed?project_id={pid}&offset=10&limit=15",
                       headers=auth).json()
-    assert page["total"] == 30 and len(page["agents"]) == 15
+    assert page["total"] == 31 and len(page["agents"]) == 15
     listed = {a["id"] for a in page["agents"]}
-    assert orphan_id not in listed and not listed & set(holder_ids)
+    assert not listed & set(holder_ids)
 
 
 @pytest.mark.parametrize("hold", ["build", "review"])
@@ -287,10 +288,10 @@ def test_an_old_dismissed_agent_stays_in_full_and_out_of_the_collapsed_count(cli
     row = next((a for a in body["agents"] if a["id"] == retired.id), None)
     assert row is not None and row["dismissed"] is True, \
         "a dismissed agent stays listed, where the view can restore it"
-    assert body["collapsed"]["count"] == 5
+    assert body["collapsed"]["count"] == 6  # five quiet plus the orphaned-branch agent
     assert body["total"] == len(body["agents"]) + body["collapsed"]["count"]
     page = client.get(f"/api/fleet/agents/collapsed?project_id={pid}", headers=auth).json()
-    assert page["total"] == 5 and retired.id not in {a["id"] for a in page["agents"]}
+    assert page["total"] == 6 and retired.id not in {a["id"] for a in page["agents"]}
 
 
 def test_mcp_fleet_status_is_not_collapsed(_db, client, auth):
@@ -299,3 +300,66 @@ def test_mcp_fleet_status_is_not_collapsed(_db, client, auth):
     pid = _proj(client, auth)
     _seed(_db, pid, n_gone=20)
     assert len(fleet.fleet_status(_db, pid)["agents"]) == 26
+
+
+# ---- GRPH-1237: offline agents with only an orphaned branch collapse too ------------------------
+
+def _row(id_, *, holdings=(), orphaned=False, seen=None, state="offline"):
+    return {"id": id_, "active_role": "worker", "state": state, "holdings": list(holdings),
+            "branch_orphaned": orphaned, "last_seen_at": seen}
+
+
+def test_the_recent_window_is_one_hour():
+    from app.services import fleet
+
+    assert fleet.ROSTER_RECENT_SECONDS == 3600
+    now = datetime.now(timezone.utc)
+    fresh = (now - timedelta(minutes=59)).isoformat()
+    stale = (now - timedelta(minutes=61)).isoformat()
+    out = fleet.collapse_roster({"agents": [_row("fresh", seen=fresh), _row("stale", seen=stale)]},
+                                now=now)
+    assert [a["id"] for a in out["agents"]] == ["fresh"]
+    assert out["collapsed"]["recent_seconds"] == 3600
+
+
+def test_an_offline_lease_holder_with_an_orphaned_branch_stays_in_full():
+    from app.services import fleet
+
+    now = datetime.now(timezone.utc).isoformat()
+    out = fleet.collapse_roster({"agents": [
+        _row("both", holdings=[{"id": "X-1", "hold": "build"}], orphaned=True, seen=now),
+        _row("only-branch", orphaned=True, seen=now)]})
+    assert [a["id"] for a in out["agents"]] == ["both"]
+    assert out["collapsed"]["by_kind"] == {"quiet": 0, "orphaned": 1}
+
+
+def test_a_thousand_orphaned_agents_collapse_to_an_exact_count(client, auth, _db):
+    import json
+
+    from app.models import Agent
+
+    pid = _proj(client, auth)
+    _seed(_db, pid, n_gone=0)
+    now = datetime.now(timezone.utc)
+    for i in range(1000):
+        _db.add(Agent(id=f"{pid}-o{i}", project_id=pid, number=5000 + i, active_role="worker",
+                      state="idle", last_seen_at=now - timedelta(minutes=5),
+                      branch=f"gb/o{i}"))
+    _db.commit()
+    body = client.get(f"/api/fleet?project_id={pid}", headers=auth).json()
+    assert len(body["agents"]) == 5
+    assert body["collapsed"]["by_kind"]["orphaned"] == 1001
+    assert body["total"] == len(body["agents"]) + body["collapsed"]["count"]
+    assert len(json.dumps(body)) < ROSTER_SIZE_CEILING
+    page = client.get(f"/api/fleet/agents/collapsed?project_id={pid}&kind=orphaned&limit=7",
+                      headers=auth).json()
+    assert page["total"] == 1001 and len(page["agents"]) == 7
+
+
+def test_consumed_and_revoked_seats_are_counted_not_sent():
+    from app.services import fleet
+
+    out = fleet.collapse_seats([{"state": s} for s in
+                                ["unused", "expired", "consumed", "consumed", "revoked"]])
+    assert [s["state"] for s in out["seats"]] == ["unused", "expired"]
+    assert out["seats_collapsed"] == {"count": 3, "by_state": {"consumed": 2, "revoked": 1}}
