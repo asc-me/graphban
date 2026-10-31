@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -216,9 +217,16 @@ def _seed_real_fleet(db, proj, agent_ids, minter, start):
     db.commit()
 
 
+def _is_embedding_bookkeeping(q):
+    # Both engines: SQLite's Python-cosine path reads `SELECT code_nodes.…` (its FROM is past
+    # _Count's 100-char cut); Postgres runs `SELECT id, (embedding <=> …) AS distance FROM
+    # code_nodes …`, then db.get(CodeNode) per hit.
+    return (q.startswith(("PRAGMA busy_timeout", "INSERT INTO llm_call_spans", "SELECT code_nodes."))
+            or (q.startswith("SELECT") and re.search(r"\bFROM code_nodes\b", q) is not None))
+
+
 def _without_embedding(c):
-    return sum(1 for q in c.sql if not q.startswith(("PRAGMA busy_timeout", "INSERT INTO llm_call_spans",
-                                                     "SELECT code_nodes.")))
+    return sum(1 for q in c.sql if not _is_embedding_bookkeeping(q))
 
 
 def _user_id(db):
