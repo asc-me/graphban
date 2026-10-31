@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -306,6 +307,11 @@ class Graphban:
         try:
             response = _post_within(self._client(), self.endpoint, body, self.deadline)
         except httpx.HTTPError as exc:
+            if isinstance(exc, _Abandoned):
+                # The abandoned client is being closed on a background thread. Drop it here, in
+                # the caller's thread, so the next call cannot pick it up before that close
+                # lands and get httpx's RuntimeError mid-request (the GRPH-1235 hazard).
+                self._http = None
             raise ServerUnreachable(f"{self.endpoint}: {exc!r}", tool=label) from exc
 
         if response.status_code >= 500:
@@ -359,6 +365,10 @@ def _keepalive_options() -> list[tuple[int, int, int]]:
     return options
 
 
+class _Abandoned(httpx.ReadTimeout):
+    """The deadline passed with the exchange still running: `client` is being closed behind it."""
+
+
 def _post_within(client: httpx.Client, url: str, body: dict, deadline: float) -> httpx.Response:
     """POST `body`, giving up after `deadline` seconds in TOTAL (GRPH-1179).
 
@@ -405,7 +415,7 @@ def _post_within(client: httpx.Client, url: str, body: dict, deadline: float) ->
     if not done.wait(deadline):
         # Closing can itself block on the stuck connection; never let it hold the caller.
         threading.Thread(target=_close_quietly, args=(client,), daemon=True).start()
-        raise httpx.ReadTimeout(f"no complete reply within {deadline:g}s")
+        raise _Abandoned(f"no complete reply within {deadline:g}s")
     if "error" in outcome:
         raise outcome["error"]
     return outcome["response"]
@@ -415,7 +425,7 @@ def _close_quietly(client: httpx.Client) -> None:
     try:
         client.close()
     except Exception:  # noqa: BLE001 - best effort on a connection already given up on
-        pass
+        logging.getLogger(__name__).debug("closing an abandoned client failed", exc_info=True)
 
 
 def _text_of(result: dict) -> str:

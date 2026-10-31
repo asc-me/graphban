@@ -198,6 +198,55 @@ def test_a_client_the_watchdog_closed_after_a_reply_is_replaced():
     assert gb.call("fleet_status") == {"ok": True}
 
 
+class _FirstHangsTransport(httpx.BaseTransport):
+    """The first request hangs like a half-open peer; later ones are answered."""
+
+    def __init__(self, reply):
+        self.reply = reply
+        self.requests = 0
+        self.release_read = threading.Event()
+
+    def handle_request(self, request):
+        self.requests += 1
+        if self.requests == 1:
+            self.release_read.wait(60)
+            raise httpx.ReadError("released", request=request)
+        return self.reply(request)
+
+
+def test_a_late_close_of_an_abandoned_client_does_not_land_under_the_next_call(monkeypatch):
+    """GRPH-1244 review: the abandoned client is closed on a background thread AFTER the caller
+    got its timeout. The next call must not reuse that client, or the late close lands under it
+    and httpx raises RuntimeError, which `_rpc` does not turn into ServerUnreachable."""
+    import gbfleet.client as client_mod
+    from gbfleet.client import ServerUnreachable
+
+    real_close = client_mod._close_quietly
+    release_close = threading.Event()
+    closed = threading.Event()
+
+    def held_close(client):
+        release_close.wait(60)  # the background close has not even begun yet
+        real_close(client)
+        closed.set()
+
+    monkeypatch.setattr(client_mod, "_close_quietly", held_close)
+    transport = _FirstHangsTransport(_rpc_reply(lambda tool: {"ok": True}))
+    gb = Graphban(base_url="http://x", api_key="k", deadline=1, transport=transport)
+    try:
+        abandoned = gb._client()
+        with pytest.raises(ServerUnreachable):
+            gb.call("fleet_status")
+        assert gb._client() is not abandoned, "the abandoned client was handed to the next call"
+        release_close.set()  # the late close lands now, on whatever the caller holds
+        assert closed.wait(5)
+        assert abandoned.is_closed
+        assert gb.call("fleet_status") == {"ok": True}
+    finally:
+        transport.release_read.set()
+        release_close.set()
+
+
 class _Stop(Exception):
     pass
 
