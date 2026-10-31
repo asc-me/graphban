@@ -223,6 +223,9 @@ def utilization(db: Session, org_id: str, *, now: datetime | None = None) -> dic
         # None when no entitlement states a budget: nothing was measured against, so the
         # share is unknown, not 0%.
         "share_used": (used / budget) if budget else None,
+        # A spend with no token count is not zero tokens: with any unreported, share_used only
+        # counts what was reported, so it is a floor on the real share, never the share itself.
+        "share_is_lower_bound": bool(budget) and unreported > 0,
         "tokens_used": used, "budget": budget or None,
         "entitlements_with_budget": with_budget, "entitlements_without_budget": without_budget,
         "unreported_spends": unreported,

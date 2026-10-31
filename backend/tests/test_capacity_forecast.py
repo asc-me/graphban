@@ -100,6 +100,17 @@ def test_utilization_is_unknown_without_a_budget_and_never_zero_for_unrecorded(c
     _week_of_events(client, org, ent, 10, tokens=250)
     u = _cap(client, org)["utilization"]
     assert u["share_used"] == 0.25 and u["tokens_used"] == 250
+    assert u["share_is_lower_bound"] is False
+
+
+def test_utilization_with_unreported_spend_is_a_lower_bound(client, org):
+    ent = _new_ent(client, org)
+    _set(client, org, ent, token_budget=1000)
+    _week_of_events(client, org, ent, 10, tokens=250)
+    _week_of_events(client, org, ent, 10)
+    u = _cap(client, org)["utilization"]
+    assert u["unreported_spends"] == 1
+    assert u["share_used"] == 0.25 and u["share_is_lower_bound"] is True
 
 
 def test_r7_fires_on_routinely_unused_weeks(client, org):

@@ -3,7 +3,7 @@ import { useHarnessCapacity } from "@/lib/queries";
 /**
  * PRD-62 S5 — per entitlement: headroom state, reset cadence, this week's tokens and a
  * projected exhaustion time; then the org rollup. Every absence says why: a projection with no
- * date gives its reason, an unreported spend is a count, and a rollup number the supervisor does
+ * date gives its reason, an unreported spend is a count (and makes the rollup share a floor), and a rollup number the supervisor does
  * not record yet reads "not recorded" rather than 0. Hidden when the org is not on a plan that
  * has capacity routing (the endpoint answers 402).
  */
@@ -19,7 +19,9 @@ export function CapacityPanel({ projectId }: { projectId?: string }) {
         Headroom used last week:{" "}
         {u.share_used === null
           ? "unknown — no entitlement states a token budget"
-          : `${Math.round(u.share_used * 100)}% of ${u.budget} tokens`}
+          : u.share_is_lower_bound
+            ? `≥${Math.round(u.share_used * 100)}% of ${u.budget} tokens (+${u.unreported_spends} unreported)`
+            : `${Math.round(u.share_used * 100)}% of ${u.budget} tokens`}
         . Waves ended by capacity: {count(u.waves_ended_by_capacity)}. Items deferred to a reset:{" "}
         {count(u.items_deferred_to_reset)}.
       </div>

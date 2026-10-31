@@ -2817,6 +2817,8 @@ export interface HarnessCapacity {
     week_start: string;
     week_end: string;
     share_used: number | null;
+    /** True when some spend reported no token count: `share_used` is then a floor. */
+    share_is_lower_bound: boolean;
     tokens_used: number;
     budget: number | null;
     entitlements_with_budget: number;
