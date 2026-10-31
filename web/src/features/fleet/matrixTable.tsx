@@ -27,9 +27,14 @@ function gradeClass(grade: string | null): string {
   return grade ? GRADE_TONE[grade] : "border-line-2 text-muted";
 }
 
-export function MatrixTable({ rows, harnessHref }: {
+export function MatrixTable({ rows, harnessHref, loading = false, error = false, onRetry }: {
   rows: FleetMatrixRow[];
   harnessHref: string;
+  /** The source query has not answered yet — not a claim about what the server has. */
+  loading?: boolean;
+  /** The source query failed; there is nothing to say about the catalog. */
+  error?: boolean;
+  onRetry?: () => void;
 }) {
   return (
     <section className="mb-7" data-testid="fleet-matrix">
@@ -49,7 +54,14 @@ export function MatrixTable({ rows, harnessHref }: {
           Performance and rankings →
         </Link>
       </div>
-      {rows.length === 0 ? (
+      {error ? (
+        <PlannerError
+          message={`${FETCH_FAILED} The catalog was not read — this is not "not served".`}
+          onRetry={() => { onRetry?.(); }}
+        />
+      ) : loading ? (
+        <TableSkeleton rows={4} columns={5} />
+      ) : rows.length === 0 ? (
         <p className="rounded-[11px] border border-dashed border-line-2 px-3 py-6 text-center text-body text-muted">
           The catalog has not been served. That is not an empty matrix.
         </p>

@@ -22,7 +22,9 @@ import { MixAllocation } from "./MixAllocation";
 export function FleetV2View() {
   const { activeId, active } = useProjectCtx();
   const { data: config } = useConfig();
-  const { data, refetch } = useFleet(activeId);
+  const { data, refetch, isError } = useFleet(activeId);
+  const loading = !data && !isError;
+  const failed = !data && !!isError;
   const viewHref = (view: string) =>
     config?.hosted_mode && active?.tag ? projectPath(active.tag, view) : `/${view}`;
 
@@ -49,6 +51,9 @@ export function FleetV2View() {
           <MatrixTable
             rows={data?.matrix?.rows ?? []}
             harnessHref={viewHref("harness")}
+            loading={loading}
+            error={failed}
+            onRetry={() => { void refetch(); }}
           />
           <TierMapPanel
             projectId={activeId}
@@ -60,6 +65,7 @@ export function FleetV2View() {
           rows={data?.matrix?.rows ?? []}
           recent={data?.mix}
           onSaved={() => { void refetch(); }}
+          loading={loading || failed}
         />
         </div>
       </div>

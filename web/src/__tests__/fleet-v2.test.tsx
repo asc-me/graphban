@@ -16,7 +16,7 @@ vi.mock("@/features/ProjectContext", () => ({
                           activeId: "core", projects: [] }),
 }));
 
-const fleet = vi.hoisted(() => ({ data: null as unknown, refetch: vi.fn() }));
+const fleet = vi.hoisted(() => ({ data: null as unknown, isError: false, refetch: vi.fn() }));
 const tierMap = vi.hoisted(() => ({
   data: null as { rows: unknown[]; cells: unknown[]; overridden: boolean } | null,
   isFetching: false,
@@ -66,6 +66,7 @@ const rows = [
 describe("Fleet.v2 catalog and allocation", () => {
   beforeEach(() => {
     fleet.data = { ...BASE };
+    fleet.isError = false;
     tierMap.data = null;
     fleet.refetch.mockReset();
     api.saveFleetProfile.mockReset();
@@ -182,5 +183,33 @@ describe("Fleet.v2 catalog and allocation", () => {
     expect(follows(catalog, map)).toBe(true);
     expect(follows(map, alloc)).toBe(true);
     expect(screen.getByRole("link", { name: "Harness performance" })).toBeInTheDocument();
+  });
+
+  it("shows loading, not 'not served' or 'No mixable harness', while the fleet query is pending", () => {
+    fleet.data = undefined;
+    renderView();
+    const content = screen.getByTestId("fleet-v2-content");
+    expect(within(content).queryByText(/not been served/)).not.toBeInTheDocument();
+    expect(within(content).queryByText(/No mixable harness/)).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("fleet-matrix")).getByLabelText("Loading table")).toBeInTheDocument();
+    expect(within(screen.getByTestId("fleet-page-tabs")).queryByText(/not served/)).not.toBeInTheDocument();
+  });
+
+  it("still says not served for a resolved payload without a catalog", () => {
+    fleet.data = { ...BASE, matrix: { rows: [] } };
+    renderView();
+    expect(within(screen.getByTestId("fleet-matrix")).getByText(/has not been served/)).toBeInTheDocument();
+    expect(within(screen.getByTestId("fleet-page-tabs")).getByText("not served")).toBeInTheDocument();
+  });
+
+  it("shows an error with retry when the fleet request failed", async () => {
+    fleet.data = undefined;
+    fleet.isError = true;
+    renderView();
+    const matrix = screen.getByTestId("fleet-matrix");
+    expect(within(matrix).queryByText(/has not been served/)).not.toBeInTheDocument();
+    await userEvent.click(within(matrix).getByRole("button", { name: /retry|try again/i }));
+    expect(fleet.refetch).toHaveBeenCalled();
+    expect(within(screen.getByTestId("fleet-page-tabs")).getAllByText("unavailable")).toHaveLength(2);
   });
 });

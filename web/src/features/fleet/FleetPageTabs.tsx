@@ -52,7 +52,9 @@ export function FleetPageTabs({ active }: { active: FleetTab }) {
       ? "unavailable"
       : "…";
   const harnessCount = new Set((data?.matrix?.rows ?? []).map((r) => r.harness)).size;
-  const harnessMeta = harnessCount ? `${harnessCount} in catalog` : "not served";
+  const harnessMeta = !data
+    ? isError ? "unavailable" : "…"
+    : harnessCount ? `${harnessCount} in catalog` : "not served";
 
   const tabs = [
     { id: "manage" as const, label: "Fleet management", meta: manageMeta },
