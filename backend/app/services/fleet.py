@@ -4904,13 +4904,18 @@ def propose_allocation(db: Session, project_id: str | None = None, *,
     # review queue — the place the fleet is actually short — rather than idling as a
     # separate "reviewer" role that no longer exists.
     want_with_cluster = min(len(free_clusters), n) if free_clusters else 0
+    # PRD-62 S4: the entitlement axis, after tier and matrix score. Agents whose entitlement
+    # has no headroom (or would leave no reviewer vendor) are not handed a cluster first.
+    from app.services import routing as routing_svc
+    axis = routing_svc.axis(db, project_id, [a["id"] for a in roster])
+    roster = sorted(roster, key=lambda a: bool(axis[a["id"]]) and axis[a["id"]]["entitlement_id"] is None)
     mapping = []
     for i, agent in enumerate(roster):
-        if i < want_with_cluster:
-            mapping.append({"agent": agent["id"], "role": "worker",
-                            "cluster": free_clusters[i]["items"]})
-        else:
-            mapping.append({"agent": agent["id"], "role": "worker", "cluster": []})
+        row = {"agent": agent["id"], "role": "worker",
+               "cluster": free_clusters[i]["items"] if i < want_with_cluster else []}
+        if axis[agent["id"]] is not None:
+            row["entitlement"] = axis[agent["id"]]
+        mapping.append(row)
     return {
         "workers": n,
         "reviewers": 0,

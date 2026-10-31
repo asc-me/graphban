@@ -19,6 +19,7 @@ Plan-gated to `team` / `enterprise` (D8) by `quotas.require_capacity_routing`.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from secrets import token_urlsafe
 
 from sqlalchemy import select
@@ -36,7 +37,7 @@ SECRET_KINDS: tuple[str, ...] = ("api_key", "cloud")
 #: The writable fields. Anything else in a write is refused, never dropped.
 FIELDS: tuple[str, ...] = (
     "vendor", "kind", "owner_user_id", "runner", "plan_label", "reset_cadence",
-    "secret_ref", "token_budget",
+    "secret_ref", "token_budget", "next_reset_at",
 )
 
 #: Said wherever a runner's declaration is shown, so no reader takes it for a check (S2).
@@ -126,6 +127,15 @@ def _apply(db: Session, row: Entitlement, fields: dict) -> None:
             raise Validation("token_budget must be a non-negative integer, or null for none "
                              "stated")
         row.token_budget = budget
+
+    if "next_reset_at" in fields:
+        raw = fields["next_reset_at"]
+        try:
+            when = None if raw in (None, "") else datetime.fromisoformat(str(raw))
+        except ValueError:
+            raise Validation("next_reset_at must be an ISO-8601 time, or null for none stated")
+        row.next_reset_at = (when if when is None or when.tzinfo
+                             else when.replace(tzinfo=timezone.utc))
 
     if not row.vendor:
         raise Validation("vendor is required, e.g. anthropic")
@@ -217,6 +227,7 @@ def to_dict(db: Session, row: Entitlement, *, declared: dict[str, list[dict]] | 
         # field rather than leaving a reader to wonder whether it was withheld.
         "secret_ref": row.secret_ref,
         "token_budget": row.token_budget,
+        "next_reset_at": row.next_reset_at.isoformat() if row.next_reset_at else None,
         # PRD-62 S3: derived from the ledger on read, never stored (D4).
         "headroom": headroom_svc.headroom(db, row),
         "declared_by": declared.get(row.id, []),
