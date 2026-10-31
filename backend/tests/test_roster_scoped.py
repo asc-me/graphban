@@ -204,3 +204,91 @@ def test_outputs_match_the_pre_change_snapshot(client, auth, db, roster):
     assert want["fleet"]["collapsed"]["count"] == OLD and want["live"]["users"]
     for part in want:
         assert got[part] == want[part], part
+
+
+# ---- live with several users: the cap is filled group by group (bounce of 4b77e5db) ----------
+
+MULTI_SNAPSHOT = Path(__file__).parent / "snapshots" / "grph1253_multi.json"
+
+
+@pytest.fixture()
+def two_users(client, auth, db):
+    """u_a and u_b, 30 offline agents each; u_a's were seen 10h ago, u_b's 2h ago.
+
+    A project-wide "cap most recently seen" pick takes only u_b's, yet the unfiltered board
+    puts u_a first and `user_filter=u_a` shows only u_a. Plus one online agent per user.
+    """
+    from app.models import User
+
+    proj = client.post("/api/projects", json={"name": "Two users"}, headers=auth).json()["id"]
+    now = datetime.now(timezone.utc)
+    keys = {}
+    for uid, name in (("u_a", "Alice"), ("u_b", "Bob")):
+        db.add(User(id=uid, name=name, handle=uid, email=f"{uid}@example.test",
+                    password_hash="x"))
+        db.add(ApiKey(id=f"key-{uid}", user_id=uid, project_id=proj, name=f"k-{uid}",
+                      prefix=f"gb_sk_{uid}", hashed_key=f"h-{uid}", scopes=["read", "write"]))
+        keys[uid] = f"key-{uid}"
+    db.flush()
+    n = 0
+    for uid, ago in (("u_a", timedelta(hours=10)), ("u_b", timedelta(hours=2))):
+        for i in range(30):
+            n += 1
+            seen = now - ago - timedelta(seconds=i)
+            db.add(Agent(id=f"agent-{uid}-{i:02d}", project_id=proj, number=n,
+                         api_key_id=keys[uid], label=f"{uid}-{i}", active_role="worker",
+                         branch="", state="idle", last_seen_at=seen, registered_at=seen))
+        n += 1
+        db.add(Agent(id=f"agent-{uid}-on", project_id=proj, number=n, api_key_id=keys[uid],
+                     label=f"{uid}-on", active_role="worker", branch="", state="idle",
+                     last_seen_at=now, registered_at=now))
+    db.commit()
+    return proj
+
+
+_BOARDS = {"all": {}, "viewer_u_b": {"viewer_id": "u_b"}, "filter_u_a": {"user_filter": "u_a"},
+           "filter_u_b": {"user_filter": "u_b"}}
+
+
+def _boards(db, proj, **extra):
+    from app.services import live as live_svc
+
+    return {name: _norm(live_svc.board(db, proj, cap=10, **kw, **extra), {proj: "PROJECT"})
+            for name, kw in _BOARDS.items()}
+
+
+def test_live_filter_shows_the_filtered_users_agents(db, two_users):
+    from app.services import live as live_svc
+
+    board = live_svc.board(db, two_users, cap=10, user_filter="u_a")
+    [u] = board["users"]
+    assert u["user_id"] == "u_a" and u["total"] == 31 and u["online"] == 1
+    assert [a["label"] for a in u["agents"]] == ["u_a-on"] + [f"u_a-{i}" for i in range(9)]
+    board = live_svc.board(db, two_users, cap=10)
+    assert [u["user_id"] for u in board["users"]] == ["u_a"]
+    assert len(board["users"][0]["agents"]) == 10
+
+
+def test_live_scoped_matches_the_whole_roster_board_for_every_group(db, two_users):
+    """The whole-roster board (injected list_agents: main's path) is the oracle."""
+    whole = _boards(db, two_users, list_agents=fleet_svc.list_agents)
+    for name, got in _boards(db, two_users).items():
+        assert got == whole[name], name
+
+
+def test_live_scoped_loads_online_plus_the_cap_per_user(db, two_users):
+    from app.services import live as live_svc
+
+    ids, _ = _loaded_agent_ids(db, lambda: live_svc.board(db, two_users, cap=10))
+    assert len(ids) == 2 + 2 * 10, len(ids)
+
+
+def test_live_multi_user_matches_the_pre_change_snapshot(db, two_users):
+    got = json.loads(json.dumps(_boards(db, two_users), default=str))
+    if os.environ.get("GRPH1253_WRITE_SNAPSHOT"):
+        MULTI_SNAPSHOT.write_text(json.dumps(got, indent=1, sort_keys=True) + "\n")
+        pytest.skip("snapshot written")
+    want = json.loads(MULTI_SNAPSHOT.read_text())
+    assert want["filter_u_a"]["users"][0]["agents"]
+    for name in want:
+        assert got[name] == want[name], name

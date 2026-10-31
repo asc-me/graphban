@@ -192,7 +192,7 @@ def _scoped_roster(db: Session, project_id: str, cap: int) -> tuple[list[dict], 
     """The agents the board can show, and the census of all of them (GRPH-1253).
 
     The payload takes at most `cap` agents, online first and then most recently seen, so the
-    roster needs every online agent plus the `cap` most recently seen of the rest; the other
+    roster needs every online agent plus, per user, the `cap` most recently seen of the rest; the other
     thousands only ever appear as counts. Those counts come from one grouped query, exact, and
     they are what the group headers, `total_agents` and `by_role` read.
 
@@ -209,10 +209,18 @@ def _scoped_roster(db: Session, project_id: str, cap: int) -> tuple[list[dict], 
         .where(Agent.project_id == project_id, shown)
         .group_by(ApiKey.user_id, Agent.active_role, offline)).all()
     online_clause = and_(~c["offline"], Agent.state.is_distinct_from("quarantined"))
-    recent = db.scalars(
-        select(Agent.id).where(Agent.project_id == project_id, shown, ~online_clause)
-        .order_by(Agent.last_seen_at.is_(None), Agent.last_seen_at.desc(), Agent.number)
-        .limit(cap)).all()
+    # The cap is filled group by group (viewer first, then label order) and `user_filter` can
+    # pick any one group, so the offline pick is the `cap` most recent of EACH user's, not of
+    # the project's: whichever group the payload reaches, its shown agents are loaded. The
+    # order is `_sort_agents`' (last seen descending, nulls last, roster order on a tie).
+    rank = func.row_number().over(
+        partition_by=ApiKey.user_id,
+        order_by=(Agent.last_seen_at.is_(None), Agent.last_seen_at.desc(), Agent.number),
+    ).label("rank")
+    ranked = (select(Agent.id.label("id"), rank)
+              .select_from(Agent).outerjoin(ApiKey, ApiKey.id == Agent.api_key_id)
+              .where(Agent.project_id == project_id, shown, ~online_clause)).subquery()
+    recent = db.scalars(select(ranked.c.id).where(ranked.c.rank <= cap)).all()
     roster = fleet_svc.list_agents(
         db, project_id, now=now,
         where=and_(shown, or_(online_clause, Agent.id.in_(recent))))
