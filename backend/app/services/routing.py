@@ -4,7 +4,10 @@ Credentials never move; work does. This module never runs anything on another ru
 entitlement and never proxies for one: it only decides which claimant an item is OFFERED to.
 
 **The rung order** (after tier and matrix score, which are decided elsewhere): `available`
-entitlements first, soonest stated reset first (use it before it is lost), then `unknown`.
+entitlements first, then the ladder rung (D6: subscription, api_key within budget, local, or
+the project policy's `ladder`), soonest stated reset first within a rung (use it before it is
+lost), then `unknown`. A kind the ladder omits is never routed to, and an api_key whose stated
+`token_budget` is met by this period's reported spend is skipped.
 `exhausted`, `broken` and `unreachable` are skipped (D4). A reset nobody stated sorts after
 every stated one and is never invented (D5).
 
@@ -34,6 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Agent, Entitlement, Item, Organization, Project, RoutingDecision, utcnow
+from app.services import fleet_profiles
 from app.services import headroom as headroom_svc
 from app.services import quotas
 
@@ -45,36 +49,65 @@ def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def rank(db: Session, org_id: str, *, now: datetime | None = None) -> list[dict]:
-    """The org's entitlements with headroom, best first: available by soonest stated reset,
-    then unknown. Skipped states are not returned — see `skipped` for why."""
+def rung_of(kind: str) -> str:
+    """The ladder rung an entitlement kind sits on; `cloud` rides the api_key rung."""
+    return "api_key" if kind == "cloud" else kind
+
+
+def _budget_spent(db: Session, row: Entitlement, now: datetime) -> bool:
+    """An api_key whose stated token_budget is met by the tokens reported this period. The
+    budget is read per reset period and the period as the trailing week, as `forecast` does."""
+    if row.kind != "api_key" or row.token_budget is None:
+        return False
+    events = headroom_svc._events(db, row.id)
+    spent = headroom_svc._spend_between(events, now - headroom_svc.WEEK, now + timedelta(seconds=1))
+    return spent["tokens"] >= row.token_budget
+
+
+def rank(db: Session, org_id: str, *, now: datetime | None = None,
+         ladder: list[str] | None = None) -> list[dict]:
+    """The org's entitlements with headroom, best first: available before unknown, then the
+    ladder rung (D6), then soonest stated reset. An entitlement on a rung the ladder omits, or
+    an api_key whose budget is spent this period, is not returned."""
+    ladder = list(ladder or fleet_profiles.DEFAULT_LADDER)
+    now = now or datetime.now(timezone.utc)
     rows = db.scalars(select(Entitlement).where(Entitlement.org_id == org_id)
                       .order_by(Entitlement.created_at, Entitlement.id)).all()
     out = []
     for r in rows:
+        rung = rung_of(r.kind)
+        if rung not in ladder:
+            continue
         state = headroom_svc.headroom(db, r, now=now)["state"]
-        if state in USABLE:
-            out.append({"id": r.id, "vendor": r.vendor, "state": state,
+        if state in USABLE and not _budget_spent(db, r, now):
+            out.append({"id": r.id, "vendor": r.vendor, "state": state, "rung": rung,
+                        "rung_rank": ladder.index(rung),
                         "next_reset_at": _aware(r.next_reset_at) if r.next_reset_at else None})
     far = datetime.max.replace(tzinfo=timezone.utc)
-    out.sort(key=lambda e: (e["state"] != "available", e["next_reset_at"] or far))
+    out.sort(key=lambda e: (e["state"] != "available", e["rung_rank"], e["next_reset_at"] or far))
     return out
 
 
 def _why(entry: dict, ranked: list[dict]) -> str:
+    who = f"{entry['id']} ({entry['vendor']}, {entry['rung']} rung)"
     if entry["state"] == "unknown":
-        return f"{entry['id']} ({entry['vendor']}) is unknown: ranked below every available one"
+        return f"{who} is unknown: ranked below every available one"
     rivals = [e for e in ranked if e["state"] == "available" and e["id"] != entry["id"]]
     mine = entry["next_reset_at"]
     reset = f"resets {mine.isoformat()}" if mine else "no reset stated"
-    head = f"{entry['id']} ({entry['vendor']}) is available and {reset}"
+    head = f"{who} is available and {reset}"
     if not rivals:
-        return f"{entry['id']} ({entry['vendor']}) is the only available entitlement; {reset}"
+        return f"{who} is the only available entitlement; {reset}"
+    # A higher rung decides before any reset does; say so rather than crediting the reset.
+    lower = [e for e in rivals if e["rung_rank"] > entry["rung_rank"]]
+    rivals = [e for e in rivals if e["rung_rank"] == entry["rung_rank"]]
     # Say "soonest reset" only for rivals a stated reset actually ranked below this one.
     beaten = [e for e in rivals if mine and (e["next_reset_at"] is None or e["next_reset_at"] > mine)]
     sooner = [e for e in rivals if e["next_reset_at"] and (mine is None or e["next_reset_at"] < mine)]
     tied = [e for e in rivals if e not in beaten and e not in sooner]
     parts = []
+    if lower:
+        parts.append(f"{entry['rung']} rung is above {', '.join(e['id'] for e in lower)}")
     if beaten:
         parts.append(f"chosen over {', '.join(e['id'] for e in beaten)} by soonest reset")
     if tied:
@@ -103,7 +136,7 @@ def gate(db: Session, item: Item, agent_id: str, *, now: datetime | None = None)
     org = db.get(Organization, project.org_id) if project is not None and project.org_id else None
     if org is None or not quotas.plan_of(org).capacity_routing:
         return None
-    ranked = rank(db, org.id, now=now)
+    ranked = rank(db, org.id, now=now, ladder=fleet_profiles.ladder_of(db, item.project_id))
     mine = [e for e in ranked if e["id"] in declared]
     live = live_reservation(db, item.id, now=now)
 
@@ -233,7 +266,7 @@ def axis(db: Session, project_id: str | None, agent_ids: list[str]) -> dict[str,
     org = db.get(Organization, project.org_id) if project is not None and project.org_id else None
     if org is None or not quotas.plan_of(org).capacity_routing:
         return {a: None for a in agent_ids}
-    ranked = rank(db, org.id)
+    ranked = rank(db, org.id, ladder=fleet_profiles.ladder_of(db, project_id))
     out: dict[str, dict | None] = {}
     for aid in agent_ids:
         agent = db.get(Agent, aid)

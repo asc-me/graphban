@@ -18,7 +18,12 @@ from app.models import FleetProfile, Project, utcnow
 
 AXES: tuple[str, ...] = ("cost", "quality", "latency", "locality")
 POLICY_KEYS: tuple[str, ...] = ("local_only", "reviewer_cross_vendor", "allowed_harnesses", "caps",
-                                 "cluster_ceiling")
+                                 "cluster_ceiling", "ladder")
+#: Capacity-routing rungs (PRD-62 D6), in the default order: a subscription with headroom, then
+#: an org API key within its stated budget, then a local model. `cloud` entitlements ride the
+#: `api_key` rung (both are metered by a handle the runner resolves).
+LADDER_RUNGS: tuple[str, ...] = ("subscription", "api_key", "local")
+DEFAULT_LADDER: tuple[str, ...] = LADDER_RUNGS
 #: Lanes a `cluster_ceiling` may name — `delegation.lane_for`'s values.
 CEILING_LANES: tuple[str, ...] = ("frontend", "backend", "mixed")
 #: The ceiling a project that set none still gets (GRPH-948). One web item per claim: the
@@ -169,14 +174,44 @@ def normalise_policy(raw: Any) -> dict | None:
     allowed = _names(raw.get("allowed_harnesses"), "allowed_harnesses")
     caps = _caps(raw.get("caps"))
     ceiling = _ceiling(raw.get("cluster_ceiling"))
-    if not local_only and not cross and not allowed and not caps and not ceiling:
+    ladder = _ladder(raw.get("ladder"))
+    if not local_only and not cross and not allowed and not caps and not ceiling and not ladder:
         return None
     out = {"local_only": local_only, "reviewer_cross_vendor": cross, "allowed_harnesses": allowed}
     if caps:
         out["caps"] = caps
     if ceiling:
         out["cluster_ceiling"] = ceiling
+    if ladder:
+        out["ladder"] = ladder
     return out
+
+
+def _ladder(value: Any) -> list[str] | None:
+    """D6: the rungs capacity routing may use, in order. Null keeps `DEFAULT_LADDER`; a rung
+    left out is never routed to. An empty list is refused, not read as "no rungs": it would
+    switch routing off by accident."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not value:
+        raise ProfileInvalid(f"ladder must be a non-empty list of rungs from {list(LADDER_RUNGS)}")
+    out: list[str] = []
+    for v in value:
+        if v not in LADDER_RUNGS:
+            raise ProfileInvalid(f"unknown ladder rung {v!r}; rungs are {list(LADDER_RUNGS)}")
+        if v in out:
+            raise ProfileInvalid(f"ladder lists {v!r} twice")
+        out.append(v)
+    return out
+
+
+def ladder_of(db: Session, project_id: str | None) -> list[str]:
+    """The rungs in force for this project: its policy's `ladder`, else the PRD order."""
+    policy = policy_of(db, project_id) or {}
+    set_ = policy.get("ladder") if isinstance(policy, dict) else None
+    if isinstance(set_, list) and set_ and all(r in LADDER_RUNGS for r in set_):
+        return list(set_)
+    return list(DEFAULT_LADDER)
 
 
 def _ceiling(value: Any) -> dict | None:
