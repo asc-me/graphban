@@ -3368,6 +3368,9 @@ class Entitlement(Base):
     reset_cadence: Mapped[str] = mapped_column(String, default="", server_default="")
     secret_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     token_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: When the owner says this entitlement next resets. Stated, never parsed from vendor text
+    #: (D5); NULL = not stated, ranked after every entitlement that did state one (S4).
+    next_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
@@ -3399,3 +3402,33 @@ class EntitlementEvent(Base):
     tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+
+
+class RoutingDecision(Base):
+    """One capacity-routing decision about one item (PRD-62 S4): the attempt-record row that
+    says which entitlement was chosen and why, beside the vendor and model of whoever then
+    claimed it, so a claim that did not match its reservation is visible.
+
+    `kind` is `reservation` (a soft hold, D10: `reserved_until` is its TTL, `ended_at` /
+    `ended_reason` say how it stopped) or `claim` (a routed claim). A reservation is LIVE while
+    `ended_at` is NULL and `reserved_until` is in the future; it ends at once when its holder
+    reports a limit or a failure, not when the clock runs out.
+    """
+
+    __tablename__ = "routing_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    entitlement_id: Mapped[str | None] = mapped_column(ForeignKey("entitlements.id"),
+                                                       nullable=True, index=True)
+    reason: Mapped[str] = mapped_column(String, default="", server_default="")
+    reserved_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_reason: Mapped[str] = mapped_column(String, default="", server_default="")
+    agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    agent_vendor: Mapped[str] = mapped_column(String, default="", server_default="")
+    agent_model: Mapped[str] = mapped_column(String, default="", server_default="")
+    #: Did the claimant hold the entitlement the decision named? NULL until someone claims.
+    matched: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

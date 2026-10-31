@@ -130,5 +130,12 @@ def report(db: Session, org_id: str, entitlement_id: str, event: str, *,
     db.add(EntitlementEvent(entitlement_id=row.id, event=event, agent_id=agent_id,
                             vendor_text=str(vendor_text).strip(),
                             tokens=tokens if event == "spend" else None, created_at=utcnow()))
+    if event in ("limit_hit", "spawn_failed"):
+        # S4: the reason to hold an item for this entitlement is gone, so the hold ends NOW and
+        # routing recalculates from the ledger — not when the TTL runs out.
+        from app.services import routing
+        routing.end_reservations(db, row.id, event)
     db.commit()
+    if event in ("limit_hit", "spawn_failed"):
+        routing.release_failed_claims(db, row.id, agent_id)
     return {"admitted": admitted, "reason": reason, "headroom": headroom(db, row)}

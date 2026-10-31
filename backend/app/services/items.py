@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Agent, Enrolment, Item, Prd, Project, utcnow
 from app.services import keys
+from app.services import routing as routing_svc
 
 logger = logging.getLogger(__name__)
 
@@ -2433,8 +2434,13 @@ def claim_next(
             continue
         if pinned_elsewhere(cand, agent_id):
             continue
+        # PRD-62 S4: capacity routing. Skipped like the pin, for the same reason: the caller
+        # asked for "whatever is next" and the next may be held for a runner with headroom.
+        if routing_svc.held_back(db, cand, agent_id):
+            continue
         claimed = _try_claim(db, cand, agent_id)
         if claimed is not None:
+            routing_svc.record_claim(db, claimed, agent_id)
             return claimed
         # Lost the race for this candidate — try the next.
     return None
@@ -2598,7 +2604,13 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
             f"taking work it did not choose."
             + ("" if it.prd_id else
                f" ({it.key} carries no PRD at all, so no scoped wave can reach it.)"))
-    return _try_claim(db, it, agent_id)
+    # PRD-62 S4: held for a runner with headroom. None, like the pin above — not a lost race.
+    if routing_svc.held_back(db, it, agent_id):
+        return None
+    claimed = _try_claim(db, it, agent_id)
+    if claimed is not None:
+        routing_svc.record_claim(db, claimed, agent_id)
+    return claimed
 
 
 def heartbeat(db: Session, item_id: str, agent_id: str,
