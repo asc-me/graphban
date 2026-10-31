@@ -15,18 +15,28 @@ interface Agg {
   below_floor: boolean;
   skew: boolean;
   probe: number;
+  /** The family rollup is speaking because no leaf of that family clears the floor. */
+  rollup: boolean;
 }
 
 interface Row {
   key: string;
   vendor: string;
   model: string;
-  cells: HarnessCell[];
+  runs: number;
 }
 
 const pct = (r: number | null) => (r === null ? "—" : `${Math.round(r * 100)}%`);
 
-function aggregate(cells: HarnessCell[], floor: number): Agg {
+/**
+ * The measured cells under the served shape: each family rollup's nested leaves, plus `other`.
+ * A family cell without leaves (an older payload) stands for itself.
+ */
+export function leafCells(cells: HarnessCell[]): HarnessCell[] {
+  return cells.flatMap((c) => (c.kind === "family" && c.leaves && c.leaves.length > 0 ? c.leaves : [c]));
+}
+
+function aggregate(cells: HarnessCell[], floor: number, rollup = false): Agg {
   const finished = cells.reduce((s, c) => s + c.finished, 0);
   const signed_off = cells.reduce((s, c) => s + c.signed_off, 0);
   return {
@@ -36,6 +46,7 @@ function aggregate(cells: HarnessCell[], floor: number): Agg {
     below_floor: finished < floor,
     skew: cells.some((c) => c.skew !== null),
     probe: cells.reduce((s, c) => s + (c.sampling.probe ?? 0), 0),
+    rollup,
   };
 }
 
@@ -43,41 +54,81 @@ function tokensLabel(cost: HarnessCost): string {
   return cost.comparable ? `${cost.tokens_per_signed_off} tokens per signed-off item` : cost.reason;
 }
 
+const SEP = "\u0000";
+const rowKeyOf = (c: HarnessCell) => `${c.key.vendor}${SEP}${c.key.model}`;
+
 /**
  * The design's harness × function grid. Rows are vendor + model exactly as the payload names
- * them (no merging); columns come from the served capability catalog, then any capability a
- * cell carries that the catalog does not list. Below-floor cells keep their numbers.
+ * them (no merging). Columns are capability leaves in the served catalog's order. The payload
+ * nests leaves under family rollups; a row shows a family's leaves once any of them clears the
+ * floor, and the family rollup in that family's column until then. `other` gets its own column.
+ * Below-floor cells keep their numbers.
  */
 export function PerformanceGrid({ data, routing }: { data: HarnessReport; routing: Routing[] }) {
   const [effort, setEffort] = useState<Effort>("All");
   const [selected, setSelected] = useState<{ row: string; col: string } | null>(null);
 
-  const { rows, columns, byKey } = useMemo(() => {
-    const kept = data.cells.filter((c) => effort === "All" || c.key.size_band === effort);
+  const { rows, columns, grid } = useMemo(() => {
+    const keep = (c: HarnessCell) => effort === "All" || c.key.size_band === effort;
     const rowMap = new Map<string, Row>();
-    const byKey = new Map<string, HarnessCell[]>();
     for (const c of data.cells) {
-      const rk = `${c.key.vendor}\u0000${c.key.model}`;
-      if (!rowMap.has(rk)) rowMap.set(rk, { key: rk, vendor: c.key.vendor, model: c.key.model, cells: [] });
+      const rk = rowKeyOf(c);
+      if (!rowMap.has(rk)) rowMap.set(rk, { key: rk, vendor: c.key.vendor, model: c.key.model, runs: 0 });
     }
-    for (const c of kept) {
-      const rk = `${c.key.vendor}\u0000${c.key.model}`;
-      rowMap.get(rk)!.cells.push(c);
-      const k = `${rk}\u0001${c.key.capability}`;
-      byKey.set(k, [...(byKey.get(k) ?? []), c]);
+    for (const c of leafCells(data.cells)) {
+      if (keep(c)) rowMap.get(rowKeyOf(c))!.runs += c.finished;
     }
-    // Catalog order first; a capability the catalog does not list still gets a column.
-    const catalog = data.capability_set?.leaves ?? [];
-    const allCaps = new Set(data.cells.map((c) => c.key.capability));
-    const columns = [
-      ...catalog.filter((l) => allCaps.has(l)),
-      ...[...allCaps].filter((l) => !catalog.includes(l)).sort(),
-    ];
-    return { rows: [...rowMap.values()], columns, byKey };
-  }, [data.cells, data.capability_set, effort]);
+
+    const grid = new Map<string, Agg>();
+    const add = (rk: string, col: string, cells: HarnessCell[], rollup = false) =>
+      grid.set(`${rk}${SEP}${col}`, aggregate(cells, data.floor, rollup));
+    const loose = new Map<string, HarnessCell[]>();
+    const families = new Map<string, { rollups: HarnessCell[]; leaves: HarnessCell[] }>();
+    for (const c of data.cells) {
+      if (!keep(c)) continue;
+      const rk = rowKeyOf(c);
+      if (c.kind === "family" && c.leaves && c.leaves.length > 0) {
+        const fk = `${rk}${SEP}${c.family ?? c.key.capability}`;
+        const f = families.get(fk) ?? { rollups: [], leaves: [] };
+        f.rollups.push(c);
+        f.leaves.push(...c.leaves);
+        families.set(fk, f);
+      } else {
+        const lk = `${rk}${SEP}${c.kind === "other" ? "other" : c.key.capability}`;
+        loose.set(lk, [...(loose.get(lk) ?? []), c]);
+      }
+    }
+    for (const [lk, cells] of loose) grid.set(lk, aggregate(cells, data.floor));
+    for (const [fk, f] of families) {
+      const [vendor, model, family] = fk.split(SEP);
+      const rk = `${vendor}${SEP}${model}`;
+      const byLeaf = new Map<string, HarnessCell[]>();
+      for (const leaf of f.leaves) byLeaf.set(leaf.key.capability, [...(byLeaf.get(leaf.key.capability) ?? []), leaf]);
+      const leafClears = [...byLeaf.values()].some((cells) => cells.reduce((s, c) => s + c.finished, 0) >= data.floor);
+      if (leafClears) {
+        for (const [cap, cells] of byLeaf) add(rk, cap, cells);
+      } else {
+        add(rk, family, f.rollups, true);
+      }
+    }
+
+    // Catalog order (each family's rollup column ahead of its leaves); then anything the
+    // catalog does not list; `other` last.
+    const used = new Set([...grid.keys()].map((k) => k.split(SEP)[2]));
+    const catalog = data.capability_set;
+    const ordered: string[] = [];
+    for (const [family, leaves] of Object.entries(catalog?.families ?? {})) {
+      if (family === "other") continue;
+      for (const col of [family, ...leaves]) if (used.has(col) && !ordered.includes(col)) ordered.push(col);
+    }
+    for (const col of catalog?.leaves ?? []) if (used.has(col) && !ordered.includes(col)) ordered.push(col);
+    const rest = [...used].filter((c) => !ordered.includes(c) && c !== "other").sort();
+    const columns = [...ordered, ...rest, ...(used.has("other") ? ["other"] : [])];
+    return { rows: [...rowMap.values()], columns, grid };
+  }, [data.cells, data.capability_set, data.floor, effort]);
 
   const label = (cap: string) => data.capability_set?.labels[cap];
-  const sel = selected ? aggregate(byKey.get(`${selected.row}\u0001${selected.col}`) ?? [], data.floor) : null;
+  const sel = selected ? grid.get(`${selected.row}${SEP}${selected.col}`) : undefined;
   const selRow = selected ? rows.find((r) => r.key === selected.row) : undefined;
 
   return (
@@ -113,30 +164,29 @@ export function PerformanceGrid({ data, routing }: { data: HarnessReport; routin
                   <th key={cap} data-testid="harness-grid-col" scope="col" className="min-w-[96px] px-2 py-2 font-mono text-[10.5px] font-normal text-faint">
                     {cap}
                     {label(cap) && label(cap) !== cap && <div className="text-muted">{label(cap)}</div>}
+                    {data.capability_set?.families[cap] && cap !== "other" && <div className="text-faint">family</div>}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => {
-                const runs = row.cells.reduce((s, c) => s + c.finished, 0);
                 return (
                   <tr key={row.key} data-testid="harness-grid-row" className="border-b border-line-2 last:border-b-0">
                     <th scope="row" className="px-3 py-2 font-normal">
                       <div className="font-mono text-body">{row.vendor}</div>
                       <div className="font-mono text-[10.5px] text-muted">{row.model}</div>
-                      <div className="font-mono text-[10.5px] text-faint">{runs} runs</div>
+                      <div className="font-mono text-[10.5px] text-faint">{row.runs} runs</div>
                     </th>
                     {columns.map((cap) => {
-                      const cells = byKey.get(`${row.key}\u0001${cap}`);
-                      if (!cells || cells.length === 0) {
+                      const a = grid.get(`${row.key}${SEP}${cap}`);
+                      if (!a) {
                         return (
                           <td key={cap} className="px-2 py-2 font-mono text-faint">
                             —
                           </td>
                         );
                       }
-                      const a = aggregate(cells, data.floor);
                       const isSel = selected?.row === row.key && selected.col === cap;
                       return (
                         <td key={cap} className="px-1 py-1">
@@ -144,8 +194,9 @@ export function PerformanceGrid({ data, routing }: { data: HarnessReport; routin
                             type="button"
                             data-testid="harness-grid-cell"
                             data-below-floor={a.below_floor ? "true" : "false"}
+                            data-rollup={a.rollup ? "true" : "false"}
                             aria-pressed={isSel}
-                            aria-label={`${row.vendor} ${row.model} ${cap}: ${a.signed_off} of ${a.finished} signed off${
+                            aria-label={`${row.vendor} ${row.model} ${cap}${a.rollup ? " family rollup" : ""}: ${a.signed_off} of ${a.finished} signed off${
                               a.below_floor ? ", below the floor" : ""
                             }`}
                             onClick={() => setSelected(isSel ? null : { row: row.key, col: cap })}
@@ -157,8 +208,9 @@ export function PerformanceGrid({ data, routing }: { data: HarnessReport; routin
                             <span className="block font-mono text-[10.5px]">
                               {a.signed_off}/{a.finished}
                             </span>
-                            {(a.below_floor || a.skew || a.probe > 0) && (
+                            {(a.rollup || a.below_floor || a.skew || a.probe > 0) && (
                               <span className="mt-0.5 flex flex-wrap gap-1 font-mono text-[9px] text-faint">
+                                {a.rollup && <span>family</span>}
                                 {a.below_floor && <span>floor {data.floor}</span>}
                                 {a.skew && <span>skew</span>}
                                 {a.probe > 0 && <span>probe</span>}
@@ -229,7 +281,7 @@ function CellPanel({
             {row.vendor}:{row.model}
           </div>
           <div className="font-mono text-[10.5px] text-faint" data-testid="harness-panel-cap">
-            {cap}{capLabel && capLabel !== cap ? ` · ${capLabel}` : ""}{effort === "All" ? "" : ` · ${effort}`}
+            {cap}{capLabel && capLabel !== cap ? ` · ${capLabel}` : ""}{agg.rollup ? " · family rollup" : ""}{effort === "All" ? "" : ` · ${effort}`}
           </div>
         </div>
         <button type="button" aria-label="Close cell detail" onClick={onClose} className="ml-auto text-muted hover:text-fg-2">
