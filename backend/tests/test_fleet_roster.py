@@ -161,3 +161,141 @@ def test_the_prompts_keep_the_unenrolled_fallback(name):
     operator never issued seats still has to be told how to be distinguishable, or it silently
     cannot review — which is the failure `instance` was added for."""
     assert "instance" in _fleet_bodies()[name]
+
+
+# ---- GRPH-1229: the REST roster folds dead, empty agents into an exact count ---------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+#: Pinned response ceiling for 5 full rows plus the page chrome. The unfolded roster of 2,005
+#: agents is several hundred KB; this fails if every agent comes back in full.
+ROSTER_SIZE_CEILING = 60_000
+
+
+@pytest.fixture()
+def _db(_clean_database):
+    from app.db import SessionLocal
+
+    s = SessionLocal()
+    try:
+        yield s
+    finally:
+        s.close()
+
+
+def _seed(db, project_id, n_gone=2000):
+    from app.models import Agent
+
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=3)
+    nxt = [1]
+
+    def mk(**kw):
+        a = Agent(id=f"{project_id}-a{nxt[0]}", project_id=project_id, number=nxt[0],
+                  active_role="worker", state="idle", **kw)
+        nxt[0] += 1
+        db.add(a)
+        return a
+
+    for _ in range(n_gone):
+        mk(last_seen_at=old)
+    for _ in range(3):
+        mk(last_seen_at=now)
+    orphan = mk(last_seen_at=old, branch="gb/orphan")
+    # The review holder is OFFLINE and quiet for days: an online holder is kept for being
+    # online, so only an offline one proves that holding something alone keeps a row in full.
+    # The lease holder is online because a fleet read requeues an offline agent's build lease
+    # (`requeue_offline_items`) before the roster is built; the offline-lease case is pinned
+    # on `collapse_roster` directly below.
+    lessee, reviewer = mk(last_seen_at=now), mk(last_seen_at=old)
+    db.flush()
+    from app.services import items as items_svc
+
+    leased = items_svc.create_item(db, title="held 0", project_id=project_id,
+                                   status="in_progress")
+    leased.claimed_by = lessee.id
+    leased.claimed_at = now
+    in_review = items_svc.create_item(db, title="held 1", project_id=project_id,
+                                      status="review")
+    in_review.review_claimed_by = reviewer.id
+    in_review.review_claimed_at = old
+    db.commit()
+    return orphan.id, (lessee.id, reviewer.id)
+
+
+def _proj(client, auth):
+    return client.post("/api/projects", json={"name": "Roster"}, headers=auth).json()["id"]
+
+
+def test_roster_returns_the_live_in_full_and_the_dead_as_an_exact_count(client, auth, _db):
+    import json
+
+    pid = _proj(client, auth)
+    orphan_id, holder_ids = _seed(_db, pid)
+    r = client.get(f"/api/fleet?project_id={pid}", headers=auth)
+    body = r.json()
+    ids = {a["id"] for a in body["agents"]}
+    # 3 online + a lease holder + an offline review holder + 1 orphaned branch.
+    assert len(body["agents"]) == 6
+    assert orphan_id in ids, "a holder of an orphaned branch is never collapsed away"
+    for hid in holder_ids:
+        assert hid in ids, "an agent holding a lease or review claim is never collapsed"
+    reviewer = next(a for a in body["agents"] if a["id"] == holder_ids[1])
+    assert reviewer["state"] == "offline" and reviewer["holdings"][0]["hold"] == "review"
+    assert body["collapsed"]["count"] == 2000
+    assert body["total"] == 2006 == len(body["agents"]) + body["collapsed"]["count"]
+    assert len(json.dumps(body)) < ROSTER_SIZE_CEILING
+
+
+def test_the_collapsed_agents_are_listed_on_demand_in_pages(client, auth, _db):
+    pid = _proj(client, auth)
+    orphan_id, holder_ids = _seed(_db, pid, n_gone=30)
+    page = client.get(f"/api/fleet/agents/collapsed?project_id={pid}&offset=10&limit=15",
+                      headers=auth).json()
+    assert page["total"] == 30 and len(page["agents"]) == 15
+    listed = {a["id"] for a in page["agents"]}
+    assert orphan_id not in listed and not listed & set(holder_ids)
+
+
+@pytest.mark.parametrize("hold", ["build", "review"])
+def test_an_offline_quiet_holder_is_never_collapsed(hold):
+    from app.services import fleet
+
+    old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+
+    def row(id_, holdings):
+        return {"id": id_, "active_role": "worker", "state": "offline", "holdings": holdings,
+                "branch_orphaned": False, "last_seen_at": old}
+
+    out = fleet.collapse_roster({"agents": [row("held", [{"id": "X-1", "hold": hold}]),
+                                            row("empty", [])]})
+    assert [a["id"] for a in out["agents"]] == ["held"]
+    assert out["collapsed"]["count"] == 1
+
+
+def test_an_old_dismissed_agent_stays_in_full_and_out_of_the_collapsed_count(client, auth, _db):
+    from app.models import Agent
+
+    pid = _proj(client, auth)
+    _seed(_db, pid, n_gone=5)
+    old = datetime.now(timezone.utc) - timedelta(days=3)
+    retired = Agent(id=f"{pid}-retired", project_id=pid, number=999, active_role="worker",
+                    state="idle", last_seen_at=old, dismissed_at=old)
+    _db.add(retired)
+    _db.commit()
+    body = client.get(f"/api/fleet?project_id={pid}", headers=auth).json()
+    row = next((a for a in body["agents"] if a["id"] == retired.id), None)
+    assert row is not None and row["dismissed"] is True, \
+        "a dismissed agent stays listed, where the view can restore it"
+    assert body["collapsed"]["count"] == 5
+    assert body["total"] == len(body["agents"]) + body["collapsed"]["count"]
+    page = client.get(f"/api/fleet/agents/collapsed?project_id={pid}", headers=auth).json()
+    assert page["total"] == 5 and retired.id not in {a["id"] for a in page["agents"]}
+
+
+def test_mcp_fleet_status_is_not_collapsed(_db, client, auth):
+    from app.services import fleet
+
+    pid = _proj(client, auth)
+    _seed(_db, pid, n_gone=20)
+    assert len(fleet.fleet_status(_db, pid)["agents"]) == 26

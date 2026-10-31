@@ -21,12 +21,14 @@ const api = vi.hoisted(() => ({
   saveFleetProfile: vi.fn(),
   clearFleetProfile: vi.fn(),
   saveFleetPolicy: vi.fn(),
+  fleetCollapsed: vi.fn(),
 }));
 vi.mock("@/lib/api", () => ({ api }));
 
+const ctx = vi.hoisted(() => ({ activeId: "core" }));
 vi.mock("@/features/ProjectContext", () => ({
-  useProjectCtx: () => ({ active: { id: "core", name: "Core", tag: "core" },
-                          activeId: "core", projects: [] }),
+  useProjectCtx: () => ({ active: { id: ctx.activeId, name: "Core", tag: ctx.activeId },
+                          activeId: ctx.activeId, projects: [] }),
 }));
 
 const fleet = vi.hoisted(() => ({ data: null as unknown, isError: false, refetch: vi.fn() }));
@@ -1302,5 +1304,67 @@ describe("re-tasking an agent", () => {
     renderView();
     expect(screen.queryByText(/No agents yet/)).toBeNull();
     expect(screen.getByText(/retry/i)).toBeTruthy();
+  });
+});
+
+describe("FleetView collapsed offline agents (GRPH-1229)", () => {
+  const gone = (n: number) => ({ ...AGENT, id: `GB-A${n}`, key: `GB-A${n}`, label: `gone ${n}`,
+                                 state: "offline" });
+  beforeEach(() => {
+    ctx.activeId = "core";
+    fleet.data = { ...BASE, collapsed: { count: 2, by_state: { offline: 2 }, by_role: {},
+                                         recent_seconds: 86400 } };
+    api.fleetCollapsed.mockReset();
+    api.dismissAgent.mockReset().mockResolvedValue({});
+    api.fleetCollapsed.mockResolvedValue({ total: 2, offset: 0, limit: 100,
+                                           agents: [gone(7), gone(8)] });
+  });
+
+  it("drops a collapsed row once it is dismissed", async () => {
+    const user = userEvent.setup();
+    renderView();
+    await user.click(screen.getByRole("button", { name: /Show 2 gone/ }));
+    await screen.findByText("gone 7");
+    // The roster holds only the two collapsed rows, in page order.
+    await user.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
+    await waitFor(() => expect(screen.queryByText("gone 7")).toBeNull());
+    expect(api.dismissAgent).toHaveBeenCalledWith("GB-A7", false);
+    expect(screen.getByText("gone 8")).toBeInTheDocument();
+  });
+
+  it("keeps the next page's offset and the total in step after a dismissal", async () => {
+    // The server stops counting a dismissed agent as collapsed, so its list shrinks by one:
+    // the next page starts one earlier, and "Load more" must still be reachable.
+    fleet.data = { ...BASE, collapsed: { count: 3, by_state: { offline: 3 }, by_role: {},
+                                         recent_seconds: 86400 } };
+    api.fleetCollapsed.mockResolvedValueOnce({ total: 3, offset: 0, limit: 2,
+                                               agents: [gone(7), gone(8)] });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(screen.getByRole("button", { name: /Show 3 gone/ }));
+    await screen.findByRole("button", { name: /Load more \(2 of 3\)/ });
+    await user.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
+    await screen.findByRole("button", { name: /Load more \(1 of 2\)/ });
+    api.fleetCollapsed.mockResolvedValueOnce({ total: 2, offset: 1, limit: 2, agents: [gone(9)] });
+    await user.click(screen.getByRole("button", { name: /Load more/ }));
+    await screen.findByText("gone 9");
+    expect(api.fleetCollapsed).toHaveBeenLastCalledWith("core", 1);
+    expect(screen.queryByRole("button", { name: /Load more/ })).toBeNull();
+  });
+
+  it("forgets the previous project's collapsed rows on a project switch", async () => {
+    const user = userEvent.setup();
+    const view = renderView();
+    await user.click(screen.getByRole("button", { name: /Show 2 gone/ }));
+    await screen.findByText("gone 7");
+    ctx.activeId = "other";
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <FleetView />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.queryByText("gone 7")).toBeNull());
   });
 });

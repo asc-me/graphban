@@ -1000,6 +1000,66 @@ def fleet_status(db: Session, project_id: str | None = None, *,
     }
 
 
+#: How long an offline agent that holds nothing stays on the roster in full (GRPH-1229).
+ROSTER_RECENT_SECONDS = 24 * 3600
+
+
+def _is_collapsible(a: dict, cutoff: datetime) -> bool:
+    """Offline, holding nothing, no orphaned branch, not dismissed, and quiet past the window.
+
+    Anything that holds something — a lease, a review claim, an orphaned branch — is NEVER
+    collapsed: that is the unfinished business the roster exists to show. A dismissed agent is
+    not collapsed either: the view lists it under "dismissed", where it can be restored, and
+    folding it in here would count it as gone while no collapsed page could show it.
+    """
+    if (a["state"] != "offline" or a["holdings"] or a["branch_orphaned"]
+            or a.get("dismissed")):
+        return False
+    seen = a["last_seen_at"]
+    if seen is None:
+        return True
+    return _aware(datetime.fromisoformat(seen)) < cutoff
+
+
+def collapse_roster(status: dict, *, now: datetime | None = None,
+                    recent_seconds: int = ROSTER_RECENT_SECONDS) -> dict:
+    """The REST roster: online, holding and recently-offline agents in full, the rest counted.
+
+    `fleet_status` (MCP) is untouched; this narrows only the view's payload. The counts are
+    exact — `collapsed.count` plus `len(agents)` is `total` — and `collapsed.by_state` says what
+    was folded away, so nothing is truncated silently. The folded rows are listed on demand by
+    `collapsed_agents`.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=recent_seconds)
+    kept, gone = [], []
+    for a in status["agents"]:
+        (gone if _is_collapsible(a, cutoff) else kept).append(a)
+    by_role: dict[str, int] = {}
+    for a in gone:
+        by_role[a["active_role"]] = by_role.get(a["active_role"], 0) + 1
+    return {
+        **status,
+        "agents": kept,
+        "collapsed": {
+            "count": len(gone),
+            "by_state": {"offline": len(gone)},
+            "by_role": by_role,
+            "recent_seconds": recent_seconds,
+        },
+    }
+
+
+def collapsed_agents(db: Session, project_id: str | None, *, offset: int = 0,
+                     limit: int = 100) -> dict:
+    """One page of the agents `collapse_roster` folded away."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=ROSTER_RECENT_SECONDS)
+    rows = [a for a in list_agents(db, project_id, now=now) if _is_collapsible(a, cutoff)]
+    return {"total": len(rows), "offset": offset, "limit": limit,
+            "agents": rows[offset:offset + limit]}
+
+
 def review_holds(db: Session, project_id: str | None) -> list[dict]:
     """Items in `review` and the declared areas each holds while it waits (GRPH-951).
 
