@@ -1215,12 +1215,44 @@ export function useCreateRequestComment() {
   });
 }
 
+/**
+ * GRPH-1229: at most one roster read in flight per project, and at most one queued behind it.
+ *
+ * The interval was never the overlap — React Query restarts it on every fetch and joins an
+ * in-flight read. `refetch()` and `invalidateQueries` are: both default to `cancelRefetch`,
+ * which abandons the pending read and starts another, while the server (which never sees the
+ * abandon — `api.fleet` takes no signal) keeps computing the first. With a 10s roster every
+ * roster action stacked one more full read on the server. A read asked for while one is
+ * pending now waits for it and then runs once, so it still sees the write that prompted it;
+ * any further asks in that window join the queued read rather than adding their own.
+ */
+type FleetRead = ReturnType<typeof api.fleet>;
+const fleetReads = new Map<string, { running: Promise<unknown>; queued?: FleetRead }>();
+
+function readFleet(projectId?: string): FleetRead {
+  const k = projectId ?? "";
+  const slot = fleetReads.get(k);
+  if (slot?.queued) return slot.queued;
+  const start = (): FleetRead => {
+    const read = api.fleet(projectId);
+    const running: Promise<unknown> = read.catch(() => {}).finally(() => {
+      const cur = fleetReads.get(k);
+      if (cur?.running === running && !cur.queued) fleetReads.delete(k);
+    });
+    fleetReads.set(k, { running });
+    return read;
+  };
+  if (!slot) return start();
+  slot.queued = slot.running.then(start);
+  return slot.queued;
+}
+
 export function useFleet(projectId?: string) {
   // Polled: presence is derived from last contact, so the roster only changes when time
   // passes. Without a refetch an agent that died stays green until somebody navigates away.
   return useQuery({
     queryKey: ["fleet", projectId],
-    queryFn: () => api.fleet(projectId),
+    queryFn: () => readFleet(projectId),
     // Gated: without a project the server resolves the request against its default one,
     // so an ungated call renders another project's fleet for a frame before the real
     // one arrives. Harmless-looking, and exactly the class of thing D1 deleted.

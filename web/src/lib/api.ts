@@ -332,6 +332,10 @@ export const api = {
   // queue would show an idle reviewer beside work it could already be taking.
   fleet: (projectId?: string) =>
     request<FleetOverview>(`/fleet${projectId ? `?project_id=${projectId}` : ""}`),
+  // GRPH-1229: one page of the offline agents the roster folded into a count.
+  fleetCollapsed: (projectId: string, offset = 0, limit = 100) =>
+    request<{ total: number; offset: number; limit: number; agents: FleetOverview["agents"] }>(
+      `/fleet/agents/collapsed?project_id=${encodeURIComponent(projectId)}&offset=${offset}&limit=${limit}`),
   // Presence on the graph (PRD-20 D4). Separate from `fleet` on purpose: the roster is a
   // page, this is polled by whichever graph view is open, and merging them would make every
   // Fleet render pay for node resolution it does not use.
