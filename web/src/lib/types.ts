@@ -2821,6 +2821,12 @@ export interface HarnessCapacityRunner {
 export interface HarnessCapacity {
   org_id: string;
   as_of: string;
+  /** D7, per builder vendor: `vendors` can review and hold headroom; `empty_for` / `only_unknown_for`
+   * name the builder vendors whose reserve (another eligible vendor) is empty or unknown-only. */
+  review_reserve: {
+    vendors: string[]; empty: boolean; empty_for: string[];
+    only_unknown: boolean; only_unknown_for: string[]; warning: string | null;
+  };
   entitlements: HarnessCapacityEntitlement[];
   utilization: {
     week_start: string;
