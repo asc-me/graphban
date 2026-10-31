@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.errors import RateLimited
+from app.errors import QuotaExceeded, RateLimited
 from app.services import ratelimit
 from app.models import (
     MemoryShard,
@@ -44,6 +44,10 @@ class Plan:
     # self-serve tiers — one org each, more by request — and carried by `enterprise`,
     # which is the licensed multi-org offering. Billing lights this up later (AL-82).
     may_found_additional_orgs: bool = False
+    # Capacity routing beyond in-runner failover: the entitlement registry, cross-runner
+    # routing, forecasting and utilization (PRD-62 D8, S2–S5). S1 is open source and never
+    # reads this.
+    capacity_routing: bool = False
 
 
 # Starting private-beta limits — tunable in one place. Free stays generous on the
@@ -52,10 +56,11 @@ class Plan:
 PLANS: dict[str, Plan] = {
     "free": Plan(max_projects=2, max_seats=3, max_shards=250, max_calls_per_month=10_000),
     "pro": Plan(max_projects=10, max_seats=15, max_shards=10_000, max_calls_per_month=100_000),
-    "team": Plan(max_projects=50, max_seats=100, max_shards=100_000, max_calls_per_month=1_000_000),
+    "team": Plan(max_projects=50, max_seats=100, max_shards=100_000, max_calls_per_month=1_000_000,
+                 capacity_routing=True),
     "enterprise": Plan(
         max_projects=500, max_seats=1_000, max_shards=1_000_000,
-        max_calls_per_month=10_000_000, may_found_additional_orgs=True,
+        max_calls_per_month=10_000_000, may_found_additional_orgs=True, capacity_routing=True,
     ),
 }
 DEFAULT_PLAN = "free"
@@ -137,6 +142,25 @@ def enforce_seat_quota(db: Session, org_id: str | None) -> None:
 
 def enforce_shard_quota(db: Session, org_id: str | None) -> None:
     return
+
+
+def require_capacity_routing(db: Session, org_id: str | None) -> Organization:
+    """The PRD-62 D8 premium gate: S2–S5 need the `team` or `enterprise` plan.
+
+    Unlike the caps above this one is NOT a no-op — it is a product boundary the PRD draws,
+    not a usage limit the control plane meters. Self-host keeps it behind the same check: a
+    project with no org has no plan but `DEFAULT_PLAN`, so it is refused rather than waved
+    through. Raises `QuotaExceeded` (HTTP 402 / `quota_exceeded`) and returns the org.
+    """
+    org = db.get(Organization, org_id) if org_id else None
+    if org is not None and plan_of(org).capacity_routing:
+        return org
+    paid = ", ".join(n for n, p in PLANS.items() if p.capacity_routing)
+    where = f"this org is on {org.plan or DEFAULT_PLAN!r}" if org else "this project has no org"
+    raise QuotaExceeded(
+        f"capacity routing needs one of: {paid}; {where}",
+        hint="upgrade the org's plan, or keep to in-runner failover, which needs no plan",
+    )
 
 
 def enforce_org_rate(org_id: str | None) -> None:

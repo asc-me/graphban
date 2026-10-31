@@ -396,7 +396,9 @@ CORE_TOKENS = 8920
 # codegraph 1789 → 1794: scans_due output names empty_reason (GRPH-1126).
 # GRPH-1127: record_scan's finding grain is a fleet-only findings description; codegraph stays 1794.
 # codegraph 1794 -> 1795 (GRPH-1129): write key suffices, planners refused; findings' repeat cut.
-TIER_TOKENS = {"prd": 1998, "codegraph": 1795, "fleet": 1100, "misc": 1238}
+# GRPH-1248: fleet 1100 -> 1413, `list_entitlements` + `set_entitlement` (PRD-62 S2). The whole
+# bill is in this tier; CORE_TOKENS does not move.
+TIER_TOKENS = {"prd": 1998, "codegraph": 1795, "fleet": 1413, "misc": 1238}
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.

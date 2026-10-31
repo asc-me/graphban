@@ -11,11 +11,12 @@ token: preview is intentionally unauthenticated (so the accept page can render "
 {org}" before the invitee logs in), while accept requires a logged-in user whose
 email matches the invitation.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.errors import NotFound, Validation
 from app.db import get_db
 from app.models import (
     Event,
@@ -54,6 +55,7 @@ from app.schemas import (
 )
 from app.security import authz
 from app.security.deps import get_current_user
+from app.services import entitlements as entitlements_svc
 from app.services import events as events_svc
 from app.services import galaxy as galaxy_svc
 from app.services import gitops
@@ -514,3 +516,48 @@ def org_enable_all_feedback(
     events_svc.record_user(db, user, action="enable_all_feedback", target_type="org",
                            target_id=org_id, meta={"projects_updated": count})
     return {"projects_updated": count, "feedback_default_on": True}
+
+
+# ---- PRD-62 S2: the entitlement registry (capacity routing) ------------------
+# The body is a plain object, not a schema, on purpose: `entitlements.set_entitlement` refuses
+# any field it does not know — naming the credential rule when one looks like a secret — and a
+# schema would drop such a field before the service ever saw the attempt.
+def _entitlement_write(db: Session, user: User, org_id: str, body: dict,
+                       entitlement_id: str | None) -> dict:
+    authz.require_org_admin(db, user.id, org_id)
+    if not isinstance(body, dict):
+        raise HTTPException(422, "body must be a JSON object")
+    try:
+        out = entitlements_svc.set_entitlement(db, org_id, body, entitlement_id=entitlement_id,
+                                               actor=user.id)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Validation as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+    events_svc.record_user(
+        db, user, action="update_entitlement" if entitlement_id else "create_entitlement",
+        target_type="org", target_id=org_id,
+        meta={"entitlement_id": out["id"], "fields": sorted(body)},
+    )
+    return out
+
+
+@router.get("/orgs/{org_id}/entitlements")
+def list_org_entitlements(org_id: str, db: Session = Depends(get_db),
+                          user: User = Depends(get_current_user)):
+    """Every entitlement the org holds, each with the runners that DECLARED it — a claim the
+    server cannot verify, and every row says so (`declaration`). 402 off team/enterprise."""
+    authz.require_org_member(db, user.id, org_id)
+    return entitlements_svc.list_entitlements(db, org_id)
+
+
+@router.post("/orgs/{org_id}/entitlements", status_code=201)
+def create_org_entitlement(org_id: str, body: dict = Body(...), db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user)):
+    return _entitlement_write(db, user, org_id, body, None)
+
+
+@router.patch("/orgs/{org_id}/entitlements/{entitlement_id}")
+def patch_org_entitlement(org_id: str, entitlement_id: str, body: dict = Body(...),
+                          db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return _entitlement_write(db, user, org_id, body, entitlement_id)

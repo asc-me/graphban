@@ -11,6 +11,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -1054,6 +1055,13 @@ class Agent(Base):
     status_text: Mapped[str] = mapped_column(String(200), default="", server_default="")
     status_files: Mapped[list] = mapped_column(JSON, default=list)
     status_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: The `Entitlement` ids this runner says it can run (PRD-62 S2), declared at
+    #: `register_agent`. TRUSTED, NOT VERIFIED: the server checks the ids exist in the
+    #: project's org and nothing more — it cannot see a vendor sign-in. A runner that claims
+    #: one it does not hold costs a failed spawn (§11). A column rather than a key inside
+    #: `capabilities`, because `capabilities` is accepted verbatim and this one is validated
+    #: and plan-gated on the way in.
+    entitlement_ids: Mapped[list] = mapped_column(JSON, default=list)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
@@ -3327,3 +3335,45 @@ class RuleSuggestionDismissal(Base):
     suggestion_id: Mapped[str] = mapped_column(String, primary_key=True)
     fingerprint: Mapped[str] = mapped_column(String, default="")
     dismissed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Entitlement(Base):
+    """One AI entitlement an org holds: a subscription seat, an API key, a cloud account, or a
+    local model (PRD-62 S2). The registry capacity routing reads; headroom is S3's.
+
+    **Credentials never move; work does** (D1). A `subscription` row is a fact about a person's
+    own vendor sign-in on their own runner, and it has NO secret field (D2): the CHECK below
+    makes `secret_ref` NULL for every kind but `api_key` and `cloud`, so the server cannot hold
+    one even if a code path forgot to refuse it. For those two kinds `secret_ref` is a HANDLE —
+    an env var or secrets-manager name the runner resolves — never the key itself (D3).
+
+    The kind list in the CHECK is a literal because a model cannot import the service that owns
+    the enum (`services/entitlements.SECRET_KINDS`); a test asserts the two agree.
+
+    `token_budget` NULL means no budget was stated, never zero. `runner` names the runner this
+    entitlement is bound to ("" = not bound); which runners actually DECLARE it is
+    `Agent.entitlement_ids`, self-reported and unverified.
+    """
+
+    __tablename__ = "entitlements"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # ent_...
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    vendor: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String)  # subscription | api_key | cloud | local
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True,
+                                                      index=True)
+    runner: Mapped[str] = mapped_column(String, default="", server_default="")
+    plan_label: Mapped[str] = mapped_column(String, default="", server_default="")
+    reset_cadence: Mapped[str] = mapped_column(String, default="", server_default="")
+    secret_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    token_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                 onupdate=utcnow)
+
+    __table_args__ = (
+        CheckConstraint("secret_ref IS NULL OR kind IN ('api_key', 'cloud')",
+                        name="ck_entitlements_secret_only_api_key_cloud"),
+    )

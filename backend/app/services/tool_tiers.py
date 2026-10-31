@@ -98,6 +98,9 @@ TOOL_TIERS: dict[str, str] = {
     # fleet is core; RUNNING one is the tier.
     **{name: "fleet" for name in (
         "propose_allocation", "assign_role", "mint_enrolment", "retire_wave",
+        # PRD-62 S2: the entitlement registry is running a fleet's capacity, and a premium
+        # surface (D8) — no reason to charge it to every key's core manifest.
+        "list_entitlements", "set_entitlement",
         # PRD-35 D3: a lone agent never delegates; running a fleet is the tier.
         "delegate",
     )},

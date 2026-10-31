@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 210 of the 288 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 212 of the 290 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -60,6 +60,9 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | --- | --- | --- | --- |
 | GET | `/api/orgs/{id}/gitops` | JWT (org member) | House process + every org project (identity only). Calls `resolve_org` |
 | PATCH | `/api/orgs/{id}/gitops` | JWT (org admin) | House process. Overlay is the project PATCH |
+| GET | `/api/orgs/{id}/entitlements` | JWT (org member) | Capacity-routing registry (PRD-62 S2): each entitlement with `declared_by`, the runners that declared it at `register_agent` — self-declared, not verified, and `declaration` says so. 402 / `quota_exceeded` off `team`/`enterprise` |
+| POST | `/api/orgs/{id}/entitlements` | JWT (org admin) | Register one: `vendor`, `kind` (`subscription`/`api_key`/`cloud`/`local`), `owner_user_id` (required for a subscription), `runner`, `plan_label`, `reset_cadence`, `token_budget`, and `secret_ref` for `api_key`/`cloud` only — the NAME of the secret on the runner, never the key. Unknown fields are refused, never dropped; a secret on a subscription is refused here and by a CHECK constraint. 402 off `team`/`enterprise` |
+| PATCH | `/api/orgs/{id}/entitlements/{entitlement_id}` | JWT (org admin) | Patch one; omitted fields unchanged, `null` clears. The result is re-validated, so a kind change cannot leave a subscription holding a `secret_ref` |
 | GET | `/api/sync/gitops` | MCP (sync key) | Cloud receiver. `resolve_local` of `targets[0]` — never outbound, never a query-string project |
 
 ## Cloud link and the Organization window (GRPH-1223)

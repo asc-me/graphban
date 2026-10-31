@@ -24,7 +24,7 @@ from app.services import tool_tiers
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 15060
+CEILING = 15380
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -163,7 +163,16 @@ CEILING = 15060
 # can file a structured decision wait. Paid by shortening `_EFFORT_DESC` (three tools), the
 # `fidelity` default and one `touchpoints` sentence, which keeps the ceiling and the worker
 # key's >10% saving (test_mcp_role_manifest) intact. core 8918 -> 8920. Headroom 4.
-MEASURED_TOKENS = 15056
+# 15056 -> 15369, and CEILING 15060 -> 15380 with it (GRPH-1248, PRD-62 S2). Two tools,
+# `list_entitlements` and `set_entitlement`: the org's capacity-routing registry. Two names
+# rather than one with a mode because the read is open and the write is planner-gated, and
+# one tool cannot carry both gates. Trimmed first — descriptions cut to the credential rule and
+# the trust caveat, the `project_id` descriptions dropped — and `register_agent`'s new
+# `entitlements` rides `_FLEET_ONLY_ARGS`. The rest is NOT funded out of core: both tools are
+# in the opt-in `fleet` tier (and premium, D8), so TIER_TOKENS["fleet"] 1100 -> 1413 is the
+# whole bill and CORE_TOKENS does not move. Same argument as GRPH-988 and GRPH-1035.
+# Headroom 11.
+MEASURED_TOKENS = 15369
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.
