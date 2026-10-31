@@ -4592,12 +4592,17 @@ def _live_reviewer_tools(db: Session, agents: list[Agent],
     somebody once registered with `gh` and then left.
     """
     out: list[frozenset[str]] = []
-    for agent in agents:
-        if project_id and agent.project_id != project_id:
-            continue
-        if presence_state(agent) in ("offline", "quarantined"):
-            continue
-        if session_expired(db, agent):
+    candidates = [a for a in agents
+                  if not (project_id and a.project_id != project_id)
+                  and presence_state(a) not in ("offline", "quarantined")]
+    # One read of the seats for every candidate, not `session_expired`'s `db.get` per agent:
+    # the same test (a seat that is not `consumed`), without a statement per enrolled agent.
+    seat_ids = {a.enrolment_id for a in candidates if a.enrolment_id}
+    seats = ({e.id: e for e in db.scalars(
+        select(Enrolment).where(Enrolment.id.in_(seat_ids))).all()} if seat_ids else {})
+    for agent in candidates:
+        seat = seats.get(agent.enrolment_id) if agent.enrolment_id else None
+        if seat is not None and enrolment_state(seat) != "consumed":
             continue
         if agent.active_role not in ("worker", ALL_IN_ONE):
             continue
