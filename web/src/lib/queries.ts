@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
-import type { EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, ShardClass } from "./types";
+import type { EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleToggleWrite, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -502,6 +502,50 @@ export function useRulesFlow(projectId: string) {
     queryKey: ["rules-flow", projectId],
     queryFn: () => api.rulesFlow(projectId),
     enabled: !!projectId,
+  });
+}
+
+/** Library rule toggles (GRPH-1262): the lock holder the flow does not carry. */
+export function useRuleToggles(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-toggles", projectId],
+    queryFn: () => api.ruleToggles(projectId),
+    enabled: !!projectId,
+  });
+}
+
+/** The last `set_rule_toggle` event on one rule in this project: who changed it, and when. */
+export function useRuleToggleLastChange(projectId: string, ruleId: string) {
+  const q: EventsQuery = { projectId, action: "set_rule_toggle", targetType: "rule", targetId: ruleId, limit: 1 };
+  return useQuery({
+    queryKey: keys.events(q),
+    queryFn: async () => (await api.events(q)).results[0] ?? null,
+    enabled: !!projectId,
+  });
+}
+
+function invalidateRuleToggles(qc: ReturnType<typeof useQueryClient>) {
+  // The map draws the toggle (used / NOT USED) from the flow; the row's "changed by" from events.
+  qc.invalidateQueries({ queryKey: ["rules-flow"] });
+  qc.invalidateQueries({ queryKey: ["rule-toggles"] });
+  qc.invalidateQueries({ queryKey: ["events"] });
+}
+
+export function useSetRuleToggle(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ruleId, body }: { ruleId: string; body: RuleToggleWrite }) =>
+      api.setRuleToggle(projectId, ruleId, body),
+    onSuccess: () => invalidateRuleToggles(qc),
+  });
+}
+
+export function useSetOrgRuleToggle(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ruleId, body }: { ruleId: string; body: RuleToggleWrite }) =>
+      api.setOrgRuleToggle(orgId, ruleId, body),
+    onSuccess: () => invalidateRuleToggles(qc),
   });
 }
 
