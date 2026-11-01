@@ -1,0 +1,229 @@
+"""PRD-P63 S5 (GRPH-1265): rule measurement and the opt-in platform aggregates.
+
+Pins the status contract (`measured` | `insufficient` | `unavailable`, a real zero is a zero,
+null never means "not enough data"), escape rates before/after adoption with n, retirement,
+and the D13 floors on platform rates: opt-in, three orgs, n, top-org share, no ids.
+"""
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from app.config import settings
+from app.db import SessionLocal
+from app.models import Event, Observation, Organization, PlatformRuleRollup, Project
+from app.services import rule_measure as M
+from app.services import rule_toggles as T
+from app.services import rules as R
+
+RULE = "review.sabotage_required"
+PID = "core"
+
+
+@pytest.fixture()
+def db(client):
+    s = SessionLocal()
+    yield s
+    s.close()
+
+
+@pytest.fixture()
+def library(monkeypatch):
+    monkeypatch.setattr(T, "LIBRARY", {})
+    T.register(T.LibraryRule(
+        id=RULE, stage="review", title="Sabotage required", summary="s", enforcement="enforced",
+        enforcer=R.Enforcer("graphban_source", "app/services/fleet.py"),
+        default_on=False, default_params={"min_tests_failed": 1}))
+
+
+def _ago(days):
+    return datetime.now(timezone.utc) - timedelta(days=days)
+
+
+def _adopt(db, days_ago, on=True, pid=PID):
+    db.add(Event(ts=_ago(days_ago), actor_type="user", surface="rest", action="set_rule_toggle",
+                 target_type="rule", target_id=RULE, project_id=pid,
+                 meta={"scope": "project", "effective_after": {"on": on}}))
+    db.commit()
+
+
+def _signoffs(db, n, days_ago, tag, pid=PID):
+    for i in range(n):
+        db.add(Event(ts=_ago(days_ago), actor_type="apikey", surface="mcp", action="sign_off",
+                     target_type="item", target_id=f"{tag}-{i}", project_id=pid))
+    db.commit()
+
+
+def _obs(db, kind, days_ago, key, rule_id=None, pid=PID):
+    db.add(Observation(project_id=pid, kind=kind, stage="merge", rule_id=rule_id,
+                       dedupe_key=key, occurred_at=_ago(days_ago)))
+    db.commit()
+
+
+def test_value_contract():
+    assert M.value(0, n=5, min_n=3)["status"] == "measured"
+    assert M.value(0, n=5, min_n=3)["value"] == 0
+    ins = M.value(0.5, n=2, min_n=10)
+    assert ins["status"] == "insufficient" and ins["value"] is None
+    assert ins["reason"] == "not enough data (2 of 10)"
+    un = M.value(None, n=0, min_n=1, available=False, reason="why")
+    assert un["status"] == "unavailable" and un["reason"] == "why"
+
+
+def test_not_adopted_is_unavailable_not_zero(db, library):
+    r = M.project_effect(db, PID)["rules"][0]
+    assert r["escape_rate"]["after"]["status"] == "unavailable"
+    assert r["caught"]["status"] == "measured" and r["caught"]["value"] == 0
+    assert r["retirement"]["suggested"] is False
+
+
+def test_escape_rate_before_after_with_n(db, library):
+    _adopt(db, 10)
+    _signoffs(db, 10, 15, "b")
+    _signoffs(db, 12, 5, "a")
+    for i in range(5):
+        _obs(db, "ci_red_after_sign_off", 14, f"b{i}")
+    _obs(db, "reopened_after_done", 4, "a0")
+    r = M.project_effect(db, PID)["rules"][0]["escape_rate"]
+    assert r["before"] == {"status": "measured", "value": 0.5, "n": 10, "min_n": 10, "reason": None}
+    assert r["after"]["status"] == "measured" and r["after"]["n"] == 12
+    assert r["after"]["value"] == round(1 / 12, 4)
+
+
+def test_escape_rate_insufficient_not_a_number(db, library):
+    _adopt(db, 10)
+    _signoffs(db, 3, 5, "a")
+    r = M.project_effect(db, PID)["rules"][0]["escape_rate"]["after"]
+    assert r["status"] == "insufficient" and r["value"] is None and r["n"] == 3
+
+
+def test_bounce_counts_only_after_a_prior_signoff(db, library):
+    _adopt(db, 10)
+    _signoffs(db, 10, 5, "a")
+    _obs(db, "bounce", 3, "bn0")  # no item: not an escape
+    db.add(Observation(project_id=PID, item_id=None, kind="bounce", stage="review",
+                       dedupe_key="bn1", occurred_at=_ago(3)))
+    db.commit()
+    assert M.project_effect(db, PID)["rules"][0]["escape_rate"]["after"]["value"] == 0
+
+
+def test_caught_counts_refusals_naming_the_rule(db, library):
+    _obs(db, "refusal", 1, "r1", rule_id=RULE)
+    _obs(db, "refusal", 1, "r2", rule_id="other.rule")
+    c = M.project_effect(db, PID)["rules"][0]["caught"]
+    assert c["value"] == 1 and c["status"] == "measured"
+
+
+def test_cost_is_unavailable_with_reason(db, library):
+    cost = M.project_effect(db, PID)["rules"][0]["cost"]
+    assert cost["overridden"]["status"] == "unavailable" and cost["overridden"]["reason"]
+
+
+def test_retirement_after_long_window_with_no_catches(db, library):
+    _adopt(db, 90)
+    assert M.project_effect(db, PID)["rules"][0]["retirement"]["suggested"] is True
+    _obs(db, "refusal", 1, "r1", rule_id=RULE)
+    assert M.project_effect(db, PID)["rules"][0]["retirement"]["suggested"] is False
+
+
+def test_adopted_then_dropped_is_not_adopted(db, library):
+    _adopt(db, 20)
+    _adopt(db, 10, on=False)
+    assert M.adopted_at(db, RULE, PID) is None
+
+
+# ---- platform ---------------------------------------------------------------------------------
+
+def _org(db, name, share, plan="team"):
+    o = Organization(id=f"org-{name}", name=name, plan=plan, telemetry_share=share)
+    db.add(o)
+    db.flush()
+    p = Project(id=f"p-{o.id}", name=name, tag=name[:3].upper(), org_id=o.id)
+    db.add(p)
+    db.commit()
+    return o, p.id
+
+
+def _seed(db, pid, before, after):
+    _adopt(db, 10, pid=pid)
+    _signoffs(db, before, 15, f"{pid}-b", pid=pid)
+    _signoffs(db, after, 5, f"{pid}-a", pid=pid)
+
+
+@pytest.fixture()
+def hosted(monkeypatch):
+    monkeypatch.setattr(settings, "hosted_mode", True)
+
+
+def test_platform_served_only_above_floors_and_without_ids(db, library, hosted):
+    orgs = [_org(db, f"o{i}", True) for i in range(3)]
+    for _, pid in orgs:
+        _seed(db, pid, 10, 10)
+    M.platform_roll(db)
+    db.commit()
+    out = M.platform_effect(db, orgs[0][0].id)
+    assert out["available"] is True
+    cell = out["rules"][0]
+    assert cell["before"]["status"] == "measured" and cell["after"]["n"] == "20–49"
+    blob = repr(out)
+    for o, pid in orgs:
+        assert o.id not in blob and pid not in blob
+
+
+def test_platform_needs_three_orgs(db, library, hosted):
+    orgs = [_org(db, f"o{i}", True) for i in range(2)]
+    for _, pid in orgs:
+        _seed(db, pid, 10, 10)
+    M.platform_roll(db)
+    cell = M.platform_effect(db, orgs[0][0].id)["rules"][0]
+    assert cell["after"]["status"] == "unavailable" and "fewer than 3 orgs" in cell["after"]["reason"]
+
+
+def test_platform_top_org_share_cap(db, library, hosted):
+    big, bp = _org(db, "big", True)
+    _seed(db, bp, 100, 100)
+    for i in range(2):
+        _, pid = _org(db, f"s{i}", True)
+        _seed(db, pid, 10, 10)
+    M.platform_roll(db)
+    cell = M.platform_effect(db, big.id)["rules"][0]
+    assert cell["after"]["status"] == "unavailable" and "share" in cell["after"]["reason"]
+
+
+def test_non_contributing_org_contributes_nothing_and_sees_nothing(db, library, hosted):
+    orgs = [_org(db, f"o{i}", True) for i in range(3)]
+    out_org, out_pid = _org(db, "out", False)
+    for _, pid in orgs + [(out_org, out_pid)]:
+        _seed(db, pid, 10, 10)
+    M.platform_roll(db)
+    row = db.get(PlatformRuleRollup, (datetime.now(timezone.utc).strftime("%G-W%V"), RULE))
+    assert row.projects_on == 3
+    seen = M.platform_effect(db, out_org.id)
+    assert seen["available"] is False and "opted in" in seen["reason"]
+
+
+def test_opting_out_purges_on_next_roll(db, library, hosted):
+    orgs = [_org(db, f"o{i}", True) for i in range(3)]
+    for _, pid in orgs:
+        _seed(db, pid, 10, 10)
+    M.platform_roll(db)
+    orgs[0][0].telemetry_share = False
+    db.commit()
+    M.platform_roll(db)
+    cell = M.platform_effect(db, orgs[1][0].id)["rules"][0]
+    assert cell["after"]["status"] == "unavailable"
+
+
+def test_self_hosted_has_no_platform_rates(db, library, monkeypatch):
+    monkeypatch.setattr(settings, "hosted_mode", False)
+    o, _ = _org(db, "x", True)
+    assert M.platform_effect(db, o.id)["available"] is False
+
+
+def test_org_and_platform_are_plan_gated(db, library, hosted):
+    from app.services.quotas import QuotaExceeded
+
+    o, _ = _org(db, "free", True, plan="free")
+    with pytest.raises(QuotaExceeded):
+        M.org_effect(db, o.id)
+    with pytest.raises(QuotaExceeded):
+        M.platform_effect(db, o.id)

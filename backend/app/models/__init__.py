@@ -3565,3 +3565,25 @@ class DocumentChunk(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     document: Mapped[Document] = relationship(back_populates="chunks")
+
+
+class PlatformRuleRollup(Base):
+    """A library rule's effect across every org that opted in (PRD-P63 D8, on PRD-38 D13).
+
+    Holds no org id and no project id: counts per rule per ISO week, plus how many orgs are
+    behind them and the largest single org's share. Served only above the D13 floors.
+    """
+
+    __tablename__ = "platform_rule_rollups"
+
+    week: Mapped[str] = mapped_column(String(8), primary_key=True)
+    rule_id: Mapped[str] = mapped_column(String, primary_key=True)
+    orgs_contributing: Mapped[int] = mapped_column(Integer, default=0)
+    top_org_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    projects_on: Mapped[int] = mapped_column(Integer, default=0)
+    caught: Mapped[int] = mapped_column(Integer, default=0)
+    signed_before: Mapped[int] = mapped_column(Integer, default=0)
+    escapes_before: Mapped[int] = mapped_column(Integer, default=0)
+    signed_after: Mapped[int] = mapped_column(Integer, default=0)
+    escapes_after: Mapped[int] = mapped_column(Integer, default=0)
+    rolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
