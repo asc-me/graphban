@@ -194,6 +194,28 @@ def test_retirement_after_long_window_with_no_catches(db, library):
     assert M.project_effect(db, PID)["rules"][0]["retirement"]["suggested"] is False
 
 
+def test_retirement_when_overrides_exceed_catches(db, library):
+    _adopt(db, 10)
+    _obs(db, "refusal", 1, "r1", rule_id=RULE)
+    it = _item(db, "o1")
+    M.record_override(db, it, RULE, "u1")
+    db.commit()
+    r = M.project_effect(db, PID)["rules"][0]["retirement"]
+    assert r["suggested"] is False and r["evidence"]["overrides"] == 1  # equal is not exceeding
+    M.record_override(db, it, RULE, "u2")
+    db.commit()
+    r = M.project_effect(db, PID)["rules"][0]["retirement"]
+    assert r["suggested"] is True
+    assert r["evidence"]["overrides"] == 2 and r["evidence"]["caught"] == 1
+
+
+def test_retirement_overrides_not_recorded_says_so():
+    adopted = [{"adopted_at": _ago(10)}]
+    r = M._retirement(adopted, [], 0, None)
+    assert r["evidence"]["overrides"] == "unavailable: not recorded"
+    assert r["suggested"] is False
+
+
 def test_adopted_then_dropped_is_not_adopted(db, library):
     _adopt(db, 20)
     _adopt(db, 10, on=False)
