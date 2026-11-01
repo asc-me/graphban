@@ -260,6 +260,23 @@ def on_refusal(db: Session, event: Event) -> None:
         occurred_at=event.ts))
 
 
+def on_rules_passed(db: Session, item: Item, rule_ids) -> None:
+    """The item got past a gate these library rules guard (a sign-off, a move to review): any
+    hold they had on it ends now and is recorded as held time per rule (GRPH-1283)."""
+    from app.services import rule_measure
+
+    _safe(db, "rule hold", lambda: rule_measure.close_holds(db, item, rule_ids))
+
+
+def on_rule_switched_off(db: Session, rule_id: str, project_ids: list[str], actor_id: str) -> None:
+    """A person switched a library rule off for these projects: each item it was holding is an
+    override by that person, and its hold ends (GRPH-1283)."""
+    from app.services import rule_measure
+
+    _safe(db, "rule override",
+          lambda: rule_measure.override_holds(db, rule_id, project_ids, actor_id))
+
+
 # ---- backfill ---------------------------------------------------------------------------------
 
 def backfill(db: Session, project_id: str) -> dict:

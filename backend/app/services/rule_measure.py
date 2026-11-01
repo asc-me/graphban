@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -49,6 +49,11 @@ ESCAPE_SCOPE_NOTE = ("escapes are counted across the whole project, not per stag
 #: A rule on this long with no catches is suggested for retirement.
 RETIRE_AFTER_DAYS = 60
 CAUGHT_LINKS = 50
+#: Observation kinds recorded here (GRPH-1283, D9 cost). Both name the rule; neither carries text.
+OVERRIDE_KIND = "rule_override"
+HELD_KIND = "rule_held"
+#: Refusals (for overrides) or recorded holds (for held time) needed before a cost is shown.
+MIN_COST_N = 5
 NOTE = "observed change, not a proven cause"
 
 
@@ -110,6 +115,95 @@ def adopted_at(db: Session, rule_id: str, project_id: str) -> datetime | None:
     return adoption(db, rule_id, project_id)[1]
 
 
+# ---- recording cost (D9) ----------------------------------------------------------------------
+
+def record_override(db: Session, item: Item, rule_id: str, actor: str,
+                    occurred_at: datetime | None = None) -> bool:
+    """A person overrode the rule's refusal on the item. One fact per override: it names the rule,
+    the item and the actor (an id, never text). True when it was newly recorded."""
+    rule_toggles._rule(rule_id)
+    n = db.scalar(select(func.count(Observation.id)).where(
+        Observation.item_id == item.id, Observation.kind == OVERRIDE_KIND,
+        Observation.rule_id == rule_id)) or 0
+    return observations_svc._add(
+        db, item, kind=OVERRIDE_KIND, key=f"override:{item.id}:{rule_id}:{n + 1}", origin="live",
+        stage=rule_toggles.LIBRARY[rule_id].stage, rule_id=rule_id, ref={"actor": actor},
+        occurred_at=occurred_at)
+
+
+def record_held(db: Session, item: Item, rule_id: str, started_at: datetime,
+                ended_at: datetime) -> bool:
+    """The item was held by the rule from `started_at` to `ended_at`. Seconds are stored per
+    rule; a hold that ends before it starts is refused rather than recorded as zero."""
+    rule_toggles._rule(rule_id)
+    started, ended = _aware(started_at), _aware(ended_at)
+    if ended < started:
+        raise ValueError("a hold cannot end before it starts")
+    return observations_svc._add(
+        db, item, kind=HELD_KIND, key=f"held:{item.id}:{rule_id}:{started.isoformat()}",
+        origin="live", stage=rule_toggles.LIBRARY[rule_id].stage, rule_id=rule_id,
+        ref={"seconds": int((ended - started).total_seconds())}, occurred_at=ended)
+
+
+def open_hold(db: Session, item_id: str, rule_id: str) -> datetime | None:
+    """When the rule's current hold on the item began, or None when it holds nothing: the
+    earliest refusal by the rule on the item since its last hold was closed (every close —
+    the rule passing, or a person overriding it — records a `rule_held`)."""
+    last = db.scalar(select(func.max(Observation.occurred_at)).where(
+        Observation.item_id == item_id, Observation.kind == HELD_KIND,
+        Observation.rule_id == rule_id))
+    q = select(func.min(Observation.occurred_at)).where(
+        Observation.item_id == item_id, Observation.kind == "refusal",
+        Observation.rule_id == rule_id)
+    if last is not None:
+        q = q.where(Observation.occurred_at > last)
+    start = db.scalar(q)
+    return _aware(start) if start is not None else None
+
+
+def close_holds(db: Session, item: Item, rule_ids, ended_at: datetime | None = None) -> int:
+    """The item got past these rules: each open hold is recorded as held time. A rule not in
+    the loaded library holds nothing. Returns how many holds were closed."""
+    ended, n = _aware(ended_at or _now()), 0
+    for rule_id in rule_ids:
+        if rule_id not in rule_toggles.LIBRARY:
+            continue
+        start = open_hold(db, item.id, rule_id)
+        if start is not None:
+            n += record_held(db, item, rule_id, start, max(start, ended))
+    return n
+
+
+def override_holds(db: Session, rule_id: str, project_ids: list[str], actor: str,
+                   at: datetime | None = None) -> int:
+    """A person switched the rule off for these projects: every open item it was holding
+    there proceeds past its refusal. Each is one override naming the rule, the item and the
+    person, and the hold closes at that moment. Returns how many items were overridden."""
+    if rule_id not in rule_toggles.LIBRARY or not project_ids:
+        return 0
+    at, n = _aware(at or _now()), 0
+    item_ids = db.scalars(select(Observation.item_id).where(
+        Observation.project_id.in_(project_ids), Observation.kind == "refusal",
+        Observation.rule_id == rule_id, Observation.item_id.is_not(None)).distinct())
+    for item_id in list(item_ids):
+        item = db.get(Item, item_id)
+        if item is None or item.status == "done":
+            continue
+        start = open_hold(db, item.id, rule_id)
+        if start is None:
+            continue
+        record_override(db, item, rule_id, actor, occurred_at=at)
+        record_held(db, item, rule_id, start, max(start, at))
+        n += 1
+    return n
+
+
+def _cost_rows(db: Session, rule_id: str, project_id: str, kind: str) -> list[Observation]:
+    return list(db.scalars(select(Observation).where(
+        Observation.project_id == project_id, Observation.kind == kind,
+        Observation.rule_id == rule_id)))
+
+
 # ---- per-project counts -----------------------------------------------------------------------
 
 def _caught(db: Session, rule_id: str, project_id: str) -> list[Observation]:
@@ -151,6 +245,8 @@ def project_counts(db: Session, rule_id: str, project_id: str) -> dict:
     """Raw counts for one rule in one project; the unit every scope sums."""
     on, since = adoption(db, rule_id, project_id)
     out = {"on": on, "adopted_at": since, "caught": _caught(db, rule_id, project_id),
+           "overrides": _cost_rows(db, rule_id, project_id, OVERRIDE_KIND),
+           "holds": _cost_rows(db, rule_id, project_id, HELD_KIND),
            "before": (0, 0), "after": (0, 0)}
     if since is not None:
         span = _now() - since
@@ -190,12 +286,7 @@ def _summary(rule_id: str, counts: list[dict], project_ids: list[str]) -> dict:
         "adopted_at": (min(c["adopted_at"] for c in adopted).isoformat() if adopted else None),
         "caught": {**value(len(caught), n=len(caught), min_n=0),
                    "items": sorted({o.item_id for o in caught if o.item_id})[:CAUGHT_LINKS]},
-        "cost": {
-            "overridden": value(None, n=0, min_n=0, available=False,
-                                reason="no record of a person overriding a refusal exists yet"),
-            "held_seconds": value(None, n=0, min_n=0, available=False,
-                                  reason="time items spend held is not recorded per rule"),
-        },
+        "cost": _cost(counts, caught),
         "escape_note": NOTE,
         "escape_scope": ESCAPE_SCOPE, "escape_scope_note": ESCAPE_SCOPE_NOTE,
         "escapes_unmeasured": list(UNMEASURED_ESCAPES),
@@ -210,6 +301,20 @@ def _summary(rule_id: str, counts: list[dict], project_ids: list[str]) -> dict:
                               for k in ("before", "after")}
     out["retirement"] = _retirement(adopted, caught, untimed)
     return out
+
+
+def _cost(counts: list[dict], caught: list) -> dict:
+    """Overrides are counted against the refusals they could have overridden, so a real zero
+    needs enough refusals behind it; held time against the number of recorded holds."""
+    overrides = [o for c in counts for o in c["overrides"]]
+    holds = [h for c in counts for h in c["holds"]]
+    return {
+        "overridden": value(len(overrides), n=len(caught), min_n=MIN_COST_N,
+                            reason=None if len(caught) >= MIN_COST_N else
+                            f"not enough data ({len(caught)} of {MIN_COST_N} refusals to override)"),
+        "held_seconds": value(sum((h.ref or {}).get("seconds", 0) for h in holds),
+                              n=len(holds), min_n=MIN_COST_N),
+    }
 
 
 def _retirement(adopted: list[dict], caught: list, untimed: int = 0) -> dict:

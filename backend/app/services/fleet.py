@@ -3055,6 +3055,11 @@ def require_reviewer_property(db: Session, item: Item, agent_id: str) -> None:
             f"on: {why}")
 
 
+#: The library rules that guard a sign-off. A sign-off that lands got past every one of them,
+#: so any hold they had on the item ends there (GRPH-1283).
+SIGN_OFF_RULES = (SABOTAGE_REQUIRED_RULE, GAP_BLOCKS_RULE, DISTINCT_VENDOR_RULE)
+
+
 def _predicate(name: str, *, compared: bool, detail: str, waived: dict) -> dict:
     """One sign-off predicate, honest about whether its check actually ran (GRPH-1007).
 
@@ -3426,6 +3431,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     db.refresh(item)
     from app.services import observations as observations_svc
     observations_svc.on_sign_off(db, item, fresh)
+    observations_svc.on_rules_passed(db, item, SIGN_OFF_RULES)
     return item
 
 

@@ -1649,6 +1649,8 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
     from app.services import observations as observations_svc
     if reopened:
         observations_svc.on_reopen(db, item)
+    if item.status == "review" and prev_status != "review":
+        observations_svc.on_rules_passed(db, item, (ENGINE_EVIDENCE_RULE,))
     if fields.get("evidence"):
         observations_svc.on_evidence(db, item)
     if (("touchpoints" in fields and fields["touchpoints"] is not None) or reopened) \
