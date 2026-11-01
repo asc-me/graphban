@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 216 of the 294 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 219 of the 297 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -90,6 +90,9 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | POST | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Dismiss a suggestion for the project, keyed on id + evidence fingerprint; it returns when the evidence changes. 204, or 404 for an unknown id |
 | GET | `/api/rules/recommended/dismissed` | JWT (project reader) | Suggestions currently dismissed against their present evidence, for the panel's "Show dismissed (N)" |
 | DELETE | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Restore a dismissed suggestion. 204, or 404 when it was not dismissed |
+| GET | `/api/rules/observations` | JWT (project reader) | The fleet observations ledger (PRD-63 S1, `services/observations.py`), newest first: `observations[]`, `total`, and `counts` by kind for the whole filtered set. Filters `stage`, `kind` (422 on an unknown value), `limit`, `offset`. Rows hold ids and counts, never text |
+| POST | `/api/rules/observations/backfill` | JWT (project writer) | Derive observations from the project's history (events, evidence, attestations). Idempotent; returns what it added by kind. Sabotage verdicts, reopenings and bounces are live-only — history cannot attribute or date them |
+| GET | `/api/orgs/{org_id}/rules/observations` | JWT (org member) | The same ledger across the org's projects the caller can read |
 | GET | `/api/rules/toggles` | JWT (project reader) | Library rule toggles (`services/rule_toggles.py`, PRD-P63 D4): `{library_loaded, toggles[]}`, each `{rule_id, stage, title, on, params, locked, locked_by}` where `on` and `params` are `{value, source}` and `source` is `project`, `org` or `platform default`. `library_loaded: false` means no rule pack is loaded — an empty list then is no library, not nothing adopted |
 | PUT | `/api/rules/toggles/{rule_id}` | JWT (project owner/admin) | `?project_id=`. A project's own `on` and/or `params` (null clears, so it inherits); `reason` is required (422 without) and every change is a `set_rule_toggle` event with who and why. Every plan. 409 refusal `rules.org_lock_holds` when the org locked the rule; 403 `rules.toggle_needs_admin` for a member. JWT only, never an API key: a person adopts (D10) |
 | PUT | `/api/orgs/{org_id}/rule-toggles/{rule_id}` | JWT (org owner/admin) | The org's `on`, `params` and `locked`, with a required `reason`. Applies to every project that inherits it — every project, when locked — and is recorded as ONE `set_rule_toggle` event naming the old and new values and `projects_changed`, which the reply also returns. `team`/`enterprise` only: 402 `quota_exceeded` otherwise, self-host included (D11) |

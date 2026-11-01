@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import CodeNode, RuleSuggestionDismissal
+from app.services import observations as observations_svc
 from app.services import platform as platform_svc
 from app.services import rules as rules_svc
 from app.services import stack as stack_svc
@@ -27,7 +28,7 @@ from app.services import stack as stack_svc
 logger = logging.getLogger("graphban.rules_recommend")
 
 CACHE_TTL_SECONDS = 60.0
-SOURCES = ("stack", "code_graph", "github")
+SOURCES = ("stack", "code_graph", "github", "fleet")
 KINDS = ("value", "code")
 _PR_FETCH_TIMEOUT = 3.0
 _MIN_PRS = 3
@@ -140,12 +141,27 @@ def _from_github(db: Session, project_id: str) -> tuple[list[dict], dict]:
     return out, _source("github", "read")
 
 
+def _from_fleet(db: Session, project_id: str) -> tuple[list[dict], dict]:
+    """The observations ledger (PRD-63 S1). It feeds suggestions in S3; until then it is read
+    and reported, so the panel never claims it looked at fleet evidence it did not have. An
+    empty ledger is `not_available`, not a clean `read` — nothing recorded is not nothing
+    happened."""
+    try:
+        n = observations_svc.count_for_project(db, project_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("observations unreadable", exc_info=True)
+        return [], _source("fleet", "not_available", "read_failed")
+    if n == 0:
+        return [], _source("fleet", "not_available", "no_observations")
+    return [], _source("fleet", "read", f"{n} observation(s)")
+
+
 def _compute(db: Session, project_id: str) -> tuple[list[dict], list[dict]]:
     paths = list(db.scalars(select(CodeNode.path).where(CodeNode.project_id == project_id)))
     suggestions: list[dict] = []
     sources: list[dict] = []
     for found, src in (_from_stack(db, project_id, paths), _from_code_graph(paths),
-                       _from_github(db, project_id)):
+                       _from_github(db, project_id), _from_fleet(db, project_id)):
         suggestions += found
         sources.append(src)
     return suggestions, sources

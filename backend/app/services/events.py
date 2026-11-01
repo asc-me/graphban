@@ -41,17 +41,20 @@ def record(
     target_id: str = "",
     project_id: str | None = None,
     meta: dict | None = None,
-) -> None:
+) -> Event | None:
     try:
-        db.add(Event(
+        event = Event(
             actor_type=actor_type, actor_id=actor_id, actor_label=actor_label,
             surface=surface, action=action, target_type=target_type,
             target_id=target_id, project_id=project_id, meta=meta,
-        ))
+        )
+        db.add(event)
         db.commit()
+        return event
     except Exception:  # noqa: BLE001 — auditing must never break the audited op
         logger.exception("failed to record event %r", action)
         db.rollback()
+        return None
 
 
 def record_key(db: Session, key: ApiKey, *, action: str, target_type: str = "",
@@ -97,11 +100,14 @@ def record_refusal(db: Session, *, rule_id: str | None, surface: str, where: str
         # A route like `PATCH /api/prds/{prd_id}` names no project; without one the refusal
         # is in the ledger but in no project's Activity, which reads as "nothing refused".
         project_id = _target_project(db, target_type, target_id)
-    record(
+    event = record(
         db, actor_type=actor[0], actor_id=actor[1], actor_label=actor[2], surface=surface,
         action="refusal" if rule_id else "refusal_unmapped", target_type=target_type,
         target_id=target_id, project_id=project_id, meta=meta,
     )
+    if event is not None:
+        from app.services import observations as observations_svc
+        observations_svc.on_refusal(db, event)
 
 
 def _target_project(db: Session, target_type: str, target_id: str) -> str | None:

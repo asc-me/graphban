@@ -3337,6 +3337,37 @@ class RuleSuggestionDismissal(Base):
     dismissed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class Observation(Base):
+    """One typed fact about how work went, derived from a record the server already holds
+    (PRD-63 S1 / D2): a sabotage receipt, an attestation, a status move, a typed refusal.
+
+    **Links and counts, never copied text** (D2) — `ref` carries ids, names of predicates and
+    numbers, so the table is safe to aggregate across projects (D8). `dedupe_key` is unique per
+    project, which is what lets a live write and the backfill describe the same fact without
+    counting it twice. `origin` says which wrote it.
+    """
+
+    __tablename__ = "observations"
+    __table_args__ = (
+        UniqueConstraint("project_id", "dedupe_key", name="uq_observation_dedupe"),
+        Index("ix_observations_project_kind", "project_id", "kind"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    item_id: Mapped[str | None] = mapped_column(ForeignKey("items.id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(40))
+    stage: Mapped[str] = mapped_column(String(16))
+    #: The library rule this implies, when the fact itself names one (a refusal does).
+    rule_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    commit: Mapped[str | None] = mapped_column(String, nullable=True)
+    dedupe_key: Mapped[str] = mapped_column(String)
+    origin: Mapped[str] = mapped_column(String(16), default="live", server_default="live")
+    ref: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Entitlement(Base):
     """One AI entitlement an org holds: a subscription seat, an API key, a cloud account, or a
     local model (PRD-62 S2). The registry capacity routing reads; headroom is S3's.

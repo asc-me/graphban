@@ -9,12 +9,14 @@ from app.config import settings
 from app.db import get_db
 from app.models import User
 from app.errors import NotFound, Validation
-from app.schemas import (OrgRuleToggleOut, RecommendedRulesOut, RefusalCoverageOut,
-                         RuleSuggestionOut, RulesFlowOut, RulesOut, RuleToggleOut,
-                         RuleTogglesOut, RuleToggleWrite, UnmappedRefusalsOut)
+from app.schemas import (ObservationBackfillOut, ObservationsOut, OrgRuleToggleOut,
+                         RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
+                         RulesFlowOut, RulesOut, RuleToggleOut, RuleTogglesOut,
+                         RuleToggleWrite, UnmappedRefusalsOut)
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import events as events_svc
+from app.services import observations as observations_svc
 from app.services import quotas
 from app.services import rules as rules_svc
 from app.services import rule_toggles
@@ -96,6 +98,43 @@ def unmapped_refusals(project_id: str = "core", days: int = Query(7, ge=1, le=90
     include_platform = (not settings.hosted_mode and owner) or quotas.is_platform_admin(user)
     return events_svc.unmapped_refusals(db, project_id, days=days, include_platform=include_platform)
 
+
+@router.get("/rules/observations", response_model=ObservationsOut)
+def project_observations(project_id: str = "core", stage: str | None = None,
+                         kind: str | None = None, limit: int = Query(100, ge=1, le=500),
+                         offset: int = Query(0, ge=0), db: Session = Depends(get_db),
+                         user: User = Depends(get_current_user)):
+    """The fleet observations ledger for one project (PRD-63 S1): typed facts, never prose."""
+    authz.require_readable(db, user.id, project_id)
+    try:
+        return observations_svc.list_observations(
+            db, project_ids=[project_id], stage=stage, kind=kind, limit=limit, offset=offset)
+    except observations_svc.BadFilter as e:
+        raise HTTPException(422, str(e))
+
+
+@router.post("/rules/observations/backfill", response_model=ObservationBackfillOut)
+def backfill_observations(project_id: str = "core", db: Session = Depends(get_db),
+                          user: User = Depends(get_current_user)):
+    """Derive observations from the project's history. Idempotent: a fact already recorded,
+    live or by an earlier run, is not added again."""
+    authz.require_writable(db, user.id, project_id)
+    return observations_svc.backfill(db, project_id)
+
+
+@router.get("/orgs/{org_id}/rules/observations", response_model=ObservationsOut)
+def org_observations(org_id: str, stage: str | None = None, kind: str | None = None,
+                     limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0),
+                     db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Observations across the org's projects the caller can read."""
+    authz.require_org_member(db, user.id, org_id)
+    readable = set(authz.readable_project_ids(db, user.id))
+    pids = [p for p in observations_svc.org_project_ids(db, org_id) if p in readable]
+    try:
+        return observations_svc.list_observations(
+            db, project_ids=pids, stage=stage, kind=kind, limit=limit, offset=offset)
+    except observations_svc.BadFilter as e:
+        raise HTTPException(422, str(e))
 
 
 # ---- library rule toggles (GRPH-1262 / PRD-P63 §8, D4) -----------------------------------

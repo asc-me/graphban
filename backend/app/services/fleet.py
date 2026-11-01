@@ -3263,6 +3263,8 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     item.claimed_at = None
     db.commit()
     db.refresh(item)
+    from app.services import observations as observations_svc
+    observations_svc.on_sign_off(db, item, fresh)
     return item
 
 
@@ -3311,6 +3313,8 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     item.blocker = ""
     db.commit()
     db.refresh(item)
+    from app.services import observations as observations_svc
+    observations_svc.on_bounce(db, item)
     return item
 
 
