@@ -11,10 +11,14 @@ import pytest
 from test_entitlements import _HOLDER, _ev, _ok, _url, hosted, org  # noqa: F401  (fixtures)
 
 
-def _ent(client, org, vendor, *, reset=None, kind="api_key"):
+def _ent(client, org, vendor, *, reset=None, kind="api_key", budget=None):
     body = {"vendor": vendor, "kind": kind}
     if kind in ("api_key", "cloud"):
         body["secret_ref"] = "KEY_" + vendor.upper()
+    if kind == "subscription":
+        body["owner_user_id"] = org["user_id"]
+    if budget is not None:
+        body["token_budget"] = budget
     if reset:
         body["next_reset_at"] = reset.isoformat()
     r = client.post(_url(org), json=body, headers=org["owner"])
@@ -222,6 +226,126 @@ def test_a_live_reservation_still_offers_the_item_to_a_runner_with_headroom(clie
     _report(client, world, other, d, "registered")
     assert _claim(x, item) is None, "the reservation still holds against the headroomless"
     assert _claim(d, item) == item
+
+
+# ---- D6: the fallback ladder is policy, not rank ------------------------------------------
+
+def _set_ladder(ladder):
+    from app.db import SessionLocal
+    from app.models import Project
+    from app.services import fleet_profiles
+
+    db = SessionLocal()
+    try:
+        fleet_profiles.set_policy(db, db.get(Project, _P["id"]), {"ladder": ladder})
+    finally:
+        db.close()
+
+
+def _chosen(client, world, ents, item):
+    a = _runner(client, world, ents)
+    for e in ents:
+        _report(client, world, e, a, "registered")
+    _runner(client, world, [_ent(client, world, "google")], vendor="google")  # reviewer vendor
+    assert _claim(a, item) == item
+    (rec,) = [d for d in _decisions(item) if d["kind"] == "claim"]
+    return rec
+
+
+def test_the_default_ladder_prefers_a_subscription_over_an_api_key_and_names_the_rung(client, world):
+    # The api_key is created first AND resets sooner, so only the rung can put the
+    # subscription ahead of it.
+    key = _ent(client, world, "openai", kind="api_key",
+               reset=datetime.now(timezone.utc) + timedelta(days=1))
+    sub = _ent(client, world, "anthropic", kind="subscription",
+               reset=datetime.now(timezone.utc) + timedelta(days=3))
+    rec = _chosen(client, world, [key, sub], _item())
+    assert rec["entitlement_id"] == sub
+    assert "subscription rung" in rec["reason"]
+
+
+def test_an_org_policy_without_the_api_key_rung_never_routes_to_an_api_key(client, world):
+    _set_ladder(["subscription", "local"])
+    key = _ent(client, world, "anthropic", kind="api_key")
+    a = _runner(client, world, [key])
+    _report(client, world, key, a, "registered")
+    _runner(client, world, [_ent(client, world, "google")], vendor="google")
+    item = _item()
+    assert _claim(a, item) == item  # no rung with headroom: the claim is unrouted, not api_key
+    (rec,) = [d for d in _decisions(item) if d["kind"] == "claim"]
+    assert rec["entitlement_id"] is None and key not in rec["reason"]
+
+
+def test_a_policy_can_put_the_api_key_rung_first(client, world):
+    _set_ladder(["api_key", "subscription"])
+    # The subscription is created first AND resets sooner, so only the rung can put the
+    # api_key ahead of it.
+    sub = _ent(client, world, "anthropic", kind="subscription",
+               reset=datetime.now(timezone.utc) + timedelta(days=1))
+    key = _ent(client, world, "openai", kind="api_key",
+               reset=datetime.now(timezone.utc) + timedelta(days=3))
+    rec = _chosen(client, world, [sub, key], _item())
+    assert rec["entitlement_id"] == key and "api_key rung" in rec["reason"]
+
+
+def test_an_api_key_whose_token_budget_is_spent_this_period_is_skipped(client, world):
+    spent = _ent(client, world, "openai", kind="api_key", budget=1000)
+    fresh = _ent(client, world, "anthropic", kind="api_key", budget=1000)
+    a = _runner(client, world, [spent, fresh])
+    for e in (spent, fresh):
+        _report(client, world, e, a, "registered")
+    _report(client, world, spent, a, "spend", tokens=1000)
+    _runner(client, world, [_ent(client, world, "google")], vendor="google")
+    item = _item()
+    assert _claim(a, item) == item
+    (rec,) = [d for d in _decisions(item) if d["kind"] == "claim"]
+    assert rec["entitlement_id"] == fresh
+
+
+def _set_profile_ladder(client, world, ladder):
+    r = client.put("/api/fleet/profile", json={"project_id": _P["id"], "ladder": ladder},
+                   headers=world["owner"])
+    assert r.status_code == 200, r.text
+    assert r.json()["ladder"] == ladder
+
+
+def test_the_key_owners_profile_ladder_overrides_the_default_order(client, world):
+    _set_profile_ladder(client, world, ["api_key", "subscription"])
+    # The subscription is created first AND resets sooner, so only the rung can put the
+    # api_key ahead of it.
+    sub = _ent(client, world, "anthropic", kind="subscription",
+               reset=datetime.now(timezone.utc) + timedelta(days=1))
+    key = _ent(client, world, "openai", kind="api_key",
+               reset=datetime.now(timezone.utc) + timedelta(days=3))
+    rec = _chosen(client, world, [sub, key], _item())
+    assert rec["entitlement_id"] == key and "api_key rung" in rec["reason"]
+
+
+def test_a_profile_ladder_cannot_add_back_the_api_key_rung_policy_removed(client, world):
+    _set_ladder(["subscription", "local"])
+    _set_profile_ladder(client, world, ["api_key", "subscription"])
+    key = _ent(client, world, "openai", kind="api_key")
+    sub = _ent(client, world, "anthropic", kind="subscription")
+    a = _runner(client, world, [key, sub])
+    for e in (key, sub):
+        _report(client, world, e, a, "registered")
+    # The reviewer vendor rides the subscription rung too, so the reserve survives the policy.
+    _runner(client, world, [_ent(client, world, "google", kind="subscription")], vendor="google")
+    item = _item()
+    assert _claim(a, item) == item
+    (rec,) = [d for d in _decisions(item) if d["kind"] == "claim"]
+    assert rec["entitlement_id"] == sub and "subscription rung" in rec["reason"]
+
+
+def test_a_ladder_policy_is_validated():
+    from app.services import fleet_profiles
+
+    assert fleet_profiles.normalise_policy({"ladder": ["subscription"]}) == {
+        "local_only": False, "reviewer_cross_vendor": False, "allowed_harnesses": [],
+        "ladder": ["subscription"]}
+    for bad in ([], ["gold"], ["local", "local"], "local"):
+        with pytest.raises(fleet_profiles.ProfileInvalid):
+            fleet_profiles.normalise_policy({"ladder": bad})
 
 
 def test_a_non_eligible_second_vendor_does_not_satisfy_the_reserve(client, world):

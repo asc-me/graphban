@@ -2385,6 +2385,10 @@ class FleetProfile(Base):
     budget_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: GRPH-865: target share of recent matrix launches per harness. Null is no mix.
     mix: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    #: PRD-62 D6 (GRPH-1255): this user's capacity-routing rung order. Null follows the
+    #: project policy's ladder. Read through `fleet_profiles.ladder_of`, which keeps only the
+    #: rungs the policy allows: a profile reorders or drops rungs, it never adds one back.
+    ladder: Mapped[list | None] = mapped_column(JSON, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (
