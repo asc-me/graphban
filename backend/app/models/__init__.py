@@ -3607,6 +3607,24 @@ class PlatformRuleRollup(Base):
     rolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class PlatformObservationRollup(Base):
+    """Observation counts by kind across every org that opted in (GRPH-1286, PRD-P63 D8/D13).
+
+    Holds no org id, project id, item id or text: a count per kind per ISO week, how many orgs
+    are behind it and the largest single org's share. Served only above the D13 floors, with
+    `n` as a band.
+    """
+
+    __tablename__ = "platform_observation_rollups"
+
+    week: Mapped[str] = mapped_column(String(8), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(40), primary_key=True)
+    orgs_contributing: Mapped[int] = mapped_column(Integer, default=0)
+    top_org_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    observations: Mapped[int] = mapped_column(Integer, default=0)
+    rolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class DesignSet(Base):
     """An optional design set on a PRD (GRPH-1279 / GRPH-P64).
 
