@@ -644,6 +644,44 @@ def test_until_does_not_spawn_for_held_review(
     assert result.spawned == 0
 
 
+def test_until_spawns_for_a_review_row_whose_holder_has_lapsed(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1254. `review_claimed_by` stays set after its holder dies, so reading it alone
+    kept the GRPH-P62 wave idle for over an hour behind a dead reviewer. The server says the
+    hold has lapsed (`review_claim_lapse`), and that row is unheld.
+
+    Sabotage: make `review_held` read only `review_claimed_by` again and nothing is spawned."""
+    workspace = tmp_path / "ws"
+    roles: list[str] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "GRPH-R1", "review_claim_lapse": "offline"}],
+        minted_roles=roles,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert roles, "a lapsed hold must get a reviewer spawned for it"
+    assert all(r == "worker" for r in roles), roles
+    assert result.reason == "review-unsigned"
+
+
+def test_review_held_reads_the_servers_lapse_and_tolerates_an_older_server():
+    """The three cases `review_held` must tell apart, including a server too old to send the
+    field, which must read exactly as it did before this change."""
+    from gbfleet.until import review_held
+
+    assert review_held({"review_claimed_by": "GRPH-R1"}) is True
+    assert review_held({"review_claimed_by": "GRPH-R1", "review_claim_lapse": "age"}) is False
+    assert review_held({"review_claimed_by": ""}) is False
+    assert review_held({}) is False
+
+
 def test_a_scoped_wave_does_not_spawn_for_review_outside_its_prd(
     git_repo: Path, tmp_path: Path, scripts, state: Path,
 ):

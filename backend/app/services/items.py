@@ -1859,6 +1859,17 @@ def item_dict(item: Item) -> dict:
         # needs the value that IS there, not a field that is always present and
         # usually blank.
         out["branch"] = item.branch
+    if item.review_claimed_by:
+        # WHY the review hold above is no longer live, PRESENT ONLY WHEN IT HAS LAPSED
+        # (GRPH-1254). `review_claimed_by` is the raw column and stays set after its holder
+        # dies, so a supervisor reading it alone saw a dead reviewer as a live one and never
+        # spawned the reviewer that `claim_review` would already have let take the item over.
+        # The reason comes from `review_claim_lapse`, the one definition of a live hold, so no
+        # client re-derives presence. Reply-only, like `review_claimed_by`.
+        from app.services.fleet import review_claim_lapse
+        lapse = review_claim_lapse(item)
+        if lapse:
+            out["review_claim_lapse"] = lapse
     if item.decision:
         # The agent's question and options, and the answer once given (GRPH-1137). Present
         # only on a decision wait; `notify` bookkeeping stays server-side. Reply-only.
