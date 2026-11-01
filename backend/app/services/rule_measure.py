@@ -39,9 +39,9 @@ from app.services import rule_toggles
 #: Sign-offs needed on EACH side of an adoption before an escape rate is shown.
 MIN_SIGNOFFS = 10
 #: Escape observation kinds measured in v1 (D9). A bounce counts only after a prior sign-off.
-ESCAPE_KINDS = ("ci_red_after_sign_off", "reopened_after_done")
-#: Not measured: no record links a bug item to the work it escaped from.
-UNMEASURED_ESCAPES = ("bug item linked to merged work",)
+ESCAPE_KINDS = ("ci_red_after_sign_off", "reopened_after_done", "bug_escaped")
+#: Escape kinds with no record to count from.
+UNMEASURED_ESCAPES: tuple[str, ...] = ()
 #: What the escape counts are scoped to; see the module docstring.
 ESCAPE_SCOPE = "project"
 ESCAPE_SCOPE_NOTE = ("escapes are counted across the whole project, not per stage: no record "

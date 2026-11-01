@@ -37,6 +37,7 @@ KINDS: dict[str, str] = {
     "reviewer_sabotage_missed": "review",
     "ci_red_after_sign_off": "merge",
     "reopened_after_done": "merge",
+    "bug_escaped": "merge",
     "predicate_exempted": "review",
     "gap_noted_at_sign_off": "review",
     "refusal": "unknown",  # taken from the refusing rule's id, see `_refusal_stage`
@@ -224,6 +225,31 @@ def on_reopen(db: Session, item: Item) -> None:
         _add(db, item, kind="reopened_after_done", key=f"reopen:{item.id}:{n + 1}", origin="live",
              ref={"to_status": item.status})
     _safe(db, "reopen", go)
+
+
+class BugEscapeRefused(ValueError):
+    pass
+
+
+def record_bug_escape(db: Session, bug: Item, escaped_from: Item) -> bool:
+    """Record that `bug` is a bug filed against `escaped_from`, work already signed off (D9).
+
+    One fact per pair, attached to the item it escaped from and placed at the time the bug was
+    filed. The bug's text is never read: only its `bug` tag and the two ids. True when newly
+    recorded; linking the same pair again adds nothing.
+    """
+    if bug.id == escaped_from.id:
+        raise BugEscapeRefused("an item cannot escape from itself")
+    if bug.project_id != escaped_from.project_id:
+        raise BugEscapeRefused("a bug and the work it escaped from must be in the same project")
+    if not any(isinstance(t, str) and t.strip().lower() == "bug" for t in (bug.tags or [])):
+        raise BugEscapeRefused(f"{bug.id} is not tagged `bug`")
+    if not (escaped_from.status == "done" or escaped_from.reviewed_by):
+        raise BugEscapeRefused(f"{escaped_from.id} has not been signed off, so nothing escaped it")
+    new = _add(db, escaped_from, kind="bug_escaped", key=f"bug_escape:{bug.id}:{escaped_from.id}",
+               origin="live", ref={"bug_item_id": bug.id}, occurred_at=bug.created_at)
+    db.commit()
+    return new
 
 
 def on_bounce(db: Session, item: Item) -> None:
