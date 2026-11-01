@@ -86,6 +86,36 @@ def test_missing_primitive_and_bad_param_are_refused_per_template():
     assert "does not exist" in pack.refused["review.evidence_attached"]
 
 
+def test_unparseable_template_is_refused_alone_and_the_pack_loads():
+    pack = P.load(*build(FIX / "api1", {"templates/evidence.toml": "id = [oops"}),
+                  trusted_keys=TRUST)
+    assert "does not parse" in pack.refused["templates/evidence.toml"]
+    assert "review.sabotage_required" not in pack.refused
+
+
+def test_template_without_id_is_refused_visibly(client):
+    t = (FIX / "api1/templates/evidence.toml").read_text().replace(
+        'id = "review.evidence_attached"', "")
+    art = build(FIX / "api1", {"templates/evidence.toml": t})
+    pack = P.load(*art, trusted_keys=TRUST)
+    assert "'id'" in pack.refused["templates/evidence.toml"]
+    db, user = _person()
+    try:
+        P.install(db, user, *art, trusted_keys=TRUST)
+        r = T.LIBRARY["templates/evidence.toml"]
+        assert r.enforcement == "unmeasured" and "'id'" in r.unmeasured_reason
+    finally:
+        db.close()
+
+
+def test_duplicate_template_ids_are_both_refused():
+    t = (FIX / "api1/templates/evidence.toml").read_text().replace(
+        'id = "review.evidence_attached"', 'id = "review.sabotage_required"')
+    pack = P.load(*build(FIX / "api1", {"templates/evidence.toml": t}), trusted_keys=TRUST)
+    reason = pack.refused["review.sabotage_required"]
+    assert "duplicate" in reason and "evidence.toml" in reason and "sabotage.toml" in reason
+
+
 def test_tampered_artifact_is_refused():
     art, sig = build(FIX / "api1")
     flipped = bytearray(art)

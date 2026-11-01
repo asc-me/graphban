@@ -227,10 +227,18 @@ def load(artifact: bytes, signature: bytes, *, trusted_keys: tuple[str, ...] | N
             f"this server is {server}")
     pack = Pack(meta["name"], meta["version"], meta["primitive_api"], meta["min_server"],
                 {}, {}, {}, [])
+    seen: dict[str, list[str]] = {}
     for path in sorted(files):
         if path.startswith("templates/") and path.endswith(".toml"):
-            t = _toml(files, path)
-            tid = t.get("id") if isinstance(t.get("id"), str) else path
+            try:
+                t = tomllib.loads(files[path].decode())
+            except (UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+                # One unreadable template is that rule's problem, not the pack's (D12).
+                pack.templates[path] = {}
+                pack.refused[path] = f"template does not parse: {e}"
+                continue
+            tid = t.get("id") if isinstance(t.get("id"), str) and t["id"] else path
+            seen.setdefault(tid, []).append(path)
             pack.templates[tid] = t
             reason = _check_template(t, pack.primitive_api)
             if reason:
@@ -238,16 +246,20 @@ def load(artifact: bytes, signature: bytes, *, trusted_keys: tuple[str, ...] | N
         elif path.startswith("profiles/") and path.endswith(".toml"):
             p = _toml(files, path)
             pack.profiles[p.get("id", path)] = p
+    for tid, paths in seen.items():
+        if len(paths) > 1:
+            # Neither half loads: every template sharing the id is refused, naming the clash.
+            pack.refused[tid] = f"duplicate template id {tid!r} in {', '.join(paths)}"
     if "mappings/observations.toml" in files:
         pack.mappings = _toml(files, "mappings/observations.toml").get("map", [])
     return pack
 
 
-def _library_rule(t: dict, reason: str) -> rule_toggles.LibraryRule:
+def _library_rule(tid: str, t: dict, reason: str) -> rule_toggles.LibraryRule:
     prim = PRIMITIVES.get(t.get("primitive", ""))
     ok = not reason
     return rule_toggles.LibraryRule(
-        id=t["id"], stage=str(t.get("stage", "")).lower(), title=t.get("title", t["id"]),
+        id=tid, stage=str(t.get("stage", "")).lower(), title=str(t.get("title") or tid),
         summary=t.get("summary", ""),
         enforcement=prim.level if ok else "unmeasured",
         enforcer=prim.enforcer if prim else Enforcer("doc", "docs/data-model.md"),
@@ -264,8 +276,8 @@ def install(db: Session, actor: object, artifact: bytes, signature: bytes, *,
     global CURRENT
     rule_toggles._require_person(db, actor)
     pack = load(artifact, signature, trusted_keys=trusted_keys, server_version=server_version)
-    rules = [_library_rule(t, pack.refused.get(tid, "")) for tid, t in pack.templates.items()
-             if isinstance(t.get("id"), str)]
+    rules = [_library_rule(tid, t, pack.refused.get(tid, ""))
+             for tid, t in pack.templates.items()]
     rule_toggles.LIBRARY.clear()
     for r in rules:
         rule_toggles.register(r)
