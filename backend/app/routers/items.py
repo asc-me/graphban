@@ -5,6 +5,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app import errors
 from app.db import get_db
 from app.models import User
 from app.schemas import (
@@ -214,6 +215,8 @@ def update_item(
         # Completion fires the judge and the lesson extractor, which are model calls
         # (GRPH-399). Scheduled here so the response does not wait on them.
         item = items_svc.update_item(db, item_id, defer=background.add_task, **changes)
+    except items_svc.EvidenceRequired as e:
+        raise errors.Refused(409, str(e), rule_id=items_svc.ENGINE_EVIDENCE_RULE)
     except items_svc.MissingAttestation as e:
         # 409, not 422: the request is well formed and the caller is permitted — the ITEM is
         # not in a state that may be completed (GRPH-543). A 422 would read as "you sent

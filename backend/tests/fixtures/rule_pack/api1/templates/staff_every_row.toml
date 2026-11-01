@@ -1,0 +1,7 @@
+id = "review.staff_every_row"
+stage = "Review"
+title = "Staff every review row"
+summary = "gbfleet until staffs a reviewer for every unheld review row its key can see, not only its own PRD's."
+primitive = "staffing_scope"
+claims = "checked"
+default = "off"

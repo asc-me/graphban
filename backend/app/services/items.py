@@ -176,6 +176,28 @@ _EVIDENCE_KINDS = {"test", "url", "screenshot", "health", "note", "sabotage", "a
 # wearing a stronger name, and a gate that counted it would be satisfied by prose.
 _SABOTAGE_FIELDS = ("claim", "mutation", "tests_failed")
 
+# The run a `test` receipt may describe as fields (GRPH-1271). `scope` is the full suite or
+# not; `passed` / `failed` / `skipped` are pytest's summary counts.
+_TEST_SCOPES = ("full", "partial")
+_TEST_COUNTS = ("passed", "failed", "skipped")
+
+
+def _test_run_fields(e: dict) -> dict:
+    """The valid structured run fields of a `test` receipt; an invalid one is left out."""
+    out: dict = {}
+    engine = e.get("engine")
+    if isinstance(engine, str) and engine.strip():
+        out["engine"] = engine.strip().lower()
+    scope = e.get("scope")
+    if isinstance(scope, str) and scope.strip().lower() in _TEST_SCOPES:
+        out["scope"] = scope.strip().lower()
+    for k in _TEST_COUNTS:
+        n = e.get(k)
+        if isinstance(n, int) and not isinstance(n, bool) and n >= 0:
+            out[k] = n
+    return out
+
+
 # What an `attestation` receipt must carry to be one (GRPH-542). Same bargain as `sabotage`
 # above: a structured kind that accepts unstructured input is the free-text field with a
 # stronger name, and the completion gate would then be checking a label rather than a fact.
@@ -383,6 +405,12 @@ def normalize_evidence_report(raw) -> tuple[list[dict], list[dict]]:
                             if e.get(k) is not None]
                     row["detail"] = ("incomplete attestation receipt (" + ", ".join(said) + ")"
                                      if said else "")
+        elif kind == "test":
+            # A `test` receipt may say WHAT ran as fields (GRPH-1271, PRD-63 D2): the engine,
+            # whether it was the full suite, and the pytest counts. Each is kept only when it
+            # validates, so a gate reading them reads a fact and never a malformed guess; the
+            # receipt itself stays advisory and is never demoted for a bad field.
+            row.update(_test_run_fields(e))
         elif kind == "note":
             # The one structured fact a note can carry (PRD-63 D2): `done: false` marks work
             # the builder says was NOT done. A bool and nothing else, so the observation
@@ -982,6 +1010,11 @@ class MissingAttestation(Exception):
     """
 
 
+class EvidenceRequired(Exception):
+    """The `build.engine_evidence` library rule is on and this item, moving to review, lacks the
+    evidence its class needs (GRPH-1271). A 409 at the boundaries, naming the rule."""
+
+
 class PRCooldown(Exception):
     """`done` was asked for too soon after the PR was linked (GRPH-567).
 
@@ -1004,6 +1037,71 @@ _PR_URL_MARKERS = ("/pull/", "/pull-requests/", "/merge_requests/")
 def is_pr_url(url: str) -> bool:
     """Does this URL point at a pull/merge request?"""
     return any(marker in (url or "").lower() for marker in _PR_URL_MARKERS)
+
+
+ENGINE_EVIDENCE_RULE = "build.engine_evidence"
+# The prose fallback, for `test` receipts written before the structured fields existed. A skip
+# count is a pytest summary ("6402 passed, 38 skipped"), not a partial run; a file count is
+# partial only in the "on N files" form ("120 test files, all passed" is a full run described).
+_PARTIAL_RUN = re.compile(
+    r"\bonly\b|\bpartial(?:ly)?\b|\bsubset\b|\bselected\b|\bsmoke\b|\bnot (?:run|ran|executed)\b"
+    r"|\bon \d+ (?:test )?(?:files?|modules?)\b|\s-k\s|\b[1-9]\d* (?:failed|errors?)\b", re.I)
+_FULL_RUN = re.compile(r"\b(?:full|entire|whole|complete)\b|\ball (?:tests|files)\b", re.I)
+
+
+def _full_engine_run(receipts, engine: str) -> bool:
+    """Whether a `test` receipt records a FULL, green run on `engine`.
+
+    Read from the structured fields (PRD-63 D2: free text never decides): `engine` names it,
+    `scope` is `full`, and `failed` is recorded as 0. A skip count never makes a run partial.
+    A receipt carrying none of the fields predates them and falls back to its prose, where a
+    partial run ("Postgres on 4 files only"), a denial ("Postgres NOT run"), a failure count or
+    a line that never says it was the whole suite does not count: absence never reads as clean.
+    """
+    from app.services import fleet as fleet_svc
+
+    for e in receipts or []:
+        if not isinstance(e, dict) or e.get("kind") != "test":
+            continue
+        if any(k in e for k in ("engine", "scope", *_TEST_COUNTS)):
+            if (e.get("engine") == engine and e.get("scope") == "full"
+                    and e.get("failed") == 0 and not isinstance(e.get("failed"), bool)):
+                return True
+            continue
+        line = str(e.get("detail") or "")
+        if (engine in line.lower() and _FULL_RUN.search(line) and not _PARTIAL_RUN.search(line)
+                and not fleet_svc.denial_in(engine, line)):
+            return True
+    return False
+
+
+def require_engine_evidence(db: Session, item: Item, incoming) -> None:
+    """The `evidence_required` primitive, bound to `build.engine_evidence` (GRPH-1271).
+
+    Read through the layered resolution (`rule_toggles.resolve`), never a constant: a rule absent
+    from the loaded library, or off, is no gate. When on, an item of the class (a touchpoint
+    containing `path`, default `alembic/versions/`) needs a test receipt recording a full run on
+    `engine` (default `postgres`) before it moves to review. Other items are unaffected.
+    """
+    from app.services import rule_toggles
+
+    if ENGINE_EVIDENCE_RULE not in rule_toggles.LIBRARY:
+        return
+    state = rule_toggles.resolve(db, ENGINE_EVIDENCE_RULE, item.project_id)
+    if not state["on"]["value"]:
+        return
+    params = state["params"]["value"] or {}
+    path = params.get("path") or "alembic/versions/"
+    engine = (params.get("engine") or "postgres").lower()
+    if not any(path in (t or "") for t in item.touchpoints or []):
+        return
+    if _full_engine_run(append_evidence(item.evidence, incoming or []), engine):
+        return
+    raise EvidenceRequired(
+        f"{item.key} cannot move to review while {ENGINE_EVIDENCE_RULE} is on: it touches "
+        f"{path} and carries no test receipt recording a full {engine} suite run. Record one "
+        f"as {{kind: test, engine: {engine!r}, scope: 'full', passed, failed: 0, skipped}}; a "
+        "partial run, or one with failures, does not count")
 
 
 def reviewable_handoff(item: Item, incoming_evidence=None) -> bool:
@@ -1310,6 +1408,8 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "reviewer has nothing to read. Claim it from a registered agent with a "
                 "branch, or attach the PR url as evidence, then move it to review"
             )
+    if fields.get("status") == "review" and prev_status != "review":
+        require_engine_evidence(db, item, fields.get("evidence"))
     # THE COMPLETION GATE (GRPH-543). Before this, `update_item` validated a status
     # transition for MEMBERSHIP IN A LIST and nothing else, so an agent working without a
     # reviewer reached `done` by writing the string — and the result was indistinguishable
