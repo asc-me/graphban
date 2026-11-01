@@ -3,16 +3,16 @@
 `fleet_profiles.ladder` is a user's rung order (subscription / api_key / local). Null follows
 the project policy's ladder. A preference: the reader keeps only rungs the policy allows.
 
-Revision ID: 0165
-Revises: 0164
+Revision ID: 0166
+Revises: 0165
 """
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "0165"
-down_revision: Union[str, None] = "0164"
+revision: str = "0166"
+down_revision: Union[str, None] = "0165"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

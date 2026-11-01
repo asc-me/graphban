@@ -13,7 +13,7 @@ convention. Each has:
 | --- | --- |
 | `text` | The content |
 | `scope` | `global` (project-wide) or `item` (attached to an item) |
-| `source` | Where it came from, e.g. `from AL-08`, `global`, `lesson from AL-16` |
+| `source` | Where it came from, e.g. `global`, `lesson from GRPH-16`. The item key is the project's current tag (`{tag}-{n}`) |
 | `status` | `candidate` → `published` → (`rejected`) — the trust boundary, below |
 | `origin` | Who wrote it: `user:<handle>`, `agent:<key>`, or `agent:auto-extract` |
 | `item_id` | Set for item-scoped shards |
@@ -68,8 +68,8 @@ tuned one.
 The Memory tab's search box runs a **semantic** search (not keyword): the query is embedded
 and compared to shard embeddings by cosine similarity, best-first, with a score.
 
-- On **Postgres** this uses the pgvector `<=>` (cosine distance) operator with an ivfflat
-  index.
+- On **Postgres** this uses the pgvector `<=>` (cosine distance) operator with an HNSW
+  index (migration 0016 replaced ivfflat).
 - On **SQLite** (tests / zero-infra) it falls back to a Python cosine over the shard set.
 
 Both paths go through the configured [embedding provider](ai-providers.md). The default
@@ -87,7 +87,7 @@ Both paths go through the configured [embedding provider](ai-providers.md). The 
 ### Auto-extraction on done
 
 When a tracker item transitions to **Done**, the [Extractor](ai-providers.md) distills 1–3
-durable shards from its title + description and attaches them (`source: "lesson from AL-…"`).
+durable shards from its title + description and attaches them (`source: "lesson from GRPH-…"`).
 This is idempotent (won't double-extract) and respects the project's `auto_extract` flag.
 The offline stub uses a heuristic (pulls decision/learning-flavored sentences); a real
 provider generates them.

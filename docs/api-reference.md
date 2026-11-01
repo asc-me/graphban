@@ -1,16 +1,18 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 213 of the 291 paths
-the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
-page exists for the endpoints whose *authority* needs explaining, which a schema has no field
-for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
-is the only accepted credential in hosted mode.
+**This names every path the app serves** — 294 of the 294. The OpenAPI schema at **`/docs`**
+is the schema (bodies and status codes). This page is where a route's *authority* is
+explained, which a schema has no field for: why `code/health` accepts an agent key and
+`fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
 
-Everything listed here is checked to still exist, and a route added without a line here fails
-in CI on the PR that adds it. The gap is tracked in `docs/completeness-baseline.json` and can
-only shrink.
+A route added without a line here fails in CI on the PR that adds it.
+`docs/completeness-baseline.json` records any path this page does not name, and that list
+can only shrink.
 
-All endpoints are under `/api` (proxied by the web tier and served directly by the API).
+Most endpoints are under `/api` (proxied by the web tier and served directly by the API).
+Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
+`/{path_id}/issues`, `/{path_id}/requests`, `/{path_id}/roadmap`, and
+`/{path_id}/t/{track_token}`.
 
 **Auth legend:** **JWT** = `Authorization: Bearer <access-jwt>` · **MCP** = API key via
 `X-API-Key` / `Authorization: Bearer gb_sk_…` · **public** = no auth (rate-limited).
@@ -20,6 +22,12 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | Method | Path | Auth |
 | --- | --- | --- |
 | GET | `/health` | none |
+
+## Config
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/config` | none | Hosted mode and whether signup is open. The two switches the SPA needs before login. No secrets |
 
 ## Auth
 
@@ -31,6 +39,7 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | POST | `/api/auth/password-reset` | none | Ask for a reset link. **Always 202 with the same body**, registered address or not — otherwise it is an account-enumeration oracle. Rate-limited on its own bucket so reset attempts cannot lock the account out of `login` |
 | POST | `/api/auth/password-reset/confirm` | none | Spend the link once and set a new password → tokens. Every prior session is revoked |
 | POST | `/api/auth/logout` | JWT | Bump `token_version`, so every access AND refresh token issued so far — on any device — stops validating immediately. What `gb logout` calls, which is why criterion 3 of PRD-40 checks the token against the server rather than checking that a file was deleted |
+| POST | `/api/auth/me/password` | JWT | Change the caller's password. Bumps `token_version`, so every previously issued token stops working, including the caller's, and returns a fresh pair so the caller stays signed in |
 | GET | `/api/auth/me` | JWT | Current user |
 | GET | `/api/auth/me/memberships` | JWT | Current user's project access |
 | GET | `/api/auth/me/preferences` | JWT | This user's UI preference document (PRD-60 D1): `{saved, preferences}`. `saved: false` means the server has never held one — **not** the same answer as `saved: true` with `{}`, which means an empty document was written on purpose. The document comes back exactly as stored, with no server-side defaults filled in |
@@ -43,8 +52,9 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | GET | `/api/projects` | JWT | List projects (each carries its `tag`) |
 | POST | `/api/projects` | JWT | Create a project. `tag` is optional — derived from `name` when omitted, refused with 422 when taken or malformed |
 | GET | `/api/projects/summaries` | JWT | Project switcher rows for every project the caller can read: `item_count`, `agent_count` (roster, dismissed excluded), `live_agents` (heartbeat inside the presence TTL, not quarantined), `default_branch` (gitops `base_branch`; `null` is unset, never `main`) and `last_activity_at` (latest item change or audit event; `null` when there is none). Fixed statement count, whatever the item count |
-| GET | `/api/projects/tag-suggestion?name=` | JWT | A free tag derived from a project name (prefills the creation form) |
-| GET | `/api/projects/tag-check?tag=` | JWT | `{tag, available, reason}` for live form feedback |
+| GET | `/api/projects/tag-suggestion` | JWT | A free tag derived from a project name (`?name=`). Prefills the creation form |
+| GET | `/api/projects/tag-check` | JWT | `{tag, available, reason}` for live form feedback (`?tag=`) |
+| GET | `/api/projects/{id}/counts` | JWT | The badge numbers the shell renders, a few integers instead of the four full lists |
 | POST | `/api/projects/{id}/retag` | JWT (write) | Move the project's tag. One UPDATE + one tag-history row + one audit event; **no other row in the database changes**. Retired tags are never reusable |
 | PATCH | `/api/projects/{id}` | JWT | Update project config. **Not** the tag — changing that has to record tag history |
 | GET | `/api/projects/{id}/members` | JWT | List members (role/access) |
@@ -90,6 +100,9 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | POST | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Dismiss a suggestion for the project, keyed on id + evidence fingerprint; it returns when the evidence changes. 204, or 404 for an unknown id |
 | GET | `/api/rules/recommended/dismissed` | JWT (project reader) | Suggestions currently dismissed against their present evidence, for the panel's "Show dismissed (N)" |
 | DELETE | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Restore a dismissed suggestion. 204, or 404 when it was not dismissed |
+| GET | `/api/rules/observations` | JWT (project reader) | The fleet observations ledger (PRD-63 S1, `services/observations.py`), newest first: `observations[]`, `total`, and `counts` by kind for the whole filtered set. Filters `stage`, `kind` (422 on an unknown value), `limit`, `offset`. Rows hold ids and counts, never text |
+| POST | `/api/rules/observations/backfill` | JWT (project writer) | Derive observations from the project's history (events, evidence, attestations). Idempotent; returns what it added by kind. Sabotage verdicts, reopenings and bounces are live-only — history cannot attribute or date them |
+| GET | `/api/orgs/{org_id}/rules/observations` | JWT (org member) | The same ledger across the org's projects the caller can read |
 | GET | `/api/rules/refusals/unmapped` | JWT (project reader) | `?project_id=&days=7` (1–90). `refusal_unmapped` events grouped by `where`+`status` over the whole window, no row cap, ranked by count: `groups[]` `{where, status, platform, count, last_at, daily[days]}` plus `recording_since` (earliest refusal event in the same scope as the groups; null = none ever recorded there). Attribution: an event belongs to the project it was recorded against (MCP: the calling key's project or the call's `project_id`); one naming no project is the platform bucket, returned with `platform: true` only to a platform admin, or on a self-hosted instance to the project's owner — never to a hosted owner who is not a platform admin |
 
 ## Items (tracker)
@@ -99,6 +112,7 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | GET | `/api/items` (`?status=`, `?project_id=`) | JWT |
 | POST | `/api/items` | JWT |
 | PATCH | `/api/items/reorder` | JWT |
+| GET | `/api/items/collision-clusters` | JWT | Non-colliding clusters over a project's items: sets whose touch-areas do not overlap |
 | GET | `/api/items/collision-triage` (`?project_id=`) | JWT | Colliding clusters with no live decision (GRPH-1138). |
 | GET | `/api/items/collision-decisions` (`?project_id=`) | JWT | Live decisions: serialize, parallel, hold, override, snooze. |
 | POST | `/api/items/collision-decisions` | JWT (override: project owner) | Body: `{project_id, members, decision, order?, snooze_until?}`. Serialize/hold add dependency links in `order`; override is refused (403) for non-owners. Writes a `collision_decide` event. |
@@ -119,6 +133,7 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | Method | Path | Auth |
 | --- | --- | --- |
 | GET | `/api/requests` (`?type=`) | JWT |
+| GET | `/api/requests/triage` | JWT | What is waiting to be triaged, each row carrying its closest duplicate |
 | POST | `/api/requests` | JWT |
 | POST | `/api/requests/{id}/vote` | JWT |
 | POST | `/api/requests/{id}/link` | JWT |
@@ -138,6 +153,11 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | POST | `/api/memory/lessons/{id}/outcomes` | JWT | Record caught / missed / contradicted. Human only |
 | POST | `/api/memory/lessons/{id}/promote-org` | JWT | Promote `reach` to org. Unverifiable cannot be overridden. X-API-Key → 401 |
 | GET | `/api/memory/candidates` | JWT | The review queue — agent shards awaiting publish (AL-49) |
+| GET | `/api/memory/candidates/scored` | JWT | The review queue with advisory accept/reject suggestions |
+| GET | `/api/memory/auto-actions` | JWT | Shards the scorer published or rejected on its own |
+| POST | `/api/memory/shards/{id}/undo-auto` | JWT | Return an auto-action shard to the candidate queue |
+| GET | `/api/memory/candidate-clusters` | JWT | Candidate shards grouped by similarity, so a recurring lesson is one cluster |
+| POST | `/api/memory/promote-cluster` | JWT | Publish the representative of a cluster and reject the rest |
 | GET | `/api/memory/judge-status` | JWT | Which judge will grade this project's next candidate (`decider` / `chat` / `similarity` / `off`) and whether that was imposed rather than chosen — `falling_back` with a `reason` naming the credential that could not be reached (GRPH-995). Read-only: resolves the pointer, never calls a model |
 | POST | `/api/memory/shards` | JWT | Human-authored → published immediately |
 | PATCH | `/api/memory/shards/{id}` | JWT | Edit `text` (re-embeds) and/or `shard_class` (`pitfall`/`convention`/`principle`; `""` or null clears; other values 422; never re-embeds). Rows carry `shard_class`, `""` = unclassified |
@@ -253,6 +273,7 @@ failure the propose-only boundary exists to prevent.
 | POST | `/api/fleet/seats/revoke-unused` | JWT | Throw away seats nobody redeemed, for a `wave` or the whole project. Consumed seats are untouched — they record which agent took what, and ending the wave is what stops live sessions |
 | POST | `/api/fleet/keys/revoke-expired` | JWT | Revoke credentials that have already expired. Expired only: a live key is somebody's running agent |
 | PUT | `/api/fleet/agents/{agent_id}/role` | JWT | Re-task a live agent as the human who owns the credential (GRPH-774): `{role, reason}`. Takes the project's WRITE gate. The credential ceiling still decides — a role the key does not permit is 409, and an all-in-one posture refuses; widening a ceiling means minting a different credential. Lands on the agent's next poll. A refusal is 409 with `{message, hint}` — the hint travels, because the same refusal was actionable over MCP and a dead end over REST |
+| POST | `/api/fleet/agents/{agent_id}/dismiss` | JWT | Hide an agent from the roster. Never deletes the row |
 | GET | `/api/fleet/end-wave` | JWT | What ending the wave would destroy, for the confirm |
 | POST | `/api/fleet/end-wave` | JWT | Revoke the wave's keys and release everything they hold |
 | GET | `/api/fleet/profile` | JWT | The caller's harness preferences (PRD-37 / PRD-41 D20 / GRPH-865): default and per-project override side by side, plus which one is in force. Includes `budget_tokens` (soft per-sign-off target, null = none) and `mix` (harness→share of recent launches, null = winner-take-all). `project_id` optional |
@@ -320,6 +341,27 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | POST | `/api/prds/{id}/grill/prototype` | JWT | emit the paste-ready prompt-pack for one high-fidelity question; records the handoff as a grill turn (GRPH-235) |
 | POST | `/api/prds/{id}/grill/prototype/verdict` | JWT | carry the prototype's human verdict back into the grill (screenshot attachment cited); PROPOSES the high→low fidelity flip — never applies it (GRPH-235) |
 | GET / POST | `/api/prds/{id}/evaluate` | JWT | pre-approval quality (GRPH-80). GET is mechanical (sections + coverage gaps, no chat). POST asks the LLM for ambiguity/testability. Ungraded is not a fail; never mutates status |
+| GET | `/api/prds/{id}/coverage` | JWT | Per-section task rollup. `gap` is a missing task on a buildable section; `empty` is a heading with no substance. Does not emit an occupancy percentage |
+| POST | `/api/prds/{id}/decompose` | JWT | Propose one tracked task per uncovered section. `create=true` files them and requires approval; a dry run still proposes on a draft. Framing sections are skipped unless `include_prose=true` |
+| GET | `/api/prds/{id}/grill` | JWT | The grill as the server knows it. No client transcript |
+| POST | `/api/prds/{id}/grill/defer` | JWT | Deliberately leave a dimension open |
+| GET | `/api/prds/{id}/baseline` | JWT | The agreed spec, or null if this PRD has never been approved |
+| GET | `/api/prds/{id}/baselines` | JWT | The whole baseline chain, oldest first |
+| POST | `/api/prds/{id}/rebaseline` | JWT | Ask for new frozen intent. Re-opens the grill and does not approve anything |
+| GET | `/api/prds/{id}/intent-diff` | JWT | What a rebaseline would change, section by section |
+| GET | `/api/prds/{id}/drift` | JWT | Structural divergence from the governing baseline |
+| GET | `/api/prds/{id}/scope-drift` | JWT | Mechanical scope drift. No model, no opinion |
+| GET | `/api/prds/{id}/completeness` | JWT | What the governing baseline demands that has nothing delivered |
+| GET | `/api/prds/{id}/classifications` | JWT | The platform judge's read on each completed item |
+| GET | `/api/prds/{id}/evidence` | JWT | What the delivered work offers as proof, bound to the intent it supports |
+| GET | `/api/prds/{id}/close-readiness` | JWT | Whether this PRD can close, in which mode, and what is outstanding |
+| GET | `/api/prds/{id}/close-report` | JWT | Delivered work against the original intent |
+| POST | `/api/prds/{id}/close` | JWT | Close a PRD. The terminal state |
+| GET | `/api/prds/{id}/lineage` | JWT | Where this PRD's dropped intent came from and went |
+| POST | `/api/prds/{id}/promote` | JWT | Promote dropped intent into a backlog item or a successor PRD |
+| GET | `/api/prds/{id}/verdicts` | JWT | Sign-off verdicts recorded against this PRD. Claims with provenance |
+| GET | `/api/prds/{id}/audit-brief` | JWT | Everything a repo-holding agent needs to audit this PRD, in one read |
+| GET | `/api/prds/{id}/audit-coverage` | JWT | Which intent elements actually carry a verdict |
 
 ## Analytics
 
@@ -329,6 +371,7 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | GET | `/api/roadmap` | JWT | Phases + milestones + progress |
 | GET | `/api/links` | JWT | Typed links |
 | GET | `/api/mcp/tools` | JWT | Tool schemas + live call counts |
+| GET | `/api/events` | JWT | The audit ledger: who did what, most recent first, scoped to projects the caller can read. The Activity view's filters ride on this same read |
 | GET | `/api/usage` | JWT | The Usage page's one aggregate (PRD-47 S14) over every project the caller can read: KPIs with deltas and sparklines, a per-project stacked series, the by-project table, plan limits (`declared: false` on self-host, never a fake zero), and `model_usage` — spawns, tokens and estimated cost per harness and model, from PRD-38 attempt records. There `tokens` is `null` for a pair nobody measured and `cost_usd` is `null` when no list price matches, while `0` is reserved for local compute that really is free, and `tokens_reported` is the count each sum rests on. `coverage` is `partial` when agent-call retention is shorter than the range. `range_days` is 7, 30 or 90 (anything else falls back to 30); `format=csv` exports the by-project table only |
 
 ## Platform & integrations
@@ -351,8 +394,13 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | PUT | `/api/platform/credentials/defaults` | JWT | Set the scope's default / fallback / embedding / **decider** credential (`decider_credential_id`). `422` for one that has never been validated |
 | PUT | `/api/platform/credentials/project` | JWT | Point a project at a credential, with an optional `model_override` and `decider_credential_id`. `409` `UNPROVEN` if the named decider has never been validated (PRD-45 S2) |
 | PUT | `/api/platform/credentials/roles` | JWT | Per-task chat overrides (GRPH-316). Unset inherits the project credential. A named unusable credential is ungraded, not a quieter model |
-| POST | `/api/platform/github/connect` · `/disconnect` · `/create-issue` | JWT |
-| POST | `/api/platform/gdrive/connect` · `/disconnect` | JWT |
+| GET | `/api/platform/providers` | JWT | The AI-provider catalog Settings renders: id, label, kind, whether it embeds, defaults |
+| POST | `/api/platform/github/connect` | JWT | Record the GitHub account and repo for this project |
+| POST | `/api/platform/github/disconnect` | JWT | Clear that connection |
+| POST | `/api/platform/github/create-issue` | JWT | Create a local tracker item for a GitHub issue. Does not push to GitHub |
+| POST | `/api/platform/gdrive/connect` | JWT | Record the Drive account and folder for this project |
+| POST | `/api/platform/gdrive/disconnect` | JWT | Clear that connection |
+| POST | `/api/platform/gdrive/sync` | JWT | Two-way sync of this project's PRDs with the connected folder's `PRDs/` subdirectory |
 
 ## Deployment settings (PRD-47 S15)
 
@@ -592,6 +640,9 @@ See [MCP tools](mcp.md) for the tool catalog.
 | POST | `/api/public/requests/{request_id}/vote` | Anonymous upvote on a published row. Sets `gb_vote` cookie; unpublished → 404 |
 | GET | `/api/public/slugs/validate` | Check a vanity slug without claiming it |
 | POST | `/api/public/github/webhook` | Inbound GitHub issue → tracker item |
+| POST | `/api/public/attachments` | Upload a screenshot for a feedback submission. Returns its id and public url |
+| GET | `/api/public/attachments/{id}` | Serve those bytes. The id is the capability |
+| GET | `/api/public/widget-config` | What the embedded widget needs before it renders, including whether to show Turnstile |
 
 ## Public (operator, JWT)
 
@@ -611,3 +662,83 @@ These share the public router so the Feedback Kit and Settings can share one ori
 | GET | `/api/public/slugs/redirect` | Resolve upgrade 301: old host → new host |
 
 All public endpoints share a per-IP sliding-window rate limit (20/60s).
+
+## Host surfaces (hosted only, PRD-43)
+
+Mounted at the root, not under `/api`. They answer when hosted mode is on and the `Host`
+header is an org's subdomain. The path segment is the project's public path.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/{path_id}/feedback` | public | The public feedback form |
+| GET | `/{path_id}/issues` | public | The public issues board |
+| GET | `/{path_id}/requests` | public | The public requests board |
+| GET | `/{path_id}/roadmap` | public | The public roadmap |
+| GET | `/{path_id}/t/{track_token}` | public | The submitter's tracking page |
+
+## Assistant
+
+Threads are scoped to one item or PRD. A write the model proposes is staged and does not
+run until someone applies it.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| POST | `/api/assistant/threads` | JWT | Open a thread. The provider defaults to the project's active chat provider |
+| GET | `/api/assistant/threads` | JWT | List threads for a project, optionally one entity |
+| GET | `/api/assistant/threads/{id}` | JWT | One thread, including its messages |
+| POST | `/api/assistant/threads/{id}/model` | JWT | Pin the provider and model for this thread |
+| POST | `/api/assistant/threads/{id}/message` | JWT (SSE) | Send a message. Streams deltas, tool calls, and any proposed write |
+| GET | `/api/assistant/providers` | JWT | The model picker's catalog for this project |
+| POST | `/api/assistant/actions/{id}/apply` | JWT (write) | Execute one staged write and record the prior value |
+| POST | `/api/assistant/actions/{id}/reject` | JWT (write) | Discard a staged write. Nothing was mutated |
+
+## Organizations (hosted only)
+
+Every route on this router 404s when hosted mode is off. Founding a second org needs a
+plan entitlement or an approved one-time request.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/orgs` | JWT | Orgs the caller sits in, each with their role |
+| POST | `/api/orgs` | JWT | Found an org. The first is free. Another spends an entitlement or an approved request |
+| POST | `/api/orgs/requests` | JWT | Ask an operator for permission to found another org |
+| GET | `/api/orgs/requests/mine` | JWT | The caller's latest additional-org request |
+| GET | `/api/orgs/{id}/members` | JWT (member) | Seats, with project access and last write |
+| GET | `/api/orgs/{id}/invites` | JWT (org admin) | Pending invites |
+| POST | `/api/orgs/{id}/invites` | JWT (org admin) | Invite an email into this org |
+| DELETE | `/api/orgs/{id}/invites/{invite_id}` | JWT (org admin) | Revoke a pending invite |
+| GET | `/api/invites/{token}/preview` | none | What a token invites, for the accept page before login. Used, expired, and unknown tokens 404 the same way |
+| POST | `/api/invites/accept` | JWT | Spend the token and take the seat |
+
+## Linear
+
+The tracker stays authoritative. This surface reads issues, takes webhooks, and writes back
+status, comments, and assignee. Tokens are stored encrypted and are never returned.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/linear/status` | JWT | Whether this org is linked. Never the token |
+| GET | `/api/linear/oauth` | JWT | The Linear authorization URL and the CSRF `state` |
+| GET | `/api/linear/callback` | none | Linear's redirect. Exchanges `code` and stores the integration |
+| DELETE | `/api/linear/link` | JWT | Unlink. Mirrored rows stay |
+| GET | `/api/linear/issues` | JWT | Issues from the linked workspace. Requires a team |
+| POST | `/api/linear/issues/{id}/status` | JWT | Write a status back |
+| POST | `/api/linear/issues/{id}/comment` | JWT | Add a comment |
+| POST | `/api/linear/issues/{id}/assignee` | JWT | Set or clear the assignee |
+| POST | `/api/linear/webhook` | HMAC | Linear's webhook. A bad signature is rejected |
+
+## Code-graph sync
+
+Ingest and purge of the cloud copy authenticate with a **sync-scoped API key**, and the
+project is taken from that key. Linking is the box admin on the Cloud link routes above.
+Pushing and the portable bundle are a JWT on this box.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/sync/status` | JWT | Link state, never the credential, plus per-project sync state |
+| POST | `/api/sync/push` | JWT (write) | Push this project's code graph to the linked cloud. 409 when this box is not linked |
+| POST | `/api/sync/purge` | JWT (write) | Delete this project's graph from the linked cloud and reset the local manifest. 409 when not linked |
+| POST | `/api/sync/code-graph` | MCP (sync scope) | Ingest nodes and edges. The cloud re-embeds. `remove` marks paths stale; `prune` marks everything absent from this batch |
+| DELETE | `/api/sync/code-graph` | MCP (sync scope) | Delete every node and edge in the key's project |
+| GET | `/api/sync/export` | JWT | A portable bundle of summaries and structure, without vectors |
+| POST | `/api/sync/import` | JWT (write) | Import a bundle. This instance re-embeds on arrival |

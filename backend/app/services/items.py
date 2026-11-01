@@ -383,6 +383,12 @@ def normalize_evidence_report(raw) -> tuple[list[dict], list[dict]]:
                             if e.get(k) is not None]
                     row["detail"] = ("incomplete attestation receipt (" + ", ".join(said) + ")"
                                      if said else "")
+        elif kind == "note":
+            # The one structured fact a note can carry (PRD-63 D2): `done: false` marks work
+            # the builder says was NOT done. A bool and nothing else, so the observation
+            # ledger counts a flag and never reads the prose beside it.
+            if e.get("done") is False:
+                row["done"] = False
         elif kind == "url":
             # A `url` may name the COMMIT it points at (GRPH-846). The fleet's merge receipt
             # is the reason: after `gh pr merge --squash` the reviewed commit is not an
@@ -1540,6 +1546,11 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
     # Reopening counts as a touchpoint change: a done item holds no `code` links (GRPH-1068),
     # so leaving `done` is when it regains them, to whatever open work it now overlaps.
     reopened = prev_status == "done" and item.status != "done"
+    from app.services import observations as observations_svc
+    if reopened:
+        observations_svc.on_reopen(db, item)
+    if fields.get("evidence"):
+        observations_svc.on_evidence(db, item)
     if (("touchpoints" in fields and fields["touchpoints"] is not None) or reopened) \
             and item.touchpoints:
         from app.services.clustering import sync_code_links
@@ -1859,6 +1870,17 @@ def item_dict(item: Item) -> dict:
         # needs the value that IS there, not a field that is always present and
         # usually blank.
         out["branch"] = item.branch
+    if item.review_claimed_by:
+        # WHY the review hold above is no longer live, PRESENT ONLY WHEN IT HAS LAPSED
+        # (GRPH-1254). `review_claimed_by` is the raw column and stays set after its holder
+        # dies, so a supervisor reading it alone saw a dead reviewer as a live one and never
+        # spawned the reviewer that `claim_review` would already have let take the item over.
+        # The reason comes from `review_claim_lapse`, the one definition of a live hold, so no
+        # client re-derives presence. Reply-only, like `review_claimed_by`.
+        from app.services.fleet import review_claim_lapse
+        lapse = review_claim_lapse(item)
+        if lapse:
+            out["review_claim_lapse"] = lapse
     if item.decision:
         # The agent's question and options, and the answer once given (GRPH-1137). Present
         # only on a decision wait; `notify` bookkeeping stays server-side. Reply-only.

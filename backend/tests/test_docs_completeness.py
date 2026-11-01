@@ -140,21 +140,31 @@ def test_the_reference_only_names_routes_that_exist():
     assert not ghosts, f"api-reference.md names routes the app does not serve: {ghosts}"
 
 
-def test_the_reference_admits_it_is_partial():
-    """The ticket's actual complaint: *partial, presented as total*. It opened with a
-    statement about where endpoints live that read as a claim to completeness, and there was
-    no 'selected endpoints' caveat — so a reader had no way to know 73 paths were missing."""
+def test_the_reference_states_its_coverage():
+    """The ticket's complaint was a partial list presented as the whole surface (GRPH-468).
+
+    While any live path is unnamed, the opening has to say it is a subset and point at
+    `/docs`. Once every path is named, calling the page a subset would be the same defect
+    in the other direction, so the opening has to say it names every path. `/docs` stays
+    the schema either way."""
     text = dc.DOCS["routes"].read_text()
-    opening = text[:1200]
-    assert "subset" in opening.lower(), "the reference does not say it is partial"
-    assert "/docs" in opening, "it must point at the authoritative list it is a subset of"
+    opening = text[:1600]
+    live = dc.live_routes()
+    covered = dc.mentioned_routes(text) & live
+    assert "/docs" in opening, "it must point at the OpenAPI schema"
+    if len(covered) == len(live):
+        assert "every path" in opening.lower(), "a complete reference must say it names every path"
+        assert "subset" not in opening.lower(), "a complete reference must not call itself a subset"
+    else:
+        assert "subset" in opening.lower(), "a partial reference must say it is a subset"
 
 
 def test_the_admission_carries_the_real_numbers():
-    """A caveat with stale numbers is the same defect wearing a disclaimer. These are the two
-    the completeness tool reports, so the claim can be checked rather than trusted."""
+    """A caveat with stale numbers is the same defect wearing a disclaimer. The numerator
+    is every live path the page names, the same set the completeness tool uses, so a host
+    route mounted outside `/api` still counts."""
     text = dc.DOCS["routes"].read_text()
     live = dc.live_routes()
-    named = _full_paths(dc.mentioned_routes(text))
-    assert f"{len(named)} of the {len(live)}" in text, (
-        f"the stated coverage is not {len(named)} of {len(live)} — regenerate the sentence")
+    covered = dc.mentioned_routes(text) & live
+    assert f"{len(covered)} of the {len(live)}" in text, (
+        f"the stated coverage is not {len(covered)} of {len(live)} — regenerate the sentence")

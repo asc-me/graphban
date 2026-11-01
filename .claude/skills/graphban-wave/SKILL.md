@@ -57,6 +57,8 @@ A service already installed under that name: `gbfleet service status --name <prd
 
 Status is `gbfleet service status --name <prd_id>`. The ledger is `fleet_status`. Do not attach a spawn watcher, and do not spawn a replacement.
 
+Attach `graphban-answer` when the service reports running. It answers a `wait:decision` the sources already decide. It is not a spawn watcher.
+
 `until` is idle when that PRD has nothing ready, nothing unsigned, and no live lease. `WAVE_IDLE` while items are still `next`, or held in review, is not done.
 
 `review-unsigned` can be a review row outside this PRD. Say which item. Do not start another drain over it, and do not `sign_off` it yourself.

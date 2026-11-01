@@ -1795,6 +1795,31 @@ class SuggestionSourceOut(BaseModel):
     reason: str | None = None
 
 
+class ObservationOut(BaseModel):
+    id: int
+    project_id: str
+    item_id: str | None = None
+    kind: str
+    stage: str
+    rule_id: str | None = None
+    commit: str | None = None
+    origin: str  # live | backfill
+    ref: dict  # ids, predicate names and counts only — never copied text
+    occurred_at: str
+
+
+class ObservationsOut(BaseModel):
+    total: int
+    counts: dict[str, int]
+    observations: list[ObservationOut]
+
+
+class ObservationBackfillOut(BaseModel):
+    project_id: str
+    added: dict[str, int]
+    total_added: int
+
+
 class RecommendedRulesOut(BaseModel):
     suggestions: list[RuleSuggestionOut]
     sources: list[SuggestionSourceOut]

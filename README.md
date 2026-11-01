@@ -9,7 +9,8 @@ path* as the web app.
 
 **Local-Docker-first.** The whole product runs offline with `docker compose up` — no
 API keys, no external services required. Cloud/local LLM providers and integrations are
-opt-in. A hosted multi-tenant service is a later, additive layer.
+opt-in. The hosted multi-tenant service is a separate deployment
+([docs/deploy-railway.md](docs/deploy-railway.md)).
 
 > Built from the `Graphban.dc.html` design prototype. Design tokens (dark-only, lime
 > `#c6f24e` / purple `#a78bfa`, IBM Plex) and the optional demo dataset mirror the prototype.
@@ -29,10 +30,10 @@ opt-in. A hosted multi-tenant service is a later, additive layer.
 | **Links** | Interactive force-directed graph of typed relationships (dependency / code / semantic / tag) |
 | **Dashboard** | KPI tiles, status distribution, request breakdown, recent activity |
 | **Roadmap** | MVP → Post-MVP → Later with progress; shareable read-only public link |
-| **MCP Tools** | **32 live tools** with per-tool call metering, params, and descriptions |
+| **MCP Tools** | **63 MCP tools** with per-tool call metering, params, and descriptions. The catalog is [docs/mcp.md](docs/mcp.md) |
 | **Feedback Kit** | Themeable embeddable widget generator (accent / radius / types) with live preview + copy-paste snippet |
 | **Settings / Profile** | AI provider switch, GitHub/Drive connection config, project config, members, API keys; profile + project access |
-| **MCP** | Orientation `get_context` · `list_projects` — Work queue `claim_next` · `next_cluster` · `heartbeat` · `release_item` · `get_backlog` · `suggest_next` — Items `create_item` · `update_item` · `search_items` · `get_item_details` · `related_work` · `link_items` — Memory `add_memory` · `search_memory` · `extract_lessons` · `generate_digest` — PRDs `create_prd` · `update_prd` · `grill_prd` · `decompose_prd` · `prd_coverage` — Code graph `describe_code` · `get_code_map` · `code_neighbors` · `search_code` · `link_code` · `unlink_code` — Upstream `report_graphban_issue` |
+| **MCP** | JSON-RPC at `POST /api/mcp`, the same service layer as the UI. Tool names and the live count live in [docs/mcp.md](docs/mcp.md) |
 | **Auth** | JWT login (users/roles/memberships) + scoped API keys for agents |
 | **Integrations** | Inbound **GitHub issues webhook** → tracker items (live); GitHub/Drive connection config |
 

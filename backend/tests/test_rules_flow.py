@@ -141,7 +141,7 @@ def test_skills_are_one_collapsed_advisory_node(db):
     version = tomllib.loads(
         (Path(__file__).resolve().parents[2] / "cli" / "pyproject.toml").read_text())["project"]["version"]
     assert n["skills_version"] == version
-    assert len(n["skills"]) == 9
+    assert len(n["skills"]) == 10
     base = f"https://github.com/asc-me/graphban/blob/cli-v{version}/cli/src/gban/skills"
     assert {"name": "graphban-work", "url": f"{base}/graphban-work/SKILL.md"} in n["skills"]
 
@@ -162,7 +162,7 @@ def test_flow_endpoint_serves_the_linked_skills(client, auth):
     r = client.get("/api/rules/flow?project_id=core", headers=auth)
     assert r.status_code == 200
     n = _rule(r.json(), "agents.skills_pack")
-    assert n["skills_version"] and len(n["skills"]) == 9
+    assert n["skills_version"] and len(n["skills"]) == 10
     assert all(f"/blob/cli-v{n['skills_version']}/" in s["url"] for s in n["skills"])
 
 

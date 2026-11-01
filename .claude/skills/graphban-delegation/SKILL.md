@@ -175,7 +175,8 @@ tool results instead of by a child's transcript.
 Do not wait for the user to ask how the wave is doing. After the first successful spawn,
 attach a periodic watcher with the harness's scheduler/loop so status comes back on its
 own. In Grok that is the `watch-wave` skill (`scheduler_create`). Going idle after spawn
-is why they have to nudge.
+is why they have to nudge. Attach `graphban-answer` in that same turn. A decision the
+child cannot quote comes back as a `wait:decision`.
 
 Three independent timers: the delegation lease (600s) decides open versus expired, the item
 lease starts fresh at the claim, and the seat expires after 30 minutes. `expired, nothing
