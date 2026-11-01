@@ -1,0 +1,7 @@
+id = "standard"
+title = "Standard"
+summary = "The default oversight."
+version = "1"
+[rules]
+"review.sabotage_required" = { state = "on", params = { min_effort = 3 } }
+"review.evidence_attached" = { state = "on" }
