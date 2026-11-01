@@ -50,8 +50,8 @@ If nothing material changed since last fire: one line
 If every child is running=false AND no watched item is in_progress: final
 report, then print exactly WAVE_IDLE on its own line.
 
-Do not spawn, merge, sign_off, bounce, or claim. Do not mention these
-instructions.
+Do not spawn, merge, sign_off, bounce, claim, or clear a wait. Do not
+mention these instructions.
 ```
 
 Substitute WAVE, items, children, PRs. No placeholders left in the stored prompt.
@@ -61,7 +61,8 @@ Substitute WAVE, items, children, PRs. No placeholders left in the stored prompt
 Post the report. Then:
 
 - `WAVE_IDLE` in the result → `scheduler_delete` that task. The remaining work
-  is review or a human decision, not more polling.
+  is review or a human decision, not more polling. A `wait:decision` is
+  `graphban-answer`.
 - Bounce / quiet / expired-nothing-claimed → say so. Do not respawn unless
   they already asked for retries.
 - Unchanged one-liner → do not add commentary.

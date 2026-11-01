@@ -536,6 +536,7 @@ def test_setup_installs_every_shipped_skill(tmp_path, wired):
     assert "watch-wave" in slugs
     assert "graphban-grill" in slugs
     assert "graphban-wave" in slugs
+    assert "graphban-answer" in slugs
     for slug in slugs:
         body = setup_mod.skill_source(slug).read_text()
         for rel in setup_mod.SKILL_DEST_DIRS:
@@ -635,6 +636,7 @@ def test_the_skill_ships_in_the_wheel(tmp_path):
     assert any(n.endswith("skills/watch-wave/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/graphban-grill/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/graphban-wave/SKILL.md") for n in names), names[:20]
+    assert any(n.endswith("skills/graphban-answer/SKILL.md") for n in names), names[:20]
 
 
 def test_graphban_wave_drains_one_prd_and_does_not_file_tasks():
@@ -647,6 +649,8 @@ def test_graphban_wave_drains_one_prd_and_does_not_file_tasks():
     assert "--dry-run" in body
     assert "gbfleet service install" in body
     assert "graphban-prd" in body
+    assert "graphban-answer" in body
+    assert "Do not attach a spawn watcher" in body
 
 
 def test_watch_wave_names_the_scheduler_and_cancels_on_idle():
@@ -659,6 +663,36 @@ def test_watch_wave_names_the_scheduler_and_cancels_on_idle():
     assert "scheduler_delete" in body
     assert "Do not wait to be asked" in body
     assert "in_progress" in body
+    assert "clear a wait" in body
+    assert "graphban-answer" in body
+
+
+def test_graphban_answer_quotes_a_decision_and_leaves_the_human_acts():
+    """A mid-build question is a wait:decision the parent may clear from a
+    quoted sentence. Clearing a secret, or recording a grill turn, is a
+    different act. The child files the wait; the drain attaches the loop."""
+    body = " ".join(setup_mod.skill_source("graphban-answer").read_text(encoding="utf-8").split())
+    assert "A child does not run this" in body
+    assert "wait:decision" in body
+    assert "wait:secret" in body
+    assert "wait:access" in body
+    assert "wait:deploy" in body
+    assert "wait:merge" in body
+    assert "include_candidates" in body
+    assert "Do not `answer_grill`" in body
+    assert "Do not `update_prd`" in body
+    assert "search_memory" in body
+    assert "Do not `publish_memory`" in body
+    assert "scheduler_create" in body
+    assert "project_id" in body
+    assert "one step" in body
+    assert "related_work" in body
+    assert 'status=done, tags=["wait:decision"]' in body
+    work = setup_mod.skill_source("graphban-work").read_text(encoding="utf-8")
+    assert "wait:decision" in work
+    assert "graphban-answer" in work
+    delegation = setup_mod.skill_source("graphban-delegation").read_text(encoding="utf-8")
+    assert "graphban-answer" in delegation
 
 
 # ---- installing the supervisor -------------------------------------------------------------------
