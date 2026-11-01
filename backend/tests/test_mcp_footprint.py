@@ -198,7 +198,10 @@ CEILING = 17629
 # move. CEILING 16743 -> 17629.
 # 17610 -> 17618 (GRPH-1280 bounce): `accepted_by` is required on accept_prompt and accept_design,
 # since a bare credential is a relay and never the person. CEILING does not move.
-MEASURED_TOKENS = 17618
+# 17618 -> 17624 (GRPH-1271): update_item's evidence items carry the `test` run fields
+# (engine, scope, passed, failed, skipped) build.engine_evidence reads; paid for by shorter
+# update_item descriptions. CEILING does not move.
+MEASURED_TOKENS = 17624
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

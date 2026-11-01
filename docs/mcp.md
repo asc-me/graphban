@@ -424,7 +424,14 @@ left out of their tool manifest entirely.
 back to `note`. A `url` may also carry the `commit` it names — the fleet supervisor records
 a squash-merge that way, because the merge commit is the only one the trunk has and the
 dependency check reads commits off the item (GRPH-846); it is kept on `url` alone, and it
-satisfies no gate, since gates read attestations by kind. Two kinds are structured, and a
+satisfies no gate, since gates read attestations by kind. A `test` may also describe its run
+as fields: `engine` (e.g. `postgres`), `scope` (`full` | `partial`) and the pytest counts
+`passed` / `failed` / `skipped` (non-negative integers). Each is kept only when it validates,
+and the receipt stays a `test` either way. The `build.engine_evidence` rule reads them: a
+migration item reaches review only with a receipt where `engine` is the rule's engine,
+`scope` is `full` and `failed` is `0` (a skip count never makes a run partial). A receipt
+with none of the fields falls back to its prose, e.g. `Postgres full suite: 6402 passed, 38
+skipped`. Two kinds are structured, and a
 receipt that claims one without the required fields is **demoted to `note`, never
 dropped** — the claim stays readable even when it doesn't validate:
 
