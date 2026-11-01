@@ -31,8 +31,9 @@ Each link has a `confidence` (0–1) and a human `reason`.
 - Data comes from `GET /api/links` (the `links` table; typed links are also created by the
   `link_items` MCP tool — see [MCP tools](mcp.md)).
 - Service: `backend/app/services/links.py` (`create_link`, `list_links`).
-- Frontend: `web/src/features/links/LinksGraphView.tsx` — the layout function and SVG
-  rendering are self-contained (no graph library).
+- Frontend: `web/src/features/links/LinksGraphView.tsx` draws the SVG. Placement comes
+  from `useGraphLayout` in `web/src/lib/graph/`, the same deterministic force-directed
+  layout the code graph uses (no graph library).
 
 ## API
 

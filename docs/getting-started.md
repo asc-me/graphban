@@ -47,15 +47,17 @@ fresh.
 
 ## A guided tour
 
-1. **Tracker** (landing view) — the linear item stream. Click a status dot to advance an
-   item, drag a row to reorder, click a row to open its detail panel. → [Tracker](tracker.md)
+1. **Dashboard** (`/home`, where `/` lands on self-host) — project health. The **Tracker**
+   is under Plan. Board is the default layout; List is the other. → [Tracker](tracker.md)
 2. **Agent sidebar** (right, toggle with **Agent**) — semantic **Memory** search and a
    streaming **Chat** grounded in project state + memory. → [Memory & chat](memory-and-chat.md)
 3. **Requests** — the triage queue. The public form that feeds it lives at
    `/embed/feedback`. → [Requests & feedback](requests-and-feedback.md)
 4. **PRDs** — open one to see the split markdown editor, live preview, version diff, and AI
    commands. → [PRDs](prds.md)
-5. **Links / Dashboard / Roadmap / MCP Tools** — the analytics views.
+5. **Roadmap** is under Plan. **Links, Code graph, and Stack** are under Build. On self-host
+   the MCP catalog is **Settings → Project → MCP** (`/mcp-tools` redirects there); on the
+   hosted service it is also a Build page.
 6. **Settings** (bottom of the nav) — switch the AI provider, connect integrations, manage
    members and API keys. → [Settings & profile](settings.md)
 
