@@ -1413,6 +1413,101 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "compile_prompts",
+        "description": (
+            "Compile candidate screen prompts (all screens or one); same inputs, same hash. "
+            "Refused, naming the screens, on an unconfirmed tier."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"design_set_id": {"type": "string"}, "screen": {"type": "string"}},
+            "required": ["design_set_id"],
+        },
+    },
+    {
+        "name": "accept_prompt",
+        "description": (
+            "A person accepts the candidate prompt; an agent relays them in accepted_by. "
+            "Refused for the compiler."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "design_set_id": {"type": "string"},
+                "screen": {"type": "string"},
+                "accepted_by": {"type": "string", "description": "The person (agent relay)."},
+            },
+            "required": ["design_set_id", "screen"],
+        },
+    },
+    {
+        "name": "put_canvas",
+        "description": (
+            "Store a design export (base64). Counts only against the accepted prompt_hash; "
+            "else an orphan."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "design_set_id": {"type": "string"},
+                "screen": {"type": "string"},
+                "bytes_b64": {"type": "string"},
+                "mime": {"type": "string"},
+                "prompt_hash": {"type": "string"},
+            },
+            "required": ["design_set_id", "screen", "bytes_b64", "mime", "prompt_hash"],
+        },
+    },
+    {
+        "name": "file_finding",
+        "description": (
+            "File a canvas finding. prompt_defect, design_edit, authority_conflict add a "
+            "correction; spec_gap cites a PRD heading and blocks accept_design only."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "design_set_id": {"type": "string"},
+                "screen": {"type": "string"},
+                "kind": {"type": "string", "enum": [
+                    "prompt_defect", "design_edit", "authority_conflict", "spec_gap"]},
+                "text": {"type": "string"},
+                "canvas_hash": {"type": "string"},
+                "winner": {"type": "string", "enum": ["shipped_decision", "prd", "design"]},
+            },
+            "required": ["design_set_id", "screen", "kind", "text"],
+        },
+    },
+    {
+        "name": "resolve_finding",
+        "description": (
+            "Resolve a finding: applied (correction compiled in), rejected or withdrawn (reason)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "finding_id": {"type": "string"},
+                "status": {"type": "string", "enum": ["applied", "rejected", "withdrawn"]},
+                "reason": {"type": "string"},
+            },
+            "required": ["finding_id", "status"],
+        },
+    },
+    {
+        "name": "accept_design",
+        "description": (
+            "A person accepts the design; refused while any gate is open (the reply names them)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "design_set_id": {"type": "string"},
+                "accepted_by": {"type": "string", "description": "The person (agent relay)."},
+            },
+            "required": ["design_set_id"],
+        },
+    },
+    {
         "name": "get_design_set",
         "description": "One design set: status (stale names the hash that moved), screens, tiers.",
         "inputSchema": {
@@ -1431,6 +1526,8 @@ _PROJECT_SCOPED = {
     "link_code", "unlink_code", "record_scan", "scan_status", "scans_due", "create_prd",
     "put_document", "get_document", "search_docs",
     "open_design", "put_preamble", "put_set_constraints", "confirm_tier", "get_design_set",
+    "compile_prompts", "accept_prompt", "put_canvas", "file_finding", "resolve_finding",
+    "accept_design",
 }
 # Tools that ACCEPT `project_id`, which is a different question from the one above.
 #
@@ -1895,6 +1992,12 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     "put_set_constraints": {"type": "object"},
     "confirm_tier": {"type": "object"},
     "get_design_set": {"type": "object"},
+    "compile_prompts": {"type": "object"},
+    "accept_prompt": {"type": "object"},
+    "put_canvas": {"type": "object"},
+    "file_finding": {"type": "object"},
+    "resolve_finding": {"type": "object"},
+    "accept_design": {"type": "object"},
     "record_scan": {
         "type": "object",
         "properties": {
@@ -3974,6 +4077,38 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             db, pid, str(args["design_set_id"]), str(args["screen"]), str(args["tier"]),
             str(args["note"]), routes=args.get("routes"),
             confirmed_by=fleet_svc.caller_identity(str(args.get("agent_id") or "").strip(), key))
+    if name in ("compile_prompts", "accept_prompt", "put_canvas", "file_finding",
+                "resolve_finding", "accept_design"):
+        actor = fleet_svc.caller_identity(str(args.get("agent_id") or "").strip(), key)
+        sid = str(args.get("design_set_id") or "")
+        if name == "compile_prompts":
+            return design_sets_svc.compile_prompts(
+                db, pid, sid, screen=args.get("screen"), actor=actor)
+        if name == "accept_prompt":
+            return design_sets_svc.accept_prompt(
+                db, pid, sid, str(args["screen"]), actor, str(args.get("accepted_by") or ""))
+        if name == "accept_design":
+            return design_sets_svc.accept_design(
+                db, pid, sid, actor, str(args.get("accepted_by") or ""))
+        if name == "put_canvas":
+            import base64
+            import binascii
+
+            try:
+                data = base64.b64decode(str(args["bytes_b64"]), validate=True)
+            except (binascii.Error, ValueError) as e:
+                raise errors.Validation("bytes_b64 is not valid base64") from e
+            return design_sets_svc.put_canvas(
+                db, pid, sid, str(args["screen"]), data, str(args["mime"]),
+                str(args["prompt_hash"]), actor=actor)
+        if name == "file_finding":
+            return design_sets_svc.file_finding(
+                db, pid, sid, str(args["screen"]), str(args["kind"]), str(args["text"]),
+                canvas_hash=str(args.get("canvas_hash") or ""),
+                winner=str(args.get("winner") or ""), actor=actor)
+        return design_sets_svc.resolve_finding(
+            db, pid, str(args["finding_id"]), str(args["status"]),
+            str(args.get("reason") or ""), actor=actor)
     if name == "get_design_set":
         return design_sets_svc.get_design_set(db, pid, str(args["design_set_id"]))
     if name == "get_document":
