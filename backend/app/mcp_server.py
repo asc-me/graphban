@@ -195,16 +195,15 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 # ADVERTISED, and it was not — so the role gate on `status: done` was unreachable through the published schema. A worker wrote `done` on the acceptance walk by simply not sending what it had no way to know it should.
-                "agent_id": {"type": "string", "description": "You. Required to move an item past `review` when a fleet is running on this credential."},
+                "agent_id": {"type": "string", "description": "You. Required to move past `review` when a fleet runs on this key."},
                 "id": {"type": "string"},
                 "status": {"type": "string", "enum": _STATUS_ENUM},
                 "title": {"type": "string"},
                 "description": {"type": "string", "description": _ITEM_BODY_DESC},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "touchpoints": {"type": "array", "items": {"type": "string"},
-                                "description": "Files/globs/modules it affects (for clustering). "
-                                               "UNIONS — sending some never removes the rest. "
-                                               "Empty is not a write."},
+                                "description": "Files/globs it affects. UNIONS — never removes "
+                                               "the rest. Empty is not a write."},
                 "effort": {"type": "integer", "description": _EFFORT_DESC},
                 "blocker": {"type": "string", "description": "Empty string clears it."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
@@ -215,10 +214,9 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "array",
                     # The kind list that used to live here is dropped, not squeezed: the
                     # `kind` enum below already carries it, and paying manifest tokens twice
-                    # for one fact is what the footprint guard exists to catch. Net +1 char
-                    # against main, so the ceiling stays exactly as tight as it was.
-                    "description": "Proof-on-done receipts matched to the completion claim; "
-                                   "kinds below. APPENDS — sending some never removes the rest.",
+                    # for one fact is what the footprint guard exists to catch. GRPH-1271 cut
+                    # these descriptions to pay for the `test` run fields below.
+                    "description": "Proof-on-done receipts. APPENDS — never removes the rest.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -227,7 +225,12 @@ TOOLS: list[dict[str, Any]] = [
                             "url": {"type": "string", "description": "Link to the artifact."},
                             "claim": {"type": "string", "description": "sabotage: what you broke."},
                             "mutation": {"type": "string", "description": "sabotage: how."},
-                            "tests_failed": {"type": "integer", "description": "sabotage: how many failed. ZERO means the test cannot fail — a finding."},
+                            "tests_failed": {"type": "integer", "description": "sabotage: how many failed. ZERO = the test cannot fail."},
+                            # GRPH-1271: a `test` run as fields, read by build.engine_evidence.
+                            "engine": {"type": "string"},
+                            "scope": {"enum": ["full", "partial"]},
+                            "passed": {"type": "integer"}, "failed": {"type": "integer"},
+                            "skipped": {"type": "integer"},
                         },
                     },
                 },

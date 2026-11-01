@@ -176,6 +176,28 @@ _EVIDENCE_KINDS = {"test", "url", "screenshot", "health", "note", "sabotage", "a
 # wearing a stronger name, and a gate that counted it would be satisfied by prose.
 _SABOTAGE_FIELDS = ("claim", "mutation", "tests_failed")
 
+# The run a `test` receipt may describe as fields (GRPH-1271). `scope` is the full suite or
+# not; `passed` / `failed` / `skipped` are pytest's summary counts.
+_TEST_SCOPES = ("full", "partial")
+_TEST_COUNTS = ("passed", "failed", "skipped")
+
+
+def _test_run_fields(e: dict) -> dict:
+    """The valid structured run fields of a `test` receipt; an invalid one is left out."""
+    out: dict = {}
+    engine = e.get("engine")
+    if isinstance(engine, str) and engine.strip():
+        out["engine"] = engine.strip().lower()
+    scope = e.get("scope")
+    if isinstance(scope, str) and scope.strip().lower() in _TEST_SCOPES:
+        out["scope"] = scope.strip().lower()
+    for k in _TEST_COUNTS:
+        n = e.get(k)
+        if isinstance(n, int) and not isinstance(n, bool) and n >= 0:
+            out[k] = n
+    return out
+
+
 # What an `attestation` receipt must carry to be one (GRPH-542). Same bargain as `sabotage`
 # above: a structured kind that accepts unstructured input is the free-text field with a
 # stronger name, and the completion gate would then be checking a label rather than a fact.
@@ -383,6 +405,12 @@ def normalize_evidence_report(raw) -> tuple[list[dict], list[dict]]:
                             if e.get(k) is not None]
                     row["detail"] = ("incomplete attestation receipt (" + ", ".join(said) + ")"
                                      if said else "")
+        elif kind == "test":
+            # A `test` receipt may say WHAT ran as fields (GRPH-1271, PRD-63 D2): the engine,
+            # whether it was the full suite, and the pytest counts. Each is kept only when it
+            # validates, so a gate reading them reads a fact and never a malformed guess; the
+            # receipt itself stays advisory and is never demoted for a bad field.
+            row.update(_test_run_fields(e))
         elif kind == "note":
             # The one structured fact a note can carry (PRD-63 D2): `done: false` marks work
             # the builder says was NOT done. A bool and nothing else, so the observation
@@ -1012,20 +1040,33 @@ def is_pr_url(url: str) -> bool:
 
 
 ENGINE_EVIDENCE_RULE = "build.engine_evidence"
+# The prose fallback, for `test` receipts written before the structured fields existed. A skip
+# count is a pytest summary ("6402 passed, 38 skipped"), not a partial run; a file count is
+# partial only in the "on N files" form ("120 test files, all passed" is a full run described).
 _PARTIAL_RUN = re.compile(
     r"\bonly\b|\bpartial(?:ly)?\b|\bsubset\b|\bselected\b|\bsmoke\b|\bnot (?:run|ran|executed)\b"
-    r"|\bskipped\b|\b\d+ (?:test )?(?:files?|modules?)\b|\s-k\s", re.I)
+    r"|\bon \d+ (?:test )?(?:files?|modules?)\b|\s-k\s|\b[1-9]\d* (?:failed|errors?)\b", re.I)
 _FULL_RUN = re.compile(r"\b(?:full|entire|whole|complete)\b|\ball (?:tests|files)\b", re.I)
 
 
 def _full_engine_run(receipts, engine: str) -> bool:
-    """Whether a `test` receipt records a FULL run on `engine`. A partial run ("Postgres on 4
-    files only"), a denial ("Postgres NOT run") or a receipt that never says it was the whole
-    suite does not count: absence never reads as clean."""
+    """Whether a `test` receipt records a FULL, green run on `engine`.
+
+    Read from the structured fields (PRD-63 D2: free text never decides): `engine` names it,
+    `scope` is `full`, and `failed` is recorded as 0. A skip count never makes a run partial.
+    A receipt carrying none of the fields predates them and falls back to its prose, where a
+    partial run ("Postgres on 4 files only"), a denial ("Postgres NOT run"), a failure count or
+    a line that never says it was the whole suite does not count: absence never reads as clean.
+    """
     from app.services import fleet as fleet_svc
 
     for e in receipts or []:
         if not isinstance(e, dict) or e.get("kind") != "test":
+            continue
+        if any(k in e for k in ("engine", "scope", *_TEST_COUNTS)):
+            if (e.get("engine") == engine and e.get("scope") == "full"
+                    and e.get("failed") == 0 and not isinstance(e.get("failed"), bool)):
+                return True
             continue
         line = str(e.get("detail") or "")
         if (engine in line.lower() and _FULL_RUN.search(line) and not _PARTIAL_RUN.search(line)
@@ -1058,8 +1099,9 @@ def require_engine_evidence(db: Session, item: Item, incoming) -> None:
         return
     raise EvidenceRequired(
         f"{item.key} cannot move to review while {ENGINE_EVIDENCE_RULE} is on: it touches "
-        f"{path} and carries no test receipt recording a full {engine} suite run (a partial "
-        "run, or one that does not say it was the full suite, does not count)")
+        f"{path} and carries no test receipt recording a full {engine} suite run. Record one "
+        f"as {{kind: test, engine: {engine!r}, scope: 'full', passed, failed: 0, skipped}}; a "
+        "partial run, or one with failures, does not count")
 
 
 def reviewable_handoff(item: Item, incoming_evidence=None) -> bool:

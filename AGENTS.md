@@ -201,7 +201,9 @@ than guessing at it.
    **review the generated file**; the custom `EmbeddingType`/pgvector columns and
    raw-SQL indexes need hand-checking (autogen gets them wrong).
 3. Verify the chain from empty: run the Postgres pytest command above (lifespan
-   migrates on startup).
+   migrates on startup). Record it as fields, not only prose — `{kind: test, engine:
+   'postgres', scope: 'full', passed, failed, skipped, detail}`. With `build.engine_evidence`
+   on, a migration item goes to review only with `scope='full'` and `failed=0` (skips are fine).
 4. Vector indexes are **HNSW**, not ivfflat (migration 0016) — ivfflat built on
    empty tables silently loses recall.
 

@@ -17,6 +17,8 @@ RULE = "build.engine_evidence"
 MIGRATION = ["backend/alembic/versions/0999_x.py"]
 FULL = {"kind": "test", "detail": "Postgres full suite: 4210 passed"}
 PARTIAL = {"kind": "test", "detail": "Postgres on 4 files only: 61 passed"}
+STRUCTURED = {"kind": "test", "detail": "Postgres full suite", "engine": "postgres",
+              "scope": "full", "passed": 6402, "failed": 0, "skipped": 38}
 
 
 def _library(monkeypatch, *, on: bool, params: dict | None = None):
@@ -89,6 +91,68 @@ def test_on_allows_a_full_suite_receipt(client, key, monkeypatch):
               {"id": item, "status": "review", "agent_id": agent, "evidence": [FULL]})
 
     assert out["status"] == "review"
+
+
+def test_on_allows_a_structured_full_receipt_with_skips(client, key, monkeypatch):
+    _library(monkeypatch, on=True)
+    item, agent = _held(client, key, MIGRATION)
+
+    out = _ok(client, key, "update_item",
+              {"id": item, "status": "review", "agent_id": agent, "evidence": [STRUCTURED]})
+
+    assert out["status"] == "review"
+    stored = [e for e in out["evidence"] if e["kind"] == "test"][-1]
+    assert (stored["engine"], stored["scope"], stored["failed"], stored["skipped"]) == \
+        ("postgres", "full", 0, 38)
+
+
+def test_on_refuses_a_structured_partial_receipt_whatever_its_prose_says(client, key,
+                                                                         monkeypatch):
+    _library(monkeypatch, on=True)
+    item, agent = _held(client, key, MIGRATION)
+
+    err = _refusal(_to_review(client, key, item, agent, [{**STRUCTURED, "scope": "partial"}]))
+
+    assert RULE in err["message"]
+
+
+def test_on_refuses_a_structured_receipt_with_failures(client, key, monkeypatch):
+    _library(monkeypatch, on=True)
+    item, agent = _held(client, key, MIGRATION)
+
+    assert RULE in _refusal(_to_review(
+        client, key, item, agent, [{**STRUCTURED, "failed": 2}]))["message"]
+
+
+def test_on_refuses_a_structured_receipt_for_another_engine(client, key, monkeypatch):
+    _library(monkeypatch, on=True)
+    item, agent = _held(client, key, MIGRATION)
+
+    assert RULE in _refusal(_to_review(
+        client, key, item, agent, [{**STRUCTURED, "engine": "sqlite"}]))["message"]
+
+
+def test_a_structured_receipt_without_a_failed_count_is_not_clean():
+    assert not items_svc._full_engine_run(
+        [{k: v for k, v in STRUCTURED.items() if k != "failed"}], "postgres")
+
+
+def test_invalid_run_fields_are_dropped_and_the_receipt_kept():
+    rows = items_svc.normalize_evidence([{"kind": "test", "detail": "d", "engine": " ",
+                                          "scope": "most", "passed": -1, "failed": True}])
+    assert rows == [{"kind": "test", "detail": "d", "url": ""}]
+
+
+def test_the_prose_fallback_reads_the_pytest_summary_form():
+    def full(detail):
+        return items_svc._full_engine_run([{"kind": "test", "detail": detail}], "postgres")
+
+    assert full("Postgres full suite: 6402 passed, 38 skipped")
+    assert full("Postgres: full suite, 120 test files, all passed")
+    assert full("Postgres full suite: 6402 passed, 0 failed, 38 skipped")
+    assert not full("Postgres full suite: 6400 passed, 2 failed")
+    assert not full("Postgres full suite on 4 files: 61 passed")
+    assert not full("Postgres: 6402 passed")
 
 
 def test_on_leaves_a_non_migration_item_alone(client, key, monkeypatch):
