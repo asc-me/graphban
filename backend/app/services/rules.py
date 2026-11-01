@@ -357,6 +357,7 @@ def _library_entries(db: Session, project_id: str | None) -> list[dict]:
             "models": list(GITOPS_ALL_MODELS), "control": "toggle",
             "value": t["on"]["value"], "source": t["on"]["source"],
             "params": t["params"], "locked": t["locked"],
+            **({"unmeasured_reason": lib.unmeasured_reason} if lib.unmeasured_reason else {}),
         })
     return out
 
