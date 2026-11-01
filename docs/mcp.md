@@ -115,7 +115,7 @@ Settings → API keys. `fleet.mint` gives a planner credential the `fleet` tier 
 operator can restore the pre-tiering manifest for a whole deployment with
 `MCP_DEFAULT_TOOL_TIERS=prd,codegraph,fleet,misc` — see [configuration.md](configuration.md).
 
-## The 67 tools
+## The 72 tools
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
 shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
@@ -146,7 +146,7 @@ that stops once the four dimensions are answered or deferred. The tool still wri
 The one-shot editor command (`POST /api/prds/{id}/ai` with `command=grill`) stays on the
 body-only prompt, which has no transcript and cannot know when to stop.
 
-**Every tool argues its role gate** (GRPH-516). 18 of the 67 tools are role-gated; the other
+**Every tool argues its role gate** (GRPH-516). 23 of the 72 tools are role-gated; the other
 49 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
 completeness guard forcing each new tool to be classified as a quality gate or an authority
 one, and `TOOL_ROLES` had no equivalent, so forty tools arrived at "open to everyone" without
@@ -364,6 +364,11 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `scans_due` | `head_sha`, `project_id` | Due cells: `never_scanned`, `stale`, `tool_missing`, or `incomplete` for security/coverage/stub/deadcode/refactor/tests; `empty_reason` when none: `unmapped`, `has_findings`, `coverage_not_computable`, or `all_clean_or_not_applicable` (read-only, GRPH-1126) |
 | `put_document` | `kind`, `prd_id`, `body`, `title?` | Write the standing preamble (person only; cites the PRD baseline hash) |
 | `get_document` | `id` | One document row; `blob_key` omitted until stored |
+| `open_design` | `prd_id` | Open the PRD's design set (GRPH-1279); one open/accepted/stale set per PRD, refused on a closed PRD. Stores the preamble version and the PRD baseline hash (live body hash when unbaselined — draftable, never acceptable) |
+| `put_preamble` | `body`, `cites_prd_id` | Person only. Writes the project preamble citing the PRD's baseline hash; a new version marks sets built on the old one `stale` |
+| `put_set_constraints` | `design_set_id`, `body`, `sections?`, `screens?` | Candidate set constraints, the PRD sections gated, and screens `[{screen, routes}]` (code-graph tier proposal stored as a suggestion). Does not accept; re-pins a stale set |
+| `confirm_tier` | `design_set_id`, `screen`, `tier`, `note`, `routes?` | Confirm `BACKED`/`HALF`/`UNBACKED`; unconfirmed is never `BACKED` |
+| `get_design_set` | `design_set_id` | The set: status (`stale` names which hash moved), screens, tiers, `acceptance_blockers`. A closed PRD freezes the set — readable, no writes |
 | `search_docs` | `query`, `include_drafts?`, `include_design?`, `limit?` | Lexical search of baselined PRD bodies; drafts and design rows opt-in |
 | `prd_acceptance` | `prd_id`, `view` | **Delivery acceptance, read-only** — one surface per `view`: `completeness` (baselined sections with nothing delivered — the only pass that surfaces ABSENT work), `drift` (mechanical, total preserved across a rebaseline), `evidence` (receipts split by whether anyone but their author could check them, + code-graph corroboration), `close_report` (delivered vs **original** intent), `readiness`, `lineage`, `verdicts`, `baseline`, `classifications` (the platform judge's serves/enables/unrelated per completed item), `audit_brief` (everything a repo-holding agent needs to audit this PRD in one read — intent text, linked work with its classifications, receipts, and what is outstanding), `audit_coverage` (which sections actually carry a verdict). None of them say "complete" |
 | `request_rebaseline` | `prd_id`, `reason_type`, `reason` | **Ask for new frozen intent** in your own words. Does NOT approve — it re-opens the grill, and the existing baseline keeps governing until a new one is earned. Cannot add sections (that is a sub-PRD); refused on a closed PRD |

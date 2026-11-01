@@ -70,6 +70,7 @@ TOOL_TIERS: dict[str, str] = {
         "create_prd", "update_prd", "grill_prd", "answer_grill", "decompose_prd",
         "close_prd", "request_rebaseline", "submit_verdict",
         "put_document", "get_document", "search_docs",
+        "open_design", "put_preamble", "put_set_constraints", "confirm_tier", "get_design_set",
     )},
 
     # ---- codegraph: WRITING the graph (+ scan produce/read) --------------------------------

@@ -2177,6 +2177,9 @@ def close_prd(
     }
     prd.status = "closed"
     db.commit()
+    from app.services import design_sets as design_svc
+
+    design_svc.freeze_for_prd(db, prd.id)
     db.refresh(prd)
     events_svc.record(
         db, actor_type="agent" if closed_by.startswith("agent:") else "user",
@@ -2746,6 +2749,9 @@ def freeze_baseline(db: Session, prd: Prd) -> PrdVersion:
     from app.services import documents as documents_svc
 
     documents_svc.index_prd_baseline(db, prd.id)
+    from app.services import design_sets as design_svc
+
+    design_svc.refresh(db, prd.project_id, prd.id)
     return row
 
 
@@ -2781,6 +2787,9 @@ def invalidate_approval(db: Session, prd: Prd, *, reason: str) -> Prd:
     from app.services import documents as documents_svc
 
     documents_svc.drop_prd_chunks(db, prd.id)
+    from app.services import design_sets as design_svc
+
+    design_svc.refresh(db, prd.project_id, prd.id)
     db.refresh(prd)
     events_svc.record(
         db, actor_type="system", actor_label="grill", surface="system",

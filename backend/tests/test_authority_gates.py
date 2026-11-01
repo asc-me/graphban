@@ -172,6 +172,9 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # GRPH-1275. QUALITY, not authority: put_document is planner-gated and refuses agent
         # identities; the other two are project-scoped reads of governing specs.
         "put_document", "get_document", "search_docs",
+        # GRPH-1279. QUALITY, not authority: design-set writes keep a set's state; the
+        # preamble is planner-gated and refuses agent identities like put_document.
+        "open_design", "put_preamble", "put_set_constraints", "confirm_tier", "get_design_set",
         # PRD-20 D8. QUALITY, not authority: it computes hubs/components/path over edges that
         # already exist and writes nothing. It can tell an agent what depends on the thing it
         # is about to change; it cannot grant that agent permission to change anything.
