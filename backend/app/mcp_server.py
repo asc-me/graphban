@@ -4668,6 +4668,11 @@ async def mcp_endpoint(
             return _fail("conflict", str(e),
                                "move it to `review` and let an adapter attest it — a worker "
                                "via sign_off with a commit, or CI holding a `gate`-scoped key")
+        except items_svc.EvidenceRequired as e:
+            return _refused(errors.Refused(
+                409, str(e), rule_id=items_svc.ENGINE_EVIDENCE_RULE,
+                hint="run the FULL suite on the named engine and attach a test receipt whose "
+                     "detail says so, e.g. 'Postgres full suite: N passed', then send review again"))
         except items_svc.PRCooldown as e:
             # CONFLICT for the same reason, and the hint says WAIT rather than naming an
             # action (GRPH-567). It is the only refusal in this surface that resolves on its

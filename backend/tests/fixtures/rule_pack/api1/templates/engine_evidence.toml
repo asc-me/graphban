@@ -1,0 +1,10 @@
+id = "build.engine_evidence"
+stage = "Build"
+title = "Full engine run on migrations"
+summary = "A migration-class item moves to review only with a test receipt of a full Postgres suite run."
+primitive = "evidence_required"
+claims = "enforced"
+default = "off"
+[params]
+path = "alembic/versions/"
+engine = "postgres"

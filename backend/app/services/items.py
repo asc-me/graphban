@@ -982,6 +982,11 @@ class MissingAttestation(Exception):
     """
 
 
+class EvidenceRequired(Exception):
+    """The `build.engine_evidence` library rule is on and this item, moving to review, lacks the
+    evidence its class needs (GRPH-1271). A 409 at the boundaries, naming the rule."""
+
+
 class PRCooldown(Exception):
     """`done` was asked for too soon after the PR was linked (GRPH-567).
 
@@ -1004,6 +1009,57 @@ _PR_URL_MARKERS = ("/pull/", "/pull-requests/", "/merge_requests/")
 def is_pr_url(url: str) -> bool:
     """Does this URL point at a pull/merge request?"""
     return any(marker in (url or "").lower() for marker in _PR_URL_MARKERS)
+
+
+ENGINE_EVIDENCE_RULE = "build.engine_evidence"
+_PARTIAL_RUN = re.compile(
+    r"\bonly\b|\bpartial(?:ly)?\b|\bsubset\b|\bselected\b|\bsmoke\b|\bnot (?:run|ran|executed)\b"
+    r"|\bskipped\b|\b\d+ (?:test )?(?:files?|modules?)\b|\s-k\s", re.I)
+_FULL_RUN = re.compile(r"\b(?:full|entire|whole|complete)\b|\ball (?:tests|files)\b", re.I)
+
+
+def _full_engine_run(receipts, engine: str) -> bool:
+    """Whether a `test` receipt records a FULL run on `engine`. A partial run ("Postgres on 4
+    files only"), a denial ("Postgres NOT run") or a receipt that never says it was the whole
+    suite does not count: absence never reads as clean."""
+    from app.services import fleet as fleet_svc
+
+    for e in receipts or []:
+        if not isinstance(e, dict) or e.get("kind") != "test":
+            continue
+        line = str(e.get("detail") or "")
+        if (engine in line.lower() and _FULL_RUN.search(line) and not _PARTIAL_RUN.search(line)
+                and not fleet_svc.denial_in(engine, line)):
+            return True
+    return False
+
+
+def require_engine_evidence(db: Session, item: Item, incoming) -> None:
+    """The `evidence_required` primitive, bound to `build.engine_evidence` (GRPH-1271).
+
+    Read through the layered resolution (`rule_toggles.resolve`), never a constant: a rule absent
+    from the loaded library, or off, is no gate. When on, an item of the class (a touchpoint
+    containing `path`, default `alembic/versions/`) needs a test receipt recording a full run on
+    `engine` (default `postgres`) before it moves to review. Other items are unaffected.
+    """
+    from app.services import rule_toggles
+
+    if ENGINE_EVIDENCE_RULE not in rule_toggles.LIBRARY:
+        return
+    state = rule_toggles.resolve(db, ENGINE_EVIDENCE_RULE, item.project_id)
+    if not state["on"]["value"]:
+        return
+    params = state["params"]["value"] or {}
+    path = params.get("path") or "alembic/versions/"
+    engine = (params.get("engine") or "postgres").lower()
+    if not any(path in (t or "") for t in item.touchpoints or []):
+        return
+    if _full_engine_run(append_evidence(item.evidence, incoming or []), engine):
+        return
+    raise EvidenceRequired(
+        f"{item.key} cannot move to review while {ENGINE_EVIDENCE_RULE} is on: it touches "
+        f"{path} and carries no test receipt recording a full {engine} suite run (a partial "
+        "run, or one that does not say it was the full suite, does not count)")
 
 
 def reviewable_handoff(item: Item, incoming_evidence=None) -> bool:
@@ -1310,6 +1366,8 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "reviewer has nothing to read. Claim it from a registered agent with a "
                 "branch, or attach the PR url as evidence, then move it to review"
             )
+    if fields.get("status") == "review" and prev_status != "review":
+        require_engine_evidence(db, item, fields.get("evidence"))
     # THE COMPLETION GATE (GRPH-543). Before this, `update_item` validated a status
     # transition for MEMBERSHIP IN A LIST and nothing else, so an agent working without a
     # reviewer reached `done` by writing the string — and the result was indistinguishable
