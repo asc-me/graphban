@@ -108,6 +108,53 @@ def test_bounce_counts_only_after_a_prior_signoff(db, library):
     assert M.project_effect(db, PID)["rules"][0]["escape_rate"]["after"]["value"] == 0
 
 
+def _bug_and_work(db, signed=True):
+    from app.services import items as items_svc
+    work = _item(db, "shipped work")
+    work.status, work.reviewed_by = ("done", "GRPH-R") if signed else (work.status, None)
+    bug = items_svc.create_item(db, title="it broke", effort=1, project_id=PID, tags=["bug"])
+    db.commit()
+    return bug, work
+
+
+def test_bug_linked_to_signed_off_work_is_an_escape_and_leaves_unmeasured(db, library):
+    from app.services import observations as O
+    _adopt(db, 10)
+    _signoffs(db, 10, 5, "a")
+    bug, work = _bug_and_work(db)
+    assert O.record_bug_escape(db, bug, work) is True
+    assert O.record_bug_escape(db, bug, work) is False  # one fact per pair
+    cell = M.project_effect(db, PID)["rules"][0]
+    assert cell["escapes_unmeasured"] == []
+    assert cell["escape_rate"]["after"]["value"] == 0.1
+    o = db.query(Observation).filter_by(kind="bug_escaped").one()
+    assert o.item_id == work.id and o.ref == {"bug_item_id": bug.id}
+
+
+def test_bug_escape_before_adoption_counts_in_the_before_window(db, library):
+    from app.services import observations as O
+    _adopt(db, 10)
+    _signoffs(db, 10, 15, "b")
+    bug, work = _bug_and_work(db)
+    bug.created_at = _ago(14)
+    db.commit()
+    O.record_bug_escape(db, bug, work)
+    r = M.project_effect(db, PID)["rules"][0]["escape_rate"]
+    assert r["before"]["value"] == 0.1
+
+
+def test_bug_escape_refuses_what_is_not_an_escape(db, library):
+    from app.services import observations as O
+    bug, work = _bug_and_work(db, signed=False)
+    with pytest.raises(O.BugEscapeRefused, match="signed off"):
+        O.record_bug_escape(db, bug, work)
+    bug, work = _bug_and_work(db)
+    with pytest.raises(O.BugEscapeRefused, match="itself"):
+        O.record_bug_escape(db, work, work)
+    with pytest.raises(O.BugEscapeRefused, match="not tagged"):
+        O.record_bug_escape(db, work, bug)
+
+
 def test_caught_counts_refusals_naming_the_rule(db, library):
     _obs(db, "refusal", 1, "r1", rule_id=RULE)
     _obs(db, "refusal", 1, "r2", rule_id="other.rule")
