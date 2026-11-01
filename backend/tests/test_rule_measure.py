@@ -473,14 +473,26 @@ def test_platform_observations_on_d13_terms_and_no_ids(db, library, hosted):
 def test_platform_observations_need_three_orgs_and_respect_share_cap(db, library, hosted):
     orgs = [_org(db, f"o{i}", True) for i in range(3)]
     _kind_obs(db, orgs[0][1], "bounce", 30)
-    _kind_obs(db, orgs[1][1], "bounce", 1)
+    _kind_obs(db, orgs[1][1], "bounce", 5)
     M.platform_roll(db)
     cells = {c["kind"]: c for c in M.platform_effect(db, orgs[0][0].id)["observations"]}
     assert cells["bounce"]["available"] is False  # only two orgs contribute
-    _kind_obs(db, orgs[2][1], "bounce", 1)
+    _kind_obs(db, orgs[2][1], "bounce", 5)
     M.platform_roll(db)
     cells = {c["kind"]: c for c in M.platform_effect(db, orgs[0][0].id)["observations"]}
     assert "share" in cells["bounce"]["reason"]
+
+
+def test_platform_observations_count_an_org_only_at_its_own_floor(db, library, hosted):
+    # D13: a third org with a single row must not launder a dominant pair past three orgs.
+    orgs = [_org(db, f"o{i}", True) for i in range(3)]
+    _kind_obs(db, orgs[0][1], "bounce", 20)
+    _kind_obs(db, orgs[1][1], "bounce", 20)
+    _kind_obs(db, orgs[2][1], "bounce", 1)
+    M.platform_roll(db)
+    cells = {c["kind"]: c for c in M.platform_effect(db, orgs[0][0].id)["observations"]}
+    assert cells["bounce"]["available"] is False
+    assert "fewer than" in cells["bounce"]["reason"] and "orgs" in cells["bounce"]["reason"]
 
 
 def test_opting_out_purges_observations_on_next_roll(db, library, hosted):
@@ -624,3 +636,118 @@ def test_switching_off_with_nothing_held_records_no_override(client, auth, key, 
         {"id": item, "agent_id": reviewer["agent_id"], "evidence": [SABOTAGE]})
     _switch_off(client, auth, proj)
     assert db.query(Observation).filter_by(kind=M.OVERRIDE_KIND).count() == 0
+
+
+# ---- per-stage escape attribution and per-profile effect (GRPH-1287, D9, D13) ----------------
+
+def _esc(db, key, days_ago, stage=None, pid=PID):
+    db.add(Observation(project_id=pid, kind="ci_red_after_sign_off", stage="merge", dedupe_key=key,
+                       occurred_at=_ago(days_ago), ref={"missed_stage": stage} if stage else {}))
+    db.commit()
+
+
+def test_escape_rate_is_stage_scoped_once_a_project_attributes_escapes(db, library):
+    _adopt(db, 10)
+    _signoffs(db, 10, 5, "a")
+    _esc(db, "e0", 3, "review")
+    _esc(db, "e1", 3, "build")
+    _esc(db, "e2", 3)  # unattributed: left out of a stage-scoped rate
+    cell = M.project_effect(db, PID)["rules"][0]
+    assert cell["escape_scope"] == "stage" and "stage" in cell["escape_scope_note"]
+    assert cell["escape_rate"]["after"]["value"] == 0.1  # only the review escape
+
+
+def test_escape_rate_stays_project_wide_with_no_attribution(db, library):
+    _adopt(db, 10)
+    _signoffs(db, 10, 5, "a")
+    _esc(db, "e0", 3)
+    _esc(db, "e1", 3)
+    cell = M.project_effect(db, PID)["rules"][0]
+    assert cell["escape_scope"] == "project"
+    assert cell["escape_rate"]["after"]["value"] == 0.2
+
+
+def test_attribute_escape_validates_and_records(db, library):
+    _esc(db, "e0", 3)
+    o = db.query(Observation).filter_by(dedupe_key="e0").one()
+    M.attribute_escape(db, o, "review")
+    assert o.ref["missed_stage"] == "review"
+    with pytest.raises(ValueError):
+        M.attribute_escape(db, o, "nonsense")
+    db.add(Observation(project_id=PID, kind="refusal", stage="review", dedupe_key="r0",
+                       occurred_at=_ago(1)))
+    db.commit()
+    with pytest.raises(ValueError):
+        M.attribute_escape(db, db.query(Observation).filter_by(dedupe_key="r0").one(), "review")
+
+
+def test_bug_escape_records_the_missed_stage(db, library):
+    from app.services import observations as O
+    bug, work = _bug_and_work(db)
+    assert O.record_bug_escape(db, bug, work, missed_stage="review")
+    o = db.query(Observation).filter_by(kind="bug_escaped").one()
+    assert o.ref["missed_stage"] == "review"
+    bug2, work2 = _bug_and_work(db)
+    with pytest.raises(O.BugEscapeRefused):
+        O.record_bug_escape(db, bug2, work2, missed_stage="nope")
+
+
+def test_platform_contribution_stays_project_wide(db, library):
+    _adopt(db, 10)
+    _signoffs(db, 10, 5, "a")
+    _esc(db, "e0", 3, "build")
+    _esc(db, "e1", 3, "review")
+    org = Organization(id="org-x", name="x", plan="team", telemetry_share=True)
+    db.add(org)
+    db.flush()
+    db.get(Project, PID).org_id = org.id
+    db.commit()
+    assert M.contribution(db, org.id)[RULE]["escapes_after"] == 2
+
+
+def _apply_profile(db, org_id, profile, days_ago=1):
+    db.add(Event(ts=_ago(days_ago), actor_type="user", surface="rest", action="apply_rule_profile",
+                 target_type="org", target_id=org_id, meta={"profile": profile}))
+    db.commit()
+
+
+def test_project_effect_reports_filters_and_groups_by_profile(db, library):
+    org, pid = _org(db, "pr", False)
+    _apply_profile(db, org.id, "old", 5)
+    _apply_profile(db, org.id, "strict", 1)
+    out = M.project_effect(db, pid)
+    assert out["oversight_profile"] == "strict" and len(out["rules"]) == 1
+    assert M.project_effect(db, pid, profile="strict")["rules"]
+    assert M.project_effect(db, pid, profile="lax")["rules"] == []
+    g = M.project_effect(db, pid, group_by="profile")["groups"]
+    assert [x["profile"] for x in g] == ["strict"]
+    assert M.project_effect(db, PID)["oversight_profile"] is None
+    with pytest.raises(Exception):
+        M.project_effect(db, pid, group_by="nope")
+
+
+def test_org_effect_groups_and_filters_by_profile(db, library):
+    org, a = _org(db, "ga", False)
+    db.add(Project(id="p-gb", name="gb", tag="GBB", org_id=org.id))
+    db.commit()
+    _apply_profile(db, org.id, "strict")
+    # a is under strict; give the other project no profile by moving it to a bare org
+    bare = Organization(id="org-bare", name="bare", plan="team", telemetry_share=False)
+    db.add(bare)
+    db.flush()
+    db.get(Project, "p-gb").org_id = bare.id
+    db.commit()
+    _seed(db, a, 10, 10)
+    out = M.org_effect(db, org.id, group_by="profile")
+    assert [g["profile"] for g in out["groups"]] == ["strict"]
+    assert out["groups"][0]["projects"] == [a]
+    assert out["groups"][0]["rules"][0]["escape_rate"]["after"]["n"] == 10
+    assert M.org_effect(db, org.id, profile="strict")["rules"][0]["projects"] == 1
+    assert M.org_effect(db, org.id, profile="lax")["rules"][0]["projects"] == 0
+
+
+def test_rules_effect_endpoint_takes_profile_and_group_by(client, auth, db):
+    r = client.get("/api/rules/effect", params={"profile": "none-such", "group_by": "profile"},
+                   headers=auth)
+    assert r.status_code == 200 and r.json()["rules"] == [] and r.json()["groups"] == []
+    assert client.get("/api/rules/effect", params={"group_by": "x"}, headers=auth).status_code == 422

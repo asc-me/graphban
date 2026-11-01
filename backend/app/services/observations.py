@@ -231,13 +231,18 @@ class BugEscapeRefused(ValueError):
     pass
 
 
-def record_bug_escape(db: Session, bug: Item, escaped_from: Item) -> bool:
+def record_bug_escape(db: Session, bug: Item, escaped_from: Item,
+                      missed_stage: str | None = None) -> bool:
     """Record that `bug` is a bug filed against `escaped_from`, work already signed off (D9).
 
     One fact per pair, attached to the item it escaped from and placed at the time the bug was
-    filed. The bug's text is never read: only its `bug` tag and the two ids. True when newly
+    filed. The bug's text is never read: only its `bug` tag and the two ids. `missed_stage`
+    names the stage whose check the bug got past, when someone knows. True when newly
     recorded; linking the same pair again adds nothing.
     """
+    if missed_stage is not None and missed_stage not in STAGE_IDS:
+        raise BugEscapeRefused(f"{missed_stage!r} is not a stage; known: "
+                               f"{', '.join(sorted(STAGE_IDS))}")
     if bug.id == escaped_from.id:
         raise BugEscapeRefused("an item cannot escape from itself")
     if bug.project_id != escaped_from.project_id:
@@ -247,7 +252,10 @@ def record_bug_escape(db: Session, bug: Item, escaped_from: Item) -> bool:
     if not (escaped_from.status == "done" or escaped_from.reviewed_by):
         raise BugEscapeRefused(f"{escaped_from.id} has not been signed off, so nothing escaped it")
     new = _add(db, escaped_from, kind="bug_escaped", key=f"bug_escape:{bug.id}:{escaped_from.id}",
-               origin="live", ref={"bug_item_id": bug.id}, occurred_at=bug.created_at)
+               origin="live",
+               ref={"bug_item_id": bug.id, **({"missed_stage": missed_stage} if missed_stage
+                                              else {})},
+               occurred_at=bug.created_at)
     db.commit()
     return new
 
