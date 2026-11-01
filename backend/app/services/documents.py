@@ -14,6 +14,7 @@ Absence is never reported as clean: an empty default search says drafts were exc
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 
@@ -136,10 +137,81 @@ def to_dict(doc: Document) -> dict:
     }
     if doc.stale_reason:
         out["stale_reason"] = doc.stale_reason
-    # The byte key is omitted when absent — never `null` or `""`, which would read as a key.
-    if doc.blob_key:
-        out["blob_key"] = doc.blob_key
+    # No byte key, pending or stored: the key is omitted, never `null` or `""`. Bytes come
+    # only from `read_blob`; `blob_status` is the field a client branches on.
+    if doc.blob_status != "none":
+        out["blob_mime"], out["blob_size"] = doc.blob_mime, doc.blob_size
     return out
+
+
+def default_backend():
+    from app.config import settings
+    from app.services.drive_sync import LocalFolderBackend
+
+    return LocalFolderBackend(settings.sync_dir)
+
+
+def _store(db: Session, doc: Document, data: bytes, backend) -> None:
+    try:
+        backend.put_bytes(doc.content_hash, data)
+    except Exception as e:  # noqa: BLE001 — any backend failure leaves the row pending
+        name = getattr(backend, "name", type(backend).__name__)
+        raise errors.Unavailable(
+            f"blob backend {name} failed: {e}",
+            hint=f"the row is kept with blob_status pending; retry the put to store the same "
+                 f"hash {doc.content_hash}") from e
+    doc.blob_status, doc.blob_key = "stored", doc.content_hash
+    db.commit()
+
+
+def put_blob(
+    db: Session, *, project_id: str, kind: str, data: bytes, mime: str, prd_id: str | None = None,
+    set_id: str = "", screen: str = "", title: str = "", created_by: str = "", backend=None,
+) -> dict:
+    """Content-addressed put. The ledger row is written (and committed) before the backend
+    call, so a backend failure leaves a `pending` row and a retry stores the same hash."""
+    if kind not in KINDS:
+        raise errors.Validation(f"unknown kind {kind!r}", hint=f"one of {', '.join(KINDS)}")
+    backend = backend or default_backend()
+    digest = hashlib.sha256(data).hexdigest()
+    rows = list(db.scalars(select(Document).where(
+        Document.project_id == project_id, Document.kind == kind,
+        Document.set_id == set_id, Document.screen == screen).order_by(Document.version)))
+    current = next((r for r in reversed(rows) if r.governing), None)
+    if current and current.content_hash == digest and current.blob_status != "none":
+        doc = current  # same bytes: not a new version; a pending one is retried
+    else:
+        for r in rows:
+            r.governing = False
+            for c in r.chunks:
+                c.governing = False
+        doc = Document(
+            id=new_id(), project_id=project_id, kind=kind, title=title or kind, prd_id=prd_id,
+            set_id=set_id, screen=screen, version=(rows[-1].version + 1) if rows else 1,
+            status="active", content_hash=digest, governing=True, created_by=created_by,
+            blob_status="pending", blob_mime=mime, blob_size=len(data))
+        # A canvas has no extraction, so there are no chunks to write before the backend call.
+        db.add(doc)
+        db.commit()
+    if doc.blob_status != "stored":
+        _store(db, doc, data, backend)
+    return to_dict(doc)
+
+
+def read_blob(db: Session, project_id: str, doc_id: str, backend=None) -> tuple[bytes, str]:
+    doc = db.get(Document, doc_id)
+    if doc is None or doc.project_id != project_id:
+        raise errors.NotFound(f"document not found: {doc_id}")
+    if doc.blob_status == "pending":
+        raise errors.BlobPending(
+            f"bytes for {doc_id} are not stored yet",
+            hint=f"blob {doc.content_hash} is pending; a retry of the put stores that same hash")
+    if doc.blob_status != "stored":
+        raise errors.NotFound(f"document has no bytes: {doc_id}")
+    data = (backend or default_backend()).get_bytes(doc.blob_key)
+    if data is None:
+        raise errors.NotFound(f"blob {doc.blob_key} missing from the backend")
+    return data, doc.blob_mime
 
 
 def get_document(db: Session, project_id: str, doc_id: str) -> dict:

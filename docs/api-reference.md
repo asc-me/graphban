@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 297 of the 297. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 298 of the 298. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -745,3 +745,4 @@ Pushing and the portable bundle are a JWT on this box.
 | DELETE | `/api/sync/code-graph` | MCP (sync scope) | Delete every node and edge in the key's project |
 | GET | `/api/sync/export` | JWT | A portable bundle of summaries and structure, without vectors |
 | POST | `/api/sync/import` | JWT (write) | Import a bundle. This instance re-embeds on arrival |
+| GET | `/api/documents/{doc_id}/bytes` | JWT (read) | The stored bytes of a document blob by id; 409 `blob_pending` while the backend write is pending, 404 with no row |
