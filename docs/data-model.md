@@ -67,6 +67,37 @@ Alembic; SQLite (tests / zero-infra dev) uses `create_all`.
 | `code_scans` | `id` (`cs_…`) | One scanner's report for a path at a commit (GRPH-1035 / PRD-P51 §3). Agent-with-repo PRODUCER writes via `record_scan` (server has no working tree, like `describe_code`). `category` (`security`\|`refactor`\|`stub`\|`deadcode`\|`coverage`\|`tests`\|`work`), `scanner_id`/`scanner_version`, repo-relative `path`, `scanned_sha`, `scanned_at`, `reported_by` provenance. **Absence is not clean** — no row means never scanned; a zero-finding row is clean only at that sha and goes stale when head moves. Path-keyed and dangle-safe. A `tests` row (GRPH-1061) carries its `passed · failed · skipped` counts in `note`; each failing test is a finding, and a run that executed zero tests is stored with a finding, never clean. Migration `0137` |
 | `scan_findings` | `id` | One finding inside a `code_scans` row (GRPH-1035). `severity`, `summary` (untrusted agent data), optional more-specific `path`, optional `link_kind`/`link_ref` into tracker / code graph / PRD. Cascades on scan delete. Migration `0137` |
 | `app_topologies` | `project_id` | One current app topology record per project (GRPH-1098 / PRD-P55 §2). The server never holds the repo; a producer posts the map and a valid post replaces the row. `components` (each has `dir`), `infrastructure`, `external_services` (posted as `external`), `unresolved`, `edges` `{from, to, protocol, label}` — every node and edge carries `provenance` `{file, line?, rule}`. `producer_id`, `producer_version`, `mapped_sha`, `mapped_at`, `previous_mapped_sha` (the sha the replaced row was mapped at, `""` on the first post — not a history table), `posted_by` (the posting credential, not the caller-declared producer). No row is `unmapped`, which is not "this app calls nothing". Env values are never stored, only variable names. Migration `0140` |
+| `org_memberships` | `id` | A user's seat in an organization (hosted only): role owner, admin, or member |
+| `org_requests` | `id` | A request to found an additional organization. An account gets one org; an approved request grants exactly one more and is consumed when that org is created |
+| `org_usage` | `org_id` + `period` | Per-org, per-month MCP-call counter for plan enforcement. `period` is `YYYY-MM` UTC, so a new month starts at zero. Project, seat, and shard usage are counted from rows, not stored here |
+| `org_invites` | `id` | A pending invitation. `kind=org` seats someone in an existing org; `kind=platform` lets a new account sign up and found its own |
+| `teams` | `id` | A named group inside an org. Grants write project access in bulk. Additive to org role and project membership |
+| `team_members` | `id` | Who is in a team. Membership here grants nothing by itself; the team's grants write real `Membership` rows |
+| `team_grants` | `id` | A team's access to one project. Creating or changing one materializes `Membership` rows rather than resolving teams on the read path |
+| `agents` | `id` | A process that connects and does work. Distinct from the API key it authenticates with, so several processes can share a key and still be separate agents |
+| `area_reservations` | `id` | A touch-area an agent holds while work is in flight, on top of the collision partition |
+| `events` | `id` | Append-only audit ledger: one row per accepted mutation, with the actor captured at the boundary. Distinct from `agent_calls`, which is telemetry and is swept |
+| `code_nodes` | `id` | A described unit of the codebase (module, file, or symbol) with a summary embedded for search over structure. Path-keyed |
+| `code_edges` | `id` | A directed typed relation between two code paths (imports, calls, owns, tested_by, references). Stored by path, so the target may not have been described yet |
+| `code_refs` | `id` | A directed link from a tracker item or request to a code path. Distinct from an item's free-text touchpoints |
+| `project_edges` | `id` | An evidenced dependency between two projects in one org. Every edge names the file that proves it; an empty evidence list is refused |
+| `linear_integrations` | `id` | One org's Linear OAuth link. The access token and webhook secret are encrypted at rest and are never returned |
+| `attachments` | `id` | A public-uploaded screenshot for a feedback request. Bytes live in the database and are served by unguessable id |
+| `assistant_threads` | `id` | A conversation with the in-app assistant, scoped to one item or PRD. provider and model pin which model drives it |
+| `assistant_messages` | `id` | One ordered turn: content, tool calls, tool results, and any staged proposed actions |
+| `assistant_proposed_actions` | `id` | A write the assistant proposed and has not executed. Apply records the prior value; reject discards it. Nothing mutates until approval |
+| `grill_turns` | `id` | One turn of a PRD's grill, owned by the server. The client does not keep the transcript |
+| `grill_dimensions` | `id` | One dimension's outcome for a PRD's grill. The same four dimensions everywhere, so `approved` means the same thing on every instance |
+| `work_classifications` | `id` | The platform judge's latest read of one completed item against its PRD's goal. One row per item, not a history |
+| `verdicts` | `id` | A sign-off judgement about a PRD, with the citations that make it arguable. A claim, not a score |
+| `artifact_inventory` | `id` | An artifact that exists on disk, including skills, hooks, agents, and rules a person wrote by hand |
+| `artifact_recommendations` | `id` | What a promoted lesson should become. One row per tier and scope; a second lesson for the same pair supersedes the first |
+| `artifact_usage` | `id` | That a generated artifact was used, written only by something that observed the use. Never inferred from silence |
+| `artifact_tombstones` | `id` | A retired artifact kept in full so it can be restored. Retirement is not a delete of the contents |
+| `ingest_watermarks` | `id` | How far ingest got in one source. The cursor is opaque to everything but the adapter that wrote it |
+| `code_sync_state` | `project_id` | Manifest of the code graph last pushed to the linked cloud: `{path: content_hash}`, updated per confirmed batch so an interrupted push can resume |
+| `sync_link` | `id` (always instance) | The box's link to a cloud tenant. The sync key is encrypted at rest. A blank cloud URL means this box is not linked |
+| `sync_state` | `prd_id` | Per-PRD snapshot of the last Drive or filesystem sync, so a change on both sides can be flagged |
 
 ## Keys are rendered, not stored (PRD-13)
 
@@ -99,10 +130,11 @@ users ─< api_keys
 ## Notes
 
 - **Embeddings** — `memory_shards.embedding` is a real pgvector `vector(EMBED_DIM)` on
-  Postgres (with an ivfflat cosine index) and JSON on SQLite, via a dialect-aware
-  `EmbeddingType`. `EMBED_DIM` must match the [embedding provider](ai-providers.md).
-- **Human ids** — items (`AL-<n>`), requests (`R-<n>`), and PRDs (`PRD-<n>`) use readable
-  ids computed from the max existing number.
+  Postgres (HNSW cosine index; migration 0016 replaced ivfflat) and JSON on SQLite, via a
+  dialect-aware `EmbeddingType`. `EMBED_DIM` must match the [embedding provider](ai-providers.md).
+- **Human ids** — rendered from the project tag and the entity's number: items `{tag}-{n}`,
+  requests `{tag}-R{n}`, PRDs `{tag}-P{n}`. The stored id is frozen at issue. Keys issued
+  before tags (`AL-12`, `R-33`, `PRD-1`) still resolve through `legacy_entity_keys`.
 - **PRD versions** — the latest snapshot stores the full body; older seeded snapshots keep
   their note/date only. New snapshots (via the editor) always store the body.
 - **Links** — `a`/`b` are plain id strings (items or requests), not foreign keys, so an edge
@@ -122,10 +154,7 @@ users ─< api_keys
 
 ## Migrations
 
-```
-0001 initial      users, projects, memberships, items, memory_shards, requests, links, api_keys
-                  (+ CREATE EXTENSION vector + ivfflat index)
-0002 prds         prds, prd_versions
-0003 roadmap_mcp  milestones, mcp_tool_stats
-0004 platform     platform_config
-```
+Postgres schema is owned by Alembic (`backend/alembic/versions/`). The head of the chain
+is the range `AGENTS.md` states (`currently 0001–…`), and a test keeps that sentence
+current, so this file does not copy the number. SQLite uses `create_all`. Vector indexes
+are HNSW; migration 0016 replaced the ivfflat indexes from 0001 and 0013.

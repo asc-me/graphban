@@ -1,7 +1,8 @@
 # Tracker
 
-The Tracker is the heart of Graphban: **one linear stream** of work items ordered by
-priority and recency — no boards, no columns. It's the landing view.
+The Tracker is the heart of Graphban. **Board** is the default layout and **List** is the
+other. On a hosted project, `/` opens the Tracker. On self-host, `/` opens the Dashboard
+at `/home`, and the Tracker is under Plan.
 
 ## Item model
 
@@ -9,7 +10,7 @@ Each item has:
 
 | Field | Notes |
 | --- | --- |
-| `id` | Human key, e.g. `AL-12` (auto-assigned `AL-<n>`) |
+| `id` | Human key rendered from the project tag, e.g. `GRPH-12` (`{tag}-{n}`). Requests are `{tag}-R{n}`, PRDs `{tag}-P{n}`. Keys issued before tags (`AL-12`) still resolve |
 | `title`, `description` | Description is markdown |
 | `status` | One of six states (below) |
 | `tags` | Free-form list |
