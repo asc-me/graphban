@@ -1833,6 +1833,10 @@ class RuleSuggestionOut(BaseModel):
     value: str | None = None
     evidence: list[SuggestionEvidenceOut]
     fingerprint: str
+    score: float | None = None
+    replay: dict | None = None
+    effect: str | None = None
+    report: dict | None = None
 
 
 class SuggestionSourceOut(BaseModel):
