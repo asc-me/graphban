@@ -692,7 +692,7 @@ def _loop(
             except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
                 watchdog_mod.current.retry("review_rows(reap)", exc)
                 rows_for_reap = []
-            unheld_at_reap = [r for r in rows_for_reap if not r.get("review_claimed_by")]
+            unheld_at_reap = [r for r in rows_for_reap if not review_held(r)]
             for child in finished:
                 if unheld_at_reap and not child.held_items:
                     review_fails += 1
@@ -936,7 +936,7 @@ def _loop(
         # GRPH-965 and built it on the reviewer's branch while the child actually assigned to
         # that item produced nothing. The authority is the seat, not the prompt, so the gate is
         # server-side (`items.review_only_seat`) and this is only the mint that asks for it.
-        unheld_review = [r for r in rows if not r.get("review_claimed_by")]
+        unheld_review = [r for r in rows if not review_held(r)]
         # No memory gate on this branch, deliberately (GRPH-842): `not live` means nothing
         # is running, and the gate never refuses the first child — so a check here could
         # only ever cost a `vm_stat` per poll and answer yes. **If that guard goes, this
@@ -969,7 +969,7 @@ def _loop(
             sleep(poll)
             continue
 
-        unheld = [r for r in rows if not r.get("review_claimed_by")]
+        unheld = [r for r in rows if not review_held(r)]
         if unheld:
             wave.reason = "review-unsigned"
             return _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
@@ -2041,6 +2041,21 @@ def _is_config(exc: ToolFailed) -> bool:
     if "may not" in message or "not planner" in message:
         return True
     return False
+
+
+def review_held(row: dict) -> bool:
+    """Whether somebody is reviewing this row RIGHT NOW (GRPH-1254).
+
+    `review_claimed_by` is the raw column, and a reviewer that dies leaves it set for good: only
+    a verdict or the holder's own `release_item` clears it. Reading it as "held" kept a wave
+    idle for over an hour on GRPH-1248, logging `held by review; no expiry reported` while the
+    holder was offline and retired and the server would already have handed the item to the
+    next `claim_review`. The server says when a hold has lapsed (`review_claim_lapse`, present
+    only when it has), so liveness has one definition and it is the server's.
+
+    An older server never sends the field, and then this reads exactly as before.
+    """
+    return bool(row.get("review_claimed_by")) and not row.get("review_claim_lapse")
 
 
 def _review_rows(planner: Graphban) -> list[dict]:
