@@ -2223,6 +2223,11 @@ class MissingAdversarialEvidence(Exception):
     """Above-threshold work signed off with nothing that tried to break it."""
 
 
+class SabotageRequired(Exception):
+    """The `review.sabotage_required` library rule is on and this sign-off carries no reviewer
+    sabotage whose tests failed (GRPH-1260)."""
+
+
 class UncomparedPredicate(Exception):
     """A sign-off whose receipt carries a check that could not run, and no waiver (GRPH-1007).
 
@@ -2902,6 +2907,39 @@ def needs_adversarial_evidence(item: Item) -> bool:
     return (item.effort or 0) >= ADVERSARIAL_EFFORT_THRESHOLD
 
 
+SABOTAGE_REQUIRED_RULE = "review.sabotage_required"
+
+
+def require_reviewer_sabotage(db: Session, item: Item, fresh: list) -> None:
+    """The `sabotage_receipt` primitive, bound to `review.sabotage_required` (GRPH-1260).
+
+    Reads its on/off and params through the layered resolution (`rule_toggles.resolve`), never
+    a constant. Counts only THIS call's evidence: the rule asks for a sabotage the REVIEWER ran,
+    so the author's recorded receipts do not satisfy it — which is also what closes the
+    effort-0 exemption `needs_adversarial_evidence` leaves open. `min_effort` (default 0: any
+    effort) is the only thing that narrows it. A rule absent from the loaded library, or off,
+    is no gate: the platform default is the library's own declaration.
+    """
+    from app.services import rule_toggles
+
+    if SABOTAGE_REQUIRED_RULE not in rule_toggles.LIBRARY:
+        return
+    state = rule_toggles.resolve(db, SABOTAGE_REQUIRED_RULE, item.project_id)
+    if not state["on"]["value"]:
+        return
+    params = state["params"]["value"] or {}
+    if (item.effort or 0) < int(params.get("min_effort", 0)):
+        return
+    need = max(1, int(params.get("min_tests_failed", 1)))
+    best = max((e.get("tests_failed") or 0 for e in items_svc.sabotage_receipts(fresh)),
+               default=0)
+    if best < need:
+        raise SabotageRequired(
+            f"{item.key} cannot be signed off while {SABOTAGE_REQUIRED_RULE} is on without a "
+            f"sabotage you ran in this sign-off that failed at least {need} test(s) — "
+            + (f"the best one failed {best}" if best else "none was recorded"))
+
+
 def _predicate(name: str, *, compared: bool, detail: str, waived: dict) -> dict:
     """One sign-off predicate, honest about whether its check actually ran (GRPH-1007).
 
@@ -3021,6 +3059,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             + (f" — {len(vacuous)} recorded sabotage(s) broke NOTHING, which means the test "
                "cannot fail rather than that the claim is guarded" if vacuous else "")
         )
+    require_reviewer_sabotage(db, item, fresh)
     # THE ACCEPTANCE COVERAGE GATE (GRPH-884). Each acceptance clause in the item's `## Tests`
     # section must have a named test in the evidence. A sabotage receipt does NOT substitute —
     # that is the defect this closes: sabotage can only mutate code some test already reaches,

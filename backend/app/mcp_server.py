@@ -3237,6 +3237,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                     "dispatch two opposing-lens critics, or run the passes yourself, and "
                     "record each as evidence {kind: sabotage, claim, mutation, tests_failed}"),
             ) from e
+        except fleet_svc.SabotageRequired as e:
+            raise errors.Refused(
+                409, str(e), rule_id="review.sabotage_required", meta=_who, hint=(
+                    "run a sabotage yourself and pass it in this sign_off's evidence as "
+                    "{kind: sabotage, claim, mutation, tests_failed} with tests_failed at or "
+                    "above the rule's min_tests_failed"),
+            ) from e
         except fleet_svc.AttestedTheBase as e:
             # The caller may sign this off, but the revision it named is not the work.
             raise errors.Refused(
