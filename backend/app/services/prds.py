@@ -3978,6 +3978,8 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     Framing sections (Problem, Goals, Non-goals, Success criteria, …) are skipped — they
     describe the work, they aren't work (AL-96). Pass ``include_prose=True`` when a PRD
     genuinely uses one of those headings for buildable scope."""
+    from app.services import design_sets as design_svc
+
     cov = coverage(db, prd)
     bodies = section_bodies(prd.body)
     context = framing_context(prd)
@@ -4011,10 +4013,17 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 f"an intent hold, or the PRD has moved since, these are the old rules and "
                 f"the PRD is the source.*\n\n{context}"
             )
+        gate = None
+        gated = design_svc.gating_set(db, prd.id, p["section"])
+        if gated is not None:
+            gate = design_svc.handoff(db, gated, p["section"])
+            described = f"{described}\n\n---\n\n{gate['text']}"
         proposals.append({
             "section": p["section"],
             "title": f"Implement: {p['section']}",
             "description": described,
+            "blocked": bool(gate and gate["blocked"]),
+            "blocker": gate["blocker"] if gate else "",
             "fidelity": fidelity,
             # Surfaced on the proposal so a dry run shows them before anything is created.
             "dangling_refs": dangling_refs(body),
@@ -4035,6 +4044,8 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 prd_id=prd.id, prd_section=pr["section"],
                 reporter={"name": "Spec", "handle": "prd", "avatar": "#c9b8ff"},
             )
+            if pr["blocked"]:
+                item.status, item.blocker = "blocked", pr["blocker"]
             # Stamped at creation, so the description's snapshot has something to be
             # compared against later. Set here rather than passed through `create_item`:
             # this is a fact about how the item was DERIVED, not a field a caller supplies,

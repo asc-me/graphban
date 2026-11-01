@@ -24,7 +24,7 @@ from app.services import prds as prd_svc
 
 STATUSES = ("open", "accepted", "stale", "frozen")
 TIERS = ("BACKED", "HALF", "UNBACKED")
-STALE_REASONS = ("preamble", "prd_baseline")
+STALE_REASONS = ("preamble", "prd_baseline", "sections")
 FINDING_KINDS = ("prompt_defect", "design_edit", "authority_conflict", "spec_gap")
 RESOLUTIONS = ("applied", "rejected", "withdrawn")
 # Who wins an authority conflict, in order: a shipped decision, the PRD for what the server can
@@ -127,9 +127,14 @@ def put_set_constraints(db: Session, project_id: str, set_id: str, body: str,
     ds = _get(db, project_id, set_id)
     _writable(ds)
     if ds.status == "accepted":
-        raise errors.Validation(f"{ds.id} is accepted", hint="its constraints are accepted as a unit")
+        if content_hash(body or "") != ds.constraints_hash:
+            raise errors.Validation(
+                f"{ds.id} is accepted", hint="its constraints are accepted as a unit")
+        # Same constraints: only the gated list is being edited.
+        return _edit_sections(db, ds, sections)
     if not (body or "").strip():
         raise errors.Validation("body is empty", hint="constraints need text")
+    old_sections = list(ds.sections or [])
     prd = prd_svc.get_prd(db, ds.prd_id)
     ds.prd_hash, ds.prd_baselined = _prd_hash(db, prd)
     _pin_preamble(db, ds)
@@ -142,6 +147,20 @@ def put_set_constraints(db: Session, project_id: str, set_id: str, body: str,
     ds.status, ds.stale_reason, ds.stale_detail = "open", "", None
     # Re-pinning to a preamble that cites a superseded baseline does not clear staleness.
     _stale_cite(db, ds)
+    _unblock_removed(db, ds, set(old_sections) - set(ds.sections or []))
+    db.commit()
+    return to_dict(db, ds)
+
+
+def _edit_sections(db: Session, ds: DesignSet, sections: list[str] | None) -> dict:
+    old = list(ds.sections or [])
+    new = [str(x) for x in sections] if sections is not None else old
+    removed = set(old) - set(new)
+    ds.sections = new
+    if removed:
+        # The accepted checklist no longer matches the gates.
+        _mark_stale(db, ds, "sections", ",".join(sorted(removed)), ",".join(new))
+        _unblock_removed(db, ds, removed)
     db.commit()
     return to_dict(db, ds)
 
@@ -244,6 +263,7 @@ def _mark_stale(db: Session, ds: DesignSet, reason: str, was: str, now: str,
     for d in db.scalars(select(Document).where(
             Document.set_id == ds.id, Document.kind.in_(_DESIGN_DOCS))):
         d.status, d.stale_reason = "stale", reason
+    _block_citing_items(db, ds, reason)
 
 
 def refresh(db: Session, project_id: str, prd_id: str | None = None) -> int:
@@ -711,3 +731,82 @@ def accept_design(db: Session, project_id: str, set_id: str, actor: str,
     db.commit()
     return to_dict(db, ds) | {"accepted_by": person, "relayed_by": relayed,
                               "review_record_id": review.id}
+
+
+# ---- Build handoff (GRPH-1281) ---------------------------------------------------------------
+
+REVISION_MARK = "Design revision: "
+_BLOCK_PREFIX = "design: "
+
+
+def gating_set(db: Session, prd_id: str, section: str) -> DesignSet | None:
+    """The design set of `prd_id` that lists `section` among the headings it gates."""
+    for ds in db.scalars(select(DesignSet).where(DesignSet.prd_id == prd_id)
+                         .order_by(DesignSet.created_at.desc())):
+        if section in (ds.sections or []):
+            return ds
+    return None
+
+
+def _revision(db: Session, ds: DesignSet) -> Document | None:
+    return db.scalars(select(Document).where(
+        Document.set_id == ds.id, Document.kind == "design_review",
+        Document.governing.is_(True))).first()
+
+
+def handoff(db: Session, ds: DesignSet | None, section: str) -> dict:
+    """What `decompose_prd` carries for a gated section: `{blocked, text}`. An accepted set yields
+    the pinned revision and its review record; anything else yields a blocked item that says so."""
+    if ds is None:
+        return {"blocked": True, "blocker": _BLOCK_PREFIX + "no design set",
+                "text": "## Design\n\nThis section is gated by a design set, but none exists. "
+                        "The design revision is not accepted; the PRD section alone is not "
+                        "sufficient to build from."}
+    rev = _revision(db, ds) if ds.status == "accepted" else None
+    if rev is None:
+        return {"blocked": True, "blocker": f"{_BLOCK_PREFIX}design set {ds.id} is {ds.status}",
+                "text": f"## Design\n\nThe design revision is not accepted: design set {ds.id} "
+                        f"is `{ds.status}`. The PRD section alone is not sufficient to build "
+                        "from; wait for an accepted revision."}
+    lines = [f"## Design\n\n{REVISION_MARK}{rev.id}", f"Design set: {ds.id}",
+             f"PRD hash: {ds.prd_hash}", f"Preamble hash: {ds.preamble_hash}",
+             f"Constraints hash: {ds.constraints_hash}", "", "Screens:"]
+    for sc in ds.screens:
+        lines.append(f"- {sc.screen} ({sc.tier}): prompt {sc.prompt_hash}, "
+                     f"canvas {sc.canvas_hash or 'none'}")
+    lines += ["", _review_record(db, ds)]
+    return {"blocked": False, "blocker": "", "revision_id": rev.id, "text": "\n".join(lines)}
+
+
+def _block_citing_items(db: Session, ds: DesignSet, reason: str) -> None:
+    """A set going stale tells the open items that cite its revision: they block and say why."""
+    from app.models import Item
+
+    revs = [r.id for r in db.scalars(select(Document).where(
+        Document.set_id == ds.id, Document.kind == "design_review"))]
+    if not revs:
+        return
+    for it in db.scalars(select(Item).where(
+            Item.prd_id == ds.prd_id, Item.status != "done")):
+        cited = next((r for r in revs if f"{REVISION_MARK}{r}" in (it.description or "")), None)
+        if cited is None:
+            continue
+        it.status = "blocked"
+        it.blocker = f"{_BLOCK_PREFIX}revision {cited} is stale ({reason})"
+        it.description = (it.description or "") + (
+            f"\n\n> **Design stale:** revision {cited} stopped governing ({reason} moved). "
+            "Wait for a new accepted revision or for this section to leave the gated list.")
+
+
+def _unblock_removed(db: Session, ds: DesignSet, removed: set[str]) -> None:
+    """Removing a section from the gated list releases the items the design blocked."""
+    from app.models import Item
+
+    if not removed:
+        return
+    db.flush()
+    for it in db.scalars(select(Item).where(
+            Item.prd_id == ds.prd_id, Item.status == "blocked",
+            Item.prd_section.in_(sorted(removed)))):
+        if (it.blocker or "").startswith(_BLOCK_PREFIX):
+            it.status, it.blocker = "backlog", ""
