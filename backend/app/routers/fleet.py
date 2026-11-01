@@ -335,6 +335,7 @@ class ProfileIn(BaseModel):
     excludes: list[str] = []
     budget_tokens: int | None = None
     mix: dict[str, float] | None = None
+    ladder: list[str] | None = None
 
 
 class PolicyIn(BaseModel):
@@ -344,6 +345,7 @@ class PolicyIn(BaseModel):
     allowed_harnesses: list[str] = []
     caps: dict | None = None
     cluster_ceiling: dict | None = None
+    ladder: list[str] | None = None
 
 
 @router.get("/profile")
@@ -365,7 +367,7 @@ def write_profile(body: ProfileIn, db: Session = Depends(get_db),
                                          defaults=body.defaults, weights=body.weights,
                                          excludes=body.excludes,
                                          budget_tokens=body.budget_tokens,
-                                         mix=body.mix)
+                                         mix=body.mix, ladder=body.ladder)
     except fleet_profiles.ProfileInvalid as e:
         raise HTTPException(422, str(e))
     events_svc.record_user(db, user, action="set_fleet_profile", target_type="fleet_profile",

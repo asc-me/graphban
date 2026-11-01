@@ -36,7 +36,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Agent, Entitlement, Item, Organization, Project, RoutingDecision, utcnow
+from app.models import (Agent, ApiKey, Entitlement, Item, Organization, Project, RoutingDecision,
+                        utcnow)
 from app.services import fleet_profiles
 from app.services import headroom as headroom_svc
 from app.services import quotas
@@ -89,7 +90,7 @@ def rank(db: Session, org_id: str, *, now: datetime | None = None,
     """The org's entitlements with headroom, best first: available before unknown, then the
     ladder rung (D6), then soonest stated reset. An entitlement on a rung the ladder omits, or
     an api_key whose budget is spent this period, is not returned."""
-    ladder = list(ladder or fleet_profiles.DEFAULT_LADDER)
+    ladder = list(fleet_profiles.DEFAULT_LADDER if ladder is None else ladder)
     now = now or datetime.now(timezone.utc)
     rows = db.scalars(select(Entitlement).where(Entitlement.org_id == org_id)
                       .order_by(Entitlement.created_at, Entitlement.id)).all()
@@ -189,7 +190,8 @@ def gate(db: Session, item: Item, agent_id: str, *, now: datetime | None = None)
     org = db.get(Organization, project.org_id) if project is not None and project.org_id else None
     if org is None or not quotas.plan_of(org).capacity_routing:
         return None
-    ranked = rank(db, org.id, now=now, ladder=fleet_profiles.ladder_of(db, item.project_id))
+    ranked = rank(db, org.id, now=now,
+                  ladder=fleet_profiles.ladder_of(db, item.project_id, _owner(db, agent)))
     mine = [e for e in ranked if e["id"] in declared]
     live = live_reservation(db, item.id, now=now)
 
@@ -229,6 +231,12 @@ def gate(db: Session, item: Item, agent_id: str, *, now: datetime | None = None)
                 "reason": f"held for {best['id']}: {_why(best, ranked)}"}
     return {"allowed": True, "entitlement_id": None,
             "reason": "no entitlement has headroom; next rung of the ladder"}
+
+
+def _owner(db: Session, agent: Agent | None) -> str | None:
+    """The user whose fleet profile applies to this runner: its API key's owner (PRD-37 D14)."""
+    key = db.get(ApiKey, agent.api_key_id) if agent is not None and agent.api_key_id else None
+    return key.user_id if key is not None else None
 
 
 def _held(db: Session, org_id: str) -> set[str]:
@@ -319,7 +327,7 @@ def axis(db: Session, project_id: str | None, agent_ids: list[str]) -> dict[str,
     org = db.get(Organization, project.org_id) if project is not None and project.org_id else None
     if org is None or not quotas.plan_of(org).capacity_routing:
         return {a: None for a in agent_ids}
-    ranked = rank(db, org.id, ladder=fleet_profiles.ladder_of(db, project_id))
+    by_ladder: dict[tuple, list[dict]] = {}
     out: dict[str, dict | None] = {}
     for aid in agent_ids:
         agent = db.get(Agent, aid)
@@ -327,6 +335,10 @@ def axis(db: Session, project_id: str | None, agent_ids: list[str]) -> dict[str,
         if not declared:
             out[aid] = None
             continue
+        ladder = tuple(fleet_profiles.ladder_of(db, project_id, _owner(db, agent)))
+        if ladder not in by_ladder:
+            by_ladder[ladder] = rank(db, org.id, ladder=list(ladder))
+        ranked = by_ladder[ladder]
         mine = [e for e in ranked if e["id"] in declared]
         pick = next((e for e in mine if review_reserved(ranked, e["vendor"])), None)
         out[aid] = ({"entitlement_id": pick["id"], "reason": _why(pick, ranked)} if pick else

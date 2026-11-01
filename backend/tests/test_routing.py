@@ -295,6 +295,37 @@ def test_an_api_key_whose_token_budget_is_spent_this_period_is_skipped(client, w
     assert rec["entitlement_id"] == fresh
 
 
+def _set_profile_ladder(client, world, ladder):
+    r = client.put("/api/fleet/profile", json={"project_id": _P["id"], "ladder": ladder},
+                   headers=world["owner"])
+    assert r.status_code == 200, r.text
+    assert r.json()["ladder"] == ladder
+
+
+def test_the_key_owners_profile_ladder_overrides_the_default_order(client, world):
+    _set_profile_ladder(client, world, ["api_key", "subscription"])
+    key = _ent(client, world, "openai", kind="api_key")
+    sub = _ent(client, world, "anthropic", kind="subscription")
+    rec = _chosen(client, world, [sub, key], _item())
+    assert rec["entitlement_id"] == key and "api_key rung" in rec["reason"]
+
+
+def test_a_profile_ladder_cannot_add_back_the_api_key_rung_policy_removed(client, world):
+    _set_ladder(["subscription", "local"])
+    _set_profile_ladder(client, world, ["api_key", "subscription"])
+    key = _ent(client, world, "openai", kind="api_key")
+    sub = _ent(client, world, "anthropic", kind="subscription")
+    a = _runner(client, world, [key, sub])
+    for e in (key, sub):
+        _report(client, world, e, a, "registered")
+    # The reviewer vendor rides the subscription rung too, so the reserve survives the policy.
+    _runner(client, world, [_ent(client, world, "google", kind="subscription")], vendor="google")
+    item = _item()
+    assert _claim(a, item) == item
+    (rec,) = [d for d in _decisions(item) if d["kind"] == "claim"]
+    assert rec["entitlement_id"] == sub and "subscription rung" in rec["reason"]
+
+
 def test_a_ladder_policy_is_validated():
     from app.services import fleet_profiles
 

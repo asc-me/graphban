@@ -113,6 +113,38 @@ def test_a_profile_that_says_something_it_may_not_is_refused_naming_the_field(cl
     assert msg in r.json()["detail"]
 
 
+def test_a_profile_ladder_is_stored_validated_and_read_back(client, auth):
+    put = client.put("/api/fleet/profile", json={**PROFILE, "ladder": ["local", "subscription"]},
+                     headers=auth)
+    assert put.status_code == 200, put.text
+    assert put.json()["ladder"] == ["local", "subscription"]
+    got = client.get("/api/fleet/profile", headers=auth).json()
+    assert got["profile"]["ladder"] == ["local", "subscription"]
+    assert client.put("/api/fleet/profile", json=PROFILE, headers=auth).json()["ladder"] is None
+    for bad in ([], ["gold"], ["local", "local"]):
+        r = client.put("/api/fleet/profile", json={**PROFILE, "ladder": bad}, headers=auth)
+        assert r.status_code == 422 and "ladder" in r.json()["detail"], r.text
+
+
+def test_the_ladder_resolves_profile_then_policy_then_default(db, proj):
+    from sqlalchemy import select
+    from app.models import User
+
+    user = db.scalars(select(User)).first()
+    assert fleet_profiles.ladder_of(db, proj, user.id) == list(fleet_profiles.DEFAULT_LADDER)
+    fleet_profiles.set_policy(db, db.get(Project, proj), {"ladder": ["subscription", "local"]})
+    assert fleet_profiles.ladder_of(db, proj, user.id) == ["subscription", "local"]
+    fleet_profiles.set_profile(db, user_id=user.id, project_id=None, defaults=[], weights={},
+                               excludes=[], ladder=["local", "api_key", "subscription"])
+    # Reordered as the profile says; the api_key rung the policy removed stays removed.
+    assert fleet_profiles.ladder_of(db, proj, user.id) == ["local", "subscription"]
+    fleet_profiles.set_profile(db, user_id=user.id, project_id=None, defaults=[], weights={},
+                               excludes=[], ladder=["api_key"])
+    # Nothing the policy allows is left: the policy applies, routing is not switched off.
+    assert fleet_profiles.ladder_of(db, proj, user.id) == ["subscription", "local"]
+    assert fleet_profiles.ladder_of(db, proj, None) == ["subscription", "local"]
+
+
 def test_a_policy_is_stored_on_the_project_and_read_back(client, auth, proj, db):
     put = client.put("/api/fleet/policy", json={"project_id": proj, "local_only": True,
                                                 "allowed_harnesses": ["gbagent"]}, headers=auth)
