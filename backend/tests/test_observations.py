@@ -8,6 +8,7 @@ from app.services import fleet as fleet_svc
 from app.services import items as items_svc
 from app.services import observations as obs
 from app.services import rules_recommend as rr
+from tests.test_fleet_adversarial_gate import key, proj  # noqa: F401  (fixtures)
 
 PID = "core"
 SHA = "a" * 40
@@ -269,3 +270,23 @@ def test_same_fact_on_two_items_is_two_observations(db):
     obs.on_sign_off(db, b, [{"kind": "sabotage", "claim": "c", "mutation": "m", "tests_failed": 1}])
     assert db.query(Observation).filter_by(kind="reviewer_sabotage_caught").count() == 2
     assert db.query(Observation).filter_by(kind="predicate_exempted").count() == 2
+
+
+# ---- held time on the move-to-review gate (GRPH-1283) ----------------------------------------
+
+def test_a_refused_move_to_review_that_later_lands_records_held_time(client, key, db, monkeypatch):
+    """`build.engine_evidence` refuses the move to review; the builder comes back with a full
+    Postgres run and it lands. The time between is recorded as held by that rule."""
+    from app.services import rule_measure as M
+    from tests.test_rule_engine_evidence import (
+        FULL, MIGRATION, RULE, _held, _library, _refusal, _to_review)
+
+    _library(monkeypatch, on=True)
+    item, agent = _held(client, key, MIGRATION)
+    assert RULE in _refusal(_to_review(client, key, item, agent))["message"]
+    assert M.open_hold(db, item, RULE) is not None
+    assert not _to_review(client, key, item, agent, [FULL]).get("isError")
+
+    rows = db.query(Observation).filter_by(kind=M.HELD_KIND, item_id=item).all()
+    assert [(r.rule_id, r.stage) for r in rows] == [(RULE, "build")]
+    assert rows[0].ref["seconds"] >= 0 and M.open_hold(db, item, RULE) is None

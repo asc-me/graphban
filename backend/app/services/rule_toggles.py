@@ -229,6 +229,8 @@ def set_project_toggle(db: Session, project_id: str, rule_id: str, changes: dict
         project_id=project_id,
         meta={"scope": "project", "reason": why, "old": old, "new": _snapshot(row),
               "effective_before": _value(before), "effective_after": _value(after)})
+    if before["on"]["value"] and not after["on"]["value"]:
+        _switched_off(db, rule_id, [project_id], user)
     return after
 
 
@@ -272,4 +274,14 @@ def set_org_toggle(db: Session, org_id: str, rule_id: str, changes: dict, *, act
         db, user, action="set_rule_toggle", target_type="rule", target_id=rule_id,
         meta={"scope": "org", "org_id": org_id, "reason": why, "old": old,
               "new": _snapshot(row), "projects_changed": changed})
+    _switched_off(db, rule_id, [pid for pid in changed if before[pid]["on"]
+                                and not resolve(db, rule_id, pid)["on"]["value"]], user)
     return {"rule_id": rule_id, "org_id": org_id, **_snapshot(row), "projects_changed": changed}
+
+
+def _switched_off(db: Session, rule_id: str, project_ids: list[str], user: User) -> None:
+    """A person switching a rule off is the override of every refusal it is still holding in
+    those projects (GRPH-1283 / D9 cost); recorded, never raised into the write."""
+    if project_ids:
+        from app.services import observations as observations_svc
+        observations_svc.on_rule_switched_off(db, rule_id, project_ids, user.id)

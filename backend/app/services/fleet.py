@@ -2248,6 +2248,11 @@ class GapUnlinked(Exception):
     item linked (GRPH-1270)."""
 
 
+class HumanClauseBlocked(Exception):
+    """The `accept.human_clause_blocks` library rule is on and an agent tried to sign off an
+    item with a clause flagged `human-only` (GRPH-1274)."""
+
+
 class ReviewerPropertyRequired(Exception):
     """The `review.distinct_vendor` library rule is on and this reviewer does not show the
     property it asks for (GRPH-1269)."""
@@ -2998,6 +3003,41 @@ def require_gap_followups(db: Session, item: Item, merged: list) -> None:
 
 
 
+HUMAN_CLAUSE_RULE = "accept.human_clause_blocks"
+
+
+def require_no_human_clause(db: Session, item: Item, agent_id: str) -> None:
+    """The `human_only_clause` primitive, bound to `accept.human_clause_blocks` (GRPH-1274).
+
+    The flag is the clause's declared `{needs: human-only}` marker (the same one routing reads),
+    so prose that merely mentions a human never counts. When the rule is on, an agent that did
+    not declare `capabilities.human` is refused and the item goes to `blocked` with a blocker
+    naming each clause; a person's sign-off passes. Reads on/off through the layered
+    resolution; a rule absent from the loaded library, or off, is no gate.
+    """
+    from app.services import rule_toggles
+
+    if HUMAN_CLAUSE_RULE not in rule_toggles.LIBRARY:
+        return
+    if not rule_toggles.resolve(db, HUMAN_CLAUSE_RULE, item.project_id)["on"]["value"]:
+        return
+    rows, _unreadable = _walk_acceptance(item.description or "")
+    flagged = [text for text, needs in rows if "human-only" in needs]
+    if not flagged:
+        return
+    agent = db.get(Agent, agent_id)
+    if "human-only" in declared_tools(agent.capabilities if agent is not None else None):
+        return
+    blocker = ("human-only acceptance clause(s) need a person to sign off: "
+               + "; ".join(repr(t[:120]) for t in flagged))
+    item.status = "blocked"
+    item.blocker = blocker
+    db.commit()
+    raise HumanClauseBlocked(
+        f"{item.key} cannot be signed off by an agent while {HUMAN_CLAUSE_RULE} is on: "
+        + blocker + ". It is now blocked; nothing was signed off")
+
+
 DISTINCT_VENDOR_RULE = "review.distinct_vendor"
 
 
@@ -3132,6 +3172,12 @@ def reopen_on_red(db: Session, item: Item, arrived: list,
     return True
 
 
+#: The library rules that guard a sign-off. A sign-off that lands got past every one of them,
+#: so any hold they had on the item ends there (GRPH-1283).
+SIGN_OFF_RULES = (SABOTAGE_REQUIRED_RULE, GAP_BLOCKS_RULE, DISTINCT_VENDOR_RULE,
+                  HUMAN_CLAUSE_RULE)
+
+
 def _predicate(name: str, *, compared: bool, detail: str, waived: dict) -> dict:
     """One sign-off predicate, honest about whether its check actually ran (GRPH-1007).
 
@@ -3254,6 +3300,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     require_reviewer_sabotage(db, item, fresh)
     require_gap_followups(db, item, merged)
     require_reviewer_property(db, item, agent_id)
+    require_no_human_clause(db, item, agent_id)
     # THE ACCEPTANCE COVERAGE GATE (GRPH-884). Each acceptance clause in the item's `## Tests`
     # section must have a named test in the evidence. A sabotage receipt does NOT substitute —
     # that is the defect this closes: sabotage can only mutate code some test already reaches,
@@ -3503,6 +3550,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     db.refresh(item)
     from app.services import observations as observations_svc
     observations_svc.on_sign_off(db, item, fresh)
+    observations_svc.on_rules_passed(db, item, SIGN_OFF_RULES)
     return item
 
 
