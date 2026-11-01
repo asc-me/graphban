@@ -383,6 +383,12 @@ def normalize_evidence_report(raw) -> tuple[list[dict], list[dict]]:
                             if e.get(k) is not None]
                     row["detail"] = ("incomplete attestation receipt (" + ", ".join(said) + ")"
                                      if said else "")
+        elif kind == "note":
+            # The one structured fact a note can carry (PRD-63 D2): `done: false` marks work
+            # the builder says was NOT done. A bool and nothing else, so the observation
+            # ledger counts a flag and never reads the prose beside it.
+            if e.get("done") is False:
+                row["done"] = False
         elif kind == "url":
             # A `url` may name the COMMIT it points at (GRPH-846). The fleet's merge receipt
             # is the reason: after `gh pr merge --squash` the reviewed commit is not an
@@ -1540,6 +1546,11 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
     # Reopening counts as a touchpoint change: a done item holds no `code` links (GRPH-1068),
     # so leaving `done` is when it regains them, to whatever open work it now overlaps.
     reopened = prev_status == "done" and item.status != "done"
+    from app.services import observations as observations_svc
+    if reopened:
+        observations_svc.on_reopen(db, item)
+    if fields.get("evidence"):
+        observations_svc.on_evidence(db, item)
     if (("touchpoints" in fields and fields["touchpoints"] is not None) or reopened) \
             and item.touchpoints:
         from app.services.clustering import sync_code_links
