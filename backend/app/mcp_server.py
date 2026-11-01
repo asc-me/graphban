@@ -3319,6 +3319,12 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                     "{kind: sabotage, claim, mutation, tests_failed} with tests_failed at or "
                     "above the rule's min_tests_failed"),
             ) from e
+        except fleet_svc.ReviewerPropertyRequired as e:
+            raise errors.Refused(
+                409, str(e), rule_id="review.distinct_vendor", meta=_who, hint=(
+                    "leave it for a reviewer of a different vendor than the builder, and make "
+                    "sure both declared capabilities.vendor at register_agent"),
+            ) from e
         except fleet_svc.AttestedTheBase as e:
             # The caller may sign this off, but the revision it named is not the work.
             raise errors.Refused(
