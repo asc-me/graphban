@@ -239,6 +239,9 @@ def put_document(
     _chunk(doc, body)
     db.add(doc)
     db.commit()
+    from app.services import design_sets as design_svc
+
+    design_svc.refresh(db, project_id)  # sets compiled from the old preamble are now stale
     return to_dict(doc)
 
 

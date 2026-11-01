@@ -1271,6 +1271,12 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # GRPH-1275. The preamble is written by a person; the planner seat is the only agent role
     # near spec authorship, and `put_document` itself refuses an agent identity.
     "put_document": ("planner",),
+    "put_preamble": ("planner",),
+    # GRPH-1279: a set is opened and compiled by whoever builds the design; accepting it is
+    # a different actor (later items).
+    "open_design": ("planner", "worker"),
+    "put_set_constraints": ("planner", "worker"),
+    "confirm_tier": ("planner", "worker"),
     "update_prd": ("planner",),
     "decompose_prd": ("planner",),
     "grill_prd": ("planner",),
@@ -1341,6 +1347,8 @@ OPEN_TOOLS: dict[str, str] = {
         "get_rule_toggles",
         # GRPH-1275: document reads — governing specs, project-scoped, nothing written.
         "get_document", "search_docs",
+        # GRPH-1279: the design-set read.
+        "get_design_set",
     )},
     "setup_project": "a read despite the name — returns a checklist, changes nothing",
     "collision_clusters": "the divvy a planner allocates FROM; seeing the partition is not "
