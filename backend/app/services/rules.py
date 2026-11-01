@@ -168,6 +168,16 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("plan.budget_cap", "plan", "Budget cap",
          "The gbfleet supervisor stops a worker that exceeds its budget.",
          "external", Enforcer("supervisor", "gbfleet budget cap"), "db", scope="org"),
+    Rule("rules.person_adopts", "learn", "A person adopts a rule",
+         "Only a person's request turns a library rule on or off or changes its params; "
+         "agents and the recommendation engine only suggest.",
+         "enforced", _src("app/services/rule_toggles.py", "Refused"), "code"),
+    Rule("rules.org_lock_holds", "learn", "An org lock holds",
+         "A project cannot override a library rule its org has locked.",
+         "enforced", _src("app/services/rule_toggles.py", "Refused"), "code", scope="org"),
+    Rule("rules.toggle_needs_admin", "learn", "Toggles need a project admin",
+         "A project's library rule toggles are set by its owner or an admin.",
+         "enforced", _src("app/services/rule_toggles.py", "Refused"), "code"),
     Rule("agents.operating_loop", "build", "Operating loop",
          "Agents follow the operating loop and invariants in AGENTS.md.",
          "advisory", Enforcer("doc", "AGENTS.md"), "repo_file", channel="doc"),
@@ -320,7 +330,7 @@ def registry(db: Session, project_id: str | None, view=None) -> list[dict]:
             "id": r.id, "stage": r.stage, "title": r.title, "summary": r.summary,
             "enforcement": r.enforcement, "channel": r.channel,
             "enforcer": _enforcer_out(r.enforcer), "truth": r.truth, "scope": r.scope,
-            "models": list(r.models), "value": None, "source": None,
+            "models": list(r.models), "value": None, "source": None, "control": None,
         }
         if r.truth == "db":
             v = _budget_cap_value(db, project_id) if r.id == BUDGET_CAP else _db_value(r, view)
@@ -329,6 +339,25 @@ def registry(db: Session, project_id: str | None, view=None) -> list[dict]:
             if v["source"] == "unmeasured" and r.gitops_field and r.id != BUDGET_CAP:
                 d["enforcement"], d["channel"] = "unmeasured", None
         out.append(d)
+    return out + _library_entries(db, project_id)
+
+
+def _library_entries(db: Session, project_id: str | None) -> list[dict]:
+    """Library rules (GRPH-1262 / PRD-P63 D3): `truth = db` for the state and params, which
+    resolve project → org → platform default, and `control = toggle`. Drawn at the level the
+    PRIMITIVE provides; a rule that is off stays in the list and `rule_used` draws it not used."""
+    from app.services import rule_toggles
+    out = []
+    for t in rule_toggles.effective(db, project_id):
+        lib = rule_toggles.LIBRARY[t["rule_id"]]
+        out.append({
+            "id": lib.id, "stage": lib.stage, "title": lib.title, "summary": lib.summary,
+            "enforcement": lib.enforcement, "channel": None,
+            "enforcer": _enforcer_out(lib.enforcer), "truth": "db", "scope": "project",
+            "models": list(GITOPS_ALL_MODELS), "control": "toggle",
+            "value": t["on"]["value"], "source": t["on"]["source"],
+            "params": t["params"], "locked": t["locked"],
+        })
     return out
 
 
@@ -352,6 +381,8 @@ EDGES = tuple((a, b) for a, b in zip(STAGE_IDS, STAGE_IDS[1:]))
 ENFORCEMENT_ORDER = ("enforced", "checked", "external", "advisory", "unmeasured")
 
 NOT_USED_LABEL = "not used by this project's model"
+#: A library rule whose toggle is off: drawn, never hidden (PRD-P63 D3).
+TOGGLED_OFF_LABEL = "turned off for this project"
 
 #: Rules that apply to a model only in part, beyond the registry's `models` field.
 _PR_STEP_MODELS = ("push_to_base",)
@@ -388,6 +419,8 @@ def shipped_skills(path: Path | None = None, cli_root: Path | None = None) -> di
 
 def rule_used(rule: dict, model: str | None) -> bool:
     """Per rule, from the registry's `models`: an unknown model (unmeasured) uses everything."""
+    if rule.get("control") == "toggle" and rule["value"] is not True:
+        return False
     if model is None:
         return True
     if model not in rule["models"]:
@@ -469,7 +502,10 @@ def flow(db: Session, project_id: str | None, user_id: str | None = None) -> dic
             if n["stage"] != sid:
                 continue
             used = rule_used(n, model)
-            on.append(dict(n, used=used, label=None if used else NOT_USED_LABEL))
+            label = None if used else (
+                TOGGLED_OFF_LABEL if n.get("control") == "toggle" and n["value"] is not True
+                else NOT_USED_LABEL)
+            on.append(dict(n, used=used, label=label))
         used_rules = [n for n in on if n["used"]]
         if not on:
             state = "unmeasured"

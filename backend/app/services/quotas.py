@@ -48,6 +48,9 @@ class Plan:
     # routing, forecasting and utilization (PRD-62 D8, S2–S5). S1 is open source and never
     # reads this.
     capacity_routing: bool = False
+    # Org-level rule adoption and locks (PRD-P63 D11): an org admin setting a library rule
+    # for every project in the org. Per-project toggles ship on every plan and never read this.
+    org_rules: bool = False
 
 
 # Starting private-beta limits — tunable in one place. Free stays generous on the
@@ -57,10 +60,11 @@ PLANS: dict[str, Plan] = {
     "free": Plan(max_projects=2, max_seats=3, max_shards=250, max_calls_per_month=10_000),
     "pro": Plan(max_projects=10, max_seats=15, max_shards=10_000, max_calls_per_month=100_000),
     "team": Plan(max_projects=50, max_seats=100, max_shards=100_000, max_calls_per_month=1_000_000,
-                 capacity_routing=True),
+                 capacity_routing=True, org_rules=True),
     "enterprise": Plan(
         max_projects=500, max_seats=1_000, max_shards=1_000_000,
         max_calls_per_month=10_000_000, may_found_additional_orgs=True, capacity_routing=True,
+        org_rules=True,
     ),
 }
 DEFAULT_PLAN = "free"
@@ -160,6 +164,21 @@ def require_capacity_routing(db: Session, org_id: str | None) -> Organization:
     raise QuotaExceeded(
         f"capacity routing needs one of: {paid}; {where}",
         hint="upgrade the org's plan, or keep to in-runner failover, which needs no plan",
+    )
+
+
+def require_org_rules(db: Session, org_id: str | None) -> Organization:
+    """The PRD-P63 D11 premium gate: org-level rule adoption and locks need `team` or
+    `enterprise`. Not a no-op, for the reason `require_capacity_routing` gives, and self-host
+    keeps it behind the same check. Raises `QuotaExceeded` (402 / `quota_exceeded`)."""
+    org = db.get(Organization, org_id) if org_id else None
+    if org is not None and plan_of(org).org_rules:
+        return org
+    paid = ", ".join(n for n, p in PLANS.items() if p.org_rules)
+    where = f"this org is on {org.plan or DEFAULT_PLAN!r}" if org else "there is no such org"
+    raise QuotaExceeded(
+        f"org-level rules need one of: {paid}; {where}",
+        hint="upgrade the org's plan, or set the rule per project, which every plan can",
     )
 
 

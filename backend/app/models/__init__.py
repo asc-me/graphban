@@ -3465,6 +3465,39 @@ class RoutingDecision(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class RuleToggle(Base):
+    """One scope's value for one library rule's toggle (GRPH-1262 / PRD-P63 D4).
+
+    A row is either an org's (`org_id`) or a project's (`project_id`), never both — the
+    platform default is the library's own declaration and has no row. `on` and `params` are
+    each NULL when this scope does not set them, so the value resolves through to the next
+    layer (project → org → platform default). `locked` is an org row's only: it fixes the
+    org's value for every project in the org.
+    """
+
+    __tablename__ = "rule_toggles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[str] = mapped_column(String, index=True)
+    org_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    on: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    locked: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                 onupdate=utcnow)
+
+    __table_args__ = (
+        CheckConstraint("(org_id IS NULL) <> (project_id IS NULL)",
+                        name="ck_rule_toggles_one_scope"),
+        CheckConstraint("project_id IS NULL OR NOT locked",
+                        name="ck_rule_toggles_lock_is_org_only"),
+        UniqueConstraint("rule_id", "org_id", name="uq_rule_toggles_org"),
+        UniqueConstraint("rule_id", "project_id", name="uq_rule_toggles_project"),
+    )
+
+
 class Document(Base):
     """A ledger row for a non-PRD governing document (GRPH-P64 "Document record").
 
