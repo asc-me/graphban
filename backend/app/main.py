@@ -23,6 +23,7 @@ from app.routers import (
     apikeys,
     assistant,
     auth,
+    documents,
     fleet,
     harness,
     items,
@@ -443,6 +444,7 @@ app.include_router(settings_routes.router, prefix=API)
 app.include_router(public.router, prefix=API)
 app.include_router(reports.router, prefix=API)
 app.include_router(sync.router, prefix=API)
+app.include_router(documents.router, prefix=API)
 app.include_router(linear.router, prefix=API)
 app.include_router(slice_pull.router, prefix=API)
 app.include_router(mcp_router, prefix=API)

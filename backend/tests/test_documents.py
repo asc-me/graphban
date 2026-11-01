@@ -210,3 +210,76 @@ def test_mcp_put_document_refuses_any_named_agent_id(client, auth, db, pid):
         "kind": "preamble", "prd_id": prd.id, "body": "x", "project_id": pid,
         "agent_id": "key:docs-named"})
     assert "person" in put.text
+
+
+# ---- GRPH-1276: blob storage ----
+
+class _Boom:
+    name = "boom-s3"
+
+    def put_bytes(self, key, data):
+        raise OSError("connection refused")
+
+
+def test_blob_put_stores_bytes_at_the_hash_and_shares_objects(db, pid, tmp_path):
+    import hashlib
+
+    from app.services.drive_sync import LocalFolderBackend
+
+    be = LocalFolderBackend(tmp_path)
+    data = b"\x89PNG canvas"
+    a = docs.put_blob(db, project_id=pid, kind="canvas", data=data, mime="text/html",
+                      screen="a", backend=be)
+    b = docs.put_blob(db, project_id=pid, kind="canvas", data=data, mime="text/html",
+                      screen="b", backend=be)
+    digest = hashlib.sha256(data).hexdigest()
+    assert a["blob_status"] == b["blob_status"] == "stored"
+    assert a["content_hash"] == digest and a["blob_size"] == len(data)
+    assert len(list((tmp_path / "blobs").rglob(digest))) == 1
+    got, mime = docs.read_blob(db, pid, a["id"], backend=be)
+    assert got == data and mime == "text/html"
+
+
+def test_backend_failure_keeps_a_pending_row_and_retry_stores_same_hash(db, pid, tmp_path):
+    from app.services.drive_sync import LocalFolderBackend
+
+    data = b"bytes"
+    with pytest.raises(errors.Unavailable) as ei:
+        docs.put_blob(db, project_id=pid, kind="canvas", data=data, mime="x/y",
+                      screen="s", backend=_Boom())
+    assert "boom-s3" in str(ei.value)
+    row = db.query(Document).filter_by(project_id=pid, kind="canvas").one()
+    assert row.blob_status == "pending"
+    d = docs.get_document(db, pid, row.id)
+    assert d["blob_status"] == "pending" and "blob_key" not in d
+    with pytest.raises(errors.BlobPending) as bi:
+        docs.read_blob(db, pid, row.id, backend=LocalFolderBackend(tmp_path))
+    assert row.content_hash in bi.value.hint
+    be = LocalFolderBackend(tmp_path)
+    again = docs.put_blob(db, project_id=pid, kind="canvas", data=data, mime="x/y",
+                          screen="s", backend=be)
+    assert again["id"] == row.id and again["blob_status"] == "stored"
+    assert "blob_key" not in docs.get_document(db, pid, row.id)
+    assert docs.read_blob(db, pid, row.id, backend=be)[0] == data
+    with pytest.raises(errors.NotFound):
+        docs.read_blob(db, pid, "DOC-missing", backend=be)
+
+
+def test_superseded_blob_keeps_its_object(db, pid, tmp_path):
+    from app.services.drive_sync import LocalFolderBackend
+
+    be = LocalFolderBackend(tmp_path)
+    one = docs.put_blob(db, project_id=pid, kind="canvas", data=b"1", mime="m", screen="s", backend=be)
+    two = docs.put_blob(db, project_id=pid, kind="canvas", data=b"2", mime="m", screen="s", backend=be)
+    assert two["version"] == 2 and two["governing"]
+    assert docs.read_blob(db, pid, one["id"], backend=be)[0] == b"1"
+
+
+def test_bytes_route_is_409_blob_pending(client, auth, db, pid):
+    row = Document(id="DOC-pend", project_id=pid, kind="canvas", content_hash="ab" * 32,
+                   blob_status="pending")
+    db.add(row)
+    db.commit()
+    r = client.get("/api/documents/DOC-pend/bytes", headers=auth)
+    assert r.status_code == 409 and r.json()["code"] == "blob_pending"
+    assert client.get("/api/documents/DOC-nope/bytes", headers=auth).status_code == 404

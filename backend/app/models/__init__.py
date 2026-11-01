@@ -3506,6 +3506,9 @@ class Document(Base):
     # none | pending | stored. Absent is not the same as pending, so the default is explicit.
     blob_status: Mapped[str] = mapped_column(String, default="none", server_default="none")
     blob_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The bytes' mime type and length, written with the row before the backend call.
+    blob_mime: Mapped[str] = mapped_column(String, default="", server_default="")
+    blob_size: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_by: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

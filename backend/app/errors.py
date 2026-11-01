@@ -41,6 +41,13 @@ class Conflict(AppError):
     code = "conflict"
 
 
+class BlobPending(Conflict):
+    """The row exists but its bytes are not stored yet (GRPH-1276). A 409 `conflict` on REST;
+    `code` lets a caller tell it from a lost lease and retry the put at the same hash."""
+
+    code = "blob_pending"
+
+
 class Unavailable(AppError):
     """The operation is well-formed and permitted but cannot run in this instance's
     configuration — e.g. adjudicating a memory candidate with no chat model configured
