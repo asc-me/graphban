@@ -1277,6 +1277,13 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     "open_design": ("planner", "worker"),
     "put_set_constraints": ("planner", "worker"),
     "confirm_tier": ("planner", "worker"),
+    # GRPH-1280: compile and file as a builder; accepting is a person's, relayed by the planner.
+    "compile_prompts": ("planner", "worker"),
+    "put_canvas": ("planner", "worker"),
+    "file_finding": ("planner", "worker"),
+    "resolve_finding": ("planner", "worker"),
+    "accept_prompt": ("planner",),
+    "accept_design": ("planner",),
     "update_prd": ("planner",),
     "decompose_prd": ("planner",),
     "grill_prd": ("planner",),
