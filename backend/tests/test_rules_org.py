@@ -180,3 +180,114 @@ def test_drift_an_off_pin_turned_on_is_changed_not_weakening(client, org, monkey
                json={"on": True, "reason": "tighten"}, headers=org["owner"])
     d = client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).json()
     assert {(x["rule_id"], x["kind"]) for x in d["drift"]} == {(OTHER, "changed")}
+
+
+def _bad_last_pin(monkeypatch, pin):
+    # OTHER sorts before RULE, so a write-as-you-go apply would land OTHER before RULE fails.
+    assert OTHER < RULE
+    monkeypatch.setitem(P.CURRENT.profiles["standard"], "rules",
+                        {OTHER: {"state": "on"}, RULE: pin})
+
+
+def test_apply_is_all_or_nothing_on_a_bad_param(client, org, monkeypatch):
+    _bad_last_pin(monkeypatch, {"state": "on", "params": {"zzz": 1}})
+    r = _apply(client, org)
+    assert r.status_code == 422 and "zzz" in r.text
+    for pid in org["ps"]:
+        assert _toggles(client, {"owner": org["owner"]}, pid)[OTHER]["on"]["source"] \
+            == "platform default"
+
+
+def test_apply_is_all_or_nothing_on_a_bad_state(client, org, monkeypatch):
+    _bad_last_pin(monkeypatch, {"state": "maybe"})
+    r = _apply(client, org)
+    assert r.status_code == 422 and "maybe" in r.text
+    for pid in org["ps"]:
+        assert _toggles(client, {"owner": org["owner"]}, pid)[OTHER]["on"]["source"] \
+            == "platform default"
+
+
+def test_profile_naming_an_unmeasured_rule_applies_nothing_and_drifts_unmeasured(client, org):
+    T.register(T.LibraryRule(
+        id="review.unmeasured", stage="review", title="u", summary="s", enforcement="enforced",
+        enforcer=R.Enforcer("doc", "x"), default_on=False, default_params={},
+        unmeasured_reason="no primitive"))
+    P.CURRENT.profiles["um"] = {"id": "um", "rules": {OTHER: {"state": "on"},
+                                                      "review.unmeasured": {"state": "on"}}}
+    try:
+        r = _apply(client, org, "um")
+        assert r.status_code == 422 and "no primitive" in r.text
+        assert _toggles(client, {"owner": org["owner"]}, org["ps"][0])[OTHER]["on"]["source"] \
+            == "platform default"
+        d = client.get(_url(org, "profiles/um/drift"), headers=org["owner"]).json()
+        assert {"rule_id": "review.unmeasured", "project_id": None, "kind": "unmeasured",
+                "detail": "the loaded library cannot enforce this rule"} in d["drift"]
+    finally:
+        P.CURRENT.profiles.pop("um")
+
+
+def test_drift_unmeasured_for_a_rule_not_in_the_library(client, org):
+    d = client.get(_url(org, "profiles/bad/drift"), headers=org["owner"]).json()
+    assert d["state"] == "drifted"
+    assert [x for x in d["drift"] if x["kind"] == "unmeasured"] == [
+        {"rule_id": "nope.rule", "project_id": None, "kind": "unmeasured",
+         "detail": "the loaded library cannot enforce this rule"}]
+
+
+def test_drift_a_params_change_is_changed_with_a_params_detail(client, org):
+    _apply(client, org)
+    client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
+               json={"on": True, "locked": True, "params": {"n": 7}, "reason": "retune"},
+               headers=org["owner"])
+    d = client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).json()
+    assert d["state"] == "drifted" and len(d["drift"]) == 3
+    assert {(x["rule_id"], x["kind"]) for x in d["drift"]} == {(RULE, "changed")}
+    assert all("pinned params" in x["detail"] for x in d["drift"])
+
+
+def test_org_recommendation_floor_rises_to_a_fifth_of_active_projects(client, org, monkeypatch):
+    for pid in org["ps"][:2]:
+        _observe(pid)
+    monkeypatch.setattr(RO, "active_projects", lambda db, oid: [f"x{i}" for i in range(11)])
+    r = client.get(_url(org, "recommended"), headers=org["owner"]).json()
+    assert r["org_min_projects"] == 3 and r["active_projects"] == 11
+    assert r["suggestions"] == []  # 2 projects carry it, below a floor of 3
+
+
+def test_active_projects_are_those_with_an_item_moved_in_30_days(client, org):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Item
+
+    db = _db()
+    try:
+        old = datetime.now(timezone.utc) - timedelta(days=31)
+        new = datetime.now(timezone.utc) - timedelta(days=1)
+        for i, (pid, at) in enumerate([(org["ps"][0], new), (org["ps"][1], old)]):
+            db.add(Item(id=f"ACT-{i}", number=i + 1, project_id=pid, title="t", updated_at=at))
+        db.commit()
+        assert RO.active_projects(db, org["id"]) == [org["ps"][0]]
+    finally:
+        db.close()
+
+
+def test_org_recommendation_recomputes_after_a_week_and_reports_its_age(client, org, monkeypatch):
+    now = [1_000_000.0]
+    monkeypatch.setattr(RO.time, "monotonic", lambda: now[0])
+    assert client.get(_url(org, "recommended"), headers=org["owner"]).json()["suggestions"] == []
+    _observe(org["ps"][0])
+    _observe(org["ps"][1])
+    rr.clear_cache()
+    now[0] += 3600
+    r = client.get(_url(org, "recommended"), headers=org["owner"]).json()
+    assert r["suggestions"] == [] and r["age_seconds"] == 3600
+    now[0] += RO.CACHE_TTL_SECONDS
+    r = client.get(_url(org, "recommended"), headers=org["owner"]).json()
+    assert [s["rule_id"] for s in r["suggestions"]] == [RULE] and r["age_seconds"] == 0
+
+
+@pytest.mark.parametrize("plan,code", [("enterprise", 200), ("free", 402)])
+def test_profiles_and_drift_are_plan_gated(client, org, plan, code):
+    _set_plan(org["id"], plan)
+    assert client.get(_url(org, "profiles"), headers=org["owner"]).status_code == code
+    assert client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).status_code == code
