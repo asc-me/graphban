@@ -111,7 +111,8 @@ def _safe_name(prd) -> str:
 
 def sync(db: Session, project_id: str, root_dir: str | os.PathLike, backend: SyncBackend | None = None) -> dict:
     backend = backend or LocalFolderBackend(root_dir)
-    report = {"exported": [], "imported": [], "updated_db": [], "updated_file": [], "conflicts": [], "in_sync": 0}
+    report = {"exported": [], "imported": [], "updated_db": [], "updated_file": [], "conflicts": [], "in_sync": 0,
+              "conflict_details": [], "export_status": "ok"}
 
     prds = prd_svc.list_prds(db, project_id=project_id)
     files = backend.list(PRDS_SUBDIR)
@@ -129,6 +130,25 @@ def sync(db: Session, project_id: str, root_dir: str | os.PathLike, backend: Syn
         db.add(st)
         states[prd_id] = st
 
+    def safe_write(name: str, content: str) -> bool:
+        """Export is best-effort: a failed write leaves the ledger row intact (never rolls back)."""
+        try:
+            backend.write(PRDS_SUBDIR, name, content)
+            return True
+        except Exception:
+            report["export_status"] = "failed"
+            return False
+
+    def conflict(prd, f: dict, db_hash: str, file_hash: str) -> None:
+        # `conflicts` stays the PRD id list the web reads; the detail carries hashes, name,
+        # size and path only: the file is already at that path and the ledger body is
+        # get_prd, so neither body is carried.
+        report["conflicts"].append(prd.id)
+        report["conflict_details"].append({
+            "prd_id": prd.id, "status": prd.status, "ledger_hash": db_hash, "file_hash": file_hash,
+            "file_name": f["name"], "byte_length": len(f["content"].encode("utf-8")),
+            "path": f"{PRDS_SUBDIR}/{f['name']}"})
+
     # 1. Reconcile each existing PRD with its file.
     for prd in prds:
         st = states.get(prd.id)
@@ -138,9 +158,9 @@ def sync(db: Session, project_id: str, root_dir: str | os.PathLike, backend: Syn
         name = st.file_name if st and st.file_name else _safe_name(prd)
 
         if f is None:
-            backend.write(PRDS_SUBDIR, name, render(prd))
-            save_state(prd.id, name, db_hash)
-            report["exported"].append(prd.id)
+            if safe_write(name, render(prd)):
+                save_state(prd.id, name, db_hash)
+                report["exported"].append(prd.id)
             continue
 
         file_body = strip_front_matter(f["content"])
@@ -153,7 +173,7 @@ def sync(db: Session, project_id: str, root_dir: str | os.PathLike, backend: Syn
                 save_state(prd.id, f["name"], db_hash)
                 report["in_sync"] += 1
             else:
-                report["conflicts"].append(prd.id)
+                conflict(prd, f, db_hash, file_hash)
             continue
 
         db_changed = db_hash != last
@@ -163,16 +183,20 @@ def sync(db: Session, project_id: str, root_dir: str | os.PathLike, backend: Syn
                 save_state(prd.id, f["name"], db_hash)
                 report["in_sync"] += 1
             else:
-                report["conflicts"].append(prd.id)  # both moved → don't clobber
+                conflict(prd, f, db_hash, file_hash)  # both moved → don't clobber
         elif file_changed:
+            if prd.status not in ("draft", "review") or prd.pending_rebaseline:
+                # Drive is an export and draft-import channel, not the baseline.
+                conflict(prd, f, db_hash, file_hash)
+                continue
             prd_svc.update_prd(db, prd.id, body=file_body)
-            prd_svc.create_version(db, prd.id, note="Synced from Drive folder.")
+            prd_svc.create_version(db, prd.id, note="Body came from the Drive folder (file edit).")
             save_state(prd.id, f["name"], file_hash)
             report["updated_db"].append(prd.id)
         elif db_changed:
-            backend.write(PRDS_SUBDIR, name, render(prd))
-            save_state(prd.id, name, db_hash)
-            report["updated_file"].append(prd.id)
+            if safe_write(name, render(prd)):
+                save_state(prd.id, name, db_hash)
+                report["updated_file"].append(prd.id)
         else:
             report["in_sync"] += 1
 
@@ -181,7 +205,7 @@ def sync(db: Session, project_id: str, root_dir: str | os.PathLike, backend: Syn
         body = strip_front_matter(f["content"])
         title = extract_title(body) or f["name"].rsplit(".", 1)[0]
         prd = prd_svc.create_prd(db, title=title, project_id=project_id, body=body)
-        backend.write(PRDS_SUBDIR, f["name"], render(prd))
+        safe_write(f["name"], render(prd))
         save_state(prd.id, f["name"], _hash(body))
         report["imported"].append(prd.id)
 
