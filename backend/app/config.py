@@ -60,6 +60,19 @@ class Settings(BaseSettings):
     #   closed      — no signup at all, invite or not
     signup_mode: str = "open"
 
+    # bcrypt work factor for NEW password hashes. 12 is bcrypt's own default and what every
+    # deployment keeps; a stored hash carries its cost, so lowering this never weakens an
+    # existing hash. The test suite runs at 4 (bcrypt's minimum): at 12 one login check is
+    # ~180 ms, and the `auth` fixture alone was the largest setup cost in CI.
+    bcrypt_rounds: int = 12
+
+    @field_validator("bcrypt_rounds")
+    @classmethod
+    def _valid_bcrypt_rounds(cls, v: int) -> int:
+        if not 4 <= v <= 31:
+            raise ValueError("bcrypt_rounds must be between 4 and 31 (bcrypt's own bounds)")
+        return v
+
     @field_validator("signup_mode")
     @classmethod
     def _valid_signup_mode(cls, v: str) -> str:

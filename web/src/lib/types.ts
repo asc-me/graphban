@@ -2919,6 +2919,60 @@ export interface RuleFlowRule {
   skills_version?: string | null;
   /** Only on a `checked` rule; null when nothing has been recorded. */
   last_result?: RuleResult | null;
+  /** `toggle` on a library rule (PRD-P63 D3); null on every other rule. */
+  control?: "toggle" | null;
+  /** Library rules only: the resolved params and where they came from. */
+  params?: RuleToggleValue<Record<string, RuleParamValue>> | null;
+  /** Library rules only: the org has fixed this rule for every project. */
+  locked?: boolean | null;
+  /** Library rules only: the pack loader refused the template, and why (PRD-P63 D12). */
+  unmeasured_reason?: string | null;
+}
+
+// ── Library rule toggles (GRPH-1262, GRPH-1268) ──────────────────────────────
+/** `services/rule_toggles.py:_resolve` — project → org → platform default (PRD-P63 D4). */
+export type RuleToggleSource = "project" | "org" | "platform default";
+
+export type RuleParamValue = string | number | boolean;
+
+export interface RuleToggleValue<T> {
+  value: T;
+  source: RuleToggleSource;
+}
+
+export interface RuleToggle {
+  rule_id: string;
+  stage: string;
+  title: string;
+  on: RuleToggleValue<boolean>;
+  params: RuleToggleValue<Record<string, RuleParamValue>>;
+  locked: boolean;
+  /** The org id holding the lock; null when unlocked. */
+  locked_by: string | null;
+}
+
+export interface RuleToggles {
+  /** False until a rule pack is loaded: an empty list then means "no library". */
+  library_loaded: boolean;
+  toggles: RuleToggle[];
+}
+
+/** `null` for `on`/`params` clears this scope's value so it inherits. `reason` is the audit record. */
+export interface RuleToggleWrite {
+  on?: boolean | null;
+  params?: Record<string, RuleParamValue> | null;
+  /** Org writes only. */
+  locked?: boolean;
+  reason: string;
+}
+
+export interface OrgRuleToggle {
+  rule_id: string;
+  org_id: string;
+  on: boolean | null;
+  params: Record<string, RuleParamValue> | null;
+  locked: boolean;
+  projects_changed: string[];
 }
 
 export interface RuleStage {

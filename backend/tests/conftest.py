@@ -39,6 +39,11 @@ os.environ["MEMORY_JUDGE_REFRESH_SECONDS"] = "0"
 # running-exporter path — which is also what makes `queue_depth` report unknown here rather
 # than a reassuring zero.
 os.environ["LOG_EXPORT_SECONDS"] = "0"
+# bcrypt at its minimum cost. Set before the templates are built so the SEEDED user's hash
+# is cheap too: `checkpw` reads the cost from the stored hash, and at the production 12 every
+# `auth` login cost ~180 ms — the single largest fixture cost in the suite (measured
+# 2026-11-01: 157 s of 334 s of fixture setup on a third of the suite). Production keeps 12.
+os.environ["BCRYPT_ROUNDS"] = "4"
 
 
 def _database_per_worker() -> None:
@@ -143,6 +148,17 @@ def pytest_configure(config):
     schema_probe.install()
 
 
+def pytest_collection_modifyitems(config, items):
+    """CI sharding: keep only this shard's files (see tests/sharding.py). A no-op unless
+    `GRAPHBAN_TEST_SHARD` is set."""
+    from tests import sharding
+
+    kept, dropped = sharding.select(items, sharding.env_value())
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        items[:] = kept
+
+
 def _is_full_run(config) -> bool:
     """Was this the whole suite, or a selection?
 
@@ -151,6 +167,12 @@ def _is_full_run(config) -> bool:
     something people learn to ignore, which is worse than not having it.
     """
     if config.option.keyword or config.option.markexpr:
+        return False
+    # A CI shard ran a slice of the files. The full-coverage demand belongs to the unsharded
+    # job (SQLite), which still runs every file.
+    from tests import sharding
+
+    if sharding.parse(sharding.env_value()) not in (None, (1, 1)):
         return False
     ini = config.getini("testpaths") or []
     return all(arg in ("", ".", *ini) for arg in config.args)
@@ -213,14 +235,29 @@ _TMPL_EMPTY = "_t0"    # schema at head, no rows — what a test WITHOUT `client
 _TMPL_SEEDED = "_t1"   # schema at head, prototype dataset loaded
 
 
+_ADMIN = None
+_COPY_STRATEGY = ""
+
+
 def _admin_engine():
-    """A connection to `postgres`, because you cannot DROP the database you are in."""
-    import sqlalchemy as sa
+    """A connection to `postgres`, because you cannot DROP the database you are in.
 
-    from app.db import engine
+    One per worker, kept for the session: `_copy_database` runs before EVERY test, and
+    building and disposing an engine each time cost a fresh connection per test."""
+    global _ADMIN, _COPY_STRATEGY
+    if _ADMIN is None:
+        import sqlalchemy as sa
 
-    return sa.create_engine(engine.url.set(database="postgres"),
-                            isolation_level="AUTOCOMMIT")
+        from app.db import engine
+
+        _ADMIN = sa.create_engine(engine.url.set(database="postgres"),
+                                  isolation_level="AUTOCOMMIT", pool_size=1)
+        with _ADMIN.connect() as conn:
+            version = int(conn.exec_driver_sql("SHOW server_version_num").scalar())
+        # Postgres 15 made WAL_LOG the default copy strategy; for a small template on tmpfs
+        # FILE_COPY is the faster of the two (measured 11 ms vs 16 ms median, pg16).
+        _COPY_STRATEGY = " STRATEGY FILE_COPY" if version >= 150000 else ""
+    return _ADMIN
 
 
 def _copy_database(source: str, target: str) -> None:
@@ -247,16 +284,13 @@ def _copy_database(source: str, target: str) -> None:
     from sqlalchemy import text
 
     admin = _admin_engine()
-    try:
-        with admin.begin() as conn:
-            for name in (source, target):
-                conn.execute(text(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = :n AND pid <> pg_backend_pid()"), {"n": name})
-            conn.exec_driver_sql(f'DROP DATABASE IF EXISTS "{target}"')
-            conn.exec_driver_sql(f'CREATE DATABASE "{target}" TEMPLATE "{source}"')
-    finally:
-        admin.dispose()
+    with admin.begin() as conn:
+        for name in (source, target):
+            conn.execute(text(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = :n AND pid <> pg_backend_pid()"), {"n": name})
+        conn.exec_driver_sql(f'DROP DATABASE IF EXISTS "{target}"')
+        conn.exec_driver_sql(f'CREATE DATABASE "{target}" TEMPLATE "{source}"{_COPY_STRATEGY}')
 
 
 def _build_templates() -> None:

@@ -122,10 +122,19 @@ jobs:
   backend-postgres:
     # Proves what SQLite cannot: the full Alembic chain from empty, and the real
     # pgvector `<=>` search path (see AL-57 — ivfflat recall bug this job caught).
-    name: Backend tests (Postgres + pgvector)
+    name: Backend tests (Postgres + pgvector) (${{ matrix.shard }}/3)
     needs: changes
     if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.stamp_only != 'true'
     runs-on: ubuntu-latest
+    # Three runners, one third of the test FILES each (tests/sharding.py packs them by measured
+    # time). Public-repo runners are free and parallel, so this is wall clock for nothing. A
+    # shard is not a full run, so the every-tool ratchet (GRPH-495) is left to the unsharded
+    # SQLite job, which still runs every file. `ci.needs` sees one result for the matrix: any
+    # shard failing fails it.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     defaults:
       run:
         working-directory: backend
@@ -152,6 +161,7 @@ jobs:
           --tmpfs /var/lib/postgresql/data:rw,size=2048m
     env:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/graphban_test
+      GRAPHBAN_TEST_SHARD: ${{ matrix.shard }}/3
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
