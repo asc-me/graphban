@@ -1268,6 +1268,9 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # gains a second role, that argument evaporates silently; a test asserts it does not.
     "mint_enrolment": ("planner",),
     "create_prd": ("planner",),
+    # GRPH-1275. The preamble is written by a person; the planner seat is the only agent role
+    # near spec authorship, and `put_document` itself refuses an agent identity.
+    "put_document": ("planner",),
     "update_prd": ("planner",),
     "decompose_prd": ("planner",),
     "grill_prd": ("planner",),
@@ -1334,6 +1337,8 @@ OPEN_TOOLS: dict[str, str] = {
         "scan_status", "scans_due",
         # PRD-62 S2: the entitlement registry read; the write is planner-gated above.
         "list_entitlements",
+        # GRPH-1275: document reads — governing specs, project-scoped, nothing written.
+        "get_document", "search_docs",
     )},
     "setup_project": "a read despite the name — returns a checklist, changes nothing",
     "collision_clusters": "the divvy a planner allocates FROM; seeing the partition is not "

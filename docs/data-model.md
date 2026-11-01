@@ -98,6 +98,8 @@ Alembic; SQLite (tests / zero-infra dev) uses `create_all`.
 | `code_sync_state` | `project_id` | Manifest of the code graph last pushed to the linked cloud: `{path: content_hash}`, updated per confirmed batch so an interrupted push can resume |
 | `sync_link` | `id` (always instance) | The box's link to a cloud tenant. The sync key is encrypted at rest. A blank cloud URL means this box is not linked |
 | `sync_state` | `prd_id` | Per-PRD snapshot of the last Drive or filesystem sync, so a change on both sides can be flagged |
+| `documents` | `id` (`DOC-…`) | A ledger row for a non-PRD governing document (GRPH-1275 / GRPH-P64): `preamble`, `set_constraints`, `design_prompt`, `design_review`, `canvas`. A PRD stays a PRD — no row duplicates the spec; the index reads `baseline_of`. `content_hash`, `governing` (one revision per identity), `accepted` (prompt and review enter the default index only once accepted; canvas never), `status`/`stale_reason`, `blob_status` (`none`|`pending`|`stored`) with `blob_key` omitted until stored. The preamble cites `prd_id` and the baseline body hash, never the tokens. Migration `0166` |
+| `document_chunks` | `id` | Extracted text of a document revision: `heading`, `text`, `content_hash`, `extractor_version`. The text is the source; a vector is a cache. Re-extraction is explicit and older chunks stay until the new set is marked `governing`. Migration `0166` |
 
 ## Keys are rendered, not stored (PRD-13)
 
