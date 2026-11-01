@@ -159,6 +159,9 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # open. `scan_status` / `scans_due` are reads of that store. None of the three
         # crosses a tenant boundary or grants a permission the key did not already have.
         "record_scan", "scan_status", "scans_due",
+        # GRPH-1275. QUALITY, not authority: put_document is planner-gated and refuses agent
+        # identities; the other two are project-scoped reads of governing specs.
+        "put_document", "get_document", "search_docs",
         # PRD-20 D8. QUALITY, not authority: it computes hubs/components/path over edges that
         # already exist and writes nothing. It can tell an agent what depends on the thing it
         # is about to change; it cannot grant that agent permission to change anything.

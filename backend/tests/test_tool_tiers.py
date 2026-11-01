@@ -389,7 +389,8 @@ CORE_TOKENS = 8918
 # fleet 1051 → 1100: `mint_enrolment` gains `review_only` (GRPH-988), a seat that may review
 # and may never take build work. The whole bill is in this tier and CORE_TOKENS does not move,
 # which is the argument for not funding it out of prose every key pays for.
-TIER_TOKENS = {"prd": 1998, "codegraph": 1791, "fleet": 1100, "misc": 1238}
+# prd 1998 -> 2397 (GRPH-1275): put_document + get_document + search_docs, tiered with the spec tools.
+TIER_TOKENS = {"prd": 2397, "codegraph": 1791, "fleet": 1100, "misc": 1238}
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.

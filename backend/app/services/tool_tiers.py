@@ -69,6 +69,7 @@ TOOL_TIERS: dict[str, str] = {
     **{name: "prd" for name in (
         "create_prd", "update_prd", "grill_prd", "answer_grill", "decompose_prd",
         "close_prd", "request_rebaseline", "submit_verdict",
+        "put_document", "get_document", "search_docs",
     )},
 
     # ---- codegraph: WRITING the graph (+ scan produce/read) --------------------------------

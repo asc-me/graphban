@@ -24,7 +24,7 @@ from app.services import tool_tiers
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 15060
+CEILING = 15460
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -149,7 +149,11 @@ CEILING = 15060
 # 15052 -> 15050 (GRPH-893). create_item/update_item `description` names the ## Acceptance
 # convention `sign_off` parses — the planner writing a description is the one who needs it.
 # Paid inside the same two tools' own prose; core 8919 -> 8918. Headroom 10.
-MEASURED_TOKENS = 15050
+# 15050 -> 15449, and CEILING 15060 -> 15460 with it (GRPH-1275). put_document, get_document and
+# search_docs: three new tools, each carrying the shared project_id property and an output
+# schema. Descriptions are one line each; the rest is the fixed per-tool wrapper. Tiered `prd`,
+# so a default key does not pay it.
+MEASURED_TOKENS = 15449
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

@@ -47,6 +47,7 @@ from app.security import authz
 from app.security.deps import get_agent_key
 from app.services import clustering as cluster_svc
 from app.services import code_graph as code_svc
+from app.services import documents as documents_svc
 from app.services import scans as scans_svc
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
@@ -1243,6 +1244,49 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["title"],
         },
     },
+    {
+        "name": "put_document",
+        "description": (
+            "Write the project's PREAMBLE (GRPH-1275); other kinds come from design-set ops. "
+            "Person only; cites prd_id's baseline hash (PRD needs a baseline)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["preamble"]},
+                "prd_id": {"type": "string"},
+                "body": {"type": "string"},
+                "title": {"type": "string"},
+            },
+            "required": ["kind", "prd_id", "body"],
+        },
+    },
+    {
+        "name": "get_document",
+        "description": "One document row by id (GRPH-1275); blob_key omitted until stored.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "search_docs",
+        "description": (
+            "Search baselined PRD bodies (GRPH-1275). include_drafts adds unbaselined PRDs; "
+            "include_design adds accepted prompts/reviews, preamble. Empty says drafts excluded."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "include_drafts": {"type": "boolean"},
+                "include_design": {"type": "boolean"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 # Project-scoped tools accept an optional `project_id` that overrides the key's project.
@@ -1251,6 +1295,7 @@ _PROJECT_SCOPED = {
     "get_backlog", "suggest_next", "generate_digest", "link_items", "unlink_items", "claim_next", "next_cluster",
     "describe_code", "get_code_map", "code_neighbors", "search_code", "graph_query",
     "link_code", "unlink_code", "record_scan", "scan_status", "scans_due", "create_prd",
+    "put_document", "get_document", "search_docs",
 }
 # Tools that ACCEPT `project_id`, which is a different question from the one above.
 #
@@ -1699,6 +1744,9 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {"removed": {"type": "integer"}},
     },
+    "put_document": {"type": "object"},
+    "get_document": {"type": "object"},
+    "search_docs": {"type": "object"},
     "record_scan": {
         "type": "object",
         "properties": {
@@ -3601,6 +3649,21 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             db, project_id=pid, ref_id=args["ref_id"], path=args["path"], relation=args.get("relation"),
         )
         return {"removed": removed}
+    if name == "put_document":
+        return documents_svc.put_document(
+            db, project_id=pid, kind=str(args["kind"]), body=str(args["body"]),
+            prd_id=str(args["prd_id"]), title=str(args.get("title") or ""),
+            created_by=fleet_svc.caller_identity(str(args.get("agent_id") or "").strip(), key),
+        )
+    if name == "get_document":
+        return documents_svc.get_document(db, pid, str(args["id"]))
+    if name == "search_docs":
+        return documents_svc.search_docs(
+            db, pid, str(args["query"]),
+            include_drafts=bool(args.get("include_drafts", False)),
+            include_design=bool(args.get("include_design", False)),
+            limit=int(args.get("limit") or 10),
+        )
     if name == "record_scan":
         # Provenance comes from the caller, not a free-text field: a key-only call stamps
         # `key:<name>` rather than an empty reported_by that reads as nobody (GRPH-1044).
