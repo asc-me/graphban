@@ -143,3 +143,38 @@ def test_org_recommendation_is_cached_weekly(client, org):
     _observe(org["ps"][1])
     rr.clear_cache()
     assert client.get(_url(org, "recommended"), headers=org["owner"]).json()["suggestions"] == []
+
+
+def test_org_recommendation_drops_an_adopted_rule_without_a_refresh(client, org):
+    _observe(org["ps"][0])
+    _observe(org["ps"][1])
+    assert [s["rule_id"] for s in client.get(
+        _url(org, "recommended"), headers=org["owner"]).json()["suggestions"]] == [RULE]
+    client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
+               json={"on": True, "reason": "adopt"}, headers=org["owner"])
+    assert client.get(_url(org, "recommended"), headers=org["owner"]).json()["suggestions"] == []
+    _apply(client, org)  # adopting through a profile is read live too
+    client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
+               json={"on": False, "locked": False, "reason": "drop"}, headers=org["owner"])
+    assert [s["rule_id"] for s in client.get(
+        _url(org, "recommended"), headers=org["owner"]).json()["suggestions"]] == [RULE]
+
+
+def test_drift_reports_a_removed_lock_as_weakening(client, org):
+    _apply(client, org)
+    client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
+               json={"locked": False, "reason": "let projects choose"}, headers=org["owner"])
+    d = client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).json()
+    assert d["state"] == "drifted" and len(d["drift"]) == 3
+    assert {(x["rule_id"], x["kind"]) for x in d["drift"]} == {(RULE, "weakening")}
+    assert all("unlocked" in x["detail"] for x in d["drift"])
+
+
+def test_drift_an_off_pin_turned_on_is_changed_not_weakening(client, org, monkeypatch):
+    prof = P.CURRENT.profiles["standard"]
+    monkeypatch.setitem(prof, "rules", {**prof["rules"], OTHER: {"state": "off"}})
+    _apply(client, org)
+    client.put(f"/api/orgs/{org['id']}/rule-toggles/{OTHER}",
+               json={"on": True, "reason": "tighten"}, headers=org["owner"])
+    d = client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).json()
+    assert {(x["rule_id"], x["kind"]) for x in d["drift"]} == {(OTHER, "changed")}

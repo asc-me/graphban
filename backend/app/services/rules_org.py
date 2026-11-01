@@ -8,12 +8,14 @@ Everything here is org-admin and premium (D11: `quotas.require_org_rules`, self-
   all-or-nothing: a profile naming a rule the loaded library cannot enforce (absent, or drawn
   unmeasured) is refused before anything is written, never half-applied.
 - **Drift is read, not stored.** `drift` compares what the profile pins with what each project
-  resolves to now. Turning a pinned rule off, or an off pin on, is `weakening` (D13); any other
-  difference is `changed`. A profile with no differences says `clean`; a profile the pack does
+  resolves to now. Loosening a pin is `weakening` (D13): a pinned-on rule now off, or a pinned
+  rule no longer locked (any project can then override it). Any other difference, such as an
+  off pin turned on or different params, is `changed`. A profile with no differences says `clean`; a profile the pack does
   not have says so, rather than reading as clean.
 - **Org recommendations** run the project engine over the org's projects (D6) and keep a rule
   only when at least `ORG_MIN_PROJECTS` projects carry it. Computed weekly and returned with
-  their age (D5). Suggestions only: nothing here turns a rule on.
+  their age (D5). The "org already has it on" filter runs at read time, so adopting a rule
+  drops it from the list at once rather than a week later. Suggestions only: nothing here turns a rule on.
 """
 from __future__ import annotations
 
@@ -146,14 +148,21 @@ def drift(db: Session, user, org_id: str, profile_id: str) -> dict:
         for pid in project_ids:
             r = rule_toggles.resolve(db, rid, pid)
             on, params = r["on"]["value"], r["params"]["value"]
+            # One row per rule and project, `weakening` when any difference loosens the pin.
+            details, weakening = [], False
             if on != want_on:
-                rows.append({"rule_id": rid, "project_id": pid,
-                             "kind": "weakening" if want_on else "changed",
-                             "detail": f"pinned {'on' if want_on else 'off'}, is "
-                                       f"{'on' if on else 'off'} ({r['on']['source']})"})
+                weakening |= want_on
+                details.append(f"pinned {'on' if want_on else 'off'}, is "
+                               f"{'on' if on else 'off'} ({r['on']['source']})")
             elif params != want_params:
-                rows.append({"rule_id": rid, "project_id": pid, "kind": "changed",
-                             "detail": f"pinned params {want_params}, are {params}"})
+                details.append(f"pinned params {want_params}, are {params}")
+            if not r["locked"]:
+                weakening = True
+                details.append("pinned locked, is unlocked: the project can override it")
+            if details:
+                rows.append({"rule_id": rid, "project_id": pid,
+                             "kind": "weakening" if weakening else "changed",
+                             "detail": "; ".join(details)})
     return {"org_id": org_id, "profile": profile_id, "projects": len(project_ids),
             "state": "clean" if not rows else "drifted", "drift": rows}
 
@@ -178,8 +187,6 @@ def _compute(db: Session, org_id: str, *, refresh: bool = False) -> dict:
                                   .order_by(Project.id)))
     active = active_projects(db, org_id)
     floor = org_min_projects(len(active))
-    org_row = {t.rule_id: t for t in db.scalars(
-        select(RuleToggle).where(RuleToggle.org_id == org_id))}
     by_rule: dict[str, dict] = {}
     unread = []
     for pid in project_ids:
@@ -195,9 +202,6 @@ def _compute(db: Session, org_id: str, *, refresh: bool = False) -> dict:
             g["projects"][pid] = s["score"] or 0
     out = []
     for rid, g in sorted(by_rule.items()):
-        row = org_row.get(rid)
-        if row is not None and row.on:
-            continue  # the org already has it on
         n = len(g["projects"])
         if n < floor:
             continue
@@ -222,4 +226,9 @@ def recommended(db: Session, user, org_id: str, *, refresh: bool = False) -> dic
     if refresh or hit is None or time.monotonic() - hit[0] >= CACHE_TTL_SECONDS:
         hit = (time.monotonic(), datetime.now(timezone.utc).isoformat(), _compute(db, org_id, refresh=refresh))
         _cache[org_id] = hit
-    return {**hit[2], "computed_at": hit[1], "age_seconds": int(time.monotonic() - hit[0])}
+    # The org's own toggles are read live, not from the weekly copy: an admin who adopts a
+    # suggestion must not keep being offered it until the cache turns over.
+    org_on = set(db.scalars(select(RuleToggle.rule_id).where(
+        RuleToggle.org_id == org_id, RuleToggle.on.is_(True))))
+    return {**hit[2], "suggestions": [s for s in hit[2]["suggestions"] if s["rule_id"] not in org_on],
+            "computed_at": hit[1], "age_seconds": int(time.monotonic() - hit[0])}
