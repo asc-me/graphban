@@ -59,7 +59,7 @@ def test_current_major_fixture_loads_every_template():
     assert pack.refused == {}
     assert set(pack.templates) == {"review.sabotage_required", "review.evidence_attached",
                                    "review.distinct_vendor", "build.engine_evidence",
-                                   "review.staff_every_row"}
+                                   "review.staff_every_row", "accept.human_clause_blocks"}
     assert "standard" in pack.profiles and pack.mappings[0]["weight"] == 2
 
 

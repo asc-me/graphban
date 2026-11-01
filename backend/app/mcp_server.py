@@ -3431,6 +3431,12 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                     "create a follow-up item for each gap and put its key in the note's `url` "
                     "(a note with done:false); the builder or you may re-send the note"),
             ) from e
+        except fleet_svc.HumanClauseBlocked as e:
+            raise errors.Refused(
+                409, str(e), rule_id="accept.human_clause_blocks", meta=_who, hint=(
+                    "the item is blocked on a human-only clause; a person with "
+                    "capabilities.human signs it off. Do not bounce it"),
+            ) from e
         except fleet_svc.ReviewerPropertyRequired as e:
             raise errors.Refused(
                 409, str(e), rule_id="review.distinct_vendor", meta=_who, hint=(
