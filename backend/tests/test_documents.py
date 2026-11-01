@@ -177,3 +177,36 @@ def test_mcp_round_trip(client, auth, db, pid):
     assert got.json()["result"]["structuredContent"]["id"] == doc["id"]
     srch = _mcp(client, h, "search_docs", {"query": "teal", "project_id": pid}, 3)
     assert srch.json()["result"]["structuredContent"]["results"][0]["prd_id"] == prd.id
+
+
+def test_mcp_put_document_refuses_a_session_seat_without_agent_id(client, auth, db, pid):
+    """A registered seat that leaves out `agent_id` is still a seat: the session resolves it,
+    so the preamble's person rule cannot be bypassed by omission (GRPH-1275 bounce)."""
+    import json
+
+    prd = _baselined(db, pid)
+    key = client.post("/api/api-keys", json={"name": "docs-seat", "project_id": pid},
+                      headers=auth).json()["plaintext"]
+    init = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                         "params": {}}, headers={"X-API-Key": key})
+    h = {"X-API-Key": key, "Mcp-Session-Id": init.headers["mcp-session-id"]}
+    # No seat: an all-in-one agent, which the role gate lets through without `agent_id`.
+    reg = _mcp(client, h, "register_agent", {"label": "P"})
+    assert json.loads(reg.json()["result"]["content"][0]["text"])["agent_id"]
+
+    put = _mcp(client, h, "put_document", {
+        "kind": "preamble", "prd_id": prd.id, "body": "## Voice\ncalm", "project_id": pid}, 2)
+    body = put.json()
+    assert "error" in body or body["result"].get("isError"), put.text
+    assert "person" in put.text
+    assert not db.scalars(__import__("sqlalchemy").select(Document).where(
+        Document.project_id == pid, Document.kind == "preamble")).first()
+
+
+def test_mcp_put_document_refuses_any_named_agent_id(client, auth, db, pid):
+    prd = _baselined(db, pid)
+    key = client.post("/api/api-keys", json={"name": "docs-named"}, headers=auth).json()["plaintext"]
+    put = _mcp(client, {"X-API-Key": key}, "put_document", {
+        "kind": "preamble", "prd_id": prd.id, "body": "x", "project_id": pid,
+        "agent_id": "key:docs-named"})
+    assert "person" in put.text

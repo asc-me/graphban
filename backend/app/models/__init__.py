@@ -3155,9 +3155,9 @@ class DocumentChunk(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), index=True)
-    ordinal: Mapped[int] = mapped_column(Integer, default=0)
+    ordinal: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     heading: Mapped[str] = mapped_column(String, default="", server_default="")
-    text: Mapped[str] = mapped_column(Text, default="")
+    text: Mapped[str] = mapped_column(Text, default="", server_default="")
     content_hash: Mapped[str] = mapped_column(String)
     # A newer extractor never silently changes what search returns: re-extraction is explicit
     # and the previous chunks stay until the new set is the one marked governing.

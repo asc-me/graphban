@@ -3650,10 +3650,18 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         )
         return {"removed": removed}
     if name == "put_document":
+        # A preamble is a person's. Resolve the caller the way the feed does — a named agent,
+        # else the session's single live agent — so a seat that leaves out `agent_id` is still
+        # a seat, and any `agent_id` at all is a seat's claim, never a person's.
+        seat = _agent_for_call(db, key, args, session_id) or str(args.get("agent_id") or "").strip()
+        if seat:
+            raise errors.Validation(
+                "preamble rows are written by a person, not an agent seat",
+                hint="call put_document with a human credential, outside a registered session")
         return documents_svc.put_document(
             db, project_id=pid, kind=str(args["kind"]), body=str(args["body"]),
             prd_id=str(args["prd_id"]), title=str(args.get("title") or ""),
-            created_by=fleet_svc.caller_identity(str(args.get("agent_id") or "").strip(), key),
+            created_by=fleet_svc.caller_identity("", key),
         )
     if name == "get_document":
         return documents_svc.get_document(db, pid, str(args["id"]))
