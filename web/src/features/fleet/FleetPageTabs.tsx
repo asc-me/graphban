@@ -1,35 +1,64 @@
-import { Link } from "react-router-dom";
+import { useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
-import { useConfig, useFleet } from "@/lib/queries";
-import { projectPath } from "@/lib/routes";
+import { useFleet } from "@/lib/queries";
 
 /**
- * The design's two Fleet tabs, as links between the shipped v1 / v2 routes.
- *
- * Roster and harness config stay on separate pages (FleetV2View's comment: mixing
- * them onto one scroll made the redesign look like a banner on the old UI). The
- * tablist is the drawing's IA without collapsing that split.
+ * Each tab renders a different view, so choosing one remounts the tablist. A keyboard
+ * move sets this so the new instance puts focus back on the tab the user just chose.
  */
-export function FleetPageTabs({ active }: { active: "manage" | "harness" }) {
-  const { activeId, active: project } = useProjectCtx();
-  const { data: config } = useConfig();
-  const { data } = useFleet(activeId);
-  const href = (view: string) =>
-    config?.hosted_mode && project?.tag ? projectPath(project.tag, view) : `/${view}`;
+let focusAfterSwitch: FleetTab | null = null;
+
+export type FleetTab = "manage" | "harness";
+
+/** The selected tab lives in the URL (`?tab=manage|harness`); manage is the default. */
+export function fleetTabFromSearch(params: URLSearchParams): FleetTab {
+  return params.get("tab") === "harness" ? "harness" : "manage";
+}
+
+/**
+ * The design's two Fleet tabs: one page, the tab in `?tab=`.
+ *
+ * Roster and harness config keep their own bodies (FleetV2View's comment: mixing
+ * them onto one scroll made the redesign look like a banner on the old UI); this
+ * only merges the IA. Arrow keys, Home and End move between tabs.
+ */
+export function FleetPageTabs({ active }: { active: FleetTab }) {
+  const { activeId } = useProjectCtx();
+  const { data, isError } = useFleet(activeId);
+  const [, setSearchParams] = useSearchParams();
+  const refs = useRef<Record<string, HTMLButtonElement | null>>({});
+  useEffect(() => {
+    if (focusAfterSwitch === active) refs.current[active]?.focus();
+    focusAfterSwitch = null;
+  }, [active]);
+  const select = (id: FleetTab) =>
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("tab", id);
+        return next;
+      },
+      { replace: true },
+    );
 
   const manageMeta = data
     ? data.total === 0
       ? "no agents"
       : `${data.online} of ${data.total} online`
-    : "no agents";
+    : isError
+      ? "unavailable"
+      : "…";
   const harnessCount = new Set((data?.matrix?.rows ?? []).map((r) => r.harness)).size;
-  const harnessMeta = harnessCount ? `${harnessCount} in catalog` : "not served";
+  const harnessMeta = !data
+    ? isError ? "unavailable" : "…"
+    : harnessCount ? `${harnessCount} in catalog` : "not served";
 
   const tabs = [
-    { id: "manage" as const, to: href("fleet.v1"), label: "Fleet management", meta: manageMeta },
-    { id: "harness" as const, to: href("fleet.v2"), label: "Harness config", meta: harnessMeta },
+    { id: "manage" as const, label: "Fleet management", meta: manageMeta },
+    { id: "harness" as const, label: "Harness config", meta: harnessMeta },
   ];
 
   return (
@@ -39,14 +68,33 @@ export function FleetPageTabs({ active }: { active: "manage" | "harness" }) {
       className="sticky top-0 z-[2] flex flex-none items-stretch gap-1 border-b border-line bg-surface px-5"
       data-testid="fleet-page-tabs"
     >
-      {tabs.map((t) => {
+      {tabs.map((t, i) => {
         const on = t.id === active;
+        const move = (to: number) => {
+          const target = tabs[(to + tabs.length) % tabs.length];
+          if (target.id === active) return;
+          focusAfterSwitch = target.id;
+          select(target.id);
+        };
         return (
-          <Link
+          <button
             key={t.id}
+            ref={(el) => {
+              refs.current[t.id] = el;
+            }}
+            type="button"
             role="tab"
             aria-selected={on}
-            to={t.to}
+            tabIndex={on ? 0 : -1}
+            onClick={() => select(t.id)}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowRight") move(i + 1);
+              else if (e.key === "ArrowLeft") move(i - 1);
+              else if (e.key === "Home") move(0);
+              else if (e.key === "End") move(tabs.length - 1);
+              else return;
+              e.preventDefault();
+            }}
             className={cn(
               "flex items-center gap-2 border-b-2 px-3 py-2.5 text-body font-medium",
               on ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg",
@@ -56,7 +104,7 @@ export function FleetPageTabs({ active }: { active: "manage" | "harness" }) {
             <span className={cn("font-mono text-meta font-normal", on ? "text-muted" : "text-faint")}>
               {t.meta}
             </span>
-          </Link>
+          </button>
         );
       })}
     </div>

@@ -131,7 +131,7 @@ function mount(layout: ClusterLayout, nodeId: string | string[], onSelect = vi.f
 
 /** Screen position of a point on the fitted 60/40 bundle. */
 function bundleScreen(t: number): { x: number; y: number } {
-  const circle = screen.getByTestId("hull-A").querySelector("circle");
+  const circle = screen.getByTestId("hull-shape-A");
   const camX = Number(circle?.getAttribute("cx"));
   const camY = Number(circle?.getAttribute("cy"));
   const k = Number(circle?.getAttribute("r")) / 50;
@@ -147,7 +147,7 @@ describe("areas-only canvas", () => {
     expect(screen.getByTestId("lod-caption")).toHaveTextContent(
       "Large map: zoom into an area to see its files",
     );
-    const circle = screen.getByTestId("hull-A").querySelector("circle");
+    const circle = screen.getByTestId("hull-shape-A");
     const clientX = Number(circle?.getAttribute("cx"));
     const clientY = Number(circle?.getAttribute("cy"));
     expect(Number.isFinite(clientX)).toBe(true);
@@ -163,7 +163,7 @@ describe("areas-only canvas", () => {
 
   it("selects a file that is drawn on a small map", () => {
     const { host, onSelect } = mount(SMALL_LAYOUT, "shown.py");
-    const circle = screen.getByTestId("hull-A").querySelector("circle");
+    const circle = screen.getByTestId("hull-shape-A");
     const clientX = Number(circle?.getAttribute("cx"));
     const clientY = Number(circle?.getAttribute("cy"));
     expect(Number.isFinite(clientX)).toBe(true);
@@ -208,7 +208,7 @@ const ZOOMED_LAYOUT: ClusterLayout = {
 };
 
 function hullCircle(id: string): { x: number; y: number; r: number } {
-  const circle = screen.getByTestId(`hull-${id}`).querySelector("circle");
+  const circle = screen.getByTestId(`hull-shape-${id}`);
   return {
     x: Number(circle?.getAttribute("cx")),
     y: Number(circle?.getAttribute("cy")),

@@ -24,7 +24,7 @@ from app.services import tool_tiers
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 15460
+CEILING = 15930
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -149,11 +149,40 @@ CEILING = 15460
 # 15052 -> 15050 (GRPH-893). create_item/update_item `description` names the ## Acceptance
 # convention `sign_off` parses — the planner writing a description is the one who needs it.
 # Paid inside the same two tools' own prose; core 8919 -> 8918. Headroom 10.
-# 15050 -> 15449, and CEILING 15060 -> 15460 with it (GRPH-1275). put_document, get_document and
+# GRPH-1089: `bound_only` rides `_FLEET_ONLY_ARGS` on delegate and mint_enrolment, so
+# MEASURED_TOKENS stays 15050, CORE_TOKENS 8918, and TIER_TOKENS fleet 1100.
+# 15050 -> 15049 (GRPH-1108). record_scan's "First category: security (...)" becomes the
+# refusal of an unknown scanner_id with no category; codegraph 1791 -> 1790. Headroom 11.
+# 15049 -> 15048 (GRPH-1125). `result` is fleet-only on record_scan; base prose trimmed.
+# 15048 -> 15053 (GRPH-1126). scans_due gains empty_reason in its output schema.
+# GRPH-1127: record_scan's finding grain (advisory_id, kind, count, …) is named in a fleet-only
+# findings description, so MEASURED_TOKENS stays 15053.
+# GRPH-1129: record_scan says a write key suffices and planners are refused; paid by dropping
+# the base findings description's repeat of "clean with result=complete", so it stays 15053.
+# 15053 -> 15056 (GRPH-1137). `create_item` gains `question` and `options`, the only way an agent
+# can file a structured decision wait. Paid by shortening `_EFFORT_DESC` (three tools), the
+# `fidelity` default and one `touchpoints` sentence, which keeps the ceiling and the worker
+# key's >10% saving (test_mcp_role_manifest) intact. core 8918 -> 8920. Headroom 4.
+# 15056 -> 15369, and CEILING 15060 -> 15380 with it (GRPH-1248, PRD-62 S2). Two tools,
+# `list_entitlements` and `set_entitlement`: the org's capacity-routing registry. Two names
+# rather than one with a mode because the read is open and the write is planner-gated, and
+# one tool cannot carry both gates. Trimmed first — descriptions cut to the credential rule and
+# the trust caveat, the `project_id` descriptions dropped — and `register_agent`'s new
+# `entitlements` rides `_FLEET_ONLY_ARGS`. The rest is NOT funded out of core: both tools are
+# in the opt-in `fleet` tier (and premium, D8), so TIER_TOKENS["fleet"] 1100 -> 1413 is the
+# whole bill and CORE_TOKENS does not move. Same argument as GRPH-988 and GRPH-1035.
+# Headroom 11.
+# 15369 -> 15515, and CEILING 15380 -> 15530 with it (GRPH-1249, PRD-62 S3). One tool,
+# `report_entitlement_event`: the runner's ledger report and the spawn admission check. One
+# name with an `event` enum rather than five, since five tools cost five descriptions. The
+# description is cut to one sentence; the rest is in opt-in `fleet` tier (premium, D8), so
+# TIER_TOKENS["fleet"] 1413 -> 1559 is the whole bill and CORE_TOKENS does not move. Headroom 15.
+# 15515 -> 15914, and CEILING 15530 -> 15930 with it (GRPH-1275). put_document, get_document and
 # search_docs: three new tools, each carrying the shared project_id property and an output
 # schema. Descriptions are one line each; the rest is the fixed per-tool wrapper. Tiered `prd`,
-# so a default key does not pay it.
-MEASURED_TOKENS = 15449
+# so TIER_TOKENS["prd"] 1998 -> 2397 is the whole bill and a default key does not pay it.
+# Headroom 16.
+MEASURED_TOKENS = 15914
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

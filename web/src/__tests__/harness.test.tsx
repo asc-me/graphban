@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 
 import { HarnessView } from "@/features/harness/HarnessView";
 import { ProjectProvider } from "@/features/ProjectContext";
@@ -44,7 +44,7 @@ const probeCandidates = vi.fn(async () => ({
   floor: 5,
   estimated_tokens: { comparable: false, reported: 0, finished: 0, reason: "no probe history reported tokens" },
   suggestions: [],
-})) as ReturnType<typeof vi.fn>;
+})) as Mock<(...args: unknown[]) => Promise<unknown>>;
 const startProbeRun = vi.fn(async () => ({ run_id: "run-1" }));
 const harnessRecommendations = vi.fn(async () => ({
   project_id: "core", cards: [] as import("@/lib/types").HarnessCard[], rules: ["R1", "R2", "R3", "R4", "R5", "R6"],
@@ -456,6 +456,24 @@ describe("Harness tabs", () => {
     expect(tabs[2]).toHaveAttribute("data-tab", "changes");
   });
 
+  it("shows the SERVED badge on Guidance when routing was served", async () => {
+    show();
+    await screen.findByTestId("harness-cell");
+    const guidanceTab = screen.getAllByTestId("harness-tab")[1];
+    expect(await within(guidanceTab).findByTestId("harness-tab-badge")).toHaveTextContent("SERVED");
+  });
+
+  it("shows no SERVED badge on Guidance when nothing has been served", async () => {
+    harnessGuidance.mockResolvedValueOnce(guidanceData({ routing: [], fleet_status_text: "" }));
+    show();
+    await screen.findByTestId("harness-cell");
+    const guidanceTab = screen.getAllByTestId("harness-tab")[1];
+    await userEvent.setup().click(guidanceTab);
+    // The guidance payload has loaded (empty-state copy is rendered) before asserting absence.
+    expect(await screen.findByText(/No measured routing served yet/)).toBeInTheDocument();
+    expect(within(guidanceTab).queryByTestId("harness-tab-badge")).toBeNull();
+  });
+
   it("switches to the Guidance tab and shows the routing table and grading rules", async () => {
     show();
     const user = userEvent.setup();
@@ -469,7 +487,7 @@ describe("Harness tabs", () => {
 
   it("switches to the Changes tab and shows recommendations and the probe panel", async () => {
     probeCandidates.mockResolvedValueOnce(probeData());
-    harnessRecommendations.mockResolvedValueOnce({
+    harnessRecommendations.mockResolvedValue({
       project_id: "core",
       cards: [{
         rule: "R1", key: "R1:test", evidence_hash: "abc",
@@ -487,6 +505,10 @@ describe("Harness tabs", () => {
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[2]);
     expect(await screen.findByTestId("harness-cards")).toBeInTheDocument();
+    harnessRecommendations.mockResolvedValue({
+      project_id: "core", cards: [], rules: ["R1", "R2", "R3", "R4", "R5", "R6"],
+      lessons_drafted: [], window_days: 90, floor: 5,
+    });
     expect(screen.getByTestId("harness-probe-panel")).toBeInTheDocument();
     expect(screen.getByText(/This page changes nothing/)).toBeInTheDocument();
   });
@@ -708,5 +730,162 @@ describe("Harness probe panel", () => {
     await user.click(tabs[2]);
     const group = await screen.findByTestId("harness-probe-group");
     expect(group).toHaveTextContent("family");
+  });
+
+  describe("harness × function grid", () => {
+    // The served shape (backend/app/services/harness.py `_as_grid`): one family rollup per
+    // vendor, model, version, family and band, with the measured leaves nested under it.
+    const leaf = (model: string, capability: string, finished: number, signed_off: number, size_band = "M") =>
+      cell({
+        kind: "leaf", family: capability[0], label: capability, leaves: undefined,
+        key: { ...cell().key, vendor: "claude", model, capability, size_band },
+        finished, signed_off, rate: finished ? signed_off / finished : null, below_floor: finished < 5,
+      });
+    const fam = (leaves: HarnessCell[]) => {
+      const { model, vendor, size_band } = leaves[0].key;
+      const family = leaves[0].key.capability[0];
+      const finished = leaves.reduce((s, l) => s + l.finished, 0);
+      const signed_off = leaves.reduce((s, l) => s + l.signed_off, 0);
+      return cell({
+        kind: "family", family, label: "family rollup",
+        key: { ...cell().key, vendor, model, capability: family, size_band },
+        finished, signed_off, rate: finished ? signed_off / finished : null, below_floor: finished < 5,
+        leaves,
+      });
+    };
+    const catalog = {
+      leaves: ["A1", "A2", "A3", "A4", "A5", "B3", "B5"],
+      families: { A: ["A1", "A2", "A3", "A4", "A5"], B: ["B3", "B5"], other: [] },
+      labels: {
+        A: "Change shape", A1: "Localised fix", A2: "Feature slice", A3: "Behaviour-preserving refactor",
+        A4: "Schema and migration", A5: "Deletion and cleanup", B: "Layer", B3: "Service and domain logic",
+        B5: "React component and state", other: "other",
+      },
+    };
+    const gridReport = () =>
+      report({
+        capability_set: catalog,
+        cells: [
+          fam([leaf("opus", "A1", 10, 9), leaf("opus", "A2", 8, 4), leaf("opus", "A3", 6, 6), leaf("opus", "A4", 7, 7)]),
+          fam([leaf("sonnet", "A1", 6, 5, "S")]),
+          fam([leaf("sonnet", "A1", 20, 10), leaf("sonnet", "A2", 3, 1), leaf("sonnet", "A3", 9, 3), leaf("sonnet", "A4", 5, 5)]),
+          fam([leaf("haiku", "A1", 12, 6), leaf("haiku", "A2", 12, 12), leaf("haiku", "A3", 5, 2), leaf("haiku", "A4", 6, 1)]),
+        ],
+        below_floor_count: 0,
+      });
+    const gridCell = (name: RegExp) => screen.getByRole("button", { name });
+
+    it("renders one row per model and one column per catalog leaf, out of the nested leaves", async () => {
+      harness.mockResolvedValueOnce(gridReport());
+      show();
+      await screen.findByTestId("harness-grid");
+      expect(screen.getAllByTestId("harness-grid-row")).toHaveLength(3);
+      expect(screen.getAllByTestId("harness-grid-col").map((c) => c.textContent)).toEqual([
+        "A1Localised fix", "A2Feature slice", "A3Behaviour-preserving refactor", "A4Schema and migration",
+      ]);
+      expect(screen.getAllByTestId("harness-grid-cell")).toHaveLength(12);
+      const first = gridCell(/^claude opus A1:/);
+      expect(first).toHaveTextContent("90%");
+      expect(first).toHaveTextContent("9/10");
+      expect(first.getAttribute("data-rollup")).toBe("false");
+    });
+
+    it("marks a below-floor cell and still shows its numbers", async () => {
+      harness.mockResolvedValueOnce(gridReport());
+      show();
+      await screen.findByTestId("harness-grid");
+      const low = gridCell(/^claude sonnet A2:/);
+      expect(low.getAttribute("data-below-floor")).toBe("true");
+      expect(low).toHaveTextContent("1/3");
+      expect(low.getAttribute("aria-label")).toMatch(/below the floor/);
+    });
+
+    it("shows the family rollup in the family column while no leaf clears the floor, and other last", async () => {
+      harness.mockResolvedValueOnce(
+        report({
+          capability_set: catalog,
+          cells: [
+            fam([leaf("opus", "A1", 10, 9)]),
+            fam([leaf("haiku", "B3", 1, 1), leaf("haiku", "B5", 2, 1)]),
+            fam([leaf("opus", "B5", 6, 3)]),
+            cell({ key: { ...cell().key, vendor: "claude", model: "haiku", capability: "other" }, finished: 4, signed_off: 2 }),
+          ],
+          below_floor_count: 2,
+        }),
+      );
+      show();
+      await screen.findByTestId("harness-grid");
+      expect(screen.getAllByTestId("harness-grid-col").map((c) => c.textContent)).toEqual([
+        "A1Localised fix", "BLayerfamily", "B5React component and state", "other",
+      ]);
+      const rollup = gridCell(/^claude haiku B family rollup:/);
+      expect(rollup.getAttribute("data-rollup")).toBe("true");
+      expect(rollup).toHaveTextContent("2/3");
+      expect(screen.queryByRole("button", { name: /^claude haiku B5:/ })).not.toBeInTheDocument();
+      expect(gridCell(/^claude opus B5:/)).toHaveTextContent("3/6");
+      expect(gridCell(/^claude haiku other:/)).toHaveTextContent("2/4");
+    });
+
+    it("opens a detail panel naming the model, capability and x/y", async () => {
+      harness.mockResolvedValueOnce(gridReport());
+      show();
+      const user = userEvent.setup();
+      await screen.findByTestId("harness-grid");
+      await user.click(gridCell(/^claude opus A1:/));
+      const panel = await screen.findByTestId("harness-cell-panel");
+      expect(within(panel).getByTestId("harness-panel-title")).toHaveTextContent("claude:opus");
+      expect(within(panel).getByTestId("harness-panel-cap")).toHaveTextContent("A1");
+      expect(within(panel).getByTestId("harness-panel-xy")).toHaveTextContent("9/10");
+    });
+
+    it("labels a row with no vendor or model Unattributed, last, with its runs", async () => {
+      const blank = (capability: string, finished: number) => {
+        const l = leaf("x", capability, finished, 1);
+        return { ...l, key: { ...l.key, vendor: "", model: "" } };
+      };
+      harness.mockResolvedValueOnce(
+        report({ capability_set: catalog, cells: [fam([blank("A1", 13)]), fam([leaf("opus", "A1", 10, 9)])], below_floor_count: 0 }),
+      );
+      show();
+      await screen.findByTestId("harness-grid");
+      const rows = screen.getAllByTestId("harness-grid-row");
+      expect(rows).toHaveLength(2);
+      expect(rows[1]).toHaveTextContent("Unattributed");
+      expect(rows[1]).toHaveTextContent("13 runs");
+      expect(rows[0]).not.toHaveTextContent("Unattributed");
+    });
+
+    it("a vendor-only row's panel title has no trailing colon", async () => {
+      const l = leaf("x", "A1", 10, 9);
+      const only = { ...l, key: { ...l.key, vendor: "alibaba", model: "" } };
+      harness.mockResolvedValueOnce(report({ capability_set: catalog, cells: [fam([only])], below_floor_count: 0 }));
+      show();
+      const user = userEvent.setup();
+      await screen.findByTestId("harness-grid");
+      await user.click(gridCell(/^alibaba A1:/));
+      expect(screen.getByTestId("harness-panel-title").textContent).toBe("alibaba");
+    });
+
+    it("the effort filter restricts the cell numbers to that band, counted on the leaves", async () => {
+      harness.mockResolvedValueOnce(gridReport());
+      show();
+      const user = userEvent.setup();
+      await screen.findByTestId("harness-grid");
+      expect(gridCell(/^claude sonnet A1:/)).toHaveTextContent("15/26");
+      await user.click(gridCell(/^claude sonnet A1:/));
+      expect(screen.getByTestId("harness-panel-bands")).toHaveTextContent("S 5/6 · M 10/20");
+      await user.click(screen.getByRole("button", { name: "S" }));
+      expect(gridCell(/^claude sonnet A1:/)).toHaveTextContent("5/6");
+      expect(screen.queryByRole("button", { name: /^claude opus A1:/ })).not.toBeInTheDocument();
+    });
+
+    it("the effort curve counts the nested leaves, not the rollups", async () => {
+      harness.mockResolvedValueOnce(gridReport());
+      show();
+      const curve = await screen.findByTestId("harness-effort-curve");
+      const m = within(curve).getAllByTestId("harness-effort-band").find((b) => b.textContent?.includes("M"))!;
+      // Above-floor M leaves: opus 26/31, sonnet 18/34 (A2 3/1 is under the floor), haiku 21/35.
+      expect(m).toHaveTextContent("65%");
+    });
   });
 });

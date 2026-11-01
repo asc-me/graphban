@@ -42,7 +42,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.errors import Refused
 from app.models import Agent, Delegation, Enrolment, Item, MemoryShard, Project
+from app.security import authz
 from app.services import harness as harness_svc
 from app.services.harness import WINDOW_DAYS
 logger = logging.getLogger(__name__)
@@ -297,8 +299,11 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     readable = authz.readable_project_ids(db, user_id) if user_id else None
     blocked_by = [items_svc.render_ref(db, d, readable)
                   for d in prioritization.blocked_by(ctx, item)]
-    shards = db.scalars(select(MemoryShard).where(MemoryShard.item_id == item.id)
-                        .order_by(MemoryShard.id).limit(LESSONS_MAX)).all()
+    # Retired/rejected shards are not lessons (GRPH-1234).
+    shards = db.scalars(select(MemoryShard).where(
+        MemoryShard.item_id == item.id,
+        MemoryShard.status.notin_(items_svc.HIDDEN_SHARD_STATUSES))
+        .order_by(MemoryShard.id).limit(LESSONS_MAX)).all()
     lessons = [{"id": s.id, "text": s.text} for s in shards]
     history = attempts_for(db, item)
     prev_row = history[-1] if history else None
@@ -562,17 +567,21 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
     for t in tel_rows:
         if t.delegation_id:
             telemetry[t.delegation_id] = t
+    agent_ids = {r.agent_id for r in rows if r.agent_id}
+    if agent_ids:
+        agents.update({a.id: a for a in db.scalars(
+            select(Agent).where(Agent.id.in_(agent_ids))).all()})
+    item_ids = {r.item_id for r in rows if r.item_id}
+    if item_ids:
+        items.update({i.id: i for i in db.scalars(
+            select(Item).where(Item.id.in_(item_ids))).all()})
     versions: dict[tuple[str, str], list[str]] = {}
     for row in rows:
-        if row.agent_id not in agents:
-            agents[row.agent_id] = db.get(Agent, row.agent_id) if row.agent_id else None
-        agent = agents[row.agent_id]
+        agent = agents.get(row.agent_id)
         declared = (agent.capabilities or {}) if agent is not None else {}
         vendor = declared.get("vendor") if isinstance(declared.get("vendor"), str) and declared.get("vendor") else UNDECLARED
         model = row.declared_model or ("" if vendor != UNDECLARED else UNDECLARED)
-        if row.item_id not in items:
-            items[row.item_id] = db.get(Item, row.item_id) if row.item_id else None
-        item = items[row.item_id]
+        item = items.get(row.item_id)
         tel = telemetry.get(row.id)
         if tel is not None and tel.sampled == "probe":
             continue
@@ -685,6 +694,45 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
     return out
 
 
+def finished_by_model(db: Session, project_id: str | None, *,
+                      window_days: int | None = None) -> dict[tuple[str, str], dict]:
+    """`{(vendor, model): {runs, signed_off}}` — DISTINCT finished delegations per pair.
+
+    The same rows `measured()` reads for its project layer: outcome set, inside the window,
+    probe attempts excluded, vendor taken from the agent's declared capabilities and model
+    from the delegation. `measured()` emits a cell per capability, so summing its cells
+    counts a delegation once per capability it carries; this counts it once. A pair with no
+    finished delegation is ABSENT, never a zero.
+    """
+    from app.models import AttemptTelemetry
+
+    cutoff = _now() - timedelta(days=WINDOW_DAYS if window_days is None else window_days)
+    stmt = select(Delegation).where(Delegation.outcome.is_not(None))
+    if project_id:
+        stmt = stmt.where(Delegation.project_id == project_id)
+    rows = [r for r in db.scalars(stmt).all() if (_aware(r.finished_at) or cutoff) >= cutoff]
+    if not rows:
+        return {}
+    probes = set(db.scalars(select(AttemptTelemetry.delegation_id).where(
+        AttemptTelemetry.delegation_id.in_([r.id for r in rows]),
+        AttemptTelemetry.sampled == "probe")).all())
+    agent_ids = {r.agent_id for r in rows if r.agent_id}
+    agents = ({a.id: a for a in db.scalars(select(Agent).where(Agent.id.in_(agent_ids))).all()}
+              if agent_ids else {})
+    out: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        if row.id in probes:
+            continue
+        agent = agents.get(row.agent_id)
+        declared = (agent.capabilities or {}) if agent is not None else {}
+        vendor = declared.get("vendor") if isinstance(declared.get("vendor"), str) and declared.get("vendor") else UNDECLARED
+        model = row.declared_model or ("" if vendor != UNDECLARED else UNDECLARED)
+        agg = out.setdefault((vendor, model), {"runs": 0, "signed_off": 0})
+        agg["runs"] += 1
+        agg["signed_off"] += 1 if row.outcome == "signed_off" else 0
+    return out
+
+
 def measured_for_lane(db: Session, item: Item, caps: list[str]) -> list[dict]:
     """At most four compact cells for the item's capabilities, inside BRIEF_MEASURED_BOUND.
 
@@ -786,26 +834,54 @@ def _refuse_by_reach(item: Item, acknowledged: bool) -> None:
     from app.services import reach as reach_svc
 
     if (item.reach or reach_svc.REPO) == reach_svc.DEPLOY:
-        raise DelegationRefused(
+        raise Refused(
+            409,
             f"{item.key} is declared `reach=deploy`: it acts on a running system, and a "
             "delegated child gets a worktree and a shell. Do this one yourself.",
-            code="validation",
+            rule_id="reach.deploy_not_delegable",
             hint="a person set this field and only a person can clear it; if the item is "
                  "really repository work, change its reach in the UI")
     if acknowledged:
         return
     found = reach_svc.signals(item.description)
     if found:
-        raise DelegationRefused(reach_svc.refusal(item.key, found), code="validation",
-                                hint="pass acknowledge_reach=true, or set the item's reach "
-                                     "to deploy in the UI")
+        raise Refused(409, reach_svc.refusal(item.key, found),
+                      rule_id="reach.acknowledge_signals",
+                      hint="pass acknowledge_reach=true, or set the item's reach "
+                           "to deploy in the UI")
+
+
+def refuse_bound_collision(db: Session, *, agent: Agent, item: Item) -> None:
+    """Refuse a bound seat whose areas someone else already holds (PRD-36 D13).
+
+    A steered claim bypasses the divvy, so the collision check the divvy would have made
+    happens here and names the holder. Writes nothing. Shared by `delegate(seat=true)` and
+    `mint_enrolment(bound_only=true, item=...)` so the second door is not a way around the
+    first (GRPH-1089).
+    """
+    from app.services import collision as collision_svc
+    from app.services import fleet as fleet_svc
+
+    areas, _ = collision_svc.touch_areas(db, item, item.project_id)
+    taken = fleet_svc.active_reservations(db, item.project_id, now=_now())
+    blocked = [r.area for r in taken if r.agent_id != agent.id]
+    if fleet_svc.areas_collide(areas, blocked):
+        holders = sorted({r.agent_id for r in taken
+                          if r.agent_id != agent.id
+                          and fleet_svc.areas_collide(areas, [r.area])})
+        raise DelegationRefused(
+            f"{item.key}'s areas are reserved by {', '.join(holders)}; a bound seat "
+            "would claim straight through that collision",
+            hint="delegate another item, or delegate without a seat and let the divvy decide",
+            detail={"held_by": ", ".join(holders)})
 
 
 def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
              note: str = "", lease_seconds: int, seat: bool = False, api_key=None,
              wave: str | None = None,
              scope: str | None = None,
-             acknowledge_reach: bool = False) -> tuple[Delegation, str | None, str | None]:
+             acknowledge_reach: bool = False,
+             bound_only: bool = False) -> tuple[Delegation, str | None, str | None]:
     """Write what the delegator asked for. Claims nothing, spawns nothing. Returns the new
     row, the id of the caller's own open delegation it withdrew (PRD-35 D14), and the bound
     seat's enrolment code when `seat` was asked for (PRD-36 D2), else None.
@@ -827,6 +903,12 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
             + (f": {item.blocker}" if item.blocker else " (status blocked)"),
             hint="clear the blocker before delegating")
     _refuse_by_reach(item, acknowledge_reach)
+    if bound_only and not seat:
+        # Before any write. A flag without a seat has nothing to store it on, and accepting
+        # the delegation would look like the child had been bound when it had not.
+        raise DelegationRefused(
+            "bound_only needs a seat bound to this item: pass seat=true",
+            code="validation")
     if item.claimed_by == agent.id:
         raise DelegationRefused(f"you hold {item.key}; release it or build it yourself",
                                 hint="a delegation is for work you are not holding")
@@ -844,24 +926,17 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
                 hint="wait for the pin to lapse, or let the author retry",
                 detail={"pinned_to": holder, "pinned_until": until.isoformat() if until else None})
     now = _now()
-    holders: list[str] = []
     if seat:
-        from app.services import collision as collision_svc
-
         # The mint gate is the mint gate: whoever may call mint_enrolment may bind a seat.
-        fleet_svc.check_tool_role(db, tool="mint_enrolment", api_key=api_key, agent_id=agent.id)
-        areas, _ = collision_svc.touch_areas(db, item, item.project_id)
-        taken = fleet_svc.active_reservations(db, item.project_id, now=now)
-        blocked = [r.area for r in taken if r.agent_id != agent.id]
-        if fleet_svc.areas_collide(areas, blocked):
-            holders = sorted({r.agent_id for r in taken
-                              if r.agent_id != agent.id
-                              and fleet_svc.areas_collide(areas, [r.area])})
-            raise DelegationRefused(
-                f"{item.key}'s areas are reserved by {', '.join(holders)}; a bound seat "
-                "would claim straight through that collision",
-                hint="delegate another item, or delegate without a seat and let the divvy decide",
-                detail={"held_by": ", ".join(holders)})
+        try:
+            fleet_svc.check_tool_role(db, tool="mint_enrolment", api_key=api_key,
+                                      agent_id=agent.id)
+        except authz.Forbidden as e:
+            # Typed, so the caller gets the rule and the refusal is recorded (GRPH-1197);
+            # bare, it reached the dispatcher as plain `unauthorized`.
+            raise Refused(403, str(e), rule_id="review.role_gated_tools", hint=e.hint,
+                          target=("item", item.id)) from e
+        refuse_bound_collision(db, agent=agent, item=item)
     withdrew: str | None = None
     for row in _open_rows(db, item):
         if row.delegated_by == agent.id:
@@ -903,7 +978,9 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
             # complaint being answered is precisely that the operator's flag stopped being
             # true one process down. A scope nobody asked for is a different surprise, not
             # a smaller one.
-            prd_id=scope or None)
+            prd_id=scope or None,
+            # GRPH-1089. Opt-in. Absent stays today's seat: the child reviews after it builds.
+            bound_only=bound_only)
     return row, withdrew, code
 
 

@@ -1,27 +1,47 @@
+import { CircleAlert } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { BOARD_COLUMNS } from "@/lib/meta";
 
-/** Named fetch failure with retry — Home's counts-unavailable pattern. */
+/**
+ * Named fetch failure with retry. Red-tinted card: the title names what failed
+ * ("Items unavailable"), the line says the failure is not an empty project.
+ */
 export function PlannerError({
-  message,
+  title = "Could not load this",
+  message = FETCH_FAILED,
   onRetry,
 }: {
-  message: string;
+  /** What failed — "<Page> unavailable". */
+  title?: string;
+  /** Defaults to the shared "nothing here means empty" line. */
+  message?: string;
   onRetry: () => void;
 }) {
   return (
-    <div className="flex flex-col items-center gap-3 px-8 py-12 text-center" role="alert">
-      <p className="text-[13px] text-st-blocked">{message}</p>
-      <Button type="button" variant="outline" size="sm" onClick={onRetry}>
-        Retry
-      </Button>
+    <div className="flex justify-center px-6 py-10">
+      <div
+        role="alert"
+        className="flex w-full max-w-md items-start gap-3 rounded-[12px] border border-st-blocked/40 bg-[rgba(255,107,107,0.06)] p-4"
+      >
+        <div className="flex h-7 w-7 flex-none items-center justify-center rounded-lg bg-[rgba(255,107,107,0.14)] text-st-blocked">
+          <CircleAlert size={14} aria-hidden="true" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-[13.5px] font-semibold text-ty-bug">{title}</h2>
+          <p className="mt-0.5 text-body leading-relaxed text-muted">{message}</p>
+          <Button type="button" variant="outline" size="sm" className="mt-3" onClick={onRetry}>
+            Retry
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
 
-/** True empty — invitation, not a failed search. */
+/** True empty — invitation, not a failed search. A dashed tile with a lime square. */
 export function PlannerEmpty({
   title,
   description,
@@ -33,6 +53,12 @@ export function PlannerEmpty({
 }) {
   return (
     <div className="flex flex-col items-center gap-3 px-8 py-16 text-center">
+      <div
+        aria-hidden="true"
+        className="flex h-10 w-10 items-center justify-center rounded-[10px] border border-dashed border-control"
+      >
+        <span className="h-2 w-2 rounded-[2px] bg-accent" />
+      </div>
       <h2 className="text-[15px] font-semibold text-fg">{title}</h2>
       <p className="max-w-md text-[13px] leading-relaxed text-muted">{description}</p>
       {action}
@@ -58,21 +84,42 @@ export function PlannerFilteredEmpty({
   );
 }
 
-function Pulse({ className }: { className?: string }) {
-  return <div className={cn("animate-pulse rounded-md bg-surface-3", className)} />;
+function Pulse({ className, style }: { className?: string; style?: React.CSSProperties }) {
+  return <div className={cn("animate-pulse rounded-md bg-surface-3", className)} style={style} />;
 }
+
+/** Title-bar widths (percent) the list skeletons cycle through, so rows read as varied text. */
+const SKELETON_TITLE_WIDTHS = [78, 52, 90, 64, 44, 82];
 
 /** Tracker list skeleton: header/chips stay; 8 placeholder rows. */
 export function TrackerListSkeleton({ rows = 8 }: { rows?: number }) {
   return (
     <div className="divide-y divide-line/70" aria-busy="true" aria-label="Loading tracker">
       {Array.from({ length: rows }, (_, i) => (
-        <div key={i} className="flex items-center gap-3 px-4 py-3">
+        <div key={i} className="flex items-center gap-3 px-4 py-3" style={{ opacity: 1 - (i / rows) * 0.7 }}>
           <Pulse className="h-3.5 w-3.5" />
           <Pulse className="h-5 w-5 rounded-full" />
           <Pulse className="h-3 w-[52px]" />
-          <Pulse className="h-3.5 flex-1" />
+          <div className="flex-1">
+            <Pulse className="h-3.5" style={{ width: `${SKELETON_TITLE_WIDTHS[i % SKELETON_TITLE_WIDTHS.length]}%` }} />
+          </div>
           <Pulse className="h-3 w-10" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Board skeleton: six column shells with card placeholders. */
+export function TrackerBoardSkeleton() {
+  return (
+    <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-5 py-4" aria-busy="true" aria-label="Loading tracker">
+      {BOARD_COLUMNS.map((s) => (
+        <div key={s} className="flex min-h-[320px] min-w-[232px] flex-1 flex-col gap-2 rounded-[12px] border border-line-2 bg-surface/40 px-2 py-2.5">
+          <Pulse className="h-3 w-20" />
+          {[0, 1].map((i) => (
+            <Pulse key={i} className="h-[84px] rounded-[10px]" />
+          ))}
         </div>
       ))}
     </div>
@@ -84,10 +131,16 @@ export function PrdListSkeleton({ rows = 6 }: { rows?: number }) {
   return (
     <div className="space-y-2 p-4" aria-busy="true" aria-label="Loading PRDs">
       {Array.from({ length: rows }, (_, i) => (
-        <div key={i} className="flex items-center gap-3 rounded-[12px] border border-line-2 bg-surface-2 px-4 py-3">
+        <div
+          key={i}
+          className="flex items-center gap-3 rounded-[12px] border border-line-2 bg-surface-2 px-4 py-3"
+          style={{ opacity: 1 - (i / rows) * 0.7 }}
+        >
           <Pulse className="h-4 w-4" />
           <Pulse className="h-3 w-[52px]" />
-          <Pulse className="h-3.5 flex-1" />
+          <div className="flex-1">
+            <Pulse className="h-3.5" style={{ width: `${SKELETON_TITLE_WIDTHS[i % SKELETON_TITLE_WIDTHS.length]}%` }} />
+          </div>
           <Pulse className="h-3 w-12" />
           <Pulse className="h-3 w-16" />
         </div>

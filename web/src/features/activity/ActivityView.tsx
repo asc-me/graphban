@@ -1,5 +1,6 @@
 import { Download, Radio, X } from "lucide-react";
 import * as React from "react";
+import { useSearchParams } from "react-router-dom";
 
 import {
   EventListSkeleton,
@@ -11,7 +12,7 @@ import {
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Button } from "@/components/ui/button";
 import { useProjectCtx } from "@/features/ProjectContext";
-import { useEvents } from "@/lib/queries";
+import { useEventById, useEvents } from "@/lib/queries";
 import type { ActivityLensId, ActivityRange, EventsQuery } from "@/lib/types";
 
 import { EventPanel } from "./EventPanel";
@@ -45,13 +46,26 @@ export function ActivityView() {
   const [range, setRange] = React.useState<ActivityRange>("24h");
   const [actor, setActor] = React.useState<string | null>(null);
   const [surface, setSurface] = React.useState<string | null>(null);
-  const [targetType, setTargetType] = React.useState<string | null>(null);
-  const [targetId, setTargetId] = React.useState<string | null>(null);
+  // `?target_type=&target_id=` deep-links to one PRD's or item's activity.
+  const [seedParams] = useSearchParams();
+  const [targetType, setTargetType] = React.useState<string | null>(seedParams.get("target_type"));
+  const [targetId, setTargetId] = React.useState<string | null>(seedParams.get("target_id"));
   const [bucket, setBucket] = React.useState<number | null>(null);
   const [groupBy, setGroupBy] = React.useState<GroupBy>("time");
   const [limit, setLimit] = React.useState(PAGE);
   const [focused, setFocused] = React.useState(0);
-  const [openId, setOpenId] = React.useState<number | null>(null);
+  // `?event=` reopens a refusal from the Rules breadcrumb (GRPH-1164).
+  const [searchParams] = useSearchParams();
+  const eventParam = searchParams.get("event");
+  const parseEvent = (v: string | null) => {
+    const n = Number(v);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  };
+  const [openId, setOpenId] = React.useState<number | null>(() => parseEvent(eventParam));
+  // A second link to this route while mounted must refocus, not be ignored (GRPH-1199).
+  React.useEffect(() => {
+    setOpenId(parseEvent(eventParam));
+  }, [eventParam]);
 
   const query: EventsQuery = React.useMemo(
     () => ({ projectId: activeId, limit, lens, range, actor, surface, targetType, targetId, bucket }),
@@ -86,10 +100,14 @@ export function ActivityView() {
   const rows = data?.results ?? [];
   const refusals = React.useMemo(() => refusalActions(data?.lenses), [data]);
   const groups = React.useMemo(() => groupEvents(rows, groupBy, range), [rows, groupBy, range]);
-  const openEvent = React.useMemo(
+  const inRows = React.useMemo(
     () => (openId === null ? null : rows.find((r) => r.id === openId) ?? null),
     [openId, rows],
   );
+  // An older event is not in the loaded page: fetch it rather than opening nothing.
+  const byId = useEventById(activeId, openId, openId !== null && !!data && inRows === null);
+  const openEvent = inRows ?? byId.data ?? null;
+  const eventMissing = openId !== null && inRows === null && !!data && byId.isFetched && !byId.data;
 
   // J/K move, Enter opens the panel, Escape closes it.
   React.useEffect(() => {
@@ -280,6 +298,12 @@ export function ActivityView() {
           }}
         />
       </div>
+
+      {eventMissing && (
+        <p role="alert" data-testid="event-missing" className="border-b border-line px-5 py-2 text-small text-st-blocked">
+          Event {openId} was not found in the ledger.
+        </p>
+      )}
 
       <div className="flex min-h-0 flex-1">
         <div ref={listRef} className="min-w-0 flex-1 overflow-y-auto p-5">

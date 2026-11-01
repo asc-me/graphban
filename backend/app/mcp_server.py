@@ -42,7 +42,7 @@ from app.config import settings
 from app.version import __version__
 from app.db import get_db
 from app.models import (Agent, ApiKey, ArtifactRecommendation, Item, Link, MemoryShard,
-                        Prd, Project)
+                        Prd, Project, User)
 from app.security import authz
 from app.security.deps import get_agent_key
 from app.services import clustering as cluster_svc
@@ -63,6 +63,8 @@ from app.services import memory as mem_svc
 from app.services import setup as setup_svc
 from app.services import tool_tiers
 from app.services import delegation as delegation_svc
+from app.services import entitlements as entitlements_svc
+from app.services import headroom as headroom_svc
 from app.services import quotas
 from app.services import artifacts as art_svc
 from app.services import prds as prd_svc
@@ -114,7 +116,7 @@ _REQUEST_TYPE_ENUM = req_svc.REQUEST_TYPES
 #: said where descriptions are WRITTEN. It used to live only in the sign_off refusal hint, which
 #: reviewers see and planners — who write the descriptions — never do.
 _ITEM_BODY_DESC = "List acceptance under ## Acceptance; prose refuses sign_off."
-_EFFORT_DESC = "Relative effort estimate (higher = more work). No fixed unit."
+_EFFORT_DESC = "Relative size; higher = more."
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -171,13 +173,15 @@ TOOLS: list[dict[str, Any]] = [
                 "description": {"type": "string", "description": _ITEM_BODY_DESC},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "touchpoints": {"type": "array", "items": {"type": "string"},
-                                "description": "Files/globs it affects, e.g. backend/app/routers/*. Powers clustering."},
+                                "description": "Files/globs it affects, e.g. backend/app/routers/*."},
                 "effort": {"type": "integer", "description": _EFFORT_DESC},
                 "status": {"type": "string", "enum": _STATUS_ENUM, "description": "Defaults to backlog."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
-                             "description": "high = needs a prototype first. Default low."},
+                             "description": "high = prototype first."},
                 "prd_id": {"type": "string", "description": "The PRD this implements."},
                 "prd_section": {"type": "string", "description": "Its PRD section."},
+                "question": {"type": "string", "description": "Asks a human."},
+                "options": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["title"],
         },
@@ -202,7 +206,7 @@ TOOLS: list[dict[str, Any]] = [
                 "effort": {"type": "integer", "description": _EFFORT_DESC},
                 "blocker": {"type": "string", "description": "Empty string clears it."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
-                             "description": "high = needs a prototype first."},
+                             "description": "high = prototype first."},
                 "prd_id": {"type": "string"},
                 "prd_section": {"type": "string"},
                 "evidence": {
@@ -582,6 +586,55 @@ TOOLS: list[dict[str, Any]] = [
             "assign_role. Agents beyond the free clusters pull from the review queue."
         ),
         "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
+    },
+    # PRD-62 S2 (GRPH-1248). The org's entitlement registry, team/enterprise only (D8). Two
+    # names rather than one with a mode, because the read is open to every role and the write
+    # is the planner's (`fleet.TOOL_ROLES`); one tool cannot carry both gates.
+    {
+        "name": "list_entitlements",
+        "description": (
+            "The org's AI entitlements and the runners that declared each — self-declared, "
+            "not verified. Says nothing about headroom."
+        ),
+        "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
+    },
+    {
+        "name": "set_entitlement",
+        "description": (
+            "Register an org entitlement, or patch one by `id`. Never a credential: "
+            "`secret_ref` (api_key/cloud only) NAMES the secret on the runner. Unknown fields "
+            "are refused."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "vendor": {"type": "string"},
+                "kind": {"type": "string", "enum": list(entitlements_svc.KINDS)},
+                "owner_user_id": {"type": "string"},
+                "runner": {"type": "string"},
+                "plan_label": {"type": "string"},
+                "reset_cadence": {"type": "string"},
+                "secret_ref": {"type": "string"},
+                "token_budget": {"type": "integer"},
+                "project_id": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "report_entitlement_event",
+        "description": "Ledger event for an entitlement. spawn_start answers `admitted`.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "event": {"type": "string", "enum": list(headroom_svc.EVENTS)},
+                "vendor_text": {"type": "string"},
+                "tokens": {"type": "integer"},
+                "project_id": {"type": "string"},
+            },
+            "required": ["id", "event"],
+        },
     },
     {
         "name": "assign_role",
@@ -984,9 +1037,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "record_scan",
         "description": (
             "Report a code-health scanner result for a path at a commit (GRPH-1035). "
-            "Empty findings = CLEAN at scanned_sha, not never-scanned. Same scanner_id+path "
-            "replaces prior. Findings are untrusted; scanner_id/version/reported_by are "
-            "provenance. First category: security (pip-audit, bandit, npm-audit, semgrep)."
+            "Empty findings = CLEAN at scanned_sha only with result=complete. Same "
+            "scanner_id+path keeps history. Write key suffices; planners refused. "
+            "Unknown scanner_id needs category (refused)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1000,7 +1053,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "findings": {
                     "type": "array",
-                    "description": "Empty = clean. Items: severity, summary; optional path/link_kind/link_ref.",
+                    "description": "Items: severity, summary.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -1027,7 +1080,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "scan_status",
         "description": (
             "Code-health scan state for a path or every Stack deployable (GRPH-1035). "
-            "States: clean_at_sha / has_findings / never_scanned / stale — never a green "
+            "States: clean_at_sha / has_findings / never_scanned / stale (+ tool_missing, "
+            "not_applicable, incomplete, not_computable) — never a green "
             "default. Pass head_sha."
         ),
         "inputSchema": {
@@ -1042,8 +1096,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "scans_due",
         "description": (
-            "Component×category pairs due for a (re)scan — never_scanned or stale "
-            "(GRPH-1035). Empty due is not all-clean; never_scanned security rows stay listed."
+            "Cells due a scan: never_scanned (first-time too), stale, tool_missing, "
+            "incomplete. Empty due is not all-clean; empty_reason says why."
         ),
         "inputSchema": {
             "type": "object",
@@ -1336,6 +1390,8 @@ _READ_ONLY = {
     "prd_coverage", "grill_prd", "get_code_map", "code_neighbors", "search_code",
     "graph_query", "scan_status", "scans_due",
     "prd_acceptance", "learning_loop", "fleet_status",
+    # PRD-62 S2: a read of the org's registry; `set_entitlement` is the write.
+    "list_entitlements",
     # Added with the tool itself missing from this set (GRPH-519 -> GRPH-48). It looks a PRD
     # up and returns fields; it writes nothing, and its own literal declared
     # `readOnlyHint: True` — which the build loop then overwrote to False, because THIS is
@@ -1551,6 +1607,9 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             "mapping": {"type": "array"}, "rationale": {"type": "string"},
         },
     },
+    "list_entitlements": {"type": "object", "properties": {"entitlements": {"type": "array"}}},
+    "set_entitlement": {"type": "object", "properties": {"id": {"type": "string"}}},
+    "report_entitlement_event": {"type": "object", "properties": {"admitted": {"type": "boolean"}}},
     "delegate": {
         "type": "object",
         "properties": {
@@ -1757,6 +1816,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             "scanned_sha": _STR,
             "findings_recorded": {"type": "integer"},
             "clean": {"type": "boolean"},
+            "result": _STR,
             "reported_by": _STR,
         },
     },
@@ -1775,6 +1835,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "properties": {
             "due": {"type": "array"},
             "due_count": {"type": "integer"},
+            "empty_reason": _NULLABLE_STR,
         },
     },
     "report_graphban_issue": {
@@ -1893,6 +1954,16 @@ _SEAT_SCOPE_ARG = {"scope": {
     "description": "PRD this seat may claim within — the child cannot claim past it.",
 }}
 
+#: GRPH-1089. Fleet-only for the reason every entry in `_FLEET_ONLY_ARGS` is: the ceiling is
+#: measured on the base manifest, and a property only a planner sends should not be charged
+#: to every agent that connects. The dispatcher accepts it whether or not it was advertised.
+_BOUND_ONLY_ARG = {"bound_only": {
+    "type": "boolean",
+    "description": "Once the bound item leaves in_progress, claim_review, claim_next, "
+                   "claim_item, claim_cluster and next_cluster refuse, naming it. "
+                   "Omit to keep review-after-build.",
+}}
+
 #: GRPH-985. An OUTPUT property rather than an argument, advertised to the fleet tier for the
 #: reason every entry in `_FLEET_ONLY_ARGS` exists: the ceiling has no headroom for a field on
 #: every agent's manifest. Advertisement, never a boundary — the dispatcher returns
@@ -1903,6 +1974,26 @@ _FLEET_ONLY_OUT = {
     "update_item": {"touchpoint_intake": {"type": "object"}},
     "record_scan": {"tests": {"type": ["object", "null"]}},
 }
+
+#: GRPH-1127. Optional per-finding fields a producer sends at the grain a person acts on:
+#: npm audit's advisory identity, direct/transitive, fixed version; knip's rollup kind+count.
+_FINDING_GRAIN = ("advisory_id", "dependency", "fixed_version", "kind", "count")
+
+
+def _with_finding_grain() -> dict:
+    """record_scan's base `findings` schema, its description naming `_FINDING_GRAIN`.
+
+    Named in prose, not as properties: five typed properties cost the worker manifest its
+    10% saving (test_mcp_role_manifest), and `_validate_args` does not check nested finding
+    fields, so the server stores them whether or not they are advertised.
+    """
+    base = next(t for t in TOOLS if t["name"] == "record_scan")
+    findings = copy.deepcopy(base["inputSchema"]["properties"]["findings"])
+    findings["description"] = (
+        "Empty = clean with result=complete. Optional: " + ", ".join(_FINDING_GRAIN) + "."
+    )
+    return findings
+
 
 _FLEET_ONLY_ARGS = {
     "collision_clusters": {
@@ -1927,8 +2018,17 @@ _FLEET_ONLY_ARGS = {
             "description": "This item's text reads like deployment work and you have checked "
                            "it is not. Recorded against the delegation.",
         },
+        **_BOUND_ONLY_ARG,
     },
-    "mint_enrolment": dict(_SEAT_SCOPE_ARG),
+    "mint_enrolment": {
+        **_SEAT_SCOPE_ARG,
+        **_BOUND_ONLY_ARG,
+        "item": {
+            "type": "string",
+            "description": "Item a bound_only seat is bound to. Required with bound_only; "
+                           "refused without it.",
+        },
+    },
     # GRPH-1007, and fleet-only for the reason every entry here is: the ceiling is measured on
     # the base manifest, and only a reviewer ever sends this. A predicate whose check could not
     # run now reports `passed: false` and blocks completion; this is how a reviewer admits one
@@ -1949,10 +2049,24 @@ _FLEET_ONLY_ARGS = {
     # GRPH-1061. A tests scan's counts. Fleet-only for the reason every entry here is: the
     # ceiling had no room for it, and `record_scan` is a worker tool (fleet.py gates it to
     # the worker role). The REST ingest (`POST /platform/stack/scans`) takes the same field.
-    "record_scan": {"tests": {
-        "type": "object",
-        "description": "Required for tests (pytest/vitest/jest/junit): passed, failed, skipped.",
-        "properties": {k: {"type": "integer"} for k in ("passed", "failed", "skipped")},
+    "record_scan": {
+        "tests": {
+            "type": "object",
+            "description": "Category tests needs it.",
+            "properties": {k: {"type": "integer"} for k in ("passed", "failed", "skipped")},
+        },
+        # GRPH-1125. Bare on purpose: an enum + description cost the worker manifest its 10%
+        # saving (test_mcp_role_manifest). A bad value is refused naming all four results.
+        "result": {"type": "string"},
+        # GRPH-1127. The finding grain, advertised where record_scan is used.
+        "findings": _with_finding_grain(),
+    },
+    # PRD-62 S2 (GRPH-1248). Fleet-only for the reason every entry here is: a runner that
+    # declares entitlements is a supervisor's spawn, and the property should not be charged to
+    # every agent that connects. The dispatcher accepts it whether or not it was advertised.
+    "register_agent": {"entitlements": {
+        "type": "array", "items": {"type": "string"},
+        "description": "Entitlement ids this runner can run. Trusted, not verified.",
     }},
     # GRPH-807. Measured on a live instance: 177 agents, 27,391 tokens, of which ONE was live.
     # A planner polling a wave paid nearly twice the whole manifest, per poll.
@@ -2516,15 +2630,25 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         # Refusals are audited with the agent AND the human principal behind the key, both
         # stamped server-side — a compromised client still produces a correctly attributed
         # trail, because none of it comes from anything the client sent.
+        #
+        # Recorded once, by the dispatcher's refusal path, as the typed `refusal` event with
+        # its rule (GRPH-1158) — it was `role_refused`, which old rows are still keyed by.
         count = fleet_svc.record_refusal(db, agent_id=_agent_id, tool=name,
                                          reason=str(refusal))
-        meta = {"tool": name, "reason": str(refusal), "agent_id": _agent_id,
-                "consecutive_refusals": count}
+        meta = {"tool": name, "agent_id": _agent_id, "consecutive_refusals": count}
         if _agent_id and count >= fleet_svc.QUARANTINE_AFTER_REFUSALS:
             meta["quarantine"] = fleet_svc.quarantine(db, _agent_id)
-        events_svc.record_key(db, key, action="role_refused", target_type="agent",
-                              target_id=_agent_id or "", project_id=pid, meta=meta)
-        raise
+        # The refusal attaches to what the call targets (PRD §6: "when the request targets an
+        # item or PRD, the event attaches to it"); the agent stays in meta. Only a call that
+        # names neither falls back to the agent.
+        if args.get("prd_id"):
+            target = ("prd", str(args["prd_id"]))
+        elif args.get("item_id") or args.get("id"):
+            target = ("item", str(args.get("item_id") or args.get("id")))
+        else:
+            target = ("agent", _agent_id or "")
+        raise errors.Refused(403, str(refusal), rule_id="review.role_gated_tools",
+                             hint=refusal.hint, meta=meta, target=target) from refusal
     # Consecutive is the property that matters: three refusals spread across a productive hour
     # is one stale code path, not an agent that has stopped listening.
     fleet_svc.clear_refusals(db, _agent_id)
@@ -2650,6 +2774,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             touchpoints=args.get("touchpoints"),
             prd_id=args.get("prd_id"),
             prd_section=args.get("prd_section", ""),
+            question=args.get("question"),
+            options=args.get("options"),
             reporter={"name": "Agent", "handle": "mcp", "avatar": "#a78bfa"},
         )
         _idempotent_remember(db, args, "create_item", item.id)
@@ -2719,7 +2845,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             tags=args.get("tags"), limit=10_000,
         )
         lean = not _full(args)
-        shape = _lean_item if lean else _item_dict
+        # GRPH-1182: the full row carries `blocker`, the field this search matches on. Without
+        # it a hit on blocker text read as unblocked, and `gbfleet until` adopted no hold.
+        shape = _lean_item if lean else (lambda i: {**_item_dict(i), "blocker": i.blocker or ""})
         return _paginate([shape(i) for i in rows], args,
                          fields=LEAN_FIELDS if lean else None)
     if name == "add_memory":
@@ -2930,6 +3058,23 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return out
     if name == "propose_allocation":
         return fleet_svc.propose_allocation(db, pid)
+    if name == "list_entitlements":
+        return {"entitlements": entitlements_svc.list_entitlements(
+            db, entitlements_svc.org_for_project(db, pid))}
+    if name == "report_entitlement_event":
+        me = _agent_for_call(db, key, args, session_id)
+        return headroom_svc.report(
+            db, entitlements_svc.org_for_project(db, pid), args["id"], args["event"],
+            agent_id=me, vendor_text=args.get("vendor_text") or "",
+            tokens=args.get("tokens"))
+    if name == "set_entitlement":
+        # Everything but routing goes to the service, unknown keys included: it refuses a
+        # field it does not know rather than this dispatcher dropping it, which would answer
+        # a request to store a credential with a success (PRD-62 D2).
+        fields = {k: v for k, v in args.items() if k not in ("id", "agent_id", "project_id")}
+        return entitlements_svc.set_entitlement(
+            db, entitlements_svc.org_for_project(db, pid), fields,
+            entitlement_id=args.get("id") or None, actor=getattr(key, "id", None))
     if name == "delegate":
         item = _scoped_item(db, args["id"], readable)
         me = _agent_for_call(db, key, args, session_id)
@@ -2943,6 +3088,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 note=args.get("note", ""), lease_seconds=items_svc.DEFAULT_LEASE_SECONDS,
                 seat=bool(args.get("seat")), api_key=key, wave=args.get("wave"),
                 acknowledge_reach=bool(args.get("acknowledge_reach")),
+                bound_only=bool(args.get("bound_only")),
                 # The ITEM's project, not the key's default: a scope has to belong to the
                 # same project as the work it bounds, and `_scoped_item` has already proved
                 # the caller may read this one.
@@ -2955,6 +3101,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise errors.Conflict(msg, hint=e.hint)
         return {"delegation_id": row.id, "state": delegation_svc.state(row),
                 "withdrew": withdrew, "enrolment_code": code,
+                # GRPH-1089. Always present, like review_only on a seat: a caller can tell
+                # "flag false" from "this server never heard of it". True only when the call
+                # asked for it — a true value with seat omitted is refused before this return.
+                "bound_only": bool(args.get("bound_only")),
                 "brief": delegation_svc.brief(db, item, user_id=key.user_id)}
     if name == "assign_role":
         try:
@@ -3032,6 +3182,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "sign_off":
         _scoped_item(db, args["id"], allowed)
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
+        _who = {"agent_id": args.get("agent_id")}
         try:
             item = fleet_svc.sign_off(
                 db, item_id=keys.resolve_item(db, args["id"]) or args["id"],
@@ -3053,74 +3204,62 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 "wait for the agent working it to call update_item(status='review'), or take "
                 "other work with claim_review"))
         except fleet_svc.SelfReview as e:
-            raise authz.Forbidden(
-                str(e), hint="another agent takes it from review; call fleet_status to see who")
+            raise errors.Refused(
+                403, str(e), rule_id="review.not_own_work", meta=_who,
+                hint="another agent takes it from review; call fleet_status to see who") from e
+        # The gates below are typed refusals (GRPH-1158): each names its rule, and the
+        # dispatcher's refusal path records it once, as `refusal` on the item — audited on
+        # the refusal path because the dispatcher only audits successes, and a gate nobody
+        # can see being routed around is a gate on paper (GRPH-321, GRPH-970). They were
+        # `sign_off_refused`, which rows written before then are still keyed by. 409, not
+        # 403: the caller IS permitted to sign this off — the work simply is not accounted
+        # for yet, and `unauthorized` would send a worker hunting a permissions problem.
         except fleet_svc.MissingAdversarialEvidence as e:
-            # Audited on the REFUSAL path, because the dispatcher only audits successes — and a
-            # gate whose refusals leave no trace cannot be examined for whether it is being
-            # routed around, which is the exact failure that kept GRPH-321 parked.
-            events_svc.record_key(
-                db, key, action="sign_off_refused", target_type="item",
-                target_id=args.get("id", ""), project_id=pid,
-                meta={"reason": str(e), "agent_id": args.get("agent_id")})
-            # Conflict, not unauthorized: the caller IS permitted to sign this off — the work
-            # simply is not accounted for yet. `unauthorized` would send a worker hunting a
-            # permissions problem it does not have.
-            raise errors.Conflict(str(e), hint=(
-                "dispatch two opposing-lens critics, or run the passes yourself, and record "
-                "each as evidence {kind: sabotage, claim, mutation, tests_failed}"))
+            raise errors.Refused(
+                409, str(e), rule_id="review.adversarial_evidence", meta=_who, hint=(
+                    "dispatch two opposing-lens critics, or run the passes yourself, and "
+                    "record each as evidence {kind: sabotage, claim, mutation, tests_failed}"),
+            ) from e
         except fleet_svc.AttestedTheBase as e:
-            # Audited on the refusal path with the others: a gate nobody can see being routed
-            # around is a gate on paper (GRPH-970).
-            events_svc.record_key(
-                db, key, action="sign_off_refused", target_type="item",
-                target_id=args.get("id", ""), project_id=pid,
-                meta={"reason": str(e), "agent_id": args.get("agent_id")})
-            # Conflict, like its neighbours: the caller may sign this off, but the revision it
-            # named is not the work.
-            raise errors.Conflict(str(e), hint=(
-                "attest the head of the branch you reviewed — `git rev-parse HEAD` in the "
-                "worktree — not the commit it was cut from; if `git log base..HEAD` is empty "
-                "there is nothing to review and this belongs in a bounce"))
+            # The caller may sign this off, but the revision it named is not the work.
+            raise errors.Refused(
+                409, str(e), rule_id="review.attest_the_head", meta=_who, hint=(
+                    "attest the head of the branch you reviewed — `git rev-parse HEAD` in the "
+                    "worktree — not the commit it was cut from; if `git log base..HEAD` is "
+                    "empty there is nothing to review and this belongs in a bounce"),
+            ) from e
         except fleet_svc.UncomparedPredicate as e:
-            # Audited like its neighbours (GRPH-970's rule): a gate nobody can see being
-            # routed around is a gate on paper.
-            events_svc.record_key(
-                db, key, action="sign_off_refused", target_type="item",
-                target_id=args.get("id", ""), project_id=pid,
-                meta={"reason": str(e), "agent_id": args.get("agent_id")})
-            # Conflict, not unauthorized: the caller may sign this off, the receipt simply
-            # would not stand behind it.
-            raise errors.Conflict(str(e), hint=(
-                "a predicate that could not run is not a pass — give it something to compare "
-                "against, or waive it on the record with waive={\"<predicate>\": \"<why>\"}"))
+            # The caller may sign this off, the receipt simply would not stand behind it.
+            raise errors.Refused(
+                409, str(e), rule_id="review.predicates_compared", meta=_who, hint=(
+                    "a predicate that could not run is not a pass — give it something to "
+                    "compare against, or waive it on the record with "
+                    "waive={\"<predicate>\": \"<why>\"}"),
+            ) from e
         except fleet_svc.ClauseCapability as e:
-            # Same audit as the coverage refusal (GRPH-970): a gate whose refusals leave no
-            # trace cannot be examined for whether it is being routed around.
-            events_svc.record_key(
-                db, key, action="sign_off_refused", target_type="item",
-                target_id=args.get("id", ""), project_id=pid,
-                meta={"reason": str(e), "agent_id": args.get("agent_id")})
-            raise errors.Conflict(str(e), hint=(
-                "this clause needs a reviewer who declared the capability — capabilities.tools "
-                "or capabilities.allows, and capabilities.human for a human-only clause. "
-                "Leave the item in review; do not bounce it"))
+            raise errors.Refused(
+                409, str(e), rule_id="review.clause_capability", meta=_who, hint=(
+                    "this clause needs a reviewer who declared the capability — "
+                    "capabilities.tools or capabilities.allows, and capabilities.human for a "
+                    "human-only clause. Leave the item in review; do not bounce it"),
+            ) from e
         except fleet_svc.MissingAcceptanceCoverage as e:
-            events_svc.record_key(
-                db, key, action="sign_off_refused", target_type="item",
-                target_id=args.get("id", ""), project_id=pid,
-                meta={"reason": str(e), "agent_id": args.get("agent_id")})
             if isinstance(e, fleet_svc.UnreadableAcceptance):
-                raise errors.Conflict(str(e), hint=(
-                    "bounce it, or update_item the description so each acceptance clause is a "
-                    "list item under ## Acceptance, then name each in a {kind: test} entry"))
-            raise errors.Conflict(str(e), hint=(
-                "pass, in this sign_off's evidence, a {kind: test} entry whose detail names "
-                "each acceptance clause from the item's ## Acceptance / ## Tests section — a "
-                "{kind: note} does not cover; a clause the evidence says was not delivered "
-                "needs a bounce, not a test; quoting the clause (including its own 'not' / "
-                "'cannot') is not a denial, and 'N failed' on a sabotage-style clause is the "
-                "expected red run"))
+                raise errors.Refused(
+                    409, str(e), rule_id="review.acceptance_covered", meta=_who, hint=(
+                        "bounce it, or update_item the description so each acceptance clause "
+                        "is a list item under ## Acceptance, then name each in a {kind: test} "
+                        "entry"),
+                ) from e
+            raise errors.Refused(
+                409, str(e), rule_id="review.acceptance_covered", meta=_who, hint=(
+                    "pass, in this sign_off's evidence, a {kind: test} entry whose detail "
+                    "names each acceptance clause from the item's ## Acceptance / ## Tests "
+                    "section — a {kind: note} does not cover; a clause the evidence says was "
+                    "not delivered needs a bounce, not a test; quoting the clause (including "
+                    "its own 'not' / 'cannot') is not a denial, and 'N failed' on a "
+                    "sabotage-style clause is the expected red run"),
+            ) from e
         out = _item_dict(item)
         if fleet_svc.is_credential(agent):
             # Say it in the response, not only in the column. A caller that never registered
@@ -3147,6 +3286,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return _item_dict(item)
     if name == "register_agent":
         assigned: dict = {}
+        # PRD-62 S2: checked BEFORE the agent exists, so a refused declaration (unknown id, or
+        # an org off team/enterprise) mints no agent id. Absent and [] both declare nothing.
+        declared = (entitlements_svc.validate_declaration(db, pid, args["entitlements"])
+                    if args.get("entitlements") else [])
         try:
             agent = fleet_svc.register_agent(
                 db, project_id=pid, api_key=key, label=args.get("label", ""),
@@ -3167,6 +3310,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         # exist to bind.
         if session_id:
             agent.mcp_session_id = session_id
+            db.commit()
+        if declared:
+            agent.entitlement_ids = declared
+            headroom_svc.note_declared(db, agent, declared)
             db.commit()
         # §7.1 (PRD-39): a seat stored as a role the server no longer has says what was
         # stored AND what it became, so the client is told rather than left to compare.
@@ -3190,6 +3337,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # cannot live there: that list is derived from the ROLE, and this is not a role.
             # The gate in `claim_next`/`claim_item` is what enforces it.
             "review_only": items_svc.review_only_seat(db, agent.id),
+            # GRPH-1089. Same shape as review_only: always present, reply-only, not in the
+            # outputSchema. The gate in claim_review/claim_next is what enforces it, and only
+            # once the bound item has left in_progress — this reports the flag itself.
+            "bound_only": items_svc.bound_only_seat(db, agent.id),
             # The boundary, stated once, at the moment the role is granted. The MANIFEST cannot
             # say this: `tools/list` is fetched at connect, before any role exists, so a fleet
             # agent holds the full list all session and finds the edge by walking into it — and
@@ -3211,22 +3362,58 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             "project_id": agent.project_id,
             "assigned": assigned or {"item": None, "state": "none", "reason": None,
                                      "held_by": None},
+            # Reply-only, and only when something was declared — same footprint argument as
+            # `role_resolved`. `verified` is always false: the server checked the ids exist,
+            # and cannot check the runner holds them (PRD-62 S2).
+            **({"entitlements": {"declared": declared, "verified": False,
+                                 "note": entitlements_svc.DECLARATION_TRUST}}
+               if declared else {}),
         }
     if name == "mint_enrolment":
+        # GRPH-1089. `item` is the binding for a bound_only seat, and only for that. Opening
+        # it on its own would be a second way to bind a seat that skips delegate's checks
+        # for every ordinary bound seat; requiring the flag keeps that path on delegate.
+        bound_only = bool(args.get("bound_only"))
+        item_key = args.get("item") or None
+        if bound_only and not item_key:
+            raise errors.Validation(
+                "bound_only needs an item this seat is bound to: pass item")
+        if item_key and not bound_only:
+            raise errors.Validation(
+                "item on mint_enrolment binds a bound_only seat: pass bound_only=true, "
+                "or bind through delegate(seat=true)")
+        item_id = None
+        project_id = pid
+        if item_key:
+            item = _scoped_item(db, item_key, readable)
+            me = db.get(Agent, args.get("agent_id") or "")
+            if me is None:
+                raise errors.Validation("mint_enrolment needs a registered agent_id")
+            try:
+                delegation_svc.refuse_bound_collision(db, agent=me, item=item)
+            except delegation_svc.DelegationRefused as e:
+                detail = "; ".join(f"{k}={v}" for k, v in e.detail.items())
+                msg = f"{e} ({detail})" if detail else str(e)
+                raise errors.Conflict(msg, hint=e.hint)
+            item_id = item.id
+            project_id = item.project_id
         try:
             row, code = fleet_svc.mint_enrolment_as(
-                db, minter_id=args["agent_id"], project_id=pid, role=args["role"],
+                db, minter_id=args["agent_id"], project_id=project_id, role=args["role"],
                 api_key=key, wave=args.get("wave"),
-                prd_id=_scope_id(db, pid, args.get("scope")),
-                review_only=bool(args.get("review_only")))
+                prd_id=_scope_id(db, project_id, args.get("scope")),
+                review_only=bool(args.get("review_only")),
+                item_id=item_id, bound_only=bound_only)
         except ValueError as e:
             raise errors.Validation(str(e))
         # Returned ONCE, like every other credential-shaped thing here. `review_only` is
         # echoed because it is the one property of the seat the minter cannot read back later:
         # the code is gone, and a planner that cannot confirm what it just minted cannot tell
-        # a review-only wave from one that quietly is not (GRPH-988).
+        # a review-only wave from one that quietly is not (GRPH-988). `bound_only` is the
+        # same kind of echo (GRPH-1089).
         return {"enrolment_code": code, "role": row.role, "seat_id": row.id,
                 "review_only": bool(row.review_only),
+                "bound_only": bool(row.bound_only),
                 "expires_at": row.expires_at.isoformat() if row.expires_at else None}
     if name == "fleet_status":
         minted_by = None
@@ -3418,7 +3605,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # `conflict`, not `validation`: the call was well-formed and permitted, the
             # PRD simply is not there yet. The message names what is still outstanding
             # so the agent knows what to go ask about.
-            raise errors.Conflict(str(e)) from e
+            raise errors.Refused(409, str(e), rule_id="gate.approval_earned_by_grill") from e
         return _prd_dict(updated)
     if name == "answer_grill":
         prd = prd_svc.get_prd(db, args["prd_id"])
@@ -3473,7 +3660,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise errors.NotFound(f"prd not found: {args['prd_id']}")
         if prd.project_id not in readable:
             raise authz.Forbidden(f"prd {args['prd_id']!r} is outside this key's project scope")
-        questions, retried = prd_svc.ai_command_detail(db, prd.id, "grill")
+        # Not `ai_command_detail`. That call sends the body to `_COMMANDS["grill"]`
+        # and never reads the transcript, so a settled grill was asked a fresh list
+        # (GRPH-1123). This is the stream's prompt, and it still writes nothing.
+        questions, retried = prd_svc.grill_questions(db, prd.id)
         # `retried` is reported rather than logged only: a caller whose grill was slow can
         # tell contention from a hung server without reading the server's logs (GRPH-505).
         #
@@ -3687,6 +3877,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             note=str(args.get("note") or ""),
             reported_by=reported,
             tests=args.get("tests"),
+            result=args.get("result"),
         )
     if name == "scan_status":
         return scans_svc.scan_status(
@@ -4004,7 +4195,8 @@ def _success(id_: Any, result: Any, modern: bool = False) -> dict:
 
 
 def _tool_error(id_: Any, code: str, message: str, hint: str | None = None,
-                modern: bool = False) -> dict:
+                modern: bool = False, *, rule_id: str | None = None,
+                refusal: bool = False) -> dict:
     """A tool-level failure. Reported via isError so the agent sees it, with a stable
     machine-readable `code` in structuredContent to branch on and an optional `hint`
     naming the corrective action (AL-47). An isError payload is still a Result, so it
@@ -4012,6 +4204,9 @@ def _tool_error(id_: Any, code: str, message: str, hint: str | None = None,
     err: dict[str, Any] = {"code": code, "message": message}
     if hint:
         err["hint"] = hint
+    if refusal:
+        # Present-but-null on an unmapped refusal: absence must not read as "no rule applies".
+        err["rule_id"] = rule_id
     text = f"{code}: {message}" + (f" ({hint})" if hint else "")
     payload: dict[str, Any] = {
         "content": [{"type": "text", "text": text}],
@@ -4136,6 +4331,27 @@ async def mcp_endpoint(
                          ok=False, error_code=code, started=_started)
             return _tool_error(id_, code, message, hint, modern=modern)
 
+        def _refused(e: errors.Refused) -> dict:
+            # A typed policy refusal (GRPH-1158). Recorded once, here, with the TOOL name —
+            # every MCP call arrives on one POST, so the route would say nothing. The rule
+            # rides in the error so an agent can branch on it without parsing prose.
+            tid = str(args.get("id") or args.get("item_id") or args.get("prd_id") or "")
+            ttype, tid = e.target or ("prd" if args.get("prd_id") else ("item" if tid else ""),
+                                      tid)
+            meta = dict(e.meta)
+            owner = db.get(User, key.user_id) if key.user_id else None
+            if owner is not None:  # the human behind the key, as `record_key` stamps it
+                meta["principal"] = {"id": owner.id, "label": owner.handle or owner.name}
+            events_svc.record_refusal(
+                db, rule_id=e.rule_id, surface="mcp", where=name, status=e.status_code,
+                detail=str(e.detail), actor=("apikey", key.id, key.name or key.id),
+                target_type=ttype, target_id=tid, meta=meta,
+                project_id=scope.get("project_id") or args.get("project_id"))
+            _record_call(db, key, name, args, None, scope, _session_id,
+                         ok=False, error_code=e.mcp_code, started=_started)
+            return _tool_error(id_, e.mcp_code, str(e.detail), e.hint, modern=modern,
+                               rule_id=e.rule_id, refusal=True)
+
         try:
             # Validate arguments against the declared schema before dispatch, so a
             # bad call is an actionable error rather than a KeyError or a silently
@@ -4170,6 +4386,8 @@ async def mcp_endpoint(
             # Collected here rather than inside each handler: every fleet tool would otherwise
             # need to remember, and the one that forgot would strand a directive silently.
             result = await run_in_threadpool(_attach_directive, db, result, args)
+        except errors.Refused as e:
+            return _refused(e)
         except authz.Forbidden as e:
             # Authenticated but out of scope: distinct code so agents can branch
             # (retry won't help — a different key or membership grant will).
@@ -4198,9 +4416,10 @@ async def mcp_endpoint(
             # CONFLICT, not validation (GRPH-654). The arguments are fine; the PRD has not
             # earned approved. `validation` would send an agent editing a payload that is
             # already correct. Mapped here so REST 409 and MCP conflict cannot drift.
-            return _fail("conflict", str(e),
-                               "finish the grill so the PRD reaches approved, then send "
-                               "create=true again")
+            return _refused(errors.Refused(
+                409, str(e), rule_id="gate.decompose_requires_approval",
+                hint="finish the grill so the PRD reaches approved, then send "
+                     "create=true again"))
         except items_svc.ReviewOnlySeat as e:
             # CONFLICT, mapped here rather than in each claim handler because this is the one
             # place every path into those service calls passes through (GRPH-988) —
@@ -4212,6 +4431,15 @@ async def mcp_endpoint(
                          "nothing is wrong with the call and no item would have been the right "
                          "one: this seat may review and may not build. claim_review, then exit "
                          "when it answers claimed=false")
+        except items_svc.BoundOnlySeat as e:
+            # CONFLICT, same reason as ReviewOnlySeat (GRPH-1089). `claim_review` returns None
+            # for an empty queue; this must not become that, and it must not become `internal`
+            # ("safe to retry"). The message says which: delivered or held elsewhere, the
+            # child exits; requeued by a lease lapse, it reclaims its own item (GRPH-1101).
+            return _fail("conflict", str(e),
+                         "nothing is wrong with the call: this seat is bound to one item. If "
+                         "the message says to reclaim it, claim_item on that item; otherwise "
+                         "exit — that is the normal end of a bound-only run")
         except errors.AppError as e:
             # Expected, agent-correctable failure: not_found | validation | conflict.
             return _fail(e.code, str(e), e.hint)

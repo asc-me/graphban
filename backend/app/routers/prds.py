@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.errors import Refused
 from app.models import User
 from app.providers import iter_reply, llm_meter
 from app.schemas import (
@@ -19,6 +20,7 @@ from app.schemas import (
     PrdAiOut,
     PrdCreate,
     PrdLinkIn,
+    PrdRequestLinkIn,
     CloseIn,
     PromoteIn,
     PrdOut,
@@ -62,7 +64,49 @@ def _require_readable_prd(db: Session, user: User, prd_id: str):
 @router.get("", response_model=list[PrdSummary])
 def list_prds(project_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     authz.require_readable(db, user.id, project_id)
-    return prd_svc.list_prds(db, project_id=project_id)
+    prds = prd_svc.list_prds(db, project_id=project_id)
+    roll = prd_svc.request_rollups(db, [p.id for p in prds])
+    return [PrdSummary.model_validate(p).model_copy(update=roll[p.id]) for p in prds]
+
+
+def _request_link(db: Session, user: User, prd_id: str, request_id: str, add: bool):
+    _require_writable_prd(db, user, prd_id)
+    prd = prd_svc.get_prd(db, prd_id)
+    try:
+        prd_svc.link_request(db, prd, request_id, add)
+    except prd_svc.PrdClosed as e:
+        raise HTTPException(409, str(e))
+    except prd_svc.RequestNotInProject as e:
+        raise HTTPException(404, str(e))
+    return {"linked": add, **prd_svc.request_rollups(db, [prd.id])[prd.id]}
+
+
+@router.post("/{prd_id}/requests")
+def link_prd_request(prd_id: str, body: PrdRequestLinkIn, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    return _request_link(db, user, prd_id, body.request_id, True)
+
+
+@router.delete("/{prd_id}/requests/{request_id}")
+def unlink_prd_request(prd_id: str, request_id: str, db: Session = Depends(get_db),
+                       user: User = Depends(get_current_user)):
+    return _request_link(db, user, prd_id, request_id, False)
+
+
+@router.get("/{prd_id}/requests")
+def list_prd_requests(prd_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    prd = _require_readable_prd(db, user, prd_id)
+    return [{"id": r.key, "title": r.title, "type": r.type, "votes": r.votes, "status": r.status,
+             "by": r.by, "created_at": r.created_at.isoformat() if r.created_at else None,
+             "linked_to": r.linked_to_key}
+            for r in prd_svc.linked_requests(db, prd)]
+
+
+@router.get("/{prd_id}/request-suggestions")
+def prd_request_suggestions(prd_id: str, db: Session = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+    prd = _require_readable_prd(db, user, prd_id)
+    return prd_svc.request_suggestions(db, prd)
 
 
 @router.post("", response_model=PrdOut, status_code=201)
@@ -412,7 +456,7 @@ def decompose_prd(prd_id: str, create: bool = False, include_prose: bool = False
     except prd_svc.DecomposeRequiresApproval as e:
         # 409, like ApprovalNotEarned: the request is well-formed; the PRD is not there yet.
         # 422 would read as a malformed payload.
-        raise HTTPException(409, str(e))
+        raise Refused(409, str(e), rule_id="gate.decompose_requires_approval")
 
 
 @router.get("/{prd_id}", response_model=PrdOut)
@@ -435,7 +479,7 @@ def update_prd(prd_id: str, body: PrdUpdate, db: Session = Depends(get_db), user
     except prd_svc.ApprovalNotEarned as e:
         # 409, not 422: the request is well-formed and permitted, the PRD just is not
         # there yet. A validation error would read as "you sent something malformed".
-        raise HTTPException(409, str(e))
+        raise Refused(409, str(e), rule_id="gate.approval_earned_by_grill")
     except ValueError as e:
         raise HTTPException(422, str(e))
     if prd is None:
@@ -529,8 +573,9 @@ def grill_stream(prd_id: str, body: GrillIn, db: Session = Depends(get_db), user
         # thread route already relies on.
         parts: list[str] = []
         if provider == "stub":
-            # Offline: stream the deterministic opening questions.
-            for line in prd_svc._stub_command("grill", prd).splitlines(keepends=True):
+            # Same outstanding-only list `grill_prd` returns. The one-shot editor
+            # command stays on `_stub_command`, which has no transcript.
+            for line in prd_svc._stub_grill(db, prd).splitlines(keepends=True):
                 parts.append(line)
                 yield _sse("delta", json.dumps({"text": line}))
         else:

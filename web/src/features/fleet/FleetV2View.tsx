@@ -21,48 +21,53 @@ import { MixAllocation } from "./MixAllocation";
  */
 export function FleetV2View() {
   const { activeId, active } = useProjectCtx();
-  const scope = active?.tag || active?.name || activeId;
   const { data: config } = useConfig();
-  const { data, refetch } = useFleet(activeId);
+  const { data, refetch, isError } = useFleet(activeId);
+  const loading = !data && !isError;
+  const failed = !data && !!isError;
   const viewHref = (view: string) =>
     config?.hosted_mode && active?.tag ? projectPath(active.tag, view) : `/${view}`;
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="fleet-v2">
       <PlaceHeader
-        viewName={`Fleet.v2 ${scope}`}
-        purpose="What can run, which model each harness runs, and how you allocate it. Roster and waves are Fleet.v1."
+        viewName="Fleet"
+        purpose="What can run, which model each harness runs, and how you allocate it. Roster and waves are on the Fleet management tab."
         action={
           <div className="flex items-center gap-3 text-[12px]">
             <Link to={viewHref("harness")} className="text-muted transition-colors hover:text-fg-2">
-              Harness
+              Harness performance
             </Link>
             <Link to={viewHref("outposts")} className="text-muted transition-colors hover:text-fg-2">
               Outposts
-            </Link>
-            <Link to={viewHref("fleet.v1")} className="text-muted transition-colors hover:text-fg-2">
-              Fleet.v1
             </Link>
           </div>
         }
       />
       <FleetPageTabs active="harness" />
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
-        <TierMapPanel
-          projectId={activeId}
-          harnessHref={viewHref("harness")}
-        />
-        <MatrixTable
-          rows={data?.matrix?.rows ?? []}
-          harnessHref={viewHref("harness")}
-        />
+        <div className="max-w-[930px]" data-testid="fleet-v2-content">
+          {/* Design order: Harness catalog → Tier map → Allocation. */}
+          <MatrixTable
+            rows={data?.matrix?.rows ?? []}
+            harnessHref={viewHref("harness")}
+            loading={loading}
+            error={failed}
+            onRetry={() => { void refetch(); }}
+          />
+          <TierMapPanel
+            projectId={activeId}
+            harnessHref={viewHref("harness")}
+          />
         <MixAllocation
           projectId={activeId}
           profile={data?.profile ?? null}
           rows={data?.matrix?.rows ?? []}
           recent={data?.mix}
           onSaved={() => { void refetch(); }}
+          loading={loading || failed}
         />
+        </div>
       </div>
     </div>
   );

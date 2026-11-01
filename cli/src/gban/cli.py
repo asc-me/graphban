@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from gban import config, doctor as doctor_mod, setup as setup_mod, swamp as swamp_mod
+from gban import config, doctor as doctor_mod, setup as setup_mod, stackmap, swamp as swamp_mod
 from gban.client import (EXIT_NO_SESSION, EXIT_NO_SUPERVISOR, EXIT_REFUSED, EXIT_UNREACHABLE,
                        Client, NoSession,
                        Refused, Unreachable, authenticated, login)
@@ -90,6 +90,24 @@ def _parser() -> argparse.ArgumentParser:
                              help=f"the graphban-swamp checkout (default: {swamp_mod.DEFAULT_ADAPTER})")
     swamp_setup.add_argument("--no-init", action="store_true",
                              help="refuse rather than run `swamp repo init` here")
+
+    stack_cmd = sub.add_parser(
+        "stack", help="map this checkout and post the app topology",
+        description=("Reads compose files, Dockerfiles, dependency manifests and "
+                     ".env.example, and posts one app-topology record. Env values "
+                     "are not stored. --dry-run prints the record and posts nothing."))
+    stack_do = stack_cmd.add_subparsers(dest="act")
+    stack_map = stack_do.add_parser(
+        "map", help="build the record from this repo",
+        description=("Deterministic. Two runs on the same commit print the same "
+                     "JSON. A real post uses a project-write API key "
+                     f"(${doctor_mod.SUPERVISOR_KEY_ENV} or ${config.API_KEY_ENV}), "
+                     "never the login session, and goes to "
+                     f"POST {stackmap._POST_PATH}."))
+    stack_map.add_argument("--dry-run", action="store_true",
+                           help="print the record and do not post it")
+    stack_map.add_argument("--repo", default=None,
+                           help="repository to map (default: the git checkout of the current directory)")
 
     fleet = sub.add_parser(
         "fleet", help="hand off to gbfleet (the supervisor)",
@@ -407,6 +425,75 @@ def cmd_swamp(args) -> int:
     return code
 
 
+def cmd_stack(args) -> int:
+    """Build the app-topology record and, unless --dry-run, post it (GRPH-P55 §3)."""
+    if args.act != "map":
+        print(f"{PROG}: usage: {PROG} stack map [--dry-run] [--repo DIR]", file=sys.stderr)
+        return EXIT_REFUSED
+    start = Path(args.repo).expanduser() if args.repo else Path.cwd()
+    project = (config.resolve(args.project, config.PROJECT_ENV, "project") or "").strip()
+    try:
+        record, warnings, coverage = stackmap.build_record(start, project_id=project)
+    except stackmap.MapError as exc:
+        print(f"{PROG}: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    for warning in warnings:
+        print(f"{PROG}: {warning}", file=sys.stderr)
+    # Always. A three-node map that exits 0 is not a finished topology.
+    print(f"{PROG}: {coverage}", file=sys.stderr)
+    text = stackmap.canonical(record)
+    if args.dry_run:
+        sys.stdout.write(text)
+        print(f"{PROG}: dry run, nothing posted", file=sys.stderr)
+        return 0
+    if not project:
+        print(f"{PROG}: `{PROG} stack map` needs a project to post. Pass --project, set "
+              f"${config.PROJECT_ENV}, or add --dry-run to print the record only.",
+              file=sys.stderr)
+        return EXIT_REFUSED
+    url = config.resolve(args.server, config.URL_ENV, "url")
+    if not url:
+        print(f"{PROG}: no server. Pass --server, set ${config.URL_ENV}, or run `gban login "
+              f"--server …` once.", file=sys.stderr)
+        return EXIT_REFUSED
+    # The supervisor injects GBFLEET_API_KEY. resolve_supervisor_key does not read
+    # it, so a seat that only has that variable would post with nothing.
+    key = (os.environ.get(doctor_mod.SUPERVISOR_KEY_ENV) or "").strip()
+    if not key:
+        key = doctor_mod.resolve_supervisor_key(project, start)
+    if not key:
+        print(f"{PROG}: no project-write API key. Set ${doctor_mod.SUPERVISOR_KEY_ENV} or "
+              f"${config.API_KEY_ENV}, or run `{PROG} setup`. The login session is not a "
+              f"key and is not sent.", file=sys.stderr)
+        return EXIT_REFUSED
+    # The record goes to stdout only after the server took it: a refused post must not
+    # leave behind something that reads like a record that was sent (GRPH-1103).
+    try:
+        receipt = stackmap.post_record(url, key, record)
+    except Refused as exc:
+        try:
+            reasons = json.loads(exc.detail)
+        except ValueError:
+            reasons = None
+        if not isinstance(reasons, list):
+            raise
+        print(f"{PROG}: the server refused the app map (HTTP {exc.status}):", file=sys.stderr)
+        for reason in reasons:
+            if isinstance(reason, dict):
+                print(f"     {reason.get('path', '?')}: {reason.get('reason', '')}",
+                      file=sys.stderr)
+            else:
+                print(f"     {reason}", file=sys.stderr)
+        return EXIT_REFUSED
+    sys.stdout.write(text)
+    receipt = receipt if isinstance(receipt, dict) else {}
+    sha = str(receipt.get("mapped_sha") or record.get("mapped_sha") or "")[:7]
+    said = [f"{k} {receipt[k]}" for k in ("mapped_at", "posted_by") if receipt.get(k)]
+    print(f"{PROG}: posted {receipt.get('project_id') or project} app map at {sha} to {url}"
+          + (f" ({', '.join(said)})" if said else ""), file=sys.stderr)
+    return 0
+
+
 def cmd_fleet(args) -> int:
     """A subprocess, never an import (D5).
 
@@ -426,7 +513,13 @@ def cmd_fleet(args) -> int:
               f"     …or `brew install asc-me/tap/gban` installs this client only — the "
               f"supervisor is a separate package.", file=sys.stderr)
         return EXIT_NO_SUPERVISOR
-    argv = [binary, *[a for a in args.rest if a != "--"]]
+    # Only a LEADING `--` is ours to drop (`gban fleet -- ps`). Any later one belongs to
+    # gbfleet: `service install --name X -- <until args>` splits on it, and stripping it
+    # handed the until args to `service install` itself.
+    rest = list(args.rest)
+    if rest[:1] == ["--"]:
+        rest = rest[1:]
+    argv = [binary, *rest]
     url = config.resolve(args.server, config.URL_ENV, "url")
     if url and "--server" not in argv:
         argv += ["--server", url]
@@ -560,7 +653,7 @@ def cmd_keys(args) -> int:
 
 COMMANDS = {"login": cmd_login, "logout": cmd_logout, "whoami": cmd_whoami,
             "doctor": cmd_doctor, "setup": cmd_setup, "fleet": cmd_fleet, "seats": cmd_seats,
-            "agents": cmd_agents, "keys": cmd_keys, "swamp": cmd_swamp}
+            "agents": cmd_agents, "keys": cmd_keys, "swamp": cmd_swamp, "stack": cmd_stack}
 
 
 def main(argv: list[str] | None = None) -> int:

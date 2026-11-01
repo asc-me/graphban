@@ -211,8 +211,8 @@ def test_the_refusal_is_in_the_ledger(client, key, db):
     _rpc(client, key, "sign_off",
          {"id": item, "agent_id": reviewer["agent_id"], "commit": BASE})
 
-    actions = [e.action for e in db.query(Event).all()]
-    assert "sign_off_refused" in actions
+    rules = [e.meta.get("rule_id") for e in db.query(Event).filter(Event.action == "refusal")]
+    assert "review.attest_the_head" in rules
 
 
 def test_the_worktree_receipt_does_not_count_as_an_attestation(client, key):
@@ -227,8 +227,8 @@ def test_the_worktree_receipt_does_not_count_as_an_attestation(client, key):
 
 
 def test_the_marker_and_its_reader_are_one_pair(client, key):
-    """The carrier is prose, so the two halves have to be pinned together. `_record_cut_from`
-    in gbfleet writes this string; `cut_from_commits` reads it. Nothing else may."""
+    """The carrier is prose, so the two halves have to be pinned together. The observations
+    route writes this string (`fleet.record_observation`); `cut_from_commits` reads it."""
     from app.services.items import CUT_FROM_MARKER, cut_from_commits
 
     detail = f"{CUT_FROM_MARKER}{BASE} (`gb/p47-ui-3`) — the base"

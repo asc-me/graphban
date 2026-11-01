@@ -132,7 +132,7 @@ const CONTENT: Record<string, DocEntry> = {
     ],
     related: [
       { label: "Requests", to: "/requests" },
-      { label: "Fleet.v1", to: "/fleet.v1" },
+      { label: "Fleet", to: "/fleet" },
     ],
   },
 
@@ -146,7 +146,7 @@ const CONTENT: Record<string, DocEntry> = {
     ],
     related: [
       { label: "Stack", to: "/stack" },
-      { label: "Fleet.v1", to: "/fleet.v1" },
+      { label: "Fleet", to: "/fleet" },
     ],
   },
 
@@ -162,37 +162,38 @@ const CONTENT: Record<string, DocEntry> = {
     related: [
       { label: "Code graph", to: "/code" },
       { label: "Outposts", to: "/outposts" },
-      { label: "Fleet.v2", to: "/fleet.v2" },
+      { label: "Fleet", to: "/fleet" },
     ],
   },
 
-  "/fleet.v2": {
-    badge: "FLEET.V2",
-    title: "Fleet.v2",
-    tagline: "Which model each harness runs, the catalog behind it, and how you allocate them.",
+  "/rules": {
+    badge: "RULES",
+    title: "Rules",
+    tagline: "How work moves through the project, and what holds each step.",
     sections: [
-      { num: 1, h: "Tier map", b: "Harness × tier, editable, for THIS deployment. An override is stored beside the committed matrix rather than in it, so clearing one falls back to the packaged model instead of to nothing. Inherit from performance grading fills only the cells grading has measured; an unmeasured cell is left exactly as it was and says so, because a value invented there would be an override nobody chose wearing a measurement's authority. Save is off until the draft differs from what is stored." },
-      { num: 2, h: "Catalog", b: "The harness × model × tier table is the committed matrix, and it is read-only: a commit changes it, this page does not. Performance and rankings live on Observe → Harness — this page does not rank models." },
-      { num: 3, h: "Allocation", b: "Mix is your share of recent spawns — off means the scorer always picks the winner. Unregistered harnesses cannot take a share. Roster, seats, and waves are Fleet.v1." },
+      { num: 1, h: "Stages are fixed", b: "Spec → Plan → Build → Review → Merge → Release → Learn, always drawn whole. Each rule hangs off the stage it governs; a rule the gitops model does not use stays drawn, dimmed and marked NOT USED." },
+      { num: 2, h: "A stage is its weakest rule", b: "ENFORCED (the server refuses), CHECKED (CI or a scan reports), EXTERNAL (held outside Graphban, not verified), ADVISORY (agents are told, nothing refuses), UNMEASURED (no value). Icon and word, never colour alone; the legend counts every registered rule." },
+      { num: 3, h: "Inspector", b: "Click a stage for its rules weakest first: what enforces each one, where its truth lives, the effective gitops value and its source. A checked rule with no result says so — that is not a pass." },
     ],
     related: [
-      { label: "Fleet.v1", to: "/fleet.v1" },
+      { label: "Stack", to: "/stack" },
+      { label: "Fleet", to: "/fleet" },
+    ],
+  },
+
+  "/fleet": {
+    badge: "FLEET",
+    title: "Fleet",
+    tagline: "Who is working here, and what they can be spawned as.",
+    sections: [
+      { num: 1, h: "Fleet management", b: "Roster, seats and waves. Offline agents fade rather than vanish — one that died holding a branch is what you need to see. A seat is the role for this session — paste it into the prompt, not the MCP config. Ending a wave is irreversible and names which wave. The API key that authenticates is minted on Settings → API keys; a wave key minted here is swept by End wave." },
+      { num: 2, h: "Harness config: tier map", b: "Harness × tier, editable, for THIS deployment. An override is stored beside the committed matrix rather than in it, so clearing one falls back to the packaged model instead of to nothing. Inherit from performance grading fills only the cells grading has measured; an unmeasured cell is left exactly as it was and says so, because a value invented there would be an override nobody chose wearing a measurement's authority. Save is off until the draft differs from what is stored." },
+      { num: 3, h: "Harness config: catalog and mix", b: "The harness × model × tier table is the committed matrix, and it is read-only: a commit changes it, this page does not. Performance and rankings live on Observe → Harness. Mix is your share of recent spawns — off means the scorer always picks the winner. Unregistered harnesses cannot take a share." },
+    ],
+    related: [
+      { label: "API keys", to: settingsPath("project/api-keys") },
       { label: "Outposts", to: "/outposts" },
       { label: "Harness", to: "/harness" },
-    ],
-  },
-
-  "/fleet.v1": {
-    badge: "FLEET.V1",
-    title: "Fleet.v1",
-    tagline: "Who is here, and the seats that put them here.",
-    sections: [
-      { num: 1, h: "Roster and posture", b: "Offline agents fade rather than vanish — one that died holding a branch is what you need to see. Fleet posture: specialised roles review themselves. Single-agent: you are the reviewer." },
-      { num: 2, h: "Waves and seats", b: "A seat is the role for this session — paste it into the prompt, not the MCP config. Ending a wave is irreversible and names which wave. The API key that authenticates is minted on Settings → API keys; a wave key minted here is swept by End wave." },
-    ],
-    related: [
-      { label: "Fleet.v2", to: "/fleet.v2" },
-      { label: "API keys", to: settingsPath("project/api-keys") },
     ],
   },
 
@@ -205,7 +206,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 2, h: "Recommendations are drafts", b: "A card can suggest promoting, demoting, or reweighting. Accepting it writes through the same profile or matrix commit a person would make. Nothing here auto-routes." },
       { num: 3, h: "What each harness loads", b: "Skills and MCP server names a child on one machine would actually see, posted by `gbfleet surface` or `gban doctor`. A name on one harness and absent from another is listed. A harness that was not checked is said so — an empty difference list is only shown once two lists were complete. No URLs or credentials." },
     ],
-    related: [{ label: "Fleet.v2", to: "/fleet.v2" }],
+    related: [{ label: "Fleet", to: "/fleet" }],
   },
 
   "/outposts": {
@@ -216,7 +217,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 1, h: "A host is who checked in", b: "Grouped from each agent's declared host, or the label after @. Unspecified is a real group — it is not localhost. Empty means nobody has registered, not a list of zero machines." },
       { num: 2, h: "Build info", b: "Vendor, model, tier, OS if declared, worktree and branch — what the agent said about itself at register/heartbeat." },
     ],
-    related: [{ label: "Fleet.v2", to: "/fleet.v2" }],
+    related: [{ label: "Fleet", to: "/fleet" }],
   },
 
   "/roadmap": {
@@ -234,18 +235,18 @@ const CONTENT: Record<string, DocEntry> = {
     title: "MCP Tools",
     tagline: "The tool surface agents call — with live metrics.",
     sections: [
-      { num: 1, h: "The surface", b: "63 live tools over a JSON-RPC endpoint (POST /api/mcp) — 34 core, shipped to every key, the rest by tier. Each card shows its params, description, and call count." },
+      { num: 1, h: "The surface", b: "66 live tools over a JSON-RPC endpoint (POST /api/mcp) — 34 core, shipped to every key, the rest by tier. Each card shows its params, description, and call count." },
       { num: 2, h: "Authenticate agents", b: "Mint an API key in Settings → API keys, then call the endpoint with it. Looking for API keys? is that mint — Graphban keys, not an LLM secret. A seat on Fleet is a role for one session, not a key. Every call is metered here." },
       { num: 3, h: "Where keys come from", b: "Two paths, one key shape. Mint on Settings → API keys, or provision the first one without a browser: `graphban init` runs once on a virgin instance and creates the operator, the project, and its first key — `--key-scope` and `--key-tiers` are the same axes as the mint dialog. This page is the catalog; it does not mint keys." },
       { num: 4, h: "Scope and tiers", b: "A Project-scoped key points the agent's writes at one project; a Global key is unbound, so calls pass `project_id` (or fall back to the default). The connect snippets follow the key: where the harness supports scoping (Claude Code, Grok CLI), a project key gets `--scope project` and a global key `--scope user`. Tiers (prd / codegraph / fleet / misc) decide which specialist tools the agent can SEE in its manifest — visibility, not permission: scopes and roles decide what may be called. Keys are shown once and stored only as a hash; a lost key is a new mint." },
     ],
     related: [
       { label: "API keys", to: settingsPath("project/api-keys") },
-      { label: "Fleet.v1", to: "/fleet.v1" },
+      { label: "Fleet", to: "/fleet" },
     ],
   },
 
-  "/memory-review": {
+  "/memory": {
     badge: "MEMORY REVIEW",
     title: "Memory review",
     tagline: "Approve agent-written memory before it's trusted.",
@@ -253,7 +254,8 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 1, h: "Candidates, not truth", b: "Memory an agent writes (via add_memory or auto-extracted on Done) enters as a candidate. It stays out of the default semantic search until you publish it here." },
       { num: 2, h: "Publish or reject", b: "Publish promotes a shard into the trusted retrieval path every future agent searches. Reject keeps it for provenance but never surfaces it. Both are recorded in Activity." },
       { num: 3, h: "Recurring lessons", b: "When the same correction shows up several times, it's grouped as a recurring lesson — publish it once as a principle and drop the duplicates in a single action." },
-      { num: 4, h: "The LLM judge", b: "When the LLM judge is on, opening the queue scores groundedness and readiness (capped). Similarity is always there. A missing list score means the toggle is off, the cap was hit, or the model could not decide — never that the note is fine. Ask the judge re-asks keep/quality for one candidate; it does not replace the list scores." },
+      { num: 4, h: "Sweep and stale", b: "Sweep rejects every shard scored under 30% confidence in one action, after a preview; each rejection can be undone from the toast. A stale flag marks anything still unreviewed after 7 days. Recent auto-actions sit at the bottom with Undo and an unvetted-only filter." },
+      { num: 5, h: "The LLM judge", b: "When the LLM judge is on, opening the queue scores groundedness and readiness (capped). Similarity is always there. A missing list score means the toggle is off, the cap was hit, or the model could not decide — never that the note is fine. Ask the judge re-asks keep/quality for one candidate; it does not replace the list scores." },
     ],
     related: [
       { label: "Lessons", to: "/lessons" },
@@ -272,7 +274,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 3, h: "Org promotion", b: "The Promote control is always on the detail page when the lesson is still project-reach. It shows the real reason it is disabled. Unverifiable cannot be overridden. There is no separate org-catalog page in this slice — a successful promote is visible on sibling project lists." },
     ],
     related: [
-      { label: "Memory review", to: "/memory-review" },
+      { label: "Memory review", to: "/memory" },
       { label: "Activity", to: "/activity" },
     ],
   },
@@ -300,7 +302,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 5, h: "What it handed to children", b: "A planner that calls delegate before spawning gets a row per delegation under its name: open, claimed by which child and what model it declared, expired when nothing ever claimed it, superseded when a stranger took the item. Requested and declared tiers sit side by side; a mismatch is stated, never refused. 'No delegations' is a word, and 'expired, nothing claimed' is a spawn that died before it registered." },
     ],
     related: [
-      { label: "Fleet.v1", to: "/fleet.v1" },
+      { label: "Fleet", to: "/fleet" },
       { label: "Code graph", to: "/code" },
       { label: "Activity", to: "/activity" },
     ],
@@ -343,7 +345,7 @@ const CONTENT: Record<string, DocEntry> = {
     ],
     related: [
       { label: "MCP Tools", to: settingsPath("project/mcp") },
-      { label: "Fleet.v1", to: "/fleet.v1" },
+      { label: "Fleet", to: "/fleet" },
       { label: "AI providers", to: settingsPath("deployment/providers") },
     ],
   },
@@ -382,7 +384,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 1, h: "Memory write modes", b: "Review: agent writes wait as candidates. Auto: only corroborated lessons publish. Trusted: publishes on write, labelled and undoable. An empty catalog is not a high score." },
       { num: 2, h: "Danger mode is conditional", b: "Allow self-review only applies when no other agent could have reviewed the item. With a second agent here, self-review is still refused. Items signed this way say so." },
     ],
-    related: [{ label: "Memory review", to: "/memory-review" }],
+    related: [{ label: "Memory review", to: "/memory" }],
   },
 
   "/settings/project/integrations": {
@@ -528,7 +530,7 @@ const CONTENT: Record<string, DocEntry> = {
     ],
     related: [
       { label: "Users & access", to: adminPath("users") },
-      { label: "Fleet.v1", to: "/fleet.v1" },
+      { label: "Fleet", to: "/fleet" },
     ],
   },
 
@@ -614,7 +616,6 @@ export function docFor(pathname: string): DocEntry {
   if (/^\/lessons(?:\/[^/]+)?$/.test(path)) return CONTENT["/lessons"];
   if (path === "/home") return CONTENT["/home"];
   if (path === "/dashboard") return CONTENT["/dashboard"];
-  if (path === "/fleet") return CONTENT["/fleet.v2"];
 
   if (path.startsWith("/admin")) return CONTENT["operator"];
 

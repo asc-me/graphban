@@ -54,10 +54,6 @@ mail is simply not sent, so an invite can be "issued" and never arrive.
 | Var | Default | Notes |
 | --- | --- | --- |
 | `HOSTED_MODE` | `false` | Multi-tenant posture: org gates on, first-run bootstrap refused, share links accept only the token |
-| `STRIPE_API_KEY` | *(empty)* | Self-serve billing (GRPH-82). Empty keeps manual `PUT /orgs/{id}/plan` as the only writer. Needs the `billing` extra (`pip install 'graphban-api[billing]'`); the default image does not ship Stripe |
-| `STRIPE_WEBHOOK_SECRET` | *(empty)* | Verifies `Stripe-Signature` on `POST /api/public/stripe/webhook`. Empty hides the webhook (404) |
-| `STRIPE_PRICE_PRO` | *(empty)* | Stripe Price id mapped to plan `pro` |
-| `STRIPE_PRICE_TEAM` | *(empty)* | Stripe Price id mapped to plan `team`. Enterprise stays operator-assigned |
 | `LOG_LEVEL` | `INFO` | |
 | `LOG_JSON` | `false` | Structured logs. On for anything with log search |
 | `REDIS_URL` | *(empty)* | Empty keeps rate-limit state in process, which is per-worker rather than per-deployment |
@@ -117,6 +113,8 @@ See [AI providers](ai-providers.md) for the details (and why embeddings are depl
 | --- | --- | --- |
 | `CREDENTIAL_RETRY_SECONDS` | `60` | How often the credential retry loop re-asks providers that could not be reached (PRD-25). `0` disables the background task entirely — what the test suite runs at, so a timer never fires mid-test. |
 | `LOG_EXPORT_SECONDS` | `60` | How often the OTLP log-export drain hands records to the collector (PRD-47 S15). `0` disables the loop, and the Log export panel then reports the exporter as **not running**, which makes queue depth unknown rather than zero — a backlog nobody is working down must not read as an empty queue. The collector itself is configured in Settings → This box → Log export, not here. |
+| `WEB_CONCURRENCY` | `0` (auto: `min(4, cpu_count)`) | Number of uvicorn worker processes (GRPH-1241). Endpoints are synchronous, so one process serialises a page's parallel requests. `1` keeps single-process behaviour. **Forced to 1 on SQLite** (logged) to avoid "database is locked". Under N workers, migrations/seed/credential migration run under a Postgres advisory lock, and the credential-retry and log-export loops run in exactly one (the advisory-lock leader). Per-process state is *not* shared: the `/api/public` and login rate-limit windows are per worker (effective limit up to N×), and a runtime LLM/embedder config change applies to the worker that served it until the others restart. |
+| `MEMORY_JUDGE_REFRESH_SECONDS` | `300` | How often the background memory judge pass runs (GRPH-1242). The Memory pages read stored verdicts only and never wait on a model; this pass asks the judge about stale rows and review candidates that have no current verdict, within the same per-pass budgets. One runner across API workers (a Postgres advisory lock). `0` disables it, and unjudged rows stay marked **not yet judged**. |
 | `LLM_SPAN_RETENTION_DAYS` | `90` | How long per-call LLM telemetry rows (`llm_call_spans`, GRPH-225) are kept. Purged once at startup, never fatal. `0` or negative keeps everything — the right answer for a self-host box with no dashboard pressure. |
 | `AGENT_CALL_RETENTION_DAYS` | `7` | How long the Observe Live feed keeps a row (`agent_calls`, PRD-34): every MCP call an agent made, attributed to it. Swept on the write path every ~200 inserts, never fatal; a failed sweep counts on `/health` as `agent_calls_sweep_failed`. `0` or negative keeps everything. |
 | `SEED_ON_START` | `false` | Load the demo dataset on an empty DB. Default off — the app starts empty and you sign up in the UI. Set `true` for a populated demo. |

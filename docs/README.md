@@ -31,7 +31,7 @@ fully offline with `docker compose up`.
 
 | Doc | What it covers |
 | --- | --- |
-| [MCP tools](mcp.md) | The 63 MCP tools, JSON-RPC endpoint, API-key auth, error taxonomy, call metering |
+| [MCP tools](mcp.md) | The 66 MCP tools, JSON-RPC endpoint, API-key auth, error taxonomy, call metering |
 | [Grok Build](grok-build.md) | Connect Grok Build (xAI's coding CLI) to Graphban's MCP + prime it on the loop |
 | [Fleet on another machine](fleet-remote.md) | Standing a drain up on a Linux box — the vendor logins that cannot be scripted, `gbfleet service`, linger |
 | [Delegation](delegation.md) | Standing delegation up on a project — the planner credential, the supervisor, `delegate(seat=true)` + `spawn`, and every refusal |

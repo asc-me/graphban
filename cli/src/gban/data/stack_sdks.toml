@@ -1,0 +1,208 @@
+# Known-SDK table shipped with gban (GRPH-P55 §3). Versioned with the package.
+# A project adds rows in `.graphban/stack-sdks.toml` using the same shape.
+# New shipped rows arrive by PR. cli/tests/test_stackmap.py exercises every row.
+# `domains` on an external row: a URL host equal to or under one of them is that
+# service, so `api.stripe.com` and the `stripe` package draw one node, not two.
+
+[[image]]
+id = "postgres"
+names = ["postgres", "pgvector/pgvector"]
+kind = "postgres"
+label = "Postgres"
+protocol = "postgres"
+
+[[image]]
+id = "redis"
+names = ["redis", "bitnami/redis"]
+kind = "redis"
+label = "Redis"
+protocol = "redis"
+
+[[image]]
+id = "rabbitmq"
+names = ["rabbitmq", "bitnami/rabbitmq"]
+kind = "rabbitmq"
+label = "RabbitMQ"
+protocol = "amqp"
+
+[[image]]
+id = "mysql"
+names = ["mysql", "mariadb"]
+kind = "mysql"
+label = "MySQL"
+protocol = "mysql"
+
+[[image]]
+id = "mongo"
+names = ["mongo", "mongodb"]
+kind = "mongodb"
+label = "MongoDB"
+protocol = "mongodb"
+
+[[sdk]]
+id = "psycopg"
+packages = ["psycopg", "psycopg2", "psycopg2-binary", "psycopg-binary"]
+node = "postgres"
+group = "infrastructure"
+kind = "postgres"
+label = "Postgres"
+protocol = "postgres"
+
+[[sdk]]
+id = "pg"
+packages = ["pg", "postgres"]
+node = "postgres"
+group = "infrastructure"
+kind = "postgres"
+label = "Postgres"
+protocol = "postgres"
+
+[[sdk]]
+id = "redis"
+packages = ["redis", "ioredis"]
+node = "redis"
+group = "infrastructure"
+kind = "redis"
+label = "Redis"
+protocol = "redis"
+
+[[sdk]]
+id = "stripe"
+packages = ["stripe"]
+node = "stripe"
+group = "external"
+kind = ""
+label = "Stripe"
+protocol = "https"
+domains = ["stripe.com"]
+
+[[sdk]]
+id = "boto3"
+packages = ["boto3", "botocore"]
+node = "aws"
+group = "external"
+kind = ""
+label = "AWS"
+protocol = "https"
+domains = ["amazonaws.com"]
+
+[[sdk]]
+id = "aws-sdk"
+packages = ["aws-sdk"]
+prefix = "@aws-sdk/"
+node = "aws"
+group = "external"
+kind = ""
+label = "AWS"
+protocol = "https"
+domains = ["amazonaws.com"]
+
+[[sdk]]
+id = "openai"
+packages = ["openai"]
+node = "openai"
+group = "external"
+kind = ""
+label = "OpenAI"
+protocol = "https"
+domains = ["openai.com"]
+
+[[sdk]]
+id = "anthropic"
+packages = ["anthropic", "@anthropic-ai/sdk"]
+node = "anthropic"
+group = "external"
+kind = ""
+label = "Anthropic"
+protocol = "https"
+domains = ["anthropic.com"]
+
+[[sdk]]
+id = "sentry"
+packages = ["sentry-sdk", "@sentry/node", "@sentry/browser", "@sentry/react"]
+prefix = "@sentry/"
+node = "sentry"
+group = "external"
+kind = ""
+label = "Sentry"
+protocol = "https"
+domains = ["sentry.io"]
+
+[[sdk]]
+id = "twilio"
+packages = ["twilio"]
+node = "twilio"
+group = "external"
+kind = ""
+label = "Twilio"
+protocol = "https"
+domains = ["twilio.com"]
+
+[[sdk]]
+id = "sendgrid"
+packages = ["sendgrid", "@sendgrid/mail"]
+node = "sendgrid"
+group = "external"
+kind = ""
+label = "SendGrid"
+protocol = "https"
+domains = ["sendgrid.com", "sendgrid.net"]
+
+[[sdk]]
+id = "resend"
+packages = ["resend"]
+node = "resend"
+group = "external"
+kind = ""
+label = "Resend"
+protocol = "https"
+domains = ["resend.com"]
+
+[[sdk]]
+id = "vercel"
+packages = ["@vercel/functions"]
+prefix = "@vercel/"
+node = "vercel"
+group = "external"
+kind = ""
+label = "Vercel"
+protocol = "https"
+domains = ["vercel.com", "vercel.app"]
+
+[[sdk]]
+id = "supabase"
+packages = ["supabase", "@supabase/supabase-js"]
+node = "supabase"
+group = "external"
+kind = ""
+label = "Supabase"
+protocol = "https"
+domains = ["supabase.co", "supabase.com"]
+
+[[env]]
+id = "database-url"
+names = ["DATABASE_URL"]
+node = "postgres"
+group = "infrastructure"
+kind = "postgres"
+label = "Postgres"
+protocol = "postgres"
+
+[[env]]
+id = "redis-url"
+names = ["REDIS_URL"]
+node = "redis"
+group = "infrastructure"
+kind = "redis"
+label = "Redis"
+protocol = "redis"
+
+[[env]]
+id = "creem"
+names = ["CREEM_API_KEY"]
+node = "creem"
+group = "external"
+kind = ""
+label = "Creem"
+protocol = "https"
+domains = ["creem.io"]

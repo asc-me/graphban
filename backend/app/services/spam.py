@@ -56,7 +56,7 @@ def verify_turnstile(secret: str, token: str, remoteip: str | None = None) -> bo
             "https://challenges.cloudflare.com/turnstile/v0/siteverify",
             data=urllib.parse.urlencode(data).encode(),
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310 — fixed trusted host
+        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310 — fixed trusted host  # nosec B310
             body = json.loads(resp.read())
         return bool(body.get("success"))
     except Exception:

@@ -2,11 +2,12 @@ import { BadgeCheck, ExternalLink, FlaskConical, GitPullRequest, Radio } from "l
 
 import { Avatar } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { TargetActivity } from "@/features/activity/TargetActivity";
 import { AssistantPanel } from "@/features/assistant/AssistantPanel";
 import { LinkedCode } from "@/features/code/LinkedCode";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { CHECK_COLOR, PR_STATE_COLOR } from "@/lib/meta";
-import { useItems, useLinks, useShards, useUpdateItem } from "@/lib/queries";
+import { useItem, useItems, useLinks, useShards, useUpdateItem } from "@/lib/queries";
 import type { Fidelity, Item, Reach, Status } from "@/lib/types";
 
 import { StatusMenu } from "./StatusMenu";
@@ -26,6 +27,9 @@ export function ItemDetailPanel({
   const { data: shards = [] } = useShards(activeId);
   const { data: links = [] } = useLinks(activeId);
   const { data: allItems = [] } = useItems(activeId);
+  // The list row is lean (GRPH-1228); description, evidence and the bounce reason come from the detail read.
+  const { data: detail } = useItem(item.id, open);
+  const evidence = detail?.evidence ?? [];
   const updateItem = useUpdateItem();
   const linked = shards.filter((s) => s.item_id === item.id);
   const setFidelity = (f: Fidelity) => updateItem.mutate({ id: item.id, body: { fidelity: f } });
@@ -147,16 +151,18 @@ export function ItemDetailPanel({
             </div>
           )}
 
-          {item.bounce_reason && (
+          {detail?.bounce_reason && (
             <div className="rounded-[10px] border border-[rgba(224,179,74,0.3)] bg-[rgba(224,179,74,0.07)] px-3 py-2.5 text-body text-[#e0b34a]">
               <span className="font-mono text-[10px] uppercase tracking-wide">Bounced · </span>
-              {item.bounce_reason}
+              {detail?.bounce_reason}
             </div>
           )}
 
+          <TargetActivity projectId={activeId} targetType="item" targetId={item.id} />
+
           <Section label="Description">
             <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-fg-2">
-              {item.description || "No description."}
+              {detail ? detail.description || "No description." : "Loading…"}
             </p>
           </Section>
 
@@ -237,10 +243,10 @@ export function ItemDetailPanel({
             </Section>
           )}
 
-          {item.evidence?.length > 0 && (
+          {evidence.length > 0 && (
             <Section label="Proof of done">
               <div className="space-y-2">
-                {item.evidence.map((e, i) => (
+                {evidence.map((e, i) => (
                   <div key={i} className="rounded-[10px] border border-[rgba(95,208,122,0.25)] bg-[rgba(95,208,122,0.05)] p-2.5">
                     <div className="mb-1 flex items-center gap-1.5">
                       <BadgeCheck size={12} className="text-st-done" />
@@ -279,7 +285,7 @@ export function ItemDetailPanel({
           </Section>
 
           <Section label="Assistant">
-            <div className="h-[420px] rounded-[11px] border border-line-2 bg-surface-2 p-2.5">
+            <div className="h-[420px] min-w-0 overflow-hidden rounded-[11px] border border-line-2 bg-surface-2 p-2.5">
               <AssistantPanel entityType="item" entityId={item.id} projectId={item.project_id} entityTags={item.tags} />
             </div>
           </Section>

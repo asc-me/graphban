@@ -32,6 +32,7 @@ from .state import repo_root
 from .supervisor import DEFAULT_MAX_WORKERS, Limits, Merger, Wave, resolve_wave_base, up
 from .tiers import TierTable
 from . import matrix as matrix_mod
+from .watchdog import STALL_AFTER_S
 from .until import PLANNER_TOOLS, emit as emit_until, run as run_until
 from .worktree import BaseBranchNotFound, Worktree, default_ref, remote_for
 
@@ -366,6 +367,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="print what this wave WOULD delegate and exit, without minting a seat or cutting "
              "a worktree. The scoping bug existed for exactly as long as nobody could see the "
              "plan")
+    until.add_argument(
+        "--entitlement", action="append", default=[], metavar="ADAPTER=ID",
+        help="an entitlement id the adapter runs on (PRD-62); repeatable. The wave declares it "
+             "at register_agent and reports spawn_start, registered, limit_hit and spawn_failed "
+             "for it. Off a capacity-routing plan the wave runs as it does without the flag",
+    )
     until.add_argument("--max-children", type=int, default=8)
     until.add_argument("--child-wall-clock", type=float, default=3600.0)
     until.add_argument("--workspace", default=None, help="where worktrees go")
@@ -373,6 +380,12 @@ def build_parser() -> argparse.ArgumentParser:
     until.add_argument(
         "--quiet-after", type=float, default=Limits.quiet_after,
         help="seconds of no output before a child is REPORTED as quiet",
+    )
+    until.add_argument(
+        "--stall-after", type=float, default=STALL_AFTER_S, metavar="SECONDS",
+        help="exit non-zero with a `stall` event when nothing has progressed for this long "
+             "and no child is live, so the service manager restarts the process; 0 disables "
+             "(GRPH-1179). `kill -USR1 <pid>` dumps every thread's stack to the log",
     )
     until.add_argument("--merge", action="store_true", default=False, help=_MERGE_HELP)
     until.add_argument(
@@ -522,6 +535,8 @@ def report(wave: Wave, out=None) -> None:
         print(f"RESUMED {branch}", file=out)
     for miss in wave.resume_misses:
         print(f"RESUME MISS {miss}", file=out)
+    for taken in wave.remote_taken:
+        print(f"BRANCH TAKEN {taken}", file=out)
     print(f"spawned {len(wave.spawned)}", file=out)
     for child in wave.spawned:
         latency = (
@@ -570,9 +585,15 @@ def report(wave: Wave, out=None) -> None:
               file=out)
     # HOW STALE the reviewer's diff is (GRPH-786). The supervisor is the only party that
     # can answer it: the server has no git, and the reviewer sees a branch with no
-    # indication of what it is a diff against.
+    # indication of what it is a diff against. When the missed commits share no file
+    # with the branch and the merge is clean, the line says so (GRPH-1087) — the same
+    # sentence that goes in the PR body. A behind branch with no such note was refused.
     for branch, (behind, ref) in sorted(wave.stale.items()):
-        print(f"BEHIND {branch}: cut from a base {behind} commit(s) behind {ref}", file=out)
+        line = f"BEHIND {branch}: cut from a base {behind} commit(s) behind {ref}"
+        note = wave.behind_clean.get(branch)
+        if note:
+            line += f"; {note}"
+        print(line, file=out)
     if wave.stale_unmeasured:
         print(f"BEHIND unmeasured: {wave.stale_unmeasured}", file=out)
     # GRPH-1053. A push that could not check whether a commit of the item is already in
@@ -606,6 +627,10 @@ def report(wave: Wave, out=None) -> None:
         print(f"{wave.unused_seats} seat(s) never redeemed", file=out)
     # Immediately after the count, because it is the answer to the question the count
     # raises. "3 seats never redeemed" with no reason reads as a bug in the fleet.
+    # One line per seat: the count cannot say which enrolment, and a wave that
+    # stopped can have a different reason than a full machine.
+    for line in wave.unredeemed:
+        print(f"UNREDEEMED {line}", file=out)
     for gate in wave.gated:
         print(f"NO ROOM {gate}", file=out)
     for failure in wave.failures:
@@ -615,16 +640,18 @@ def report(wave: Wave, out=None) -> None:
     # WHAT BECAME OF EACH MERGE (GRPH-846). Four lines for four outcomes, because a merge
     # the forge refused, a merge that is armed and waiting, and an item left alone because
     # its head moved are different facts a person acts on differently.
+    # GRPH-P57 D1: every line names the release ref it used, so drift between boxes shows.
     for item_id, got in sorted(wave.merged.items()):
+        ref = f" [{got.release}]" if got.release else ""
         if got.ok:
-            print(f"MERGED {item_id}: {got.commit[:12]} {got.url}".rstrip(), file=out)
+            print(f"MERGED {item_id}: {got.commit[:12]} {got.url}".rstrip() + ref, file=out)
         elif got.pending:
-            print(f"MERGE PENDING {item_id}: {got.reason}", file=out)
+            print(f"MERGE PENDING {item_id}: {got.reason}{ref}", file=out)
         elif got.skipped:
-            print(f"MERGE SKIPPED {item_id}: {got.reason}", file=out)
+            print(f"MERGE SKIPPED {item_id}: {got.reason}{ref}", file=out)
         else:
             print(f"MERGE HELD {item_id}: {got.reason}"
-                  + (f" (checked: {', '.join(got.checked)})" if got.checked else ""),
+                  + (f" (checked: {', '.join(got.checked)})" if got.checked else "") + ref,
                   file=out)
 
 
@@ -659,6 +686,14 @@ def _until(args) -> int:
         except ValueError as exc:
             print(f"gbfleet until: {exc}", file=sys.stderr)
             return 2
+
+    entitlements: dict[str, list[str]] = {}
+    for pair in args.entitlement or []:
+        adapter_name, _, ent_id = pair.partition("=")
+        if not adapter_name.strip() or not ent_id.strip():
+            print(f"gbfleet until: --entitlement wants ADAPTER=ID, got {pair!r}", file=sys.stderr)
+            return 2
+        entitlements.setdefault(adapter_name.strip(), []).append(ent_id.strip())
 
     planner = Graphban(base_url=args.server, api_key=api_key, allowed=PLANNER_TOOLS, project_id=args.project)
     supervisor = Graphban(base_url=args.server, api_key=api_key, allowed=ALLOWED_TOOLS, project_id=args.project)
@@ -728,6 +763,8 @@ def _until(args) -> int:
             matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
             merge=bool(args.merge),
             base_branch=args.base,
+            entitlements=entitlements,
+            stall_after=args.stall_after,
         )
     except RepoLocked as exc:
         print(f"gbfleet until: {exc}", file=sys.stderr)

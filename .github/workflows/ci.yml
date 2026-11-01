@@ -58,6 +58,10 @@ jobs:
               # Host/pack/upgrade tests import scripts/*. A scripts-only PR
               # would otherwise skip the suite that exists to keep them honest.
               - 'scripts/**'
+              # The skills manifest guard (test_pack_release) reads cli/: a gban version bump
+              # or a new skill must fail it until backend/scripts/gban_skills.json is regenerated.
+              - 'cli/pyproject.toml'
+              - 'cli/src/gban/skills/**'
             frontend:
               - 'web/**'
               - '.github/workflows/ci.yml'
@@ -84,6 +88,16 @@ jobs:
               - 'docs/fleet-adapters.md'
               - 'docs/fleet-supervisor-walk.md'
               - '.github/workflows/ci.yml'
+
+  # Both refusal counts must not go up (GRPH-1158). Pure AST scan, no install needed.
+  refusal-ratchet:
+    name: Refusal ratchet
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/refusal_ratchet.py check
 
   backend-sqlite:
     name: Backend tests (SQLite)
@@ -174,7 +188,40 @@ jobs:
       - run: uv venv --python 3.12 .venv
       # No `.git`, like the build context a deploy ships.
       - run: rm -rf ../.git
+      # Refusal coverage is written at package build time, never committed (GRPH-1185):
+      # gitignored, so hatchling ships it only as a declared `artifacts` entry. Publish it here
+      # the way the packer does, and require the INSTALLED wheel to report it.
+      - run: python3 ../scripts/refusal_ratchet.py publish app/data/refusal_coverage.json "$GITHUB_SHA"
+      # The gban skills manifest (GRPH-1194), written from cli/ the way the packer does.
+      - run: python3 ../scripts/graphban_pack.py --skills-manifest app/data/gban_skills.json
       - run: uv pip install .
+      - name: The installed wheel ships the refusal coverage
+        run: |
+          rm app/data/refusal_coverage.json
+          cd /tmp && "$GITHUB_WORKSPACE/backend/.venv/bin/python" - <<'EOF'
+          import os
+          from app.services import rules
+          got = rules.refusal_coverage()
+          assert "site-packages" in str(rules.REFUSAL_COVERAGE_FILE), rules.REFUSAL_COVERAGE_FILE
+          assert got["published"] and got["m"] and got["commit"] == os.environ["GITHUB_SHA"], got
+          print(f"installed wheel: {got['n']} of {got['m']} refusal sites name their rule")
+          EOF
+      - name: The installed wheel ships the gban skills
+        run: |
+          rm app/data/gban_skills.json
+          want=$(python3 -c "import tomllib; print(tomllib.load(open('../cli/pyproject.toml','rb'))['project']['version'])")
+          n=$(find ../cli/src/gban/skills -mindepth 1 -maxdepth 1 -type d | wc -l)
+          cd /tmp && WANT="$want" WANT_N="$n" "$GITHUB_WORKSPACE/backend/.venv/bin/python" - <<'EOF'
+          import os
+          from app.services import rules
+          got = rules.shipped_skills()
+          assert "site-packages" in str(rules.GBAN_SKILLS_FILE), rules.GBAN_SKILLS_FILE
+          assert rules.GBAN_SKILLS_FILE.is_file(), rules.GBAN_SKILLS_FILE
+          assert got and got["version"] == os.environ["WANT"], got
+          assert len(got["skills"]) == int(os.environ["WANT_N"]) > 0, got
+          assert all(f"/blob/cli-v{got['version']}/" in s["url"] for s in got["skills"]), got
+          print(f"installed wheel: {len(got['skills'])} skills shipped with gban {got['version']}")
+          EOF
       # The installed wheel must ship the eval fixtures, or `graphban eval`
       # reports `absent` on every install (the GRPH-224 claim). 4 is the
       # extract_lessons golden set; `None`/short means the wheel dropped them.
@@ -297,6 +344,62 @@ jobs:
           uv pip install -e ".[dev]"
           .venv/Scripts/python -m pytest -q </dev/null
 
+  # GRPH-P57 D2: the security scans that a fleet merge into the RELEASE ref requires, attested
+  # as `scans_clean` on the pull request's head. Deliberately NOT in `ci.needs` and never a
+  # required check: a blocking job would gate every feature PR on scans at the forge, and the
+  # gate is the fleet merge into the release ref, nowhere else. `test_ci_shape` names this the
+  # one job the gate does not cover, and `test_scan_ci` fails if it ever becomes required.
+  security-scans:
+    name: Security scans
+    # Pull requests only (the attestation names `pull_request.head.sha`), and not from forks:
+    # this job holds the gate key and talks to the LAN ledger, like `ci`.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, graphban-ledger]
+    # A force-push cancels the older run. One that is not cancelled can still only attest the
+    # commit it checked out.
+    concurrency:
+      group: security-scans-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The HEAD, not GitHub's default PR checkout (the merge commit). A scan of the merge
+          # commit is not a scan of the head, and the script reports it stale if it differs.
+          ref: ${{ github.event.pull_request.head.sha }}
+          # The script diffs merge-base..head itself.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+      - name: Install the Python scanners
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/scanners"
+          VIRTUAL_ENV="$RUNNER_TEMP/scanners" uv pip install pip-audit bandit
+          echo "$RUNNER_TEMP/scanners/bin" >> "$GITHUB_PATH"
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Scan the pull request head and attest scans_clean
+        # Every value through `env`, never `${{ }}` inside `run` — see the gate job's attest
+        # step for why. The detail lands in the job summary via GITHUB_STEP_SUMMARY.
+        env:
+          GRAPHBAN_URL: ${{ vars.GRAPHBAN_URL }}
+          GRAPHBAN_GATE_KEY: ${{ secrets.GRAPHBAN_GATE_KEY }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 scripts/scan_ci.py \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --branch "$HEAD_REF" \
+            --run-url "$RUN_URL" \
+            --text "$PR_TITLE $PR_BODY"
+
   # A single required check, so branch protection has one name to point at whatever the
   # filters decided to run. Without it a skipped job reads as "pending" forever on a
   # protected branch — the filter would look like it had wedged CI rather than saved time.
@@ -309,7 +412,7 @@ jobs:
     # Every job defined above must appear here. A job that runs but is not needed by this
     # gate is worse than no job: it burns the minutes and reports nowhere.
     # `test_ci_gate_covers_every_job` in the backend suite is what enforces that.
-    needs: [changes, backend-sqlite, backend-postgres, backend-packaging, frontend, fleet, cli-tests, windows]
+    needs: [changes, refusal-ratchet, backend-sqlite, backend-postgres, backend-packaging, frontend, fleet, cli-tests, windows]
     # `always()` so a failed/skipped suite still runs the gate (otherwise a broken
     # filter looks like a green PR). Fork PRs are excluded: this job talks to the
     # LAN ledger on ubuntu-srv, and a public repo must not run untrusted checkout

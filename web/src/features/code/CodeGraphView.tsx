@@ -4,16 +4,7 @@ import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import {
-  collapse,
-  convexHull,
-  DETAIL_BUDGET,
-  enterComponent,
-  hullPath,
-  superRadius,
-  worthCollapsing,
-  type SuperNode,
-} from "@/lib/graph/galaxy";
+import { DETAIL_BUDGET } from "@/lib/graph/galaxy";
 import {
   areaColor,
   areaOf,
@@ -26,7 +17,6 @@ import { degrees, topByDegree, withinHops } from "@/lib/graph/metrics";
 import {
   cloudsFor,
   contentionOf,
-  holdersOf,
   describeContention,
   formatRemaining,
   indexByNode,
@@ -40,7 +30,7 @@ import { NODE_TAB_INDEX, useGraphKeyboard } from "@/lib/graph/useGraphKeyboard";
 import { HubsPanel, type HubSort } from "./HubsPanel";
 import { PathTrace } from "./PathTrace";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
-import { useGraphPins } from "@/lib/graph/useGraphPins";
+import { useCanvasPins, useGraphPins } from "@/lib/graph/useGraphPins";
 import {
   LABEL_ZOOM,
   MAX_ZOOM,
@@ -52,12 +42,19 @@ import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useCodeAnalysis, useCodeMap, useFleetPresence } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors, HeldArea, ProjectStub } from "@/lib/types";
 
-import { AreaMatrix, CellInspector, buildMatrix, cellFromModel, type GraphLayoutId } from "./AreaMatrix";
+import { AreaMatrix, CellInspector, LayoutChips, buildMatrix, cellFromModel, type GraphLayoutId } from "./AreaMatrix";
+import {
+  LINKED_NODE_TOAST,
+  readGraphUrl,
+  replaceGraphUrl,
+  type GraphUrlSeed,
+} from "./useGraphUrlState";
 import { CANVAS_MAX_K, CANVAS_MIN_K } from "./canvas/camera";
 import { useCanvasPath } from "./canvas/overlay";
 import { CodeChat } from "./CodeChat";
 import { CodeGraphCanvas, type CanvasControlApi } from "./CodeGraphCanvas";
 import { FleetLegend } from "./FleetLegend";
+import { hexagonPoints, kindShape } from "./kindShape";
 
 const KIND_META: Record<string, { label: string; color: string }> = {
   module: { label: "Module", color: "#c6f24e" },
@@ -76,19 +73,14 @@ const kindMeta = (kind: string) => KIND_META[kind] ?? { label: kind || "node", c
  * Build.dc.html encodes kind as SHAPE and area as COLOUR. Shape landed in GRPH-1033; fill
  * now follows `areaOf` (the owning module, else the path prefix) hashed onto the existing
  * token set. Presence stays on clouds/rings (PRD-20 D5) — a held node must still say what
- * kind it is, and that is now the glyph, not the fill.
+ * kind it is, and that is now the glyph, not the fill. GRPH-1027: doc and config no longer
+ * share a square — config is a hexagon, from `kindShape`, so the pair is not colour alone.
  *
  * The legend is grey shapes: once fill names area, a coloured key would re-teach kind as
- * colour, which is the channel we just freed.
+ * colour, which is the channel we just freed. The hues in `KIND_META` stay, and the
+ * inspector chip draws them on the same glyph.
  */
 const KIND_LEGEND_COLOR = "#9aa3ab"; // --color-muted-2
-type KindShape = "ring" | "circle" | "diamond" | "square";
-function kindShape(kind: string): KindShape {
-  if (kind === "module") return "ring";
-  if (kind === "symbol" || kind === "request") return "diamond";
-  if (kind === "doc" || kind === "config") return "square";
-  return "circle";
-}
 
 /** Radii from Build.dc.html, scaled to this viewBox. File size still grows with degree. */
 function kindRadius(kind: string, degree = 0): number {
@@ -117,49 +109,27 @@ function KindGlyph({
   const fill = described ? (shape === "ring" ? "#0a0c0e" : color) : "#0d1114";
   const stroke = described && shape !== "ring" ? "#0a0c0e" : color;
   const opacity = described ? 1 : 0.7;
+  const mark = { fill, stroke, strokeWidth: 2, strokeDasharray: dash, opacity };
+  let body: React.ReactNode;
   if (shape === "diamond") {
-    return (
-      <polygon
-        points={`0,${-r} ${r},0 0,${r} ${-r},0`}
-        fill={fill}
-        stroke={stroke}
-        strokeWidth={2}
-        strokeDasharray={dash}
-        opacity={opacity}
-      />
+    body = <polygon points={`0,${-r} ${r},0 0,${r} ${-r},0`} {...mark} />;
+  } else if (shape === "square") {
+    body = <rect x={-r} y={-r} width={r * 2} height={r * 2} rx={1.5} {...mark} />;
+  } else if (shape === "hexagon") {
+    body = (
+      <polygon points={hexagonPoints(r).map(([x, y]) => `${x},${y}`).join(" ")} {...mark} />
+    );
+  } else {
+    body = (
+      <>
+        <circle r={r} {...mark} />
+        {shape === "ring" && described && (
+          <circle r={Math.max(2.2, r * 0.36)} fill={color} />
+        )}
+      </>
     );
   }
-  if (shape === "square") {
-    return (
-      <rect
-        x={-r}
-        y={-r}
-        width={r * 2}
-        height={r * 2}
-        rx={1.5}
-        fill={fill}
-        stroke={stroke}
-        strokeWidth={2}
-        strokeDasharray={dash}
-        opacity={opacity}
-      />
-    );
-  }
-  return (
-    <>
-      <circle
-        r={r}
-        fill={fill}
-        stroke={stroke}
-        strokeWidth={2}
-        strokeDasharray={dash}
-        opacity={opacity}
-      />
-      {shape === "ring" && described && (
-        <circle r={Math.max(2.2, r * 0.36)} fill={color} />
-      )}
-    </>
-  );
+  return <g data-shape={shape}>{body}</g>;
 }
 
 const EDGE_META: Record<CodeEdgeType, { label: string; color: string }> = {
@@ -243,13 +213,17 @@ function HoverTip({
 }
 
 export function CodeGraphView() {
+  // D10: one read, on mount. Later search-string edits do not move the view.
+  const urlSeed = React.useRef<GraphUrlSeed | null>(null);
+  if (urlSeed.current === null) urlSeed.current = readGraphUrl(window.location.search);
+  const seed = urlSeed.current;
   const { activeId } = useProjectCtx();
   const mapQ = useCodeMap(activeId);
   const { data: map, isLoading } = mapQ;
   const [enabled, setEnabled] = React.useState<Record<CodeEdgeType, boolean>>({
     imports: true, calls: true, owns: true, tested_by: true, references: true,
   });
-  const [selPath, setSelPath] = React.useState<string | null>(null);
+  const [selPath, setSelPath] = React.useState<string | null>(seed.sel);
   /** Find and hub picks tween the canvas camera. A canvas click does not. */
   const [frameId, setFrameId] = React.useState<string | null>(null);
   const [hubsOpen, setHubsOpen] = React.useState(false);
@@ -262,22 +236,26 @@ export function CodeGraphView() {
   const [hoverId, setHoverId] = React.useState<string | null>(null);
   // How many rings the selection lights. Shift-click (or Shift+Enter) widens it; a fresh
   // selection resets it, so depth never quietly persists into the next thing you click.
-  const [depth, setDepth] = React.useState(1);
+  const [depth, setDepth] = React.useState(seed.depth ?? 1);
   // Isolate (Build.dc.html): the design's toggle beside the depth chips. The canvas already
   // DIMS everything outside the reach ring to 0.22; isolate drops those nodes and edges
   // instead, so a dense graph can be read at all. It needs a reach set to isolate against,
   // so with nothing selected the control is disabled rather than silently doing nothing.
-  const [isolate, setIsolate] = React.useState(false);
+  const [isolate, setIsolate] = React.useState(seed.iso === true);
   // Matrix is the fourth layout. It is DOM, so the canvas unmounts while it
   // is showing. Show in graph comes back to Clusters with this pair isolated.
-  const [layoutMode, setLayoutMode] = React.useState<GraphLayoutId>("clusters");
+  const [layoutMode, setLayoutMode] = React.useState<GraphLayoutId>(seed.layout ?? "clusters");
   // D2 holds the area depth for the session. The canvas owns the layout hook,
   // and opening Matrix unmounts it, so the depth lives here and goes back in.
   const [keptDepth, setKeptDepth] = React.useState<number | undefined>(undefined);
   const onAreaDepth = React.useCallback((depth: number) => {
     setKeptDepth((cur) => (cur === depth ? cur : depth));
   }, []);
-  const [matrixCell, setMatrixCell] = React.useState<{ row: string; col: string } | null>(null);
+  const [matrixCell, setMatrixCell] = React.useState<{ row: string; col: string } | null>(seed.cell);
+  const [linkToast, setLinkToast] = React.useState<string | null>(null);
+  // False until the mount-time URL has been checked against the loaded map.
+  // Writing earlier would replace a shared link with the defaults.
+  const [urlReady, setUrlReady] = React.useState(false);
   const [matrixScroll, setMatrixScroll] = React.useState(0);
   const matrixScrollRef = React.useRef<HTMLDivElement | null>(null);
   const [returnPoint, setReturnPoint] = React.useState<{
@@ -291,8 +269,14 @@ export function CodeGraphView() {
   // cluster reads this scale and drives that camera; the SVG viewport is a
   // different range and must not move the canvas.
   const canvasControlRef = React.useRef<CanvasControlApi | null>(null);
+  // The canvas's status lines and zoom caption go where Build.dc.html puts them: under
+  // find, and inside the legend box. Callback refs, so the canvas re-renders into them.
+  const [statusSlot, setStatusSlot] = React.useState<HTMLDivElement | null>(null);
+  const [captionSlot, setCaptionSlot] = React.useState<HTMLDivElement | null>(null);
   const [canvasK, setCanvasK] = React.useState(1);
   const onCanvasZoom = React.useCallback((k: number) => setCanvasK(k), []);
+  // The canvas drops its floor below 0.7 when a whole layout needs it; zoom-out follows.
+  const [canvasMinK, setCanvasMinK] = React.useState(CANVAS_MIN_K);
   // Trail breadcrumb: the last N nodes the user selected, most-recent last. Clicking one
   // re-selects it without losing the rest — a back button that does not erase history.
   const [trail, setTrail] = React.useState<string[]>([]);
@@ -337,41 +321,17 @@ export function CodeGraphView() {
     edges: allEdges.length,
   }), [allIds, nodes, allEdges]);
 
-  // ── D9: the galaxy view ────────────────────────────────────────────────────
-  // Past the detail budget the graph changes WHAT it draws rather than drawing the same thing
-  // slower. `entered` is the component we are inside, or null for the whole map.
-  const [entered, setEntered] = React.useState<string | null>(null);
-  const galaxyEdges = React.useMemo(
-    () => allEdges.map((e) => ({ a: e.src, b: e.dst })),
-    [allEdges],
-  );
-  const galaxy = React.useMemo(() => collapse(allIds, galaxyEdges), [allIds, galaxyEdges]);
-  // Collapsed only when the flat view cannot hold D1's budget AND collapsing would actually
-  // explain something. `worthCollapsing` checks the DISTRIBUTION, not just the count: this
-  // project measured [146, 3, 1, 1, 1, 1] on the live graph, which passes a count check and
-  // renders one huge dot beside five specks (GRPH-403).
-  // Above the detail budget the code view is canvas mode (PRD-52 D1). Galaxy
-  // collapse stays in this file for S9; it does not run while canvas mode is on.
+  // Every non-empty map is canvas mode (PRD-52 D1, budget now 0). The galaxy
+  // collapse (PRD-20 D9) is gone (PRD-52 D8): every node is drawn, none is entered.
   const canvasMode = allIds.length > DETAIL_BUDGET;
-  const galaxyMode =
-    !canvasMode &&
-    entered === null &&
-    allIds.length > DETAIL_BUDGET &&
-    worthCollapsing(galaxy.superNodes, allIds.length);
-
-  const ids = React.useMemo(() => {
-    if (entered) return enterComponent(galaxy, entered, galaxyEdges).ids;
-    return allIds;
-  }, [entered, galaxy, galaxyEdges, allIds]);
+  const ids = allIds;
 
   // The UNFILTERED set drives layout; the filtered one only decides what is drawn. That split
   // is what makes a chip toggle redraw instead of rearranging the map under the user (AC-3).
-  const edges = React.useMemo(() => {
-    const drawn = allEdges.filter((e) => enabled[e.type]);
-    if (!entered) return drawn;
-    const inside = new Set(ids);
-    return drawn.filter((e) => inside.has(e.src) && inside.has(e.dst));
-  }, [allEdges, enabled, entered, ids]);
+  const edges = React.useMemo(
+    () => allEdges.filter((e) => enabled[e.type]),
+    [allEdges, enabled],
+  );
 
   const nodeByPath = React.useMemo(() => {
     const m: Record<string, (typeof nodes)[number]> = {};
@@ -379,20 +339,18 @@ export function CodeGraphView() {
     return m;
   }, [nodes]);
 
-  // Layout runs over the collapsed set in galaxy mode, and over one component's nodes once
-  // entered — which is what makes the bound the largest COMPONENT rather than the repo.
-  const layoutIds = React.useMemo(
-    () => (canvasMode ? [] : galaxyMode ? galaxy.superNodes.map((s) => s.id) : ids),
-    [canvasMode, galaxyMode, galaxy, ids],
+  // Canvas mode lays its own positions out in the worker. SVG mode lays out every node.
+  const layoutIds = React.useMemo(() => (canvasMode ? [] : ids), [canvasMode, ids]);
+  const layoutEdges = React.useMemo(
+    () => allEdges.map((e) => ({ a: e.src, b: e.dst })),
+    [allEdges],
   );
-  const layoutEdges = React.useMemo(() => {
-    if (galaxyMode) return galaxy.superEdges.map((e) => ({ a: e.a, b: e.b }));
-    const within = new Set(ids);
-    return galaxyEdges.filter((e) => within.has(e.a) && within.has(e.b));
-  }, [galaxyMode, galaxy, ids, galaxyEdges]);
 
   const view = useGraphViewport(W, H);
   const pinsApi = useGraphPins(view.toWorld);
+  // Held here, not in the canvas: Matrix unmounts the canvas, and a pin is
+  // session state keyed by layout. The SVG pins above are a different store.
+  const canvasPins = useCanvasPins();
   const kindOf = React.useMemo(() => {
     const m: Record<string, string> = {};
     for (const id of allIds) m[id] = nodeByPath[id]?.kind ?? "";
@@ -415,7 +373,8 @@ export function CodeGraphView() {
     width: W,
     height: H,
     pinned: pinsApi.pins,
-    ...(galaxyMode ? {} : { membership, kinds: kindOf }),
+    membership,
+    kinds: kindOf,
   });
   // A dragged node sits where the user put it; everything else where the layout put it.
   const pos = React.useMemo(
@@ -429,26 +388,16 @@ export function CodeGraphView() {
     (id: string) => `${id} ${nodeByPath[id]?.name ?? ""}`,
     [nodeByPath],
   );
-  // Find searches EVERY node, including those inside collapsed components — a search that
-  // cannot see what the view is hiding is worse than no search.
+  // Find searches every node. There is no collapsed component to enter (PRD-52 D8):
+  // a canvas hit selects the node and frames it.
   const find = useGraphFind(allIds, labelOf);
 
-  // A match inside a collapsed component enters it, rather than leaving the user staring at a
-  // super-node with a hit count and no way to reach the hit.
   const firstMatch = find.active ? [...find.matches].sort()[0] : undefined;
   React.useEffect(() => {
-    if (!firstMatch) return;
-    if (canvasMode) {
-      setSelPath(firstMatch);
-      setFrameId(firstMatch);
-      return;
-    }
-    const home = galaxy.componentOf[firstMatch];
-    setEntered((cur) => {
-      if (cur !== null || allIds.length <= DETAIL_BUDGET) return cur;
-      return home ?? cur;
-    });
-  }, [firstMatch, galaxy, allIds.length, canvasMode]);
+    if (!firstMatch || !canvasMode) return;
+    setSelPath(firstMatch);
+    setFrameId(firstMatch);
+  }, [firstMatch, canvasMode]);
   const hubs = React.useMemo(() => topByDegree(ids, layoutEdges, LOD_TOP_N), [ids, layoutEdges]);
 
   // The kinds the legend has to explain: what is DRAWN, in the fixed order of the colour
@@ -660,10 +609,6 @@ export function CodeGraphView() {
   /**
    * Picking a hub: select it, then ease the viewport onto it — the same path the find box
    * takes, rather than a fourth way for this view to move.
-   *
-   * In galaxy mode the node is not drawn at all: only super-nodes are. So enter the component
-   * holding it FIRST and let the position effect below frame it once the flat layout exists.
-   * Without that, clicking the top hub while collapsed selects something invisible.
    */
   const [pendingFocus, setPendingFocus] = React.useState<string | null>(null);
   const pickHub = React.useCallback(
@@ -673,13 +618,9 @@ export function CodeGraphView() {
         setFrameId(path);
         return;
       }
-      if (!ids.includes(path)) {
-        const holder = galaxy.superNodes.find((sn) => sn.members.includes(path));
-        if (holder) setEntered(holder.id);
-      }
       setPendingFocus(path);
     },
-    [ids, galaxy, selectNode, canvasMode],
+    [selectNode, canvasMode],
   );
 
   // Find is highlight-by-another-name: it feeds the same dim path as selection rather than
@@ -707,7 +648,7 @@ export function CodeGraphView() {
     if (points.length) fitRef.current(points);
   }, [matchKey, canvasMode]);
 
-  // Deferred rather than done in the click: after entering a component the layout has not run
+  // Deferred rather than done in the click: the layout may not have placed the node
   // yet, so `pos[path]` is undefined for a frame or three.
   React.useEffect(() => {
     if (canvasMode || !pendingFocus) return;
@@ -723,7 +664,13 @@ export function CodeGraphView() {
     () =>
       allIds.map((id) => {
         const n = nodeByPath[id];
-        return { id, path: n?.path ?? id, kind: n?.kind ?? "file", name: n?.name ?? "" };
+        return {
+          id,
+          path: n?.path ?? id,
+          kind: n?.kind ?? "file",
+          name: n?.name ?? "",
+          summary: n?.summary ?? "",
+        };
       }),
     [allIds, nodeByPath],
   );
@@ -752,6 +699,23 @@ export function CodeGraphView() {
       meta: `${a.count} nodes`,
     }));
   }, [canvasMode, scale, areas]);
+  // One way into an area, from the Explore list and from the chips under find alike. On the
+  // canvas an area is a hull to frame; the SVG-era chips named a module to select instead.
+  const jumpToArea = React.useCallback(
+    (id: string) => {
+      if (canvasMode && scale?.areas.some((a) => a.id === id)) {
+        setLayoutMode("clusters");
+        setSelPath(null);
+        setPairFocus(null);
+        setReturnPoint(null);
+        setFrameId(null);
+        setFrameArea((cur) => ({ id, n: (cur?.n ?? 0) + 1 }));
+        return;
+      }
+      pickHub(id);
+    },
+    [canvasMode, scale, pickHub],
+  );
 
   // A layout-chip entry drops the previous cell. Back is the only way to restore it.
   const enterMatrix = React.useCallback(() => {
@@ -784,6 +748,13 @@ export function CodeGraphView() {
     setLayoutMode("matrix");
     setReturnPoint(null);
   }, [returnPoint]);
+  const canvasReturnTo = React.useMemo(
+    () =>
+      returnPoint
+        ? { text: `Back to matrix · ${returnPoint.row}→${returnPoint.col}`, onClick: backToMatrix }
+        : null,
+    [returnPoint, backToMatrix],
+  );
   const onLayoutChip = React.useCallback(
     (id: GraphLayoutId) => {
       // The Matrix chip is a fresh entry even when Matrix is already showing:
@@ -800,6 +771,51 @@ export function CodeGraphView() {
     },
     [enterMatrix, layoutMode],
   );
+
+  React.useEffect(() => {
+    if (!linkToast) return;
+    const timer = window.setTimeout(() => setLinkToast(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [linkToast]);
+
+  // Check the mount-time link once the map has been read. An unknown sel or
+  // cell is dropped here and named; a later refetch does not re-read the URL.
+  React.useEffect(() => {
+    if (urlReady || isLoading || map === undefined) return;
+    const linked = urlSeed.current;
+    if (!linked) {
+      setUrlReady(true);
+      return;
+    }
+    let missing = false;
+    const selKnown = !!linked.sel && allIds.includes(linked.sel);
+    if (linked.sel && !selKnown) {
+      setSelPath(null);
+      missing = true;
+    } else if (selKnown && linked.sel) {
+      // Camera is not in the URL. A linked node is framed; otherwise the
+      // canvas fits on layout, and the SVG view resets to Fit.
+      setFrameId(linked.sel);
+      if (!canvasMode) setPendingFocus(linked.sel);
+    } else if (!canvasMode) {
+      view.reset();
+    }
+    const cellKnown = !!(linked.cell && matrixModel && cellFromModel(matrixModel, linked.cell));
+    if (linked.cellPresent && !cellKnown) {
+      setMatrixCell(null);
+      missing = true;
+    }
+    if (missing) setLinkToast(LINKED_NODE_TOAST);
+    setUrlReady(true);
+    // `view.reset` is a stable callback. Listing `view` would re-run this on
+    // every render, because the viewport object is rebuilt each time.
+  }, [urlReady, isLoading, map, allIds, canvasMode, matrixModel]);
+
+  React.useEffect(() => {
+    if (!urlReady) return;
+    replaceGraphUrl({ layout: layoutMode, sel: selPath, depth, iso: isolate, cell: matrixCell });
+  }, [urlReady, layoutMode, selPath, depth, isolate, matrixCell]);
+
   // `truncated === false` means the server looked and the page is complete.
   // A missing flag is complete only when the returned list matches the total.
   const truncated =
@@ -812,22 +828,7 @@ export function CodeGraphView() {
   const failed = mapQ.isError && map === undefined;
   const empty = !isLoading && !failed && nodes.length === 0;
 
-  const purpose = entered ? (
-    <span className="flex items-center gap-1.5">
-      <button
-        onClick={() => setEntered(null)}
-        className="rounded border border-control px-1.5 py-px font-mono text-[10.5px] text-muted transition-colors hover:border-control-hover hover:text-fg"
-      >
-        ← all components
-      </button>
-      <span className="font-mono text-small text-fg-2">{label(entered, "")}</span>
-      <span className="text-faint">· {ids.length} nodes</span>
-    </span>
-  ) : (
-    galaxyMode
-      ? `${counts.drawn} nodes in ${galaxy.superNodes.length} components — too many to draw at once. Click a component to enter it.`
-      : `The codebase as agents described it — modules, files, and symbols with typed relations. ${map ? `${counts.drawn} nodes · ${counts.edges} edges${counts.undescribed ? ` · ${counts.undescribed} referenced but not yet described` : ""}.` : ""}`
-  );
+  const purpose = `The codebase as agents described it — modules, files, and symbols with typed relations. ${map ? `${counts.drawn} nodes · ${counts.edges} edges${counts.undescribed ? ` · ${counts.undescribed} referenced but not yet described` : ""}.` : ""}`;
 
   return (
     <div className="flex h-full min-h-0">
@@ -952,9 +953,11 @@ export function CodeGraphView() {
               }}
               truncated={truncated}
               totalNodes={map?.node_count ?? nodes.length}
+              undescribed={counts.undescribed}
               frameId={frameId}
               controlRef={canvasControlRef}
               onZoom={onCanvasZoom}
+              onZoomFloor={setCanvasMinK}
               holderOf={holderOf}
               pathPending={canvasPath.pending}
               pathArmed={canvasPath.picking}
@@ -972,14 +975,8 @@ export function CodeGraphView() {
               prevDepth={keptDepth}
               onDepth={onAreaDepth}
               pairFocus={pairFocus}
-              returnTo={
-                returnPoint
-                  ? {
-                      text: `Back to matrix · ${returnPoint.row}→${returnPoint.col}`,
-                      onClick: backToMatrix,
-                    }
-                  : null
-              }
+              returnTo={canvasReturnTo}
+              chromeSlots={{ status: statusSlot, caption: captionSlot }}
               frameAreaId={frameArea?.id ?? null}
               frameAreaNonce={frameArea?.n ?? 0}
               pathState={{
@@ -990,6 +987,10 @@ export function CodeGraphView() {
               }}
               onPathTarget={canvasPath.pick}
               onPathEmpty={canvasPath.disarm}
+              onTraceTo={canvasPath.traceTo}
+              canvasPins={canvasPins}
+              presence={presence}
+              soloUser={soloUser}
             />
           ) : (
             <svg
@@ -1004,9 +1005,7 @@ export function CodeGraphView() {
               aria-label={
                 // Carries the same facts as the visible caption, including the undescribed
                 // count — a11y parity is the point, and it was the caption that was wrong
-                // (GRPH-479). `ids` rather than `counts.drawn` because inside a component
-                // this describes what is on screen NOW, which is what the arrow keys move
-                // through; the two are the same set on the whole map.
+                // (GRPH-479). `ids` is the whole map: nothing is hidden inside a component.
                 `Code graph: ${ids.length} nodes, ${edges.length} of ${allEdges.length} edges shown` +
                 (counts.undescribed
                   ? `, ${counts.undescribed} referenced but not yet described. `
@@ -1063,39 +1062,7 @@ export function CodeGraphView() {
                   stroke. That is the load-bearing rule of the visual design: a held node must
                   still say what kind of node it is, and tinting the node would overload the one
                   channel that already carries meaning. */}
-              {/* Presence as one hull per (user, component) — section 7's own mitigation for
-                  the cost of a per-node cloud layer at scale, and the better visual besides. */}
-              {galaxyMode &&
-                holdersOf(presence).map((h) => {
-                  const byComponent = new Map<string, typeof pos[string][]>();
-                  for (const path of h.nodes) {
-                    const comp = galaxy.componentOf[path];
-                    const p = pos[comp];
-                    if (!comp || !p) continue;
-                    const list = byComponent.get(comp) ?? [];
-                    list.push(p);
-                    byComponent.set(comp, list);
-                  }
-                  return [...byComponent.entries()].map(([comp, pts]) => {
-                    const d = hullPath(convexHull(pts, 24));
-                    return d ? (
-                      <path key={`hull-${h.userId}-${comp}`} d={d} fill={h.color} fillOpacity={0.14} />
-                    ) : (
-                      <circle
-                        key={`hull-${h.userId}-${comp}`}
-                        cx={pts[0].x}
-                        cy={pts[0].y}
-                        r={superRadius(1) + 22}
-                        fill={h.color}
-                        fillOpacity={0.14}
-                        filter="url(#code-cloud-blur)"
-                      />
-                    );
-                  });
-                })}
-
-              {!galaxyMode &&
-                clouds.map((c, i) => (
+              {clouds.map((c, i) => (
                 <circle
                   key={`cloud-${c.userId}-${i}`}
                   cx={c.cx}
@@ -1114,14 +1081,12 @@ export function CodeGraphView() {
                   strokeDasharray={c.predicted ? "6 5" : undefined}
                   style={{ pointerEvents: "none" }}
                 />
-                ))}
+              ))}
 
               {/* Directory hulls (Build.dc.html). Distinct from presence clouds (user colour,
-                  blurred) and from PRD-20's component hulls (galaxy mode). Drawn only when
-                  clustered layout has actually grouped the members — a hull on a force
-                  hairball is a costume. */}
-              {!galaxyMode &&
-                hullGroups.map((g) => {
+                  blurred). Drawn only when clustered layout has actually grouped the members
+                  — a hull on a force hairball is a costume. */}
+              {hullGroups.map((g) => {
                   const pts = g.members.map((id) => pos[id]).filter(Boolean);
                   if (pts.length < 2) return null;
                   const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
@@ -1164,65 +1129,10 @@ export function CodeGraphView() {
                         {label(g.id, nodeByPath[g.id]?.name ?? "")}
                       </text>
                     </g>
-                  );
-                })}
+                );
+              })}
 
-              {/* Collapsed components. Radius grows with AREA, so one 400-node component does
-                  not become forty times the width of a 10-node one and swallow the canvas. */}
-              {galaxyMode &&
-                galaxy.superNodes.map((s) => {
-                  const p = pos[s.id];
-                  if (!p) return null;
-                  return (
-                    <g
-                      key={`super-${s.id}`}
-                      transform={`translate(${p.x},${p.y})`}
-                      className="cursor-pointer"
-                      role="button"
-                      tabIndex={0}
-                      aria-label={`Component ${label(s.anchor, "")}, ${s.size} nodes. Enter to open.`}
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        setEntered(s.id);
-                      }}
-                      onKeyDown={(ev) => {
-                        if (ev.key === "Enter" || ev.key === " ") {
-                          ev.preventDefault();
-                          setEntered(s.id);
-                        }
-                      }}
-                    >
-                      <circle
-                        r={superRadius(s.size)}
-                        fill="#12171b"
-                        stroke="var(--color-line-3)"
-                        strokeWidth={2}
-                      />
-                      <text
-                        y={4}
-                        textAnchor="middle"
-                        fontSize={11}
-                        fontFamily="IBM Plex Mono, monospace"
-                        fill="#8b949e"
-                        style={{ pointerEvents: "none" }}
-                      >
-                        {s.size}
-                      </text>
-                      <text
-                        y={superRadius(s.size) + 14}
-                        textAnchor="middle"
-                        fontSize={10}
-                        fontFamily="IBM Plex Mono, monospace"
-                        fill="#5c656e"
-                        style={{ pointerEvents: "none" }}
-                      >
-                        {label(s.anchor, "")}
-                      </text>
-                    </g>
-                  );
-                })}
-
-              {!galaxyMode && edges.map((e, i) => {
+              {edges.map((e, i) => {
                 const a = pos[e.src];
                 const b = pos[e.dst];
                 if (!a || !b) return null;
@@ -1251,7 +1161,7 @@ export function CodeGraphView() {
                 );
               })}
 
-              {!galaxyMode && ids.map((id) => {
+              {ids.map((id) => {
                 const p = pos[id];
                 if (!p) return null;
                 const node = nodeByPath[id];
@@ -1404,7 +1314,7 @@ export function CodeGraphView() {
                 );
               })}
 
-              {!galaxyMode && hoverId && hoverId !== selPath && pos[hoverId] && (
+              {hoverId && hoverId !== selPath && pos[hoverId] && (
                 <HoverTip
                   x={pos[hoverId].x}
                   y={pos[hoverId].y - kindRadius(nodeByPath[hoverId]?.kind ?? "", degree[hoverId] ?? 0) - 10}
@@ -1413,7 +1323,7 @@ export function CodeGraphView() {
                 />
               )}
 
-              {!galaxyMode && <ArrowsOut stubs={outbound} pos={pos} onHover={setStubHover} />}
+              <ArrowsOut stubs={outbound} pos={pos} onHover={setStubHover} />
               </g>
             </svg>
           )}
@@ -1421,13 +1331,21 @@ export function CodeGraphView() {
           {/* Top-left, 320px, over the canvas — where the design puts find. The header's
               168px box is gone: a search whose results are nodes belongs on the surface
               that draws them, and the dropdown below it needs room the header never had. */}
-          {!isLoading && !empty && (
+          {/* Not over Matrix: it has no nodes to find, and the column sat on its header row. */}
+          {!isLoading && !empty && !(canvasMode && layoutMode === "matrix") && (
             <CanvasFind
               find={find}
               nodeByPath={nodeByPath}
               onPick={pickHub}
-              areas={areas}
-              activeId={selPath}
+              areas={jumpAreas}
+              onArea={jumpToArea}
+              activeId={canvasMode ? (frameArea?.id ?? null) : selPath}
+              head={
+                canvasMode ? (
+                  <LayoutChips layout={layoutMode} onLayout={onLayoutChip} returnTo={canvasReturnTo} />
+                ) : undefined
+              }
+              statusRef={canvasMode ? setStatusSlot : undefined}
             />
           )}
 
@@ -1444,7 +1362,10 @@ export function CodeGraphView() {
               <div className="flex min-w-0 flex-col items-start gap-2">
                 {stubHover && <StubEvidence stub={stubHover} />}
                 <FleetLegend presence={presence} soloUser={soloUser} onSolo={setSoloUser} />
-                {!galaxyMode && <KindLegend kinds={drawnKinds} />}
+                <KindLegend
+                  kinds={drawnKinds}
+                  captionRef={canvasMode && layoutMode !== "matrix" ? setCaptionSlot : undefined}
+                />
               </div>
               {layoutMode !== "matrix" && (
               <GraphControls
@@ -1454,7 +1375,7 @@ export function CodeGraphView() {
                 onIsolate={() => setIsolate((v) => !v)}
                 canIsolate={!!shown || !!pairFocus}
                 zoom={canvasMode ? canvasK : view.viewport.k}
-                minZoom={canvasMode ? CANVAS_MIN_K : MIN_ZOOM}
+                minZoom={canvasMode ? canvasMinK : MIN_ZOOM}
                 maxZoom={canvasMode ? CANVAS_MAX_K : MAX_ZOOM}
                 onZoom={(factor) => {
                   if (canvasMode) canvasControlRef.current?.zoomBy(factor);
@@ -1466,6 +1387,17 @@ export function CodeGraphView() {
                 }}
               />
               )}
+            </div>
+          )}
+          {linkToast && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-16 z-20 flex justify-center">
+              <p
+                role="status"
+                data-testid="graph-link-toast"
+                className="rounded-lg border border-line bg-surface px-4 py-2 text-body text-fg shadow-lg"
+              >
+                {linkToast}
+              </p>
             </div>
           )}
         </div>
@@ -1608,24 +1540,7 @@ export function CodeGraphView() {
               !isLoading &&
               !empty &&
               !failed && (
-                <InteractionHint
-                  galaxyMode={galaxyMode}
-                  superNodes={galaxy.superNodes}
-                  areas={jumpAreas}
-                  onJump={(id) => {
-                    if (canvasMode && scale?.areas.some((a) => a.id === id)) {
-                      setLayoutMode("clusters");
-                      setSelPath(null);
-                      setPairFocus(null);
-                      setReturnPoint(null);
-                      setFrameId(null);
-                      setFrameArea((cur) => ({ id, n: (cur?.n ?? 0) + 1 }));
-                      return;
-                    }
-                    if (galaxyMode) setEntered(id);
-                    else pickHub(id);
-                  }}
-                />
+                <InteractionHint areas={jumpAreas} onJump={jumpToArea} />
               )
             )}
           </div>
@@ -1680,9 +1595,21 @@ function NodeInspector({
   return (
     <div className="animate-fade">
       <div className="mb-1.5 flex items-center gap-2">
+        {/* Kind is the glyph, in the kind's own hue. A text chip named the kind and
+            left the shape on the canvas, so the aside could not say what the mark was. */}
         <span
-          className="rounded border border-line px-1.5 py-px font-mono text-meta tracking-wide text-muted"
+          data-testid="inspector-kind"
+          className="inline-flex items-center gap-1.5 rounded border border-line px-1.5 py-px font-mono text-meta tracking-wide text-muted"
         >
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+            <g transform="translate(6,6)">
+              <KindGlyph
+                kind={node?.kind || kind}
+                color={meta.color}
+                r={kindShape(node?.kind || kind) === "ring" ? 4.2 : 3.4}
+              />
+            </g>
+          </svg>
           {meta.label}
         </span>
         <span className="inline-flex items-center gap-1.5 font-mono text-[10px]" style={{ color: areaCol }}>
@@ -2040,17 +1967,25 @@ function StubEvidence({ stub }: { stub: ProjectStub }) {
 const ZOOM_STEP = 1.3;
 
 // ── Kind legend ───────────────────────────────────────────────────────────────
-// The design's bottom-left slot. Kind is SHAPE (ring / circle / diamond / square); colour
-// still names the kind because the server has no cluster axis to colour by. The legend
-// draws the same KindGlyph the canvas uses — a key of circles would explain nothing.
+// The design's bottom-left slot. Kind is SHAPE (ring / circle / diamond / square /
+// hexagon). Fill on the canvas names area, so the key is grey — a coloured key would
+// teach kind as colour again. The legend draws the same KindGlyph the canvas uses.
 //
 // Only the kinds actually drawn are listed. A fixed five-row key over a graph of nothing but
 // files is a glossary, and it teaches the reader to ignore it.
 
-function KindLegend({ kinds }: { kinds: string[] }) {
+function KindLegend({
+  kinds,
+  captionRef,
+}: {
+  kinds: string[];
+  /** Build.dc.html sets the zoom caption under the legend, in the same box. */
+  captionRef?: (el: HTMLDivElement | null) => void;
+}) {
   if (kinds.length < 2) return null;
   return (
-    <div className="pointer-events-auto flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-[10px] border border-line-2 bg-surface/90 px-3 py-2 backdrop-blur-sm">
+    <div className="pointer-events-auto flex flex-col gap-1.5 rounded-[10px] border border-line-2 bg-surface/90 px-3 py-2 backdrop-blur-sm">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
       {kinds.map((k) => {
         const meta = kindMeta(k);
         return (
@@ -2070,6 +2005,8 @@ function KindLegend({ kinds }: { kinds: string[] }) {
         );
       })}
     </div>
+    {captionRef && <div ref={captionRef} className="empty:hidden" />}
+    </div>
   );
 }
 
@@ -2077,8 +2014,8 @@ function KindLegend({ kinds }: { kinds: string[] }) {
 // The design's top-left overlay: a 320px box with a magnifier, and under it the hits as a
 // list. The header box this replaces could only ever show a COUNT — "7" beside the input —
 // which tells you the search worked and not which seven, on a canvas where a hit may be a
-// dot three screens away or inside a collapsed component. The list names them and clicking
-// one takes the same route a hub click does.
+// dot three screens away. The list names them and clicking one takes the same route a hub
+// click does.
 
 /** How many hits the dropdown names before it stops and says how many it did not. */
 const FIND_ROWS = 8;
@@ -2089,16 +2026,26 @@ function CanvasFind({
   onPick,
   areas,
   activeId,
+  onArea,
+  head,
+  statusRef,
 }: {
   find: GraphFind;
   nodeByPath: Record<string, { name: string; kind: string }>;
   onPick: (path: string) => void;
   areas: { id: string; label: string; color: string; meta: string }[];
   activeId: string | null;
+  /** An area chip. Defaults to `onPick`, which selects the area's module. */
+  onArea?: (id: string) => void;
+  /** Build.dc.html stacks the layout chips above find, in this same column. */
+  head?: React.ReactNode;
+  /** Where the canvas puts its toasts and status lines, under the area chips. */
+  statusRef?: (el: HTMLDivElement | null) => void;
 }) {
   const hits = React.useMemo(() => [...find.matches].sort(), [find.matches]);
   return (
     <div className="pointer-events-auto absolute left-4 top-3.5 z-10 flex w-[min(320px,calc(100%-2rem))] flex-col gap-2">
+      {head}
       <div className="relative">
         <svg
           width="13"
@@ -2171,6 +2118,7 @@ function CanvasFind({
         <div
           className="flex flex-nowrap gap-1.5 overflow-x-auto pb-0.5"
           style={{ scrollbarWidth: "none" }}
+          role="group"
           aria-label="Areas"
         >
           {areas.map((a) => {
@@ -2178,7 +2126,7 @@ function CanvasFind({
             return (
               <button
                 key={a.id}
-                onClick={() => onPick(a.id)}
+                onClick={() => (onArea ?? onPick)(a.id)}
                 aria-pressed={on}
                 className={cn(
                   "inline-flex h-6 flex-none items-center gap-1.5 whitespace-nowrap rounded-xl border px-2.5 font-mono text-[10px] transition-colors",
@@ -2194,6 +2142,7 @@ function CanvasFind({
           })}
         </div>
       )}
+      {statusRef && <div ref={statusRef} className="flex flex-col items-start gap-1.5 empty:hidden" />}
     </div>
   );
 }
@@ -2358,42 +2307,28 @@ function TrailBreadcrumb({
 }
 
 // ── Interaction hint ──────────────────────────────────────────────────────────
-// The aside's no-selection state (the design calls it "Explore"): teaches the gestures, and
-// in galaxy mode offers the largest components to jump into. It was a dismissible card in the
-// canvas's bottom-right corner — the corner the design gives to the control cluster — and
-// nothing needs dismissing once it is in a column of its own.
+// The aside's no-selection state (the design calls it "Explore"): teaches the gestures and
+// offers areas to jump into. It was a dismissible card in the canvas's bottom-right corner —
+// the corner the design gives to the control cluster — and nothing needs dismissing once it
+// is in a column of its own.
 
 function InteractionHint({
-  galaxyMode,
-  superNodes,
   areas,
   onJump,
 }: {
-  galaxyMode: boolean;
-  superNodes: SuperNode[];
   areas: { id: string; label: string; color: string; meta: string }[];
   onJump: (id: string) => void;
 }) {
-  const jumps = areas.length
-    ? areas
-    : galaxyMode
-      ? superNodes.slice(0, 4).map((sn) => ({
-          id: sn.id,
-          label: label(sn.anchor, ""),
-          color: "#8b949e",
-          meta: `${sn.size} nodes`,
-        }))
-      : [];
   return (
     <div className="flex flex-col gap-2.5">
       <div className="text-[13px] font-semibold text-fg">Explore</div>
       <p className="text-[12px] leading-relaxed text-muted">
         Hover to preview a node&rsquo;s neighbourhood, click to pin it, double-click to zoom in.
-        {jumps.length > 0 ? " Or jump into an area:" : ""}
+        {areas.length > 0 ? " Or jump into an area:" : ""}
       </p>
-      {jumps.length > 0 && (
+      {areas.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          {jumps.map((a) => (
+          {areas.map((a) => (
             <button
               key={a.id}
               onClick={() => onJump(a.id)}

@@ -14,9 +14,27 @@ import type { FleetMatrixRow, FleetTierCell } from "@/lib/types";
  * Facts only. The Observe → Harness page is where rates and rankings live; this table
  * names what can run, and a link is how you get to how it turned out.
  */
-export function MatrixTable({ rows, harnessHref }: {
+const GRADE_TONE: Record<string, string> = {
+  A: "border-accent/40 text-accent",
+  B: "border-accent/40 text-accent",
+  C: "border-line-2 text-fg-2",
+  D: "border-line-2 text-fg-2",
+  F: "border-[color:var(--color-st-blocked)]/40 text-[color:var(--color-st-blocked)]",
+};
+
+/** F reads as a warning; an ungraded cell stays muted. */
+function gradeClass(grade: string | null): string {
+  return grade ? GRADE_TONE[grade] : "border-line-2 text-muted";
+}
+
+export function MatrixTable({ rows, harnessHref, loading = false, error = false, onRetry }: {
   rows: FleetMatrixRow[];
   harnessHref: string;
+  /** The source query has not answered yet — not a claim about what the server has. */
+  loading?: boolean;
+  /** The source query failed; there is nothing to say about the catalog. */
+  error?: boolean;
+  onRetry?: () => void;
 }) {
   return (
     <section className="mb-7" data-testid="fleet-matrix">
@@ -33,10 +51,17 @@ export function MatrixTable({ rows, harnessHref }: {
           className="shrink-0 text-[12px] text-fg-2 underline-offset-2 hover:underline"
           data-testid="fleet-matrix-observe"
         >
-          Performance and rankings
+          Performance and rankings →
         </Link>
       </div>
-      {rows.length === 0 ? (
+      {error ? (
+        <PlannerError
+          message={`${FETCH_FAILED} The catalog was not read — this is not "not served".`}
+          onRetry={() => { onRetry?.(); }}
+        />
+      ) : loading ? (
+        <TableSkeleton rows={4} columns={5} />
+      ) : rows.length === 0 ? (
         <p className="rounded-[11px] border border-dashed border-line-2 px-3 py-6 text-center text-body text-muted">
           The catalog has not been served. That is not an empty matrix.
         </p>
@@ -114,12 +139,6 @@ function picklist(cell: FleetTierCell): string[] {
   return inOrder([...cell.models, cell.packaged_model]);
 }
 
-/** The draft's own answer to "what will run", which is the server's `effective_model` while
- *  nothing is pending and the edit the operator is looking at while something is. */
-function effectiveOf(cell: FleetTierCell, draft: string | null): string {
-  return draft ?? cell.packaged_model;
-}
-
 /**
  * Tier map — which model each harness runs when (GRPH-1003, design `Build.dc.html`).
  *
@@ -157,7 +176,12 @@ export function TierMapPanel({ projectId, harnessHref }: {
       <div className="mb-3 flex items-end justify-between gap-3">
         <div>
           <h2 className="text-lead font-semibold tracking-tight">Tier map</h2>
-          <p className="mt-0.5 text-[12px] text-muted">Which model each harness runs when</p>
+          <p className="mt-0.5 text-[12px] text-muted">
+            Which model each harness runs when{" "}
+            <code className="font-mono text-small">spawn(tier=)</code> lands on it. Each cell takes
+            the top-graded model for that harness and tier. Pick a model to pin an override; pick
+            Inherit to drop it.
+          </p>
         </div>
         <div className="flex shrink-0 items-center gap-3 text-[12px]">
           <Link
@@ -166,13 +190,6 @@ export function TierMapPanel({ projectId, harnessHref }: {
             data-testid="tier-map-grading-link"
           >
             Grading rules →
-          </Link>
-          <Link
-            to={harnessHref}
-            className="text-fg-2 underline-offset-2 hover:underline"
-            data-testid="tier-map-performance-link"
-          >
-            Performance and rankings →
           </Link>
         </div>
       </div>
@@ -279,8 +296,50 @@ function TierMapForm({ cells, saving, clearing, saveError, clearError, onSave, o
     })));
   }
 
+  const measured = cells.filter((c) => c.graded_model !== null);
+  const inheriting = measured.length > 0
+    && measured.every((c) => draft[cellKey(c.harness, c.tier)] === c.graded_model);
+
+  /** Unchecking drops the measured cells back to packaged; it never invents another value. */
+  function toggleInherit(on: boolean) {
+    if (on) { inheritGrading(); return; }
+    setDraft((prev) => {
+      const next = { ...prev };
+      for (const c of measured) next[cellKey(c.harness, c.tier)] = null;
+      return next;
+    });
+    setNote("");
+  }
+
   return (
     <>
+      <div
+        className="mb-2 flex flex-wrap items-center justify-end gap-3 text-[12px]"
+        data-testid="tier-map-controls"
+      >
+        <label className="flex items-center gap-1.5 text-fg-2">
+          <input
+            type="checkbox"
+            checked={inheriting}
+            onChange={(e) => toggleInherit(e.target.checked)}
+            data-testid="tier-map-inherit"
+          />
+          Inherit from performance grading
+        </label>
+        <span className="text-muted" data-testid="tier-map-override-count">
+          {savedOverrides} override{savedOverrides === 1 ? "" : "s"} on top of grading
+        </span>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onClear}
+          disabled={clearing}
+          loading={clearing}
+          data-testid="tier-map-clear"
+        >
+          Clear overrides
+        </Button>
+      </div>
       <div className="overflow-x-auto rounded-[11px] border border-line-2">
         <table className="w-full text-left text-body">
           <thead className="border-b border-line-2 bg-surface-2 font-mono text-[10px] uppercase tracking-wide text-faint">
@@ -314,60 +373,75 @@ function TierMapForm({ cells, saving, clearing, saveError, clearError, onSave, o
                   const choices = picklist(cell);
                   return (
                     <td key={tier} className="px-3 py-2">
-                      <div className="flex min-w-[13rem] flex-col gap-1">
-                        <select
-                          aria-label={`Model for ${harness} at ${tier}`}
-                          data-testid="tier-map-select"
-                          className={cn(
-                            "w-full rounded-[8px] border bg-surface-2 px-2 py-1 font-mono text-[11.5px] outline-none",
-                            "[@media(hover:hover)_and_(pointer:fine)]:hover:border-control-hover",
-                            "focus-visible:border-control-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
-                            // An overridden cell is the one thing on this panel that is not the
-                            // committed default, so it gets the accent border rather than a dot.
-                            overridden ? "border-accent text-fg" : "border-control text-muted",
-                          )}
-                          value={value ?? USE_PACKAGED}
-                          onChange={(e) => choose(harness, tier, e.target.value)}
-                        >
-                          <option value={USE_PACKAGED}>
-                            packaged · {cell.packaged_model || "nothing committed"}
-                          </option>
-                          {choices.map((model) => (
-                            <option key={model} value={model}>{model}</option>
-                          ))}
-                          {value !== null && !choices.includes(value) && (
-                            // The draft holds a model this cell's picklist does not name: a saved
-                            // override the catalog stopped serving, or a graded model Inherit just
-                            // wrote. Without this option the select paints its FIRST entry while
-                            // the effective line beside it says something else, and the operator
-                            // can neither see nor undo the value they are looking at.
-                            <option value={value}>{value} · not in this catalog</option>
-                          )}
-                        </select>
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span
-                            className={cn("font-mono text-small", overridden ? "text-accent" : "text-fg-2")}
-                            data-testid="tier-map-effective"
-                          >
-                            {effectiveOf(cell, value) || "—"}
-                          </span>
-                          {overridden && (
-                            <span className="rounded-md border border-accent/40 px-1 font-mono text-meta text-accent">
-                              override
-                            </span>
-                          )}
-                          {unsaved && (
-                            <span className="rounded-md border border-control px-1 font-mono text-meta text-muted">
-                              unsaved
-                            </span>
-                          )}
-                        </div>
+                      <div className="flex min-w-[13rem] items-start gap-2">
+                        {/* `measured.grade` is the letter; null (unmeasured or below the floor) is "–". */}
                         <span
-                          className={cn("text-[10.5px]", cell.graded_model ? "text-faint" : "text-muted")}
-                          data-testid="tier-map-graded"
+                          className={cn(
+                            "mt-0.5 rounded-md border px-1.5 font-mono text-meta",
+                            gradeClass(cell.measured?.grade ?? null),
+                          )}
+                          data-testid="tier-map-grade"
+                          title={cell.measured?.grade ? `Grade ${cell.measured.grade}` : "Not graded"}
                         >
-                          {cell.graded_model ? `graded · ${cell.graded_model}` : "not measured"}
+                          {cell.measured?.grade ?? "–"}
                         </span>
+                        <div className="flex min-w-0 flex-1 flex-col gap-1">
+                          <select
+                            aria-label={`Model for ${harness} at ${tier}`}
+                            data-testid="tier-map-select"
+                            className={cn(
+                              "w-full rounded-[8px] border bg-surface-2 px-2 py-1 font-mono text-[11.5px] outline-none",
+                              "[@media(hover:hover)_and_(pointer:fine)]:hover:border-control-hover",
+                              "focus-visible:border-control-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
+                              // An overridden cell is the one thing on this panel that is not the
+                              // committed default, so it gets the accent border rather than a dot.
+                              overridden ? "border-accent text-fg" : "border-control text-muted",
+                            )}
+                            value={value ?? USE_PACKAGED}
+                            onChange={(e) => choose(harness, tier, e.target.value)}
+                          >
+                            <option value={USE_PACKAGED}>
+                              packaged · {cell.packaged_model || "nothing committed"}
+                            </option>
+                            {choices.map((model) => (
+                              <option key={model} value={model}>{model}</option>
+                            ))}
+                            {value !== null && !choices.includes(value) && (
+                              // The draft holds a model this cell's picklist does not name: a saved
+                              // override the catalog stopped serving, or a graded model Inherit just
+                              // wrote. Without this option the select paints its FIRST entry while
+                              // the operator can neither see nor undo the value they are looking at.
+                              <option value={value}>{value} · not in this catalog</option>
+                            )}
+                          </select>
+                          <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted" data-testid="tier-map-meta">
+                            <span data-testid="tier-map-graded">
+                              {cell.measured
+                                ? `${cell.measured.below_floor ? "below grading floor · " : ""}${Math.round(cell.measured.pass_rate * 100)}% pass · ${cell.measured.runs} run${cell.measured.runs === 1 ? "" : "s"}`
+                                : "not measured"}
+                            </span>
+                            {overridden && (
+                              <span className="rounded-md border border-line-2 px-1 font-mono text-meta" data-testid="tier-map-state">
+                                override
+                              </span>
+                            )}
+                            {unsaved && (
+                              <span className="rounded-md border border-control px-1 font-mono text-meta">
+                                unsaved
+                              </span>
+                            )}
+                            {overridden && (
+                              <button
+                                type="button"
+                                className="text-fg-2 underline-offset-2 hover:underline"
+                                onClick={() => choose(harness, tier, USE_PACKAGED)}
+                                data-testid="tier-map-cell-reset"
+                              >
+                                reset
+                              </button>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     </td>
                   );
@@ -379,19 +453,6 @@ function TierMapForm({ cells, saving, clearing, saveError, clearError, onSave, o
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="outline" onClick={inheritGrading} data-testid="tier-map-inherit">
-          Inherit from performance grading
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={onClear}
-          disabled={clearing}
-          loading={clearing}
-          data-testid="tier-map-clear"
-        >
-          Clear overrides
-        </Button>
         <Button
           size="sm"
           onClick={save}

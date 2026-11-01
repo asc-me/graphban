@@ -402,15 +402,17 @@ def test_deferred_stays_deferred_through_classify(db):
     assert result["mechanical"]["passed"], result["mechanical"]
 
 
-def test_the_questions_runner_invokes_ai_command(db, monkeypatch):
+def test_the_questions_runner_invokes_grill_questions(db, monkeypatch):
+    """The eval has to call the function `grill_prd` calls. Patching the old
+    body-only command stays green while the shipped path moves (GRPH-1123)."""
     called = {"n": 0}
-    real = evals_svc.prd_svc.ai_command_detail
+    real = evals_svc.prd_svc.grill_questions
 
-    def wrapped(db, prd_id, command):
+    def wrapped(db, prd_id):
         called["n"] += 1
-        return real(db, prd_id, command)
+        return real(db, prd_id)
 
-    monkeypatch.setattr(evals_svc.prd_svc, "ai_command_detail", wrapped)
+    monkeypatch.setattr(evals_svc.prd_svc, "grill_questions", wrapped)
     evals_svc.run_case(db, _grill("asks-dimensions"))
     assert called["n"] == 1
 
@@ -430,7 +432,7 @@ def test_the_classify_runner_invokes_classify_grill(db, monkeypatch):
 
 def test_a_silent_questions_runner_fails_min_shards(db, monkeypatch):
     monkeypatch.setattr(
-        evals_svc.prd_svc, "ai_command_detail", lambda db, prd_id, command: ("", False))
+        evals_svc.prd_svc, "grill_questions", lambda db, prd_id: ("", False))
     result = evals_svc.run_case(db, _grill("asks-dimensions"))
     assert result["outcome"] == "fail"
     assert result["mechanical"]["passed"] is False

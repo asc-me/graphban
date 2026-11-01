@@ -1,14 +1,21 @@
-"""A branch and a PR carry exactly one item; salvage keeps items apart (GRPH-948).
+"""A branch and a PR carry exactly one item; salvage keeps items apart (GRPH-948, GRPH-1086).
 
 Reported from SA-P21: one child built four items on one branch, salvage made one WIP commit
 naming three, and the PR — "SA-583, SA-581, SA-580: …", 19 files, ~2,500 lines — merged before
 review and needed four fix PRs. A cluster claim is a scheduling unit, not a delivery unit.
 
+GRPH-1086: stacking those PRs still put the later item's commits on top of the earlier
+item's, so one merge carried both. Each PR is cut from the base, carries only the commits
+whose subject names that item, and says `Attests:` for that item alone. A commit that names
+no item, names two, or will not apply without the other item's commit refuses the branch.
+
 Sabotage: restore the joined-items title in `propose.describe` and the one-item-per-PR tests
-here fail.
+here fail. Drop `attest=True` on the per-item `_open_pr` and the `Attests:` assertions fail.
+Drop the "names no item" return in `split_by_item` and the unnamed-commit test fails.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -44,14 +51,21 @@ def published(git_repo: Path, tmp_path: Path) -> Path:
     return git_repo
 
 
+def _attested(body: str) -> list[str]:
+    """The ids on the `Attests:` line, the way CI reads it."""
+    match = re.search(r"^[ \t]*Attests:[ \t]*(.*)$", body or "", re.MULTILINE)
+    assert match, body
+    return re.findall(r"\b[A-Z]{2,10}-\d+\b", match.group(1))
+
+
 @pytest.fixture
 def forge(monkeypatch):
-    """A recorded `gh`: every PR the supervisor opens, as (branch, base, title)."""
-    opened: list[tuple[str, str, str]] = []
+    """A recorded `gh`: every PR the supervisor opens, as (branch, base, title, body)."""
+    opened: list[tuple[str, str, str, str]] = []
     monkeypatch.setattr(wt_mod, "default_ref", lambda repo, remote: "origin/main")
 
     def propose(repo, branch, base, *, title, body):
-        opened.append((branch, base, title))
+        opened.append((branch, base, title, body))
         return propose_mod.Proposed(branch=branch, url=f"https://x/pull/{len(opened)}", ok=True)
 
     monkeypatch.setattr(propose_mod, "propose", propose)
@@ -60,13 +74,14 @@ def forge(monkeypatch):
 
 class _Ledger:
     def __init__(self):
-        self.evidence: list[tuple[str, dict]] = []
+        self.observations: list[dict] = []
 
     def call(self, tool, **kw):
-        if tool == "update_item":
-            for e in kw.get("evidence") or []:
-                self.evidence.append((kw["id"], e))
         return {}
+
+    def post_observation(self, **kw):
+        self.observations.append(kw)
+        return {"recorded": True}
 
 
 # ---- describe ---------------------------------------------------------------------------------
@@ -84,7 +99,6 @@ def test_a_child_holding_several_items_proposes_one_pr_per_item(published, forge
     repo = published
     _git(repo, "checkout", "-q", "-b", "gb/w-1")
     a = _commit(repo, "web/a.tsx", "SA-580: board filter")
-    _commit(repo, "web/a2.tsx", "tidy the filter")  # names nothing: belongs to SA-580
     b = _commit(repo, "web/b.tsx", "SA-581: card badge")
     _git(repo, "checkout", "-q", "main")
     ledger = _Ledger()
@@ -92,53 +106,100 @@ def test_a_child_holding_several_items_proposes_one_pr_per_item(published, forge
     wave = Wave()
     propose_branch(wave, repo, "gb/w-1", ["SA-580", "SA-581"], client=ledger)
 
-    assert [(br, base) for br, base, _ in forge] == [
+    assert [(br, base) for br, base, _, _ in forge] == [
         ("gb/w-1--SA-580", "origin/main"),
-        ("gb/w-1--SA-581", "origin/gb/w-1--SA-580"),
+        ("gb/w-1--SA-581", "origin/main"),
     ], wave.failures
-    titles = [t for _, _, t in forge]
-    assert titles == ["SA-580: tidy the filter", "SA-581: card badge"]
+    titles = [t for _, _, t, _ in forge]
+    assert titles == ["SA-580: board filter", "SA-581: card badge"]
     for t in titles:
         assert sum(i in t for i in ("SA-580", "SA-581")) == 1, t
-    # Each item's branch ends at its own last commit, and the stack keeps each diff to one item.
-    assert _git(repo, "rev-parse", "gb/w-1--SA-581").strip() == b
-    assert _git(repo, "merge-base", "--is-ancestor", a, "gb/w-1--SA-580") == ""
-    assert "web/b.tsx" not in _git(repo, "diff", "--name-only", "main", "gb/w-1--SA-580")
-    assert _git(repo, "diff", "--name-only", "gb/w-1--SA-580", "gb/w-1--SA-581").split() == ["web/b.tsx"]
+    bodies = [body for _, _, _, body in forge]
+    assert _attested(bodies[0]) == ["SA-580"]
+    assert _attested(bodies[1]) == ["SA-581"]
+    assert "SA-581" not in bodies[0]
+    assert "SA-580" not in bodies[1]
+    # A's prefix keeps its own commit. B is replayed onto the base, so A's file is not in it.
+    assert _git(repo, "rev-parse", "gb/w-1--SA-580").strip() == a
+    assert _git(repo, "rev-parse", "gb/w-1--SA-581").strip() != b
+    assert _git(repo, "diff", "--name-only", "main", "gb/w-1--SA-580").split() == ["web/a.tsx"]
+    assert _git(repo, "diff", "--name-only", "main", "gb/w-1--SA-581").split() == ["web/b.tsx"]
     # The receipt lands on its own item and names its own PR.
-    urls = {(i, e["url"]) for i, e in ledger.evidence if e.get("kind") == "url"}
+    urls = {(o["item_id"], o["url"]) for o in ledger.observations if o["kind"] == "pr_opened"}
     assert urls == {("SA-580", "https://x/pull/1"), ("SA-581", "https://x/pull/2")}
     assert not wave.failures, wave.failures
 
 
-def test_commits_that_do_not_separate_the_items_are_not_proposed(published, forge):
-    """Interleaved work cannot be stacked without rewriting it, and that is not the
-    supervisor's call. Nothing is proposed, and the wave says why."""
+def test_interleaved_commits_that_apply_alone_become_one_pr_each(published, forge):
+    """A later item's commit in between does not glue the histories together when each
+    patch applies on the base by itself."""
     repo = published
-    _git(repo, "checkout", "-q", "-b", "gb/w-2")
+    _git(repo, "checkout", "-q", "-b", "gb/w-5")
     _commit(repo, "a.py", "SA-580: one")
     _commit(repo, "b.py", "SA-581: two")
     _commit(repo, "c.py", "SA-580: three")
     _git(repo, "checkout", "-q", "main")
 
     wave = Wave()
+    propose_branch(wave, repo, "gb/w-5", ["SA-580", "SA-581"], client=_Ledger())
+
+    assert [(br, base) for br, base, _, _ in forge] == [
+        ("gb/w-5--SA-580", "origin/main"),
+        ("gb/w-5--SA-581", "origin/main"),
+    ], wave.failures
+    assert set(_git(repo, "diff", "--name-only", "main", "gb/w-5--SA-580").split()) == {"a.py", "c.py"}
+    assert _git(repo, "diff", "--name-only", "main", "gb/w-5--SA-581").split() == ["b.py"]
+    assert _attested(forge[0][3]) == ["SA-580"]
+    assert _attested(forge[1][3]) == ["SA-581"]
+
+
+def test_a_commit_that_depends_on_another_items_commit_is_not_proposed(published, forge):
+    repo = published
+    _git(repo, "checkout", "-q", "-b", "gb/w-2")
+    _commit(repo, "web/a.tsx", "SA-580: board")
+    path = repo / "web/a.tsx"
+    path.write_text(path.read_text(encoding="utf-8") + "badge\n", encoding="utf-8")
+    _git(repo, "add", "web/a.tsx")
+    _git(repo, "commit", "-qm", "SA-581: badge")
+    b = _git(repo, "rev-parse", "HEAD").strip()
+    _git(repo, "checkout", "-q", "main")
+
+    wave = Wave()
     propose_branch(wave, repo, "gb/w-2", ["SA-580", "SA-581"], client=_Ledger())
 
     assert forge == []
-    assert "interleaved" in wave.unproposed["gb/w-2"]
+    assert b[:12] in wave.unproposed["gb/w-2"]
+    assert "depends" in wave.unproposed["gb/w-2"]
     assert any("not proposed" in f for f in wave.failures)
+
+
+def test_a_commit_naming_no_item_is_not_proposed(published, forge):
+    repo = published
+    _git(repo, "checkout", "-q", "-b", "gb/w-6")
+    _commit(repo, "web/a.tsx", "SA-580: board filter")
+    blank = _commit(repo, "web/a2.tsx", "tidy the filter")
+    _commit(repo, "web/b.tsx", "SA-581: card badge")
+    _git(repo, "checkout", "-q", "main")
+
+    wave = Wave()
+    propose_branch(wave, repo, "gb/w-6", ["SA-580", "SA-581"], client=_Ledger())
+
+    assert forge == []
+    assert blank[:12] in wave.unproposed["gb/w-6"]
+    assert "names no item" in wave.unproposed["gb/w-6"]
 
 
 def test_a_commit_naming_two_items_is_not_proposed(published, forge):
     repo = published
     _git(repo, "checkout", "-q", "-b", "gb/w-3")
-    _commit(repo, "a.py", "SA-580, SA-581: both at once")
+    both = _commit(repo, "a.py", "SA-580, SA-581: both at once")
     _git(repo, "checkout", "-q", "main")
 
     wave = Wave()
     propose_branch(wave, repo, "gb/w-3", ["SA-580", "SA-581"], client=_Ledger())
 
     assert forge == []
+    assert both[:12] in wave.unproposed["gb/w-3"]
     assert "names SA-580, SA-581" in wave.unproposed["gb/w-3"]
 
 
@@ -153,7 +214,9 @@ def test_one_item_is_proposed_as_before(published, forge):
     wave = Wave()
     propose_branch(wave, repo, "gb/w-4", ["SA-580"], client=_Ledger())
 
-    assert forge == [("gb/w-4", "origin/main", "SA-580: one")]
+    assert [(br, base, title) for br, base, title, _ in forge] == [
+        ("gb/w-4", "origin/main", "SA-580: one")]
+    assert "Attests:" not in forge[0][3]
 
 
 # ---- salvage writes one commit per item ---------------------------------------------------------
@@ -204,7 +267,7 @@ def test_salvaged_work_for_several_items_names_each_items_own_branch(published, 
     propose_branch(wave, repo, "gb/w-8", ["GRPH-1", "GRPH-2"], client=ledger)
 
     assert forge == [], "a salvage is never proposed"
-    notes = {i: e["detail"] for i, e in ledger.evidence}
-    assert "`gb/w-8`" in notes["GRPH-1"]
-    assert "`gb/w-8--GRPH-2`" in notes["GRPH-2"]
+    notes = {o["item_id"]: o["branch"] for o in ledger.observations if o["kind"] == "salvage"}
+    assert notes["GRPH-1"] == "gb/w-8"
+    assert notes["GRPH-2"] == "gb/w-8--GRPH-2"
     assert wave.published["gb/w-8--GRPH-2"].ok, "the sibling is pushed so it can be found"

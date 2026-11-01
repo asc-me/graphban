@@ -60,13 +60,29 @@ function rimPoint(h: Hull, ux: number, uy: number, sign: number): { x: number; y
   return { x: h.cx + ux * h.r * sign, y: h.cy + uy * h.r * sign };
 }
 
-/** Quadratic between hull edges. Bend 0.1, control point from centres and radii only. */
+/**
+ * Quadratic between hull edges. Bend 0.1, control point from centres and radii only.
+ *
+ * Map tiles are the exception: they are packed edge to edge, so rim to rim is a stub a few
+ * pixels long between neighbours. Tiles connect centre to centre at the design's Map bend
+ * (0.08), drawn over the tiles and under the nodes.
+ */
 export function quadraticBetween(a: Hull, b: Hull): Quad {
   const dx = b.cx - a.cx;
   const dy = b.cy - a.cy;
   const len = Math.hypot(dx, dy) || 1;
   const ux = dx / len;
   const uy = dy / len;
+  if (a.rect && b.rect) {
+    return {
+      x0: a.cx,
+      y0: a.cy,
+      cx: (a.cx + b.cx) / 2 - uy * 0.08 * len,
+      cy: (a.cy + b.cy) / 2 + ux * 0.08 * len,
+      x1: b.cx,
+      y1: b.cy,
+    };
+  }
   const p0 = rimPoint(a, ux, uy, 1);
   const p1 = rimPoint(b, ux, uy, -1);
   const x0 = p0.x;

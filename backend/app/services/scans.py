@@ -3,10 +3,14 @@
 Producer = agent-with-repo (MCP `record_scan`), same shape as `describe_code`. The server
 stores + serves; it never runs the scanner. A health badge NEVER defaults to green:
 
-  clean_at_sha  — a scan exists, zero findings, scanned_sha matches head
+  clean_at_sha  — a scan exists, zero findings, scanned_sha matches head, result complete
   has_findings  — a scan exists with findings (at head, or head unknown)
   never_scanned — no scan for this category × component
   stale         — a scan exists but scanned_sha ≠ head (result does not cover what's running)
+  tool_missing  — scanner not on the machine (producer result, not never_scanned)
+  not_applicable — scanner does not apply at this path
+  incomplete    — scanner ran but did not finish (findings may be present)
+  not_computable — coverage when the project has no code-graph nodes (server-derived)
 
 Ship security end-to-end first. Coverage and open-work are derived from the code graph /
 tracker (built-in, no agent producer required). Refactor, stub and tests stay never_scanned
@@ -18,19 +22,27 @@ counts an empty findings list cannot be told apart from a suite that collected n
 failing test is a finding; a run that executed zero tests is stored WITH a finding, never as
 clean; skips are written into the note rather than folded into the passes. The counts live
 in the note, not a column — a reader sees them where the scan's other context already is.
+
+History (GRPH-1128): a report never deletes an earlier one. Every report is a row; a cell
+reads the newest row per (scanner, path), and `scan_status` for a path returns every row
+newest first, each naming what cleared and what is new against the row before it.
 """
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import CodeRef, CodeScan, Item, ScanFinding
 from app.services import code_graph as code_svc
+from app.services import scan_topology as topo_svc
 from app.services.clustering import _match
+
+logger = logging.getLogger("graphban.scans")
 
 # Overlay categories — match docs/design/Stack.dc.html CAT list.
 CATEGORIES = ("security", "refactor", "stub", "deadcode", "coverage", "tests", "work")
@@ -50,9 +62,10 @@ _SEV_NORM = {
     "high": "high",
     "med": "med", "medium": "med",
     "low": "low",
-    "info": "low",
+    "info": "info",
 }
-_SEV_ORDER = ("crit", "high", "med", "low")
+_SEV_ORDER = ("crit", "high", "med", "low", "info")
+_DEPENDENCY_VALUES = frozenset({"direct", "transitive"})
 
 # Stack deployable id → repo path prefix (ticket paths; api owns backend/, not "api/").
 COMPONENT_PATHS: dict[str, str] = {
@@ -72,7 +85,40 @@ _SECURITY_SCANNERS = frozenset({
 _DEADCODE_SCANNERS = frozenset({"deadcode", "vulture", "knip", "ts-prune"})
 # Test runners that roll into the tests category when `category` is omitted.
 _TEST_SCANNERS = frozenset({"pytest", "vitest", "jest", "junit", "tests"})
+_REFACTOR_SCANNERS = frozenset({"radon", "complexity", "eslint-complexity", "refactor"})
+_STUB_SCANNERS = frozenset({"stubscan", "stub", "partial"})
+_COVERAGE_SCANNERS = frozenset({"graphcheck", "coverage", "code-graph"})
+
+# scanner_id → category when `category` is omitted. There is no fallback: an unknown
+# scanner with no category is refused, because any default category lets one empty row
+# paint that cell clean at head (GRPH-1108).
+_INFERRED_CATEGORY: tuple[tuple[str, frozenset[str]], ...] = (
+    ("security", _SECURITY_SCANNERS),
+    ("refactor", _REFACTOR_SCANNERS),
+    ("stub", _STUB_SCANNERS),
+    ("deadcode", _DEADCODE_SCANNERS),
+    ("coverage", _COVERAGE_SCANNERS),
+    ("tests", _TEST_SCANNERS),
+)
 _TEST_COUNTS = ("passed", "failed", "skipped")
+
+# Categories `scans_due` may name. `work` is live tracker state, not a scan to schedule.
+_SCANS_DUE_CATEGORIES = frozenset({
+    "security", "coverage", "refactor", "stub", "deadcode", "tests",
+})
+# States that mean someone should run or finish a scan (GRPH-1126 / PRD-P58 First-time due).
+_SCANS_DUE_STATES = frozenset({
+    "never_scanned", "stale", "tool_missing", "incomplete",
+})
+# Producer `result` values stored on CodeScan (GRPH-1125). `not_computable` is server-only.
+PRODUCER_RESULTS = frozenset({"complete", "tool_missing", "not_applicable", "incomplete"})
+_EMPTY_FINDINGS_REFUSAL = (
+    "result is required when findings is empty — use 'complete' for a clean scan, or "
+    "'tool_missing' / 'not_applicable' when the scanner did not run; nothing was stored"
+)
+_EMPTY_INCOMPLETE = (
+    "result 'incomplete' requires findings; nothing was stored"
+)
 
 
 # Tag prefix on an item filed from the overlay (a finding's Defrag, a stale/never-run CTA).
@@ -84,7 +130,7 @@ FILED_TAG_PREFIX = "stack-filed:"
 def filed_key(*parts: str) -> str:
     """Stable tag for one overlay offer: same finding (or same gap) → same key."""
     raw = "|".join((p or "").strip() for p in parts)
-    return FILED_TAG_PREFIX + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return FILED_TAG_PREFIX + hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
 
 
 def _utcnow() -> datetime:
@@ -105,6 +151,83 @@ def _norm_sev(raw: str) -> str:
     return _SEV_NORM.get(key, "med")
 
 
+def _optional_str(raw: object) -> str:
+    return str(raw or "").strip()
+
+
+def _optional_count(raw: object) -> int | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise ValueError("count must be a non-negative integer")
+    return raw
+
+
+def _validate_finding_extra(i: int, raw: dict) -> None:
+    dep = _optional_str(raw.get("dependency"))
+    if dep and dep not in _DEPENDENCY_VALUES:
+        raise ValueError(
+            f"findings[{i}].dependency must be direct or transitive (got {dep!r})"
+        )
+    _optional_count(raw.get("count"))
+
+
+def _finding_row(
+    *,
+    scan_id: str,
+    project_id: str,
+    path_n: str,
+    raw: dict,
+    default_sev: str,
+) -> ScanFinding:
+    summary = _optional_str(raw.get("summary"))
+    dep = _optional_str(raw.get("dependency"))
+    fixed = _optional_str(raw.get("fixed_version"))
+    kind = _optional_str(raw.get("kind"))
+    advisory = _optional_str(raw.get("advisory_id"))
+    count = _optional_count(raw.get("count"))
+    return ScanFinding(
+        scan_id=scan_id,
+        project_id=project_id,
+        path=_optional_str(raw.get("path")) or path_n,
+        severity=_norm_sev(str(raw.get("severity") or default_sev)),
+        summary=summary,
+        link_kind=_optional_str(raw.get("link_kind")),
+        link_ref=_optional_str(raw.get("link_ref")),
+        advisory_id=advisory,
+        dependency=dep,
+        fixed_version=fixed,
+        kind=kind,
+        count=count,
+    )
+
+
+def _finding_dict(f: ScanFinding) -> dict:
+    out = {
+        "severity": f.severity,
+        "summary": f.summary,
+        "path": f.path,
+        "link_kind": f.link_kind or None,
+        "link_ref": f.link_ref or None,
+    }
+    if f.advisory_id:
+        out["advisory_id"] = f.advisory_id
+    if f.dependency:
+        out["dependency"] = f.dependency
+    if f.fixed_version:
+        out["fixed_version"] = f.fixed_version
+    if f.kind:
+        out["kind"] = f.kind
+    if f.count is not None:
+        out["count"] = f.count
+    return out
+
+
+def _informational_rollup(finding: dict) -> bool:
+    """Knip-style rollups (kind + count) are not offered as tracker items."""
+    return bool(_optional_str(finding.get("kind"))) and finding.get("count") is not None
+
+
 def _infer_category(scanner_id: str, category: str | None) -> str:
     if category:
         c = category.strip().lower()
@@ -112,20 +235,15 @@ def _infer_category(scanner_id: str, category: str | None) -> str:
             raise ValueError(f"category must be one of {list(CATEGORIES)}")
         return c
     sid = (scanner_id or "").strip().lower()
-    if sid in _SECURITY_SCANNERS:
-        return "security"
-    if sid in ("radon", "complexity", "eslint-complexity", "refactor"):
-        return "refactor"
-    if sid in ("stubscan", "stub", "partial"):
-        return "stub"
-    if sid in _DEADCODE_SCANNERS:
-        return "deadcode"
-    if sid in ("graphcheck", "coverage", "code-graph"):
-        return "coverage"
-    if sid in _TEST_SCANNERS:
-        return "tests"
-    # Default the first shipped producer.
-    return "security"
+    for cat, scanners in _INFERRED_CATEGORY:
+        if sid in scanners:
+            return cat
+    known = "; ".join(f"{cat}: {', '.join(sorted(ids))}" for cat, ids in _INFERRED_CATEGORY)
+    raise ValueError(
+        f"category is required for scanner_id {scanner_id!r} — it is not a known scanner, "
+        f"so its category cannot be inferred. Pass category, one of {list(CATEGORIES)}. "
+        f"Known scanners ({known})."
+    )
 
 
 def _under(prefix: str, path: str) -> bool:
@@ -186,11 +304,14 @@ def record_scan(
     note: str = "",
     reported_by: str = "",
     tests: dict | None = None,
+    result: str | None = None,
 ) -> dict:
-    """Upsert a scanner's report for `path` at `scanned_sha`.
+    """Record a scanner's report for `path` at `scanned_sha`.
 
-    Empty `findings` is a deliberate clean result at that sha — not the same as never
-    having scanned. Replaces any prior row for the same (project, scanner_id, path).
+    Empty `findings` requires `result='complete'` — nothing else is stored. Other producer
+    results (`tool_missing`, `not_applicable`, `incomplete`) name blocked or partial runs.
+    Prior rows for the same (project, scanner_id, path) are kept: the newest is the
+    cell, the older ones are its history (GRPH-1128).
     A tests-category scan also needs `tests` counts (see the module docstring).
     """
     sid = (scanner_id or "").strip()
@@ -221,6 +342,7 @@ def record_scan(
                 f"findings[{i}] requires a non-empty summary "
                 f"(got keys {sorted(raw.keys())})"
             )
+        _validate_finding_extra(i, raw)
 
     counts: dict[str, int] | None = None
     default_sev = "medium"
@@ -252,17 +374,27 @@ def record_scan(
     elif tests is not None:
         raise ValueError(f"tests counts are only for the tests category, not {cat}")
 
-    # Replace prior result for this scanner+path (one live answer).
-    prior = list(db.scalars(
-        select(CodeScan).where(
-            CodeScan.project_id == project_id,
-            CodeScan.scanner_id == sid,
-            CodeScan.path == path_n,
+    outcome = (result or "").strip()
+    if not rows:
+        if not outcome:
+            raise ValueError(_EMPTY_FINDINGS_REFUSAL)
+        if outcome == "incomplete":
+            raise ValueError(_EMPTY_INCOMPLETE)
+        if outcome not in PRODUCER_RESULTS:
+            raise ValueError(
+                f"result must be one of {sorted(PRODUCER_RESULTS)} (got {outcome!r}); "
+                "nothing was stored"
+            )
+    elif not outcome:
+        outcome = "complete"
+    elif outcome not in PRODUCER_RESULTS:
+        raise ValueError(
+            f"result must be one of {sorted(PRODUCER_RESULTS)} (got {outcome!r})"
         )
-    ).all())
-    for old in prior:
-        db.execute(delete(ScanFinding).where(ScanFinding.scan_id == old.id))
-        db.delete(old)
+    elif outcome in ("tool_missing", "not_applicable") and rows:
+        raise ValueError(
+            f"result '{outcome}' cannot be stored with findings; nothing was stored"
+        )
 
     scan = CodeScan(
         id="cs_" + uuid.uuid4().hex[:12],
@@ -275,19 +407,17 @@ def record_scan(
         scanned_at=_utcnow(),
         reported_by=(reported_by or "").strip(),
         note=(note or "").strip(),
+        result=outcome,
     )
     db.add(scan)
     stored = 0
     for raw in rows:
-        summary = str(raw.get("summary") or "").strip()
-        db.add(ScanFinding(
+        db.add(_finding_row(
             scan_id=scan.id,
             project_id=project_id,
-            path=str(raw.get("path") or path_n).strip() or path_n,
-            severity=_norm_sev(str(raw.get("severity") or default_sev)),
-            summary=summary,
-            link_kind=str(raw.get("link_kind") or "").strip(),
-            link_ref=str(raw.get("link_ref") or "").strip(),
+            path_n=path_n,
+            raw=raw,
+            default_sev=default_sev,
         ))
         stored += 1
     db.commit()
@@ -300,7 +430,8 @@ def record_scan(
         "path": scan.path,
         "scanned_sha": scan.scanned_sha,
         "findings_recorded": stored,
-        "clean": stored == 0,
+        "clean": stored == 0 and outcome == "complete",
+        "result": outcome,
         "tests": counts,
         "reported_by": scan.reported_by,
         "scanned_at": scan.scanned_at.isoformat(),
@@ -312,20 +443,64 @@ def _findings_for(db: Session, scan_id: str) -> list[dict]:
         select(ScanFinding).where(ScanFinding.scan_id == scan_id)
         .order_by(ScanFinding.id.asc())
     ).all())
-    return [
-        {
-            "severity": f.severity,
-            "summary": f.summary,
-            "path": f.path,
-            "link_kind": f.link_kind or None,
-            "link_ref": f.link_ref or None,
-        }
-        for f in rows
-    ]
+    return [_finding_dict(f) for f in rows]
+
+
+def _stored_result(scan: CodeScan) -> str:
+    r = (getattr(scan, "result", None) or "").strip()
+    return r if r in PRODUCER_RESULTS else "complete"
+
+
+def _stale_note(scan: CodeScan, head: str, prefix: str = "") -> str:
+    if not head or scan.scanned_sha == head:
+        return ""
+    return (
+        f"Recorded at {scan.scanned_sha[:12]}; head is {head[:12]}, so that "
+        "result does not cover what is running."
+    )
+
+
+def _same_finding(a: dict, b: dict) -> bool:
+    """Is `b` the same finding as `a`? The advisory id when BOTH carry one, else the exact
+    summary and the exact path. One-sided ids are not an advisory match, and the missing id
+    is never treated as a wildcard. No fuzzy match: a reworded summary is another finding."""
+    aa = str(a.get("advisory_id") or "").strip()
+    ba = str(b.get("advisory_id") or "").strip()
+    if aa and ba:
+        return aa == ba
+    return a.get("summary") == b.get("summary") and a.get("path") == b.get("path")
+
+
+def finding_diff(earlier: list[dict], later: list[dict]) -> dict:
+    """What cleared between two rows of one scanner+path, and what is new.
+
+    One-to-one: two identical findings on the earlier row and one on the later leaves one
+    cleared, not zero."""
+    remaining = list(earlier)
+    new: list[dict] = []
+    for f in later:
+        idx = next((i for i, e in enumerate(remaining) if _same_finding(e, f)), None)
+        if idx is None:
+            new.append(f)
+        else:
+            remaining.pop(idx)
+    return {"cleared": remaining, "new": new}
+
+
+def _newest_per_scanner_path(scans: list[CodeScan]) -> list[CodeScan]:
+    """The newest row per (scanner_id, path) — the cell. `scans` must be newest first."""
+    seen: set[tuple[str, str]] = set()
+    out: list[CodeScan] = []
+    for s in scans:
+        k = (s.scanner_id, s.path)
+        if k not in seen:
+            seen.add(k)
+            out.append(s)
+    return out
 
 
 def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) -> dict:
-    """Three-state (+ stale) answer. Never defaults to clean."""
+    """Overlay cell state. Never defaults to clean."""
     if scan is None:
         return {
             "state": "never_scanned",
@@ -335,8 +510,10 @@ def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) 
             "scanned_at": None,
             "findings": [],
             "note": "Nothing has scanned this path. Until something does, its state is unknown.",
+            "result": None,
         }
     label = scan.scanner_id + (f" {scan.scanner_version}" if scan.scanner_version else "")
+    outcome = _stored_result(scan)
     base = {
         "scanner": label,
         "scanner_version": scan.scanner_version or None,
@@ -345,14 +522,33 @@ def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) 
         "reported_by": scan.reported_by or None,
         "findings": findings,
         "note": scan.note or None,
+        "result": outcome,
     }
     head = (head_sha or "").strip()
-    if findings:
-        # Findings still matter even if the sha drifted — show them, flag stale in note.
-        stale = bool(head and scan.scanned_sha != head)
+    stale = bool(head and scan.scanned_sha != head)
+
+    if outcome == "not_applicable":
+        if stale:
+            return {**base, "state": "stale", "note": _stale_note(scan, head) or base["note"]}
+        return {**base, "state": "not_applicable"}
+
+    if outcome == "tool_missing":
+        if stale:
+            return {**base, "state": "stale", "note": _stale_note(scan, head)}
+        return {**base, "state": "tool_missing"}
+
+    if outcome == "incomplete":
         note = base["note"]
         if stale:
-            extra = f"Scanned at {scan.scanned_sha[:12]}; head is {head[:12]}."
+            extra = _stale_note(scan, head)
+            note = f"{note} {extra}".strip() if note else extra
+            return {**base, "state": "stale", "note": note}
+        return {**base, "state": "incomplete"}
+
+    if findings:
+        note = base["note"]
+        if stale:
+            extra = _stale_note(scan, head)
             note = f"{note} {extra}".strip() if note else extra
         return {**base, "state": "has_findings", "note": note}
     if not head:
@@ -363,7 +559,7 @@ def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) 
                 " Head revision unknown — a clean result cannot be confirmed at head."
             ).strip(),
         }
-    if scan.scanned_sha != head:
+    if stale:
         return {
             **base,
             "state": "stale",
@@ -375,16 +571,31 @@ def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) 
     return {**base, "state": "clean_at_sha"}
 
 
-def _scans_for_prefix(db: Session, project_id: str, prefix: str) -> list[CodeScan]:
-    """Every live scan row whose path is under or equal to the component prefix.
+def _scans_for_exact_path(db: Session, project_id: str, path: str) -> list[CodeScan]:
+    """The newest row per scanner recorded at exactly this path (security lockfile cells).
 
-    Upsert already keeps one row per (scanner_id, path). Do not collapse to the latest
-    per scanner: a clean nested-path scan must not hide findings recorded on a parent.
+    Older rows are history, not the cell (GRPH-1128) — the same rule as `_scans_for_prefix`.
     """
-    all_scans = list(db.scalars(
+    path_n = path.strip().removeprefix("./")
+    return _newest_per_scanner_path(list(db.scalars(
+        select(CodeScan).where(
+            CodeScan.project_id == project_id,
+            CodeScan.path == path_n,
+        ).order_by(CodeScan.scanned_at.desc())
+    ).all()))
+
+
+def _scans_for_prefix(db: Session, project_id: str, prefix: str) -> list[CodeScan]:
+    """The newest row per (scanner_id, path) whose path is under or equal to the prefix.
+
+    Older rows of the same scanner+path are history, not the cell (GRPH-1128). Do not
+    collapse further to the latest per scanner: a clean nested-path scan must not hide
+    findings recorded on a parent.
+    """
+    all_scans = _newest_per_scanner_path(list(db.scalars(
         select(CodeScan).where(CodeScan.project_id == project_id)
         .order_by(CodeScan.scanned_at.desc())
-    ).all())
+    ).all()))
     pref = prefix.rstrip("/")
     out: list[CodeScan] = []
     for s in all_scans:
@@ -396,6 +607,21 @@ def _scans_for_prefix(db: Session, project_id: str, prefix: str) -> list[CodeSca
                 continue
         out.append(s)
     return out
+
+
+def _coverage_not_computable() -> dict:
+    return {
+        "state": "not_computable",
+        "scanner": "code-graph health",
+        "scanner_version": None,
+        "scanned_sha": None,
+        "scanned_at": None,
+        "findings": [],
+        "note": (
+            "This project has no code-graph nodes — coverage is not computable per component."
+        ),
+        "result": None,
+    }
 
 
 def _coverage_category(db: Session, project_id: str, prefix: str, head_sha: str) -> dict:
@@ -580,6 +806,9 @@ def scan_status(
     """Read scan state for one path or the whole project.
 
     When `path` is a component prefix (or omitted), returns the overlay-shaped payload.
+    With `path`, every row for it is returned newest first — older rows of a scanner are
+    `current: false` history — and each row with an earlier one of the same scanner names
+    what `cleared` and what is `new` against that earlier row (GRPH-1128).
     """
     head = (head_sha or "").strip()
     if path:
@@ -591,13 +820,22 @@ def scan_status(
         if scanner_id:
             q = q.where(CodeScan.scanner_id == scanner_id.strip())
         scans = list(db.scalars(q.order_by(CodeScan.scanned_at.desc())).all())
+        found = {s.id: _findings_for(db, s.id) for s in scans}
+        current = {s.id for s in _newest_per_scanner_path(scans)}
         out = []
-        for s in scans:
-            out.append(_state_for_scan(s, _findings_for(db, s.id), head) | {
+        for i, s in enumerate(scans):
+            prev = next((o for o in scans[i + 1:] if o.scanner_id == s.scanner_id), None)
+            history = None
+            if prev is not None:
+                history = {"compared_to": prev.id, "compared_sha": prev.scanned_sha}
+                history |= finding_diff(found[prev.id], found[s.id])
+            out.append(_state_for_scan(s, found[s.id], head) | {
                 "path": s.path,
                 "category": s.category,
                 "scanner_id": s.scanner_id,
                 "scan_id": s.id,
+                "current": s.id in current,
+                "history": history,
             })
         if scanner_id and not out:
             return {
@@ -618,39 +856,74 @@ def scan_status(
     return component_health(db, project_id, head_sha=head)
 
 
+def _scans_due_empty_reason(health: dict) -> str | None:
+    """Why `due` is empty — not interchangeable with all-clean (GRPH-1126)."""
+    mapping = health.get("mapping") or {}
+    if mapping.get("state") == "unmapped":
+        return "unmapped"
+    components = health.get("components") or []
+    if not components:
+        return "unmapped"
+    saw_not_computable_coverage = False
+    saw_findings = False
+    for comp in components:
+        for cat_key, cat in (comp.get("categories") or {}).items():
+            if cat_key not in _SCANS_DUE_CATEGORIES:
+                continue
+            st = cat.get("state") or "never_scanned"
+            if st in _SCANS_DUE_STATES:
+                return None
+            if cat_key == "coverage" and st == "not_computable":
+                saw_not_computable_coverage = True
+            if st == "has_findings":
+                saw_findings = True
+    # Findings at head are not due, but they are not clean either: name them first.
+    if saw_findings:
+        return "has_findings"
+    if saw_not_computable_coverage:
+        return "coverage_not_computable"
+    return "all_clean_or_not_applicable"
+
+
 def scans_due(db: Session, project_id: str, *, head_sha: str = "") -> dict:
     """Which component × category pairs need a (re)scan.
 
-    Due = never_scanned or stale for the security category (the one we ship producers for),
-    plus coverage when the graph says something is wrong. Refactor/stub/deadcode/tests due only once a
-    scanner has ever reported (otherwise they stay never_scanned without nagging).
+    Names every real cell in ``never_scanned``, ``stale``, ``tool_missing``, or ``incomplete``
+    for security, coverage, stub, dead code, refactor, and tests — including first-time
+    never_scanned on stub/deadcode/refactor/tests. ``not_applicable``, ``clean_at_sha``,
+    ``has_findings``, and ``not_computable`` coverage are not due.
     """
     health = component_health(db, project_id, head_sha=head_sha)
+    mapping = health.get("mapping") or {}
+    if mapping.get("state") == "unmapped":
+        return {
+            "head_sha": health.get("head_sha"),
+            "mapping": mapping,
+            "due": [],
+            "due_count": 0,
+            "empty_reason": "unmapped",
+        }
     due = []
     for comp in health["components"]:
         for cat_key, cat in (comp.get("categories") or {}).items():
-            st = cat.get("state")
-            if st in ("never_scanned", "stale"):
-                # Nag security/coverage whenever unscanned or stale; refactor/stub/deadcode only
-                # once stale (a scanner has reported before).
-                if cat_key in ("security", "coverage") or (
-                    cat_key in ("refactor", "stub", "deadcode", "tests") and st == "stale"
-                ):
-                    due.append({
-                        "component": comp["id"],
-                        "path": comp["path"],
-                        "category": cat_key,
-                        "state": st,
-                        "scanned_sha": cat.get("scanned_sha"),
-                        "head_sha": health.get("head_sha"),
-                    })
+            if cat_key not in _SCANS_DUE_CATEGORIES:
+                continue
+            st = cat.get("state") or "never_scanned"
+            if st in _SCANS_DUE_STATES:
+                due.append({
+                    "component": comp["id"],
+                    "path": comp["path"],
+                    "category": cat_key,
+                    "state": st,
+                    "scanned_sha": cat.get("scanned_sha"),
+                    "head_sha": health.get("head_sha"),
+                })
+    empty_reason = _scans_due_empty_reason(health) if not due else None
     return {
         "head_sha": health.get("head_sha"),
         "due": due,
         "due_count": len(due),
-        # Absence of due work is not "all clean" — components with never_scanned
-        # security still appear above. An empty list with every security never_scanned
-        # would be a bug; the filter includes never_scanned for security.
+        "empty_reason": empty_reason,
     }
 
 
@@ -672,6 +945,8 @@ def _merge_category_scans(
     shas: set[str] = set()
     latest = max(mine, key=lambda s: s.scanned_at or datetime.min.replace(tzinfo=timezone.utc))
     any_stale = False
+    any_blocked = False
+    any_incomplete = False
     root_clean_at_head = False
     for s in mine:
         labels.append(s.scanner_id + (f" {s.scanner_version}" if s.scanner_version else ""))
@@ -679,16 +954,44 @@ def _merge_category_scans(
         fs = _findings_for(db, s.id)
         findings.extend(fs)
         st = _state_for_scan(s, fs, head_sha)
-        if st["state"] == "stale":
+        cell_st = st["state"]
+        if cell_st == "stale":
             any_stale = True
+        if cell_st == "tool_missing":
+            any_blocked = True
+        if cell_st == "incomplete":
+            any_incomplete = True
         if (
             not fs
+            and _stored_result(s) == "complete"
             and head_sha
             and s.scanned_sha == head_sha
             and _covers_component_root(s.path, prefix)
         ):
             root_clean_at_head = True
     label = " · ".join(dict.fromkeys(labels))
+    if any_incomplete and not findings:
+        return _state_for_scan(
+            next(s for s in mine if _stored_result(s) == "incomplete"), [], head_sha,
+        ) | {"scanner": label}
+    if any_incomplete:
+        return {
+            "state": "incomplete",
+            "scanner": label,
+            "scanner_version": None,
+            "scanned_sha": latest.scanned_sha,
+            "scanned_at": latest.scanned_at.isoformat() if latest.scanned_at else None,
+            "reported_by": latest.reported_by or None,
+            "findings": findings,
+            "note": latest.note or None,
+            "result": "incomplete",
+        }
+    if any_blocked:
+        blocked = next(
+            s for s in mine if _state_for_scan(s, _findings_for(db, s.id), head_sha)["state"]
+            in ("tool_missing", "stale") and _stored_result(s) == "tool_missing"
+        )
+        return _state_for_scan(blocked, [], head_sha) | {"scanner": label, "findings": findings}
     if findings:
         return {
             "state": "has_findings",
@@ -702,6 +1005,13 @@ def _merge_category_scans(
         }
     if any_stale or (head_sha and any(s.scanned_sha != head_sha for s in mine)):
         return _state_for_scan(latest, [], head_sha) | {"scanner": label}
+    if (
+        not findings
+        and not any_blocked
+        and not any_incomplete
+        and all(_stored_result(s) == "not_applicable" for s in mine)
+    ):
+        return _state_for_scan(mine[0], [], head_sha) | {"scanner": label}
     if not root_clean_at_head:
         # Nested cleans at head without a root-covering scan: partial coverage ≠ CLEAN.
         note = (
@@ -721,11 +1031,13 @@ def _merge_category_scans(
     return _state_for_scan(latest, [], head_sha) | {"scanner": label}
 
 
-def _roll_component(categories: dict[str, dict], path: str, head_sha: str) -> dict:
+def _roll_component(
+    categories: dict[str, dict], path: str, head_sha: str, *, keys: tuple[str, ...] = CATEGORIES,
+) -> dict:
     """Per-box footer: FINDINGS / STALE / NOT SCANNED / CLEAN — never invent a score."""
-    states = {k: (categories[k].get("state") or "never_scanned") for k in CATEGORIES}
+    states = {k: (categories[k].get("state") or "never_scanned") for k in keys}
     findings = []
-    for k in CATEGORIES:
+    for k in keys:
         if states[k] == "has_findings":
             findings.extend(categories[k].get("findings") or [])
     sev_counts: dict[str, int] = {}
@@ -736,10 +1048,15 @@ def _roll_component(categories: dict[str, dict], path: str, head_sha: str) -> di
         for s in _SEV_ORDER if sev_counts.get(s)
     ]
     stale_n = sum(1 for s in states.values() if s == "stale")
-    nr_n = sum(1 for s in states.values() if s == "never_scanned")
+    nr_n = sum(
+        1 for s in states.values()
+        if s in ("never_scanned", "not_computable")
+    )
+    blocked_n = sum(1 for s in states.values() if s in ("tool_missing", "incomplete"))
     gaps = " · ".join(filter(None, [
         f"{stale_n} stale" if stale_n else "",
         f"{nr_n} not run" if nr_n else "",
+        f"{blocked_n} blocked" if blocked_n else "",
     ]))
     if findings:
         worst = next(s for s in _SEV_ORDER if sev_counts.get(s))
@@ -766,7 +1083,7 @@ def _roll_component(categories: dict[str, dict], path: str, head_sha: str) -> di
             "state": "never_scanned",
             "worst_severity": None,
             "severity_badges": [],
-            "meta": f"{nr_n} of {len(CATEGORIES)} never run",
+            "meta": f"{nr_n} of {len(keys)} never run",
             "finding_count": 0,
         }
     return {
@@ -803,48 +1120,61 @@ def _attach_offers(
     for cat, cell in categories.items():
         if cat != "work":
             for f in cell.get("findings") or []:
+                if _informational_rollup(f):
+                    continue
                 k = filed_key(component, cat, f.get("path") or "", f.get("summary") or "")
                 f["filed_key"] = k
                 f["filed_item"] = filed.get(k)
         st = cell.get("state")
-        if cell.get("live") or st not in ("stale", "never_scanned"):
+        if cell.get("live") or st not in ("stale", "never_scanned", "tool_missing", "incomplete"):
             cell["cta"] = None
             continue
-        kind = "rerun" if st == "stale" else "add_scanner"
+        kind = "rerun" if st in ("stale", "tool_missing", "incomplete") else "add_scanner"
         k = filed_key(component, cat, kind, cell.get("scanned_sha") or "")
         cell["cta"] = {"kind": kind, "path": prefix, "filed_key": k, "filed_item": filed.get(k)}
 
 
 def component_health(db: Session, project_id: str, *, head_sha: str = "") -> dict:
-    """Stack overlay payload: one entry per deployable with scannable code."""
+    """Stack overlay payload: one entry per scan cell from the posted app topology."""
     head = (head_sha or "").strip()
     filed = _filed_items(db, project_id)
+    mapping, cells = topo_svc.scan_cells(db, project_id)
     components = []
-    for cid, prefix in COMPONENT_PATHS.items():
-        scans = _scans_for_prefix(db, project_id, prefix)
+    for cell in cells:
+        prefix = cell.path
+        scans = (
+            _scans_for_exact_path(db, project_id, prefix)
+            if cell.exact_path
+            else _scans_for_prefix(db, project_id, prefix)
+        )
         cats: dict[str, dict] = {}
-        for cat in CATEGORIES:
+        for cat in cell.categories:
             if cat == "coverage":
-                cats[cat] = _coverage_category(db, project_id, prefix, head)
+                if cell.id == "_coverage:not_computable":
+                    cats[cat] = _coverage_not_computable()
+                else:
+                    cats[cat] = _coverage_category(db, project_id, prefix, head)
             elif cat == "work":
                 cats[cat] = _work_category(db, project_id, prefix)
             else:
                 cats[cat] = _merge_category_scans(db, scans, cat, head, prefix=prefix)
-        _attach_offers(cats, cid, prefix, filed)
-        roll = _roll_component(cats, prefix, head)
+        _attach_offers(cats, cell.id, prefix, filed)
+        keys = tuple(cell.categories)
+        roll = _roll_component(cats, prefix, head, keys=keys)
         components.append({
-            "id": cid,
+            "id": cell.id,
             "path": prefix,
             "head_sha": head or None,
             "rollup": roll,
             "categories": {
-                k: {**cats[k], "label": CATEGORY_LABELS[k]} for k in CATEGORIES
+                k: {**cats[k], "label": CATEGORY_LABELS[k]} for k in keys
             },
         })
     return {
         "project_id": project_id,
         "head_sha": head or None,
         "generated_at": _utcnow().isoformat(),
+        "mapping": mapping,
         "components": components,
         # Explicit: no single health score is fabricated.
         "scored": False,

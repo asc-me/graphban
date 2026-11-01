@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { TableSkeleton } from "@/components/planner/PlannerStates";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { errorDetail } from "@/lib/errors";
@@ -31,12 +32,14 @@ function percentsFromMix(names: string[], mix: Record<string, number> | null | u
  * Empty mix is winner-take-all, not a zeroed map. Saving all zeros is refused rather than
  * stored as "nobody". Recent launch share is shown beside the target when n ≥ 3.
  */
-export function MixAllocation({ projectId, profile, rows, recent, onSaved }: {
+export function MixAllocation({ projectId, profile, rows, recent, onSaved, loading = false }: {
   projectId: string;
   profile: FleetProfile | null;
   rows: FleetMatrixRow[];
   recent?: { n: number; by_harness: Record<string, number>; unreported: number };
   onSaved: () => void;
+  /** The fleet query has not answered: an empty catalog is not yet known. */
+  loading?: boolean;
 }) {
   const names = React.useMemo(() => harnessNames(rows), [rows]);
   const [enabled, setEnabled] = React.useState(!!profile?.mix);
@@ -98,7 +101,9 @@ export function MixAllocation({ projectId, profile, rows, recent, onSaved }: {
         />
         Allocate by share
       </label>
-      {names.length === 0 ? (
+      {loading ? (
+        <TableSkeleton rows={3} columns={3} />
+      ) : names.length === 0 ? (
         <p className="rounded-[11px] border border-dashed border-line-2 px-3 py-4 text-body text-muted">
           No mixable harness in the catalog.
         </p>

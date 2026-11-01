@@ -65,8 +65,8 @@ vi.mock("@/lib/publicApi", () => ({
 
 const { PrdEditorView } = await import("@/features/prds/PrdEditorView");
 
-/** The six S4 names, in the order the spec lists them. */
-const TAB_IDS = ["preview", "assistant", "grill", "coverage", "acceptance", "history"];
+/** The S4 names plus Requests (GRPH-1150), in the order the spec lists them. */
+const TAB_IDS = ["preview", "requests", "assistant", "grill", "coverage", "acceptance", "history"];
 
 function grillState() {
   return {
@@ -147,7 +147,7 @@ async function openTab(id: string) {
 }
 
 function labelFor(id: string) {
-  return { preview: "Preview", assistant: "Assistant", grill: "Grill", coverage: "Coverage",
+  return { preview: "Preview", requests: "Requests", assistant: "Assistant", grill: "Grill", coverage: "Coverage",
            acceptance: "Acceptance", history: "History" }[id] as string;
 }
 
@@ -156,9 +156,17 @@ beforeEach(() => {
 });
 
 describe("the PRD editor's six tabs (PRD-47 S4)", () => {
-  it("renders the six ids, in the order the spec lists them", async () => {
+  it("renders the seven ids, in the order the spec lists them", async () => {
     await show();
     expect(tabIds()).toEqual(TAB_IDS);
+  });
+
+  it("draws the Linked control without an icon and the Grill button without ✦ (GRPH-1207)", async () => {
+    await show();
+    const linked = screen.getByTestId("prd-linked-button");
+    expect(linked.querySelector(".lucide-link-2")).toBeNull();
+    const grill = screen.getAllByRole("button", { name: /^Grill/ }).find((b) => b.hasAttribute("title"))!;
+    expect(grill.textContent).not.toContain("✦");
   });
 
   it("mounts the acceptance panel on the acceptance tab", async () => {
@@ -195,5 +203,17 @@ describe("the PRD editor's six tabs (PRD-47 S4)", () => {
       "Approval is earned, not picked — Approved unlocks when every question has an answer the eval accepts.",
     )).toBeInTheDocument();
     expect(screen.getByText("3 / 4 answered")).toBeInTheDocument();
+  });
+});
+
+describe("the Linked control (GRPH-1171)", () => {
+  it("is one button that opens the Requests tab", async () => {
+    await show();
+    const user = userEvent.setup();
+    const btn = screen.getByTestId("prd-linked-button");
+    expect(btn).toHaveTextContent("Linked · 0 items · 0 requests");
+    await user.click(btn);
+    const requests = within(screen.getByTestId("prd-editor-tabs")).getByRole("button", { name: /Requests/ });
+    expect(requests.className).toContain("bg-surface-4");
   });
 });

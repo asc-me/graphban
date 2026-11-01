@@ -10,7 +10,7 @@ import { CommandPalette } from "@/components/shell/CommandPalette";
 import { TOP_BAR_JUMP_PLACEHOLDER, TopBar } from "@/components/shell/TopBar";
 import { ProjectProvider } from "@/features/ProjectContext";
 import { TrackerView } from "@/features/tracker/TrackerView";
-import type { Item, PrdSummary } from "@/lib/types";
+import type { Item, ItemDetail, PrdSummary } from "@/lib/types";
 
 const project = {
   id: "core",
@@ -25,7 +25,7 @@ const project = {
   embed_model: "",
 };
 
-const items: Item[] = [
+const items: ItemDetail[] = [
   {
     id: "AL-01",
     project_id: "core",
@@ -51,6 +51,7 @@ const items: Item[] = [
     reach: "repo",
     created_at: "",
     updated_at: "",
+    done_at: null,
   },
 ];
 
@@ -65,7 +66,7 @@ const prds: PrdSummary[] = [
   },
 ];
 
-let servedItems: Item[] = items;
+let servedItems: ItemDetail[] = items;
 let servedPrds: PrdSummary[] = prds;
 
 vi.mock("@/features/auth/AuthContext", () => ({
@@ -85,6 +86,7 @@ vi.mock("@/lib/api", () => ({
     projects: vi.fn(async () => [project]),
     config: vi.fn(async () => ({ hosted_mode: false })),
     items: vi.fn(async () => servedItems),
+    item: vi.fn(async (id: string) => servedItems.find((i) => i.id === id) ?? items[0]),
     prds: vi.fn(async () => servedPrds),
     counts: vi.fn(async () => ({ items: servedItems.length, items_in_progress: 1, requests: 0, review: 0 })),
     apiKeys: vi.fn(async () => []),

@@ -37,7 +37,12 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
     idle worker next to review it could already be signing off on.
     """
     authz.require_readable(db, user.id, project_id)
-    status = fleet_svc.fleet_status(db, project_id, caller_user_id=user.id)
+    # Collapsed (GRPH-1229): a project with thousands of dead agents answered 4.5MB in 10s.
+    # `fleet_status` stays whole for MCP; only this payload folds offline-and-empty agents
+    # into exact counts, listed on demand by `/fleet/agents/collapsed`. `collapsed=True` loads
+    # just the agents that stay in the payload and counts the rest in SQL (GRPH-1253), so the
+    # build no longer scales with the dead agents either.
+    status = fleet_svc.fleet_status(db, project_id, caller_user_id=user.id, collapsed=True)
     return {
         **status,
         "review_queue": fleet_svc.review_queue(db, project_id),
@@ -45,7 +50,8 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
         # Seats ride with the roster because they are read together: "three agents online,
         # one seat still unused" is one question, and two calls would let the page render a
         # half-answer.
-        "seats": fleet_svc.list_enrolments(db, project_id),
+        # Only the actionable ones in full; consumed and revoked are counted (GRPH-1237).
+        **fleet_svc.collapse_seats(fleet_svc.list_enrolments(db, project_id)),
         # The credentials this project's agents authenticate with. Shown beside the seats
         # because the walk kept asking "which key is that agent on" and the answer lived in a
         # different screen — and because a wave-tagged key is a wave artifact somebody may
@@ -59,6 +65,19 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
         # Recent matrix-launch shares for the mix sliders. n=0 is unmeasured, not 0%.
         "mix": delegation_svc.mix_counts(db, project_id),
     }
+
+
+@router.get("/agents/collapsed")
+def fleet_collapsed_agents(project_id: str | None = None, offset: int = 0, limit: int = 100,
+                           kind: str | None = None, db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user)):
+    """A page of the offline agents holding nothing that `/fleet` folds into a count.
+
+    `kind` is `quiet` or `orphaned` (only an orphaned branch left); absent pages both.
+    """
+    authz.require_readable(db, user.id, project_id)
+    return fleet_svc.collapsed_agents(db, project_id, offset=max(offset, 0),
+                                      limit=min(max(limit, 1), 500), kind=kind)
 
 
 class FleetKeyIn(BaseModel):
@@ -324,6 +343,7 @@ class PolicyIn(BaseModel):
     reviewer_cross_vendor: bool = False
     allowed_harnesses: list[str] = []
     caps: dict | None = None
+    cluster_ceiling: dict | None = None
 
 
 @router.get("/profile")
@@ -371,12 +391,15 @@ def delete_profile(project_id: str | None = None, db: Session = Depends(get_db),
 def read_policy(project_id: str, db: Session = Depends(get_db),
                 user: User = Depends(get_current_user)):
     authz.require_readable(db, user.id, project_id)
-    return {"project_id": project_id, "policy": fleet_profiles.policy_of(db, project_id)}
+    return {"project_id": project_id, "policy": fleet_profiles.policy_of(db, project_id),
+            "writable": authz.can_write(db, user.id, project_id)}
 
 
 @router.put("/policy")
 def write_policy(body: PolicyIn, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
+    """Full replace: clients send the WHOLE policy, and any key left out is cleared.
+    Read it, change what you mean to, and PUT it all back."""
     authz.require_writable(db, user.id, body.project_id)
     project = db.get(Project, body.project_id)
     if project is None:
@@ -550,3 +573,46 @@ def post_attempt(body: AttemptIn, db: Session = Depends(get_db),
     if row.derived_at is None:
         return JSONResponse(status_code=202, content=harness_svc.row_dict(row))
     return harness_svc.row_dict(row)
+
+
+class ObservationIn(BaseModel):
+    """Facts about a tree the supervisor cut (GRPH-975). Not an evidence array.
+
+    The server composes the note or the url receipt. Accepting `evidence` here would let
+    a child that holds the wave key post an attestation, which is the write this route
+    exists to avoid making. `lease` (GRPH-1116) is the keep-alive on this route: the
+    agent whose pid is alive, the branch, and an optional commit. `pushed_head`
+    (GRPH-973) is still refused — not stored, and not given a second path.
+    """
+
+    item_id: str
+    kind: str
+    branch: str = ""
+    base: str | None = None
+    url: str | None = None
+    commit: str | None = None
+    reason: str | None = None
+    agent_id: str | None = None
+
+
+@router.post("/observations")
+def post_observation(body: ObservationIn, db: Session = Depends(get_db),
+                     key: ApiKey = Depends(get_agent_key)):
+    """A base, a draft PR, a salvage, a withheld proposal, or a lease keep-alive.
+
+    **Authenticated by the key, not by a session**, same as `POST /attempts`. A credential
+    that is not a supervisor key is 403: planner must be in its ceiling, and it must carry
+    a fleet wave or be the project-scoped key `gban setup` mints. A write about an item
+    that key's seats did not cut is 404, the same answer as an item the key cannot see —
+    the refusal must not say which.
+    """
+    try:
+        out = fleet_svc.record_observation(
+            db, key, item_key=body.item_id, kind=body.kind, branch=body.branch,
+            base=body.base, url=body.url, commit=body.commit, reason=body.reason,
+            agent_id=body.agent_id,
+        )
+    except fleet_svc.ObservationError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    db.commit()
+    return out

@@ -97,7 +97,9 @@ def put_document(
         raise errors.NotFound(f"prd not found in this project: {prd_id}")
     base = prd_svc.baseline_of(db, prd.id)
     if base is None:
-        raise errors.Conflict(
+        # A precondition on the cited PRD, not a policy refusal: a Validation, so it stays
+        # out of the bare-409 ratchet (scripts/refusal_ratchet.py).
+        raise errors.Validation(
             f"{prd.id} has no baseline", hint="the preamble cites the baseline body hash; "
             "approve the visual-system PRD first")
     digest = content_hash(body)

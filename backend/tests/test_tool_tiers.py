@@ -354,7 +354,7 @@ def test_a_worker_credential_runs_on_core(client, auth):
 #: fail. This one disagrees the moment core moves, which forces whoever moved it to re-run
 #: the arithmetic — and moving core is the thing worth noticing, since core is what every
 #: key pays.
-CORE_TOKENS = 8918
+CORE_TOKENS = 8920
 # 8919 -> 8918 (GRPH-893): create_item/update_item `description` carries the ## Acceptance
 # convention planners never saw. Paid inside the same two tools (trimming prose on their
 # own descriptions, touchpoints, blocker, fidelity, prd_*), so core shrank by one.
@@ -389,8 +389,17 @@ CORE_TOKENS = 8918
 # fleet 1051 → 1100: `mint_enrolment` gains `review_only` (GRPH-988), a seat that may review
 # and may never take build work. The whole bill is in this tier and CORE_TOKENS does not move,
 # which is the argument for not funding it out of prose every key pays for.
+# GRPH-1089: bound_only is fleet-only args, not base TOOLS, so fleet stays 1100.
+# codegraph 1791 → 1790: record_scan refuses an unknown scanner with no category (GRPH-1108).
+# GRPH-1125: `result` is fleet-only on record_scan; base prose trimmed, tier unchanged.
+# codegraph 1790 → 1789: GRPH-1125 met GRPH-1128's "keeps prior rows" on main.
+# codegraph 1789 → 1794: scans_due output names empty_reason (GRPH-1126).
+# GRPH-1127: record_scan's finding grain is a fleet-only findings description; codegraph stays 1794.
+# codegraph 1794 -> 1795 (GRPH-1129): write key suffices, planners refused; findings' repeat cut.
+# GRPH-1248: fleet 1100 -> 1413, `list_entitlements` + `set_entitlement` (PRD-62 S2). The whole
+# bill is in this tier; CORE_TOKENS does not move.
 # prd 1998 -> 2397 (GRPH-1275): put_document + get_document + search_docs, tiered with the spec tools.
-TIER_TOKENS = {"prd": 2397, "codegraph": 1791, "fleet": 1100, "misc": 1238}
+TIER_TOKENS = {"prd": 2397, "codegraph": 1795, "fleet": 1559, "misc": 1238}
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.

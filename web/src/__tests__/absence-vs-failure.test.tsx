@@ -27,6 +27,10 @@ import { OutpostsView } from "@/features/fleet/OutpostsView";
 import { HarnessView } from "@/features/harness/HarnessView";
 import { ProjectHome } from "@/features/projecthome/ProjectHome";
 import { ProjectProvider } from "@/features/ProjectContext";
+import { PrdListView } from "@/features/prds/PrdListView";
+import { RequestsView } from "@/features/requests/RequestsView";
+import { RoadmapView } from "@/features/roadmap/RoadmapView";
+import { TrackerView } from "@/features/tracker/TrackerView";
 import { TriageView } from "@/features/triage/TriageView";
 
 /**
@@ -37,17 +41,17 @@ import { TriageView } from "@/features/triage/TriageView";
  * The factory is hoisted above every top-level binding, so `fail` is declared inside it.
  */
 const FAILING_ENDPOINTS = [
-  "dashboard", "counts", "events", "triageQueue", "fleet", "harness", "harnessProbeCandidates",
+  "dashboard", "counts", "events", "projectTriage", "fleet", "harness", "harnessProbeCandidates",
   "items", "shards", "codeMap", "prds", "orgs", "galaxy", "platform", "mcpTools",
-  "links", "apiKeys",
+  "links", "apiKeys", "roadmap", "requests",
 ];
 
 vi.mock("@/lib/api", () => {
   const fail = () => Promise.reject(new Error("boom"));
   const endpoints = [
-    "dashboard", "counts", "events", "triageQueue", "fleet", "harness", "harnessProbeCandidates",
+    "dashboard", "counts", "events", "projectTriage", "fleet", "harness", "harnessProbeCandidates",
     "items", "shards", "codeMap", "prds", "orgs", "galaxy", "platform", "mcpTools",
-    "links", "apiKeys",
+    "links", "apiKeys", "roadmap", "requests",
   ];
   return {
     setActiveProjectId: vi.fn(),
@@ -72,7 +76,7 @@ const homeDash = {
   recent_items: [{ id: "GRPH-1", title: "Ship the home", status: "in_progress" as const, date: "Oct 22" }],
 };
 const homeCounts = {
-  items: 4, items_in_progress: 1, requests: 1, review: 2, triage_new: 1, lessons_published: 3,
+  items: 4, items_in_progress: 1, requests: 1, review: 2, triage_new: 1, lessons_published: 3, live_agents: 1,
 };
 
 function show(ui: React.ReactElement) {
@@ -120,14 +124,10 @@ describe("a failed fetch is not an empty project", () => {
     expect(screen.queryByRole("group", { name: "Activity lenses" })).not.toBeInTheDocument();
   });
 
-  it("Triage names both failures instead of 'Queue is empty' and 'Nothing in flight'", async () => {
+  it("Triage names the failure instead of 'Triage clear'", async () => {
     show(<TriageView />);
-    const failures = await screen.findAllByText(FAILED_COPY);
-    // Two independent reads fail independently: the queue and the fleet.
-    expect(failures.length).toBe(2);
-    expect(screen.queryByText(/queue is empty/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/nothing in flight/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/no overlaps in flight/i)).not.toBeInTheDocument();
+    expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
+    expect(screen.queryByText(/triage clear/i)).not.toBeInTheDocument();
   });
 
   it("Harness says the catalog was not served, not that nothing is measured", async () => {
@@ -166,8 +166,8 @@ describe("a failed fetch is not an empty project", () => {
     vi.mocked(api.codeMap).mockResolvedValue({ node_count: 40 } as never);
     vi.mocked(api.fleet).mockResolvedValue({ online: 1 } as never);
     show(<ProjectHome />);
-    expect(await screen.findByText("Items")).toBeInTheDocument();
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(await screen.findByText("Items", { selector: "span" })).toBeInTheDocument();
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("4");
     expect(screen.queryByText(STALE_BANNER)).not.toBeInTheDocument();
     expect(screen.queryByText(FAILED_COPY)).not.toBeInTheDocument();
   });
@@ -179,14 +179,33 @@ describe("a failed fetch is not an empty project", () => {
     vi.mocked(api.codeMap).mockResolvedValue({ node_count: 40 } as never);
     vi.mocked(api.fleet).mockResolvedValue({ online: 1 } as never);
     const { qc } = show(<ProjectHome />);
-    expect(await screen.findByText("Items")).toBeInTheDocument();
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(await screen.findByText("Items", { selector: "span" })).toBeInTheDocument();
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("4");
 
     vi.mocked(api.dashboard).mockRejectedValue(new Error("boom"));
     await qc.refetchQueries({ queryKey: ["dashboard", "core"] }).catch(() => undefined);
 
     expect(await screen.findByText(STALE_BANNER)).toBeInTheDocument();
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("4");
     expect(screen.queryByText("—")).not.toBeInTheDocument();
+  });
+});
+
+describe("Plan pages: a failed fetch shows the error card and no zero counts", () => {
+  const cases: [string, React.ReactElement, RegExp, RegExp][] = [
+    ["Tracker", <TrackerView />, /items unavailable/i, /no items yet/i],
+    ["PRDs", <PrdListView />, /prds unavailable/i, /no prds yet/i],
+    ["Requests", <RequestsView />, /requests unavailable/i, /no requests yet/i],
+    ["Roadmap", <RoadmapView />, /roadmap unavailable/i, /no milestones/i],
+  ];
+  it.each(cases)("%s", async (_name, ui, title, emptyCopy) => {
+    show(ui);
+    expect(await screen.findByText(title)).toBeInTheDocument();
+    expect(screen.getByText(/nothing here means empty/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByText(emptyCopy)).not.toBeInTheDocument();
+    // No view tabs, no chip row, so no zero count anywhere.
+    expect(screen.queryByRole("tablist", { name: "Views" })).not.toBeInTheDocument();
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
   });
 });

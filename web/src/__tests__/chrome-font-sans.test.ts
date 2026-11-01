@@ -60,37 +60,29 @@ function assertLineNoMono(src: string, marker: string, label: string): void {
 }
 
 describe("shell chrome uses Sans, not Mono (GRPH-938)", () => {
-  it("TopBar product subtitle is not font-mono", () => {
-    const src = readShell("TopBar.tsx");
-    assertLineNoMono(src, "Agent memory", "TopBar subtitle");
-  });
-
-  it("TopBar MCP live indicator is not font-mono", () => {
-    const src = readShell("TopBar.tsx");
-    assertLineNoMono(src, "tools live", "TopBar MCP indicator");
-  });
-
+  // GRPH-1174: the design sets the brand subline and MCP pill in mono uppercase; they are
+  // asserted positively in top-bar-header.test.tsx, so no no-mono guard for them here.
   it("AppFrame loading text is not font-mono", () => {
     const src = readShell("AppFrame.tsx");
     assertLineNoMono(src, "loading…", "AppFrame loading");
   });
 
-  it("LeftNav RailHeading is not font-mono", () => {
+  it("LeftNav SectionHeader is not font-mono", () => {
     const src = readShell("LeftNav.tsx");
-    // The RailHeading component's className line.
+    // The SectionHeader component's className line.
     const lines = src.split("\n");
-    const idx = lines.findIndex((l) => l.includes("RailHeading") && l.includes("function"));
-    expect(idx, "RailHeading function not found").toBeGreaterThanOrEqual(0);
+    const idx = lines.findIndex((l) => l.includes("SectionHeader") && l.includes("function"));
+    expect(idx, "SectionHeader function not found").toBeGreaterThanOrEqual(0);
     // Find the className within the next few lines.
     let found = false;
-    for (let j = idx!; j < Math.min(idx! + 10, lines.length); j++) {
+    for (let j = idx!; j < Math.min(idx! + 25, lines.length); j++) {
       if (lines[j]!.includes("className=")) {
-        expect(lines[j]!, "RailHeading: chrome must not use font-mono (GRPH-938)").not.toContain("font-mono");
+        expect(lines[j]!, "SectionHeader: chrome must not use font-mono (GRPH-938)").not.toContain("font-mono");
         found = true;
         break;
       }
     }
-    expect(found, "RailHeading className not found").toBe(true);
+    expect(found, "SectionHeader className not found").toBe(true);
   });
 
   it("AgentSidebar memory count label is not font-mono", () => {
@@ -104,9 +96,9 @@ describe("shell chrome uses Sans, not Mono (GRPH-938)", () => {
     assertLineNoMono(src, "thinking…", "AgentSidebar thinking");
   });
 
-  it("PlaceHeader project name is not font-mono", () => {
+  it("PlaceHeader page title is not font-mono", () => {
     const src = readShell("PlaceHeader.tsx");
-    assertLineNoMono(src, "{projectName}", "PlaceHeader project name");
+    assertLineNoMono(src, "{viewName}", "PlaceHeader title");
   });
 
   it("identifiers still use font-mono (sabotage guard)", () => {

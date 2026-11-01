@@ -10,6 +10,8 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+import numpy as np
+
 from sqlalchemy import and_, bindparam, func, or_, select, text
 from sqlalchemy.orm import Session
 
@@ -35,13 +37,14 @@ def _includes_global(db: Session, project_id: str) -> bool:
 
 REACHES = ("project", "org")
 LESSON_CLASSES = ("correction", "drift", "preference", "observation")  # "" is unclassified
+SHARD_CLASSES = ("pitfall", "convention", "principle")  # "" is unclassified
 UNCLASSIFIED_FILTER = "unclassified"
 CAUGHT_STATES = ("caught", "missed", "unknown", "mixed")
 ELIGIBILITIES = ("ineligible", "eligible", "unverifiable", "promoted")
 TRENDS = ("dropping", "stable", "rising", "unmeasured")
 OUTCOME_KINDS = ("caught", "missed", "applied", "contradicted")
 OUTCOME_SOURCES = ("human", "recurrence", "evidence")
-ORIGIN_PATH_STATES = ("ok", "gone", "unknown", "unindexed")
+ORIGIN_PATH_STATES = ("ok", "gone", "unknown", "unindexed", "changed")
 TRANSFERABILITY_STATES = ("unverified", "evidenced", "unverifiable", "overridden")
 CLUSTER_SCAN_STATES = ("scanned", "cluster_scope_unmeasured")
 
@@ -93,7 +96,22 @@ def _project_match_sql(include_global: bool) -> str:
     )
 
 
-def age_state(shard: MemoryShard, *, now: datetime | None = None) -> str:
+def candidate_expiry_map(db: Session, shards) -> dict[str | None, int]:
+    """`project_id -> memory_candidate_expiry_days` for the projects these shards belong to.
+    A project-less (global) shard, or an unknown project, keeps `CANDIDATE_EXPIRY_DAYS`."""
+    pids = {s.project_id for s in shards if s.project_id is not None}
+    out: dict[str | None, int] = {None: CANDIDATE_EXPIRY_DAYS}
+    if pids:
+        for pid, days in db.execute(
+            select(Project.id, Project.memory_candidate_expiry_days).where(Project.id.in_(pids))
+        ).all():
+            out[pid] = int(days or CANDIDATE_EXPIRY_DAYS)
+    return out
+
+
+def age_state(
+    shard: MemoryShard, *, now: datetime | None = None, expiry_days: int | None = None,
+) -> str:
     """`fresh` | `expired` | `stale` — the decay clock (GRPH-306 / PRD-16).
 
     Computed from `created_at` rather than stored, so it cannot drift out of step with the
@@ -101,7 +119,8 @@ def age_state(shard: MemoryShard, *, now: datetime | None = None) -> str:
 
     Two different fates, because they mean different things:
 
-    - a CANDIDATE nothing has repeated in `CANDIDATE_EXPIRY_DAYS` has gone cold — it was
+    - a CANDIDATE nothing has repeated in `expiry_days` (the project's
+      `memory_candidate_expiry_days`; `CANDIDATE_EXPIRY_DAYS` when not given) has gone cold — it was
       never corroborated and is dropped from retrieval;
     - a PUBLISHED shard with no fresh support in `PUBLISHED_STALE_DAYS` is `stale`-FLAGGED,
       never hidden. Something a human stood behind does not stop being true because nobody
@@ -114,8 +133,12 @@ def age_state(shard: MemoryShard, *, now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
     if created.tzinfo is None:
         created = created.replace(tzinfo=timezone.utc)
+    # A person's Keep restarts the clock for a published shard (GRPH-1180).
+    kept = _aware(shard.kept_at) if shard.kept_at is not None else None
+    if kept is not None and kept > created:
+        created = kept
     days = (now - created).days
-    if shard.status == "candidate" and days >= CANDIDATE_EXPIRY_DAYS:
+    if shard.status == "candidate" and days >= (CANDIDATE_EXPIRY_DAYS if expiry_days is None else expiry_days):
         return "expired"
     if shard.status == "published" and days >= PUBLISHED_STALE_DAYS:
         return "stale"
@@ -141,7 +164,9 @@ def list_shards(
     stmt = stmt.order_by(MemoryShard.created_at.desc())
     rows = list(db.scalars(stmt).all())
     if not include_expired:
-        rows = [r for r in rows if age_state(r) != "expired"]
+        expiry = candidate_expiry_map(db, rows)
+        rows = [r for r in rows
+                if age_state(r, expiry_days=expiry.get(r.project_id)) != "expired"]
     # Applied AFTER the expiry filter, deliberately. `LIMIT` in SQL would cap the rows read and
     # then drop expired ones from that page, so a caller asking for 50 could receive 30 and read
     # it as "that is all there is" — the shape where an absence looks like a clean result. This
@@ -205,6 +230,8 @@ def add_memory(
         actor_user_id=actor_user_id,
         attributed_project_id=attributed_project_id,
     )
+    if status == "published":
+        snapshot_cited_code(db, shard)
     db.add(shard)
     db.commit()
     db.refresh(shard)
@@ -270,26 +297,68 @@ _AUTO_ACCEPT_MIN = 0.9
 _UNVETTED_SOURCES = ("trusted", "agent")
 
 
-def _corroboration_pool(db: Session, project_id: str | None) -> list[tuple[MemoryShard, list[float]]]:
-    return [
+class VecPool(list):
+    """A `[(shard, vector)]` pool that normalises its vectors ONCE (GRPH-1227).
+
+    `score_candidates` compares every candidate against the same published and rejected
+    pools. Rebuilding each pool member's norm per candidate was 80 × 1,300 × 1024-dim
+    passes on the deployed instance; the matrix here is built on first use and reused.
+    It is a list so every existing caller that iterates or appends still works — and an
+    append drops the cached matrix rather than leaving it a member short."""
+
+    _mat: np.ndarray | None = None
+
+    def append(self, item):  # noqa: D401 — list API
+        self._mat = None
+        super().append(item)
+
+    def matrix(self) -> np.ndarray:
+        if self._mat is None or len(self._mat) != len(self):
+            self._mat = _unit_rows([v for _, v in self])
+        return self._mat
+
+
+def _unit_rows(vectors: list[list[float]]) -> np.ndarray:
+    """Rows scaled to unit length; a zero row stays zero, so it can never be the best match."""
+    if not vectors:
+        return np.zeros((0, 0))
+    mat = np.asarray(vectors, dtype=np.float64)
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return mat / norms
+
+
+def _corroboration_pool(db: Session, project_id: str | None) -> VecPool:
+    return VecPool(
         (s, list(s.embedding))
         for s in list_shards(db, project_id=project_id, status="published")
         if s.embedding is not None and s.scoring_source not in _UNVETTED_SOURCES
-    ]
+    )
 
 
 def _best_match(vec: list[float], pool: list[tuple[MemoryShard, list[float]]]) -> tuple[MemoryShard | None, float]:
-    """The most-similar shard in `pool` and its cosine score (0.0 if the pool is empty)."""
-    best, score = None, 0.0
-    for shard, svec in pool:
-        sim = cosine_similarity(vec, svec)
-        if sim > score:
-            best, score = shard, sim
-    return best, score
+    """The most-similar shard in `pool` and its cosine score (0.0 if the pool is empty).
+
+    One matrix product against the unit-normalised pool, not a Python loop per member.
+    Same answer as the loop it replaced: the first member with the highest score wins, and
+    nothing at or below 0.0 is a match."""
+    if not pool:
+        return None, 0.0
+    q = np.asarray(vec, dtype=np.float64)
+    nq = float(np.linalg.norm(q))
+    if nq == 0:
+        return None, 0.0
+    mat = pool.matrix() if isinstance(pool, VecPool) else _unit_rows([v for _, v in pool])
+    sims = mat @ (q / nq)
+    i = int(np.argmax(sims))
+    score = float(sims[i])
+    if score <= 0.0:
+        return None, 0.0
+    return pool[i][0], score
 
 
 # The promotion ladder (GRPH-306 / PRD-16). Named constants, deliberately, and NOT project
-# settings: we do not know the right values yet, and a slider is how you avoid finding out.
+# settings (candidate expiry has since become one, GRPH-1212): we do not know the right values yet, and a slider is how you avoid finding out.
 # Pick one number; if it is wrong somebody hits it and we learn something real.
 MIN_DISTINCT_SOURCES = 3        # independent sessions before recurrence counts as evidence
 MIN_DISTINCT_SOURCES_CORRECTION = 2  # corrections earn trust faster — they are self-punishing
@@ -451,7 +520,7 @@ def _score_shard(
     return suggestion, round(confidence, 3), reasons, duplicate_of
 
 
-def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict]:
+def score_candidates(db: Session, *, project_id: str | None = None, judge: bool = True) -> list[dict]:
     """Advisory accept/reject suggestions for the review queue (AL-151).
 
     For each candidate, compare its embedding against the trusted (`published`) and
@@ -466,10 +535,16 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
 
     Similarity always runs. When `memory_llm_judge` is on, a resolved decider scores
     non-vetoed candidates until `DECIDER_QUEUE_BUDGET_S` (D9); the chat judge is still
-    capped at `REVIEW_JUDGE_MAX`. On-demand keep/quality is `advisory_judge`."""
+    capped at `REVIEW_JUDGE_MAX`. On-demand keep/quality is `advisory_judge`.
+
+    `judge=False` never asks a model (GRPH-1227): a candidate carries only the verdict
+    already stored on it, if any. Queue membership and similarity suggestions are identical;
+    only fresh judge calls (and a stale-key cached verdict being refused) are skipped. A
+    candidate with nothing stored is `not_judged`. GET /candidates/scored uses this
+    (GRPH-1242); `refresh_judgements` is what calls `judge=True`."""
     cands = [s for s in list_shards(db, project_id=project_id, status="candidate") if s.embedding is not None]
-    published = [(s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="published") if s.embedding is not None]
-    rejected = [(s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="rejected") if s.embedding is not None]
+    published = VecPool((s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="published") if s.embedding is not None)
+    rejected = VecPool((s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="rejected") if s.embedding is not None)
     corroborating = _corroboration_pool(db, project_id)
 
     # Recurrence: how many candidates each one clusters with (reuse AL-50 clustering).
@@ -546,6 +621,7 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
         # REVIEW_JUDGE_MAX does not apply on this branch.
         out.sort(key=lambda r: -float(r["confidence"]))
     asked = 0
+    unjudged: str | None = None  # resolved once, only if some row needs it
     t0 = time.monotonic()
     for row in out:
         default_cause = "off" if not llm_judge else (
@@ -564,8 +640,16 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
             allow = (time.monotonic() - t0) < DECIDER_QUEUE_BUDGET_S
         else:
             allow = asked < REVIEW_JUDGE_MAX
-        verdict, cause = review_judge(db, row["shard"], published_texts=published_texts,
-                                      allow_call=allow)
+        if judge:
+            verdict, cause = review_judge(db, row["shard"], published_texts=published_texts,
+                                          allow_call=allow)
+        else:
+            verdict, cause = row["shard"].review_judge_verdict or None, "cached"
+            if verdict is None:
+                unjudged = unjudged or ("not_judged" if use_decider
+                                        else _unjudged_cause(db, project_id))
+                row.update(_empty_review_judge(cause=unjudged))
+                continue
         if cause == "capped":
             if use_decider:
                 row.update(_empty_review_judge(cause="unscored_budget"))
@@ -745,6 +829,8 @@ JUDGE_CAUSES = {
     "undecided": "the decider's keep probability is inside the abstain band, so this "
                  "candidate has no adjudication rather than a negative one",
     "unscored_budget": "not scored yet — the decider queue budget ran out this pass",
+    "not_judged": "not yet judged — the judge is asked by a background pass, never on page "
+                  "load; this row fills in once that pass reaches it",
 }
 
 # Extra causes the on-demand review endpoint can report (GRPH-650). Not in
@@ -993,7 +1079,10 @@ def judge_verdict(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
 
     decider_res = _resolved_decider(db, shard.project_id)
     if decider_res is not None:
-        return _decider_judge(db, decider_res, shard)
+        verdict, cause = _decider_judge(db, decider_res, shard)
+        if verdict is not None:
+            _store_keep_verdict(shard, _keep_identity(decider_res=decider_res), verdict)
+        return verdict, cause
 
     try:
         _resolved = platform_svc.resolve_role(db, shard.project_id or "core", "memory.judge")
@@ -1029,11 +1118,93 @@ def judge_verdict(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
 
     # Agreed. Average the quality so one outlier rating cannot carry a publish on its own,
     # and keep the first reason — they concur on the verdict, so any of them explains it.
-    return {
+    agreed = {
         "keep": verdicts[0]["keep"],
         "quality": round(sum(v["quality"] for v in verdicts) / len(verdicts), 3),
         "reason": verdicts[0]["reason"],
-    }, "ok"
+    }
+    _store_keep_verdict(shard, _keep_identity(provider=provider, model=model), agreed)
+    return agreed, "ok"
+
+
+# --- Stored keep/quality verdicts (GRPH-1242) ------------------------------------------
+# The stale queue used to call `judge_verdict` for up to STALE_JUDGE_MAX rows on EVERY GET —
+# eight sequential decider calls, ~4s a page view. A verdict is now stored where it is
+# reached, the GET reads only what is stored, and `refresh_judgements` (a background pass)
+# asks the judge about rows whose stored verdict is missing or was reached by a different
+# judge or about different text.
+_KEEP_STORE_FIELDS = ("key", "text_sha")
+
+
+def _text_sha(text: str | None) -> str:
+    return hashlib.sha256(" ".join((text or "").split()).encode("utf-8")).hexdigest()
+
+
+def _keep_identity(*, decider_res=None, provider: str = "", model=None) -> str:
+    """Which judge reached a keep verdict. The chat judge's sample count rides along for
+    the reason `_judge_cache_key` gives: unanimity across three is part of the verdict."""
+    if decider_res is not None:
+        return "\x00".join(["decider", str(decider_res.model or "")])
+    return "\x00".join([provider, str(getattr(model, "model", "")), str(JUDGE_SAMPLES)])
+
+
+def _keep_key(identity: str, text: str | None) -> str:
+    return hashlib.sha256("\x00".join([identity, _text_sha(text)]).encode("utf-8")).hexdigest()
+
+
+def _keep_judge_identity(db: Session, project_id: str | None) -> str | None:
+    """The identity `judge_verdict` would stamp, resolved without asking a model. None when
+    no judge could answer — a stored verdict then cannot be confirmed current."""
+    from app.services import platform as platform_svc
+
+    decider_res = _resolved_decider(db, project_id)
+    if decider_res is not None:
+        return _keep_identity(decider_res=decider_res)
+    try:
+        resolved = platform_svc.resolve_role(db, project_id or "core", "memory.judge")
+    except Exception:  # noqa: BLE001 — unresolvable is "cannot confirm", not a crash
+        logger.exception("llm judge: provider resolution failed")
+        return None
+    if resolved.provider_id == "stub":
+        return None
+    return _keep_identity(provider=resolved.provider_id, model=resolved.chat)
+
+
+def _unjudged_cause(db: Session, project_id: str | None) -> str:
+    """Why a row with nothing stored has no verdict, found without asking a model.
+    `not_judged` only when a judge resolves — telling a project with no model that the
+    background pass will get to it would be a promise nothing keeps."""
+    if _resolved_decider(db, project_id) is not None:
+        return "not_judged"
+    return "not_judged" if _keep_judge_identity(db, project_id) is not None else "no_provider"
+
+
+def _store_keep_verdict(shard: MemoryShard, identity: str, verdict: dict) -> None:
+    # Not committed here: `judge_verdict` runs inside write paths that own their commit.
+    shard.keep_judge_verdict = {
+        **verdict, "key": _keep_key(identity, shard.text), "text_sha": _text_sha(shard.text),
+    }
+
+
+def stored_keep_verdict(shard: MemoryShard) -> dict | None:
+    """The stored keep/quality verdict, or None. A verdict about text the shard no longer
+    says is not a verdict about this shard, so it reads as not yet judged."""
+    stored = shard.keep_judge_verdict
+    if not stored or stored.get("text_sha") != _text_sha(shard.text):
+        return None
+    return {k: v for k, v in stored.items() if k not in _KEEP_STORE_FIELDS}
+
+
+def _keep_judge(db: Session, shard: MemoryShard, *, allow_call: bool) -> tuple[dict | None, str]:
+    """`judge_verdict`, unless the stored verdict was reached by this judge about this text
+    (`cached`). `allow_call=False` reports `capped` instead of asking."""
+    identity = _keep_judge_identity(db, shard.project_id)
+    stored = shard.keep_judge_verdict
+    if identity is not None and stored and stored.get("key") == _keep_key(identity, shard.text):
+        return stored_keep_verdict(shard), "cached"
+    if not allow_call:
+        return None, "capped"
+    return judge_verdict(db, shard)
 
 
 def _parse_review_judge(raw: str) -> dict | None:
@@ -1340,6 +1511,20 @@ def may_auto_publish(shard: MemoryShard) -> bool:
     return not (shard.origin or "").startswith(_UNPUBLISHABLE_ORIGINS)
 
 
+def needs_human_review(db: Session, shard: MemoryShard) -> bool:
+    """Whether this shard's class is one the project reserves for a human (GRPH-1214).
+
+    Read at decision time from the shard's current class, so reclassifying cannot launder a
+    principle past the gate. Project-less shards have no owner to have chosen; they take the
+    platform default (principles).
+    """
+    if not shard.shard_class:
+        return False
+    project = db.get(Project, shard.project_id) if shard.project_id else None
+    classes = project.memory_human_review_classes if project is not None else ["principle"]
+    return shard.shard_class in (classes or [])
+
+
 def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
     """Synchronously score a freshly-written candidate and act on it if the project
     opts in (AL-227): auto-reject near-dups / resembles-rejected, or auto-publish a
@@ -1377,8 +1562,8 @@ def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
     if mode == "review" and not auto_reject:
         return shard  # nothing may act; skip the scoring work entirely
 
-    published = [(s, list(s.embedding)) for s in list_shards(db, project_id=shard.project_id, status="published") if s.embedding is not None]
-    rejected = [(s, list(s.embedding)) for s in list_shards(db, project_id=shard.project_id, status="rejected") if s.embedding is not None]
+    published = VecPool((s, list(s.embedding)) for s in list_shards(db, project_id=shard.project_id, status="published") if s.embedding is not None)
+    rejected = VecPool((s, list(s.embedding)) for s in list_shards(db, project_id=shard.project_id, status="rejected") if s.embedding is not None)
     # Recurrence: the size of the candidate cluster this shard belongs to (AL-50).
     support, distinct_sources = 1, None
     for group in cluster_candidates(db, project_id=shard.project_id):
@@ -1426,6 +1611,8 @@ def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
         action, new_status = "auto_reject_shard", "rejected"
     elif not may_auto_publish(shard):
         return shard  # GRPH-358 — see below; reject above still applies
+    elif needs_human_review(db, shard):
+        return shard  # GRPH-1214 — a class the project reserves for a human
     elif mode == "trusted":
         # Provenance, not a score: `trusted` marks the shard as published without
         # anyone — human or judge — having assessed it, so a human arriving later
@@ -1439,6 +1626,8 @@ def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
     shard.status = new_status
     shard.scoring_source = source
     shard.auto_confidence = confidence
+    if new_status == "published":
+        snapshot_cited_code(db, shard)
     db.commit()
     db.refresh(shard)
     events_svc.record(
@@ -1507,6 +1696,11 @@ def agent_adjudication_enabled(db: Session, project_id: str | None) -> bool:
     return bool(project and project.agent_adjudication)
 
 
+#: The rule an `agent_reject_shard` event names (GRPH-1158): an agent holds only the "no" side
+#: of the memory gate — it may discard a candidate, but publishing is the judge's call.
+ADJUDICATION_RULE = "memory.independent_adjudication"
+
+
 def agent_reject(db: Session, shard: MemoryShard, *, origin: str) -> MemoryShard:
     """An agent discards its own candidate. Kept for provenance, never surfaced."""
     shard.status = "rejected"
@@ -1516,7 +1710,7 @@ def agent_reject(db: Session, shard: MemoryShard, *, origin: str) -> MemoryShard
     events_svc.record(
         db, actor_type="agent", actor_label=origin, surface="mcp",
         action="agent_reject_shard", target_type="shard", target_id=shard.id,
-        project_id=shard.project_id, meta={"source": "agent"},
+        project_id=shard.project_id, meta={"source": "agent", "rule_id": ADJUDICATION_RULE},
     )
     return shard
 
@@ -1528,6 +1722,11 @@ def agent_publish(db: Session, shard: MemoryShard, *, origin: str) -> tuple[Memo
 
     Raises AdjudicationUnavailable when no real chat model is configured, so an offline
     instance degrades to the human boundary instead of rubber-stamping."""
+    if needs_human_review(db, shard):
+        raise AdjudicationUnavailable(
+            f"{shard.shard_class} candidates are reserved for human review in this project, "
+            f"so an agent cannot publish this one; a human publishes it from Memory review"
+        )
     verdict, cause = judge_verdict(db, shard)
     if verdict is None:
         # Say WHICH failure (GRPH-351). This read "no independent chat model is configured"
@@ -1545,6 +1744,8 @@ def agent_publish(db: Session, shard: MemoryShard, *, origin: str) -> tuple[Memo
     shard.status = "published" if keep else "rejected"
     shard.scoring_source = "agent"
     shard.auto_confidence = verdict["quality"]
+    if keep:
+        snapshot_cited_code(db, shard)
     db.commit()
     db.refresh(shard)
     events_svc.record(
@@ -1552,7 +1753,8 @@ def agent_publish(db: Session, shard: MemoryShard, *, origin: str) -> tuple[Memo
         action="agent_publish_shard" if keep else "agent_reject_shard",
         target_type="shard", target_id=shard.id, project_id=shard.project_id,
         meta={"source": "agent", "confidence": verdict["quality"],
-              "reason": verdict.get("reason", ""), "kept": keep},
+              "reason": verdict.get("reason", ""), "kept": keep,
+              **({} if keep else {"rule_id": ADJUDICATION_RULE})},
     )
     if keep:
         maybe_record_recurrence_miss(db, shard)
@@ -1568,6 +1770,8 @@ def set_status(db: Session, shard_id: str, status: str) -> MemoryShard | None:
         return None
     prev = shard.status
     shard.status = status
+    if status == "published" and prev != "published":
+        snapshot_cited_code(db, shard)
     db.commit()
     db.refresh(shard)
     # A second publish of an already-published row is not a new stand-behind.
@@ -1576,14 +1780,24 @@ def set_status(db: Session, shard_id: str, status: str) -> MemoryShard | None:
     return shard
 
 
-def update_shard(db: Session, shard_id: str, *, text_body: str) -> MemoryShard | None:
-    """Edit a shard's text and RE-EMBED it (fixes stale-embedding-after-edit, R-27)."""
+def update_shard(
+    db: Session, shard_id: str, *, text_body: str | None = None, shard_class: str | None = None
+) -> MemoryShard | None:
+    """Edit a shard's text (RE-EMBEDS, R-27) and/or its class ("" clears it).
+
+    Changing the class alone never re-embeds: the vector is of the text.
+    """
+    if shard_class is not None and shard_class not in ("", *SHARD_CLASSES):
+        raise ValueError(f"shard_class must be one of {', '.join(SHARD_CLASSES)} or empty")
     shard = db.get(MemoryShard, shard_id)
     if shard is None:
         return None
-    shard.text = text_body
-    # An edit is a write too — don't lose the user's text to a down embedder.
-    shard.embedding = safe_embed(text_body)
+    if text_body is not None:
+        shard.text = text_body
+        # An edit is a write too — don't lose the user's text to a down embedder.
+        shard.embedding = safe_embed(text_body)
+    if shard_class is not None:
+        shard.shard_class = shard_class
     db.commit()
     db.refresh(shard)
     return shard
@@ -1654,6 +1868,8 @@ def search_memory(
         status_names = [f":st{i}" for i in range(len(allowed))]
         for i, st in enumerate(allowed):
             params[f"st{i}"] = st
+        # bandit B608: only bind-parameter NAMES and _project_match_sql's fixed clause are
+        # interpolated; every value travels as a bound parameter.
         sql = text(
             f"""
             SELECT id, (embedding <=> (:qv)::vector) AS distance
@@ -1663,7 +1879,7 @@ def search_memory(
               {project_clause}
             ORDER BY distance ASC
             LIMIT :k
-            """
+            """  # nosec B608
         )
         if expanding:
             sql = sql.bindparams(bindparam("sibling_ids", expanding=True))
@@ -1831,7 +2047,7 @@ def lesson_effectiveness(
 
 
 def origin_path_state(db: Session, shard: MemoryShard) -> str:
-    """ok | gone | unknown | unindexed.
+    """ok | changed | gone | unknown | unindexed.
 
     Walks CodeNode for the originating item's project, never the viewer's.
     An empty graph is unindexed, not gone — absence of an index is not a deleted path.
@@ -1851,9 +2067,49 @@ def origin_path_state(db: Session, shard: MemoryShard) -> str:
             select(CodeNode.path).where(CodeNode.project_id == item.project_id)
         ).all()
     }
-    if any(_touchpoint_hits(paths, tp) > 0 for tp in item.touchpoints):
-        return "ok"
-    return "gone"
+    if not any(_touchpoint_hits(paths, tp) > 0 for tp in item.touchpoints):
+        return "gone"
+    # The path exists. Did the code behind it move since the shard was published (or last
+    # kept)? Content hashes answer that; `updated_at` cannot, because a re-describe at a new
+    # revision moves it with identical source. No baseline, or a cited node that no longer
+    # carries a hash, has not shown the code is unchanged: that is `unknown`, never `ok`.
+    baseline = shard.cited_code_hashes
+    if not baseline:
+        return "unknown"
+    current = _cited_code_nodes(db, item)
+    for path, h in baseline.items():
+        if path not in current or (current[path] and current[path] != h):
+            return "changed"
+    if any(h and p not in baseline for p, h in current.items()):
+        return "changed"
+    if any(not current[p] for p in baseline):
+        return "unknown"
+    return "ok"
+
+
+def _cited_code_nodes(db: Session, item: Item) -> dict[str, str]:
+    """{path: content_hash} of the item's project's code-graph nodes at its touchpoints."""
+    tps = item.touchpoints or []
+    return {
+        p: h or "" for (p, h) in db.execute(
+            select(CodeNode.path, CodeNode.content_hash)
+            .where(CodeNode.project_id == item.project_id)
+        ).all()
+        if any(_touchpoint_hits({p}, tp) > 0 for tp in tps)
+    }
+
+
+def snapshot_cited_code(db: Session, shard: MemoryShard) -> None:
+    """Record the cited code's content hashes as the shard's `changed` baseline (GRPH-1213).
+
+    Taken at publish and at Keep; the caller commits. Only hashed nodes enter it, so a
+    shard whose code the graph cannot hash keeps no baseline and reads `unknown`."""
+    item = db.get(Item, shard.item_id) if shard.item_id else None
+    if item is None or not item.touchpoints:
+        shard.cited_code_hashes = None
+        return
+    hashed = {p: h for p, h in _cited_code_nodes(db, item).items() if h}
+    shard.cited_code_hashes = hashed or None
 
 
 def published_cluster(
@@ -2081,6 +2337,7 @@ def _lesson_row(
     origin_path: str | None = None,
     include_history: bool = False,
     overridden: bool = False,
+    expiry_days: int | None = None,
 ) -> dict:
     # Empty outcomes still go through the scorer; unknown is a result, not a skip.
     path = "unknown" if origin_path is None else origin_path
@@ -2112,7 +2369,7 @@ def _lesson_row(
         "reach": shard.reach or "project",
         "lesson_class": shard.lesson_class or "",
         "suggested_class": "correction" if _is_correction(shard) else None,
-        "age_state": age_state(shard, now=now),
+        "age_state": age_state(shard, now=now, expiry_days=expiry_days),
         "caught_state": eff["caught_state"],
         "effectiveness": effectiveness,
         "eligibility": elig,
@@ -2175,7 +2432,10 @@ def list_lessons(
         .where(published_lessons_where(db, project_id))
         .order_by(MemoryShard.created_at.desc())
     )
-    rows = [r for r in db.scalars(stmt).all() if age_state(r, now=now) != "expired"]
+    all_rows = db.scalars(stmt).all()
+    expiry = candidate_expiry_map(db, all_rows)
+    rows = [r for r in all_rows
+            if age_state(r, now=now, expiry_days=expiry.get(r.project_id)) != "expired"]
 
     wanted_class = filters.get("lesson_class")
     if wanted_class is not None:
@@ -2194,6 +2454,7 @@ def list_lessons(
         computed.append(_lesson_row(
             shard, outcomes_by.get(shard.id, []), cluster, now=now,
             overridden=shard.id in overridden_ids,
+            expiry_days=expiry.get(shard.project_id),
         ))
 
     if trend := filters.get("trend"):
@@ -2437,6 +2698,7 @@ def get_lesson(
     row = _lesson_row(
         shard, outcomes, cluster, now=now,
         origin_path=path, include_history=True, overridden=overridden,
+        expiry_days=candidate_expiry_map(db, [shard]).get(shard.project_id),
     )
     members, unread = _display_cluster(
         db, shard, cluster,
@@ -2552,3 +2814,285 @@ def promote_org(
         "eligibility": elig,
         "lesson": detail,
     }
+
+
+# --- Memory triage queues (GRPH-1175) -------------------------------------------
+RETIRE_RECOVERY_DAYS = 14
+RECOMMENDATION_FLOOR = 0.85   # the console's "Apply N" default
+STALE_JUDGE_MAX = REVIEW_JUDGE_MAX  # judge calls per stale listing, same bill as the review queue
+RECOMMENDATION_ACTIONS = ("keep", "revise", "retire", "verify")
+QUEUES = ("needs_decision", "conflicts", "duplicate_clusters", "stale_or_wrong",
+          "published_unreviewed")
+
+
+class RetireRefused(Exception):
+    """The shard cannot be retired or restored; the message says why."""
+
+
+def retire_shard(db: Session, shard_id: str, *, now: datetime | None = None) -> MemoryShard | None:
+    """Published → retired. Out of retrieval at once, restorable for RETIRE_RECOVERY_DAYS."""
+    shard = db.get(MemoryShard, shard_id)
+    if shard is None:
+        return None
+    if shard.status != "published":
+        raise RetireRefused(f"only a published shard can be retired; this one is {shard.status}")
+    shard.status = "retired"
+    shard.retired_at = now or datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(shard)
+    return shard
+
+
+def keep_shard(db: Session, shard_id: str, *, now: datetime | None = None) -> MemoryShard | None:
+    """A person confirmed a published shard is still right: it stays published and its
+    staleness clock restarts, so it leaves the stale queue until PUBLISHED_STALE_DAYS pass again."""
+    shard = db.get(MemoryShard, shard_id)
+    if shard is None:
+        return None
+    if shard.status != "published":
+        raise RetireRefused(f"only a published shard can be kept; this one is {shard.status}")
+    shard.kept_at = now or datetime.now(timezone.utc)
+    # A Keep stands behind the code as it is now, so `changed` is measured from here.
+    snapshot_cited_code(db, shard)
+    db.commit()
+    db.refresh(shard)
+    return shard
+
+
+def restore_shard(db: Session, shard_id: str, *, now: datetime | None = None) -> MemoryShard | None:
+    """Retired → published, refused once the recovery window has closed (final)."""
+    shard = db.get(MemoryShard, shard_id)
+    if shard is None:
+        return None
+    if shard.status != "retired" or shard.retired_at is None:
+        raise RetireRefused(f"only a retired shard can be restored; this one is {shard.status}")
+    now = now or datetime.now(timezone.utc)
+    if (now - _aware(shard.retired_at)).days >= RETIRE_RECOVERY_DAYS:
+        raise RetireRefused(
+            f"retired more than {RETIRE_RECOVERY_DAYS} days ago — the retirement is final"
+        )
+    shard.status = "published"
+    shard.retired_at = None
+    db.commit()
+    db.refresh(shard)
+    return shard
+
+
+def _wrong_reports(db: Session, shards: list[MemoryShard]) -> dict[str, int]:
+    """Count of missed/contradicted outcomes per shard — someone said it was wrong.
+
+    A Keep answers every report filed before it (GRPH-1180): only reports after `kept_at`
+    count, so a kept shard leaves the queue until someone reports it wrong again."""
+    kept = {s.id: _aware(s.kept_at) for s in shards if s.kept_at is not None}
+    return {sid: sum(1 for o in outs if o.kind in _MISS_KINDS
+                     and (sid not in kept or _aware(o.created_at) > kept[sid]))
+            for sid, outs in _outcomes_for(db, [s.id for s in shards]).items()}
+
+
+def stale_or_wrong(db: Session, project_id: str | None) -> list[tuple[MemoryShard, list[str]]]:
+    """Published shards that are stale or reported wrong, each with WHY. Cheap: no judge."""
+    shards = list_shards(db, project_id=project_id, status="published")
+    wrong = _wrong_reports(db, shards)
+    pids = {s.project_id for s in shards if s.project_id is not None}
+    flag_changed: dict[str | None, bool] = {}
+    if pids:
+        flag_changed = {
+            pid: bool(on) for pid, on in db.execute(
+                select(Project.id, Project.memory_flag_on_code_change).where(Project.id.in_(pids))
+            ).all()
+        }
+    out: list[tuple[MemoryShard, list[str]]] = []
+    for s in shards:
+        why: list[str] = []
+        if age_state(s) == "stale":
+            why.append(f"nothing has corroborated it in {PUBLISHED_STALE_DAYS}+ days")
+        if wrong.get(s.id):
+            why.append(f"reported wrong or contradicted {wrong[s.id]}x")
+        # A person who kept it already saw the origin was gone and stood behind it anyway.
+        # `changed` is measured against the hashes taken at publish or Keep, so a Keep clears it.
+        # Only worth the code-graph walk when it can flag: a kept shard skips `gone`, and
+        # a project that turned the rule off skips `changed`.
+        check_changed = flag_changed.get(s.project_id, True)
+        if s.kept_at is None or check_changed:
+            path = origin_path_state(db, s)
+            if s.kept_at is None and path == "gone":
+                why.append("the code it came from no longer exists")
+            elif check_changed and path == "changed":
+                why.append("cited code changed since publish")
+        if why:
+            out.append((s, why))
+    return out
+
+
+def _recommend(verdict: dict, *, reported_wrong: bool) -> dict:
+    keep, quality = bool(verdict["keep"]), float(verdict["quality"])
+    if not keep:
+        action, conf = "retire", 1 - quality
+        reason = verdict.get("reason") or "the judge would not keep it"
+    elif quality >= DECIDER_QUALITY_MIN:
+        # Reported wrong but the judge still likes it: a human should look, not a bulk apply.
+        action, conf = ("verify" if reported_wrong else "keep"), quality
+        reason = verdict.get("reason") or "the judge would keep it"
+    else:
+        action, conf = "revise", 1 - quality
+        reason = verdict.get("reason") or "kept, but weakly written"
+    return {"action": action, "confidence": round(conf, 3), "reason": reason}
+
+
+def recommendations(
+    db: Session, rows: list[tuple[MemoryShard, list[str]]], project_id: str | None,
+    *, judge: bool = False,
+) -> list[dict]:
+    """Attach the project's judge recommendation to each row. A judge that is off, absent,
+    capped or unsure yields `ungraded` with the cause — never an invented recommendation.
+
+    `judge=False` (the default, and every GET) reads only the STORED verdict and never asks a
+    model (GRPH-1242); a row without one is `not_judged`. `judge=True` — the background
+    refresh and the apply action — asks for rows whose stored verdict is not current, at most
+    STALE_JUDGE_MAX model calls."""
+    _m, _r, judge_on = _triage_prefs(db, project_id)
+    asked = 0
+    out = []
+    unjudged: str | None = None  # resolved once, only if some row needs it
+    for shard, why in rows:
+        row = {"shard": shard, "why": why, "ungraded": True, "recommendation": None,
+               "ungraded_reason": JUDGE_CAUSES["off"]}
+        out.append(row)
+        if not judge_on:
+            continue
+        if judge:
+            verdict, cause = _keep_judge(db, shard, allow_call=asked < STALE_JUDGE_MAX)
+            if cause not in ("cached", "capped"):
+                asked += 1
+        else:
+            verdict, cause = stored_keep_verdict(shard), "cached"
+            if verdict is None:
+                unjudged = unjudged or _unjudged_cause(db, project_id)
+                cause = unjudged
+        if verdict is None:
+            row["ungraded_reason"] = JUDGE_CAUSES.get(cause, cause)
+            continue
+        row["ungraded"] = False
+        row["ungraded_reason"] = ""
+        row["recommendation"] = _recommend(
+            verdict, reported_wrong=any("wrong" in w for w in why))
+    if asked:
+        db.commit()  # keep what was paid for; a session closed without commit discards it
+    return out
+
+
+def stale_list(db: Session, project_id: str | None) -> list[dict]:
+    """The stale-or-wrong queue with STORED recommendations. Never asks a model (GRPH-1242)."""
+    return recommendations(db, stale_or_wrong(db, project_id), project_id)
+
+
+# Postgres advisory-lock key for the judge refresh: one runner across every API worker.
+_JUDGE_REFRESH_LOCK = 1242
+
+
+def refresh_judgements(db: Session, project_id: str | None = None) -> int:
+    """Judge what the memory pages show, off the request path (GRPH-1242). For each project
+    with the LLM judge on: stale rows get a keep/quality verdict (STALE_JUDGE_MAX calls) and
+    candidates a review verdict (the queue's own budget). Both reuse current stored verdicts,
+    so a pass over an already-judged queue costs no model calls. Returns projects visited."""
+    stmt = select(Project.id).where(Project.memory_llm_judge.is_(True))
+    if project_id:
+        stmt = stmt.where(Project.id == project_id)
+    pids = list(db.scalars(stmt).all())
+    for pid in pids:
+        recommendations(db, stale_or_wrong(db, pid), pid, judge=True)
+        score_candidates(db, project_id=pid, judge=True)
+    return len(pids)
+
+
+def run_judge_refresh(db: Session) -> int:
+    """`refresh_judgements` behind a single-runner guard. On Postgres a transaction-scoped
+    advisory lock held on its OWN connection: a second worker's pass finds it taken and does
+    nothing, and the lock cannot outlive the pass (closing the connection ends the
+    transaction) even though the judges commit on the session's connection meanwhile.
+    SQLite is one process; nothing to arbitrate."""
+    bind = db.get_bind()
+    if bind.dialect.name != "postgresql":
+        return refresh_judgements(db)
+    with bind.connect() as lock_conn, lock_conn.begin():
+        got = lock_conn.execute(
+            text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": _JUDGE_REFRESH_LOCK}
+        ).scalar()
+        if not got:
+            return 0
+        return refresh_judgements(db)
+
+
+def queue_counts(db: Session, project_id: str | None) -> dict:
+    """One call for the five queue cards. A queue whose source raised is `failed` with the
+    error and `count: None`; 0 is only ever a measured zero.
+
+    Counts come from the similarity pass plus the review-judge verdicts ALREADY STORED on
+    candidates (`score_candidates(judge=False)`); counting never waits on a model (GRPH-1227)."""
+    def counted(fn):
+        try:
+            return {"count": int(fn()), "state": "ok", "error": ""}
+        except Exception as exc:  # noqa: BLE001 — one broken source must not hide the others
+            logger.exception("memory queue count failed")
+            return {"count": None, "state": "failed", "error": str(exc) or type(exc).__name__}
+
+    scored: list[dict] | None = None
+
+    def scored_rows() -> list[dict]:
+        nonlocal scored
+        if scored is None:
+            scored = score_candidates(db, project_id=project_id, judge=False)
+        return scored
+
+    def unreviewed() -> int:
+        stmt = select(func.count()).select_from(MemoryShard).where(
+            MemoryShard.status == "published", MemoryShard.scoring_source != "")
+        if project_id:
+            stmt = stmt.where(MemoryShard.project_id == project_id)
+        return db.scalar(stmt) or 0
+
+    return {
+        "needs_decision": counted(lambda: len(scored_rows())),
+        "conflicts": counted(lambda: sum(1 for r in scored_rows() if r.get("conflicts"))),
+        "duplicate_clusters": counted(lambda: len(cluster_candidates(db, project_id=project_id))),
+        "stale_or_wrong": counted(lambda: len(stale_or_wrong(db, project_id))),
+        "published_unreviewed": counted(unreviewed),
+    }
+
+
+def apply_recommendations(
+    db: Session, shard_ids: list[str], *, floor: float = RECOMMENDATION_FLOOR,
+) -> list[dict]:
+    """Apply each shard's judge recommendation when it clears `floor`. Per-id result so the UI
+    can undo: `undo` is `restore` for a retire. `retire` and `keep` mutate — `keep` restarts the
+    staleness clock via `keep_shard`; `revise`/`verify` need a person's edit, so they are reported as left alone."""
+    results = []
+    for sid in shard_ids:
+        shard = db.get(MemoryShard, sid)
+        res = {"shard_id": sid, "action": None, "confidence": None, "applied": False,
+               "reason": "", "undo": None}
+        results.append(res)
+        if shard is None:
+            res["reason"] = "shard not found"
+            continue
+        if shard.status != "published":
+            res["reason"] = f"not published ({shard.status})"
+            continue
+        # An explicit action, so it may ask — and a current stored verdict costs nothing.
+        row = recommendations(db, [(shard, [])], shard.project_id, judge=True)[0]
+        rec = row["recommendation"]
+        if rec is None:
+            res["reason"] = f"ungraded: {row['ungraded_reason']}"
+            continue
+        res.update(action=rec["action"], confidence=rec["confidence"])
+        if rec["confidence"] < floor:
+            res["reason"] = f"confidence {rec['confidence']} is below the floor {floor}"
+        elif rec["action"] == "retire":
+            retire_shard(db, sid)
+            res.update(applied=True, undo="restore", reason=rec["reason"])
+        elif rec["action"] == "keep":
+            keep_shard(db, sid)
+            res.update(applied=True, reason=rec["reason"])
+        else:
+            res["reason"] = f"{rec['action']} needs a person's edit; left alone"
+    return results

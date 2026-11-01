@@ -1,4 +1,4 @@
-import type { HarnessRecommendations, HarnessReport } from "@/lib/types";
+import type { HarnessRecommendations, HarnessReport, ShardClass } from "@/lib/types";
 import type { Credential, CredentialIn, FleetOverview, FleetPolicy, FleetPresence, FleetProfile, FleetProfileRead, FleetTierMap, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
@@ -13,6 +13,7 @@ import type {
   Galaxy,
   OrgProjectAccess,
   TriageRow,
+  TriageFeed,
   AdminInvite,
   AdminOrg,
   AdminUser,
@@ -21,7 +22,6 @@ import type {
   ApiKeyCreated,
   AppConfig,
   AuditCoverage,
-  Billing,
   ChatResponse,
   CloseReport,
   EvidenceRollup,
@@ -43,11 +43,13 @@ import type {
   LogExportSampleResponse,
   LogExportTestResult,
   LogExportView,
+  BoxHealth,
   UpdateCheck,
   UsageAggregate,
   Invite,
   InvitePreview,
   Item,
+  ItemDetail,
   EventPage,
   EventsQuery,
   GrillMessage,
@@ -63,18 +65,31 @@ import type {
   Member,
   PlatformConfig,
   StackHealth,
+  RecommendedRules,
+  RuleSuggestion,
+  RefusalCoverage,
+  RulesFlow,
+  UnmappedRefusals,
   StackTopology,
   Prd,
   PrdCoverage,
   PrdEval,
+  PrdLinkedRequest,
+  PrdRequestSuggestions,
   PrdStatus,
   PrdSummary,
   PrdVersion,
   Project,
+  ProjectSummary,
+  RequestComment,
   RequestItem,
   RoadmapPhase,
+  ApplyRecommendationResult,
   CandidateJudge,
   JudgeStatus,
+  MemoryQueueCount,
+  MemoryQueueKey,
+  StaleShardRow,
   ScoredCandidate,
   AssistantThread,
   AssistantThreadDetail,
@@ -84,6 +99,7 @@ import type {
   ShardHit,
   Status,
   SyncBundle,
+  SyncOrgOverview,
   SyncStatus,
   User,
 } from "./types";
@@ -316,6 +332,10 @@ export const api = {
   // queue would show an idle reviewer beside work it could already be taking.
   fleet: (projectId?: string) =>
     request<FleetOverview>(`/fleet${projectId ? `?project_id=${projectId}` : ""}`),
+  // GRPH-1229: one page of the offline agents the roster folded into a count.
+  fleetCollapsed: (projectId: string, offset = 0, limit = 100, kind?: "quiet" | "orphaned") =>
+    request<{ total: number; offset: number; limit: number; agents: FleetOverview["agents"] }>(
+      `/fleet/agents/collapsed?project_id=${encodeURIComponent(projectId)}&offset=${offset}&limit=${limit}${kind ? `&kind=${kind}` : ""}`),
   // Presence on the graph (PRD-20 D4). Separate from `fleet` on purpose: the roster is a
   // page, this is polled by whichever graph view is open, and merging them would make every
   // Fleet render pay for node resolution it does not use.
@@ -333,6 +353,8 @@ export const api = {
   clearFleetProfile: (projectId?: string | null) =>
     request<{ cleared: boolean }>(`/fleet/profile${projectId ? `?project_id=${projectId}` : ""}`,
                                   { method: "DELETE" }),
+  fleetPolicy: (projectId: string) =>
+    request<{ project_id: string; policy: FleetPolicy | null; writable?: boolean }>(`/fleet/policy?project_id=${encodeURIComponent(projectId)}`),
   saveFleetPolicy: (body: { project_id: string } & FleetPolicy) =>
     request<{ project_id: string; policy: FleetPolicy | null }>(
       "/fleet/policy", { method: "PUT", body: JSON.stringify(body) }),
@@ -353,6 +375,10 @@ export const api = {
   liveFeed: (projectId: string, agentId: string, limit = 50) => {
     const q = new URLSearchParams({ project_id: projectId, limit: String(limit) });
     return request<LiveFeed>(`/live/${encodeURIComponent(agentId)}/feed?${q.toString()}`);
+  },
+  liveProjectFeed: (projectId: string, limit = 50) => {
+    const q = new URLSearchParams({ project_id: projectId, limit: String(limit) });
+    return request<LiveFeed>(`/live/feed?${q.toString()}`);
   },
   live: (projectId: string, user?: string | null) => {
     const q = new URLSearchParams({ project_id: projectId });
@@ -400,6 +426,7 @@ export const api = {
   config: () => request<AppConfig>("/config"),
 
   projects: () => request<Project[]>("/projects"),
+  projectSummaries: () => request<ProjectSummary[]>("/projects/summaries"),
   createProject: (body: {
     name: string;
     /** Omit to let the server derive one from `name`. */
@@ -447,6 +474,21 @@ export const api = {
       body: JSON.stringify(body),
     }),
   updateCheck: () => request<UpdateCheck>("/platform/update-check"),
+  // What this box is serving right now. `/health`, not update-check: it asks no GitHub
+  // feed, so polling it through an install cannot spend the unauthenticated rate limit.
+  // Not under /api and needs no session. `timeoutMs` bounds one call — a request held by
+  // a restarting proxy must not hold the install poll with it.
+  health: async (timeoutMs: number): Promise<BoxHealth> => {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await fetch("/health", { cache: "no-store", signal: ctl.signal });
+      if (!res.ok) throw new ApiError(res.status, res.statusText);
+      return res.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  },
   // Log export is the deployment's, so none of these takes a project id (PRD-47 S15). One
   // collector, one exporter, one queue for the box — see `LogExportConfig` in types.ts.
   logExport: () => request<LogExportView>("/settings/log-export"),
@@ -537,17 +579,6 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ access }),
     }),
-  orgBilling: (orgId: string) => request<Billing>(`/orgs/${orgId}/billing`),
-  orgCheckout: (orgId: string, body: { plan: string; success_url: string; cancel_url: string }) =>
-    request<{ url: string }>(`/orgs/${orgId}/billing/checkout`, {
-      method: "POST", body: JSON.stringify(body),
-    }),
-  orgPortal: (orgId: string, body: { return_url: string }) =>
-    request<{ url: string }>(`/orgs/${orgId}/billing/portal`, {
-      method: "POST", body: JSON.stringify(body),
-    }),
-  setOrgPlan: (orgId: string, plan: string) =>
-    request<Org>(`/orgs/${orgId}/plan`, { method: "PUT", body: JSON.stringify({ plan }) }),
   requestAdditionalOrg: (body: { reason: string; company?: string }) =>
     request<OrgRequest>("/orgs/requests", { method: "POST", body: JSON.stringify(body) }),
 
@@ -579,15 +610,16 @@ export const api = {
 
   items: (projectId?: string) =>
     request<Item[]>(`/items${projectId ? `?project_id=${projectId}` : ""}`),
+  item: (id: string) => request<ItemDetail>(`/items/${encodeURIComponent(id)}`),
   // The shell's badge numbers. It used to fetch four whole collections to call `.length` on
   // them — 2.1 MB on every route to draw three badges and a stat (GRPH-431).
   counts: (projectId: string) => request<ShellCounts>(`/projects/${projectId}/counts`),
-  createItem: (projectId: string, body: Partial<Item>) =>
+  createItem: (projectId: string, body: Partial<ItemDetail>) =>
     request<Item>("/items", {
       method: "POST",
       body: JSON.stringify(withProject(projectId, body)),
     }),
-  updateItem: (id: string, body: Partial<Item>) =>
+  updateItem: (id: string, body: Partial<ItemDetail>) =>
     request<Item>(`/items/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   ownerClose: (id: string, body: { commit: string; pr_url?: string }) =>
     request<Item>(`/items/${id}/owner-close`, { method: "POST", body: JSON.stringify(body) }),
@@ -638,6 +670,26 @@ export const api = {
   // GRPH-995: whether the judge this project asked for can actually answer.
   judgeStatus: (projectId?: string) =>
     request<JudgeStatus>(`/memory/judge-status${projectId ? `?project_id=${projectId}` : ""}`),
+  // GRPH-1175: the triage console's queue counts, the stale-or-wrong list, retire/restore.
+  memoryQueues: (projectId: string) =>
+    request<Record<MemoryQueueKey, MemoryQueueCount>>(
+      `/memory/queues?project_id=${encodeURIComponent(projectId)}`,
+    ),
+  staleShards: (projectId: string) =>
+    request<StaleShardRow[]>(`/memory/stale?project_id=${encodeURIComponent(projectId)}`),
+  retireShard: (id: string) =>
+    request<Shard>(`/memory/shards/${id}/retire`, { method: "POST" }),
+  setShardClass: (id: string, shard_class: ShardClass | "") =>
+    request<Shard>(`/memory/shards/${id}`, { method: "PATCH", body: JSON.stringify({ shard_class }) }),
+  keepShard: (id: string) =>
+    request<Shard>(`/memory/shards/${id}/keep`, { method: "POST" }),
+  restoreShard: (id: string) =>
+    request<Shard>(`/memory/shards/${id}/restore`, { method: "POST" }),
+  applyRecommendations: (shard_ids: string[]) =>
+    request<ApplyRecommendationResult[]>("/memory/apply-recommendations", {
+      method: "POST",
+      body: JSON.stringify({ shard_ids }),
+    }),
 
   harness: (projectId: string, opts: { windowDays?: number; versions?: "current" | "all" } = {}) => {
     const q = new URLSearchParams({ project_id: projectId });
@@ -650,6 +702,9 @@ export const api = {
     if (opts.windowDays) q.set("window_days", String(opts.windowDays));
     return request<import("@/lib/types").HarnessGuidance>(`/harness/guidance?${q.toString()}`);
   },
+  harnessCapacity: (projectId: string) =>
+    request<import("@/lib/types").HarnessCapacity>(
+      `/harness/capacity?project_id=${encodeURIComponent(projectId)}`),
   harnessRecommendations: (projectId: string, opts: { windowDays?: number; orgId?: string } = {}) => {
     const q = new URLSearchParams();
     if (opts.orgId) q.set("org_id", opts.orgId);
@@ -714,6 +769,65 @@ export const api = {
   /** What is waiting to be triaged, each row carrying its closest duplicate. */
   triageQueue: (projectId: string) =>
     request<TriageRow[]>(`/requests/triage?project_id=${encodeURIComponent(projectId)}`),
+  /** The unified triage feed: requests, blockers and collisions in one queue (GRPH-1135). */
+  projectTriage: (projectId: string) =>
+    request<TriageFeed>(`/projects/${encodeURIComponent(projectId)}/triage`),
+  /** Accept a request into `backlog` or `next`; `action_id` is what `undoRequestAction` takes. */
+  acceptRequestTo: (id: string, status: "backlog" | "next", prdId?: string) =>
+    request<{ request: RequestItem; item: Item; action_id: string | null }>(
+      `/requests/${encodeURIComponent(id)}/accept`,
+      { method: "POST", body: JSON.stringify({ status, prd_id: prdId ?? null }) },
+    ),
+  mergeRequest: (id: string, targetId: string) =>
+    request<RequestItem & { action_id: string | null }>(
+      `/requests/${encodeURIComponent(id)}/merge`,
+      { method: "POST", body: JSON.stringify({ target_id: targetId }) },
+    ),
+  declineRequest: (id: string) =>
+    request<RequestItem & { action_id: string | null }>(
+      `/requests/${encodeURIComponent(id)}/decline`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  snoozeRequest: (id: string, until: string) =>
+    request<RequestItem & { action_id: string | null }>(
+      `/requests/${encodeURIComponent(id)}/snooze`,
+      { method: "POST", body: JSON.stringify({ until }) },
+    ),
+  undoRequestAction: (id: string, actionId: string) =>
+    request<RequestItem>(`/requests/${encodeURIComponent(id)}/undo`, {
+      method: "POST",
+      body: JSON.stringify({ action_id: actionId }),
+    }),
+  /** Blocker actions (GRPH-1137). `undoBlocker` reverses the newest one on the item. */
+  answerBlocker: (itemId: string, option: string) =>
+    request<unknown>(`/items/${encodeURIComponent(itemId)}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ option }),
+    }),
+  blockerAction: (itemId: string, action: "unblock" | "escalate" | "release-claim") =>
+    request<unknown>(`/items/${encodeURIComponent(itemId)}/${action}`, { method: "POST" }),
+  snoozeBlocker: (itemId: string, until: string) =>
+    request<unknown>(`/items/${encodeURIComponent(itemId)}/snooze`, {
+      method: "POST",
+      body: JSON.stringify({ until }),
+    }),
+  undoBlocker: (itemId: string) =>
+    request<unknown>(`/items/${encodeURIComponent(itemId)}/undo`, { method: "POST" }),
+  /** Collision decisions (GRPH-1138). Override is the project owner's alone. */
+  decideCollision: (
+    projectId: string,
+    members: string[],
+    decision: "serialize" | "parallel" | "hold" | "override" | "snooze",
+    snoozeUntil?: string,
+  ) =>
+    request<{ id: number }>(`/items/collision-decisions`, {
+      method: "POST",
+      body: JSON.stringify({
+        project_id: projectId, members, decision, snooze_until: snoozeUntil ?? null,
+      }),
+    }),
+  undoCollisionDecision: (decisionId: number) =>
+    request<unknown>(`/items/collision-decisions/${decisionId}`, { method: "DELETE" }),
   /** Turn a request into tracked work. One transaction — item and link land together. */
   acceptRequest: (id: string) =>
     request<{ request: RequestItem; item: Item }>(`/requests/${id}/accept`, { method: "POST" }),
@@ -731,8 +845,11 @@ export const api = {
     request<{ published: boolean; published_at: string | null }>(`/requests/${id}/publish`, { method: "POST" }),
   unpublishRequest: (id: string) =>
     request<{ published: boolean }>(`/requests/${id}/unpublish`, { method: "POST" }),
+  /** PRD-60 D9: the operator thread — public replies, internal notes and submitter replies. */
+  requestComments: (id: string) => request<RequestComment[]>(`/requests/${id}/comments`),
+  /** The write lives on the public router (PRD-43 D7); a public reply emails the submitter. */
   createRequestComment: (id: string, body: string, visibility: "public" | "private" = "private") =>
-    request<{ id: string; body: string; visibility: string; created_at: string }>(`/requests/${id}/comments`, {
+    request<{ id: string; body: string; visibility: string; created_at: string }>(`/public/requests/${id}/comments`, {
       method: "POST",
       body: JSON.stringify({ body, visibility }),
     }),
@@ -803,6 +920,13 @@ export const api = {
     request<Prd>(`/prds/${id}/versions`, { method: "POST", body: JSON.stringify({ note }) }),
   linkPrd: (id: string, itemId: string, add: boolean) =>
     request<Prd>(`/prds/${id}/link`, { method: "POST", body: JSON.stringify({ item_id: itemId, add }) }),
+  prdRequests: (id: string) => request<PrdLinkedRequest[]>(`/prds/${id}/requests`),
+  prdRequestSuggestions: (id: string) =>
+    request<PrdRequestSuggestions>(`/prds/${id}/request-suggestions`),
+  linkPrdRequest: (id: string, requestId: string) =>
+    request<unknown>(`/prds/${id}/requests`, { method: "POST", body: JSON.stringify({ request_id: requestId }) }),
+  unlinkPrdRequest: (id: string, requestId: string) =>
+    request<unknown>(`/prds/${id}/requests/${requestId}`, { method: "DELETE" }),
   prdAi: (id: string, command: string) =>
     request<{ text: string }>(`/prds/${id}/ai`, {
       method: "POST",
@@ -945,6 +1069,27 @@ export const api = {
   /** Derived architecture map of the running system (GRPH-1034). */
   stack: (projectId: string) =>
     request<StackTopology>(`/platform/stack${projectQuery(projectId)}`),
+  /** The rule registry placed on the Rules map's fixed stages (GRPH-1156). */
+  rulesFlow: (projectId: string) => request<RulesFlow>(`/rules/flow${projectQuery(projectId)}`),
+  /** Unmapped refusals grouped and ranked over the last `days` by the server (GRPH-1195). */
+  unmappedRefusals: (projectId: string, days = 7) =>
+    request<UnmappedRefusals>(`/rules/refusals/unmapped${projectQuery(projectId)}&days=${days}`),
+  /** "N of M refusal sites name their rule", as the build published it (GRPH-1192). */
+  refusalCoverage: (projectId: string) =>
+    request<RefusalCoverage>(`/rules/refusal-coverage${projectQuery(projectId)}`),
+  /** Suggestions from the project's own evidence; `sources` says what was and wasn't read (GRPH-1160). */
+  recommendedRules: (projectId: string) =>
+    request<RecommendedRules>(`/rules/recommended${projectQuery(projectId)}`),
+  dismissRecommendedRule: (projectId: string, suggestionId: string) =>
+    request<void>(`/rules/recommended/${encodeURIComponent(suggestionId)}/dismiss${projectQuery(projectId)}`, {
+      method: "POST",
+    }),
+  dismissedRecommendedRules: (projectId: string) =>
+    request<RuleSuggestion[]>(`/rules/recommended/dismissed${projectQuery(projectId)}`),
+  restoreRecommendedRule: (projectId: string, suggestionId: string) =>
+    request<void>(`/rules/recommended/${encodeURIComponent(suggestionId)}/dismiss${projectQuery(projectId)}`, {
+      method: "DELETE",
+    }),
   /** Per-deployable code-health overlay (GRPH-1035). */
   stackHealth: (projectId: string) =>
     request<StackHealth>(`/platform/stack/health${projectQuery(projectId)}`),
@@ -1035,6 +1180,7 @@ export const api = {
   syncLink: (cloud_url: string, api_key: string, org: string) =>
     request<SyncStatus>("/sync/link", { method: "POST", body: JSON.stringify({ cloud_url, api_key, org }) }),
   syncUnlink: () => request<SyncStatus>("/sync/link", { method: "DELETE" }),
+  syncOrg: () => request<SyncOrgOverview>("/sync/org"),
   syncPush: (project_id: string) =>
     request<{ project_id: string; pushed?: number; removed?: number; unchanged?: number; skipped?: boolean; reason?: string }>(
       "/sync/push", { method: "POST", body: JSON.stringify({ project_id }) }),

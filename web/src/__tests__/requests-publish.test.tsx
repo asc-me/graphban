@@ -24,7 +24,9 @@ const makeReq = (overrides: Partial<RequestItem> = {}): RequestItem => ({
   published_at: null, ...overrides,
 });
 
-const { publishSpy, unpublishSpy, commentSpy, voteSpy } = vi.hoisted(() => ({
+const { publishSpy, unpublishSpy, commentSpy, voteSpy, requestsMock, codeMock } = vi.hoisted(() => ({
+  requestsMock: vi.fn(async () => [] as unknown[]),
+  codeMock: vi.fn(async () => [] as unknown[]),
   publishSpy: vi.fn(async () => ({ published: true, published_at: "2026-01-01T00:00:00Z" })),
   unpublishSpy: vi.fn(async () => ({ published: false })),
   commentSpy: vi.fn(async () => ({ id: "c1", body: "test", visibility: "private", created_at: "2026-01-01T00:00:00Z" })),
@@ -34,18 +36,27 @@ const { publishSpy, unpublishSpy, commentSpy, voteSpy } = vi.hoisted(() => ({
 vi.mock("@/lib/api", () => ({
   api: {
     projects: vi.fn(async () => [core]),
-    requests: vi.fn(async () => [makeReq()]),
+    requests: requestsMock,
     voteRequest: voteSpy,
     publishRequest: publishSpy,
     unpublishRequest: unpublishSpy,
     createRequestComment: commentSpy,
+    requestComments: vi.fn(async () => []),
+    me: vi.fn(async () => ({ id: "u1", name: "Alex Smith", handle: "alex", email: "", avatar: "", initials: "AS" })),
     // The expanded row mounts `LinkedCode`, which reads the request's code links. Served
     // as an empty list so the no-links copy is asserted against a real answer rather than
     // against a query that threw because nothing was mocked.
-    codeForRef: vi.fn(async () => []),
+    codeForRef: codeMock,
     fleet: vi.fn(async () => ({ agents: [], online: 0, total: 0, by_role: {}, posture: "single-agent", roles: [], presence_ttl_seconds: 90, heartbeat_interval_seconds: 30, review_queue: [], clusters: [], seats: [], waves: [] })),
   },
 }));
+
+beforeEach(() => {
+  requestsMock.mockReset();
+  requestsMock.mockImplementation(async () => [makeReq()]);
+  codeMock.mockReset();
+  codeMock.mockImplementation(async () => []);
+});
 
 function renderRequests() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -81,14 +92,15 @@ describe("Requests publish/comment controls (GRPH-903 sabotage)", () => {
     expect(btn.textContent).toMatch(/published/i);
   });
 
-  it("has a comment form with a public visibility toggle in the expanded row", async () => {
+  it("mounts the shared comment thread, with the public/internal toggle, in the expanded row", async () => {
     renderRequests();
     const expandBtn = await screen.findByTitle(/show detail/i);
     expandBtn.click();
-    const publicCheckbox = await screen.findByLabelText(/public/i);
-    expect(publicCheckbox).toBeTruthy();
-    const textarea = screen.getByPlaceholderText(/write a comment/i);
-    expect(textarea).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Public reply" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Internal note" })).toBeTruthy();
+    expect(screen.getByPlaceholderText(/reply to the submitter/i)).toBeTruthy();
+    // Requests is not the triage inbox: its box is not the one C focuses.
+    expect(document.querySelector("textarea[data-triage-comment]")).toBeNull();
   });
 });
 
@@ -115,6 +127,53 @@ describe("the request row (PRD-47 S3)", () => {
     // and matching either one would not show that the row is typed.
     const row = vote.closest<HTMLDivElement>("div[class*='rounded-[12px]']")!;
     expect(within(row).getByText("BUG")).toBeInTheDocument();
+  });
+
+  it("casts chips in sentence case and the badge and status in uppercase", async () => {
+    renderRequests();
+    const vote = await screen.findByTitle("Upvote");
+    const row = vote.closest<HTMLDivElement>("div[class*='rounded-[12px]']")!;
+    expect(screen.getByRole("button", { name: /^Bug/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^BUG/ })).not.toBeInTheDocument();
+    expect(within(row).getByText("BUG")).toBeInTheDocument();
+    expect(within(row).getByText("new")).toHaveClass("uppercase");
+  });
+
+  it("carries no icon on Publish or Link, and shows the PUBLISHED pill once published", async () => {
+    renderRequests();
+    const publish = await screen.findByTitle(/publish.*public board/i);
+    expect(publish.querySelector("svg")).toBeNull();
+    const link = screen.getByRole("button", { name: /^Link$/ });
+    expect(link.querySelector("svg")).toBeNull();
+  });
+
+  it("shows the published pill without an icon", async () => {
+    requestsMock.mockResolvedValueOnce([makeReq({ published_at: "2026-01-01T00:00:00Z" })]);
+    renderRequests();
+    const pill = await screen.findByTitle(/unpublish.*public board/i);
+    expect(pill.querySelector("svg")).toBeNull();
+    expect(pill.textContent).toMatch(/published/i);
+    expect(pill.className).not.toMatch(/green-(400|500)/);
+  });
+
+  it("shows the short age, not '… ago'", async () => {
+    requestsMock.mockResolvedValueOnce([makeReq({ ago: "6h ago" })]);
+    renderRequests();
+    expect(await screen.findByText("6h")).toBeInTheDocument();
+    expect(screen.queryByText("6h ago")).not.toBeInTheDocument();
+  });
+
+  it("renders existing code links as chips with add-link collapsed behind Link", async () => {
+    codeMock.mockResolvedValueOnce([
+      { path: "backend/app/x.py", relation: "affects", node: null },
+    ]);
+    renderRequests();
+    await userEvent.click(await screen.findByTitle(/show detail/i));
+    expect(await screen.findByText("backend/app/x.py")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("backend/app/services/x.py")).not.toBeInTheDocument();
+    // The row's own Link button comes first; the add-link toggle is the one in the expanded section.
+    await userEvent.click(screen.getAllByRole("button", { name: /^Link$/ }).at(-1)!);
+    expect(screen.getByPlaceholderText("backend/app/services/x.py")).toBeInTheDocument();
   });
 
   it("counts a vote from the row's vote control", async () => {

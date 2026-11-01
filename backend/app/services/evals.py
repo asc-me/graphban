@@ -358,8 +358,8 @@ def _grill_outputs(text: str, done: dict) -> list[dict]:
 def _run_grill_prd(db: Session, case: dict) -> tuple[list[dict], str]:
     """Create the fixture PRD and call the real grill. Returns (outputs, project_id).
 
-    `action=questions` is `ai_command_detail(..., "grill")` — the CALL `grill_prd`
-    makes. It must not record answers: a green questions eval that also classified
+    `action=questions` is `grill_questions` — the CALL `grill_prd` makes. It must
+    not record answers: a green questions eval that also classified
     four dummy replies would approve the fixture, which is the theatre this pin
     exists to catch.
 
@@ -393,7 +393,7 @@ def _run_grill_prd(db: Session, case: dict) -> tuple[list[dict], str]:
         }, sort_keys=True)
         return _grill_outputs(text, done), project_id
 
-    questions, _retried = prd_svc.ai_command_detail(db, prd.id, "grill")
+    questions, _retried = prd_svc.grill_questions(db, prd.id)
     done = prd_svc.completion(db, prd.id)
     return _grill_outputs(questions, done), project_id
 

@@ -1,4 +1,4 @@
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 import jwt
@@ -10,6 +10,7 @@ from app.security.jwt import decode_token
 
 
 def get_current_user(
+    request: Request = None,  # type: ignore[assignment] - direct callers omit it
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> User:
@@ -28,10 +29,14 @@ def get_current_user(
     # carries a stale `tv` and is rejected even though its signature is still valid (AL-59).
     if payload.get("tv", 0) != user.token_version:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token revoked")
+    # So the one refusal handler can attribute a `Refused` to who asked (GRPH-1158).
+    if request is not None:
+        request.state.actor = ("user", user.id, user.handle or user.name)
     return user
 
 
 def get_agent_key(
+    request: Request = None,  # type: ignore[assignment] - direct callers omit it
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None),
     db: Session = Depends(get_db),
@@ -45,6 +50,8 @@ def get_agent_key(
     key = verify_api_key(db, raw or "")
     if key is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid api key")
+    if request is not None:
+        request.state.actor = ("apikey", key.id, key.name or key.id)
     return key
 
 

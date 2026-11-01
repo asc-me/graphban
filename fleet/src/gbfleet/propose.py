@@ -20,10 +20,12 @@ the wave — which is also the honest attribution.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 INSTALL = "brew install gh   # or see https://cli.github.com"
@@ -187,17 +189,16 @@ def _names(subject: str, item: str) -> bool:
 
 
 def split_by_item(repo: Path, branch: str, base: str,
-                  items: list[str]) -> tuple[list[tuple[str, str]], str]:
-    """Where each item's work ends on a branch that carries several: `[(item, sha)]` in
-    branch order, or `([], why)` when the commits do not separate them (GRPH-948).
+                  items: list[str]) -> tuple[list[tuple[str, list[str]]], str]:
+    """The commits that belong to each item, oldest first: `[(item, [sha, ...])]` in
+    the order the items first appear, or `([], why)` when they cannot be separated
+    (GRPH-948, GRPH-1086).
 
-    Read from the worker's own commit subjects, oldest first. A commit naming one item belongs
-    to it; one naming none belongs to the item before it (or, before any, the first); one
-    naming two cannot be divided. An item's commits must be CONTIGUOUS, because the per-item
-    branches are stacked — each PR's base is the previous item's branch, so its diff is only
-    its own item — and interleaved commits cannot be stacked without rewriting them. Rewriting
-    a worker's history is not the supervisor's call, so that is refused and the person splits
-    it.
+    Read from the worker's own commit subjects. A commit naming one of `items` belongs
+    to it. A commit naming none, or naming more than one, cannot be put on one item's
+    PR — the reason names that commit. Commits for one item need not be contiguous:
+    each item is cut from the base, not stacked on the previous item, so an earlier
+    item's commit is not an ancestor of the next item's branch.
     """
     if not base:
         return [], "there is no base to split it against"
@@ -205,30 +206,78 @@ def split_by_item(repo: Path, branch: str, base: str,
                           cwd=str(repo), capture_output=True, text=True)
     if done.returncode != 0:
         return [], "its commits could not be read"
-    blocks: list[list] = []  # [item, last sha]
+    blocks: list[list] = []  # [item, [sha, ...]]
     for line in (done.stdout or "").splitlines():
         sha, _, subj = line.partition("\t")
         named = [i for i in items if _names(subj, i)]
         if len(named) > 1:
             return [], f"commit {sha[:12]} names {', '.join(named)}"
         if not named:
-            if blocks:
-                blocks[-1][1] = sha
-            continue
+            # Not the previous item's. Folding it in is how a commit that names nothing
+            # rides into a PR and gets attested as that item (GRPH-1086).
+            return [], f"commit {sha[:12]} names no item"
         item = named[0]
-        if blocks and blocks[-1][0] == item:
-            blocks[-1][1] = sha
-        elif any(b[0] == item for b in blocks):
-            return [], f"{item}'s commits are interleaved with {blocks[-1][0]}'s"
+        owned = next((b for b in blocks if b[0] == item), None)
+        if owned is None:
+            blocks.append([item, [sha]])
         else:
-            blocks.append([item, sha])
+            owned[1].append(sha)
     missing = [i for i in items if not any(b[0] == i for b in blocks)]
     if missing:
         return [], f"no commit names {', '.join(missing)}"
-    return [(b[0], b[1]) for b in blocks], ""
+    return [(b[0], list(b[1])) for b in blocks], ""
 
 
-def describe(branch: str, items: list[str], commit_subject: str = "") -> tuple[str, str]:
+def replay_onto(repo: Path, base: str, commits: list[str]) -> tuple[str, str]:
+    """Replay `commits` onto `base`. `(sha, "")`, or `("", why)` naming the commit that
+    would not apply (GRPH-1086).
+
+    Done in a throwaway worktree so the caller's checkout stays where it is. A commit
+    whose parent is the current tip fast-forwards, which keeps the original sha for a
+    prefix of the branch. Anything else is cherry-picked, so the result contains those
+    commits and not the other item's. A patch that needs the other item's tree does not
+    apply; that is the refusal, and the branch is left uncut.
+    """
+    if not commits:
+        return "", "there are no commits to cut"
+    base_read = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{base}^{{commit}}"],
+        cwd=str(repo), capture_output=True, text=True)
+    if base_read.returncode != 0 or not (base_read.stdout or "").strip():
+        return "", "there is no base to cut it from"
+    base_sha = base_read.stdout.strip()
+    parent = Path(tempfile.mkdtemp(prefix="gb-split-"))
+    wt = parent / "wt"
+    env = {**os.environ, "GIT_EDITOR": "true", "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        added = subprocess.run(
+            ["git", "worktree", "add", "--detach", "-q", str(wt), base_sha],
+            cwd=str(repo), capture_output=True, text=True, env=env)
+        if added.returncode != 0:
+            tail = (added.stderr or added.stdout or "").strip().splitlines()
+            return "", (f"could not cut from {base_sha[:12]}: "
+                        f"{tail[-1][:160] if tail else added.returncode}")
+        for sha in commits:
+            picked = subprocess.run(
+                ["git", "-c", "commit.gpgsign=false", "cherry-pick", "--ff", sha],
+                cwd=str(wt), capture_output=True, text=True, env=env)
+            if picked.returncode != 0:
+                subprocess.run(["git", "cherry-pick", "--abort"], cwd=str(wt),
+                               capture_output=True, text=True, env=env)
+                return "", f"commit {sha[:12]} depends on an earlier item's commit"
+        tip = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(wt), capture_output=True, text=True)
+        if tip.returncode != 0 or not (tip.stdout or "").strip():
+            return "", "the cut branch has no commit"
+        return tip.stdout.strip(), ""
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(wt)],
+                       cwd=str(repo), capture_output=True, text=True)
+        shutil.rmtree(parent, ignore_errors=True)
+
+
+def describe(branch: str, items: list[str], commit_subject: str = "", *,
+             attest: bool = False) -> tuple[str, str]:
     """Title and body for work a wave produced — for ONE item, or none (GRPH-948).
 
     THE WORKER'S OWN SUBJECT LEADS (GRPH-817). The first version always composed
@@ -266,6 +315,12 @@ def describe(branch: str, items: list[str], commit_subject: str = "") -> tuple[s
           "is a judgement the supervisor did not make. The ledger holds the evidence — read "
           "the item before this description, which is generated and knows nothing.\n"
     )
+    # Only when the caller asks. A single-item branch keeps the body it had: CI still
+    # finds the id in the prose. A split PR must say `Attests:` so a body that mentions
+    # the branch, or the other item, cannot attest both (GRPH-1086). `attest` stays off
+    # the single-item path.
+    if attest and named:
+        body += f"Attests: {named}\n"
     return title, body
 
 
@@ -284,9 +339,12 @@ SIGN_OFF_ADAPTER = "fleet.sign_off"
 #: The predicate CI attests (`scripts/attest_ci.py`). Named exactly: an adapter claiming
 #: more than it checked is how a gate quietly starts accepting less than it appears to.
 CI_PREDICATE = "suite_green"
+#: The predicate CI attests after running the named security tools at a PR head (GRPH-P57
+#: D2). Required only on a merge into the release ref, and only against the ACTUAL head.
+SCANS_PREDICATE = "scans_clean"
 #: What `gh pr view --json` is asked for. `mergeCommit` is null until the PR is merged.
 _PR_FIELDS = ("number,url,state,isDraft,mergeable,mergeStateStatus,headRefOid,headRefName,"
-              "isCrossRepository,mergeCommit")
+              "baseRefName,isCrossRepository,mergeCommit")
 
 
 @dataclass(frozen=True)
@@ -313,6 +371,12 @@ class Merged:
     #: The preconditions that HELD, in the order they were asked. Reported beside the miss
     #: so "head moved" cannot be mistaken for "nothing was checked".
     checked: tuple[str, ...] = ()
+    #: Which release ref this attempt used, as a phrase for the MERGE line (GRPH-P57 D1):
+    #: "release ref main (project setting)" or "release ref unset, scans_clean not
+    #: required". Every line names it, so drift between boxes shows in the log.
+    release: str = ""
+    #: Other open PRs of the item closed as "Superseded by #n" after this merge (GRPH-1219).
+    closed: tuple[str, ...] = ()
 
     @property
     def final(self) -> bool:
@@ -363,23 +427,145 @@ def green_commits(item: dict) -> set[str]:
     return out
 
 
+@dataclass(frozen=True)
+class ScanVerdict:
+    """One `scans_clean` predicate as the ledger recorded it: the commit its attestation
+    names, whether it passed, and the predicate's detail (kind, tool, prefix on a failure)."""
+
+    commit: str
+    passed: bool
+    detail: str = ""
+
+
+def scans_clean_verdicts(item: dict) -> list[ScanVerdict]:
+    """Every `scans_clean` predicate on the item, in the order the ledger returns evidence.
+
+    That order is the server's insertion order — evidence is an append-only list
+    (`items.append_evidence`) — and it is the only order this trusts: the latest verdict
+    for a head wins, so a rerun's pass unblocks a merge and a later failure blocks it. A
+    runner timestamp is never consulted. Deliberately NOT `green_commits`' shape: a union of
+    passes would read pass-then-fail on one head as passed (GRPH-P57 D6).
+
+    Only the `scans_clean` predicate is read, not the receipt's other predicates: whether
+    the scan passed is that predicate's answer alone.
+    """
+    out: list[ScanVerdict] = []
+    for e in item.get("evidence") or []:
+        if not isinstance(e, dict) or e.get("kind") != "attestation":
+            continue
+        commit = str(e.get("commit") or "").strip()
+        preds = e.get("predicates") or []
+        if not commit or not isinstance(preds, list):
+            continue
+        for p in preds:
+            if isinstance(p, dict) and str(p.get("name") or "") == SCANS_PREDICATE:
+                out.append(ScanVerdict(commit=commit, passed=p.get("passed") is True,
+                                       detail=str(p.get("detail") or "").strip()))
+    return out
+
+
+def release_ref(roster: dict | None) -> str:
+    """The project's release ref from a `fleet_status` payload, or "" when it is unset.
+
+    Only `source == "project"` names a ref (GRPH-1109). `unmeasured`, `unknown`, and a
+    server that predates the field are all "unset": nothing here infers `main`, the remote's
+    default, or `gitops.base_branch` — an unset ref means the rule does not exist.
+    """
+    got = (roster or {}).get("release_ref") if isinstance(roster, dict) else None
+    if not isinstance(got, dict) or got.get("source") != "project":
+        return ""
+    return str(got.get("ref") or "").strip()
+
+
+def release_phrase(ref: str) -> str:
+    """How every MERGE line names the release ref it used (GRPH-P57 D1)."""
+    if not ref:
+        return f"release ref unset, {SCANS_PREDICATE} not required"
+    return f"release ref {ref} (project setting)"
+
+
+def _scans_refusal(head: str, ref: str, scans) -> str:
+    """Why `head` may not merge into the release ref, or "" when it may.
+
+    Keyed strictly by commit, and the LATEST verdict for the head wins. An attestation on
+    an older commit neither passes nor blocks this head; the latest older pass is named
+    only so the reader knows CI has run, just not here.
+    """
+    mine = [v for v in scans or () if same_commit(head, v.commit)]
+    if mine:
+        last = mine[-1]
+        if last.passed:
+            return ""
+        return (f"{SCANS_PREDICATE} failed on {head[:12]} (release ref {ref}): "
+                f"{last.detail or 'the predicate recorded no detail'}")
+    older = [v for v in scans or () if v.passed]
+    tail = f"; latest pass names {older[-1].commit[:12]}" if older else ""
+    return f"CI has not attested {SCANS_PREDICATE} on {head[:12] or '?'} (release ref {ref}){tail}"
+
+
+def _receipt_branch(detail: str) -> str:
+    """The branch a `pr_opened` receipt names, or "". The server writes the detail as
+    "draft PR opened by gbfleet for <branch>" (services/fleet.py `_observation_receipt`)."""
+    head, sep, tail = (detail or "").rpartition(" for ")
+    if not sep or "PR opened" not in head:
+        return ""
+    return tail.strip().strip("`")
+
+
 def pr_selector(item: dict) -> str:
     """What to hand `gh pr view`: the item's PR if it names one, else the PR receipt the
-    supervisor wrote when it proposed the branch, else the branch itself.
+    supervisor wrote when it proposed the item's branch, else the LATEST PR receipt, else
+    the branch itself.
 
     A signed-off item's `branch` is routinely empty, which is why the receipt is consulted
     before it — the URL `propose_branch` recorded is the one thing that reliably survives.
+
+    Evidence only appends. An item reworked on a new branch gets a second receipt for its
+    new PR while the first still names the old one, and taking the first match checked the
+    stale PR forever (GRPH-1218). So the receipt for `branch` wins, and without one the
+    newest receipt does.
     """
     pr = item.get("pr")
     if isinstance(pr, str) and pr.strip():
         return pr.strip()
+    branch = str(item.get("branch") or "").strip()
+    latest = ""
     for e in item.get("evidence") or []:
         if not isinstance(e, dict) or e.get("kind") != "url":
             continue
         url = str(e.get("url") or "").strip()
-        if "/pull/" in url:
+        if "/pull/" not in url:
+            continue
+        latest = url
+        if branch and _receipt_branch(str(e.get("detail") or "")) == branch:
             return url
-    return str(item.get("branch") or "").strip()
+    return latest or branch
+
+
+def pr_receipts(item: dict) -> list[str]:
+    """Every PR the item names — its `pr` field, then each `/pull/` receipt — once each, in
+    ledger order. What `merge` checks when the PR `pr_selector` chose is not at the reviewed
+    commit, and what it closes as superseded once one of them lands (GRPH-1219)."""
+    urls: list[str] = []
+    pr = item.get("pr")
+    if isinstance(pr, str) and pr.strip():
+        urls.append(pr.strip())
+    for e in item.get("evidence") or []:
+        if not isinstance(e, dict) or e.get("kind") != "url":
+            continue
+        url = str(e.get("url") or "").strip()
+        if "/pull/" in url and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _pr_ref(pr: dict | None, fallback: str) -> str:
+    """`#9` when the forge gave a number or the URL ends in one, else `fallback`."""
+    number = (pr or {}).get("number")
+    if isinstance(number, int):
+        return f"#{number}"
+    m = re.search(r"/pull/(\d+)", str((pr or {}).get("url") or fallback or ""))
+    return f"#{m.group(1)}" if m else (fallback or "?")
 
 
 def _url_for_ref(repo: Path, selector: str) -> str:
@@ -454,7 +640,9 @@ def same_commit(a: str, b: str) -> bool:
 
 
 def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
-          green: set[str], paths: list[str] | tuple[str, ...] | None = None) -> Merged:
+          green: set[str], paths: list[str] | tuple[str, ...] | None = None,
+          release: str = "", scans: list[ScanVerdict] | tuple[ScanVerdict, ...] = (),
+          siblings: list[str] | tuple[str, ...] = ()) -> Merged:
     """Finish one item's merge, or say exactly which precondition stopped it.
 
     `reviewed` is the commit the sign-off attestation names; `green` is every commit CI has
@@ -465,8 +653,117 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
     those paths byte-identical to `reviewed` — is not a new review (GRPH-1032). Empty `paths`
     cannot prove that, so the head must still match.
 
-    Never raises and never fails a wave. Every path returns a `Merged` that says what it did.
+    `release` is the project's release ref ("" when unset) and `scans` the item's
+    `scans_clean` verdicts in ledger order, both read by the caller (GRPH-P57 D6). A PR
+    whose base is the release ref also needs the latest verdict on the ACTUAL head to pass —
+    never the reviewed commit, and with no GRPH-1032 exemption: merging main brings in the
+    code the scan exists to check. Any other base, or an unset ref, skips it. Nothing here
+    calls `scan_status` or reads Stack.
+
+    `siblings` are the item's other PRs (`pr_receipts`). When the selected PR's head is not
+    the reviewed commit, the one sibling at that commit (already MERGED first, else OPEN)
+    is merged or recorded instead, also when the selected PR is closed; none or several is
+    a hold naming every PR checked and its head (GRPH-1219). After a merge, any other
+    sibling still open is closed as superseded — best effort, never a failed merge.
+
+    Never raises and never fails a wave. Every path returns a `Merged` that says what it did,
+    and names the release ref it used.
     """
+    got = _merge(repo, item_id, selector, reviewed=reviewed, green=green, paths=paths,
+                 release=release, scans=scans, siblings=tuple(siblings or ()))
+    if got.ok and siblings:
+        got = replace(got, closed=_close_superseded(repo, got, siblings))
+    return replace(got, release=release_phrase(release))
+
+
+def _close_superseded(repo: Path, got: Merged, siblings) -> tuple[str, ...]:
+    """Close each other OPEN PR in `siblings` with "Superseded by #n". Best effort: a PR
+    that cannot be read or closed is left open, and the merge stays a merge (GRPH-1219)."""
+    by = _pr_ref(None, got.url)
+    closed: list[str] = []
+    for s in siblings:
+        if s in (got.url, got.selector):
+            continue
+        try:
+            pr, _ = view(repo, s)
+            if pr is None or str(pr.get("state") or "").upper() != "OPEN":
+                continue
+            if str(pr.get("url") or "") == got.url:
+                continue
+            done = _gh(repo, "pr", "close", s, "--comment", f"Superseded by {by}")
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if done.returncode == 0:
+            closed.append(_pr_ref(pr, s))
+    return tuple(closed)
+
+
+def _sibling_at(repo: Path, item_id: str, selector: str, url: str, head: str, reviewed: str,
+                siblings) -> tuple[str, str]:
+    """`(sibling, hold)`: the one other PR of the item whose head is `reviewed` — merged
+    first, else open — or the reason none can stand in, naming every PR checked with its
+    head (GRPH-1219).
+
+    Wave p61b held four signed-off, green PRs with "the branch moved after sign-off" when the
+    selector had simply picked the item's other PR; the hold named only that one."""
+    seen = [f"{_pr_ref({'url': url}, selector)} head {head[:12] or '?'}"]
+    hits: list[str] = []
+    merged: list[str] = []
+    for s in siblings:
+        if s in (selector, url):
+            continue
+        pr, err = view(repo, s)
+        if pr is None:
+            seen.append(f"{s} unreadable ({err})")
+            continue
+        if str(pr.get("url") or "") == url:
+            continue
+        other = str(pr.get("headRefOid") or "")
+        state = str(pr.get("state") or "").upper()
+        seen.append(f"{_pr_ref(pr, s)} head {other[:12] or '?'}"
+                    + ("" if state == "OPEN" else f" ({state.lower() or 'unknown state'})"))
+        if state in ("OPEN", "MERGED") and same_commit(other, reviewed):
+            (merged if state == "MERGED" else hits).append(s)
+    # A sibling the forge already merged at the reviewed commit is the answer, not a hold:
+    # its own auto-merge armed on an earlier tick landed, and the ledger still needs it.
+    if len(merged) == 1:
+        return merged[0], ""
+    if not merged and len(hits) == 1:
+        return hits[0], ""
+    hits += merged
+    checked_prs = "; ".join(seen)
+    if hits:
+        return "", (f"no single PR to merge: {len(hits)} PRs of {item_id} are at the "
+                    f"reviewed commit {reviewed[:12]} (checked {checked_prs})")
+    return "", (f"PR head {head[:12] or '?'} is not the reviewed commit {reviewed[:12]}, and "
+                f"no other open or merged PR of {item_id} is (checked {checked_prs}) — the branch "
+                "moved after sign-off or the reviewed PR is gone; it needs review again, "
+                "not a merge")
+
+
+def _via_sibling(repo: Path, item_id: str, selector: str, pr: dict, *, reviewed: str,
+                 green: set[str], paths, release: str, scans, siblings: tuple[str, ...],
+                 checked: list[str], miss: Merged | None = None) -> Merged:
+    """Merge the item's sibling PR at `reviewed` in place of the selected `pr`, or hold
+    naming every PR checked (`miss` instead, when given). The recursion gets no siblings,
+    so it cannot loop (GRPH-1219)."""
+    url = str(pr.get("url") or "")
+    head = str(pr.get("headRefOid") or "")
+    sibling, hold = _sibling_at(repo, item_id, selector, url, head, reviewed, siblings)
+    if not sibling:
+        if miss is not None:
+            return miss
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      reason=hold)
+    got = _merge(repo, item_id, sibling, reviewed=reviewed, green=green, paths=paths,
+                 release=release, scans=scans)
+    why = (f"sibling={sibling} (selected {_pr_ref(pr, selector)} head {head[:12] or '?'} "
+           "is not the reviewed commit)")
+    return replace(got, checked=tuple(checked) + (why,) + got.checked)
+
+
+def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set[str],
+           paths, release: str, scans, siblings: tuple[str, ...] = ()) -> Merged:
     checked: list[str] = []
     if not find():
         return Merged(item=item_id, selector=selector, skipped=True,
@@ -492,8 +789,15 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
                       ok=bool(commit), checked=("state=MERGED",),
                       reason="" if commit else "merged, but gh reported no merge commit")
     if state != "OPEN":
-        return Merged(item=item_id, selector=selector, url=url, skipped=True,
-                      reason=f"PR is {state or 'in an unknown state'}, not open")
+        not_open = Merged(item=item_id, selector=selector, url=url, skipped=True,
+                          reason=f"PR is {state or 'in an unknown state'}, not open")
+        if siblings and not same_commit(str(pr.get("headRefOid") or ""), reviewed):
+            # GRPH-1219: a closed selection may be the superseded PR; the sibling at the
+            # reviewed commit is still the one to merge. Without one, the skip stands.
+            return _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
+                                paths=paths, release=release, scans=scans,
+                                siblings=siblings, checked=checked, miss=not_open)
+        return not_open
     checked.append("open")
     if pr.get("isCrossRepository"):
         return Merged(item=item_id, selector=selector, url=url, skipped=True,
@@ -515,6 +819,13 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
     if not same_commit(head, reviewed):
         if paths_unchanged(repo, reviewed, head, paths):
             checked.append("paths-unchanged")
+        elif siblings:
+            # GRPH-1219: the selector may have picked the item's other PR. One open sibling
+            # at the reviewed commit is the PR the sign-off vouches for; merge that one, and
+            # say which and why. The recursion gets no siblings, so it cannot loop.
+            return _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
+                                paths=paths, release=release, scans=scans,
+                                siblings=siblings, checked=checked)
         else:
             return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                           reason=f"PR head {head[:12] or '?'} is not the reviewed commit "
@@ -522,10 +833,27 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
                                  "review again, not a merge")
     else:
         checked.append("head=reviewed")
-    if not any(same_commit(reviewed, g) for g in green):
+    # CI runs on the commit the forge would merge. When the head is still the reviewed
+    # commit, that is `reviewed`. When the head moved and this item's paths did not
+    # (GRPH-1032), the suite that matters is the one on `head`: the reviewed commit can
+    # stay red forever while the follow-up commit is the one CI attested.
+    vouched = head if "paths-unchanged" in checked else reviewed
+    if not any(same_commit(vouched, g) for g in green):
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
-                      reason=f"CI has not attested {CI_PREDICATE} on {reviewed[:12]}")
+                      reason=f"CI has not attested {CI_PREDICATE} on {vouched[:12]}")
     checked.append(f"ci={CI_PREDICATE}")
+
+    # GRPH-P57 D6. Against `head`, not `reviewed`: the paths-unchanged pass above vouches
+    # for the item's own files, and says nothing about what main brought in with it. A PR
+    # whose base the forge did not report is treated as into the release ref — not knowing
+    # is not an exemption.
+    base_ref = str(pr.get("baseRefName") or "").strip()
+    if release and (not base_ref or base_ref == release):
+        refused = _scans_refusal(head, release, scans)
+        if refused:
+            return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                          reason=refused)
+        checked.append(f"{SCANS_PREDICATE}=head")
 
     if pr.get("isDraft"):
         try:

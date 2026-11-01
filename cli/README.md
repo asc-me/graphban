@@ -115,7 +115,7 @@ project is not a mistake anybody notices quickly.
 `setup` mints a project-scoped credential, writes the `graphban` and `gbfleet` MCP entries
 into every parent harness that would actually read them, stores that key next to the login
 session (a `gb_sk_…`, never the refresh token), installs the supervisor if it is missing,
-drops the delegation skill into `.claude/skills/`, and then **verifies** rather than
+drops the shipped skills into `.claude/skills/` and `.agents/skills/`, and then **verifies** rather than
 asserting: it asks the new credential what it can actually see. Restart the session that will
 call `delegate`/`spawn` afterwards — MCP servers are read at startup.
 
@@ -171,6 +171,34 @@ Two things it will not do. It does not install Swamp, because that install pipes
 script into a shell. And it never writes the gate key into an MCP config: `gban setup`'s agent
 key must not carry `gate`, or the agent doing the work attests its own completion — which
 fails silently, since a gate that always says yes looks exactly like a gate that held.
+
+## `gban stack map`
+
+```bash
+gban stack map --dry-run
+gban stack map --project <id>
+```
+
+Reads this checkout and posts one app-topology record to `POST /api/platform/stack/app`.
+`--dry-run` prints that record and posts nothing; it needs no server and no key.
+Two runs of the same commit print the same JSON. There is no timestamp in it.
+
+What it reads:
+
+- Compose files (`compose.yml`, `docker-compose.yml`, and the `compose.*` / `docker-compose.*` variants): a service with `build` is a deployable, a service with only `image` is infrastructure, and `depends_on` is an edge. `environment` contributes variable **names** and, when a value is a literal URL, the bare host.
+- Dockerfiles (`Dockerfile`, `Dockerfile.*`, `*.Dockerfile`), for the deployable they sit in and for a `FROM` image the table knows.
+- Dependency manifests (`package.json`, `pyproject.toml`, `requirements*.txt`, `go.mod`, `Cargo.toml`, `Gemfile`). Every `package.json` and `Cargo.toml` is a component named from the manifest's `name`. The known-SDK table adds edges; it is not what decides whether the component exists. `file:` and `workspace:` dependencies (and a Cargo `path` or `workspace = true`) are internal edges. Other manifests still become a component only when a dependency hits the table, and that edge is attributed to the component whose directory contains the file.
+- Deploy manifests (`vercel.json`, `railway.json`, `railway.toml`, `fly.toml`, `netlify.toml`, `render.yaml`) are a platform node. The file body is not stored.
+- `.env.example` only. A real `.env` is not a template and is not opened. A commented `KEY=` is read and the edge is `state: documented` rather than `set`. `*_TOKEN`, `*_CLIENT_ID`, and `*_CLIENT_SECRET` count, and so do `*_BASE` and `*_ISSUER` when the value is a URL. A passphrase (`AUTH_SECRET`, `ENCRYPTION_KEY`) is not an edge unless a table row names it. Values stay out of the record.
+- Source files are not scanned. There is no source-HTTP pass in this command. stderr always prints a coverage line: files read, files that produced nothing, commented template keys skipped, and that source was not scanned. Exit 0 means the record was built.
+
+The known-SDK table ships at `cli/src/gban/data/stack_sdks.toml` and is versioned with `gban`. A checkout may add rows in `.graphban/stack-sdks.toml` (same shape); those rows are consulted first.
+
+Compose is parsed by a subset, not by PyYAML: block mappings and lists, single-line `[...]` / `{...}` flow, and `|` / `>` scalars. Anchors and aliases are not expanded (`*name` stays text). A `<<` merge key is ignored. A file the subset cannot read is skipped with a warning on stderr; the rest of the tree is still mapped.
+
+Env values are never stored and never posted. A host taken from a URL is the bare host (`api.stripe.com`), because the posted shape rejects any string containing `://`. An image the table does not know is infrastructure named after the **compose service**, kind `unclassified image` — the image string is not stored. A `depends_on`, `external: true`, or `extends.file` that names something this file does not define becomes an `unresolved` node. It is not dropped and it is not a failure.
+
+A real post needs a git commit (there is nothing to send for a repo with no HEAD) and a project-write API key: `$GBFLEET_API_KEY`, then `$GRAPHBAN_API_KEY`, then the key `gban setup` stored for this project. The login session is a different credential and is not sent. Pass `--project` (or `$GRAPHBAN_PROJECT`) so the record names the project; without one, `--dry-run` still prints and a post is refused.
 
 ## `gban login` wants a real terminal
 

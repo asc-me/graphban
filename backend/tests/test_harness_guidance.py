@@ -31,7 +31,7 @@ def test_guidance_endpoint_returns_rules_routing_and_fleet_status(client, auth, 
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["project_id"] == proj
-    assert len(body["grading_rules"]) == 6
+    assert len(body["grading_rules"]) == 7
     assert body["grading_rules"][1]["thresholds"]["max_rate"] == 0.25
     assert "routing" in body
     assert "generation_stamp" in body

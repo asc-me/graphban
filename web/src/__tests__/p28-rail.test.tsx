@@ -33,6 +33,7 @@ vi.mock("@/lib/api", () => ({
     projects: vi.fn(async () => [project]),
     counts: vi.fn(async () => ({
       items: 41, items_in_progress: 3, requests: 7, review: 5, triage_new: 4, lessons_published: 6,
+      items_open: 41, requests_untriaged: 7, code_nodes: 2184, mcp_tools: 24, fleet_agents: 3, outposts: 2, live_agents: 2,
     })),
     // Collections the shell chrome asks for. Empty on purpose: the redirect tests assert on
     // where the URL landed, and a populated palette/sidebar only adds noise around it.
@@ -106,17 +107,21 @@ describe("P28 self-host rail", () => {
     expect(await screen.findByText("41")).toBeInTheDocument();
   });
 
-  it("expands Build on click without leaving the current page", async () => {
+  it("folds Build out inline, and Plan up, without leaving the current page", async () => {
     const user = userEvent.setup();
     wrap(<LeftNav />, "/tracker");
     await screen.findByText("Tracker");
     await user.click(screen.getByRole("button", { name: "Build" }));
-    expect(await screen.findByText("Code graph")).toBeInTheDocument();
-    expect(screen.getByText("Fleet.v2")).toBeInTheDocument();
-    expect(screen.getByText("Fleet.v1")).toBeInTheDocument();
-    expect(screen.getByText("Outposts")).toBeInTheDocument();
-    expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
-    // A header is a disclosure, not a link: opening Build must not move you off /tracker.
+    const menu = document.getElementById("nav-build")!;
+    expect(menu).toHaveAttribute("data-inline", "open");
+    expect(within(menu).getByRole("link", { name: /Code graph/ })).toBeInTheDocument();
+    expect(within(menu).getByRole("link", { name: /Fleet/ })).toBeInTheDocument();
+    expect(within(menu).queryByText("Fleet.v1")).not.toBeInTheDocument();
+    expect(within(menu).getByRole("link", { name: /Outposts/ })).toBeInTheDocument();
+    // One section at a time (GRPH-1222): Plan folds up even though it owns the page.
+    expect(document.getElementById("nav-plan")).toHaveAttribute("data-inline", "closed");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Opening a section never navigates: Build must not move you off /tracker.
     expect(screen.getByTestId("here")).toHaveTextContent("/tracker");
   });
 
@@ -125,10 +130,12 @@ describe("P28 self-host rail", () => {
     wrap(<LeftNav />, "/tracker");
     await screen.findByText("Tracker");
     await user.click(screen.getByRole("button", { name: "Plan" }));
-    expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
+    // The rows stay mounted to animate shut, but inert and hidden from assistive tech.
+    expect(screen.queryByRole("link", { name: /^Tracker/ })).toBeNull();
+    expect(document.getElementById("nav-plan")).toHaveAttribute("inert");
     expect(screen.getByRole("button", { name: "Plan" })).toHaveAttribute("aria-expanded", "false");
     await user.click(screen.getByRole("button", { name: "Plan" }));
-    expect(screen.getByText("Tracker")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /^Tracker/ })).toBeInTheDocument();
     expect(screen.getByTestId("here")).toHaveTextContent("/tracker");
   });
 
@@ -137,11 +144,12 @@ describe("P28 self-host rail", () => {
     wrap(<LeftNav />, "/tracker");
     await screen.findByText("Tracker");
     await user.click(screen.getByRole("button", { name: "Observe" }));
-    expect(screen.getByText("Activity")).toBeInTheDocument();
-    // Following a child link changes the route, and the rail follows the route.
-    await user.click(screen.getByText("Activity"));
+    await user.click(within(document.getElementById("nav-observe")!).getByRole("link", { name: /Activity/ }));
+    // Choosing a page changes the route, and the sidebar follows the route.
     expect(screen.getByTestId("here")).toHaveTextContent("/activity");
     expect(screen.getByRole("button", { name: "Observe" })).toHaveAttribute("aria-expanded", "true");
+    expect(document.getElementById("nav-observe")).toHaveAttribute("data-inline", "open");
+    expect(document.getElementById("nav-plan")).toHaveAttribute("data-inline", "closed");
   });
 
   it("shows Memory and Lessons under Observe on /lessons (children are collapsed on /tracker)", async () => {
@@ -159,41 +167,13 @@ describe("P28 self-host rail", () => {
     expect(screen.getByText("Lessons")).toBeInTheDocument();
   });
 
-  it("keeps Lessons in OBSERVE next to Memory, and keeps headers non-navigating", () => {
+  it("keeps headers non-navigating", () => {
     const sources = import.meta.glob("../components/shell/LeftNav.tsx", {
       query: "?raw",
       import: "default",
       eager: true,
     }) as Record<string, string>;
     const src = Object.values(sources)[0] ?? "";
-    const build = src.match(/const BUILD = \[[\s\S]*?\];/)?.[0] ?? "";
-    expect(build).toContain('to: "/fleet.v2"');
-    expect(build).toContain('to: "/fleet.v1"');
-    expect(build).not.toContain('to: "/fleet",');
-
-    const observe = src.match(/const OBSERVE = \[[\s\S]*?\];/)?.[0] ?? "";
-    expect(observe).toContain('to: "/lessons"');
-    expect(observe).toContain('to: "/memory-review"');
-    expect(observe).toContain('to: "/live"');
-    expect(observe).toContain('to: "/activity"');
-
-    const hostedObserve = src.match(/const HOSTED_OBSERVE = \[[\s\S]*?\];/)?.[0] ?? "";
-    const mem = hostedObserve.indexOf('to: "memory-review"');
-    const les = hostedObserve.indexOf('to: "lessons"');
-    expect(mem).toBeGreaterThan(-1);
-    expect(les).toBeGreaterThan(mem);
-    expect(hostedObserve.slice(mem, les).match(/to:/g)?.length).toBe(2);
-
-    const act = hostedObserve.indexOf('to: "activity"');
-    const live = hostedObserve.indexOf('to: "live"');
-    expect(act).toBeGreaterThan(-1);
-    expect(live).toBeGreaterThan(act);
-    expect(hostedObserve.slice(act, live).match(/to:/g)?.length).toBe(1);
-
-    const harness = hostedObserve.indexOf('to: "harness"');
-    expect(harness).toBeGreaterThan(live);
-    expect(hostedObserve.slice(live, harness).match(/to:/g)?.length).toBe(1);
-
     // A section header expands; it never navigates. No default landing page may creep back in.
     const header = src.match(/function SectionHeader\(\{[\s\S]*?\n\}/)?.[0] ?? "";
     expect(header).toContain("onToggle");
@@ -203,11 +183,11 @@ describe("P28 self-host rail", () => {
 });
 
 describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
-  it("opens Plan on /p/CORE/tracker and shows Admin, Galaxy, Feedback Kit", async () => {
+  it("opens Plan on /p/CORE/tracker and shows Admin and Feedback Kit", async () => {
     wrap(<LeftNav hosted />, "/p/CORE/tracker");
     expect(await screen.findByText("Tracker")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Plan" })).toHaveAttribute("aria-expanded", "true");
-    const plan = document.getElementById("hosted-nav-plan");
+    const plan = document.getElementById("nav-plan");
     expect(plan).not.toBeNull();
     expect(within(plan!).getByText("Requests")).toBeInTheDocument();
     expect(within(plan!).getByText("Triage")).toBeInTheDocument();
@@ -219,11 +199,11 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     const dash = screen.getByRole("link", { name: "Dashboard" });
     expect(dash).toHaveAttribute("href", "/p/CORE");
     expect(dash).not.toHaveAttribute("aria-current");
-    expect(await screen.findByText("Users & access")).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Admin" })).toBeInTheDocument();
     expect(screen.getByText("Feedback Kit")).toBeInTheDocument();
-    expect(screen.getByText("Galaxy")).toBeInTheDocument();
-    // Build and Observe are collapsed — their children are not in the document.
-    expect(screen.queryByText("Code graph")).not.toBeInTheDocument();
+    // Build and Observe are folded up: their rows stay mounted to animate, but hidden.
+    expect(screen.queryByRole("link", { name: /Code graph/ })).toBeNull();
+    expect(document.getElementById("nav-build")).toHaveAttribute("inert");
     expect(screen.queryByText("Memory review")).not.toBeInTheDocument();
   });
 
@@ -232,14 +212,16 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     wrap(<LeftNav hosted />, "/p/CORE/tracker");
     await screen.findByText("Tracker");
     await user.click(screen.getByRole("button", { name: "Build" }));
-    expect(await screen.findByText("Code graph")).toBeInTheDocument();
-    expect(screen.getByText("MCP Tools")).toBeInTheDocument();
-    expect(screen.getByText("Fleet.v2")).toBeInTheDocument();
-    // Plan collapsed, Build expanded.
-    expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
+    const menu = document.getElementById("nav-build")!;
+    expect(within(menu).getByRole("link", { name: /Code graph/ })).toBeInTheDocument();
+    expect(within(menu).getByRole("link", { name: /MCP Tools/ })).toBeInTheDocument();
+    expect(within(menu).getByRole("link", { name: /Fleet/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-expanded", "true");
-    // Header click must not navigate — same trap as self-host (GRPH-P28 rev2).
+    // Opening must not navigate — same trap as self-host (GRPH-P28 rev2).
     expect(screen.getByTestId("here")).toHaveTextContent("/p/CORE/tracker");
+    await user.click(within(menu).getByRole("link", { name: /Code graph/ }));
+    expect(screen.getByTestId("here")).toHaveTextContent("/p/CORE/code");
+    expect(menu).toHaveAttribute("data-inline", "open");
   });
 
   it("opens the owning section when the route is in another group", async () => {
@@ -247,9 +229,9 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     expect(await screen.findByText("Activity")).toBeInTheDocument();
     expect(screen.getByText("Live")).toBeInTheDocument();
     expect(screen.getByText("Harness")).toBeInTheDocument();
-    expect(screen.getByText("Memory review")).toBeInTheDocument();
+    expect(screen.getByText("Memory")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Observe" })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Tracker/ })).toBeNull();
   });
 
   it("shows hosted Harness under Observe and Usage link in the footer", async () => {
@@ -259,42 +241,21 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     expect(screen.getByRole("link", { name: "Usage" })).toHaveAttribute("href", "/usage");
   });
 
-  it("keeps Admin and Galaxy in the hosted source (sabotage: deleting those rows must fail)", async () => {
+  it("sabotage: the Admin row and all three sections stay in the source", () => {
     const sources = import.meta.glob("../components/shell/LeftNav.tsx", {
       query: "?raw",
       import: "default",
       eager: true,
     }) as Record<string, string>;
     const src = Object.values(sources)[0] ?? "";
-    expect(src).toContain('label="Galaxy"');
-    expect(src).toContain('label="Users & access"');
-    expect(src).toContain("function HostedLeftNav");
-  });
-
-  it("sabotage: Plan, Build and Observe must exist in the hosted tree", async () => {
-    const sources = import.meta.glob("../components/shell/LeftNav.tsx", {
-      query: "?raw",
-      import: "default",
-      eager: true,
-    }) as Record<string, string>;
-    const src = Object.values(sources)[0] ?? "";
-    // The hosted render must use SectionHeader with all three labels — removing a group
-    // must fail these assertions, not silently produce a flat list.
-    const hostedFn = src.slice(src.indexOf("function HostedLeftNav"), src.indexOf("function SelfHostLeftNav"));
-    expect(hostedFn).toContain('label="Plan"');
-    expect(hostedFn).toContain('label="Build"');
-    expect(hostedFn).toContain('label="Observe"');
-    expect(hostedFn).toContain("HOSTED_PLAN");
-    expect(hostedFn).toContain("HOSTED_BUILD");
-    expect(hostedFn).toContain("HOSTED_OBSERVE");
+    expect(src).toContain('label="Admin"');
+    expect(src).toContain('key: "plan", label: "Plan"');
+    expect(src).toContain('key: "build", label: "Build"');
+    expect(src).toContain('key: "observe", label: "Observe"');
     // Dashboard sits above the sections, not inside Plan.
-    const plan = src.match(/const HOSTED_PLAN = \[[\s\S]*?\];/)?.[0] ?? "";
+    const plan = src.match(/key: "plan"[\s\S]*?\],\n  \}/)?.[0] ?? "";
     expect(plan).not.toContain("dashboard");
-    expect(plan.match(/label:/g)?.length).toBe(5);
-    const dash = hostedFn.indexOf('label="Dashboard"');
-    const planLabel = hostedFn.indexOf('label="Plan"');
-    expect(dash).toBeGreaterThan(-1);
-    expect(planLabel).toBeGreaterThan(dash);
+    expect(plan.match(/label:/g)?.length).toBe(6);
   });
 });
 
@@ -318,8 +279,8 @@ describe("P28 Home", () => {
     expect(jump).toHaveTextContent("12 nodes");
     expect(jump).toHaveTextContent("5 to review");
     expect(jump).toHaveTextContent("6 published");
-    expect(jump).toHaveTextContent("1 online");
-    expect(jump).toHaveTextContent("1 on now");
+    expect(jump).toHaveTextContent("2 online");
+    expect(jump).toHaveTextContent("2 on now");
   });
 
   it("wires jump tiles to flat self-host paths", async () => {
@@ -327,8 +288,8 @@ describe("P28 Home", () => {
     const jump = await screen.findByRole("region", { name: "Jump to" });
     expect(within(jump).getByRole("link", { name: /Tracker/ })).toHaveAttribute("href", "/tracker");
     expect(within(jump).getByRole("link", { name: /Triage/ })).toHaveAttribute("href", "/triage");
-    expect(within(jump).getByRole("link", { name: /^Memory/ })).toHaveAttribute("href", "/memory-review");
-    expect(within(jump).getByRole("link", { name: /Fleet/ })).toHaveAttribute("href", "/fleet.v1");
+    expect(within(jump).getByRole("link", { name: /^Memory/ })).toHaveAttribute("href", "/memory");
+    expect(within(jump).getByRole("link", { name: /Fleet/ })).toHaveAttribute("href", "/fleet");
     expect(within(jump).getByRole("link", { name: /Lessons/ })).toHaveAttribute("href", "/lessons");
     expect(within(jump).getByRole("link", { name: /^Live/ })).toHaveAttribute("href", "/live");
   });
@@ -384,7 +345,7 @@ describe("GRPH-1066 /dashboard is project home and the nav entry is current ther
     expect(dash).toHaveAttribute("aria-current", "page");
     // This page owns no section, so Plan stays closed. Jump tiles still link to Tracker.
     expect(screen.getByRole("button", { name: "Plan" })).toHaveAttribute("aria-expanded", "false");
-    expect(document.getElementById("hosted-nav-plan")).toBeNull();
+    expect(document.getElementById("nav-plan")).toHaveAttribute("data-inline", "closed");
   });
 
   it("hosted flat /dashboard resolves to the same home", async () => {

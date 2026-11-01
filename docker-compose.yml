@@ -32,6 +32,8 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-agentledger}:${POSTGRES_PASSWORD:-agentledger}@db:5432/${POSTGRES_DB:-agentledger}
       GIT_SHA: ${GIT_SHA:-unknown}
+      # uvicorn workers; 0 = min(4, cpu_count), 1 = single process (GRPH-1241).
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-0}
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me-in-production-0123456789abcdef}
       # One proxy in front (nginx), so the rate limiter reads one hop from the RIGHT of
       # X-Forwarded-For — what nginx actually observed, rather than the client-supplied

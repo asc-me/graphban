@@ -11,7 +11,7 @@ import { buildScene, type DrawScene } from "../../src/features/code/canvas/scene
 import { diffBitmaps, createWebGL } from "../../src/features/code/canvas/webgl";
 import type { Renderer } from "../../src/features/code/canvas/renderer";
 import { fitCamera, framePoint } from "../../src/features/code/canvas/camera";
-import { clustersLayout, hitTest } from "../../src/lib/graph/bigLayout";
+import { clustersLayout, hitTest, type ClusterLayout } from "../../src/lib/graph/bigLayout";
 import { dense, sparse, type BigMap } from "../../src/lib/graph/__fixtures__/bigMap";
 
 export interface BenchResult {
@@ -80,18 +80,25 @@ function bench(name: "sparse" | "dense", opts?: { renderer?: "webgl" | "canvas2d
   renderer.draw(first);
   const paintMs = performance.now() - t0;
 
+  // A pan frame on a shared CI runner can stall for reasons that are not the
+  // renderer. Warm-up frames are drawn and thrown away, and enough frames are
+  // timed that p95 is not just the second-slowest one.
+  const warmup = 5;
+  const timed = 120;
   const samples: number[] = [];
-  for (let i = 0; i < 40; i++) {
-    // The Canvas 2D budget pans at a fixed zoom, the same walk the S2 bench
-    // already measured. An explicit zoom (dense WebGL at 2.6×) also steps ±0.05,
-    // which stays inside the renderer's 8% bake window so the pan does not
-    // re-upload instance buffers.
+  for (let n = 0; n < warmup + timed; n++) {
+    // The walk repeats the same 40 cameras, so a longer run does not pan
+    // further. The Canvas 2D budget pans at a fixed zoom, the same walk the S2
+    // bench already measured. An explicit zoom (dense WebGL at 2.6×) also steps
+    // ±0.05, which stays inside the renderer's 8% bake window so the pan does
+    // not re-upload instance buffers.
+    const i = n % 40;
     const cam = opts?.zoom != null
       ? { x: origin.x + (i % 5) * 6, y: origin.y + (i % 4) * 4, k: zoom + (i % 2) * 0.05 }
       : { x: origin.x + (i + 1) * 4, y: origin.y + (i + 1) * 2, k: zoom };
     const t = performance.now();
     renderer.draw(buildScene(layout, { ...base, camera: cam }));
-    samples.push(performance.now() - t);
+    if (n >= warmup) samples.push(performance.now() - t);
   }
   samples.sort((a, b) => a - b);
   const panP95 = samples[Math.min(samples.length - 1, Math.floor(samples.length * 0.95))];
@@ -171,6 +178,10 @@ export interface PixelDiff {
   centerHit: number;
   centerN: number;
   zoom: number;
+  /** Same thresholds, on a scene whose bottom layer is one unpredicted cloud. */
+  cloudMae: number;
+  cloudInk2d: number;
+  cloudInkGl: number;
 }
 
 function readWebGL(canvas: HTMLCanvasElement): Uint8ClampedArray {
@@ -183,10 +194,72 @@ function readWebGL(canvas: HTMLCanvasElement): Uint8ClampedArray {
   const out = new Uint8ClampedArray(w * h * 4);
   const row = w * 4;
   for (let y = 0; y < h; y++) out.set(buf.subarray((h - 1 - y) * row, (h - y) * row), y * row);
+  // The WebGL buffer is premultiplied. Canvas 2D getImageData is straight,
+  // so undo the multiply before the two rasters are compared. Opaque and
+  // empty pixels are already straight.
+  for (let i = 0; i < out.length; i += 4) {
+    const a = out[i + 3];
+    if (a === 0 || a === 255) continue;
+    out[i] = Math.min(255, Math.round((out[i] * 255) / a));
+    out[i + 1] = Math.min(255, Math.round((out[i + 1] * 255) / a));
+    out[i + 2] = Math.min(255, Math.round((out[i + 2] * 255) / a));
+  }
   return out;
 }
 
-/** `sparse` through both renderers. Node centres and a coarse grid have to agree. */
+function paintPair(scene: DrawScene): { mae: number; ink2d: number; inkGl: number; img2: Uint8ClampedArray; imgG: Uint8ClampedArray; canvas: HTMLCanvasElement } {
+  const c2 = document.createElement("canvas");
+  const cg = document.createElement("canvas");
+  document.body.append(c2, cg);
+  const a = createCanvas2D(c2);
+  const b = createWebGL(cg);
+  if (!a || !b) throw new Error("both renderers are required for the pixel diff");
+  a.draw(scene);
+  b.draw(scene);
+  const img2 = c2.getContext("2d")!.getImageData(0, 0, c2.width, c2.height).data;
+  const imgG = readWebGL(cg);
+  const diff = diffBitmaps(img2, imgG, c2.width, c2.height);
+  a.destroy();
+  b.destroy();
+  c2.remove();
+  cg.remove();
+  return { mae: diff.blockMae, ink2d: diff.inkA, inkGl: diff.inkB, img2, imgG, canvas: c2 };
+}
+
+/** One soft cloud, no dashes. Dashes are shared segments and are not what this diff is for. */
+function cloudProbe(): DrawScene {
+  const layout: ClusterLayout = {
+    ids: ["n.py"],
+    x: Float32Array.from([40]),
+    y: Float32Array.from([30]),
+    r: Float32Array.from([6]),
+    kinds: ["file"],
+    colors: ["#7ca2ff"],
+    areaOf: ["a"],
+    areas: [],
+    bundles: [],
+    edges: [],
+    grid: {},
+    depth: null,
+    nodeCount: 1,
+  };
+  const scene = buildScene(layout, {
+    width: 480,
+    height: 320,
+    dpr: 1,
+    camera: { x: 200, y: 130, k: 1 },
+    alpha: Uint8Array.from([255]),
+    types: null,
+    isolate: null,
+    selectedId: null,
+    hoverId: null,
+    clouds: [{ x: 40, y: 30, r: 36, color: "#c6f24e", userId: "ada", predicted: false, alpha: 0.16 }],
+  });
+  // The node would count as ink on its own. This probe is the cloud alone.
+  return { ...scene, nodes: [], strokes: [], rings: [], glow: [] };
+}
+
+/** `sparse` through both renderers, then one presence cloud. Node centres and a coarse grid have to agree. */
 function pixelDiff(): PixelDiff {
   const map = sparse;
   const nodes = map.nodes.map((n) => ({ id: n.id, path: n.path, kind: n.kind }));
@@ -212,17 +285,10 @@ function pixelDiff(): PixelDiff {
     zoom = Math.min(2.4, 3.5 / Math.max(med, 0.25));
     scene = buildScene(layout, { ...base, camera: { x: 20, y: 16, k: zoom } });
   }
-  const c2 = document.createElement("canvas");
-  const cg = document.createElement("canvas");
-  document.body.append(c2, cg);
-  const a = createCanvas2D(c2);
-  const b = createWebGL(cg);
-  if (!a || !b) throw new Error("both renderers are required for the pixel diff");
-  a.draw(scene);
-  b.draw(scene);
-  const img2 = c2.getContext("2d")!.getImageData(0, 0, c2.width, c2.height).data;
-  const imgG = readWebGL(cg);
-  const diff = diffBitmaps(img2, imgG, c2.width, c2.height);
+  const painted = paintPair(scene);
+  const img2 = painted.img2;
+  const imgG = painted.imgG;
+  const c2 = painted.canvas;
   let centerHit = 0;
   let centerN = 0;
   const w = c2.width;
@@ -243,17 +309,17 @@ function pixelDiff(): PixelDiff {
       centerHit += 1;
     }
   }
-  a.destroy();
-  b.destroy();
-  c2.remove();
-  cg.remove();
+  const cloud = paintPair(cloudProbe());
   return {
-    blockMae: diff.blockMae,
-    ink2d: diff.inkA,
-    inkGl: diff.inkB,
+    blockMae: painted.mae,
+    ink2d: painted.ink2d,
+    inkGl: painted.inkGl,
     centerHit,
     centerN,
     zoom,
+    cloudMae: cloud.mae,
+    cloudInk2d: cloud.ink2d,
+    cloudInkGl: cloud.inkGl,
   };
 }
 

@@ -61,7 +61,10 @@ function user(over: Partial<LiveUser> = {}): LiveUser {
 }
 
 function emptyBoard(over: Partial<LiveBoard> = {}): LiveBoard {
+  const onlineAgents = (over.users ?? []).reduce(
+    (n, u) => n + u.agents.filter((a) => a.state !== "offline").length, 0);
   return {
+    online_agents: onlineAgents,
     served_at: "2026-09-02T12:00:10Z",
     heartbeat_interval_seconds: 50,
     presence_ttl_seconds: 150,
@@ -98,6 +101,7 @@ vi.mock("@/lib/api", () => ({
       return board;
     }),
     liveFeed: vi.fn(async () => feed),
+    liveProjectFeed: vi.fn(async () => feed),
     fleet: vi.fn(async () => fleet),
   },
 }));
@@ -157,7 +161,7 @@ describe("Live board", () => {
     renderLive();
     expect(await screen.findByText("No agents on this project yet")).toBeInTheDocument();
     expect(screen.getByText(/Live shows who is working here right now/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Open Fleet\.v1/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Open Fleet/ })).toBeInTheDocument();
   });
 
   it("renders a row unchanged whether the delegations field is absent, null or present (PRD-35 PR 1)", async () => {
@@ -260,6 +264,26 @@ describe("Live board", () => {
     expect(boardEl.getByText("orphan-branch")).toBeInTheDocument();
     // The header counts still come from the server: 1 online of 6.
     expect(boardEl.getByText("1/6")).toBeInTheDocument();
+  });
+
+  it("shows a quarantined agent as offline with a quarantined marker, not online (GRPH-1239)", async () => {
+    const a1 = agent({ id: "a1", key: "CORE-A1", label: "busy-one", state: "working" });
+    const a2 = agent({ id: "a2", key: "CORE-A2", label: "busy-two", state: "idle" });
+    const q = agent({
+      id: "q1", key: "CORE-Q1", label: "grok-quarantined", state: "offline", quarantined: true,
+      holdings: [{ id: "CORE-9", title: "held work", status: "in_progress", phase: "building", phase_basis: "x", pr: { state: "unrecorded" } }],
+    });
+    board = emptyBoard({
+      total_agents: 3,
+      users: [user({ online: 2, total: 3, agents: [a1, a2, q] })],
+    });
+    renderLive();
+    const boardEl = await agentBoard();
+    expect(await screen.findByTestId("live-online")).toHaveTextContent("2 online");
+    expect(boardEl.getByText("2/3")).toBeInTheDocument();
+    expect(boardEl.getByText("grok-quarantined")).toBeInTheDocument();
+    expect(boardEl.getByText("quarantined")).toBeInTheDocument();
+    expect(boardEl.queryAllByText("quarantined")).toHaveLength(1);
   });
 
   it("does not render a collapse when every offline agent holds work", async () => {
@@ -437,7 +461,7 @@ describe("Live board", () => {
     expect(boardEl.getByText("declared on item, not reserved")).toBeInTheDocument();
     expect(boardEl.queryByText(/^leased$/)).not.toBeInTheDocument();
     expect(screen.getByText("1 worker")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Fleet.v1" })).toHaveAttribute("href", "/fleet.v1");
+    expect(screen.getByRole("link", { name: "Fleet" })).toHaveAttribute("href", "/fleet");
   });
 
   // ---- PRD-34 PR 1: the feed. Silence is a word; sources are named; nothing is guessed. ----
@@ -546,7 +570,8 @@ describe("Live board", () => {
     renderLive();
     const boardEl = await agentBoard();
     fireEvent.click(boardEl.getByRole("button", { expanded: false }));
-    expect(await screen.findByText("No calls recorded in the last 7 days.")).toBeInTheDocument();
+    // The board's own feed and the project-wide stream both say it.
+    expect((await screen.findAllByText(/No calls recorded in the last 7 days/)).length).toBeGreaterThan(0);
   });
 
   it("labels reported files as a claim, not a lease, and leaves file_state alone", async () => {
@@ -642,10 +667,76 @@ describe("Live board", () => {
     renderLive();
     const boardEl = await agentBoard();
     fireEvent.click(boardEl.getByRole("button", { expanded: false }));
-    const feedFilter = within(boardEl.getByRole("group", { name: "feed filter" }));
+    const feedFilter = within(await boardEl.findByRole("group", { name: "feed filter" }));
     fireEvent.click(feedFilter.getByRole("button", { name: "failures" }));
     expect(boardEl.getByText("No failures in this feed.")).toBeInTheDocument();
     expect(boardEl.queryByRole("list", { name: "feed" })).not.toBeInTheDocument();
+  });
+
+  // ---- GRPH-1231: who is on now ----
+
+  it("lists only online agents in the strip and folds the rest into an offline count", async () => {
+    const on = Array.from({ length: 3 }, (_, i) => agent({ id: `on${i}`, label: `on-${i}` }));
+    const off = Array.from({ length: 50 }, (_, i) =>
+      agent({ id: `off${i}`, label: `off-${i}`, state: "offline", last_seen_at: "2026-08-01T12:00:00Z" }));
+    board = emptyBoard({
+      total_agents: 53,
+      users: [user({ online: 3, total: 53, agents: [...on, ...off] })],
+      user_counts: [{ user_id: "u_blair", label: "Blair", online: 3, total: 53 }],
+    });
+    renderLive();
+    const strip = within(await screen.findByRole("list", { name: "Agent presence" }));
+    expect(strip.getAllByRole("listitem")).toHaveLength(3);
+    expect(strip.getByText("50 offline")).toBeInTheDocument();
+    expect(screen.getByTestId("live-online")).toHaveTextContent("3 online");
+
+    fireEvent.click(strip.getByRole("button", { name: "show offline" }));
+    expect(strip.getAllByRole("listitem")).toHaveLength(53);
+    fireEvent.click(strip.getByRole("button", { name: "hide offline" }));
+    expect(strip.getAllByRole("listitem")).toHaveLength(3);
+  });
+
+  it("counts offline agents on the project, not in the capped payload, and says when it cannot list them all", async () => {
+    const on = Array.from({ length: 3 }, (_, i) => agent({ id: `on${i}`, label: `on-${i}` }));
+    const off = Array.from({ length: 197 }, (_, i) =>
+      agent({ id: `off${i}`, label: `off-${i}`, state: "offline", last_seen_at: "2026-08-01T12:00:00Z" }));
+    board = emptyBoard({
+      truncated: true,
+      total_agents: 6170,
+      online_agents: 3,
+      users: [user({ online: 3, total: 6170, agents: [...on, ...off] })],
+      user_counts: [{ user_id: "u_blair", label: "Blair", online: 3, total: 6170 }],
+    });
+    renderLive();
+    const strip = within(await screen.findByRole("list", { name: "Agent presence" }));
+    expect(strip.getAllByRole("listitem")).toHaveLength(3);
+    expect(strip.getByText("6167 offline")).toBeInTheDocument();
+    expect(strip.queryByTestId("offline-partial")).not.toBeInTheDocument();
+
+    fireEvent.click(strip.getByRole("button", { name: "show offline" }));
+    expect(strip.getAllByRole("listitem")).toHaveLength(200);
+    expect(strip.getByTestId("offline-partial")).toHaveTextContent("listing 197 of them");
+  });
+
+  it("shows the project-wide stream with calls from several agents when none is focused", async () => {
+    board = emptyBoard({
+      total_agents: 2,
+      users: [user({ online: 2, total: 2, agents: [agent({ id: "a1" }), agent({ id: "a2", label: "second" })] })],
+      user_counts: [{ user_id: "u_blair", label: "Blair", online: 2, total: 2 }],
+    });
+    feed = {
+      served_at: "2026-09-02T12:00:10Z", retention_days: 7, state: "ok",
+      rows: [
+        { id: 2, at: "2026-09-02T12:00:09Z", source: "observed", tool: "search_code", target: "lease", ok: true, write: false, agent_id: "a2", agent_label: "second" },
+        { id: 1, at: "2026-09-02T12:00:08Z", source: "observed", tool: "update_item", target: "CORE-1", ok: true, write: true, agent_id: "a1", agent_label: "clustered-one" },
+      ],
+    };
+    renderLive();
+    const stream = within(await screen.findByRole("list", { name: "stream" }));
+    expect(stream.getByText("search_code")).toBeInTheDocument();
+    expect(stream.getByText("update_item")).toBeInTheDocument();
+    expect(stream.getByText("second")).toBeInTheDocument();
+    expect(stream.getByText("clustered-one")).toBeInTheDocument();
   });
 
   // ---- PRD-47 S11: planner desk, ticket lanes, stream, KPIs (GRPH-962) ----

@@ -13,6 +13,8 @@ import { dense, sparse } from "./__fixtures__/bigMap";
 import workerSrc from "./layout.worker.ts?raw";
 import {
   clustersLayout,
+  driftOrbit,
+  fitTargets,
   GRID_CELL,
   HIT_WINDOW,
   hitTest,
@@ -21,8 +23,11 @@ import {
   layoutRunCount,
   mapLayout,
   nodeRadius,
+  orbitAngle,
   orbitLayout,
   ORBIT_BUNDLE_CAP,
+  ORBIT_PERIOD_S,
+  ORBIT_SWAY_MAX,
   resetLayoutRuns,
   WORLD_H,
   WORLD_W,
@@ -742,6 +747,100 @@ describe("map and orbit layouts", () => {
 
     const focused = buildScene(orbit, sceneOpts(1, { hoverId: "m00/f0" }));
     expect(focused.strokes.length).toBeGreaterThan(30);
+  });
+});
+
+describe("orbit drift", () => {
+  it("moves each area round its ring and keeps its files inside it", () => {
+    const orbit = orbitLayout(chain());
+    const rings = orbit.orbitRings ?? [];
+    const moved = driftOrbit(orbit, 30);
+    expect(moved).not.toBe(orbit);
+    const before = new Map(orbit.areas.map((a) => [a.id, a]));
+    let travelled = 0;
+    for (const ring of rings) {
+      for (const id of ring.areaIds) {
+        const a = before.get(id)!;
+        const b = moved.areas.find((h) => h.id === id)!;
+        // It travels along the ring, swaying no further off it than ORBIT_SWAY_MAX.
+        const off = Math.hypot(b.cx - ring.cx, b.cy - ring.cy) - Math.hypot(a.cx - ring.cx, a.cy - ring.cy);
+        expect(Math.abs(off)).toBeLessThanOrEqual(ORBIT_SWAY_MAX + 1e-3);
+        travelled += Math.hypot(b.cx - a.cx, b.cy - a.cy);
+      }
+    }
+    expect(travelled).toBeGreaterThan(1);
+    const hullOf = new Map(moved.areas.map((a) => [a.id, a]));
+    const oldHull = new Map(orbit.areas.map((a) => [a.id, a]));
+    for (let i = 0; i < moved.ids.length; i++) {
+      const h = hullOf.get(moved.areaOf[i])!;
+      const o = oldHull.get(orbit.areaOf[i])!;
+      expect(moved.x[i] - h.cx).toBeCloseTo(orbit.x[i] - o.cx, 3);
+      expect(moved.y[i] - h.cy).toBeCloseTo(orbit.y[i] - o.cy, 3);
+    }
+    // Bundles curve between the moved hulls, not the packed ones.
+    for (const b of moved.bundles) {
+      expect(b.hullA).toBe(hullOf.get(b.a));
+      expect(b.hullB).toBe(hullOf.get(b.b));
+    }
+  });
+
+  it("sways areas that share one ring out of step, so links between them flex", () => {
+    const orbit = orbitLayout(chain());
+    const ring = (orbit.orbitRings ?? []).find((r) => r.areaIds.length >= 2 && r.r > 0);
+    expect(ring).toBeTruthy();
+    const dist = (lay: ClusterLayout, id: string) => {
+      const h = lay.areas.find((a) => a.id === id)!;
+      return Math.hypot(h.cx - ring!.cx, h.cy - ring!.cy);
+    };
+    const [p, q] = ring!.areaIds;
+    const span = (lay: ClusterLayout) => {
+      const a = lay.areas.find((h) => h.id === p)!;
+      const b = lay.areas.find((h) => h.id === q)!;
+      return Math.hypot(a.cx - b.cx, a.cy - b.cy);
+    };
+    const at = [3, 9, 15].map((t) => driftOrbit(orbit, t));
+    // A rigid turn would keep every pair the same distance apart.
+    expect(Math.abs(span(at[0]) - span(at[1])) + Math.abs(span(at[1]) - span(at[2]))).toBeGreaterThan(1);
+    expect(dist(at[0], p) - dist(orbit, p)).not.toBeCloseTo(dist(at[0], q) - dist(orbit, q), 3);
+  });
+
+  it("hit-tests a file where it has drifted to", () => {
+    const orbit = orbitLayout(chain());
+    const moved = driftOrbit(orbit, 45);
+    const i = moved.ids.findIndex((_, j) => Math.hypot(moved.x[j] - orbit.x[j], moved.y[j] - orbit.y[j]) > 20);
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(hitTest(moved, moved.x[i], moved.y[i])).toBe(moved.ids[i]);
+  });
+
+  it("turns neighbouring rings opposite ways, outer rings slower", () => {
+    expect(orbitAngle(0, ORBIT_PERIOD_S)).toBeCloseTo(Math.PI * 2, 6);
+    expect(Math.sign(orbitAngle(0, 10))).toBe(1);
+    expect(Math.sign(orbitAngle(1, 10))).toBe(-1);
+    expect(Math.abs(orbitAngle(2, 10))).toBeLessThan(Math.abs(orbitAngle(1, 10)));
+  });
+
+  it("fits the whole circle each ring's areas travel", () => {
+    const orbit = orbitLayout(chain());
+    const targets = fitTargets(orbit, {});
+    const reach = (pts: { x: number; y: number; r: number }[], t: number) => {
+      const moved = driftOrbit(orbit, t);
+      return moved.areas.every((a) =>
+        pts.some((p) => Math.hypot(a.cx - p.x, a.cy - p.y) + a.r <= p.r + 1e-3),
+      );
+    };
+    // Some drifted area leaves the areas' own start circles, but stays inside the fit.
+    const startOnly = orbit.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r }));
+    expect([20, 40, 60, 80].some((t) => !reach(startOnly, t))).toBe(true);
+    for (const t of [20, 40, 60, 80]) expect(reach(targets, t)).toBe(true);
+  });
+
+  it("leaves other layouts, and no drift, as the same object", () => {
+    const orbit = orbitLayout(chain());
+    expect(driftOrbit(orbit, 0)).toBe(orbit);
+    const clusters = clustersLayout(chain());
+    expect(driftOrbit(clusters, 30)).toBe(clusters);
+    const map = mapLayout(chain());
+    expect(driftOrbit(map, 30)).toBe(map);
   });
 });
 

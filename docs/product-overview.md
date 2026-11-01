@@ -25,7 +25,7 @@ the **[design philosophy](design-philosophy.md)**.
 - Provide a single source of truth for dev items, decisions, and feedback.
 - Let AI agents deeply understand and act on project context via MCP.
 - Reduce context-switching and knowledge loss across projects.
-- Dogfood-able daily; a compelling hosted SaaS tier later.
+- Dogfood-able daily, self-hosted and on the hosted service.
 
 ## Target users
 
@@ -52,7 +52,7 @@ A dark-only, keyboard-friendly web app with these areas (each has its own guide)
   user that made it.
 - **Settings / Profile** — switch AI providers, connect integrations, configure the project,
   manage members and API keys.
-- **Native MCP** — 63 tools over a JSON-RPC endpoint, authenticated by scoped API keys, with
+- **Native MCP** — 66 tools over a JSON-RPC endpoint, authenticated by scoped API keys, with
   a typed error taxonomy (every failure carries a machine code + repair hint).
 
 ## Non-goals (current)
@@ -61,7 +61,6 @@ A dark-only, keyboard-friendly web app with these areas (each has its own guide)
 - Advanced analytics / time tracking.
 - Native mobile apps (responsive web first).
 - Enterprise SSO / on-prem enterprise features.
-- A hosted multi-tenant service (a later, additive layer — see the implementation plan).
 
 ## Technical stack
 
@@ -70,7 +69,7 @@ A dark-only, keyboard-friendly web app with these areas (each has its own guide)
 - **Database** — PostgreSQL + pgvector (SQLite fallback for tests / zero-infra dev).
 - **AI** — provider-agnostic (offline stub by default; local Ollama or cloud Claude/OpenAI).
 - **Auth** — JWT for the web app + scoped API keys for MCP/agents.
-- **Deployment** — Docker Compose for one-command self-host.
+- **Deployment** — Docker Compose for one-command self-host. The hosted multi-tenant service is a separate deployment ([Railway](deploy-railway.md)).
 
 ## Licensing & business model
 
@@ -79,4 +78,4 @@ A dark-only, keyboard-friendly web app with these areas (each has its own guide)
   reselling the software or offering it as a hosted/SaaS service that substitutes for it — is
   not permitted without a commercial license. Each version converts to Apache-2.0 two years
   after release.
-- **Hosted tiers (future, TBD)** — free (limited projects/memory), Pro, Team/Enterprise.
+- **Hosted plans** — `free`, `pro`, `team`, and `enterprise` (`backend/app/services/quotas.py`). Quotas apply when hosted mode is on. Assigning a plan is an operator action on the control plane. Self-host does not require billing.

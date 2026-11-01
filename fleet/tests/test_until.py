@@ -70,8 +70,14 @@ def _clients(
     bound_refused: bool = False,
     sticky_clusters: bool = False,
     gitops: dict | None = None,
+    drop_delegated: bool = False,
+    prds: dict | None = None,
 ):
-    """Planner + supervisor clients sharing one mock Graphban."""
+    """Planner + supervisor clients sharing one mock Graphban.
+
+    `prds` maps each spelling `get_prd` accepts to the PRD's canonical key (GRPH-1190); a
+    spelling it does not name is refused as the server refuses it. None answers every
+    spelling with itself."""
     # GRPH-885: `_delegate_next` only seeds a cluster that names an item. Fixtures that
     # used `clusters=1` with an empty `items` list used to spawn an unbound drain child;
     # that is the skip-ahead path this item closes. Default a seed so spawn-path tests
@@ -79,6 +85,8 @@ def _clients(
     if cluster_items is None and clusters:
         cluster_items = [[f"GRPH-{i+1}"] for i in range(clusters)]
     seen_agents = {"yes": False}
+    # GRPH-1189: what the real server does — an item a child holds leaves `collision_clusters`.
+    taken: set[str] = set()
 
     def handler(request: httpx.Request) -> httpx.Response:
         ack = telemetry_ack(request)
@@ -115,6 +123,13 @@ def _clients(
             # process — so every other test here exercises the unmeasured path whether it
             # knows it or not.
             return _mcp({"project_id": "core", "gitops": dict(gitops or {})}, rid)
+        if tool == "get_prd":
+            asked = str(args.get("prd_id"))
+            if prds is None:
+                return _mcp({"id": asked, "project_id": "core"}, rid)
+            if asked not in prds:
+                return _error("not_found", f"prd not found: {asked}", rid)
+            return _mcp({"id": prds[asked], "project_id": "core"}, rid)
         if tool == "get_item_details":
             return _mcp({"id": args.get("id"), "title": "seed", "status": "next", "brief": {
                 "lane": {"value": "backend", "basis": ["backend/app/x.py"]},
@@ -122,6 +137,7 @@ def _clients(
                 "text": "Item seed",
             }}, rid)
         if tool == "delegate":
+            taken.add(str(args.get("id")))
             if delegate_fails:
                 return _error(delegate_fails, f"refused ({delegate_fails})", rid)
             if bound_refused and args.get("seat"):
@@ -143,6 +159,8 @@ def _clients(
             total = clusters if sticky_clusters else (0 if seen_agents["yes"] else clusters)
             rows = [{"items": list(cluster_items[i]) if cluster_items and i < len(cluster_items) else []}
                     for i in range(total)]
+            if drop_delegated:
+                rows = [r for r in rows if not taken.intersection(r["items"])]
             return _mcp({
                 "clusters": rows,
                 "total": total,
@@ -624,6 +642,170 @@ def test_until_does_not_spawn_for_held_review(
     assert roles == [], roles
     assert result.reason == "idle"
     assert result.spawned == 0
+
+
+def test_until_spawns_for_a_review_row_whose_holder_has_lapsed(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1254. `review_claimed_by` stays set after its holder dies, so reading it alone
+    kept the GRPH-P62 wave idle for over an hour behind a dead reviewer. The server says the
+    hold has lapsed (`review_claim_lapse`), and that row is unheld.
+
+    Sabotage: make `review_held` read only `review_claimed_by` again and nothing is spawned."""
+    workspace = tmp_path / "ws"
+    roles: list[str] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "GRPH-R1", "review_claim_lapse": "offline"}],
+        minted_roles=roles,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert roles, "a lapsed hold must get a reviewer spawned for it"
+    assert all(r == "worker" for r in roles), roles
+    assert result.reason == "review-unsigned"
+
+
+def test_review_held_reads_the_servers_lapse_and_tolerates_an_older_server():
+    """The three cases `review_held` must tell apart, including a server too old to send the
+    field, which must read exactly as it did before this change."""
+    from gbfleet.until import review_held
+
+    assert review_held({"review_claimed_by": "GRPH-R1"}) is True
+    assert review_held({"review_claimed_by": "GRPH-R1", "review_claim_lapse": "age"}) is False
+    assert review_held({"review_claimed_by": ""}) is False
+    assert review_held({}) is False
+
+
+def test_a_scoped_wave_does_not_spawn_for_review_outside_its_prd(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1188. `--prd P` with one unheld review row that belongs to no PRD. The reviewer
+    seat this loop mints is scoped to P and cannot claim it, so spawning for it only starts
+    children that exit — seven of them across two drain runs, each run ending
+    `review-unsigned` and cutting short P's own build work. The row is named as outside the
+    PRD, and the run ends idle.
+
+    Sabotage: drop the `prd_id` filter in `_split_by_prd` and a spawn happens."""
+    workspace = tmp_path / "ws"
+    mints: list[dict] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "", "prd_id": None}],
+        minted_args=mints,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        prd="SA-P11",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert mints == [], mints
+    assert result.spawned == 0
+    assert result.minted == 0
+    assert result.reason == "idle", result.as_json()
+    assert result.exit == 0
+    assert result.review == []
+    assert result.as_json()["review_outside_prd"] == ["GRPH-9"]
+
+
+def test_a_scoped_wave_still_spawns_a_reviewer_for_review_inside_its_prd(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1188, the other half: a row whose `prd_id` is the wave's PRD is reviewed as
+    before — a review-only seat scoped to the PRD, and a child started on it."""
+    workspace = tmp_path / "ws"
+    mints: list[dict] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "", "prd_id": "SA-P11"}],
+        minted_args=mints,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        prd="SA-P11",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert mints, result.as_json()
+    assert mints[0].get("review_only") is True, mints
+    assert mints[0].get("scope") == "SA-P11", mints
+    assert result.spawned >= 1
+    assert result.review == ["GRPH-9"]
+    assert result.as_json()["review_outside_prd"] == []
+
+
+def test_a_scoped_wave_named_by_an_old_key_reviews_its_own_rows(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1190. `--prd` given as a key the PRD no longer carries (a retag, a legacy key);
+    the server resolves it, and the review row carries the CURRENT key. The row is this
+    PRD's: a reviewer is spawned, scoped to the canonical key, and nothing is outside.
+
+    Sabotage: compare review rows against the raw `--prd` again and the row is listed under
+    `review_outside_prd` with no spawn."""
+    workspace = tmp_path / "ws"
+    mints: list[dict] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "", "prd_id": "GRPH-P11"}],
+        minted_args=mints,
+        prds={"SA-P11": "GRPH-P11", "GRPH-P11": "GRPH-P11"},
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        prd="SA-P11",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert result.as_json()["review_outside_prd"] == [], result.as_json()
+    assert result.review == ["GRPH-9"]
+    assert mints, result.as_json()
+    assert mints[0].get("review_only") is True, mints
+    assert mints[0].get("scope") == "GRPH-P11", mints
+    assert result.spawned >= 1
+
+
+def test_a_scoped_wave_refuses_a_prd_the_server_does_not_know(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1190. An unknown `--prd` ends the run with the server's refusal before anything
+    is minted or spawned — not a fallback to the raw string."""
+    workspace = tmp_path / "ws"
+    mints: list[dict] = []
+    calls: list[str] = []
+    planner, supervisor = _clients(
+        workspace, clusters=1,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "", "prd_id": "SA-P99"}],
+        minted_args=mints, calls=calls,
+        prds={"GRPH-P11": "GRPH-P11"},
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        prd="SA-P99",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert result.reason == "config", result.as_json()
+    assert result.exit == 2
+    assert result.ok is False
+    assert "prd not found: SA-P99" in result.detail, result.detail
+    assert mints == []
+    assert result.spawned == 0
+    assert "delegate" not in calls and "mint_enrolment" not in calls, calls
 
 
 def test_a_review_only_supervisor_mints_seats_that_cannot_claim(
@@ -1743,3 +1925,90 @@ def test_an_unmeasured_project_base_falls_to_the_remote_default_and_says_it_was_
     assert "BASE origin/main" in printed
     assert "[remote_default]" in printed
     assert "unmeasured" in printed, "the summary must keep saying no project rule named it"
+
+
+class _SizingStub:
+    """`planner`/`supervisor` for `_wanted_workers` alone: one dict per tool."""
+
+    def __init__(self, replies: dict):
+        self.replies = replies
+
+    def call(self, tool: str, **_args):
+        return self.replies[tool]
+
+
+def _sizing(*, free: int, live: int, workers: int | None = None) -> dict:
+    agents = [{"id": f"GRPH-A{i}"} for i in range(live)]
+    n = live if workers is None else workers
+    return {
+        "collision_clusters": {"clusters": [{"items": [f"GRPH-{i}"]} for i in range(free)]},
+        "fleet_status": {"agents": agents},
+        "propose_allocation": {"workers": n, "reviewers": 0, "rationale": "stub",
+                               "mapping": [{"agent_id": a["id"]} for a in agents]},
+    }
+
+
+def test_a_live_child_does_not_hide_a_free_cluster():
+    """GRPH-1189. `collision_clusters` already leaves out what a running child claimed, so
+    the one free cluster here is work nobody has. Subtracting the live child from it as well
+    returned 0, and the cluster sat unclaimed with two slots spare. The roster holds only the
+    live child — this loop's planner never heartbeats — so `propose_allocation` says one
+    worker, and that is the roster, not a bound."""
+    from gbfleet.until import _wanted_workers
+
+    stub = _SizingStub(_sizing(free=1, live=1))
+    assert _wanted_workers(stub, stub, live_n=1, max_workers=3) == 1
+
+
+def test_a_live_child_with_no_slot_left_spawns_nothing():
+    from gbfleet.until import _wanted_workers
+
+    stub = _SizingStub(_sizing(free=1, live=1, workers=3))
+    assert _wanted_workers(stub, stub, live_n=1, max_workers=1) == 0
+
+
+def test_live_children_and_no_free_cluster_spawn_nothing():
+    """Ready work still bounds everything (the PRD-39 runaway): the roster's two live
+    children and a proposal of three workers are not work."""
+    from gbfleet.until import _wanted_workers
+
+    stub = _SizingStub(_sizing(free=0, live=2, workers=3))
+    assert _wanted_workers(stub, stub, live_n=2, max_workers=3) == 0
+
+
+def test_free_clusters_fill_the_slots_live_children_leave():
+    from gbfleet.until import _wanted_workers
+
+    stub = _SizingStub(_sizing(free=5, live=1))
+    assert _wanted_workers(stub, stub, live_n=1, max_workers=3) == 2
+
+
+def test_the_loop_spawns_beside_a_live_child_for_a_free_cluster(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1189, end to end: with one child still running and one cluster nobody holds,
+    the loop starts a second child rather than waiting out the first. Two clusters; the
+    first child's leaves the read, as on the real server, so one free cluster remains.
+    Spawning twice is not enough — the bug spawned the second once the first was reaped —
+    so the second launch must land inside the first child's wall clock."""
+    import time
+
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=2, workers=1, sticky_clusters=True,
+                                   drop_delegated=True)
+    inner = _factory(scripts, "sleeper")
+    launched: list[float] = []
+
+    def factory(*args, **kwargs):
+        launched.append(time.monotonic())
+        return inner(*args, **kwargs)
+
+    wall = 4.0
+    result = run(
+        git_repo, factory,
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0.05, empty_ticks=3,
+        limits=Limits(max_workers=3, max_children=2, child_wall_clock=wall),
+    )
+    assert result.spawned == 2, result.detail
+    assert launched[1] - launched[0] < wall / 2, "the second child waited out the first"

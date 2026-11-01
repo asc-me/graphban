@@ -71,6 +71,10 @@ class _Ledger:
     def post_attempt(self, **payload):
         self.calls.append(("post_attempt", payload))
 
+    def post_observation(self, **payload):
+        self.calls.append(("post_observation", payload))
+        return {"recorded": True}
+
     def call(self, tool, **kwargs):
         self.calls.append((tool, kwargs))
         if tool == "search_items":
@@ -188,11 +192,11 @@ def test_publish_diverts_when_the_trunk_already_holds_the_fix(git_repo: Path, tm
     assert _git(bare, "rev-parse", tree.branch) == landed, "the landed branch moved"
     assert _git(bare, "rev-parse", side) == tip
     assert "propose_branch" not in __import__("inspect").getsource(sup.publish_salvaged)
-    updates = [c for c in client.calls if c[0] == "update_item"]
-    assert updates and updates[0][1]["id"] == "GRPH-1"
-    detail = updates[0][1]["evidence"][0]["detail"]
-    assert side in detail and "not proposed as a PR" in detail
-    assert "/pull/" not in detail
+    updates = [c for c in client.calls if c[0] == "post_observation"]
+    assert updates and updates[0][1]["item_id"] == "GRPH-1"
+    assert updates[0][1]["kind"] == "salvage"
+    assert updates[0][1]["branch"] == side
+    assert "url" not in updates[0][1]
     assert any("diverted" in line for line in wave.failures), wave.failures
 
 
@@ -211,8 +215,9 @@ def test_publish_keeps_the_branch_when_nothing_has_landed(git_repo: Path, tmp_pa
 
     assert _git(bare, "rev-parse", tree.branch) == tip
     assert not any("diverted" in line for line in wave.failures), wave.failures
-    updates = [c for c in client.calls if c[0] == "update_item"]
-    assert tree.branch in updates[0][1]["evidence"][0]["detail"]
+    updates = [c for c in client.calls if c[0] == "post_observation"]
+    assert updates[0][1]["kind"] == "salvage"
+    assert updates[0][1]["branch"] == tree.branch
 
 
 def test_a_child_whose_item_is_done_is_stopped_before_it_can_move_the_branch(

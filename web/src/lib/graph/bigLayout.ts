@@ -663,10 +663,19 @@ export function mapLayout(input: ClusterInput): ClusterLayout {
     if (!area || !rect) continue;
     const members = orderedMembers(area.members, prep.kindOf, prep.degree);
     const n = Math.max(members.length, 1);
-    const cols = Math.max(1, Math.ceil(Math.sqrt(n * (rect.w / Math.max(rect.h, 1)))));
-    const rows = Math.ceil(n / cols);
-    const cellW = rect.w / cols;
-    const cellH = rect.h / rows;
+    // Build.dc.html: a header band for the tile's name (34 on a tile taller than 70,
+    // else 10), 6 in from the sides and the bottom, and square cells. Filling the whole
+    // tile put the first row of nodes under the name.
+    const top = rect.h > 70 ? 34 : 10;
+    const gx = rect.x + 6;
+    const gy = rect.y + top;
+    const gw = Math.max(1, rect.w - 12);
+    const gh = Math.max(1, rect.h - top - 6);
+    let cols = Math.max(1, Math.ceil(Math.sqrt((n * gw) / gh)));
+    const cell = Math.min(gw / cols, gh / Math.ceil(n / cols));
+    cols = Math.max(1, Math.floor(gw / cell));
+    const cellW = cell;
+    const cellH = cell;
     members.forEach((m, i) => {
       const col = i % cols;
       const row = Math.floor(i / cols);
@@ -675,8 +684,8 @@ export function mapLayout(input: ClusterInput): ClusterLayout {
       kinds.push(m.kind);
       colors.push(area.color);
       areaIds.push(area.id);
-      xs.push(rect.x + (col + 0.5) * cellW);
-      ys.push(rect.y + (row + 0.5) * cellH);
+      xs.push(gx + (col + 0.5) * cellW);
+      ys.push(gy + (row + 0.5) * cellH);
       rs.push(Number.isFinite(rad) ? Math.max(1.25, rad) : 1.25);
     });
     hulls.push({
@@ -935,4 +944,158 @@ export function hitTest(layout: ClusterLayout, wx: number, wy: number): string |
   }
   lastHitVisits = visits;
   return best?.id ?? null;
+}
+
+function gridKey(x: number, y: number): string {
+  return `${Math.floor(x / GRID_CELL)},${Math.floor(y / GRID_CELL)}`;
+}
+
+/**
+ * Lay position overrides on a cached layout.
+ *
+ * The cached arrays stay as the worker left them. The copy's x/y move, and each
+ * moved node leaves its old grid cell for the new one, so hit-testing follows
+ * the pin instead of the packed slot. No pins returns the same object.
+ */
+export function applyPinOverrides(
+  layout: ClusterLayout,
+  pins: Record<string, { x: number; y: number }>,
+): ClusterLayout {
+  const entries = Object.entries(pins);
+  if (entries.length === 0) return layout;
+  const index = new Map(layout.ids.map((id, i) => [id, i]));
+  const moves: { i: number; x: number; y: number }[] = [];
+  for (const [id, pin] of entries) {
+    const i = index.get(id);
+    if (i === undefined) continue;
+    if (layout.x[i] === pin.x && layout.y[i] === pin.y) continue;
+    moves.push({ i, x: pin.x, y: pin.y });
+  }
+  if (moves.length === 0) return layout;
+  const x = new Float32Array(layout.x);
+  const y = new Float32Array(layout.y);
+  const grid: Record<string, number[]> = {};
+  for (const [key, bucket] of Object.entries(layout.grid)) grid[key] = bucket.slice();
+  for (const move of moves) {
+    const oldKey = gridKey(layout.x[move.i], layout.y[move.i]);
+    const bucket = grid[oldKey];
+    if (bucket) {
+      const at = bucket.indexOf(move.i);
+      if (at >= 0) bucket.splice(at, 1);
+      if (bucket.length === 0) delete grid[oldKey];
+    }
+    x[move.i] = move.x;
+    y[move.i] = move.y;
+    const nextKey = gridKey(move.x, move.y);
+    const next = grid[nextKey];
+    if (next) next.push(move.i);
+    else grid[nextKey] = [move.i];
+  }
+  return { ...layout, x, y, grid };
+}
+
+/** Seconds for the core ring to turn once. Each ring further out is slower. */
+export const ORBIT_PERIOD_S = 120;
+/** How much longer each ring out takes than the one inside it, as a fraction of the core's period. */
+export const ORBIT_PERIOD_STEP = 0.35;
+/** Seconds for one in-and-out sway of an area off its ring. */
+export const ORBIT_SWAY_S = 24;
+/**
+ * Largest sway off the ring, in world units. Rings sit at least 32 apart, so two
+ * neighbours swaying toward each other still clear.
+ */
+export const ORBIT_SWAY_MAX = 14;
+
+/**
+ * How far ring `index` has turned after `seconds` of drift, in radians. Even
+ * rings turn clockwise and odd rings anticlockwise, so the links between two
+ * neighbouring rings shear instead of the whole picture spinning as one.
+ */
+export function orbitAngle(index: number, seconds: number): number {
+  const dir = index % 2 === 0 ? 1 : -1;
+  return (dir * seconds * Math.PI * 2) / (ORBIT_PERIOD_S * (1 + ORBIT_PERIOD_STEP * index));
+}
+
+/**
+ * Orbit after `seconds` of drift. Each area travels round its ring's centre and
+ * sways a little in and out of it, out of step with its neighbours, so links
+ * flex even when every area shares one ring (a small map has only the core).
+ * Its files keep their offsets inside it, so an area moves without spinning.
+ * Hulls, bundles and the hit grid move with it. Any other layout, and zero
+ * seconds, returns the same object.
+ */
+export function driftOrbit(layout: ClusterLayout, seconds: number): ClusterLayout {
+  const rings = layout.orbitRings;
+  if (layout.layout !== "orbit" || !rings?.length || seconds === 0) return layout;
+  const shift = new Map<string, { dx: number; dy: number }>();
+  const hullById = new Map(layout.areas.map((h) => [h.id, h]));
+  for (const ring of rings) {
+    const turn = orbitAngle(ring.index, seconds);
+    const sway = Math.min(ORBIT_SWAY_MAX, ring.r * 0.05);
+    ring.areaIds.forEach((id, j) => {
+      const hull = hullById.get(id);
+      if (!hull) return;
+      const ox = hull.cx - ring.cx;
+      const oy = hull.cy - ring.cy;
+      const r0 = Math.hypot(ox, oy);
+      // An area on the centre point has no ring to travel or sway along.
+      if (r0 < 1e-6) return;
+      // Neighbours start the sway a third of a cycle apart, so they never move as one.
+      const phase = (seconds / ORBIT_SWAY_S + j / 3) * Math.PI * 2;
+      const r = r0 + sway * Math.sin(phase);
+      const a = Math.atan2(oy, ox) + turn;
+      shift.set(id, { dx: ring.cx + Math.cos(a) * r - hull.cx, dy: ring.cy + Math.sin(a) * r - hull.cy });
+    });
+  }
+  const x = new Float32Array(layout.x.length);
+  const y = new Float32Array(layout.y.length);
+  const grid: Record<string, number[]> = {};
+  for (let i = 0; i < x.length; i++) {
+    const d = shift.get(layout.areaOf[i]);
+    x[i] = layout.x[i] + (d?.dx ?? 0);
+    y[i] = layout.y[i] + (d?.dy ?? 0);
+    const key = gridKey(x[i], y[i]);
+    const bucket = grid[key];
+    if (bucket) bucket.push(i);
+    else grid[key] = [i];
+  }
+  const areas = layout.areas.map((h) => {
+    const d = shift.get(h.id);
+    return d ? { ...h, cx: h.cx + d.dx, cy: h.cy + d.dy } : h;
+  });
+  const moved = new Map(areas.map((h) => [h.id, h]));
+  const bundles = layout.bundles.map((b) => ({
+    ...b,
+    hullA: moved.get(b.a) ?? b.hullA,
+    hullB: moved.get(b.b) ?? b.hullB,
+  }));
+  return { ...layout, x, y, grid, areas, bundles };
+}
+
+/**
+ * Hulls plus every pinned node. Fit on hulls alone leaves a pin that was
+ * dragged outside its area off the frame.
+ */
+export function fitTargets(
+  layout: ClusterLayout,
+  pins: Record<string, { x: number; y: number }>,
+): { x: number; y: number; r: number }[] {
+  const pts = layout.areas.map((a) => ({ x: a.cx, y: a.cy, r: a.r }));
+  // Orbit areas drift round their rings, so fit frames every circle an area can
+  // travel, not only where the areas started.
+  if (layout.layout === "orbit") {
+    const radius = new Map(layout.areas.map((a) => [a.id, a.r]));
+    for (const ring of layout.orbitRings ?? []) {
+      if (ring.r <= 0) continue;
+      const widest = Math.max(0, ...ring.areaIds.map((id) => radius.get(id) ?? 0));
+      pts.push({ x: ring.cx, y: ring.cy, r: ring.r + widest + Math.min(ORBIT_SWAY_MAX, ring.r * 0.05) });
+    }
+  }
+  const index = new Map(layout.ids.map((id, i) => [id, i]));
+  for (const [id, pin] of Object.entries(pins)) {
+    const i = index.get(id);
+    if (i === undefined) continue;
+    pts.push({ x: pin.x, y: pin.y, r: layout.r[i] });
+  }
+  return pts;
 }

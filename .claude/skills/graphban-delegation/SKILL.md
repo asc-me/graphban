@@ -111,6 +111,13 @@ willing to pay for.
 `seat=true` mints a worker seat **bound to the item**, which is what makes the child claim it
 at registration rather than racing for it.
 
+`bound_only=true` (with `seat=true`) is the opt-in that stops the child taking anything else.
+Once its bound item leaves `in_progress`, `claim_review`, `claim_next`, `claim_item`,
+`claim_cluster` and `next_cluster` refuse and name the binding, and the child is told to
+exit. Omit the flag and the child may review other items after it finishes — that is today's
+behaviour, and `gbfleet until` does not set the flag, because a wave relies on finished bound
+workers reviewing each other.
+
 Delegate whole items, never fragments. If it has no title, touchpoints and acceptance, it is
 not ready to hand over — the touchpoints become the area reservations that stop the child
 colliding with other work. File it properly or do it inline.
@@ -168,7 +175,8 @@ tool results instead of by a child's transcript.
 Do not wait for the user to ask how the wave is doing. After the first successful spawn,
 attach a periodic watcher with the harness's scheduler/loop so status comes back on its
 own. In Grok that is the `watch-wave` skill (`scheduler_create`). Going idle after spawn
-is why they have to nudge.
+is why they have to nudge. Attach `graphban-answer` in that same turn. A decision the
+child cannot quote comes back as a `wait:decision`.
 
 Three independent timers: the delegation lease (600s) decides open versus expired, the item
 lease starts fresh at the claim, and the seat expires after 30 minutes. `expired, nothing
@@ -182,6 +190,15 @@ chose the item, wrote the brief and picked the tier; review exists to be a secon
 
 So a delegated item needs a second agent to review it. Plan for that, or the work stops at
 `review` with nobody entitled to clear it.
+
+## Before a wave of seats
+
+`delegate(seat=true)` is one item. Several seats is `mint_enrolment`.
+
+- `propose_allocation` first. It names workers and which cluster each would take. Nothing is assigned until `assign_role`.
+- `collision_clusters(holds=true)` before claiming. `predicted: true` means the grouping used inferred areas.
+- `mint_enrolment(review_only=true)` when that seat may review and must not take build work. The child still registers as `worker`. One seat per agent: two agents on one seat cannot review each other.
+- `retire_wave` revokes the seats you minted and releases what they hold. It does not stop the processes. `agents_still_running` are still building against dead seats.
 
 ## When not to use this
 

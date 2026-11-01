@@ -33,6 +33,7 @@ RACED = {
     "services/orgs.py": "test_the_floor_check_locks_the_seats_it_counts",
     "services/teams.py": "test_recompute_locks_the_project_it_materialises_into",
     "services/keys.py": "test_minting_a_key_locks_the_project_it_numbers",
+    "services/headroom.py": "test_admission_locks_the_entitlement_it_counts",
 }
 
 postgres_only = pytest.mark.skipif(
@@ -202,3 +203,31 @@ def test_minting_a_key_locks_the_project_it_numbers(org):
         "SELECT id FROM projects WHERE id = 'lk_prj' FOR NO KEY UPDATE",
         lambda v: items_svc.create_item(v, title="raced", project_id=org["project"]),
     ), "the mint path never contended for the project row — the lock is absent"
+
+
+@postgres_only
+def test_admission_locks_the_entitlement_it_counts(org):
+    """`headroom.report` reads the in-flight count and then records a `spawn_start`. Without
+    the lock, two starts on an `unknown` entitlement both read in_flight=0 and both are
+    admitted — the burst PRD-62 S3 forbids (GRPH-1249)."""
+    from app.models import Agent, Entitlement
+    from app.services import headroom
+
+    s = SessionLocal()
+    try:
+        s.get(Organization, org["org"]).plan = "team"
+        s.add(Entitlement(id="lk_ent", org_id=org["org"], vendor="anthropic",
+                          kind="subscription"))
+        s.flush()
+        s.add(Agent(id="LK-A1", project_id=org["project"], number=1,
+                    entitlement_ids=["lk_ent"]))
+        s.commit()
+    finally:
+        s.close()
+
+    assert _blocks_while_row_is_locked(
+        # NO KEY UPDATE: the event insert's FK takes KEY SHARE and would not conflict, so a
+        # pass here means the explicit lock ran rather than an event row being written.
+        "SELECT id FROM entitlements WHERE id = 'lk_ent' FOR NO KEY UPDATE",
+        lambda v: headroom.report(v, org["org"], "lk_ent", "spawn_start", agent_id="LK-A1"),
+    ), "admission never contended for the entitlement row — the lock is absent"

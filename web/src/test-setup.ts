@@ -1,5 +1,17 @@
 import "@testing-library/jest-dom/vitest";
 
+// CodeGraphView reads layout, sel, depth, iso, and cell once on mount and
+// writes them back with replaceState. A test that opens Matrix or selects a
+// node would otherwise hand that link to the next test in the same file.
+beforeEach(() => {
+  if (!window.location.search) return;
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `${window.location.pathname}${window.location.hash}`,
+  );
+});
+
 // jsdom lacks these; Radix (dropdowns, dialogs) calls them.
 Element.prototype.hasPointerCapture = () => false;
 Element.prototype.setPointerCapture = () => {};
@@ -14,6 +26,11 @@ function noop2d(): CanvasRenderingContext2D {
   return new Proxy({} as CanvasRenderingContext2D, {
     get(target, prop) {
       if (prop in target) return target[prop as keyof CanvasRenderingContext2D];
+      // Gradient and pattern factories return an object the caller then paints on.
+      // A bare noop would hand back undefined and throw on the first addColorStop.
+      if (prop === "createRadialGradient" || prop === "createLinearGradient" || prop === "createPattern") {
+        return () => noop2d();
+      }
       return () => {};
     },
     set(target, prop, value) {

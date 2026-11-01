@@ -314,6 +314,8 @@ export function useCanvasListbox({
   onAbortPath,
   onDisarmPath,
   idPrefix,
+  keepOrder = false,
+  announce,
 }: {
   nodes: CanvasListNode[];
   selectedId: string | null;
@@ -327,8 +329,16 @@ export function useCanvasListbox({
   onAbortPath?: () => void;
   onDisarmPath?: () => void;
   idPrefix: string;
+  /** The caller's order is the traversal order (a flow of stages), not degree order. */
+  keepOrder?: boolean;
+  /** Replaces the code-graph sentence for views whose nodes are not files. */
+  announce?: (id: string) => string;
 }): CanvasListbox {
-  const order = React.useMemo(() => degreeOrder(nodes), [nodes]);
+  const order = React.useMemo(() => (keepOrder ? nodes : degreeOrder(nodes)), [nodes, keepOrder]);
+  const announceRef = React.useRef(announce);
+  announceRef.current = announce;
+  const say = (node: CanvasListNode) =>
+    announceRef.current ? announceRef.current(node.id) : announceNode(node, holderRef.current?.(node.id));
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const activeRef = React.useRef<string | null>(null);
   const orderRef = React.useRef(order);
@@ -453,10 +463,10 @@ export function useCanvasListbox({
       id: node.id,
       index: i,
       optionId: `${idPrefix}-opt-${i}`,
-      label: announceNode(node, holderRef.current?.(node.id)),
+      label: say(node),
     });
   }
-  const live = activeIndex >= 0 ? announceNode(order[activeIndex], holderRef.current?.(order[activeIndex].id)) : "";
+  const live = activeIndex >= 0 ? say(order[activeIndex]) : "";
 
   return {
     activeId,

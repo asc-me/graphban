@@ -136,13 +136,13 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
-async function show() {
+async function show(url = "/activity") {
   const { api } = await import("@/lib/api");
   vi.mocked(api.events).mockClear();
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/activity"]}>
+      <MemoryRouter initialEntries={[url]}>
         <ProjectProvider>
           <ActivityView />
         </ProjectProvider>
@@ -394,5 +394,23 @@ describe("export", () => {
     const button = screen.getByRole("button", { name: /Export 2 rows/ });
     expect(button).toBeEnabled();
     expect(button.getAttribute("title")).toMatch(/250 match — the rest are beyond this page/);
+  });
+});
+
+describe("?event= for an event outside the loaded rows (GRPH-1199)", () => {
+  it("fetches an older event by id and opens it", async () => {
+    const { api } = await import("@/lib/api");
+    const old = event({ id: 99, action: "refusal", meta: { rule_id: "review.not_own_work" } });
+    vi.mocked(api.events).mockImplementation(async (q) =>
+      (q as { range?: string | null }).range ? served : page({ results: [old] }));
+    await show("/activity?event=99");
+    expect(await screen.findByLabelText("Event 99")).toBeInTheDocument();
+  });
+
+  it("says so when the id is not in the ledger", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.events).mockImplementation(async () => served);
+    await show("/activity?event=12345");
+    expect(await screen.findByTestId("event-missing")).toHaveTextContent("12345");
   });
 });

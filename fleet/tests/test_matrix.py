@@ -931,6 +931,25 @@ def test_doctor_empty_probe_suggestions_are_none_only_after_a_lookup(
 
 # ---- GRPH-732: the child is told what to declare, because only the supervisor knows ------------
 
+def test_a_grok_declaration_carries_one_vendor_spelling():
+    """GRPH-1120. The shipped rows already say xai. A row, or the harness-name
+    fallback, that still says `grok` must not be what a new capability row records.
+    Removing the fold leaves `vendor: grok` here and the same-vendor gate green."""
+    from gbfleet.adapters import canonical_vendor
+    from gbfleet.adapters.grok import Grok
+
+    assert Grok.vendor == "xai"
+    assert canonical_vendor("grok") == "xai"
+    assert canonical_vendor("xai") == "xai"
+    assert canonical_vendor("grok-4.7") == "xai"
+    assert canonical_vendor("anthropic") == "anthropic"
+    assert m.declaration("grok", "grok-4.7", "frontier")["vendor"] == "xai"
+    stale = _matrix(_row("grok", "grok-4.7", vendor="grok", tier="frontier",
+                         cost_class="frontier"))
+    assert m.declaration("grok", "grok-4.7", "frontier", stale)["vendor"] == "xai"
+    assert m.vendor_of("grok", _matrix()) == "xai", "no row: the harness name is still xAI"
+
+
 def test_declaration_names_the_vendor_from_the_matrix_and_only_a_named_model():
     assert m.declaration("claude", "opus", "frontier") == {"vendor": "anthropic", "model": "opus", "tier": "frontier"}
     assert m.declaration("qwen-code") == {"vendor": "alibaba", "tier": "cheap"}, "no model: a vendor default is unknowable here"

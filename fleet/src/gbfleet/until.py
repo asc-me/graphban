@@ -26,6 +26,7 @@ from . import deps
 from . import worktree as wt_mod
 from . import observe
 from . import waits as wait_mod
+from . import watchdog as watchdog_mod
 from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreachable, ToolFailed
 from .lock import hold
 from .seat import Seat
@@ -38,7 +39,7 @@ from .spawn import VendorLimit
 from .headroom import Headroom
 from .supervisor import (
     _declared_into,
-    DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Merger, Wave, WaveBase,
+    DEFAULT_MAX_WORKERS, LaunchFactory, Limits, Merger, Wave, WaveBase,
     _reap_all, _rooted, _report_exits, _start, item_status, publish_salvaged,
     resolve_wave_base, watch_tick,
 )
@@ -54,6 +55,9 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
     "retire_wave",
     "fleet_status",
     "register_agent",
+    # PRD-62 S1↔S3 (GRPH-1258). The wave's own ledger events for the entitlements it declared
+    # at `register_agent`; the server refuses a reporter that did not declare the id.
+    "report_entitlement_event",
     "search_items",
     # GRPH-1012: the base this wave cuts children from. Step 2 of the three is the
     # project's MEASURED `gitops.base_branch`, and `get_context` is the only way to ask
@@ -82,6 +86,8 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
     # cut from main and lost the work. The planner has the standing (it minted the seat);
     # the server bounds what `release_item` may do by role, not this set.
     "release_item",
+    # GRPH-1190: `--prd` is resolved ONCE to the PRD's canonical key. A read, like the rest.
+    "get_prd",
 })
 
 EMPTY_TICKS = 3
@@ -122,6 +128,7 @@ class Report:
     minted: int = 0
     waits: list[str] = field(default_factory=list)
     review: list[str] = field(default_factory=list)
+    review_outside_prd: list[str] = field(default_factory=list)
     detail: str = ""
     wave: Wave | None = None
 
@@ -134,6 +141,11 @@ class Report:
             "minted": self.minted,
             "waits": list(self.waits),
             "review": list(self.review),
+            # GRPH-1188: with `--prd`, items in review that belong to another PRD or to none.
+            # Informational only — this run neither spawns for them nor fails on them, since
+            # the PRD-scoped seat it would mint cannot claim them. Listed so a person sees
+            # they are waiting. Always empty without `--prd`.
+            "review_outside_prd": list(self.review_outside_prd),
             # GRPH-834. Always present, including when nothing was measured: an absent key
             # reads as "this build has no spend reporting", and a zeroed block with
             # `reported: 0` reads as "nobody told us", which is the true statement.
@@ -187,6 +199,8 @@ class Report:
             "substituted": {k: list(v) for k, v in (self.wave.substituted.items()
                                                     if self.wave else [])},
         }
+        # GRPH-1247. Every exhausted entitlement with the vendor's own reset text, quoted.
+        payload["exhausted"] = (list(self.wave.exhausted.values()) if self.wave else [])
         if self.detail:
             payload["detail"] = self.detail
         return payload
@@ -221,6 +235,9 @@ def run(
     matrix: "matrix_mod.Matrix | None" = None,
     merge: bool = False,
     base_branch: str | None = None,
+    entitlements: dict[str, list[str]] | None = None,
+    stall_after: float = watchdog_mod.STALL_AFTER_S,
+    clock: Callable[[], float] = time.monotonic,
 ) -> Report:
     """Hold the repo lock and run until idle, a cap, or a config refusal.
 
@@ -252,6 +269,10 @@ def run(
 
     from . import observe
     observe.configure(state)
+    # GRPH-1179. `kill -USR1 <pid>` dumps every thread's stack to the service log, and the
+    # watchdog turns a silent stall into a logged one and a non-zero exit (KeepAlive restarts).
+    watchdog_mod.install_stack_dump()
+    watchdog_mod.current = watchdog_mod.Watchdog(stall_after, clock)
 
     try:
         if budget:
@@ -282,6 +303,14 @@ def run(
                 "--max-workers 0 cannot be combined with pre-minted seats: every child this "
                 "supervisor spawns is a reviewer, and only the server can mint a seat that may "
                 "review but not claim. Drop --seats and let the loop mint review-only seats")
+        # GRPH-1190. An old key after a retag, a legacy key, or the frozen internal id all
+        # name the same PRD to the server, but a review row's `prd_id` is its CURRENT key.
+        # Resolved once here and used for every comparison below, so the PRD's own rows are
+        # not read as outside it. Inside the try: a refusal is a config error, never a
+        # fallback to the raw string.
+        if prd:
+            prd = resolve_prd(planner, prd)
+            observe.emit("prd", detail=prd)
         # GRPH-1012. Resolved ONCE for the wave, before anything is cut from it or
         # published against it: the operator's `--base`, else the project's MEASURED
         # gitops base, else the remote's default ref — fetched, and never this checkout's
@@ -326,7 +355,8 @@ def run(
                 adopt_mod.persist(roster_path, children)
 
             persist()
-            identity = _identify(planner, repo, adapter)
+            wave.entitlements = {a: list(ids) for a, ids in (entitlements or {}).items() if ids}
+            identity = _identify(planner, repo, adapter, wave)
             result = _loop(
                 wave, children, occupied, persist,
                 repo, workspace, wave_name, api_key, server,
@@ -372,18 +402,43 @@ def run(
         wave.reason = exc.reason
         return Report(ok=False, reason=exc.reason, exit=1, detail=str(exc), wave=wave,
                       minted=minted, spawned=len(wave.spawned))
+    except watchdog_mod.Stalled as exc:
+        wave.reason = "stall"
+        return Report(ok=False, reason="stall", exit=1, detail=str(exc), wave=wave,
+                      minted=minted, spawned=len(wave.spawned))
 
 
-def _identify(planner: Graphban, repo: Path, adapter: str = "") -> dict:
-    """Register this process. A key that cannot mint is refused here, not after a wave."""
+def _identify(planner: Graphban, repo: Path, adapter: str = "",
+              wave: Wave | None = None) -> dict:
+    """Register this process. A key that cannot mint is refused here, not after a wave.
+
+    When the wave names entitlements the supervisor declares them too (GRPH-1258): the
+    ledger accepts an event only from an agent that declared the id. A plan without capacity
+    routing refuses the declaration with 402; the wave then registers plain and reports
+    nothing, exactly as S1 does.
+    """
     label = f"gbfleet until ({adapter})" if adapter else "gbfleet until"
+    ids = sorted({i for v in (wave.entitlements if wave else {}).values() for i in v})
     try:
-        payload = planner.call(
-            "register_agent",
-            label=label,
-            role_hint="planner",
-            worktree=str(repo),
-        )
+        try:
+            payload = planner.call(
+                "register_agent",
+                label=label,
+                role_hint="planner",
+                worktree=str(repo),
+                **({"entitlements": ids} if ids else {}),
+            )
+        except ToolFailed as exc:
+            if not ids or exc.code != "quota_exceeded":
+                raise
+            wave.entitlements = {}
+            observe.emit("ledger_off", detail=f"capacity routing is not on this plan: {exc}")
+            payload = planner.call(
+                "register_agent",
+                label=label,
+                role_hint="planner",
+                worktree=str(repo),
+            )
     except NotPermitted as exc:
         raise ConfigError(str(exc)) from exc
     except ToolFailed as exc:
@@ -423,6 +478,29 @@ def _item_brief(client, item_id: str | None) -> dict | None:
         return None
     brief = details.get("brief") if isinstance(details, dict) else None
     return brief if isinstance(brief, dict) else None
+
+
+def _skip_exhausted(wave: Wave, check):
+    """Wrap an `installed` checker so adapters the vendor refused this wave resolve to nothing."""
+    def wrapped(row):
+        entry = wave.exhausted.get(row.harness)
+        if entry:
+            return False, f"exhausted: {entry['said']}"[:160]
+        return check(row)
+    return wrapped
+
+
+def _mark_exhausted(wave: Wave, exc: VendorLimit, chosen: str) -> None:
+    # The harness the matrix chose is the name `_skip_exhausted` matches on.
+    adapter = chosen or exc.adapter
+    wave.exhausted.setdefault(adapter, {
+        "adapter": adapter, "said": exc.said, "seen_at": int(time.time()),
+    })
+
+
+def _capacity_detail(wave: Wave, last: str) -> str:
+    names = ", ".join(sorted(wave.exhausted)) or "none recorded"
+    return f"no entitlement with headroom is left (exhausted: {names}). {last}"
 
 
 def _loop(
@@ -515,8 +593,72 @@ def _loop(
     # changes the answer, so these are lifted out of `delegated` when one lands.
     held: dict[str, list[str]] = {}
     # GRPH-950: holds are blockers on the server, so they outlive the wave that wrote them.
-    _adopt_holds(planner, held, delegated)
-    rechecked = 0.0
+    _resume_holds(planner, held, delegated, repo, base)
+    rechecked = time.monotonic()
+
+    def next_candidate(seed: str, want: str):
+        """The next matrix winner for `want`, exhausted adapters skipped; None when none is left."""
+        if not (want and want not in tiers.lanes and launch_for is not None
+                and matrix is not None):
+            return None
+        brief = _item_brief(planner, seed)
+        res = matrix.resolve(tier=want, profile=profile, policy=policy,
+                             measured=measured,
+                             installed=_skip_exhausted(wave, matrix_mod.installed_checker()),
+                             capabilities=(brief or {}).get("capabilities"),
+                             cap_measured=cap_measured,
+                             spend=(brief or {}).get("spend"),
+                             mix=(brief or {}).get("mix"))
+        if res.winner is None:
+            observe.emit("resolve_refused", item=seed, detail=res.refused)
+            return None
+        explained = res.explain()
+        observe.emit("resolved", item=seed, **{k: v for k, v in explained.items() if k in ("winner", "dropped", "eligible", "profile", "stages", "capabilities")})
+        wave.resolutions.append({"item": seed, **{k: explained[k] for k in
+                                                  ("winner", "dropped", "stages",
+                                                   "capabilities", "profile")
+                                                  if k in explained}})
+        return (launch_for(res.winner.harness, res.winner.model),
+                (res.winner.harness, res.winner.model))
+
+    def failover(seat, seed, want, factory, chosen):
+        """GRPH-1247. Spawn; on a vendor limit, mark the adapter exhausted and take the next.
+
+        Ends the wave with `capacity` (not `cap`, not `vendor_limit`) when nothing is left.
+        """
+        while True:
+            mark = (len(wave.failures), len(wave.unredeemed), wave.unused_seats)
+            exc: VendorLimit | None = None
+            seat = replace(seat, entitlements=tuple(wave.entitlements.get(chosen[0], ())))
+            if chosen[0] in wave.exhausted:
+                said = wave.exhausted[chosen[0]]["said"]
+                exc = VendorLimit(f"adapter {chosen[0]!r} is exhausted this wave: {said}",
+                                  adapter=chosen[0], said=said)
+            else:
+                try:
+                    _spawn_one(
+                        wave, children, occupied, persist, seat, factory,
+                        repo, workspace, wave_name, supervisor, limits, planner, debug,
+                        base=base, ledger=planner,
+                    )
+                    return
+                except VendorLimit as caught:
+                    exc = caught
+                    _mark_exhausted(wave, caught, chosen[0])
+            nxt = next_candidate(seed, want)
+            if nxt is None:
+                wave.reason = "capacity"
+                raise CapError("capacity", _capacity_detail(wave, str(exc))) from exc
+            # The failed attempt is superseded by the retry, not a second failure.
+            del wave.failures[mark[0]:]
+            del wave.unredeemed[mark[1]:]
+            wave.unused_seats = mark[2]
+            prev = chosen[0]
+            factory, chosen = nxt
+            seat = replace(seat, declare=matrix_mod.declaration(
+                chosen[0], chosen[1], want or None, matrix))
+            observe.emit("failover", item=seed,
+                         detail=f"{prev} exhausted; continuing on {chosen[0]}")
 
     while True:
         # GRPH-1056. This loop IS the supervisor working. An `mcp` that merely stays
@@ -546,10 +688,11 @@ def _loop(
             # S6 (PRD-39 D-i): re-keyed off the fact it measures — a child exited
             # and there are still unheld review rows. Not off a role.
             try:
-                rows_for_reap = _review_rows(planner)
-            except (NotPermitted, ToolFailed, ServerUnreachable):
+                rows_for_reap, _ = _split_by_prd(_review_rows(planner), prd)
+            except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+                watchdog_mod.current.retry("review_rows(reap)", exc)
                 rows_for_reap = []
-            unheld_at_reap = [r for r in rows_for_reap if not r.get("review_claimed_by")]
+            unheld_at_reap = [r for r in rows_for_reap if not review_held(r)]
             for child in finished:
                 if unheld_at_reap and not child.held_items:
                     review_fails += 1
@@ -570,13 +713,20 @@ def _loop(
             persist()
             if any("handoff-failed" in f for f in wave.failures):
                 wave.reason = "handoff-failed"
-                return _finish(wave, "handoff-failed", 1, minted, planner)
+                return _finish(wave, "handoff-failed", 1, minted, planner, prd=prd)
 
         live = [c for c in children if c.running]
+        wd = watchdog_mod.current
+        wd.check(bool(live))
         holdings = _any_holdings(supervisor)
         try:
-            rows = _review_rows(planner)
+            # GRPH-1188: with `--prd`, only this PRD's review rows can trigger a spawn or fail
+            # the run. The reviewer seat minted below is PRD-scoped and cannot claim any other
+            # row, so a project-wide trigger spawned children that could only exit, and ended
+            # the run `review-unsigned` over an item it was never able to review.
+            rows, rows_outside = _split_by_prd(_review_rows(planner), prd)
             reviews = [str(r["id"]) for r in rows]
+            outside = [str(r["id"]) for r in rows_outside]
             waits = _wait_ids(planner)
         except NotPermitted as exc:
             raise ConfigError(f"cannot classify review/waits: {exc}") from exc
@@ -584,6 +734,7 @@ def _loop(
             raise ConfigError(f"cannot classify review/waits: {exc}") from exc
         except ServerUnreachable as exc:
             # Unknown is not empty: leftover review must not look like idle.
+            wd.retry("review/waits", exc)
             if live or holdings:
                 sleep(poll)
                 continue
@@ -591,6 +742,7 @@ def _loop(
                 "cap",
                 f"search_items unreachable; leftover review is unknown, not empty ({exc})",
             ) from exc
+        wd.progress("review/waits read")
 
         # GRPH-846, GRPH-880. The merger discovers candidates from the attestation, not from
         # observing departures. An item already `done` with a sign_off attestation is a
@@ -615,8 +767,9 @@ def _loop(
         try:
             need = _wanted_workers(planner, supervisor, live_n=len(live),
                                    max_workers=limits.max_workers, prd=prd)
-        except ServerUnreachable:
+        except ServerUnreachable as exc:
             # D-i: no new spawns while unreachable. Live children run to their lease.
+            wd.retry("wanted_workers", exc)
             if not live:
                 wave.reason = "cap"
                 raise CapError("cap", "server unreachable with no live children")
@@ -628,7 +781,8 @@ def _loop(
             try:
                 need = _wanted_workers(planner, supervisor, live_n=len(live),
                                        max_workers=limits.max_workers, prd=prd)
-            except ServerUnreachable:
+            except ServerUnreachable as exc:
+                wd.retry("wanted_workers(recheck)", exc)
                 sleep(poll)
                 continue
             if need <= 0:
@@ -649,9 +803,10 @@ def _loop(
             # skip-aheads the DAG. Do NOT reset `empty` either: `_wanted_workers` still
             # counts those free file-clusters, so zeroing here spun the loop forever
             # (CI cancelled the fleet suite after 6h). Count toward idle like a no-work tick.
+            flags: dict = {}
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
                                               request, prd, repo, base, held=held,
-                                              merger=merger)
+                                              merger=merger, bound_out=flags)
             if seed is None:
                 # No takeable work this tick. Fall through to the idle counter below.
                 pass
@@ -659,7 +814,7 @@ def _loop(
                 empty = 0
                 seat = Seat(shared=dict(shared or {}),
                             code=code, server_url=server, api_key=api_key, role="worker",
-                            item=seed)
+                            item=seed, bound_only=bool(flags.get("bound_only")))
                 minted += 1
                 factory = launch_factory
                 chosen = (adapter, "")
@@ -672,7 +827,7 @@ def _loop(
                     # policy read at launch, and the log says how.
                     brief = _item_brief(planner, seed)
                     res = matrix.resolve(tier=want, profile=profile, policy=policy,
-                                         measured=measured, installed=matrix_mod.installed_checker(),
+                                         measured=measured, installed=_skip_exhausted(wave, matrix_mod.installed_checker()),
                                          capabilities=(brief or {}).get("capabilities"),
                                          cap_measured=cap_measured,
                                          spend=(brief or {}).get("spend"),
@@ -706,11 +861,8 @@ def _loop(
                 if chosen[0]:
                     seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
                 _cap_children(wave, limits, item=seed)
-                _spawn_one(
-                    wave, children, occupied, persist, seat, factory,
-                    repo, workspace, wave_name, supervisor, limits, planner, debug,
-                    base=base,
-                )
+                failover(seat, seed, want, factory, chosen)
+                wd.progress(f"spawned for {seed}")
                 continue
             else:
                 empty = 0
@@ -733,7 +885,7 @@ def _loop(
                     # policy read at launch, and the log says how.
                     brief = _item_brief(planner, seed)
                     res = matrix.resolve(tier=want, profile=profile, policy=policy,
-                                         measured=measured, installed=matrix_mod.installed_checker(),
+                                         measured=measured, installed=_skip_exhausted(wave, matrix_mod.installed_checker()),
                                          capabilities=(brief or {}).get("capabilities"),
                                          cap_measured=cap_measured,
                                          spend=(brief or {}).get("spend"),
@@ -767,11 +919,8 @@ def _loop(
                 if chosen[0]:
                     seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
                 _cap_children(wave, limits, item=seed)
-                _spawn_one(
-                    wave, children, occupied, persist, seat, factory,
-                    repo, workspace, wave_name, supervisor, limits, planner, debug,
-                    base=base,
-                )
+                failover(seat, seed, want, factory, chosen)
+                wd.progress(f"spawned for {seed}")
                 continue
 
         # S6 (PRD-39 D-i): unheld review rows need a merged worker. Re-keyed off the
@@ -787,7 +936,7 @@ def _loop(
         # GRPH-965 and built it on the reviewer's branch while the child actually assigned to
         # that item produced nothing. The authority is the seat, not the prompt, so the gate is
         # server-side (`items.review_only_seat`) and this is only the mint that asks for it.
-        unheld_review = [r for r in rows if not r.get("review_claimed_by")]
+        unheld_review = [r for r in rows if not review_held(r)]
         # No memory gate on this branch, deliberately (GRPH-842): `not live` means nothing
         # is running, and the gate never refuses the first child — so a check here could
         # only ever cost a `vm_stat` per poll and answer yes. **If that guard goes, this
@@ -797,7 +946,7 @@ def _loop(
             if review_fails >= REVIEWER_FAILS:
                 wave.reason = "review-unsigned"
                 return _finish(wave, "review-unsigned", 1, minted, planner,
-                               review=reviews, waits=waits)
+                               review=reviews, waits=waits, outside=outside)
             seat, minted_one = _take_seat(
                 pool, planner, agent_id, wave_name, server, api_key,
                 mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
@@ -810,11 +959,7 @@ def _loop(
                 seat = replace(seat, declare=matrix_mod.declaration(adapter, "", None, matrix))
             _cap_children(wave, limits)
             before = len(wave.spawned)
-            _spawn_one(
-                wave, children, occupied, persist, seat, launch_factory,
-                repo, workspace, wave_name, supervisor, limits, planner, debug,
-                base=base,
-            )
+            failover(seat, "", "", launch_factory, (adapter, ""))
             if len(wave.spawned) == before:
                 review_fails += 1
             continue
@@ -824,25 +969,27 @@ def _loop(
             sleep(poll)
             continue
 
-        unheld = [r for r in rows if not r.get("review_claimed_by")]
+        unheld = [r for r in rows if not review_held(r)]
         if unheld:
             wave.reason = "review-unsigned"
             return _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
-                           waits=waits)
+                           waits=waits, outside=outside)
 
         empty += 1
         if empty >= empty_ticks:
             if waits:
                 wave.reason = "idle-with-waits"
-                return _finish(wave, "idle-with-waits", 0, minted, planner, waits=waits)
+                return _finish(wave, "idle-with-waits", 0, minted, planner, waits=waits,
+                               review=reviews, outside=outside)
             wave.reason = "idle"
-            return _finish(wave, "idle", 0, minted, planner)
+            return _finish(wave, "idle", 0, minted, planner, review=reviews, outside=outside)
         sleep(poll)
 
 
 def _finish(
     wave: Wave, reason: str, exit_code: int, minted: int, planner: Graphban,
     *, review: list[str] | None = None, waits: list[str] | None = None,
+    outside: list[str] | None = None, prd: str | None = None,
 ) -> Report:
     if waits is None:
         try:
@@ -851,7 +998,9 @@ def _finish(
             waits = []
     if review is None:
         try:
-            review = _review_ids(planner)
+            inside, beyond = _split_by_prd(_review_rows(planner), prd)
+            review = [str(r["id"]) for r in inside]
+            outside = [str(r["id"]) for r in beyond]
         except (NotPermitted, ToolFailed, ServerUnreachable):
             review = []
     return Report(
@@ -862,6 +1011,7 @@ def _finish(
         minted=minted,
         waits=waits,
         review=review,
+        review_outside_prd=list(outside or []),
         wave=wave,
     )
 
@@ -881,6 +1031,7 @@ def _spawn_one(
     planner: Graphban,
     debug: bool,
     base: str = "",
+    ledger: Graphban | None = None,
 ) -> None:
     before = len(wave.spawned)
     # No `room=` on purpose (GRPH-842). `_start`'s own gate is for `up`, which decides how
@@ -891,7 +1042,7 @@ def _spawn_one(
         wave, [seat], launch_factory, repo, workspace, wave_name, supervisor,
         limits, debug=debug, occupied=occupied, items=_declared_into(wave,
                                                                      item_status(planner)),
-        into=children, persist=persist, base=base,
+        into=children, persist=persist, base=base, ledger=ledger,
     )
     occupied.update(c.branch for c in children)
     persist()
@@ -1223,16 +1374,9 @@ def _dependency_holds(planner: Graphban, free: list[dict], repo: Path | None,
     """The GRPH-950 holds a wave would write now, and the ones already written. READS ONLY."""
     out: list[dict] = []
     seen: set[str] = set()
-    try:
-        got = planner.call("search_items", query=deps.HOLD_MARK, limit=200, fields="full") or {}
-    except (ToolFailed, NotPermitted, ServerUnreachable):
-        got = {}
-    for row in (got.get("results") if isinstance(got, dict) else None) or []:
-        if isinstance(row, dict) and deps.is_hold(str(row.get("blocker") or "")):
-            item_id = str(row.get("id") or "")
-            seen.add(item_id)
-            out.append({"item": item_id, "waiting_on": str(row.get("blocker") or ""),
-                        "already_held": True})
+    for item_id, blocker in _held_on_server(planner):
+        seen.add(item_id)
+        out.append({"item": item_id, "waiting_on": blocker, "already_held": True})
     if repo is None or not base:
         return out
     for cluster in free:
@@ -1433,17 +1577,52 @@ def _adopt_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[s
     A blocker nobody re-checks strands its item after the merge it waits on — worse than the
     duplicate it prevented, because it looks deliberate.
     """
+    for item_id, _blocker in _held_on_server(planner):
+        if item_id not in held:
+            held[item_id] = []
+            delegated.add(item_id)
+
+
+def _resume_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str],
+                  repo: Path | None, base: str) -> None:
+    """Adopt the holds earlier runs wrote and re-check them NOW, before the first tick.
+
+    GRPH-1182: not a recheck period later. Under `gbfleet service` every run is a fresh
+    process that may exit idle well inside that period, so a hold whose dependency an
+    earlier run merged was lifted by nobody.
+    """
+    _adopt_holds(planner, held, delegated)
+    _recheck_holds(planner, held, delegated, repo, base)
+
+
+def _held_on_server(planner: Graphban) -> list[tuple[str, str]]:
+    """Every GRPH-950 hold the server carries, as (item, blocker). Empty when unreadable.
+
+    The search matches on blocker text, but a row that does not carry `blocker` says nothing
+    about it (GRPH-1182): `search_items` full rows omitted the field, so every hit read as
+    unheld and no later run ever adopted, re-checked or lifted a hold. Such a row is confirmed
+    against `get_item_details`, the read that does carry it, never dropped as clean.
+    """
     try:
         got = planner.call("search_items", query=deps.HOLD_MARK, limit=200, fields="full") or {}
     except (ToolFailed, NotPermitted, ServerUnreachable):
-        return
+        return []
+    out: list[tuple[str, str]] = []
     for row in (got.get("results") if isinstance(got, dict) else None) or []:
-        if not isinstance(row, dict) or not deps.is_hold(str(row.get("blocker") or "")):
+        item_id = str(row.get("id") or "") if isinstance(row, dict) else ""
+        if not item_id:
             continue
-        item_id = str(row.get("id") or "")
-        if item_id and item_id not in held:
-            held[item_id] = []
-            delegated.add(item_id)
+        if "blocker" in row:
+            blocker = str(row["blocker"] or "")
+        else:
+            try:
+                details = planner.call("get_item_details", id=item_id) or {}
+            except (ToolFailed, NotPermitted, ServerUnreachable):
+                continue
+            blocker = str(details.get("blocker") or "") if isinstance(details, dict) else ""
+        if deps.is_hold(blocker):
+            out.append((item_id, blocker))
+    return out
 
 
 def _recheck_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str],
@@ -1490,6 +1669,7 @@ def _delegate_next(
     base: str = "",
     held: dict[str, list[str]] | None = None,
     merger: Merger | None = None,
+    bound_out: dict | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Write the delegation for the seed of the next free cluster, before its seat is minted.
 
@@ -1603,8 +1783,12 @@ def _delegate_next(
             try:
                 # PRD-36 D9: a BOUND seat. The server refuses one when the seed's areas are held
                 # by someone else (D13). GRPH-885: do not fall back to an unbound delegate.
+                # GRPH-1089: do not pass bound_only. A wave's finished bound workers review
+                # each other; the flag is opt-in for a caller that wants the child to exit.
                 reply = planner.call("delegate", id=candidate, lane=lane, tier=want, agent_id=agent_id,
                                      note=note, seat=True, wave=wave_name, **_seat_scope(prd))
+                if bound_out is not None and isinstance(reply, dict):
+                    bound_out["bound_only"] = bool(reply.get("bound_only"))
                 got_code = reply.get("enrolment_code") if isinstance(reply, dict) else None
                 code = str(got_code) if got_code else None
             except ToolFailed as exc:
@@ -1718,7 +1902,7 @@ def _wanted_workers(
     planner: Graphban, supervisor: Graphban, *, live_n: int, max_workers: int,
     prd: str | None = None,
 ) -> int:
-    """How many more workers to start. Cold start reads clusters; a live roster reads the mix."""
+    """How many more workers to start: free clusters, bounded by the slots live children leave."""
     # READY WORK BOUNDS EVERYTHING. `propose_allocation` describes the roster, not the
     # backlog: with zero free clusters it still maps every idle registered agent as a worker
     # "pulling from the review queue", and a child this loop spawned ten seconds ago is still
@@ -1753,14 +1937,20 @@ def _wanted_workers(
             _contention.clear()
         return 0
     _contention.clear()
-    roster = supervisor.call("fleet_status")
-    agents = [a for a in (roster.get("agents") or []) if a.get("id")]
-    if not agents:
-        return max(0, min(max_workers, total) - live_n)
-    alloc = AllocationRead.of(planner.call("propose_allocation"))
-    if alloc.uninformative:
-        return max(0, min(max_workers, total) - live_n)
-    return max(0, min(max_workers, alloc.workers, total) - live_n)
+    # SLOTS AND WORK ARE BOUNDED SEPARATELY (GRPH-1189). `collision_clusters` already leaves
+    # out what the running children claimed, so `total` is work NO child has; subtracting
+    # `live_n` from it counted every child twice, and each one hid a free cluster — a wave of
+    # N free clusters ran about one at a time. `live_n` comes off the slots, not the work.
+    #
+    # `propose_allocation` is NOT a bound here. Its `workers` is the count of online agents on
+    # the roster — every one of them, live children included — never a demand for more, so
+    # `alloc.workers - live_n` is just "online agents that are not our children". This loop's
+    # planner registers once and does not heartbeat, so a drain alone on its project soon has
+    # only its children online, that term reads 0, and the free cluster hides again. Ghosts on
+    # the roster can only inflate it, which `total` already bounds (the PRD-39 runaway).
+    # The roster is still read: `fleet_status` is what requeues an offline child's items.
+    supervisor.call("fleet_status")
+    return max(0, min(max_workers - live_n, total))
 
 
 def _take_seat(
@@ -1853,6 +2043,21 @@ def _is_config(exc: ToolFailed) -> bool:
     return False
 
 
+def review_held(row: dict) -> bool:
+    """Whether somebody is reviewing this row RIGHT NOW (GRPH-1254).
+
+    `review_claimed_by` is the raw column, and a reviewer that dies leaves it set for good: only
+    a verdict or the holder's own `release_item` clears it. Reading it as "held" kept a wave
+    idle for over an hour on GRPH-1248, logging `held by review; no expiry reported` while the
+    holder was offline and retired and the server would already have handed the item to the
+    next `claim_review`. The server says when a hold has lapsed (`review_claim_lapse`, present
+    only when it has), so liveness has one definition and it is the server's.
+
+    An older server never sends the field, and then this reads exactly as before.
+    """
+    return bool(row.get("review_claimed_by")) and not row.get("review_claim_lapse")
+
+
 def _review_rows(planner: Graphban) -> list[dict]:
     """Raises on a failed read. An empty list means looked and found none."""
     payload = planner.call("search_items", status="review", fields="full", limit=10_000)
@@ -1862,8 +2067,31 @@ def _review_rows(planner: Graphban) -> list[dict]:
     return [r for r in rows if isinstance(r, dict) and r.get("id")]
 
 
-def _review_ids(planner: Graphban) -> list[str]:
-    return [str(r["id"]) for r in _review_rows(planner)]
+def resolve_prd(planner: Graphban, prd: str) -> str:
+    """The canonical key of the PRD `--prd` names (GRPH-1190).
+
+    `get_prd` resolves any spelling the server accepts and answers with the current key as
+    `id`. A refusal, or a server that cannot be reached, ends the run with the server's
+    reason: comparing against the raw string instead is how the PRD's own review rows came
+    to be listed outside it while the run exited idle.
+    """
+    try:
+        got = planner.call("get_prd", prd_id=prd)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        raise ConfigError(f"--prd {prd} could not be resolved: {exc}") from exc
+    key = str(got.get("id") or "")
+    if not key:
+        raise ConfigError(f"--prd {prd} could not be resolved: get_prd answered with no id")
+    return key
+
+
+def _split_by_prd(rows: list[dict], prd: str | None) -> tuple[list[dict], list[dict]]:
+    """(this PRD's review rows, everyone else's) — GRPH-1188. Without `--prd` every row is
+    this run's, as before. With it, a row with another `prd_id` or none is outside."""
+    if not prd:
+        return rows, []
+    return ([r for r in rows if r.get("prd_id") == prd],
+            [r for r in rows if r.get("prd_id") != prd])
 
 
 def _wait_ids(planner: Graphban) -> list[str]:
@@ -1876,7 +2104,8 @@ def _any_holdings(supervisor: Graphban) -> bool:
     the caller pairs it with `live`; a stale hold is a dead agent's, not a holding."""
     try:
         roster = supervisor.call("fleet_status")
-    except ServerUnreachable:
+    except ServerUnreachable as exc:
+        watchdog_mod.current.retry("fleet_status", exc)
         return False
     for agent in roster.get("agents") or []:
         # A `stale` hold is a lease older than the presence TTL — a builder that exited with

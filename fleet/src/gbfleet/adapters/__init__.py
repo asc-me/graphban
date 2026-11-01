@@ -488,6 +488,29 @@ ADAPTERS: dict[str, Adapter] = {
 }
 
 
+def canonical_vendor(name: str) -> str:
+    """One spelling for the grok harness (GRPH-1120).
+
+    Two strings are written onto a capability row from this adapter. The matrix
+    row, and therefore the seat's `capabilities=` clause, says `xai`
+    (`Grok.vendor`). A child that copies `Grok.name`, or a model id
+    `known_models` returns (`grok-4.5`, `grok-4.7`), writes `grok`. They are
+    one company. `xai` is kept because that is what the matrix and the launch
+    post already record. Anything else is returned as given — a vendor this
+    function has not seen twice is not a guess.
+
+    The backend holds the same two inputs in `app.services.fleet.canonical_vendor`
+    and cannot import this package (PRD-22 D-e).
+    """
+    if not isinstance(name, str):
+        return name
+    key = name.strip().lower()
+    company = getattr(ADAPTERS.get("grok"), "vendor", None) or "xai"
+    if key in {"grok", "xai", str(company).strip().lower()} or key.startswith("grok-"):
+        return company
+    return name
+
+
 def checked_tuning(adapter: "str | Adapter | None", tuning: "Tuning") -> "Tuning":
     """The tuning, once the adapter has agreed it can spawn with it (GRPH-813, GRPH-831).
 

@@ -3,7 +3,8 @@
  *
  * Wheel and drag are live. Programmatic moves tween for 600ms, ease-out-cubic,
  * and a new target replaces the one in flight. Reduced motion jumps.
- * Scale is 0.7×–16×, which is not the SVG viewport's range.
+ * Scale is 0.7×–16×, which is not the SVG viewport's range. The floor drops below 0.7
+ * only when a whole layout needs it to fit (`zoomFloor`).
  */
 
 export const CANVAS_MIN_K = 0.7;
@@ -61,13 +62,14 @@ export function framePoint(x: number, y: number, k: number, width: number, heigh
   return { k: kk, x: width / 2 - x * kk, y: height / 2 - y * kk };
 }
 
-export function fitCamera(
+/** The scale that frames `points` with `pad`, unclamped. Null when there is nothing to frame. */
+export function fitScale(
   points: { x: number; y: number; r?: number }[],
   width: number,
   height: number,
   pad = 48,
-): Cam {
-  if (points.length === 0 || width <= 0 || height <= 0) return { x: 0, y: 0, k: 1 };
+): number | null {
+  if (points.length === 0 || width <= 0 || height <= 0) return null;
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -81,7 +83,40 @@ export function fitCamera(
   }
   const bw = Math.max(1, maxX - minX);
   const bh = Math.max(1, maxY - minY);
-  const k = clampCanvasZoom(Math.min((width - pad * 2) / bw, (height - pad * 2) / bh));
+  return Math.min((width - pad * 2) / bw, (height - pad * 2) / bh);
+}
+
+/**
+ * The lowest scale the camera allows for this layout: 0.7, or lower when the whole map
+ * needs it. A Map treemap can be taller than the frame at 0.7, and a fixed floor left Fit
+ * and zoom-out unable to show all of it.
+ */
+export function zoomFloor(fit: number | null): number {
+  if (fit === null || !Number.isFinite(fit)) return CANVAS_MIN_K;
+  return Math.max(0.05, Math.min(CANVAS_MIN_K, fit));
+}
+
+export function fitCamera(
+  points: { x: number; y: number; r?: number }[],
+  width: number,
+  height: number,
+  pad = 48,
+  minK = CANVAS_MIN_K,
+): Cam {
+  const raw = fitScale(points, width, height, pad);
+  if (raw === null || !Number.isFinite(raw)) return { x: 0, y: 0, k: 1 };
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of points) {
+    const r = p.r ?? 0;
+    minX = Math.min(minX, p.x - r);
+    maxX = Math.max(maxX, p.x + r);
+    minY = Math.min(minY, p.y - r);
+    maxY = Math.max(maxY, p.y + r);
+  }
+  const k = Math.max(minK, Math.min(CANVAS_MAX_K, raw));
   return {
     k,
     x: width / 2 - ((minX + maxX) / 2) * k,

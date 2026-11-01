@@ -14,7 +14,8 @@ from collections import Counter
 from datetime import timezone
 
 from app.models import (
-    CodeNode, Event, GrillDimension, GrillTurn, Item, Prd, PrdVersion, Verdict,
+    CodeNode, Event, GrillDimension, GrillTurn, Item, Prd, PrdRequestLink, PrdVersion, Request,
+    Verdict,
     WorkClassification, utcnow,
 )
 from app.services import items as items_svc
@@ -220,11 +221,125 @@ def link_item(db: Session, prd_id: str, item_id: str, add: bool = True) -> Prd |
     return prd
 
 
+# ---- PRD <-> request links (PRD-60 D10 / GRPH-1140) ----
+SUGGESTION_THRESHOLD = 0.55
+
+
+class RequestNotInProject(ValueError):
+    """The request is unknown or belongs to another project than the PRD."""
+
+
+def _request_for(db: Session, prd: Prd, request_id: str) -> Request:
+    req = db.get(Request, keys.resolve_request(db, request_id) or request_id)
+    if req is None or req.project_id != prd.project_id:
+        raise RequestNotInProject("request not found in this PRD's project")
+    return req
+
+
+def link_request(db: Session, prd: Prd, request_id: str, add: bool = True) -> Prd:
+    if prd.close_record is not None:
+        raise PrdClosed("this PRD is closed; requests can no longer be linked or unlinked")
+    req = _request_for(db, prd, request_id)
+    row = db.get(PrdRequestLink, (prd.id, req.id))
+    if add and row is None:
+        db.add(PrdRequestLink(prd_id=prd.id, request_id=req.id))
+    elif not add and row is not None:
+        db.delete(row)
+    db.commit()
+    return prd
+
+
+def linked_requests(db: Session, prd: Prd) -> list[Request]:
+    return list(db.scalars(
+        select(Request).join(PrdRequestLink, PrdRequestLink.request_id == Request.id)
+        .where(PrdRequestLink.prd_id == prd.id).order_by(Request.number)).all())
+
+
+def request_rollups(db: Session, prd_ids: list[str]) -> dict[str, dict]:
+    out = {pid: {"request_count": 0, "request_votes": 0, "request_types": {}} for pid in prd_ids}
+    if not prd_ids:
+        return out
+    rows = db.execute(
+        select(PrdRequestLink.prd_id, Request.type, Request.votes)
+        .join(Request, Request.id == PrdRequestLink.request_id)
+        .where(PrdRequestLink.prd_id.in_(prd_ids))).all()
+    for pid, typ, votes in rows:
+        o = out[pid]
+        o["request_count"] += 1
+        o["request_votes"] += votes or 0
+        o["request_types"][typ] = o["request_types"].get(typ, 0) + 1
+    return out
+
+
+def _prd_texts(prd: Prd) -> list[str]:
+    spans = section_spans(prd.body or "")
+    texts = [f"{t}\n{(prd.body or '')[s:e].strip()}" for t, s, e in spans]
+    return texts or [f"{prd.title}\n{prd.body or ''}"]
+
+
+def _section_vectors(embedder, prd: Prd) -> list:
+    """Embed a PRD's sections once; callers reuse them across every request they score."""
+    return [embedder.embed(t) for t in _prd_texts(prd)]
+
+
+def _request_vector(embedder, req: Request):
+    return embedder.embed(f"{req.title}\n{req.detail or ''}")
+
+
+def _score(section_vecs: list, request_vec) -> float:
+    from app.providers import cosine_similarity
+
+    return max(cosine_similarity(request_vec, sv) for sv in section_vecs)
+
+
+def request_suggestions(db: Session, prd: Prd, *, threshold: float = SUGGESTION_THRESHOLD) -> dict:
+    """Unlinked requests scored against the PRD's sections. An embedder failure is
+    `{available: false}` — an empty list would read as "nothing matches"."""
+    from app.providers import get_embedder
+
+    linked = select(PrdRequestLink.request_id).where(PrdRequestLink.prd_id == prd.id)
+    cands = db.scalars(select(Request).where(
+        Request.project_id == prd.project_id, Request.id.not_in(linked))).all()
+    try:
+        embedder = get_embedder()
+        section_vecs = _section_vectors(embedder, prd)
+        scored = [(r, _score(section_vecs, _request_vector(embedder, r))) for r in cands]
+    except Exception:  # noqa: BLE001 — any provider failure means "unavailable"
+        logging.getLogger("graphban.prds").warning("request suggestions unavailable", exc_info=True)
+        return {"available": False, "suggestions": []}
+    hits = sorted((x for x in scored if x[1] >= threshold), key=lambda x: x[1], reverse=True)
+    return {"available": True, "suggestions": [
+        {"request_id": r.key, "title": r.title, "type": r.type, "votes": r.votes,
+         "score": round(sc, 4)} for r, sc in hits]}
+
+
+def best_prd_for_request(db: Session, req: Request, *, threshold: float = SUGGESTION_THRESHOLD) -> dict | None:
+    """The open PRD in the request's project that fits best, or None (also when the
+    embedder is down). Closed PRDs cannot take links, so they are not offered."""
+    from app.providers import get_embedder
+
+    prds = [p for p in db.scalars(select(Prd).where(Prd.project_id == req.project_id)).all()
+            if p.close_record is None]
+    try:
+        embedder = get_embedder()
+        rv = _request_vector(embedder, req) if prds else None
+        best = max(((p, _score(_section_vectors(embedder, p), rv)) for p in prds),
+                   key=lambda x: x[1], default=None)
+    except Exception:  # noqa: BLE001
+        logging.getLogger("graphban.prds").warning("best prd unavailable", exc_info=True)
+        return None
+    if best is None or best[1] < threshold:
+        return None
+    return {"prd_id": best[0].key, "title": best[0].title, "score": round(best[1], 4)}
+
+
 # ---- AI commands ----
 _COMMANDS = {
     "expand": "Expand the section under the cursor into 1-2 well-written paragraphs. Return only the new markdown.",
     "risks": "Generate a '## Risks & Open Questions' markdown section (3-5 bullets) for this PRD. Return only that section.",
     "summarize": "Write a 2-3 sentence executive summary of this PRD as markdown. Return only the summary.",
+    # Body only, on purpose. This command has no transcript, so it cannot know when
+    # to stop. The interactive grill is `grill_questions` (GRPH-1123).
     "grill": (
         "You are grilling the author to sharpen this PRD before anyone builds it. Ask 5-8 relentless, "
         "specific clarifying questions that surface unstated assumptions, scope boundaries, failure "
@@ -376,6 +491,75 @@ def grill_context(prd: Prd, history: list[dict]) -> str:
     if t:
         parts += ["", "Conversation so far:", t]
     return "\n".join(parts)
+
+
+def _grill_question(history: list[dict]) -> str:
+    """The turn the stream already sends as `question`.
+
+    An opening call has no author answer, so it asks the model to begin. A later
+    call passes the latest answer. That answer is also inside `grill_context`,
+    and the system prompt says to ask from it rather than from a fresh list.
+    """
+    for message in reversed(history or []):
+        text = (message.get("text") or "").strip()
+        if message.get("role") == "user" and text:
+            return text
+    return "Begin — ask your opening clarifying questions about this PRD."
+
+
+_GRILL_STOP = (
+    "The grill is finished: scope edges, failure modes, contracts, and open "
+    "decisions each have an answer or an explicit deferral. Stop asking.\n"
+)
+
+
+def _stub_grill(db: Session, prd: Prd) -> str:
+    """Offline questions for the interrogation `grill_prd` is in.
+
+    `_stub_command("grill")` stays the one-shot editor command. It has no
+    transcript, so it asks every dimension, and teaching it to stop would hide
+    that it never saw the answers. This follows `completion`: only outstanding
+    dimensions, and a stop line when nothing is left. A fresh PRD still gets one
+    bullet per dimension, which is what the questions eval counts.
+    """
+    outstanding = set(completion(db, prd.id)["outstanding"])
+    if not outstanding:
+        return _GRILL_STOP
+    lines = [f"- {question}" for name, question in DIMENSIONS.items() if name in outstanding]
+    thin = [
+        section for section in parse_sections(prd.body)
+        if len(section_bodies(prd.body).get(section, "").strip()) < 40
+    ]
+    for section in thin[:3]:
+        lines.append(f"- Section **{section}** is thin — what belongs there?")
+    return "\n".join(lines) + (
+        "\n\n_(Local stub questions. Set CHAT_PROVIDER=ollama|anthropic for a real grill.)_\n"
+    )
+
+
+def grill_questions(db: Session, prd_id: str) -> tuple[str, bool]:
+    """The next grill questions. This is the call `grill_prd` makes.
+
+    It reads the current interrogation the stream already uses — `grill_history`
+    since `grill_window`, `grill_context`, `GRILL_CHAT_SYSTEM` — and writes
+    nothing. Recording an answer is `answer_grill`. The editor's one-shot
+    `grill` command stays on `ai_command_detail`, whose context is only the body.
+    """
+    prd = db.get(Prd, keys.resolve_prd(db, prd_id) or prd_id)
+    if prd is None:
+        raise ValueError(f"prd not found: {prd_id}")
+    history = grill_history(db, prd.id, since=grill_window(db, prd.id))
+    resolved = platform_svc.resolve_role(db, prd.project_id, "grill.converse")
+    if resolved.provider_id == "stub":
+        return _stub_grill(db, prd), False
+    return chat_with_retry(
+        resolved.chat,
+        provider=resolved.provider_id,
+        model=getattr(resolved.chat, "model", ""),
+        system=GRILL_CHAT_SYSTEM,
+        context=grill_context(prd, history),
+        question=_grill_question(history),
+    )
 
 
 # ---- server-owned grill state (AL-296 / PRD-15 D4) ---------------------------------

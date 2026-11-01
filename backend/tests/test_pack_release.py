@@ -7,6 +7,7 @@ while `main` packed the dirty checkout, is the deploy.sh incident wearing new cl
 """
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import subprocess
@@ -17,6 +18,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "scripts"))
 import graphban_pack as gp  # noqa: E402
+import refusal_ratchet  # noqa: E402
 import graphban_upgrade as up  # noqa: E402
 
 SHA, VER = "abc1234", "2026.09.1"
@@ -26,6 +28,14 @@ def _host_scripts(root: pathlib.Path) -> None:
     (root / "scripts").mkdir(parents=True, exist_ok=True)
     for name in gp.HOST_SCRIPTS:
         (root / "scripts" / name).write_text(f"# {name}\n", encoding="utf-8")
+    # The real ratchet, with a zero bare-403/409 baseline: the fixture app has none, so it
+    # passes until a test adds one (GRPH-1185).
+    real = pathlib.Path(refusal_ratchet.__file__).read_text(encoding="utf-8")
+    assert '"bare_403_409": ' in real
+    fixture = real.replace(f'"bare_403_409": {refusal_ratchet.BASELINE["bare_403_409"]}',
+                           '"bare_403_409": 0')
+    assert fixture != real or refusal_ratchet.BASELINE["bare_403_409"] == 0
+    (root / "scripts" / "refusal_ratchet.py").write_text(fixture, encoding="utf-8")
 
 
 def make_src(tmp_path: pathlib.Path, *, version: str = VER) -> pathlib.Path:
@@ -38,6 +48,11 @@ def make_src(tmp_path: pathlib.Path, *, version: str = VER) -> pathlib.Path:
     (src / "backend" / "pyproject.toml").write_text(
         '[project]\nname = "graphban-api"\n', encoding="utf-8")
     (src / "backend" / "alembic.ini").write_text("[alembic]\n", encoding="utf-8")
+    skill = src / "cli" / "src" / "gban" / "skills" / "graphban-work"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# work\n", encoding="utf-8")
+    (src / "cli" / "pyproject.toml").write_text(
+        '[project]\nname = "gban"\nversion = "9.9.9"\n', encoding="utf-8")
     (src / "backend" / "alembic" / "versions" / "0001_initial.py").write_text(
         "revision = '0001'\n", encoding="utf-8")
     (src / "backend" / ".env").write_text("JWT_SECRET=packer-secret\n", encoding="utf-8")
@@ -91,6 +106,96 @@ def test_pack_lays_out_backend_web_sha_and_no_env(tmp_path):
         names = tf.getnames()
     assert f"graphban-{VER}/GIT_SHA" in names
     assert not any(n.endswith("/.env") or n.endswith(".env") for n in names)
+
+
+# ---- refusal coverage is built into the package, never committed (GRPH-1185) ----------------
+
+def _refusals(src: pathlib.Path) -> None:
+    (src / "backend" / "app" / "gates.py").write_text(
+        "def a():\n    raise Refused(409, 'x', rule_id='review.not_own_work')\n"
+        "def b():\n    raise Refused(403, 'y', rule_id='review.role_gated_tools')\n",
+        encoding="utf-8")
+
+
+def test_pack_ships_the_coverage_its_tree_measured(tmp_path):
+    src = make_src(tmp_path)
+    _refusals(src)
+    rc, tree = gp.pack(src, tmp_path / "out", sha=SHA, version=VER, api_only=True)
+    assert rc == 0
+    data = json.loads((tree / gp.COVERAGE).read_text(encoding="utf-8"))
+    assert (data["n"], data["m"], data["commit"]) == (2, 2, SHA)
+    # The tarball is what ships, not only the directory.
+    with tarfile.open(tmp_path / "out" / f"graphban-{VER}.tar.gz") as tf:
+        assert f"graphban-{VER}/{gp.COVERAGE}" in tf.getnames()
+
+
+def test_pack_ships_the_gban_skills_its_tree_carries(tmp_path):
+    """GRPH-1194: the packed backend lists the skills and gban version of the packed `cli/`."""
+    src = make_src(tmp_path)
+    rc, tree = gp.pack(src, tmp_path / "out", sha=SHA, version=VER, api_only=True)
+    assert rc == 0
+    data = json.loads((tree / gp.GBAN_SKILLS).read_text(encoding="utf-8"))
+    assert data == {"version": "9.9.9", "skills": ["graphban-work"]}
+    with tarfile.open(tmp_path / "out" / f"graphban-{VER}.tar.gz") as tf:
+        assert f"graphban-{VER}/{gp.GBAN_SKILLS}" in tf.getnames()
+
+
+def test_a_tree_without_cli_is_not_packed(tmp_path):
+    src = make_src(tmp_path)
+    (src / "cli" / "pyproject.toml").unlink()
+    rc, tree = gp.pack(src, tmp_path / "out", sha=SHA, version=VER, api_only=True)
+    assert rc == 1 and tree is None
+
+
+def test_the_image_skills_manifest_matches_cli_and_the_dockerfile_ships_it():
+    """The image's build context is backend/ (no cli/), so it ships a checked-in manifest.
+    A gban bump or a new skill fails here until it is regenerated with
+    `python3 scripts/graphban_pack.py --skills-manifest backend/scripts/gban_skills.json`."""
+    root = pathlib.Path(__file__).resolve().parents[2]
+    manifest = root / "backend" / "scripts" / "gban_skills.json"
+    assert json.loads(manifest.read_text(encoding="utf-8")) == gp.skills_manifest(root / "cli")
+    dockerfile = (root / "backend" / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY scripts/gban_skills.json ./app/data/gban_skills.json" in dockerfile
+    assert "test -s /app/app/data/gban_skills.json" in dockerfile
+    install = dockerfile.index("pip install --no-cache-dir .")
+    assert dockerfile.index("gban_skills.json ./app/data") < install
+
+
+def test_main_writes_the_skills_manifest(tmp_path):
+    out = tmp_path / "m.json"
+    assert gp.main(["--skills-manifest", str(out)]) == 0
+    root = pathlib.Path(__file__).resolve().parents[2]
+    assert json.loads(out.read_text(encoding="utf-8")) == gp.skills_manifest(root / "cli")
+
+
+def test_a_tree_that_fails_the_ratchet_is_not_packed_and_ships_no_number(tmp_path):
+    src = make_src(tmp_path)
+    _refusals(src)
+    (src / "backend" / "app" / "sneaky.py").write_text(
+        "def d():\n    raise HTTPException(409, 'a bare refusal')\n", encoding="utf-8")
+    out = tmp_path / "out"
+    rc, tree = gp.pack(src, out, sha=SHA, version=VER, api_only=True)
+    assert rc == 1 and tree is None
+    assert not (out / f"graphban-{VER}").exists()
+    assert not (out / f"graphban-{VER}.tar.gz").exists()
+    assert not list(out.rglob("refusal_coverage.json"))
+
+
+def test_a_stale_coverage_file_in_the_source_is_replaced_not_shipped(tmp_path):
+    src = make_src(tmp_path)
+    (src / gp.COVERAGE).parent.mkdir(parents=True)
+    (src / gp.COVERAGE).write_text(json.dumps({"n": 99, "m": 99, "commit": "stale"}))
+    rc, tree = gp.pack(src, tmp_path / "out", sha=SHA, version=VER, api_only=True)
+    assert rc == 0
+    data = json.loads((tree / gp.COVERAGE).read_text(encoding="utf-8"))
+    assert (data["n"], data["m"], data["commit"]) == (0, 0, SHA)
+
+
+def test_a_tree_without_the_ratchet_is_not_packed(tmp_path):
+    src = make_src(tmp_path)
+    (src / "scripts" / "refusal_ratchet.py").unlink()
+    rc, tree = gp.pack(src, tmp_path / "out", sha=SHA, version=VER, api_only=True)
+    assert rc == 1 and tree is None
 
 
 def test_src_dot_env_is_not_shipped(tmp_path):

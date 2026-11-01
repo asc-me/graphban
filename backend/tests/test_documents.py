@@ -77,7 +77,7 @@ def test_preamble_cites_baseline_hash_and_versions(db, pid):
 
 def test_preamble_needs_a_baselined_prd(db, pid):
     prd = prd_svc.create_prd(db, title="Draft", project_id=pid, body=BODY)
-    with pytest.raises(errors.Conflict):
+    with pytest.raises(errors.Validation):
         docs.put_document(db, project_id=pid, kind="preamble", body="x", prd_id=prd.id,
                           created_by=KEY)
 

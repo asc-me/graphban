@@ -16,7 +16,7 @@ vi.mock("@/features/ProjectContext", () => ({
                           activeId: "core", projects: [] }),
 }));
 
-const fleet = vi.hoisted(() => ({ data: null as unknown, refetch: vi.fn() }));
+const fleet = vi.hoisted(() => ({ data: null as unknown, isError: false, refetch: vi.fn() }));
 const tierMap = vi.hoisted(() => ({
   data: null as { rows: unknown[]; cells: unknown[]; overridden: boolean } | null,
   isFetching: false,
@@ -66,20 +66,21 @@ const rows = [
 describe("Fleet.v2 catalog and allocation", () => {
   beforeEach(() => {
     fleet.data = { ...BASE };
+    fleet.isError = false;
     tierMap.data = null;
     fleet.refetch.mockReset();
     api.saveFleetProfile.mockReset();
   });
 
-  it("names itself Fleet.v2 and does not mix in the roster", () => {
+  it("names itself Fleet and does not mix in the roster", () => {
     fleet.data = { ...BASE, matrix: { rows } };
     renderView();
     expect(screen.getByTestId("fleet-v2")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toMatch(/Fleet\.v2\s*core/);
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Fleet");
     expect(screen.queryByRole("button", { name: /^Work/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Wave/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Fleet.v1" })).toHaveAttribute("href", "/fleet.v1");
-    expect(screen.getByRole("tab", { name: /Fleet management/ })).toHaveAttribute("href", "/fleet.v1");
+    expect(screen.getByRole("tab", { name: /Fleet management/ })).toHaveAttribute("aria-selected", "false");
+    expect(screen.getByRole("tab", { name: /Harness config/ })).toHaveAttribute("aria-selected", "true");
   });
 
   it("draws unique matrix rows and links to Observe Harness", () => {
@@ -142,12 +143,73 @@ describe("Fleet.v2 catalog and allocation", () => {
     expect(within(panel).getByRole("heading", { name: "Tier map" })).toBeInTheDocument();
     // The read-only catalog is still there beside it — the panel is an addition, not a swap.
     expect(screen.getByTestId("fleet-matrix")).toHaveTextContent("gbagent");
-    expect(within(panel).getByRole("button", { name: /Inherit from performance grading/ }))
+    expect(within(panel).getByRole("checkbox", { name: /Inherit from performance grading/ }))
       .toBeInTheDocument();
+    expect(within(panel).getByTestId("tier-map-override-count"))
+      .toHaveTextContent("0 overrides on top of grading");
+    // Controls sit ABOVE the table; Save and the status footnote come after it.
+    const table = within(panel).getByRole("table");
+    const above = (a: Node, b: Node) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(above(within(panel).getByTestId("tier-map-controls"), table)).toBe(true);
+    expect(above(table, within(panel).getByTestId("tier-map-save"))).toBe(true);
+    expect(above(table, within(panel).getByTestId("tier-map-status"))).toBe(true);
+    // Subtitle is the whole sentence, not cut off mid-way.
+    expect(panel).toHaveTextContent(/lands on it\. Each cell takes the top-graded model/);
+    const subtitle = within(panel).getByText(/Which model each harness runs when/).closest("p")!;
+    expect(subtitle).toHaveTextContent(
+      /Each cell takes the top-graded model for that harness and tier\. Pick a model to pin an override; pick Inherit to drop it\.$/,
+    );
+    expect(within(panel).getByTestId("tier-map-grade")).toHaveTextContent("–");
     expect(within(panel).getByRole("button", { name: /Clear overrides/ })).toBeInTheDocument();
     expect(within(panel).getByRole("button", { name: /Save tier map/ })).toBeInTheDocument();
     expect(within(panel).getByLabelText("Model for gbagent at cheap")).toBeInTheDocument();
     expect(within(panel).getByTestId("tier-map-grading-link")).toHaveAttribute("href", "/harness");
-    expect(within(panel).getByTestId("tier-map-performance-link")).toHaveAttribute("href", "/harness");
+    expect(within(panel).queryByTestId("tier-map-performance-link")).not.toBeInTheDocument();
+    const content = screen.getByTestId("fleet-v2-content");
+    expect(content.className).toContain("max-w-[930px]");
+    expect(content.className).not.toContain("mx-auto");
+  });
+
+  it("orders sections Harness catalog → Tier map → Allocation", () => {
+    fleet.data = { ...BASE, matrix: { rows } };
+    tierMap.data = { rows: [], overridden: false, cells: [] };
+    renderView();
+    const catalog = screen.getByTestId("fleet-matrix");
+    const map = screen.getByTestId("fleet-tier-map");
+    const alloc = screen.getByTestId("fleet-v2-content").lastElementChild!;
+    const follows = (a: Node, b: Node) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(catalog, map)).toBe(true);
+    expect(follows(map, alloc)).toBe(true);
+    expect(screen.getByRole("link", { name: "Harness performance" })).toBeInTheDocument();
+  });
+
+  it("shows loading, not 'not served' or 'No mixable harness', while the fleet query is pending", () => {
+    fleet.data = undefined;
+    renderView();
+    const content = screen.getByTestId("fleet-v2-content");
+    expect(within(content).queryByText(/not been served/)).not.toBeInTheDocument();
+    expect(within(content).queryByText(/No mixable harness/)).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("fleet-matrix")).getByLabelText("Loading table")).toBeInTheDocument();
+    expect(within(screen.getByTestId("fleet-page-tabs")).queryByText(/not served/)).not.toBeInTheDocument();
+  });
+
+  it("still says not served for a resolved payload without a catalog", () => {
+    fleet.data = { ...BASE, matrix: { rows: [] } };
+    renderView();
+    expect(within(screen.getByTestId("fleet-matrix")).getByText(/has not been served/)).toBeInTheDocument();
+    expect(within(screen.getByTestId("fleet-page-tabs")).getByText("not served")).toBeInTheDocument();
+  });
+
+  it("shows an error with retry when the fleet request failed", async () => {
+    fleet.data = undefined;
+    fleet.isError = true;
+    renderView();
+    const matrix = screen.getByTestId("fleet-matrix");
+    expect(within(matrix).queryByText(/has not been served/)).not.toBeInTheDocument();
+    await userEvent.click(within(matrix).getByRole("button", { name: /retry|try again/i }));
+    expect(fleet.refetch).toHaveBeenCalled();
+    expect(within(screen.getByTestId("fleet-page-tabs")).getAllByText("unavailable")).toHaveLength(2);
   });
 });

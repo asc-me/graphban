@@ -7,6 +7,12 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, fie
 # Imports nothing from `app`, so this cannot cycle back through schemas.
 from app.services import tool_tiers as tool_tiers_svc
 
+# The preference document's vocabularies have one owner and it is the service, so they are
+# referenced here rather than restated — AGENTS.md's rule for `items.STATUSES`. Neither module
+# imports schemas (nor does anything they import), so neither can cycle back here.
+from app.services import items as items_svc
+from app.services import preferences as prefs_svc
+
 
 class ORMModel(BaseModel):
     # populate_by_name so the `id` fields aliased to a rendered `key` (PRD-13) can still
@@ -83,6 +89,167 @@ class UserOut(ORMModel):
     email: EmailStr
     avatar: str
     initials: str
+
+
+# ---- Per-user UI preferences (PRD-60 D1 / GRPH-1133) ----
+class _Prefs(BaseModel):
+    """Base for every level of the preference document.
+
+    `extra="forbid"` is the whole contract, and it has to be inherited at EVERY level rather
+    than declared once on the root: a nested model that quietly allowed extras would accept
+    `{"nav": {"collapsedd": true}}`, store nothing, and answer 200 — a save that reports
+    success and changes nothing. Pydantic reports the offending key in `loc`, so the 422 names
+    the field instead of the caller having to diff what they sent against what came back.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+def _one_of(value: str, allowed: tuple[str, ...], field: str) -> str:
+    """Membership against a service-owned vocabulary, naming both the field and the choices.
+
+    A validator rather than a `Literal`, because two of these vocabularies are `items.STATUSES`
+    and `prds.STATUSES` — lists that live in the services and grow there. A `Literal` would be
+    a hand-copied snapshot of them that stops agreeing the day a status is added.
+    """
+    if value not in allowed:
+        raise ValueError(f"{field} must be one of: {', '.join(allowed)}")
+    return value
+
+
+class NavPrefs(_Prefs):
+    collapsed: bool = False
+
+
+class PlanPrefs(_Prefs):
+    condensed: bool = False
+
+
+class BoardPrefs(_Prefs):
+    """`{status: shown|collapsed|hidden}` — the KEYS are validated as well as the values.
+
+    A column named after a status that does not exist is an unknown key wearing a dict's
+    clothes: `extra="forbid"` cannot see inside a `dict[str, str]`, so without this a typo'd
+    status would be stored, silently match no column on the board, and read back as a
+    preference the UI honours by doing nothing.
+    """
+
+    columns: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("columns")
+    @classmethod
+    def _known_columns(cls, value: dict[str, str]) -> dict[str, str]:
+        unknown = sorted(set(value) - set(items_svc.STATUSES))
+        if unknown:
+            raise ValueError(
+                f"columns: not an item status: {', '.join(unknown)} "
+                f"(expected one of: {', '.join(items_svc.STATUSES)})"
+            )
+        for status in sorted(value):
+            _one_of(value[status], prefs_svc.COLUMN_STATES, f"columns.{status}")
+        return value
+
+
+class TrackerPrefs(_Prefs):
+    layout: str = "board"
+    board: BoardPrefs = Field(default_factory=BoardPrefs)
+
+    @field_validator("layout")
+    @classmethod
+    def _known_layout(cls, v: str) -> str:
+        return _one_of(v, prefs_svc.LAYOUTS, "layout")
+
+
+class SavedView(_Prefs):
+    """One saved view. `status` is the page's own vocabulary, so it lives on the subclasses."""
+
+    # Bounded, not enumerated: a view id is minted by the client ("My view N"), so a fixed set
+    # here would reject every view the moment the frontend picks a scheme this file lacked.
+    id: str = Field(min_length=1, max_length=prefs_svc.MAX_ID_LENGTH)
+    label: str = Field(min_length=1, max_length=prefs_svc.MAX_LABEL_LENGTH)
+    window: str = "all"
+    hide: str = "never"
+
+    @field_validator("window")
+    @classmethod
+    def _known_window(cls, v: str) -> str:
+        return _one_of(v, prefs_svc.WINDOWS, "window")
+
+    @field_validator("hide")
+    @classmethod
+    def _known_hide(cls, v: str) -> str:
+        return _one_of(v, prefs_svc.AUTO_HIDE, "hide")
+
+
+class TrackerSavedView(SavedView):
+    status: str = "all"
+
+    @field_validator("status")
+    @classmethod
+    def _known_status(cls, v: str) -> str:
+        return _one_of(v, prefs_svc.TRACKER_STATUSES, "status")
+
+
+class PrdSavedView(SavedView):
+    status: str = "all"
+
+    @field_validator("status")
+    @classmethod
+    def _known_status(cls, v: str) -> str:
+        return _one_of(v, prefs_svc.PRD_STATUSES, "status")
+
+
+class _PageViews(_Prefs):
+    """`views.{page}.default` — the id of the view the page opens on.
+
+    `None` rather than `""` for "no default chosen": an empty string is a value that names no
+    view, and a client that stored one would open on nothing and report it as a preference.
+    """
+
+    default: str | None = Field(default=None, min_length=1,
+                                max_length=prefs_svc.MAX_ID_LENGTH)
+
+
+class TrackerViews(_PageViews):
+    saved: list[TrackerSavedView] = Field(default_factory=list)
+
+
+class PrdViews(_PageViews):
+    saved: list[PrdSavedView] = Field(default_factory=list)
+
+
+class ViewsPrefs(_Prefs):
+    tracker: TrackerViews = Field(default_factory=TrackerViews)
+    prds: PrdViews = Field(default_factory=PrdViews)
+
+
+class PreferencesIn(_Prefs):
+    """The whole document, as sent.
+
+    Every key optional and nothing defaulted on the way out: the router stores
+    `model_dump(exclude_unset=True)`, so a key the client did not send stays ABSENT rather than
+    arriving as a server-side guess. Defaults belong to the UI, which is the only place that
+    knows what they should be next release.
+    """
+
+    nav: NavPrefs = Field(default_factory=NavPrefs)
+    plan: PlanPrefs = Field(default_factory=PlanPrefs)
+    tracker: TrackerPrefs = Field(default_factory=TrackerPrefs)
+    views: ViewsPrefs = Field(default_factory=ViewsPrefs)
+
+
+class PreferencesOut(BaseModel):
+    """`{saved, preferences}`.
+
+    `saved` is the flag the localStorage migration reads, and it is the reason the response is
+    not just the document: `saved: false` means the server has never held one for this user,
+    which is the ONLY case where a client uploads its local values. `saved: true` with `{}`
+    means the user saved an empty document on purpose. Rendered the same way by any UI, the two
+    would let a second device flatten the first one's layout.
+    """
+
+    saved: bool
+    preferences: dict
 
 
 # ---- Organizations (hosted-only, AL-74b) ----
@@ -334,35 +501,6 @@ class UsageOut(BaseModel):
     calls_this_month: int
 
 
-class BillingOut(BaseModel):
-    plan: str
-    limits: PlanLimitsOut
-    usage: UsageOut
-    # True only when Stripe is fully configured. False is "manual assignment",
-    # not "billing is broken" — absence of keys is today's default.
-    self_serve: bool = False
-    # Portal needs a Stripe customer. False is "never checked out", not "portal broken".
-    has_customer: bool = False
-
-
-class CheckoutIn(BaseModel):
-    plan: str
-    success_url: str
-    cancel_url: str
-
-
-class PortalIn(BaseModel):
-    return_url: str
-
-
-class BillingUrlOut(BaseModel):
-    url: str
-
-
-class SetPlanIn(BaseModel):
-    plan: str  # free | pro | team
-
-
 # ---- Projects ----
 class ProjectOut(ORMModel):
     id: str
@@ -389,10 +527,33 @@ class ProjectOut(ORMModel):
     memory_write_mode: str = "review"
     memory_auto_reject: bool = True
     memory_llm_judge: bool = False
+    memory_candidate_expiry_days: int = 45
+    memory_flag_on_code_change: bool = True
+    memory_human_review_classes: list[str] = ["principle"]
     # May an agent operate this project's quality gates (AL-282)? Never authority gates.
     agent_adjudication: bool = False
     # Danger mode (GRPH-380): may an agent sign off its own work when nobody else can?
     allow_self_review: bool = False
+    # The release branch, set on this box (PRD-P57 S2). Null is unmeasured, never `main`.
+    release_ref: str | None = None
+
+
+class ProjectSummaryOut(BaseModel):
+    """One project switcher row (GRPH-1131): what the row draws, counted in SQL.
+
+    `default_branch` is gitops `base_branch` — null is unset, never `main`.
+    `last_activity_at` is null when nothing has ever happened, so the switcher can say so
+    instead of rendering an epoch as "idle 20000d".
+    """
+    id: str
+    name: str
+    tag: str
+    accent: str
+    item_count: int
+    agent_count: int
+    live_agents: int
+    default_branch: str | None = None
+    last_activity_at: datetime | None = None
 
 
 class ProjectCreate(BaseModel):
@@ -419,6 +580,17 @@ class ItemCreate(BaseModel):
     project_id: str = "core"
     prd_id: str | None = None
     prd_section: str = ""
+    question: str | None = None
+    options: list[str] | None = None
+
+
+class WaitAnswerIn(BaseModel):
+    option: str | None = None
+    text: str | None = None
+
+
+class SnoozeIn(BaseModel):
+    until: datetime
 
 
 class ItemUpdate(BaseModel):
@@ -487,11 +659,44 @@ class ItemOut(ORMModel):
     fidelity: str = "low"
     created_at: datetime
     updated_at: datetime
+    #: When it last reached `done` (GRPH-1134); null while it is not done. The board's
+    #: done-window and auto-hide read this, not `updated_at`, which any edit bumps.
+    done_at: datetime | None = None
+    #: A decision wait's `{question, options, answer?}` (GRPH-1137); null on every other item.
+    decision: dict | None = None
+    #: Hidden from triage until this time (GRPH-1137).
+    snoozed_until: datetime | None = None
+
+    @field_validator("decision", mode="before")
+    @classmethod
+    def _decision_public(cls, v):
+        # Strips the server-side `notify` bookkeeping from what the web reads.
+        if not v:
+            return None
+        return {k: v[k] for k in ("question", "options", "answer") if k in v}
 
     @field_validator("touchpoints", "evidence", mode="before")
     @classmethod
     def _tp_default(cls, v):
         return v or []
+
+
+#: What the project list leaves out by default (GRPH-1228): the per-item fields that are large
+#: and that no list view draws. A pinned set — `test_items_list.py` fails if one comes back.
+ITEM_HEAVY_FIELDS = frozenset({"description", "evidence", "bounce_reason"})
+
+
+def item_list_row(item) -> dict:
+    """A lean list row: every `ItemOut` field but the heavy ones, plus `has_attestation` so the
+    board can still tell whether `done` would 409 without reading the evidence array."""
+    row = ItemOut.model_validate(item).model_dump(
+        mode="json", by_alias=True, exclude=ITEM_HEAVY_FIELDS
+    )
+    row["has_attestation"] = any(
+        isinstance(e, dict) and e.get("kind") == "attestation" and e.get("adapter") and e.get("commit")
+        for e in (item.evidence or [])
+    )
+    return row
 
 
 # ---- Memory ----
@@ -516,6 +721,8 @@ class ShardOut(ORMModel):
     # ("similarity" | "llm") plus the confidence it acted on.
     scoring_source: str = ""
     auto_confidence: float | None = None
+    # pitfall | convention | principle; "" = unclassified.
+    shard_class: str = ""
     created_at: datetime
 
 
@@ -665,6 +872,27 @@ class RequestLinkIn(BaseModel):
     item_id: str | None = None
 
 
+class RequestAcceptIn(BaseModel):
+    status: str = "backlog"  # backlog | next
+    prd_id: str | None = None
+
+
+class RequestMergeIn(BaseModel):
+    target_id: str
+
+
+class RequestDeclineIn(BaseModel):
+    reason: str = ""
+
+
+class RequestSnoozeIn(BaseModel):
+    until: datetime
+
+
+class RequestUndoIn(BaseModel):
+    action_id: str
+
+
 class RequestVoteIn(BaseModel):
     delta: int = 1
 
@@ -694,6 +922,7 @@ class RequestAcceptOut(BaseModel):
 
     request: RequestOut
     item: ItemOut
+    action_id: str | None = None  # pass to /undo
 
 
 class RequestOut(ORMModel):
@@ -712,6 +941,9 @@ class RequestOut(ORMModel):
     attachment_ids: list[str] = []
     created_at: datetime
     published_at: datetime | None = None
+    snoozed_until: datetime | None = None
+    merged_into: str | None = None  # rendered key of the merge target (filled by the router)
+    action_id: str | None = None  # the triage action just taken, for undo
 
     # Rows created before these columns existed can hold NULL; coerce to the default.
     @field_validator("meta", mode="before")
@@ -903,6 +1135,43 @@ class SyncStatusOut(BaseModel):
     projects: list[SyncProjectState] = []
 
 
+class SyncOrgIdentity(BaseModel):
+    name: str
+    host: str | None = None  # `<slug>.graphban.dev` label; None when the org has not claimed one
+    plan: str | None = None
+
+
+class SyncOrgCounts(BaseModel):
+    members: int
+    teams: int
+    policy_rules: int  # org-level gitops fields the org has set (what Rules shows as org-sourced)
+    deployments: int
+
+
+class SyncOrgDeployment(BaseModel):
+    name: str
+    projects: int | None = None  # None while the cloud is unreachable — not zero
+    here: bool = False
+    last_sync_at: datetime | None = None
+
+
+class SyncOrgOverviewOut(BaseModel):
+    """The Organization window (GRPH-1223). Unlinked is `linked: false` and nothing else.
+
+    Unreachable keeps the last known identity and role but `counts` is null and every other
+    deployment's numbers are null — never the last numbers presented as current. The one
+    exception is THIS deployment's `last_sync_at`, which is local truth."""
+    linked: bool
+    reachable: bool | None = None
+    unreachable_since: datetime | None = None
+    fetched_at: datetime | None = None
+    org: SyncOrgIdentity | None = None
+    role: str | None = None  # the linking credential's owner's org role (owner | admin | member)
+    counts: SyncOrgCounts | None = None
+    deployments: list[SyncOrgDeployment] | None = None
+    can_unlink: bool | None = None  # the VIEWER is a box admin (GRPH-1225) — `role` is not theirs
+
+
 class GitopsField(BaseModel):
     value: str | bool | None = None
     source: str
@@ -1004,8 +1273,14 @@ class ProjectUpdate(BaseModel):
     memory_write_mode: str | None = None
     memory_auto_reject: bool | None = None
     memory_llm_judge: bool | None = None
+    memory_candidate_expiry_days: int | None = None
+    memory_flag_on_code_change: bool | None = None
+    memory_human_review_classes: list[str] | None = None
     agent_adjudication: bool | None = None
     allow_self_review: bool | None = None
+    # Unlike the fields above, an explicit null here CLEARS (back to unmeasured); omit the
+    # key for no change. Validated in services/projects.normalize_release_ref.
+    release_ref: str | None = None
 
     @field_validator("memory_write_mode")
     @classmethod
@@ -1014,6 +1289,26 @@ class ProjectUpdate(BaseModel):
         # allowed values instead of a project silently reverting to `review`.
         if v is not None and v not in ("review", "auto", "trusted"):
             raise ValueError("memory_write_mode must be one of: review, auto, trusted")
+        return v
+
+    @field_validator("memory_human_review_classes")
+    @classmethod
+    def _valid_review_classes(cls, v: list[str] | None) -> list[str] | None:
+        # Refused, not dropped: a typo'd class would silently leave that class auto-publishing.
+        if v is None:
+            return v
+        allowed = ("pitfall", "convention", "principle")  # services.memory.SHARD_CLASSES
+        bad = [c for c in v if c not in allowed]
+        if bad:
+            raise ValueError(f"memory_human_review_classes must be from: {', '.join(allowed)}")
+        return list(dict.fromkeys(v))
+
+    @field_validator("memory_candidate_expiry_days")
+    @classmethod
+    def _valid_expiry_days(cls, v: int | None) -> int | None:
+        # Refused, not clamped: 0 would expire every candidate the moment it is written.
+        if v is not None and v < 1:
+            raise ValueError("memory_candidate_expiry_days must be at least 1")
         return v
 
 
@@ -1051,6 +1346,7 @@ class PrdOut(ORMModel):
     updated: str
     created_at: datetime
     updated_at: datetime
+    closed_at: datetime | None = None
 
 
 class PrdSummary(ORMModel):
@@ -1060,6 +1356,14 @@ class PrdSummary(ORMModel):
     version: str
     linked: list[str] = _key("linked_keys", default_factory=list)
     updated_at: datetime
+    closed_at: datetime | None = None
+    request_count: int = 0
+    request_votes: int = 0
+    request_types: dict[str, int] = {}
+
+
+class PrdRequestLinkIn(BaseModel):
+    request_id: str
 
 
 class PrdCreate(BaseModel):
@@ -1138,8 +1442,14 @@ class TrackingOut(BaseModel):
     type: str
     status: str  # new / triaging / linked
     linked_status: str | None = None  # item status when linked
+    merged_into: str | None = None  # key of the request/item this was merged into
     votes: int
     comments: list["PublicCommentOut"] = []
+
+
+class SubmitterCommentIn(BaseModel):
+    """PRD-60 D9: a submitter's reply on the tracking page. Capped: anyone holding the token can post."""
+    body: str = Field(min_length=1, max_length=5000)
 
 
 class PublicCommentOut(BaseModel):
@@ -1157,6 +1467,7 @@ class PublicBoardRow(BaseModel):
     votes: int
     created_at: datetime
     linked_status: str | None = None  # absent when unlinked
+    merged_into: str | None = None  # key of the merge target; the row points there
     comments: list[PublicCommentOut] = []
 
 
@@ -1435,3 +1746,160 @@ class TrackerLinkOut(ORMModel):
     write_back_comment: bool
     created_at: datetime
     updated_at: datetime
+
+
+class RuleEnforcerOut(BaseModel):
+    kind: str
+    ref: str
+    url: str = ""
+
+
+class RuleOut(BaseModel):
+    id: str
+    stage: str
+    title: str
+    summary: str
+    enforcement: str
+    channel: str | None = None
+    enforcer: RuleEnforcerOut
+    truth: str
+    scope: str
+    models: list[str]
+    value: str | bool | None = None
+    source: str | None = None
+
+
+class SuggestionEvidenceOut(BaseModel):
+    text: str
+    source: str
+    link: str = ""
+
+
+class RuleSuggestionOut(BaseModel):
+    id: str
+    stage: str
+    level: str
+    title: str
+    why: str
+    kind: str
+    rule_id: str | None = None
+    value: str | None = None
+    evidence: list[SuggestionEvidenceOut]
+    fingerprint: str
+
+
+class SuggestionSourceOut(BaseModel):
+    source: str
+    state: str  # read | not_available
+    read_at: str | None = None
+    reason: str | None = None
+
+
+class ObservationOut(BaseModel):
+    id: int
+    project_id: str
+    item_id: str | None = None
+    kind: str
+    stage: str
+    rule_id: str | None = None
+    commit: str | None = None
+    origin: str  # live | backfill
+    ref: dict  # ids, predicate names and counts only — never copied text
+    occurred_at: str
+
+
+class ObservationsOut(BaseModel):
+    total: int
+    counts: dict[str, int]
+    observations: list[ObservationOut]
+
+
+class ObservationBackfillOut(BaseModel):
+    project_id: str
+    added: dict[str, int]
+    total_added: int
+
+
+class RecommendedRulesOut(BaseModel):
+    suggestions: list[RuleSuggestionOut]
+    sources: list[SuggestionSourceOut]
+
+
+class RulesOut(BaseModel):
+    version: str
+    rules: list[RuleOut]
+
+
+class UnmappedGroupOut(BaseModel):
+    where: str
+    status: int | None = None
+    #: True for a refusal that named no project at all (the platform bucket, owners only).
+    platform: bool = False
+    count: int
+    last_at: datetime | None = None
+    #: `days` counts, oldest day first.
+    daily: list[int]
+
+
+class UnmappedRefusalsOut(BaseModel):
+    days: int
+    #: Earliest refusal event recorded; None = none ever, which is not "zero since".
+    recording_since: datetime | None = None
+    groups: list[UnmappedGroupOut]
+
+
+class ShippedSkillOut(BaseModel):
+    name: str
+    #: SKILL.md at `cli-v<version>` (GRPH-1194).
+    url: str
+
+
+class RuleResultOut(BaseModel):
+    outcome: str  # pass | fail
+    at: str
+    item: str
+    commit: str = ""
+
+
+class RuleFlowRuleOut(RuleOut):
+    #: Only on a `checked` rule; None means no result is recorded.
+    last_result: RuleResultOut | None = None
+    used: bool
+    label: str | None = None
+    #: Only the collapsed skills node; None means the shipped skill list was not readable here.
+    skills: list[ShippedSkillOut] | None = None
+    #: The gban version those skills ship at; None with `skills`.
+    skills_version: str | None = None
+
+
+class RuleStageOut(BaseModel):
+    id: str
+    title: str
+    summary: str
+    state: str
+    rules: list[RuleFlowRuleOut]
+
+
+class RefusalCoverageOut(BaseModel):
+    """`published: false` carries null numbers — never a zero (GRPH-1192)."""
+    published: bool
+    n: int | None = None
+    m: int | None = None
+    commit: str | None = None
+    published_at: str | None = None
+
+
+class RuleFlowControlOut(BaseModel):
+    """Which plane holds the gitops contract; the Rules view reads it from the flow."""
+    state: str
+    writable: bool = False
+    message: str = ""
+    org_name: str = ""
+
+
+class RulesFlowOut(BaseModel):
+    version: str
+    model: str | None = None
+    stages: list[RuleStageOut]
+    edges: list[list[str]]
+    control: RuleFlowControlOut

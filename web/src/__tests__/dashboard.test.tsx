@@ -27,10 +27,10 @@ import type { DashboardData, RequestType } from "@/lib/types";
 const { dashboardSpy } = vi.hoisted(() => ({ dashboardSpy: vi.fn() }));
 
 const countsPopulated = {
-  items: 11, items_in_progress: 4, requests: 5, review: 2, triage_new: 1, lessons_published: 3,
+  items: 11, items_in_progress: 4, requests: 5, review: 2, triage_new: 1, lessons_published: 3, live_agents: 2,
 };
 const countsZero = {
-  items: 0, items_in_progress: 0, requests: 0, review: 0, triage_new: 0, lessons_published: 0,
+  items: 0, items_in_progress: 0, requests: 0, review: 0, triage_new: 0, lessons_published: 0, live_agents: 0,
 };
 const mapOf = (node_count: number) => ({
   nodes: [], edges: [], node_count, edge_count: 0, outbound: [],
@@ -109,7 +109,7 @@ function renderDashboard() {
 
 /** The panel a section title belongs to — titles are unique, panels are not addressable. */
 function panelOf(title: string) {
-  return screen.getByText(title).parentElement!;
+  return screen.getByRole("heading", { name: title }).closest("section")!;
 }
 
 beforeEach(async () => {
@@ -133,9 +133,9 @@ async function zeroTheRest() {
 describe("Dashboard (PRD-47 S3)", () => {
   it("draws the six stats in one grid, toned when they are above zero", async () => {
     renderDashboard();
-    await screen.findByText("Items");
+    await screen.findByText("Items", { selector: "span" });
 
-    const grid = screen.getByText("Items").parentElement!.parentElement!;
+    const grid = screen.getByText("Items", { selector: "span" }).parentElement!.parentElement!;
     expect(grid.children).toHaveLength(6);
 
     const tile = (label: string) => within(grid).getByText(label).parentElement!;
@@ -158,10 +158,51 @@ describe("Dashboard (PRD-47 S3)", () => {
     }
   });
 
+  it("shows a failed count as failed, not 0", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.counts).mockRejectedValue(new Error("boom"));
+    renderDashboard();
+    const tile = (await screen.findByText("Agents live", { selector: "span" })).parentElement!;
+    expect(tile).toHaveTextContent("—");
+    expect(tile).not.toHaveTextContent("0");
+    expect(tile.querySelector("[title]")).toHaveAttribute("title", "Not read — the request failed");
+  });
+
+  it("shows each stat's uppercase label above its value", async () => {
+    renderDashboard();
+    const label = await screen.findByText("Items", { selector: "span" });
+    expect(label).toHaveClass("uppercase");
+    expect(label.nextElementSibling).toHaveTextContent("11");
+  });
+
+  it("puts the four section headings and subtitles outside the cards", async () => {
+    renderDashboard();
+    await screen.findByText("Where the stream stands.");
+    for (const [title, subtitle] of [
+      ["Items", "Where the stream stands."],
+      ["Requests", "From the public form, by type."],
+      ["Recent activity", "Latest moves in the stream."],
+      ["Jump to", "Live counts from each surface."],
+    ]) {
+      const heading = screen.getByRole("heading", { name: title });
+      const sub = screen.getByText(subtitle);
+      expect(sub.parentElement).toBe(heading.parentElement);
+      expect(heading.closest(".rounded-\\[14px\\]")).toBeNull();
+    }
+  });
+
+  it("orders the Jump to tiles Tracker through Live", async () => {
+    renderDashboard();
+    await screen.findByText("Where the stream stands.");
+    const jump = screen.getByRole("region", { name: "Jump to" });
+    const names = within(jump).getAllByRole("link").map((a) => a.textContent!.match(/^[A-Za-z ]+?(?=\d|—|not|$)/)![0].trim());
+    expect(names).toEqual(["Tracker", "Triage", "PRDs", "Code graph", "Memory", "Lessons", "Fleet", "Live"]);
+  });
+
   it("segments the status bar by what is there and keeps the full vocabulary in the legend", async () => {
     renderDashboard();
-    await screen.findByText("Item status distribution");
-    const panel = panelOf("Item status distribution");
+    await screen.findByRole("heading", { name: "Items" });
+    const panel = panelOf("Items");
 
     // One segment per status that has items — `next` has none, so it is not drawn as a
     // zero-width sliver pretending to be a category.
@@ -182,19 +223,20 @@ describe("Dashboard (PRD-47 S3)", () => {
 
   it("lists every request type, including the ones nobody has filed", async () => {
     renderDashboard();
-    await screen.findByText("Requests by type");
-    const panel = panelOf("Requests by type");
+    await screen.findByRole("heading", { name: "Requests" });
+    const panel = panelOf("Requests");
 
     for (const t of Object.keys(TYPE_META) as RequestType[]) {
-      expect(within(panel).getByText(TYPE_META[t].label)).toBeInTheDocument();
+      const label = TYPE_META[t].label;
+      expect(within(panel).getByText(label.charAt(0) + label.slice(1).toLowerCase())).toBeInTheDocument();
     }
-    expect(within(panel).getByText("FEATURE").closest("div.flex")).toHaveTextContent("3");
-    expect(within(panel).getByText("ENHANCEMENT").closest("div.flex")).toHaveTextContent("0");
+    expect(within(panel).getByText("Feature").closest("div.flex")).toHaveTextContent("3");
+    expect(within(panel).getByText("Enhancement").closest("div.flex")).toHaveTextContent("0");
   });
 
   it("lists recent activity with each item's id, title and date", async () => {
     renderDashboard();
-    await screen.findByText("Recent activity");
+    await screen.findByRole("heading", { name: "Recent activity" });
     const panel = panelOf("Recent activity");
 
     expect(within(panel).getByText("GRPH-954")).toBeInTheDocument();
@@ -217,7 +259,7 @@ describe("Dashboard (PRD-47 S3)", () => {
     // the control only ever clears the current paint.
     unmount();
     renderDashboard();
-    await screen.findByText("Items");
+    await screen.findByText("Items", { selector: "span" });
     expect(screen.queryByText("Put agents on the backlog")).not.toBeInTheDocument();
   });
 });
@@ -232,8 +274,8 @@ describe("an empty project is not a measured one", () => {
     expect(await screen.findByText("Nothing to summarise yet")).toBeInTheDocument();
     // The tiles are the tell: a strip of zeros is a claim about the project.
     expect(screen.queryByText("Memory shards")).not.toBeInTheDocument();
-    expect(screen.queryByText("Item status distribution")).not.toBeInTheDocument();
-    expect(screen.queryByText("Recent activity")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Items" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Recent activity" })).not.toBeInTheDocument();
   });
 
   /**
@@ -264,7 +306,7 @@ describe("an empty project is not a measured one", () => {
     await zeroTheRest();
     renderDashboard();
 
-    await screen.findByText("Items");
+    await screen.findByText("Items", { selector: "span" });
     expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
     expect(screen.getByText("Memory shards")).toBeInTheDocument();
     expect(screen.getByText("PRDs")).toBeInTheDocument();
@@ -281,7 +323,7 @@ describe("an empty project is not a measured one", () => {
     vi.mocked(api.counts).mockResolvedValue({ ...countsZero, [field]: value } as never);
     renderDashboard();
 
-    await screen.findByText("Items");
+    await screen.findByText("Items", { selector: "span" });
     expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Jump to" })).toHaveTextContent(meta);
   });
@@ -293,11 +335,11 @@ describe("an empty project is not a measured one", () => {
     vi.mocked(api.counts).mockResolvedValue({ ...countsZero, items: 8 } as never);
     renderDashboard();
 
-    await screen.findByText("Items");
+    await screen.findByText("Items", { selector: "span" });
     expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
     // The figure prefers the dashboard's measured 0. The shell's 8 still blocks the
     // empty project, which is what deleting that clause would bring back.
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("0");
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("0");
   });
 
   it("is not empty when the shell says work is in flight and the dashboard said 0", async () => {
@@ -307,7 +349,7 @@ describe("an empty project is not a measured one", () => {
     vi.mocked(api.counts).mockResolvedValue({ ...countsZero, items_in_progress: 3 } as never);
     renderDashboard();
 
-    await screen.findByText("Items");
+    await screen.findByText("Items", { selector: "span" });
     expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
     // The figure prefers the dashboard's measured 0. The shell's 3 still blocks the
     // empty project, which is what deleting that clause would bring back.
@@ -321,7 +363,7 @@ describe("an empty project is not a measured one", () => {
     vi.mocked(api.codeMap).mockResolvedValue(mapOf(9) as never);
     renderDashboard();
 
-    await screen.findByText("Items");
+    await screen.findByText("Items", { selector: "span" });
     expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
     expect(screen.getByText("Graph nodes").parentElement).toHaveTextContent("9");
   });
@@ -330,10 +372,10 @@ describe("an empty project is not a measured one", () => {
     const { api } = await import("@/lib/api");
     vi.mocked(api.dashboard).mockResolvedValue(bare as never);
     await zeroTheRest();
-    vi.mocked(api.fleet).mockResolvedValue(fleetOf(1) as never);
+    vi.mocked(api.counts).mockResolvedValue({ ...countsZero, live_agents: 1 } as never);
     renderDashboard();
 
-    await screen.findByText("Items");
+    await screen.findByText("Items", { selector: "span" });
     expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
     expect(screen.getByText("Agents live").parentElement).toHaveTextContent("1");
   });

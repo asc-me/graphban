@@ -10,6 +10,13 @@ interface BenchResult {
 
 type BenchFn = (name: "sparse" | "dense") => BenchResult;
 
+/** Prints the numbers before the budget checks, so a failing run shows its margin too. */
+function report(label: string, r: BenchResult): void {
+  const line = `${label}: paint ${r.paintMs.toFixed(1)}ms pan p95 ${r.panP95.toFixed(1)}ms hit ${r.hitMs.toFixed(3)}ms nodes ${r.nodes} edges ${r.edges}`;
+  console.log(`[bench] ${line}`);
+  test.info().annotations.push({ type: "bench", description: line });
+}
+
 /**
  * D9 budgets are Canvas 2D on `sparse` only. Dense is loaded so a paint that
  * throws is still a failure; its pan time is a WebGL budget (S10).
@@ -25,24 +32,18 @@ test("sparse canvas stays inside the frame budget and dense paints", async ({ pa
   const sparse = await page.evaluate(() =>
     (window as unknown as { __bench: BenchFn }).__bench("sparse"),
   );
+  report("canvas2d sparse", sparse);
   expect(sparse.nodes).toBeGreaterThan(800);
   expect(sparse.paintMs).toBeLessThanOrEqual(1000);
   expect(sparse.panP95).toBeLessThanOrEqual(16);
   expect(sparse.hitMs).toBeLessThanOrEqual(1);
-  test.info().annotations.push({
-    type: "sparse",
-    description: `paint ${sparse.paintMs.toFixed(1)}ms pan p95 ${sparse.panP95.toFixed(1)}ms hit ${sparse.hitMs.toFixed(3)}ms nodes ${sparse.nodes}`,
-  });
 
   const dense = await page.evaluate(() =>
     (window as unknown as { __bench: BenchFn }).__bench("dense"),
   );
+  report("canvas2d dense", dense);
   expect(dense.nodes).toBeGreaterThan(800);
   expect(dense.paintMs).toBeGreaterThan(0);
-  test.info().annotations.push({
-    type: "dense",
-    description: `paint ${dense.paintMs.toFixed(1)}ms pan p95 ${dense.panP95.toFixed(1)}ms hit ${dense.hitMs.toFixed(3)}ms`,
-  });
 });
 
 /**
@@ -78,6 +79,7 @@ test("webgl paints both fixtures inside the frame budget", async ({ page }) => {
       { renderer: "webgl" },
     ),
   );
+  report("webgl sparse", sparse);
   expect(sparse.nodes).toBeGreaterThan(800);
   expect(sparse.paintMs).toBeLessThanOrEqual(1000);
   expect(sparse.panP95).toBeLessThanOrEqual(16);
@@ -90,24 +92,21 @@ test("webgl paints both fixtures inside the frame budget", async ({ page }) => {
       }
     ).__bench("dense", { renderer: "webgl", zoom: 2.6 }),
   );
+  report("webgl dense 2.6x", dense);
   expect(dense.nodes).toBeGreaterThan(800);
   expect(dense.edges).toBeGreaterThan(100);
   expect(dense.paintMs).toBeLessThanOrEqual(1000);
   expect(dense.panP95).toBeLessThanOrEqual(16);
   expect(dense.hitMs).toBeLessThanOrEqual(1);
-  test.info().annotations.push({
-    type: "webgl",
-    description: `sparse paint ${sparse.paintMs.toFixed(1)}ms pan ${sparse.panP95.toFixed(1)}ms edges ${sparse.edges}; dense paint ${dense.paintMs.toFixed(1)}ms pan ${dense.panP95.toFixed(1)}ms edges ${dense.edges}`,
-  });
 });
 
 test("sparse pixel diff stays close between canvas 2d and webgl", async ({ page }) => {
   await page.goto("/");
   await page.waitForFunction(
-    () => typeof (window as unknown as { __pixelDiff?: () => { blockMae: number; centerN: number; centerHit: number; ink2d: number; inkGl: number } }).__pixelDiff === "function",
+    () => typeof (window as unknown as { __pixelDiff?: () => { blockMae: number; centerN: number; centerHit: number; ink2d: number; inkGl: number; cloudMae: number } }).__pixelDiff === "function",
   );
   const diff = await page.evaluate(() =>
-    (window as unknown as { __pixelDiff: () => { blockMae: number; centerN: number; centerHit: number; ink2d: number; inkGl: number; zoom: number } }).__pixelDiff(),
+    (window as unknown as { __pixelDiff: () => { blockMae: number; centerN: number; centerHit: number; ink2d: number; inkGl: number; zoom: number; cloudMae: number; cloudInk2d: number; cloudInkGl: number } }).__pixelDiff(),
   );
   expect(diff.centerN).toBeGreaterThan(20);
   expect(diff.centerHit / diff.centerN).toBeGreaterThanOrEqual(0.75);
@@ -117,8 +116,14 @@ test("sparse pixel diff stays close between canvas 2d and webgl", async ({ page 
   const ratio = diff.inkGl / diff.ink2d;
   expect(ratio).toBeGreaterThan(0.45);
   expect(ratio).toBeLessThan(2.2);
+  expect(diff.cloudMae).toBeLessThanOrEqual(28);
+  // A soft falloff crosses alpha>20 at different radii on the two rasters, so
+  // the ink ratio is not the agreement check. Ink only proves each backend
+  // painted the cloud; blockMae is what says the pictures match.
+  expect(diff.cloudInk2d).toBeGreaterThan(100);
+  expect(diff.cloudInkGl).toBeGreaterThan(100);
   test.info().annotations.push({
     type: "pixel",
-    description: `mae ${diff.blockMae.toFixed(2)} centres ${diff.centerHit}/${diff.centerN} ink ${diff.ink2d}/${diff.inkGl} zoom ${diff.zoom.toFixed(2)}`,
+    description: `mae ${diff.blockMae.toFixed(2)} centres ${diff.centerHit}/${diff.centerN} ink ${diff.ink2d}/${diff.inkGl} zoom ${diff.zoom.toFixed(2)} cloud mae ${diff.cloudMae.toFixed(2)} ink ${diff.cloudInk2d}/${diff.cloudInkGl}`,
   });
 });

@@ -37,6 +37,7 @@ from app.schemas import (
     PublicRequestIn,
     PublicRequestOut,
     RequestOut,
+    SubmitterCommentIn,
 )
 from app.services import attachments as att_svc
 from app.services import duplicates as dup_svc
@@ -155,25 +156,6 @@ def _verify_github_signature(raw: bytes, signature: str | None) -> None:
     expected = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):
         raise HTTPException(401, "webhook signature verification failed")
-
-
-@router.post("/stripe/webhook")
-async def stripe_webhook(request: FastAPIRequest, db: Session = Depends(get_db)):
-    """Stripe → org.plan (GRPH-82). Unsigned or unconfigured is 401/404, never a quiet apply."""
-    from app.services import billing as billing_svc
-
-    if not billing_svc.configured():
-        raise HTTPException(404, "Not Found")
-    raw = await request.body()
-    sig = request.headers.get("stripe-signature") or ""
-    try:
-        event = billing_svc.construct_event(raw, sig)
-    except billing_svc.BillingUnavailable:
-        raise HTTPException(404, "Not Found") from None
-    except ValueError:
-        raise HTTPException(401, "webhook signature verification failed") from None
-    billing_svc.apply_event(db, event)
-    return {"ok": True}
 
 
 @router.post("/github/webhook")
@@ -346,7 +328,26 @@ def tracking_page(track_token: str, request: FastAPIRequest, db: Session = Depen
         item = db.get(Item, req.linked_to)
         if item:
             data["linked_status"] = item.status
+    data["merged_into"] = req_svc.merged_target_key(db, req)
     return data
+
+
+@router.post("/t/{track_token}/comments", status_code=201)
+def submitter_comment(track_token: str, body: SubmitterCommentIn, request: FastAPIRequest, db: Session = Depends(get_db)):
+    """PRD-60 D9: the submitter replies on their own request. The tracking token is the
+    credential; an unknown token is a 404, same as the tracking page."""
+    _rate_or_429(db, request, None)
+    req = req_svc.resolve_track_token(db, track_token)
+    if req is None:
+        raise HTTPException(404, "not found")
+    try:
+        comment = req_svc.create_comment(
+            db, request_id=req.id, author_user_id=None,
+            body=body.body, author_kind="submitter",
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"id": comment.id, "body": comment.body, "created_at": comment.created_at.isoformat()}
 
 
 # ---- PRD-43: public boards ----
@@ -373,6 +374,7 @@ def public_issues_board(
             item = db.get(Item, r.linked_to)
             if item:
                 row["linked_status"] = item.status
+        row["merged_into"] = req_svc.merged_target_key(db, r)
         rows.append(row)
     return rows
 
@@ -399,6 +401,7 @@ def public_requests_board(
             item = db.get(Item, r.linked_to)
             if item:
                 row["linked_status"] = item.status
+        row["merged_into"] = req_svc.merged_target_key(db, r)
         rows.append(row)
     return rows
 
@@ -723,6 +726,7 @@ def host_issues(
             item = db.get(Item, r.linked_to)
             if item:
                 row["linked_status"] = item.status
+        row["merged_into"] = req_svc.merged_target_key(db, r)
         rows.append(row)
     return rows
 
@@ -756,6 +760,7 @@ def host_requests(
             item = db.get(Item, r.linked_to)
             if item:
                 row["linked_status"] = item.status
+        row["merged_into"] = req_svc.merged_target_key(db, r)
         rows.append(row)
     return rows
 
@@ -787,5 +792,6 @@ def host_tracking(
         item = db.get(Item, req.linked_to)
         if item:
             data["linked_status"] = item.status
+    data["merged_into"] = req_svc.merged_target_key(db, req)
     return data
 

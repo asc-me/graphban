@@ -256,10 +256,10 @@ class _Forge:
 
     def __init__(self, *, state="OPEN", draft=True, head=REVIEWED, mergeable="MERGEABLE",
                  status="CLEAN", fork=False, has_pr=True, merge_ok=True, ready_ok=True,
-                 lands=True, url="https://github.com/o/r/pull/9", listed=None):
+                 lands=True, url="https://github.com/o/r/pull/9", listed=None, base="main"):
         self.pr = {"number": 9, "url": url, "state": state, "isDraft": draft,
                    "mergeable": mergeable, "mergeStateStatus": status, "headRefOid": head,
-                   "headRefName": "gb/w-1", "isCrossRepository": fork,
+                   "headRefName": "gb/w-1", "baseRefName": base, "isCrossRepository": fork,
                    "mergeCommit": {"oid": MERGE_OID} if state == "MERGED" else None}
         self.has_pr, self.merge_ok, self.ready_ok, self.lands = has_pr, merge_ok, ready_ok, lands
         self.listed = list(listed or [])
@@ -371,11 +371,44 @@ def test_a_main_only_head_move_still_merges(gh, git_repo: Path):
     forge = _Forge(draft=False, head=head)
     gh(_only_gh(forge))
     got = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=reviewed,
-                            green={reviewed}, paths=["item.py"])
+                            green={head}, paths=["item.py"])
 
     assert got.ok and got.commit == MERGE_OID
     assert "paths-unchanged" in got.checked
+    assert "ci=suite_green" in got.checked
     assert "pr merge" in forge.verbs()
+
+
+def test_a_paths_unchanged_head_is_green_on_that_head_not_the_old_one(gh, git_repo: Path):
+    """The follow-up commit is what CI ran. `suite_green` on the signed-off commit does
+    not cover a later head, and a later head's pass does not need the old red commit.
+
+    Sabotage: keep comparing `green` to `reviewed` after `paths-unchanged`. The first
+    call merges a head CI never saw; the second refuses the head CI did attest.
+    """
+    (git_repo / "item.py").write_text("mine\n", encoding="utf-8")
+    subprocess.run(["git", "add", "item.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "item"], cwd=git_repo, check=True)
+    reviewed = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo,
+                              capture_output=True, text=True, check=True).stdout.strip()
+    (git_repo / "other.py").write_text("lockfile\n", encoding="utf-8")
+    subprocess.run(["git", "add", "other.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "ci fix outside the item"], cwd=git_repo, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo,
+                          capture_output=True, text=True, check=True).stdout.strip()
+    forge = _Forge(draft=False, head=head)
+    gh(_only_gh(forge))
+
+    stale = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=reviewed,
+                              green={reviewed}, paths=["item.py"])
+    assert not stale.ok and not stale.skipped
+    assert head[:12] in stale.reason
+    assert "pr merge" not in forge.verbs()
+
+    fresh = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=reviewed,
+                              green={head}, paths=["item.py"])
+    assert fresh.ok and "paths-unchanged" in fresh.checked
+    assert "ci=suite_green" in fresh.checked
 
 
 def test_a_real_edit_of_the_item_still_needs_review(gh, git_repo: Path):
@@ -563,24 +596,230 @@ def test_the_pr_selector_prefers_the_item_pr_then_the_receipt_then_the_branch():
     assert propose_mod.pr_selector({}) == ""
 
 
+def _opened(n: int, branch: str) -> dict:
+    """The receipt the server writes for a `pr_opened` observation."""
+    return {"kind": "url", "url": f"https://github.com/o/r/pull/{n}",
+            "detail": f"draft PR opened by gbfleet for {branch}"}
+
+
+def test_a_rework_on_a_new_branch_selects_that_branchs_pr_not_the_first(gh):
+    """GRPH-1218. Reworked onto `gb/new`, the item carries the old PR's receipt first and the
+    new one after it. Signed off at the new PR's head, the merge must check the new PR.
+
+    Sabotage: return the first `/pull/` receipt again — this selects #8 and fails."""
+    item = {"pr": None, "branch": "gb/new",
+            "evidence": [_opened(8, "gb/old"), _opened(9, "gb/new")]}
+
+    selector = propose_mod.pr_selector(item)
+    assert selector.endswith("/pull/9")
+
+    forge = _Forge(draft=True)
+    got = _merge(forge, gh, selector=selector)
+
+    assert got.ok and got.commit == MERGE_OID
+    assert forge.calls[0][3].endswith("/pull/9"), "viewed the superseded PR"
+    assert forge.calls[3][1:3] == ["pr", "merge"] and forge.calls[3][3].endswith("/pull/9")
+
+
+def test_the_branchs_receipt_wins_even_when_it_is_not_the_latest():
+    item = {"branch": "gb/new", "evidence": [_opened(9, "gb/new"), _opened(8, "gb/old")]}
+
+    assert propose_mod.pr_selector(item).endswith("/pull/9")
+
+
+def test_two_receipts_and_no_branch_selects_the_latest():
+    """A signed-off item's `branch` is routinely empty; the newest receipt is the live PR."""
+    item = {"branch": "", "evidence": [_opened(8, "gb/old"), _opened(9, "gb/new")]}
+
+    assert propose_mod.pr_selector(item).endswith("/pull/9")
+
+
+def test_a_branch_no_receipt_names_falls_back_to_the_latest_receipt():
+    item = {"branch": "gb/other", "evidence": [_opened(8, "gb/old"), _opened(9, "gb/new")]}
+
+    assert propose_mod.pr_selector(item).endswith("/pull/9")
+
+
+# ---- the item's other PR is the reviewed one (GRPH-1219) ------------------------------------
+
+PR_A = "https://github.com/o/r/pull/8"
+PR_B = "https://github.com/o/r/pull/9"
+
+
+class _Forges:
+    """A recorded `gh` holding several PRs, keyed by URL, each moved the way `_Forge` moves
+    one. `close_ok=False` makes every `pr close` fail."""
+
+    def __init__(self, heads: dict[str, str], *, close_ok=True):
+        self.prs = {u: _Forge(draft=False, head=h, url=u) for u, h in heads.items()}
+        for u, f in self.prs.items():
+            f.pr["number"] = int(u.rsplit("/", 1)[1])
+        self.close_ok = close_ok
+        self.calls: list[list[str]] = []
+
+    def verbs(self) -> list[str]:
+        return [" ".join(c[1:3]) + " #" + c[3].rsplit("/", 1)[-1] for c in self.calls]
+
+    def __call__(self, argv, **kw):
+        self.calls.append(argv)
+        pr = self.prs[argv[3]]
+        if " ".join(argv[1:3]) == "pr close":
+            if not self.close_ok:
+                return subprocess.CompletedProcess(argv, 1, "", "could not close")
+            pr.pr["state"] = "CLOSED"
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return pr(argv, **kw)
+
+
+def _merge_siblings(forges, gh, selector, siblings, green=None):
+    gh(forges)
+    return propose_mod.merge(REPO, "SA-417", selector, reviewed=REVIEWED,
+                             green={REVIEWED} if green is None else green,
+                             siblings=siblings)
+
+
+def test_the_item_pr_receipts_are_every_pull_url_once():
+    item = {"pr": PR_B, "evidence": [_opened(8, "gb/old"), _opened(9, "gb/new"),
+                                     {"kind": "url", "url": "https://ci/run/1"}]}
+
+    assert propose_mod.pr_receipts(item) == [PR_B, PR_A]
+
+
+def test_the_sibling_at_the_reviewed_commit_is_merged_instead(gh):
+    """Receipts [#8 head MOVED, #9 head REVIEWED], selector picked #8. The sign-off vouches
+    for #9; #9 merges, and the receipt says which PR and why.
+
+    Sabotage: drop the sibling lookup in `_merge` — this holds on #8 instead."""
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED})
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert got.ok and got.commit == MERGE_OID, got.reason
+    assert got.selector == PR_B and got.url == PR_B
+    assert ["pr", "merge", PR_B] == forges.calls[[" ".join(c[1:3]) for c in forges.calls]
+                                                 .index("pr merge")][1:4]
+    assert not any(c[1:3] == ["pr", "merge"] and c[3] == PR_A for c in forges.calls)
+    assert any(c.startswith(f"sibling={PR_B}") and "#8" in c for c in got.checked)
+
+
+def test_after_the_sibling_merges_the_superseded_pr_is_closed(gh):
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED})
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    close = [c for c in forges.calls if c[1:3] == ["pr", "close"]]
+    assert len(close) == 1 and close[0][3] == PR_A
+    assert close[0][close[0].index("--comment") + 1] == "Superseded by #9"
+    assert got.closed == ("#8",)
+
+
+def test_a_failed_close_still_reports_the_merge(gh):
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED}, close_ok=False)
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert got.ok and got.commit == MERGE_OID and got.closed == ()
+    assert any(c[1:3] == ["pr", "close"] for c in forges.calls)
+
+
+def test_no_pr_at_the_reviewed_commit_names_every_pr_and_its_head(gh):
+    other = "d" * 40
+    forges = _Forges({PR_A: MOVED, PR_B: other})
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert not got.ok and not got.skipped
+    assert f"#8 head {MOVED[:12]}" in got.reason and f"#9 head {other[:12]}" in got.reason
+    assert REVIEWED[:12] in got.reason
+    assert not any(c[1:3] in (["pr", "merge"], ["pr", "close"]) for c in forges.calls)
+
+
+def test_two_prs_at_the_reviewed_commit_is_a_hold_naming_both(gh):
+    pr_c = "https://github.com/o/r/pull/10"
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED, pr_c: REVIEWED})
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B, pr_c])
+
+    assert not got.ok and "2 PRs" in got.reason
+    assert "#9 head" in got.reason and "#10 head" in got.reason
+    assert not any(c[1:3] == ["pr", "merge"] for c in forges.calls)
+
+
+def test_a_closed_sibling_at_the_reviewed_commit_is_not_merged(gh):
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED})
+    forges.prs[PR_B].pr["state"] = "CLOSED"
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert not got.ok and "#9 head" in got.reason and "(closed)" in got.reason
+
+
+def test_a_sibling_already_merged_at_the_reviewed_commit_is_recorded(gh):
+    """The sibling's `--auto` merge was armed on an earlier tick and has since landed, while
+    the selector still picks the stale #8. That is a merge to record, not "the branch moved".
+
+    Sabotage: count only OPEN siblings as hits — this holds with #9 listed as merged."""
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED})
+    forges.prs[PR_B].pr["state"] = "MERGED"
+    forges.prs[PR_B].pr["mergeCommit"] = {"oid": MERGE_OID}
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert got.ok and got.commit == MERGE_OID, got.reason
+    assert got.selector == PR_B and "state=MERGED" in got.checked
+    assert not any(c[1:3] == ["pr", "merge"] for c in forges.calls)
+    assert got.closed == ("#8",)
+
+
+def test_a_closed_selection_still_merges_the_sibling_at_the_reviewed_commit(gh):
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED})
+    forges.prs[PR_A].pr["state"] = "CLOSED"
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert got.ok and got.selector == PR_B and got.commit == MERGE_OID, got.reason
+    assert any(c.startswith(f"sibling={PR_B}") for c in got.checked)
+    assert got.closed == ()
+
+
+def test_a_closed_selection_without_a_sibling_at_the_reviewed_commit_stays_skipped(gh):
+    forges = _Forges({PR_A: MOVED, PR_B: "d" * 40})
+    forges.prs[PR_A].pr["state"] = "CLOSED"
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert got.skipped and not got.ok and "CLOSED, not open" in got.reason
+    assert not any(c[1:3] in (["pr", "merge"], ["pr", "close"]) for c in forges.calls)
+
+
+def test_a_right_selection_closes_the_other_open_receipt(gh):
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED})
+
+    got = _merge_siblings(forges, gh, PR_B, [PR_A, PR_B])
+
+    assert got.ok and got.closed == ("#8",)
+    assert not any("sibling=" in c for c in got.checked)
+
+
 # --- GRPH-869: the receipt must land on the item ----------------------------------------
 
 
 class _RecordingClient:
-    """A client that records `update_item` calls. Stands in for the planner."""
+    """A client that records observation posts. The supervisor may not call `update_item`."""
 
     def __init__(self, refuse=False):
         self.refuse = refuse
-        self.calls: list[dict] = []
+        self.observations: list[dict] = []
 
     def call(self, tool, **kwargs):
-        if tool == "update_item":
-            if self.refuse:
-                from gbfleet.client import NotPermitted
-                raise NotPermitted("update_item not allowed")
-            self.calls.append(kwargs)
-            return {"id": kwargs.get("id")}
         return {}
+
+    def post_observation(self, **kwargs):
+        if self.refuse:
+            from gbfleet.client import ObservationRefused
+            raise ObservationRefused("refused")
+        self.observations.append(kwargs)
+        return {"recorded": True, "item_id": kwargs.get("item_id"), "kind": kwargs.get("kind")}
 
 
 def test_propose_branch_does_not_open_a_pr_for_a_salvage_subject(
@@ -608,18 +847,18 @@ def test_propose_branch_does_not_open_a_pr_for_a_salvage_subject(
     propose_branch(wave, git_repo, "gb/w-1", ["GRPH-1"], client=client)
     assert proposed == [], "gh pr create ran for a salvage subject"
     assert wave.proposed["gb/w-1"].skipped
-    assert client.calls, "item was not named"
-    ev = client.calls[0]["evidence"][0]
-    assert ev["kind"] == "note" and "not proposed as a PR" in ev["detail"]
-    assert "/pull/" not in ev.get("url", "") + ev.get("detail", "")
+    assert client.observations, "item was not named"
+    obs = client.observations[0]
+    assert obs["kind"] == "salvage" and obs["item_id"] == "GRPH-1"
+    assert obs["branch"] == "gb/w-1"
+    assert "url" not in obs
 
 
 def test_propose_branch_records_the_pr_url_on_the_item(gh, git_repo, monkeypatch):
-    """A successful draft PR produces a `url` receipt on the item via `update_item`.
+    """A successful draft PR posts `pr_opened` with the url. The server composes the receipt.
 
-    The CALL is `client.call("update_item", id=..., evidence=[{url: ...}])`. Sabotage:
-    pass `client=None` → no receipt lands. Pass a client that raises `NotPermitted` →
-    the failure is recorded in `wave.failures`.
+    Sabotage: pass `client=None` → no receipt lands. Pass a client whose
+    `post_observation` raises → the failure is recorded in `wave.failures`.
     """
     from gbfleet.supervisor import Wave, propose_branch
     from gbfleet import propose as propose_mod
@@ -632,10 +871,11 @@ def test_propose_branch_records_the_pr_url_on_the_item(gh, git_repo, monkeypatch
     wave = Wave()
     client = _RecordingClient()
     propose_branch(wave, git_repo, "gb/wave-1", ["GRPH-1"], client=client)
-    assert len(client.calls) == 1, f"expected one update_item call, got {client.calls}"
-    assert client.calls[0]["id"] == "GRPH-1"
-    evidence = client.calls[0]["evidence"]
-    assert any(e.get("kind") == "url" and "/pull/42" in e.get("url", "") for e in evidence)
+    assert len(client.observations) == 1, client.observations
+    assert client.observations[0]["item_id"] == "GRPH-1"
+    assert client.observations[0]["kind"] == "pr_opened"
+    assert client.observations[0]["branch"] == "gb/wave-1"
+    assert client.observations[0]["url"] == "https://github.com/o/r/pull/42"
 
 
 def test_propose_branch_with_no_client_opens_the_pr_but_records_nothing(gh, git_repo, monkeypatch):
@@ -715,3 +955,233 @@ def test_a_fragment_too_short_to_name_a_commit_never_matches(gh):
     assert not propose_mod.same_commit("", REVIEWED)
     assert not propose_mod.same_commit(REVIEWED, "")
     assert not propose_mod.same_commit("zzzzzzzz", "zzzzzzzz")  # not hex, not a commit
+
+
+# ---- a merge into the release ref needs scans_clean on the actual head (GRPH-P57 D6) ---------
+#
+# The release ref and the verdicts are passed in, the same way `green` is. Nothing here
+# reads Stack or calls `scan_status`; a verdict is `ScanVerdict(commit, passed, detail)` in
+# the order the ledger returned it.
+
+OLDER = "d" * 40
+
+
+def _scan(commit, passed, detail=""):
+    return propose_mod.ScanVerdict(commit=commit, passed=passed, detail=detail)
+
+
+def _release_merge(forge, gh, *, release="main", scans=(), reviewed=REVIEWED, green=None):
+    gh(forge)
+    return propose_mod.merge(REPO, "SA-417", "gb/w-1", reviewed=reviewed,
+                             green={REVIEWED} if green is None else green,
+                             release=release, scans=list(scans))
+
+
+def test_an_unset_release_ref_consults_no_scans_and_says_so(gh):
+    """AC 12. Unset is the rule not existing — a refusing failed verdict on the head is
+    not even read.
+
+    Sabotage: treat an unset ref as `main`, and this fixture (base `main`, failed scan)
+    starts refusing."""
+    forge = _Forge(draft=False, base="main")
+
+    got = _release_merge(forge, gh, release="", scans=[_scan(REVIEWED, False, "findings")])
+
+    assert got.ok
+    assert got.release == "release ref unset, scans_clean not required"
+    assert not any("scans_clean" in c for c in got.checked)
+
+
+def test_the_release_ref_without_a_pass_on_the_head_is_refused(gh):
+    """AC 13, the refusal. Sign-off and suite_green on the head are not enough."""
+    forge = _Forge(draft=False, base="main")
+
+    got = _release_merge(forge, gh, scans=())
+
+    assert not got.ok and not got.skipped and not got.pending
+    assert got.reason == f"CI has not attested scans_clean on {REVIEWED[:12]} (release ref main)"
+    assert got.release == "release ref main (project setting)"
+    assert "pr merge" not in forge.verbs()
+    assert "ci=suite_green" in got.checked, "the earlier preconditions must still read as held"
+
+
+def test_the_release_ref_with_a_pass_on_the_head_merges(gh):
+    """AC 13, the pass — still requiring sign-off and suite_green."""
+    forge = _Forge(draft=False, base="main")
+
+    got = _release_merge(forge, gh, scans=[_scan(REVIEWED, True)])
+
+    assert got.ok and "scans_clean=head" in got.checked
+    assert got.release == "release ref main (project setting)"
+
+
+def test_a_scan_pass_does_not_stand_in_for_suite_green(gh):
+    forge = _Forge(draft=False, base="main")
+
+    got = _release_merge(forge, gh, scans=[_scan(REVIEWED, True)], green=set())
+
+    assert not got.ok and "suite_green" in got.reason
+
+
+def test_another_base_merges_on_sign_off_and_suite_green_alone(gh):
+    """AC 13, the other ref. A failed scan on the head of a feature PR does not hold it."""
+    forge = _Forge(draft=False, base="integration")
+
+    got = _release_merge(forge, gh, scans=[_scan(REVIEWED, False, "failed check bandit fleet/")])
+
+    assert got.ok
+    assert got.release == "release ref main (project setting)", "every line names the ref"
+
+
+def test_a_base_the_forge_did_not_name_is_not_an_exemption(gh):
+    forge = _Forge(draft=False, base="")
+
+    got = _release_merge(forge, gh, scans=())
+
+    assert not got.ok and "CI has not attested scans_clean" in got.reason
+
+
+def test_a_main_merged_head_still_needs_scans_clean_on_the_new_head(gh, git_repo: Path):
+    """AC 14. A paths-unchanged head still needs scans_clean on that head. suite_green
+    is on the same head: the reviewed commit is not the tree being merged.
+
+    Sabotage: check scans_clean against `reviewed`, and the old pass merges this head."""
+    (git_repo / "item.py").write_text("mine\n", encoding="utf-8")
+    subprocess.run(["git", "add", "item.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "item"], cwd=git_repo, check=True)
+    reviewed = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo,
+                              capture_output=True, text=True, check=True).stdout.strip()
+    (git_repo / "other.py").write_text("from-main\n", encoding="utf-8")
+    subprocess.run(["git", "add", "other.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "main moved"], cwd=git_repo, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo,
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+    forge = _Forge(draft=False, head=head, base="main")
+    gh(_only_gh(forge))
+    held = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=reviewed,
+                             green={head}, paths=["item.py"], release="main",
+                             scans=[_scan(reviewed, True)])
+
+    assert not held.ok and "paths-unchanged" in held.checked
+    assert held.reason == (f"CI has not attested scans_clean on {head[:12]} (release ref main)"
+                           f"; latest pass names {reviewed[:12]}")
+    assert "pr merge" not in forge.verbs()
+
+    forge = _Forge(draft=False, head=head, base="main")
+    gh(_only_gh(forge))
+    got = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=reviewed,
+                            green={head}, paths=["item.py"], release="main",
+                            scans=[_scan(reviewed, True), _scan(head, True)])
+
+    assert got.ok and "scans_clean=head" in got.checked
+
+
+def test_fail_then_pass_on_one_head_proceeds(gh):
+    """AC 15. A rerun after a transient failure unblocks the merge.
+
+    Sabotage: take the first verdict for the head, and this refuses."""
+    forge = _Forge(draft=False, base="main")
+
+    got = _release_merge(forge, gh, scans=[_scan(REVIEWED, False, "never-run pip-audit backend/"),
+                                           _scan(REVIEWED, True)])
+
+    assert got.ok
+
+
+def test_pass_then_fail_on_one_head_refuses_with_the_failure(gh):
+    """AC 15. The latest verdict for the head wins, so a later failure is not outvoted.
+
+    Sabotage: union the passes (`attested_predicates`' shape), and this merges."""
+    forge = _Forge(draft=False, base="main")
+
+    got = _release_merge(forge, gh, scans=[_scan(REVIEWED, True),
+                                           _scan(REVIEWED, False, "failed check bandit fleet/")])
+
+    assert not got.ok
+    assert got.reason == (f"scans_clean failed on {REVIEWED[:12]} (release ref main): "
+                          "failed check bandit fleet/")
+
+
+def test_an_older_commit_neither_passes_nor_blocks_the_head(gh):
+    """AC 15. Keyed strictly by commit."""
+    forge = _Forge(draft=False, base="main")
+    blocked = _release_merge(forge, gh, scans=[_scan(OLDER, True)])
+    assert not blocked.ok and "CI has not attested" in blocked.reason
+
+    forge = _Forge(draft=False, base="main")
+    got = _release_merge(forge, gh, scans=[_scan(REVIEWED, True), _scan(OLDER, False, "x")])
+    assert got.ok
+
+
+def test_ledger_order_wins_over_runner_timestamps():
+    """AC 15. The order is the order the ledger returned the evidence; a runner timestamp
+    inside the receipt is never read.
+
+    Sabotage: sort by `ran_at`, and the skewed runner's older pass reads as the latest."""
+    item = {"evidence": [
+        dict(_att("github-actions", REVIEWED, ("scans_clean", False)), ran_at="2026-10-25T12:00:00Z"),
+        dict(_att("github-actions", REVIEWED, ("scans_clean", True)), ran_at="2026-10-25T09:00:00Z"),
+        dict(_att("github-actions", MOVED, ("scans_clean", True)), ran_at="2026-10-25T08:00:00Z"),
+        dict(_att("github-actions", MOVED, ("scans_clean", False)), ran_at="2026-10-24T00:00:00Z"),
+    ]}
+
+    got = propose_mod.scans_clean_verdicts(item)
+
+    assert [(v.commit, v.passed) for v in got] == [
+        (REVIEWED, False), (REVIEWED, True), (MOVED, True), (MOVED, False)]
+    assert propose_mod._scans_refusal(REVIEWED, "main", got) == ""
+    assert propose_mod._scans_refusal(MOVED, "main", got).startswith("scans_clean failed on")
+
+
+def test_verdicts_read_only_the_scans_clean_predicate():
+    """Unlike `green_commits`, a receipt's other predicates do not decide the scan — and a
+    receipt with no scans_clean predicate contributes nothing."""
+    item = {"evidence": [
+        _att("github-actions", REVIEWED, ("suite_green", False), ("scans_clean", True)),
+        _att("github-actions", MOVED, ("suite_green", True)),
+        {"kind": "note", "detail": "scans_clean passed", "commit": OLDER},
+        {"kind": "attestation", "adapter": "github-actions", "commit": OLDER,
+         "predicates": [{"name": "scans_clean", "passed": "true"}]},
+    ]}
+
+    got = propose_mod.scans_clean_verdicts(item)
+
+    assert [(v.commit, v.passed) for v in got] == [(REVIEWED, True), (OLDER, False)], \
+        "a string 'true' is not a pass"
+
+
+def test_the_two_refusals_are_different_strings(gh):
+    """AC 16. "Run CI" and "fix the code" read differently, and neither posts to the PR."""
+    forge = _Forge(draft=False, base="main")
+    missing = _release_merge(forge, gh, scans=[_scan(OLDER, True)])
+    forge2 = _Forge(draft=False, base="main")
+    failed = _release_merge(forge2, gh, scans=[_scan(REVIEWED, False, "stale semgrep web/")])
+
+    assert missing.reason == (f"CI has not attested scans_clean on {REVIEWED[:12]} "
+                              f"(release ref main); latest pass names {OLDER[:12]}")
+    assert failed.reason == (f"scans_clean failed on {REVIEWED[:12]} (release ref main): "
+                             "stale semgrep web/")
+    assert missing.reason != failed.reason
+    for f in (forge, forge2):
+        assert f.verbs() == ["pr view"], "a refusal touched the PR"
+
+
+def test_a_forge_block_is_still_skipped_after_a_clean_scan(gh):
+    """AC 17. A passing scans_clean does not go around branch protection."""
+    forge = _Forge(draft=False, base="main", status="BLOCKED")
+
+    got = _release_merge(forge, gh, scans=[_scan(REVIEWED, True)])
+
+    assert got.skipped and not got.ok and "branch protection" in got.reason
+    assert "pr merge" not in forge.verbs()
+    assert got.release == "release ref main (project setting)"
+
+
+def test_the_release_ref_is_read_only_from_a_project_setting():
+    """GRPH-1109's `{ref, source}`. Only `project` names a ref; nothing infers `main`."""
+    assert propose_mod.release_ref({"release_ref": {"ref": "main", "source": "project"}}) == "main"
+    assert propose_mod.release_ref({"release_ref": {"ref": None, "source": "unmeasured"}}) == ""
+    assert propose_mod.release_ref({"release_ref": {"ref": None, "source": "unknown"}}) == ""
+    assert propose_mod.release_ref({"agents": []}) == "", "a server without the field is unset"
+    assert propose_mod.release_ref(None) == ""

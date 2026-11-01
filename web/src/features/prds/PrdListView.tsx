@@ -5,8 +5,11 @@ import { useNavigate } from "react-router-dom";
 import {
   PlannerEmpty,
   PlannerError,
+  PlannerFilteredEmpty,
   PrdListSkeleton,
 } from "@/components/planner/PlannerStates";
+import { ViewBar, ViewFooter } from "@/components/planner/ViewBar";
+import { hiddenSummary, scopeRows, statusMatches, useCondensed, useViews } from "@/components/planner/viewScope";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,12 +28,34 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { relTime } from "@/lib/relTime";
 
-import { prdStatusMeta } from "./meta";
+import { PRD_STATUS_ORDER, prdStatusMeta } from "./meta";
+import { RequestDots } from "./PrdRequests";
+
+/** "2h ago" -> "2h"; absence stays a dash. */
+function shortAgo(rel: string | null): string {
+  return rel ? rel.replace(/ ago$/, "") : "—";
+}
 
 export function PrdListView() {
   const { activeId } = useProjectCtx();
   const { data: prds = [], isLoading, isError, refetch } = usePrds(activeId);
   const navigate = useNavigate();
+  const views = useViews("prds");
+  const [condensed, toggleCondensed] = useCondensed();
+
+  const scopeOf = (v: { window: number; hide: number }) =>
+    scopeRows(prds, v, {
+      activity: (p) => p.updated_at,
+      finishedAt: (p) => (p.status === "closed" ? p.closed_at ?? null : null),
+    });
+  const scoped = scopeOf(views.state);
+  const [chip, setChip] = React.useState<string>("all");
+  const inView = scoped.shown.filter((p) => statusMatches(p.status, views.state.status, []));
+  const chipCount = (st: string) => inView.filter((p) => st === "all" || p.status === st).length;
+  const visible = inView.filter((p) => chip === "all" || p.status === chip);
+  const hidden = hiddenSummary(scoped, views.state, "closed");
+  const showHidden = () => views.patch({ window: 0, hide: 0 });
+  const showing = !isLoading && !isError && prds.length > 0;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -38,31 +63,82 @@ export function PrdListView() {
         viewName="PRDs"
         purpose="Product specs with version history, linked items, and AI drafting commands."
         action={<NewPrdDialog onCreated={(id) => navigate(`/prds/${id}`)} />}
+        condensed={condensed}
       />
+
+      {showing && (
+        <ViewBar
+          views={views}
+          doneWord="closed"
+          condensed={condensed}
+          onToggleCondense={toggleCondensed}
+          countFor={(v) => scopeOf(v).shown.filter((p) => statusMatches(p.status, v.status, [])).length}
+        />
+      )}
+
+      {showing && (
+        <div className="flex flex-wrap gap-1.5 border-b border-line px-6 py-2.5" role="group" aria-label="Filter by status">
+          {["all", ...PRD_STATUS_ORDER].map((st) => {
+            const label = st === "all" ? "All" : prdStatusMeta(st).label;
+            return (
+              <button
+                key={st}
+                aria-pressed={chip === st}
+                onClick={() => setChip(st)}
+                className={
+                  "inline-flex items-center gap-1.5 rounded-[7px] border px-2.5 py-1 text-[12px] transition-colors " +
+                  (chip === st
+                    ? "border-control-hover bg-surface-4 text-fg"
+                    : "border-control bg-surface-2 text-muted hover:text-fg-2")
+                }
+              >
+                {st !== "all" && (
+                  <span className="h-1.5 w-1.5 rounded-full" style={{ background: prdStatusMeta(st).color }} />
+                )}
+                {label}
+                <span className="font-mono text-meta text-faint">{chipCount(st)}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading ? (
           <PrdListSkeleton rows={prds.length > 0 ? prds.length : 6} />
         ) : isError ? (
-          <PlannerError message="PRDs unavailable" onRetry={() => refetch()} />
+          <PlannerError title="PRDs unavailable" onRetry={() => refetch()} />
         ) : prds.length === 0 ? (
           <PlannerEmpty
             title="No PRDs yet"
             description="Product specs live here — versioned requirements with linked items and AI drafting. Write the first PRD to define what you are building."
-            action={<NewPrdDialog onCreated={(id) => navigate(`/prds/${id}`)} />}
+            action={<NewPrdDialog icon={false} onCreated={(id) => navigate(`/prds/${id}`)} />}
+          />
+        ) : visible.length === 0 ? (
+          <PlannerFilteredEmpty
+            message={`No PRDs in this view${hidden ? ` — ${hidden}` : ""}.`}
+            onClear={() => views.select(views.views.find((v) => v.id === "all") ?? views.current)}
           />
         ) : (
           <div className="space-y-2 p-4">
-            {prds.map((p) => {
+            {visible.map((p) => {
               const meta = prdStatusMeta(p.status);
               return (
-                <button
+                <div
                   key={p.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => navigate(`/prds/${p.id}`)}
-                  className="flex w-full items-center gap-3 rounded-[12px] border border-control bg-surface-2 px-4 py-3 text-left transition-colors hover:border-control-hover"
+                  onKeyDown={(e) => {
+                    if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                      e.preventDefault();
+                      navigate(`/prds/${p.id}`);
+                    }
+                  }}
+                  className="flex w-full cursor-pointer items-center gap-3 rounded-[12px] border border-line-2 bg-surface-2 px-4 py-3 text-left transition-colors hover:border-line-hover"
                 >
                   <FileText size={16} className="flex-none text-muted" />
-                  <span className="w-[52px] flex-none font-mono text-small text-faint">{p.id}</span>
+                  <span className="w-14 flex-none font-mono text-small text-faint">{p.id}</span>
                   <span className="min-w-0 flex-1 truncate text-[13.5px] text-fg-2">{p.title}</span>
                   <div className="flex flex-none items-center gap-1.5">
                     {p.linked.slice(0, 4).map((id) => (
@@ -70,26 +146,28 @@ export function PrdListView() {
                         {id}
                       </span>
                     ))}
+                    <RequestDots prd={p} onOpen={() => navigate(`/prds/${p.id}?tab=requests`)} />
                   </div>
                   <span className="flex-none rounded-md bg-surface-4 px-1.5 py-0.5 font-mono text-[10px] text-muted-2">
                     {p.version}
                   </span>
                   <span
-                    className="flex flex-none items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide"
+                    className="flex w-[86px] flex-none items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide"
                     style={{ color: meta.color }}
                   >
                     <span className="h-1.5 w-1.5 rounded-full" style={{ background: meta.color }} />
                     {meta.label}
                   </span>
                   <span className="w-[52px] flex-none text-right font-mono text-[10px] text-faint-2">
-                    {relTime(p.updated_at) ?? "—"}
+                    {shortAgo(relTime(p.updated_at))}
                   </span>
-                </button>
+                </div>
               );
             })}
           </div>
         )}
       </div>
+      {showing && <ViewFooter shown={visible.length} hidden={hidden} onShowHidden={showHidden} />}
     </div>
   );
 }
@@ -101,7 +179,8 @@ function titleFromMarkdown(md: string, fileName: string): string {
   return fileName.replace(/\.(md|markdown|txt)$/i, "").replace(/[-_]+/g, " ").trim();
 }
 
-function NewPrdDialog({ onCreated }: { onCreated: (id: string) => void }) {
+/** `icon={false}` drops the plus — the empty-state card carries the label alone. */
+function NewPrdDialog({ onCreated, icon = true }: { onCreated: (id: string) => void; icon?: boolean }) {
   const qc = useQueryClient();
   const [open, setOpen] = React.useState(false);
   const [title, setTitle] = React.useState("");
@@ -143,7 +222,7 @@ function NewPrdDialog({ onCreated }: { onCreated: (id: string) => void }) {
     <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
       <DialogTrigger asChild>
         <Button size="sm">
-          <Plus size={14} />
+          {icon && <Plus size={14} />}
           New PRD
         </Button>
       </DialogTrigger>

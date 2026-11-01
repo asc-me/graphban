@@ -195,7 +195,7 @@ def test_origin_path_walks_item_project_not_viewer(db):
     )
     db.add(CodeNode(
         id="cn_hit", project_id="core", path="app/services/memory.py",
-        kind="file", name="memory",
+        kind="file", name="memory", content_hash="h1",  # hashed: only then can the graph say ok
     ))
     db.commit()
     shard = mem_svc.add_memory(

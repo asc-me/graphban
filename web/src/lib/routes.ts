@@ -44,6 +44,9 @@ export function settingsPath(sub = ""): string {
   return tail ? `/settings/${tail}` : "/settings";
 }
 
+/** The Graphban Cloud waitlist. Both org actions on a self-host box land here until cloud orgs ship (GRPH-1224). */
+export const ORG_SIGNUP_URL = "https://graphban.dev/platform#waitlist";
+
 /** A cloud console URL we will actually open. Missing/junk is not a URL (GRPH-P28 D5). */
 export function usableHttpUrl(raw: string | null | undefined): string | null {
   const s = (raw ?? "").trim();
@@ -77,6 +80,16 @@ export function viewFromPath(pathname: string): string {
   return m ? m[1] : "";
 }
 
+/** The view part of either URL shape: hosted `/p/GRPH/code/x` and self-host `/code/x` → `code/x`. */
+function viewRest(pathname: string): string {
+  return viewFromPath(pathname) || (tagFromPath(pathname) ? "" : pathname.replace(/^\/+/, ""));
+}
+
+/** The view a path names, in either URL shape: `/p/GRPH/code/x` and `/code/x` → `code`. */
+export function viewSegment(pathname: string): string {
+  return viewRest(pathname).split("/").filter(Boolean)[0] ?? "";
+}
+
 /** Section · page for the project bar (GRPH-953). Never title-cases the whole path. */
 export type Place = { section: string; page: string };
 
@@ -90,12 +103,9 @@ const VIEW_PLACE: Record<string, Place> = {
   links: { section: "Build", page: "Links" },
   code: { section: "Build", page: "Code graph" },
   "mcp-tools": { section: "Build", page: "MCP Tools" },
-  "fleet.v2": { section: "Build", page: "Fleet.v2" },
-  "fleet.v1": { section: "Build", page: "Fleet.v1" },
   fleet: { section: "Build", page: "Fleet" },
   outposts: { section: "Build", page: "Outposts" },
-  "memory-review": { section: "Observe", page: "Memory review" },
-  "memory-triage": { section: "Observe", page: "Memory triage" },
+  memory: { section: "Observe", page: "Memory review" },
   lessons: { section: "Observe", page: "Lessons" },
   activity: { section: "Observe", page: "Activity" },
   live: { section: "Observe", page: "Live" },
@@ -130,8 +140,7 @@ export function placeFromPath(pathname: string): Place | null {
   if (tagFromPath(pathname) && viewFromPath(pathname) === "") {
     return { section: "Dashboard", page: "Dashboard" };
   }
-  const hosted = viewFromPath(pathname);
-  const rest = hosted || (tagFromPath(pathname) ? "" : pathname.replace(/^\/+/, ""));
+  const rest = viewRest(pathname);
   if (!rest) return null;
   const segs = rest.split("/").filter(Boolean);
   const first = segs[0] ?? "";
@@ -175,10 +184,24 @@ export function consoleOrigin(): string {
   return (raw || "http://localhost:5174").replace(/\/+$/, "");
 }
 
-/** Absolute URL for a path on the cloud console (`/org`, `/admin`, …). */
+/**
+ * The console path for a bookmark that still uses this app's URL shape.
+ *
+ * Operator bookmarks use `/admin` here; graphban-control serves them under `/operator`.
+ * Org-plane paths keep the same prefix on the console.
+ */
+export function consolePathFromProduct(pathname: string): string {
+  if (pathname === "/admin") return "/operator";
+  if (pathname.startsWith("/admin/")) {
+    return `/operator${pathname.slice("/admin".length)}`;
+  }
+  return pathname;
+}
+
+/** Absolute URL for a path on the cloud console (`/org`, `/operator`, …). */
 export function consoleHref(path: string): string {
   const p = path.startsWith("/") ? path : `/${path}`;
-  return `${consoleOrigin()}${p}`;
+  return `${consoleOrigin()}${consolePathFromProduct(p)}`;
 }
 
 /**

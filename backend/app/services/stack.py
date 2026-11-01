@@ -9,11 +9,12 @@ the whole system.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import or_, select, text, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -154,6 +155,199 @@ def _cred_liveness(state: str | None) -> str:
     return LIVENESS_UNKNOWN
 
 
+# Graphban's own deployables, each with source paths unique to it. Ownership is relative
+# to the project being viewed: a box is "code we write" only when THIS project's code map
+# has described one of its markers. For every other project the same box is a tool it
+# runs to build its code, not code it wrote — the map used to call all four "ours"
+# everywhere. Markers are specific files/packages, never `backend/app` or `web/src`,
+# which half the FastAPI/Vite repos in the world also have.
+GRAPHBAN_SOURCES: dict[str, dict[str, Any]] = {
+    "api": {"package": "graphban-api",
+            "markers": ("backend/app/mcp_server.py", "backend/app/services/stack.py")},
+    "web": {"package": "graphban-web",
+            "markers": ("web/src/features/stack", "web/src/lib/graph")},
+    "fleet": {"package": "graphban-fleet", "markers": ("fleet/src/gbfleet",)},
+    "gbagent": {"package": "graphban-fleet", "markers": ("fleet/src/gbagent",)},
+    "cli": {"package": "graphban-cli", "markers": ("cli/src/gban",)},
+}
+
+OWNED = "owned"
+NOT_OWNED = "not_owned"
+OWNERSHIP_UNKNOWN = "unknown"
+
+
+def source_ownership(db: Session, project_id: str) -> dict[str, tuple[str, str]]:
+    """`{node_id: (state, matched_marker)}` for each Graphban deployable.
+
+    Ownership belongs to the project, not to each box: every deployable here ships from
+    one repository, so one described marker makes the project Graphban's source and all
+    of them its code. Deciding per box read a partial code map's silence as "not ours" —
+    gbagent drew as a tool the project runs because nobody had described a gbagent file,
+    while fleet, from the same package, drew as ours. A box owned that way carries the
+    marker that matched for another box; `_ownership_fact` says so.
+
+    A project with no code map at all is `unknown`, not `not_owned`: nothing was looked
+    at. It still draws outside ring 1, because one project in an instance holds
+    Graphban's source and every other one runs it.
+    """
+    from app.models import CodeNode
+
+    try:
+        has_map = db.scalar(
+            select(CodeNode.id).where(CodeNode.project_id == project_id).limit(1)
+        ) is not None
+    except Exception:  # noqa: BLE001 — an unreadable map is unknown, not "not ours"
+        logger.debug("code map unreadable for ownership", exc_info=True)
+        has_map = False
+    if not has_map:
+        return {node_id: (OWNERSHIP_UNKNOWN, "") for node_id in GRAPHBAN_SOURCES}
+    hits: dict[str, str] = {}
+    for node_id, src in GRAPHBAN_SOURCES.items():
+        hit = ""
+        for marker in src["markers"]:
+            found = db.scalar(
+                select(CodeNode.path).where(
+                    CodeNode.project_id == project_id,
+                    or_(
+                        CodeNode.path == marker,
+                        CodeNode.path.startswith(marker + "/", autoescape=True),
+                        CodeNode.path.startswith(marker + "::", autoescape=True),
+                    ),
+                ).limit(1)
+            )
+            if found is not None:
+                hit = marker
+                break
+        if hit:
+            hits[node_id] = hit
+    if not hits:
+        return {node_id: (NOT_OWNED, "") for node_id in GRAPHBAN_SOURCES}
+    evidence = next(iter(hits.values()))
+    return {node_id: (OWNED, hits.get(node_id, evidence)) for node_id in GRAPHBAN_SOURCES}
+
+
+# What makes a directory one of the project's OWN deployables, read from its code map.
+# The server never holds the repo; the describing agent's config/file nodes are the only
+# account of what the project builds. A container file is the strongest signal; a package
+# manifest says "a unit that ships". Compose files are not deployables themselves.
+_CONTAINER_NAMES = frozenset({"Dockerfile", "Containerfile"})
+_MANIFEST_NAMES = frozenset({
+    "package.json", "pyproject.toml", "setup.py", "Cargo.toml", "go.mod", "Gemfile",
+    "pom.xml", "build.gradle", "build.gradle.kts", "composer.json", "mix.exs", "deno.json",
+    "Procfile", "fly.toml", "railway.json", "railway.toml", "vercel.json", "netlify.toml",
+    "app.yaml",
+})
+# A manifest under any of these is a fixture, an example or tooling, not a deployable.
+_NOT_DEPLOYABLE_SEGMENTS = frozenset({
+    "node_modules", "test", "tests", "__tests__", "fixtures", "examples", "example",
+    "docs", "vendor", "dist", "build", ".github", ".cursor", ".vscode", ".claude",
+})
+HOST_PROJECT = "project_app"
+HOST_APP_INFRA = "app_infra"
+_MAX_OWN_DEPLOYABLES = 12
+
+
+def _is_deploy_file(name: str) -> str:
+    if name in _CONTAINER_NAMES or name.startswith("Dockerfile.") or name.endswith(".Dockerfile"):
+        return "container"
+    if name in _MANIFEST_NAMES:
+        return "manifest"
+    return ""
+
+
+def own_deployables(db: Session, project_id: str,
+                    owner: dict[str, tuple[str, str]] | None = None) -> list[dict[str, Any]]:
+    """The project's own deployables, one per directory whose Dockerfile or package
+    manifest its code map describes. `[{dir, files: [(path, summary)], container}]`.
+
+    Directories that are the source root of a Graphban box this project owns are left
+    out (Graphban's own project would otherwise draw `backend/` beside `api`). A repo
+    root with only a manifest is a workspace root when subdirectories also qualify, so it
+    is drawn only when it is the sole candidate or carries a container file.
+    """
+    from app.models import CodeNode
+
+    try:
+        rows = db.execute(
+            select(CodeNode.path, CodeNode.summary).where(CodeNode.project_id == project_id)
+        ).all()
+    except Exception:  # noqa: BLE001
+        logger.debug("code map unreadable for own deployables", exc_info=True)
+        return []
+    owned_markers = [
+        m for nid, (state, _) in (owner or {}).items() if state == OWNED
+        for m in GRAPHBAN_SOURCES[nid]["markers"]
+    ]
+    dirs: dict[str, dict[str, Any]] = {}
+    for path, summary in rows:
+        if "::" in path:
+            continue
+        parts = path.strip("/").split("/")
+        kind = _is_deploy_file(parts[-1])
+        if not kind:
+            continue
+        parent = parts[:-1]
+        if any(seg in _NOT_DEPLOYABLE_SEGMENTS for seg in parent):
+            continue
+        d = "/".join(parent)
+        if d and any(m == d or m.startswith(d + "/") for m in owned_markers):
+            continue
+        entry = dirs.setdefault(d, {"dir": d, "files": [], "container": False})
+        entry["files"].append((path, summary or ""))
+        entry["container"] = entry["container"] or kind == "container"
+    if "" in dirs and len(dirs) > 1 and not dirs[""]["container"]:
+        del dirs[""]
+    out = sorted(dirs.values(), key=lambda e: (not e["container"], e["dir"]))
+    for e in out:
+        e["files"].sort()
+    return out[:_MAX_OWN_DEPLOYABLES]
+
+
+PLANE_APP = "app"
+PLANE_GRAPHBAN = "graphban"
+# Graph-id prefixes the posted record's boxes carry (`_fold_app_record`). Its externals
+# share the external host with Graphban's providers, so host alone cannot place them.
+_APP_ID_PREFIXES = ("app:", "infra:", "ext:", "unresolved:")
+
+
+def _is_app_node(node: dict[str, Any]) -> bool:
+    return node["host"] in (HOST_PROJECT, HOST_APP_INFRA) or str(node["id"]).startswith(
+        _APP_ID_PREFIXES
+    )
+
+
+def _graphban_source(owner: dict[str, tuple[str, str]]) -> str:
+    states = {state for state, _ in owner.values()}
+    if OWNED in states:
+        return OWNED
+    if NOT_OWNED in states:
+        return NOT_OWNED
+    return OWNERSHIP_UNKNOWN
+
+
+def own_node_id(directory: str) -> str:
+    return f"app:{directory or '.'}"
+
+
+def _ownership_fact(node_id: str, owner: tuple[str, str]) -> dict[str, str]:
+    state, marker = owner
+    package = GRAPHBAN_SOURCES[node_id]["package"]
+    if state == OWNED and marker in GRAPHBAN_SOURCES[node_id]["markers"]:
+        value = f"{package} — this project writes it ({marker} is in its code map)"
+    elif state == OWNED:
+        value = (
+            f"{package} — this project writes it: its code map holds Graphban's source "
+            f"({marker}), and every Graphban deployable ships from that one repository; "
+            f"none of {node_id}'s own files ({', '.join(GRAPHBAN_SOURCES[node_id]['markers'])}) "
+            f"are described yet"
+        )
+    elif state == NOT_OWNED:
+        value = f"{package} — a tool this project runs; its source is not in this project's code map"
+    else:
+        value = f"{package} — unknown: this project has no code map to check"
+    return _fact("source", value, "code map (code_nodes) vs Graphban source markers")
+
+
 def _fact(key: str, value: Any, provenance: str) -> dict[str, str]:
     if value is None or value == "":
         rendered = "unknown"
@@ -202,6 +396,11 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
 
     smtp_configured = bool(settings.smtp_host)
 
+    owner = source_ownership(db, project_id)
+
+    def ring_of(node_id: str) -> int:
+        return RING_CODE if owner[node_id][0] == OWNED else RING_INFRA
+
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     empties: list[dict[str, str]] = []
@@ -214,13 +413,14 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         _fact("mcp_tools", LIVE_TOOL_COUNT, "mcp_server.LIVE_TOOL_COUNT"),
         _fact("embed_provider", settings.embed_provider, "settings.embed_provider"),
         _fact("embed_ok", settings.embed_provider != "stub", "settings.embed_provider != stub"),
+        _ownership_fact("api", owner["api"]),
     ]
     nodes.append({
         "id": "api",
         "label": "api",
         "title": "graphban-api",
         "kind": "deployable",
-        "ring": RING_CODE,
+        "ring": ring_of("api"),
         "scope": "instance",
         "host": HOST_COMPOSE,
         "liveness": LIVENESS_REACHABLE,  # this process answered
@@ -232,13 +432,14 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
     web_facts = [
         _fact("bundle_sha", web_sha, "/version.txt"),
         _fact("role", "React SPA", "model"),
+        _ownership_fact("web", owner["web"]),
     ]
     nodes.append({
         "id": "web",
         "label": "web",
         "title": "web (React SPA)",
         "kind": "deployable",
-        "ring": RING_CODE,
+        "ring": ring_of("web"),
         "scope": "instance",
         "host": HOST_COMPOSE,
         # Serving the SPA is nginx/compose; the API can only report the stamped sha.
@@ -291,6 +492,7 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         _fact("agents_total", total, "GET /api/fleet"),
         _fact("posture", (roster or {}).get("posture"), "GET /api/fleet"),
         _fact("outpost_hosts", len(hosts), "fleet agents grouped by capabilities.host"),
+        _ownership_fact("fleet", owner["fleet"]),
     ]
     if roster is None:
         fleet_live = LIVENESS_UNKNOWN
@@ -306,10 +508,10 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
 
     nodes.append({
         "id": "fleet",
-        "label": "fleet",
-        "title": "graphban-fleet / gbfleet",
+        "label": "gbfleet",
+        "title": "gbfleet supervisor (graphban-fleet)",
         "kind": "deployable",
-        "ring": RING_CODE,
+        "ring": ring_of("fleet"),
         "scope": "instance",
         "host": HOST_AGENTS,
         "liveness": fleet_live,
@@ -330,21 +532,55 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         "label": "HTTP + MCP",
     })
 
-    # Vendor agents spawned by fleet — only when someone is online.
-    if online > 0:
+    # gbagent is Graphban's own coding agent: a separate binary in the graphban-fleet
+    # package that gbfleet spawns like a vendor CLI. Idle is normal for a spawned
+    # child, so none online is unknown, not unreachable.
+    def _vendor(a: dict) -> str:
+        return str((a.get("capabilities") or {}).get("vendor") or "")
+
+    live_agents = [a for a in agents if a.get("state") != "offline"]
+    gbagent_online = sum(1 for a in live_agents if _vendor(a) == "gbagent")
+    vendor_online = len(live_agents) - gbagent_online
+    nodes.append({
+        "id": "gbagent",
+        "label": "gbagent",
+        "title": "gbagent (graphban-fleet)",
+        "kind": "deployable",
+        "ring": ring_of("gbagent"),
+        "scope": "instance",
+        "host": HOST_AGENTS,
+        "liveness": LIVENESS_REACHABLE if gbagent_online else LIVENESS_UNKNOWN,
+        "surfaces": [],
+        "extensions": [],
+        "facts": [
+            _fact("online", gbagent_online, "GET /api/fleet (capabilities.vendor == gbagent)"),
+            _fact("role", "first-party coding agent, spawned by gbfleet", "model"),
+            _ownership_fact("gbagent", owner["gbagent"]),
+        ],
+    })
+    edges.append({
+        "from": "fleet", "to": "gbagent", "protocol": "spawn local process", "label": "spawn",
+    })
+    edges.append({
+        "from": "gbagent", "to": "api", "protocol": "MCP JSON-RPC", "label": "MCP",
+    })
+
+    # Vendor CLIs spawned by fleet — only when one is online. Nobody's project writes
+    # claude or grok, so they are never ring 1.
+    if vendor_online > 0:
         nodes.append({
             "id": "vendor_agents",
             "label": "vendor agents",
             "title": "Spawned vendor CLIs",
             "kind": "agent",
-            "ring": RING_CODE,
+            "ring": RING_INFRA,
             "scope": "instance",
             "host": HOST_AGENTS,
             "liveness": LIVENESS_REACHABLE,
             "surfaces": [],
             "extensions": [],
             "facts": [
-                _fact("online", online, "GET /api/fleet"),
+                _fact("online", vendor_online, "GET /api/fleet (capabilities.vendor != gbagent)"),
             ],
         })
         edges.append({
@@ -356,14 +592,14 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
             "label": "MCP",
         })
 
-    # ── CLI (user machines) — always present as a deployable; liveness unknown
+    # ── gban (user machines) — always present as a deployable; liveness unknown
     #    unless we invent a phone-home (we do not).
     nodes.append({
         "id": "cli",
-        "label": "cli",
-        "title": "graphban-cli / gb",
+        "label": "gban",
+        "title": "gban (graphban-cli)",
         "kind": "deployable",
-        "ring": RING_CODE,
+        "ring": ring_of("cli"),
         "scope": "instance",
         "host": HOST_USERS,
         "liveness": LIVENESS_UNKNOWN,
@@ -371,11 +607,61 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         "extensions": [],
         "facts": [
             _fact("note", "runs on user machines; no phone-home in v1", "model"),
+            _ownership_fact("cli", owner["cli"]),
         ],
     })
     edges.append({
         "from": "cli", "to": "api", "protocol": "HTTP/JWT", "label": "HTTP/JWT",
     })
+
+    # ── The project's own deployables (its code map's Dockerfiles / manifests) ──
+    project_name = ""
+    try:
+        from app.models import Project
+        proj = db.get(Project, project_id)
+        project_name = (proj.name if proj else "") or project_id
+    except Exception:  # noqa: BLE001
+        project_name = project_id
+    # A posted record is the app. Code-map deployables are what we draw only before
+    # the first post (PRD-P55 §4); drawing both would show the app twice.
+    record, record_unreadable = _load_app_record(db, project_id)
+    own = [] if record is not None else own_deployables(db, project_id, owner)
+    if record is not None:
+        _fold_app_record(nodes, edges, record, project_name)
+    for dep in own:
+        d = dep["dir"]
+        facts = [
+            _fact(f"file:{p}", s or "(no summary)", "code map (code_nodes)") for p, s in dep["files"]
+        ]
+        facts.append(_fact(
+            "liveness", "Graphban does not probe this app; where it runs is not in the code map",
+            "model",
+        ))
+        nodes.append({
+            "id": own_node_id(d),
+            "label": d.rsplit("/", 1)[-1] if d else project_name,
+            "title": f"{d}/" if d else f"{project_name} (repo root)",
+            "kind": "deployable",
+            "ring": RING_CODE,
+            "scope": "project",
+            "host": HOST_PROJECT,
+            "liveness": LIVENESS_UNKNOWN,
+            "surfaces": [],
+            "extensions": [],
+            "facts": [
+                _fact("packaging", "container image" if dep["container"] else "package",
+                      "Dockerfile in the code map" if dep["container"] else "manifest in the code map"),
+                *facts,
+            ],
+        })
+
+    if record is None and not own and not any(state == OWNED for state, _ in owner.values()):
+        empties.append({
+            "id": "own_code",
+            "message": "this project's own deployables are not on this map — its code map "
+                       "describes no Dockerfile or package manifest (package.json, "
+                       "pyproject.toml, …) to draw them from",
+        })
 
     # ── External: email (SMTP; item text says Resend) ────────────────────────
     email_facts = [
@@ -586,7 +872,24 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         "PlatformConfigOut.effective_chat_provider (project-scoped)",
     ))
 
-    host_groups = [
+    # Which plane each box belongs to (GRPH-1099). The map collapses Graphban into one
+    # "Built with Graphban" box on a project that does not write it, so the client must
+    # know which boxes are the instance and which are the app, without parsing ids.
+    for n in nodes:
+        n["plane"] = PLANE_APP if _is_app_node(n) else PLANE_GRAPHBAN
+
+    project_nodes = [n["id"] for n in nodes if n["host"] == HOST_PROJECT]
+    app_infra_nodes = [n["id"] for n in nodes if n["host"] == HOST_APP_INFRA]
+    app_source = "the app topology record" if record is not None else "the code map"
+    host_groups = ([{
+        "id": HOST_PROJECT,
+        "label": f"{project_name} — its own app (from {app_source})",
+        "nodes": project_nodes,
+    }] if project_nodes else []) + ([{
+        "id": HOST_APP_INFRA,
+        "label": f"{project_name} — infrastructure the app runs on",
+        "nodes": app_infra_nodes,
+    }] if app_infra_nodes else []) + [
         {
             "id": HOST_COMPOSE,
             "label": "Compose / Railway stack",
@@ -629,4 +932,690 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
             "db_engine": db_meta.get("engine"),
             "mcp_tools": LIVE_TOOL_COUNT,
         },
+        # owned | not_owned | unknown. Unknown (no code map) is not "owned": the client
+        # collapses Graphban for it, and says why, rather than drawing it as ours.
+        "graphban_source": _graphban_source(owner),
+        # Always present. Omitting it when nothing was posted would read as "no services".
+        "mapping": _mapping_block(record, record_unreadable),
+        "app": None if record is None else _record_public(record),
     }
+
+
+# ── Posted app topology (GRPH-1098 / PRD-P55 §2) ─────────────────────────────
+#
+# The server never holds the repo. A producer that does posts one current record
+# per project. A refused post writes nothing, so a bad payload cannot blank the map.
+
+class TopologyRefused(Exception):
+    """The whole post was refused. `errors` is `{path, reason}`; nothing was written."""
+
+    def __init__(self, errors: list[dict[str, str]]):
+        self.errors = errors
+        super().__init__(f"{len(errors)} problem(s)")
+
+
+_NO_HEAD = frozenset({"", "unknown"})
+_SECRET_REASON = "env values are never stored, only variable names"  # nosec B105 — a message
+_DANGLING = (
+    "references a node the post does not define; declare it as an unresolved node"
+)
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# URLs, credential assignments, and known token prefixes. Matched on every string
+# the post would store. A variable name (`DATABASE_URL`) has none of these.
+_SECRET_RE = re.compile(
+    r"://"
+    r"|(?<![A-Za-z0-9_])(?:password|secret|api_key|token)\s*=\s*\S"
+    r"|(?:^|[^A-Za-z0-9])(?:"
+    r"sk-[A-Za-z0-9]|sk_live_|sk_test_|ghp_[A-Za-z0-9]|github_pat_|"
+    r"xox[baprs]-|AKIA[A-Z0-9]"
+    r")",
+    re.IGNORECASE,
+)
+_TOP_KEYS = frozenset({
+    "project_id", "producer_id", "producer_version", "mapped_sha",
+    "components", "infrastructure", "external", "unresolved", "edges",
+})
+_NODE_KEYS = {
+    "components": frozenset({"id", "dir", "label", "provenance", "env"}),
+    "infrastructure": frozenset({"id", "label", "kind", "provenance", "env"}),
+    "external": frozenset({"id", "label", "provenance", "env"}),
+    "unresolved": frozenset({"id", "label", "provenance", "env"}),
+}
+_EDGE_KEYS = frozenset({
+    "from", "to", "protocol", "label", "provenance", "provenances", "env", "state",
+})
+_PROV_KEYS = frozenset({"file", "rule", "line"})
+_EDGE_STATES = frozenset({"set", "documented"})
+_FORBIDDEN_KEYS = frozenset({
+    "value", "env_value", "secret", "password", "token", "api_key", "credential",
+})
+_GROUPS = ("components", "infrastructure", "external", "unresolved")
+
+
+def project_head_sha() -> str | None:
+    """The revision scans compare against, or None when this process has none.
+
+    Same source as the Stack identity (`instance_update.running`). `unknown` is the
+    sentinel that source returns when nothing was baked in (GRPH-426). A map compared
+    to that sentinel would read as current. No head is `freshness_unknown`.
+    """
+    running = instance_update.running()
+    raw = (running.get("git_sha") or settings.resolved_git_sha or "").strip()
+    if raw in _NO_HEAD:
+        return None
+    return raw
+
+
+def _looks_like_secret(value: str) -> bool:
+    return bool(_SECRET_RE.search(value))
+
+
+def _norm_dir(raw: str) -> str:
+    d = raw.strip().replace("\\", "/")
+    while d.startswith("./"):
+        d = d[2:]
+    d = d.strip("/")
+    if d == ".":
+        return ""
+    return d
+
+
+def _load_app_record(db: Session, project_id: str):
+    """`(row, unreadable)`. A failed read is not "nobody posted"."""
+    from app.models import AppTopology
+
+    try:
+        return db.get(AppTopology, project_id), False
+    except Exception:  # noqa: BLE001 — a missing table or a broken row is absence of a read
+        logger.debug("app topology unreadable", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            logger.debug("rollback after unreadable app topology failed", exc_info=True)
+        return None, True
+
+
+def _iso(value: datetime | None) -> str | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
+def _mapping_block(record, unreadable: bool) -> dict[str, Any]:
+    """`mapped | stale | unmapped | freshness_unknown`.
+
+    No record is `unmapped` even when the head is known — that is "nobody posted",
+    and it is not "this app calls nothing". A record with no head is
+    `freshness_unknown`, never `mapped`: staleness is the sha, and a missing sha
+    is not a match. An unreadable record is the same state with empty fields, so
+    a failed read cannot pass for a project that was never mapped.
+    """
+    head = project_head_sha()
+    empty = {
+        "state": "freshness_unknown" if unreadable else "unmapped",
+        "mapped_sha": None,
+        "head_sha": head,
+        "previous_mapped_sha": None,
+        "producer_id": None,
+        "producer_version": None,
+        "mapped_at": None,
+        "posted_by": None,
+    }
+    if unreadable or record is None:
+        return empty
+    mapped = (record.mapped_sha or "").strip()
+    if head is None:
+        state = "freshness_unknown"
+    elif head != mapped:
+        state = "stale"
+    else:
+        state = "mapped"
+    return {
+        "state": state,
+        "mapped_sha": mapped or None,
+        "head_sha": head,
+        "previous_mapped_sha": record.previous_mapped_sha or "",
+        "producer_id": record.producer_id,
+        "producer_version": record.producer_version,
+        "mapped_at": _iso(record.mapped_at),
+        "posted_by": record.posted_by or "",
+    }
+
+
+def _record_public(record) -> dict[str, Any]:
+    """The stored post, in the shape the producer sent. `external` is the wire key."""
+    return {
+        "project_id": record.project_id,
+        "producer_id": record.producer_id,
+        "producer_version": record.producer_version,
+        "mapped_sha": record.mapped_sha,
+        "mapped_at": _iso(record.mapped_at),
+        "previous_mapped_sha": record.previous_mapped_sha or "",
+        "posted_by": record.posted_by or "",
+        "components": list(record.components or []),
+        "infrastructure": list(record.infrastructure or []),
+        "external": list(record.external_services or []),
+        "unresolved": list(record.unresolved or []),
+        "edges": list(record.edges or []),
+    }
+
+
+def _prov_dict(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = {
+        "file": str(raw.get("file") or ""),
+        "rule": str(raw.get("rule") or ""),
+    }
+    line = raw.get("line")
+    if isinstance(line, int) and not isinstance(line, bool) and line >= 1:
+        out["line"] = line
+    return out
+
+
+def _fold_app_record(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
+                     record, project_name: str) -> None:
+    """Draw the posted record in place of code-map deployables.
+
+    Graph ids are prefixed (`app:`, `infra:`, `ext:`, `unresolved:`) so a producer
+    id of `api` or `db` cannot collide with the instance boxes. Edges whose
+    endpoints are not in this record are dropped: a corrupt row must not draw a
+    dangling edge the post path would have refused.
+    """
+    produced: dict[str, str] = {}
+
+    def add(graph_id: str, label: str, title: str, kind: str, ring: int, host: str,
+            prov: dict[str, Any], extra: list[dict[str, str]]) -> None:
+        facts = [
+            _fact("file", prov.get("file"), "app topology record"),
+            _fact("rule", prov.get("rule"), "app topology record"),
+        ]
+        if prov.get("line"):
+            facts.append(_fact("line", prov["line"], "app topology record"))
+        facts.append(_fact("producer", record.producer_id, "app topology record"))
+        facts.append(_fact("producer_version", record.producer_version, "app topology record"))
+        facts.append(_fact("mapped_sha", record.mapped_sha, "app topology record"))
+        facts.extend(extra)
+        facts.append(_fact("liveness", "Graphban does not probe this app", "model"))
+        nodes.append({
+            "id": graph_id,
+            "label": label,
+            "title": title,
+            "kind": kind,
+            "ring": ring,
+            "scope": "project",
+            "host": host,
+            "liveness": LIVENESS_UNKNOWN,
+            "surfaces": [],
+            "extensions": [],
+            "facts": facts,
+            "provenance": prov,
+        })
+
+    for comp in record.components or []:
+        if not isinstance(comp, dict):
+            continue
+        directory = comp.get("dir") if isinstance(comp.get("dir"), str) else ""
+        directory = _norm_dir(directory) if directory else ""
+        gid = own_node_id(directory)
+        label = (comp.get("label") or "").strip() if isinstance(comp.get("label"), str) else ""
+        if not label:
+            label = directory.rsplit("/", 1)[-1] if directory else (project_name or "app")
+        title = f"{directory}/" if directory else f"{project_name or 'app'} (repo root)"
+        prov = _prov_dict(comp.get("provenance"))
+        extra = [_fact("dir", directory or ".", "app topology record")]
+        if isinstance(comp.get("env"), str) and comp["env"]:
+            extra.append(_fact("env", comp["env"], "app topology record"))
+        add(gid, label, title, "deployable", RING_CODE, HOST_PROJECT, prov, extra)
+        produced[str(comp.get("id") or directory or ".")] = gid
+
+    def plain(group: str, prefix: str, kind: str, ring: int, host: str) -> None:
+        for item in getattr(record, group) or []:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            pid = str(item["id"])
+            gid = f"{prefix}:{pid}"
+            label = item.get("label") if isinstance(item.get("label"), str) else ""
+            label = label.strip() or pid
+            prov = _prov_dict(item.get("provenance"))
+            extra: list[dict[str, str]] = []
+            if group == "infrastructure" and isinstance(item.get("kind"), str) and item["kind"]:
+                extra.append(_fact("kind", item["kind"], "app topology record"))
+            if isinstance(item.get("env"), str) and item["env"]:
+                extra.append(_fact("env", item["env"], "app topology record"))
+            add(gid, label, label, kind, ring, host, prov, extra)
+            produced[pid] = gid
+
+    plain("infrastructure", "infra", "infra", RING_INFRA, HOST_APP_INFRA)
+    plain("external_services", "ext", "external", RING_EXTERNAL, HOST_EXTERNAL)
+    plain("unresolved", "unresolved", "unresolved", RING_EXTERNAL, HOST_EXTERNAL)
+
+    for edge in record.edges or []:
+        if not isinstance(edge, dict):
+            continue
+        src = produced.get(str(edge.get("from") or ""))
+        dst = produced.get(str(edge.get("to") or ""))
+        if not src or not dst:
+            logger.debug("app topology edge dropped; endpoint not in the record")
+            continue
+        folded: dict[str, Any] = {
+            "from": src,
+            "to": dst,
+            "protocol": str(edge.get("protocol") or ""),
+            "label": str(edge.get("label") or ""),
+            "provenance": _prov_dict(edge.get("provenance")),
+        }
+        # A second source of the same edge is part of the map. Dropping it here
+        # would make the posted record look like the first file was the only one.
+        extra_provs = edge.get("provenances")
+        if isinstance(extra_provs, list) and extra_provs:
+            folded["provenances"] = [
+                _prov_dict(item) for item in extra_provs if isinstance(item, dict)
+            ]
+        if edge.get("state") in _EDGE_STATES:
+            folded["state"] = edge["state"]
+        edges.append(folded)
+
+
+def _err(errors: list[dict[str, str]], path: str, reason: str) -> None:
+    errors.append({"path": path, "reason": reason})
+
+
+def _req_str(body: dict, key: str, errors: list[dict[str, str]]) -> str | None:
+    if key not in body or body[key] is None:
+        _err(errors, key, "missing")
+        return None
+    if not isinstance(body[key], str):
+        _err(errors, key, "must be a string")
+        return None
+    value = body[key].strip()
+    if not value:
+        _err(errors, key, "missing")
+        return None
+    if _looks_like_secret(value):
+        _err(errors, key, _SECRET_REASON)
+    return value
+
+
+def _field_str(item: dict, key: str, prefix: str, errors: list[dict[str, str]],
+               *, allow_empty: bool = False) -> str | None:
+    path = f"{prefix}.{key}"
+    if key not in item or item[key] is None:
+        _err(errors, path, "missing")
+        return None
+    if not isinstance(item[key], str):
+        _err(errors, path, "must be a string")
+        return None
+    value = item[key] if allow_empty else item[key].strip()
+    if not allow_empty and not value.strip():
+        _err(errors, path, "missing")
+        return None
+    if _looks_like_secret(value):
+        _err(errors, path, _SECRET_REASON)
+    return value.strip() if not allow_empty else value
+
+
+def _provenance(item: dict, prefix: str, errors: list[dict[str, str]]) -> dict | None:
+    path = f"{prefix}.provenance"
+    if "provenance" not in item or item["provenance"] is None or item["provenance"] == {}:
+        _err(errors, path, "missing")
+        return None
+    prov = item["provenance"]
+    if not isinstance(prov, dict):
+        _err(errors, path, "must be an object")
+        return None
+    return _one_provenance(prov, path, errors)
+
+
+def _one_provenance(prov: dict, path: str, errors: list[dict[str, str]]) -> dict | None:
+    for key in prov:
+        if key in _FORBIDDEN_KEYS:
+            _err(errors, f"{path}.{key}", _SECRET_REASON)
+        elif key not in _PROV_KEYS:
+            _err(errors, f"{path}.{key}", "unknown field")
+    ok = True
+    file_ = prov.get("file")
+    rule = prov.get("rule")
+    if not isinstance(file_, str) or not file_.strip():
+        _err(errors, f"{path}.file", "missing")
+        ok = False
+    elif _looks_like_secret(file_):
+        _err(errors, f"{path}.file", _SECRET_REASON)
+        ok = False
+    if not isinstance(rule, str) or not rule.strip():
+        _err(errors, f"{path}.rule", "missing")
+        ok = False
+    elif _looks_like_secret(rule):
+        _err(errors, f"{path}.rule", _SECRET_REASON)
+        ok = False
+    line = None
+    if "line" in prov and prov["line"] is not None:
+        line_v = prov["line"]
+        if isinstance(line_v, bool) or not isinstance(line_v, int) or line_v < 1:
+            _err(errors, f"{path}.line", "must be a positive integer")
+            ok = False
+        else:
+            line = line_v
+    if not ok:
+        return None
+    out: dict[str, Any] = {"file": file_.strip(), "rule": rule.strip()}
+    if line is not None:
+        out["line"] = line
+    return out
+
+
+def _provenances(item: dict, prefix: str, errors: list[dict[str, str]]) -> list[dict] | None:
+    """Every source of one edge. Absent is fine; a present value must be a list of provenance objects."""
+    if "provenances" not in item or item["provenances"] is None:
+        return None
+    raw = item["provenances"]
+    path = f"{prefix}.provenances"
+    if not isinstance(raw, list):
+        _err(errors, path, "must be a list")
+        return None
+    out: list[dict] = []
+    for index, prov in enumerate(raw):
+        item_path = f"{path}[{index}]"
+        if not isinstance(prov, dict):
+            _err(errors, item_path, "must be an object")
+            continue
+        parsed = _one_provenance(prov, item_path, errors)
+        if parsed is not None:
+            out.append(parsed)
+    return out
+
+
+def _edge_state(item: dict, prefix: str, errors: list[dict[str, str]]) -> str:
+    if "state" not in item or item["state"] is None or item["state"] == "":
+        return ""
+    state = item["state"]
+    if not isinstance(state, str) or state not in _EDGE_STATES:
+        _err(errors, f"{prefix}.state", "must be set or documented")
+        return ""
+    return state
+
+
+def _optional_env(item: dict, prefix: str, errors: list[dict[str, str]]) -> str:
+    if "env" not in item or item["env"] is None or item["env"] == "":
+        return ""
+    env = item["env"]
+    if not isinstance(env, str) or not _IDENT.fullmatch(env):
+        _err(errors, f"{prefix}.env", "must be a variable name")
+        return ""
+    if _looks_like_secret(env):
+        _err(errors, f"{prefix}.env", _SECRET_REASON)
+        return ""
+    return env
+
+
+def _check_keys(item: dict, allowed: frozenset, prefix: str, errors: list[dict[str, str]]) -> None:
+    for key in item:
+        if key in _FORBIDDEN_KEYS:
+            _err(errors, f"{prefix}.{key}", _SECRET_REASON)
+        elif key not in allowed:
+            _err(errors, f"{prefix}.{key}", "unknown field")
+
+
+def _validate_app_post(body: Any) -> tuple[list[dict[str, str]], dict | None]:
+    """Every problem, sorted by path. A non-empty error list means store nothing."""
+    errors: list[dict[str, str]] = []
+    if not isinstance(body, dict):
+        return [{"path": "", "reason": "must be an object"}], None
+
+    for key in body:
+        if key in _FORBIDDEN_KEYS:
+            _err(errors, key, _SECRET_REASON)
+        elif key not in _TOP_KEYS:
+            _err(errors, key, "unknown field")
+
+    producer_id = _req_str(body, "producer_id", errors)
+    producer_version = _req_str(body, "producer_version", errors)
+    mapped_sha = _req_str(body, "mapped_sha", errors)
+    if isinstance(body.get("mapped_sha"), str) and body["mapped_sha"].strip() == "unknown":
+        _err(errors, "mapped_sha", "unknown is not a commit")
+    if isinstance(body.get("project_id"), str) and _looks_like_secret(body["project_id"]):
+        _err(errors, "project_id", _SECRET_REASON)
+
+    groups: dict[str, list] = {g: [] for g in _GROUPS}
+    id_owner: dict[str, str] = {}
+    dir_owner: dict[str, str] = {}
+
+    for group in _GROUPS:
+        if group not in body:
+            continue
+        raw = body[group]
+        if not isinstance(raw, list):
+            _err(errors, group, "must be a list")
+            continue
+        allowed = _NODE_KEYS[group]
+        for i, item in enumerate(raw):
+            prefix = f"{group}[{i}]"
+            if not isinstance(item, dict):
+                _err(errors, prefix, "must be an object")
+                continue
+            _check_keys(item, allowed, prefix, errors)
+            prov = _provenance(item, prefix, errors)
+            env = _optional_env(item, prefix, errors)
+            label = ""
+            if "label" in item and item["label"] is not None:
+                if not isinstance(item["label"], str):
+                    _err(errors, f"{prefix}.label", "must be a string")
+                else:
+                    label = item["label"].strip()
+                    if _looks_like_secret(label):
+                        _err(errors, f"{prefix}.label", _SECRET_REASON)
+
+            directory: str | None = None
+            kind = ""
+            if group == "components":
+                if "dir" not in item or item["dir"] is None:
+                    _err(errors, f"{prefix}.dir", "missing")
+                elif not isinstance(item["dir"], str):
+                    _err(errors, f"{prefix}.dir", "must be a string")
+                else:
+                    if _looks_like_secret(item["dir"]):
+                        _err(errors, f"{prefix}.dir", _SECRET_REASON)
+                    directory = _norm_dir(item["dir"])
+                raw_id = item.get("id")
+                if "id" in item and raw_id is not None and not isinstance(raw_id, str):
+                    _err(errors, f"{prefix}.id", "must be a string")
+                    pid = None
+                elif isinstance(raw_id, str) and raw_id.strip():
+                    pid = raw_id.strip()
+                    if _looks_like_secret(pid):
+                        _err(errors, f"{prefix}.id", _SECRET_REASON)
+                elif directory is None:
+                    pid = None
+                else:
+                    pid = directory or "."
+            else:
+                pid = None
+                raw_id = item.get("id")
+                if "id" not in item or raw_id is None or (isinstance(raw_id, str) and not raw_id.strip()):
+                    _err(errors, f"{prefix}.id", "missing")
+                elif not isinstance(raw_id, str):
+                    _err(errors, f"{prefix}.id", "must be a string")
+                else:
+                    pid = raw_id.strip()
+                    if _looks_like_secret(pid):
+                        _err(errors, f"{prefix}.id", _SECRET_REASON)
+                if group == "infrastructure" and "kind" in item and item["kind"] is not None:
+                    if not isinstance(item["kind"], str) or not item["kind"].strip():
+                        _err(errors, f"{prefix}.kind", "must be a string")
+                    else:
+                        kind = item["kind"].strip()
+                        if _looks_like_secret(kind):
+                            _err(errors, f"{prefix}.kind", _SECRET_REASON)
+
+            if pid:
+                if pid in id_owner:
+                    _err(errors, f"{prefix}.id", f"duplicate of {id_owner[pid]}")
+                else:
+                    id_owner[pid] = f"{prefix}.id"
+            if group == "components" and directory is not None:
+                if directory in dir_owner:
+                    _err(errors, f"{prefix}.dir", f"duplicate of {dir_owner[directory]}")
+                else:
+                    dir_owner[directory] = f"{prefix}.dir"
+
+            # Registered for edge checks even when provenance failed, so a posted
+            # node is not also reported as a node the post does not define.
+            node_broken = any(e["path"] == prefix or e["path"].startswith(prefix + ".") for e in errors)
+            if pid and not node_broken and prov is not None and (group != "components" or directory is not None):
+                norm: dict[str, Any] = {
+                    "id": pid,
+                    "label": label,
+                    "provenance": prov,
+                }
+                if env:
+                    norm["env"] = env
+                if group == "components":
+                    norm["dir"] = directory
+                if group == "infrastructure" and kind:
+                    norm["kind"] = kind
+                groups[group].append(norm)
+
+    node_paths = tuple(f"{g}[" for g in _GROUPS) + _GROUPS
+    structural = any(e["path"] in _GROUPS or e["path"].startswith(node_paths) for e in errors)
+    if sum(len(v) for v in groups.values()) == 0 and not structural:
+        _err(errors, "nodes", "missing")
+
+    edges_norm: list[dict[str, Any]] = []
+    if "edges" in body:
+        raw_edges = body["edges"]
+        if not isinstance(raw_edges, list):
+            _err(errors, "edges", "must be a list")
+        else:
+            for i, item in enumerate(raw_edges):
+                prefix = f"edges[{i}]"
+                if not isinstance(item, dict):
+                    _err(errors, prefix, "must be an object")
+                    continue
+                _check_keys(item, _EDGE_KEYS, prefix, errors)
+                src = _field_str(item, "from", prefix, errors)
+                dst = _field_str(item, "to", prefix, errors)
+                protocol = _field_str(item, "protocol", prefix, errors)
+                if "label" not in item or item["label"] is None:
+                    _err(errors, f"{prefix}.label", "missing")
+                    label = None
+                elif not isinstance(item["label"], str):
+                    _err(errors, f"{prefix}.label", "must be a string")
+                    label = None
+                else:
+                    label = item["label"]
+                    if _looks_like_secret(label):
+                        _err(errors, f"{prefix}.label", _SECRET_REASON)
+                prov = _provenance(item, prefix, errors)
+                env = _optional_env(item, prefix, errors)
+                provenances = _provenances(item, prefix, errors)
+                state = _edge_state(item, prefix, errors)
+                if src and src not in id_owner:
+                    _err(errors, f"{prefix}.from", _DANGLING)
+                if dst and dst not in id_owner:
+                    _err(errors, f"{prefix}.to", _DANGLING)
+                edge_broken = any(
+                    e["path"] == prefix or e["path"].startswith(prefix + ".") for e in errors
+                )
+                if not edge_broken and src and dst and protocol is not None and label is not None and prov:
+                    edge: dict[str, Any] = {
+                        "from": src,
+                        "to": dst,
+                        "protocol": protocol,
+                        "label": label.strip(),
+                        "provenance": prov,
+                    }
+                    if env:
+                        edge["env"] = env
+                    if provenances:
+                        edge["provenances"] = provenances
+                    if state:
+                        edge["state"] = state
+                    edges_norm.append(edge)
+
+    seen: set[tuple[str, str]] = set()
+    uniq: list[dict[str, str]] = []
+    for e in sorted(errors, key=lambda item: (item["path"], item["reason"])):
+        key = (e["path"], e["reason"])
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(e)
+    if uniq:
+        return uniq, None
+    return [], {
+        "producer_id": producer_id,
+        "producer_version": producer_version,
+        "mapped_sha": mapped_sha,
+        "components": groups["components"],
+        "infrastructure": groups["infrastructure"],
+        "external": groups["external"],
+        "unresolved": groups["unresolved"],
+        "edges": edges_norm,
+    }
+
+
+def replace_app_topology(db: Session, project_id: str, body: dict, *, posted_by: str) -> dict:
+    """Validate, then replace the one current record. Last valid post wins.
+
+    The check finishes before any write. A refusal leaves the previous row
+    untouched — the map never goes blank because a post was wrong.
+    """
+    errors, norm = _validate_app_post(body)
+    if errors or norm is None:
+        raise TopologyRefused(errors)
+
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models import AppTopology, Project
+
+    if db.get(Project, project_id) is None:
+        raise TopologyRefused([{"path": "project_id", "reason": "unknown project"}])
+
+    # One UPDATE. `previous_mapped_sha = mapped_sha` is the old sha, evaluated
+    # from the row being replaced, so two valid posts cannot blank it and the
+    # last committed post is the record. No SELECT ... FOR UPDATE: an untested
+    # lock is a round trip (test_lock_concurrency).
+    payload = {
+        "previous_mapped_sha": AppTopology.mapped_sha,
+        "producer_id": norm["producer_id"],
+        "producer_version": norm["producer_version"],
+        "mapped_sha": norm["mapped_sha"],
+        "mapped_at": datetime.now(timezone.utc),
+        "posted_by": posted_by or "",
+        "components": list(norm["components"]),
+        "infrastructure": list(norm["infrastructure"]),
+        "external_services": list(norm["external"]),
+        "unresolved": list(norm["unresolved"]),
+        "edges": list(norm["edges"]),
+    }
+    updated = db.execute(
+        update(AppTopology).where(AppTopology.project_id == project_id).values(**payload)
+    )
+    if not updated.rowcount:
+        db.add(AppTopology(
+            project_id=project_id,
+            previous_mapped_sha="",
+            producer_id=norm["producer_id"],
+            producer_version=norm["producer_version"],
+            mapped_sha=norm["mapped_sha"],
+            mapped_at=payload["mapped_at"],
+            posted_by=payload["posted_by"],
+            components=list(norm["components"]),
+            infrastructure=list(norm["infrastructure"]),
+            external_services=list(norm["external"]),
+            unresolved=list(norm["unresolved"]),
+            edges=list(norm["edges"]),
+        ))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        db.execute(
+            update(AppTopology).where(AppTopology.project_id == project_id).values(**payload)
+        )
+        db.commit()
+    row = db.get(AppTopology, project_id)
+    db.refresh(row)
+    return _record_public(row)

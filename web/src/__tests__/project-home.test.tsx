@@ -68,7 +68,7 @@ const dash = {
 };
 
 const counts = {
-  items: 4, items_in_progress: 1, requests: 1, review: 2, triage_new: 1, lessons_published: 3,
+  items: 4, items_in_progress: 1, requests: 1, review: 2, triage_new: 1, lessons_published: 3, live_agents: 0,
 };
 
 const zeroDash = {
@@ -80,7 +80,7 @@ const zeroDash = {
 };
 
 const zeroCounts = {
-  items: 0, items_in_progress: 0, requests: 0, review: 0, triage_new: 0, lessons_published: 0,
+  items: 0, items_in_progress: 0, requests: 0, review: 0, triage_new: 0, lessons_published: 0, live_agents: 0,
 };
 
 vi.mock("@/lib/api", () => ({
@@ -219,14 +219,38 @@ describe("Project home", () => {
     expect(link(/PRDs/)).toHaveTextContent("1 docs");
     expect(link(/Code graph/)).toHaveAttribute("href", "/p/CORE/code");
     expect(link(/Code graph/)).toHaveTextContent("40 nodes");
-    expect(link(/^Memory/)).toHaveAttribute("href", "/p/CORE/memory-review");
+    expect(link(/^Memory/)).toHaveAttribute("href", "/p/CORE/memory");
     expect(link(/^Memory/)).toHaveTextContent("2 to review");
     expect(link(/Lessons/)).toHaveAttribute("href", "/p/CORE/lessons");
     expect(link(/Lessons/)).toHaveTextContent("3 published");
-    expect(link(/Fleet/)).toHaveAttribute("href", "/p/CORE/fleet.v1");
+    expect(link(/Fleet/)).toHaveAttribute("href", "/p/CORE/fleet");
     expect(link(/Fleet/)).toHaveTextContent("0 online");
     expect(link(/^Live/)).toHaveAttribute("href", "/p/CORE/live");
     expect(link(/^Live/)).toHaveTextContent("0 on now");
+  });
+
+  it("colours Jump-to labels fg, a live count accent and a zero count muted", async () => {
+    renderHome();
+    await screen.findByText("1 in flight");
+    const jump = screen.getByRole("region", { name: "Jump to" });
+    const link = (name: RegExp) => within(jump).getByRole("link", { name });
+
+    expect(within(link(/Tracker/)).getByText("Tracker")).toHaveClass("text-fg");
+    expect(within(link(/Tracker/)).getByText("Tracker")).not.toHaveClass("text-accent");
+    expect(within(link(/Tracker/)).getByText("1 in flight")).toHaveClass("text-accent");
+    expect(within(link(/Fleet/)).getByText("0 online")).toHaveClass("text-muted");
+    expect(within(link(/Fleet/)).getByText("0 online")).not.toHaveClass("text-accent");
+  });
+
+  it("draws each requests bar inside a track element", async () => {
+    renderHome();
+    await screen.findByText("1 in flight");
+    const tracks = screen.getAllByTestId("request-track");
+    expect(tracks).toHaveLength(4);
+    for (const track of tracks) {
+      expect(track).toHaveClass("bg-surface-2");
+      expect(track.children).toHaveLength(1);
+    }
   });
 
   it("placeholds the counts while a read is in flight rather than rendering 0", async () => {
@@ -320,7 +344,7 @@ describe("Project home", () => {
     vi.mocked(api.orgGalaxy).mockReturnValue(new Promise(() => {}) as never);
     renderHome();
 
-    await screen.findByText("Items");
+    await screen.findByText("Items", { selector: "span" });
     // Unknown is a third answer: no heading, no honest empty, no failure copy.
     expect(screen.queryByRole("heading", { name: "Cross-project dependencies" })).not.toBeInTheDocument();
     expect(screen.queryByText(/No sibling repo declares this one/)).not.toBeInTheDocument();
@@ -378,14 +402,14 @@ describe("Project home", () => {
     expect(screen.getByText("Nothing has happened here yet.")).toBeInTheDocument();
     expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
     // The stat grid stays: shards were measured, so a zero items cell is a real zero.
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("0");
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("0");
     expect(screen.getByText("Memory shards").parentElement).toHaveTextContent("2");
   });
 
   it("does not call a healthy read stale", async () => {
     renderHome();
-    expect(await screen.findByText("Items")).toBeInTheDocument();
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(await screen.findByText("Items", { selector: "span" })).toBeInTheDocument();
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("4");
     expect(screen.queryByText(STALE_BANNER)).not.toBeInTheDocument();
     expect(screen.queryByText(/the request failed/i)).not.toBeInTheDocument();
   });
@@ -393,8 +417,8 @@ describe("Project home", () => {
   it("keeps the last good counts and names them stale when a refresh fails", async () => {
     const { api } = await import("@/lib/api");
     const { qc } = renderHome();
-    expect(await screen.findByText("Items")).toBeInTheDocument();
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(await screen.findByText("Items", { selector: "span" })).toBeInTheDocument();
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("4");
     expect(screen.queryByText(STALE_BANNER)).not.toBeInTheDocument();
 
     vi.mocked(api.dashboard).mockRejectedValue(new Error("boom"));
@@ -402,7 +426,7 @@ describe("Project home", () => {
 
     expect(await screen.findByText(STALE_BANNER)).toBeInTheDocument();
     // The failed refresh must not replace the last read with — or with the first-load error.
-    expect(screen.getByText("Items").parentElement).toHaveTextContent("4");
+    expect(screen.getByText("Items", { selector: "span" }).parentElement).toHaveTextContent("4");
     expect(screen.queryByText(/A count showing — was not read/i)).not.toBeInTheDocument();
   });
 });

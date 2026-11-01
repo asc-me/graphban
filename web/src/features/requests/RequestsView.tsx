@@ -1,4 +1,4 @@
-import { ChevronRight, ChevronUp, ExternalLink, Globe, Lock, Send } from "lucide-react";
+import { ChevronRight, ChevronUp, ExternalLink } from "lucide-react";
 import * as React from "react";
 
 import {
@@ -12,9 +12,10 @@ import { LinkedCode } from "@/features/code/LinkedCode";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { TYPE_META } from "@/lib/meta";
-import { useRequests, useVoteRequest, usePublishRequest, useUnpublishRequest, useCreateRequestComment } from "@/lib/queries";
+import { useRequests, useVoteRequest, usePublishRequest, useUnpublishRequest } from "@/lib/queries";
 import type { RequestItem, RequestType } from "@/lib/types";
 
+import { CommentThread } from "./CommentThread";
 import { LinkDialog } from "./LinkDialog";
 
 const STATUS_COLOR: Record<string, string> = {
@@ -22,6 +23,16 @@ const STATUS_COLOR: Record<string, string> = {
   triaging: "#e0b34a",
   linked: "#7ca2ff",
 };
+
+/** "BUG" → "Bug": the filter chips show sentence case, whatever casing the data carries. */
+export function sentenceCase(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+
+/** "6h ago" → "6h": the row shows the short form. */
+export function shortAge(ago: string): string {
+  return ago.replace(/\s+ago$/, "");
+}
 
 type Filter = "all" | RequestType;
 
@@ -46,6 +57,7 @@ export function RequestsView() {
         purpose="Triage queue from the public form. Auto-duplicate detection links submissions to existing items & memory."
       />
 
+      {!isLoading && !isError && requests.length > 0 && (
       <div className="flex flex-none flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
         <Chip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={requests.length} />
         {(Object.keys(TYPE_META) as RequestType[]).map((t) => (
@@ -53,18 +65,19 @@ export function RequestsView() {
             key={t}
             active={filter === t}
             onClick={() => setFilter(t)}
-            label={TYPE_META[t].label}
+            label={sentenceCase(TYPE_META[t].label)}
             count={counts[t] ?? 0}
             color={TYPE_META[t].color}
           />
         ))}
       </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading ? (
           <RequestsListSkeleton rows={requests.length > 0 ? requests.length : 6} />
         ) : isError ? (
-          <PlannerError message="Requests unavailable" onRetry={() => refetch()} />
+          <PlannerError title="Requests unavailable" onRetry={() => refetch()} />
         ) : requests.length === 0 ? (
           <PlannerEmpty
             title="No requests yet"
@@ -105,9 +118,6 @@ function RequestRow({
   const [open, setOpen] = React.useState(false);
   const publish = usePublishRequest();
   const unpublish = useUnpublishRequest();
-  const addComment = useCreateRequestComment();
-  const [commentBody, setCommentBody] = React.useState("");
-  const [commentVis, setCommentVis] = React.useState<"public" | "private">("private");
   const isPublished = request.published_at != null;
 
   async function handlePublishToggle() {
@@ -116,13 +126,6 @@ function RequestRow({
     } else {
       await publish.mutateAsync(request.id);
     }
-  }
-
-  async function handleComment(e: React.FormEvent) {
-    e.preventDefault();
-    if (!commentBody.trim()) return;
-    await addComment.mutateAsync({ id: request.id, body: commentBody.trim(), visibility: commentVis });
-    setCommentBody("");
   }
 
   return (
@@ -138,7 +141,7 @@ function RequestRow({
         </button>
 
         <span
-          className="flex-none rounded-md border px-1.5 py-0.5 font-mono text-meta uppercase tracking-wide"
+          className="flex-none rounded-md border px-1.5 py-0.5 font-mono text-meta uppercase"
           style={{ color: meta.color, background: meta.bg, borderColor: meta.border }}
         >
           {meta.label}
@@ -161,10 +164,10 @@ function RequestRow({
         {request.source_url && <SourceLink url={request.source_url} />}
 
         <span className="flex-none font-mono text-[10.5px] text-faint">{request.by}</span>
-        <span className="hidden flex-none font-mono text-[10px] text-faint-2 sm:inline">{request.ago}</span>
+        <span className="hidden flex-none font-mono text-[10px] text-faint-2 sm:inline">{shortAge(request.ago)}</span>
 
         <span
-          className="flex flex-none items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide"
+          className="flex w-[82px] flex-none items-center gap-1.5 font-mono text-[10px] uppercase"
           style={{ color: STATUS_COLOR[request.status] ?? "#8b949e" }}
         >
           <span
@@ -178,15 +181,14 @@ function RequestRow({
           onClick={handlePublishToggle}
           disabled={publish.isPending || unpublish.isPending}
           className={cn(
-            "flex flex-none items-center gap-1 rounded-md border px-2 py-1 font-mono text-[10px] uppercase tracking-wide transition-colors",
+            "flex flex-none items-center gap-1 rounded-md border px-2 py-1 font-mono text-[10px] uppercase transition-colors",
             isPublished
-              ? "border-green-500/30 bg-green-500/10 text-green-400 hover:border-green-500/50"
+              ? "border-st-done/30 bg-st-done/10 text-st-done hover:border-st-done/50"
               : "border-control bg-surface text-muted hover:border-control-hover hover:text-fg-2",
           )}
           title={isPublished ? "Unpublish (remove from public board)" : "Publish (show on public board)"}
         >
-          {isPublished ? <Globe size={11} /> : <Lock size={11} />}
-          {isPublished ? "Published" : "Publish"}
+          {isPublished ? "● Published" : "Publish"}
         </button>
 
         <LinkDialog request={request} />
@@ -198,38 +200,10 @@ function RequestRow({
             <p className="whitespace-pre-wrap text-body leading-relaxed text-fg-2">{request.detail}</p>
           )}
           <div>
-            <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">Linked code</div>
-            <LinkedCode refId={request.id} projectId={activeId} />
+            <div className="mb-1.5 font-mono text-meta uppercase text-faint">Linked code</div>
+            <LinkedCode refId={request.id} projectId={activeId} variant="chips" />
           </div>
-          <form onSubmit={handleComment} className="space-y-2 border-t border-line pt-3">
-            <div className="font-mono text-[10px] uppercase tracking-wide text-faint">Operator comment</div>
-            <textarea
-              value={commentBody}
-              onChange={(e) => setCommentBody(e.target.value)}
-              rows={2}
-              placeholder="Write a comment…"
-              className="w-full rounded-md border border-control bg-surface px-2 py-1.5 text-[12px] text-fg-2 placeholder:text-faint focus:border-accent/50 focus:outline-none"
-            />
-            <div className="flex items-center gap-2">
-              <label className="flex items-center gap-1.5 text-small text-fg-2">
-                <input
-                  type="checkbox"
-                  checked={commentVis === "public"}
-                  onChange={(e) => setCommentVis(e.target.checked ? "public" : "private")}
-                  className="accent-accent"
-                />
-                Public
-              </label>
-              <button
-                type="submit"
-                disabled={!commentBody.trim() || addComment.isPending}
-                className="ml-auto flex items-center gap-1 rounded-md border border-control bg-surface px-2.5 py-1 font-mono text-[10px] text-fg-2 transition-colors hover:border-accent/40 disabled:opacity-50"
-              >
-                <Send size={10} />
-                {addComment.isPending ? "Posting…" : "Post"}
-              </button>
-            </div>
-          </form>
+          <CommentThread requestId={request.id} />
         </div>
       )}
     </div>

@@ -7,10 +7,11 @@ from sqlalchemy.orm import Session
 from app import tagging
 from app.config import settings
 from app.db import get_db
+from app.errors import Refused
 from app.models import Membership, Project, User
 from app.schemas import (
     GitopsPatch, GitopsView, MemberOut, ProjectCreate, ProjectOut, ProjectRetagIn,
-    ProjectUpdate, UserOut,
+    ProjectSummaryOut, ProjectUpdate, UserOut,
 )
 from app.security import authz
 from app.security.deps import get_current_user
@@ -19,6 +20,7 @@ from app.services import events as events_svc
 from app.services import gitops
 from app.services import projects as projects_svc
 from app.services import quotas
+from app.services import triage as triage_svc
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -68,6 +70,13 @@ def list_projects(db: Session = Depends(get_db), user: User = Depends(get_curren
     return [p for p in rows if p.id in readable]
 
 
+@router.get("/summaries", response_model=list[ProjectSummaryOut])
+def project_summaries(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The project switcher's rows — counts, branch, presence and last activity for every
+    project this user can read, in one request of fixed cost (GRPH-1131)."""
+    return projects_svc.project_summaries(db, authz.readable_project_ids(db, user.id))
+
+
 @router.post("", response_model=ProjectOut, status_code=201)
 def create_project(
     body: ProjectCreate,
@@ -100,8 +109,16 @@ def update_project(
     if project is None:
         raise HTTPException(404, "project not found")
     changed = body.model_dump(exclude_unset=True)
+    if "release_ref" in changed:
+        # Null clears, so it cannot ride the skip-None loop below. Not gated on the box
+        # being linked: that refusal belongs to the gitops PATCH, not to this field.
+        try:
+            projects_svc.set_release_ref(db, project, changed.pop("release_ref"))
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        changed["release_ref"] = project.release_ref
     for k, v in changed.items():
-        if v is not None:
+        if v is not None and k != "release_ref":
             setattr(project, k, v)
     db.commit()
     db.refresh(project)
@@ -139,9 +156,22 @@ def project_counts(project_id: str, db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):
     """The badge numbers the app shell renders — a few integers instead of the four full
     collections it used to fetch on every route (GRPH-431). `triage_new` and
-    `lessons_published` are the Project Home Jump-to populations (GRPH-1064)."""
+    `lessons_published` are the Project Home Jump-to populations (GRPH-1064); the rest of
+    the sidebar's badges ride along as `projects.BADGE_FIELDS` (GRPH-1132)."""
     authz.require_readable(db, user.id, project_id)
     return projects_svc.shell_counts(db, project_id)
+
+
+@router.get("/{project_id}/triage")
+def project_triage(project_id: str, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """One inbox: requests, blockers and collisions, blockers first, with per-tab counts.
+
+    A source that fails is named in `failed_sources` and the others are still returned — an
+    empty `rows` with a non-empty `failed_sources` means "could not look", not "nothing
+    waiting"."""
+    authz.require_readable(db, user.id, project_id)
+    return triage_svc.feed(db, project_id)
 
 
 def _load_project(db: Session, project_id: str) -> Project:
@@ -179,7 +209,7 @@ def patch_gitops(project_id: str, body: GitopsPatch, db: Session = Depends(get_d
         authz.require_org_admin(db, user.id, project.org_id)
     else:
         if code_sync.link_status(db)["linked"]:
-            raise HTTPException(403, gitops.LINKED_PATCH_DETAIL)
+            raise Refused(403, gitops.LINKED_PATCH_DETAIL, rule_id="gitops.owned_by_org")
         authz.require_writable(db, user.id, project_id)
     try:
         changed = gitops.apply_patch(project, {k: getattr(body, k) for k in body.model_fields_set})

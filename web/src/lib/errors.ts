@@ -27,3 +27,30 @@ export function errorDetail(err: unknown, fallback: string): string {
   }
   return fallback;
 }
+
+/** A policy refusal (`Refused`, 403/409) carries `{detail, rule_id}`; `rule_id` is null when the
+ *  refusal is not mapped to a rule yet. Returns the rule id, or null for "none named". */
+export function errorRuleId(err: unknown): string | null {
+  if (err && typeof err === "object" && "message" in err && typeof err.message === "string") {
+    try {
+      const parsed = JSON.parse(err.message);
+      if (parsed && typeof parsed.rule_id === "string" && parsed.rule_id) return parsed.rule_id;
+    } catch {
+      /* not JSON */
+    }
+  }
+  return null;
+}
+
+/** True when the error is a 403/409 refusal envelope (it has a `rule_id` key, null or not). */
+export function isRefusal(err: unknown): boolean {
+  if (err && typeof err === "object" && "message" in err && typeof err.message === "string") {
+    try {
+      const parsed = JSON.parse(err.message);
+      return !!parsed && typeof parsed === "object" && "rule_id" in parsed;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}

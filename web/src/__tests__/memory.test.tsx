@@ -7,14 +7,14 @@ import { AgentSidebar } from "@/components/shell/AgentSidebar";
 import { MemoryRouter } from "react-router-dom";
 
 import { ProjectProvider } from "@/features/ProjectContext";
-import type { Item, Shard, ShardHit } from "@/lib/types";
+import type { Item, ItemDetail, Shard, ShardHit } from "@/lib/types";
 
 const hits: ShardHit[] = [
   {
     shard: {
       id: "m1", text: "Decided: use pgvector to keep self-host to one Postgres container.",
       scope: "global", source: "from AL-08", status: "published", origin: "user:ascme",
-      item_id: null, project_id: "core", fresh: false, scoring_source: "", auto_confidence: null,
+      item_id: null, project_id: "core", fresh: false, scoring_source: "", shard_class: "", auto_confidence: null,
       created_at: "",
     },
     score: 0.83,
@@ -32,6 +32,7 @@ const staleCooldown: Shard = {
   project_id: "core",
   fresh: false,
   scoring_source: "",
+  shard_class: "",
   auto_confidence: null,
   created_at: "",
 };
@@ -43,7 +44,7 @@ const liveCooldown: Shard = {
   text: "Still in review — cooldown applies.",
 };
 
-const doneItem: Item = {
+const doneItem: ItemDetail = {
   id: "GRPH-915",
   project_id: "core",
   title: "Done gate item",
@@ -68,6 +69,7 @@ const doneItem: Item = {
   reach: "repo",
   created_at: "",
   updated_at: "",
+  done_at: "2026-09-01T12:00:00Z",
 };
 
 const reviewItem: Item = {
@@ -147,7 +149,7 @@ describe("Memory panel", () => {
   });
 
   it("names the memory-review queue count instead of silent zero (GRPH-923)", async () => {
-    renderSidebar("/memory-review");
+    renderSidebar("/memory");
     expect(await screen.findByText(/763 waiting · 1 shards shown/i)).toBeInTheDocument();
   });
 });

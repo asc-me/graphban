@@ -31,6 +31,11 @@ PYPROJECT = pathlib.Path("backend/pyproject.toml")
 PACKAGE_JSON = pathlib.Path("web/package.json")
 FLEET_PYPROJECT = pathlib.Path("fleet/pyproject.toml")
 PACK_SCRIPT = pathlib.Path(__file__).resolve().parent / "graphban_pack.py"
+#: The release rules, read at the commit being cut (GRPH-1114). See `release_rules`.
+RULES_FILE = pathlib.Path("scripts/release_rules.json")
+RULE_SCANS_CLEAN = "release.requires_scans_clean"
+#: Every named rule and its default. Absent from the file means the default, nothing else.
+RULE_DEFAULTS = {RULE_SCANS_CLEAN: False}
 _VERSION_PY_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.M)
 _PYPROJECT_VER_RE = re.compile(r'^version\s*=\s*"([^"]+)"', re.M)
 _PACKAGE_VER_RE = re.compile(r'"version"\s*:\s*"([^"]+)"')
@@ -391,6 +396,63 @@ def pack_release(ref: str, out: pathlib.Path, *, api_only: bool = False) -> int:
     return subprocess.run(cmd).returncode
 
 
+def release_rules(repo: pathlib.Path, sha: str, *,
+                  git_run=None) -> tuple[dict[str, bool] | None, str]:
+    """(rules, where) from `RULES_FILE` at `sha`. None means unreadable — refuse, not off.
+
+    Read at the commit being cut, not cwd, for the reason `read_stamped_at` is: the rule a
+    release obeys is part of what was reviewed and merged, so turning it off is a PR like any
+    other, not a local edit before `publish`. A checked-in file rather than a flag also gives
+    the rules view (GRPH-1115) one place to read and change it.
+
+    No file is every rule at its default and says so. A file that does not parse, or names a
+    rule this script does not know, or gives a non-boolean, is None: somebody meant to set a
+    rule, and guessing "off" would be the quiet reading.
+    """
+    run = git_run or git
+    where = f"{RULES_FILE.as_posix()} at {sha[:12]}"
+    proc = run(repo, "show", f"{sha}:{RULES_FILE.as_posix()}", check=False)
+    if proc.returncode != 0:
+        return dict(RULE_DEFAULTS), f"no {where}, defaults"
+    try:
+        data = json.loads(proc.stdout or "")
+    except json.JSONDecodeError as e:
+        return None, f"{where} is not JSON ({e})"
+    if not isinstance(data, dict):
+        return None, f"{where} is not an object"
+    unknown = sorted(set(data) - set(RULE_DEFAULTS))
+    if unknown:
+        return None, f"{where} names unknown rule(s): {', '.join(unknown)}"
+    bad = sorted(k for k, v in data.items() if not isinstance(v, bool))
+    if bad:
+        return None, f"{where}: {', '.join(bad)} must be true or false"
+    return {**RULE_DEFAULTS, **data}, where
+
+
+def scan_release_tree(repo: pathlib.Path, sha: str) -> tuple[bool, str]:
+    """`scans_clean` for the exact commit publish packs, every component (GRPH-1114).
+
+    Not an attestation lookup: the squash-merged stamp commit is no PR's head, so no PR
+    receipt names it. This runs the S3 scanner itself on a detached worktree of `sha` — the
+    same tree the packer materializes — so what is scanned is what ships. A fresh worktree has
+    no node_modules and no .venv; `pnpm audit` reads only package.json + pnpm-lock.yaml, and
+    pip-audit reads uv.lock, so nothing beyond the checked-in tree is needed.
+    """
+    sys.path.insert(0, str(PACK_SCRIPT.parent))
+    import graphban_pack
+    import scan_ci
+
+    try:
+        tree = graphban_pack.materialize(sha, repo)
+    except RuntimeError:
+        return False, f"scans_clean never-run at {sha[:12]}: could not check out {sha}"
+    try:
+        verdict = scan_ci.evaluate_tree(tree, head=sha)
+    finally:
+        graphban_pack.dematerialize(repo, tree)
+    return verdict.passed, verdict.detail
+
+
 def gh(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(["gh", *args], capture_output=True, text=True)
 
@@ -466,7 +528,8 @@ def cmd_notes(repo: pathlib.Path, version: str | None, *,
 
 def cmd_publish(repo: pathlib.Path, version: str | None, *,
                 ref: str, out: pathlib.Path, fetch: bool, api_only: bool,
-                dry_run: bool, git_run=None, pack=pack_release, gh_run=gh) -> int:
+                dry_run: bool, git_run=None, pack=pack_release, gh_run=gh,
+                scan=scan_release_tree) -> int:
     """Tag + pack + GitHub Release. Does not merge and does not apply."""
     run = git_run or git
     if fetch:
@@ -497,6 +560,23 @@ def cmd_publish(repo: pathlib.Path, version: str | None, *,
     existing = _gh_json(view_proc) if view_proc.returncode == 0 else None
     if isinstance(existing, dict) and want in release_assets(existing):
         return _fail(f"GitHub already has {version} with {want} — not republishing")
+
+    # Before pack and before `gh release create`, which is what makes the tag: a refusal
+    # here leaves nothing on GitHub. Dry-run scans too, so it says what publish would do.
+    rules, where = release_rules(repo, sha, git_run=run)
+    if rules is None:
+        return _fail(f"rule {RULE_SCANS_CLEAN}: unreadable — {where}. Not publishing")
+    if not rules[RULE_SCANS_CLEAN]:
+        print(f"rule {RULE_SCANS_CLEAN}: off ({where})")
+    else:
+        print(f"rule {RULE_SCANS_CLEAN}: on ({where}) — scanning {short}")
+        passed, detail = scan(repo, sha)
+        print(detail)
+        if not passed:
+            outcome = ("publish would refuse" if dry_run
+                       else "not tagging, not creating the GitHub Release")
+            return _fail(f"rule {RULE_SCANS_CLEAN}: {short} does not pass scans_clean — "
+                         f"{outcome}")
 
     notes, _prev, _changes = collect_notes(repo, version, sha, short, git_run=run)
 

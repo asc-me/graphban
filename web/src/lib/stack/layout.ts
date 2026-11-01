@@ -54,8 +54,161 @@ export interface StackLayout {
   rings: RingFrame[];
   hostFrames: HostFrame[];
   edges: EdgeRoute[];
+  /** The "Built with Graphban" frame around an expanded instance, or null. */
+  lane: HostFrame | null;
   /** Corner points of every box — for fit-to-screen. */
   fitPoints: { x: number; y: number }[];
+}
+
+// ── App-first map (GRPH-1099 / PRD-P55 §4) ──────────────────────────────────
+//
+// On a project that does not write Graphban, Graphban is the tool that builds the app,
+// not the app. Its whole instance collapses into one box in a build lane at the left
+// edge, with `builds` edges to the app's deployables, so the app fills the map.
+
+export const BUILD_LANE = "graphban_build";
+export const GRAPHBAN_BOX = "graphban:instance";
+export const GRAPHBAN_KIND = "graphban";
+export const PLACEHOLDER_KIND = "placeholder";
+export const UNMAPPED_BOX = "ext:__not_mapped";
+export const BUILT_WITH_GRAPHBAN = "Built with Graphban";
+export const SERVICES_NOT_MAPPED = "services not mapped yet";
+const APP_INFRA = "app_infra";
+const APP_HOSTS = new Set(["project_app", APP_INFRA]);
+const APP_ID = /^(app|infra|ext|unresolved):/;
+
+/** The project's own box (code map or posted record), not Graphban's instance. */
+export function isAppNode(n: StackNode): boolean {
+  if (n.kind === PLACEHOLDER_KIND) return true;
+  if (n.plane) return n.plane === "app";
+  return APP_HOSTS.has(n.host) || APP_ID.test(n.id);
+}
+
+/**
+ * Whether this project writes Graphban's source. An older API without
+ * `graphban_source` answers by ring: Graphban's boxes are ring 1 only when owned.
+ */
+export function ownsGraphban(topo: StackTopology): boolean {
+  if (topo.graphban_source) return topo.graphban_source === "owned";
+  return topo.nodes.some((n) => !isAppNode(n) && n.ring === 1);
+}
+
+/** No record was posted (or an older API sent no mapping block, which is the same). */
+export function isUnmapped(topo: StackTopology): boolean {
+  return (topo.mapping?.state ?? "unmapped") === "unmapped";
+}
+
+export interface StackMapView {
+  /** The topology to draw: collapsed or expanded, with any placeholder added. */
+  topo: StackTopology;
+  /** Graphban can collapse here (the project does not write it). */
+  collapsible: boolean;
+  collapsed: boolean;
+  layoutOptions: StackLayoutOptions;
+}
+
+// Worst-first, for the collapsed box's liveness. `not_configured` is not a failure.
+const BOX_RANK: Record<StackLiveness, number> = {
+  unreachable: 4,
+  unknown: 3,
+  uncalibrated: 2,
+  reachable: 1,
+  not_configured: 0,
+};
+
+/**
+ * The map to draw for this project. Graphban's own project gets today's map with no
+ * self-box. Any other project gets the app first and Graphban as one collapsed box,
+ * unless `expanded`, which draws the instance's detail in its lane. Expanding needs no
+ * extra call: the instance detail is already in the same payload.
+ */
+export function prepareStackMap(topo: StackTopology, expanded = false): StackMapView {
+  const owned = ownsGraphban(topo);
+  const instance = topo.nodes.filter((n) => !isAppNode(n));
+  const collapsible = !owned && instance.length > 0;
+  const collapsed = collapsible && !expanded;
+  const unmapped = isUnmapped(topo) && !owned;
+
+  let nodes = topo.nodes;
+  let edges = topo.edges;
+  let hosts = topo.hosts;
+  if (collapsed) {
+    const app = topo.nodes.filter(isAppNode);
+    const appIds = new Set(app.map((n) => n.id));
+    // The instance's liveness is its core boxes (api, web, db on the compose host),
+    // the worst of them: a failed probe reads the whole box unreachable or unknown.
+    const core = instance.filter((n) => n.scope === "instance" && n.ring < 3);
+    const pool = core.length ? core : instance;
+    const liveness = pool.reduce<StackLiveness>(
+      (worst, n) => (BOX_RANK[n.liveness] > BOX_RANK[worst] ? n.liveness : worst),
+      "not_configured",
+    );
+    const box: StackNode = {
+      id: GRAPHBAN_BOX,
+      label: BUILT_WITH_GRAPHBAN,
+      title: `${BUILT_WITH_GRAPHBAN} — the instance that builds this app`,
+      kind: GRAPHBAN_KIND,
+      ring: 2,
+      scope: "instance",
+      host: BUILD_LANE,
+      plane: "graphban",
+      liveness: pool.length ? liveness : "unknown",
+      surfaces: [],
+      extensions: [],
+      members: instance.map((n) => n.id),
+      facts: [
+        { key: "version", value: topo.identity.api_version || "unknown", provenance: "identity.api_version" },
+        { key: "git_sha", value: topo.identity.api_git_sha || "unknown", provenance: "identity.api_git_sha" },
+        {
+          key: "source",
+          value:
+            topo.graphban_source === "unknown"
+              ? "unknown — this project has no code map to check"
+              : "a tool this project runs; its source is not in this project's code map",
+          provenance: "graphban_source",
+        },
+      ],
+    };
+    const builds: StackEdge[] = app
+      .filter((n) => n.ring === 1 && n.kind !== PLACEHOLDER_KIND)
+      .map((n) => ({ from: GRAPHBAN_BOX, to: n.id, protocol: "builds", label: "builds" }));
+    nodes = [box, ...app];
+    edges = [...builds, ...topo.edges.filter((e) => appIds.has(e.from) && appIds.has(e.to))];
+    hosts = [
+      { id: BUILD_LANE, label: "Build lane", nodes: [GRAPHBAN_BOX] },
+      ...topo.hosts
+        .map((h) => ({ ...h, nodes: h.nodes.filter((id) => appIds.has(id)) }))
+        .filter((h) => h.nodes.length > 0),
+    ];
+  }
+
+  if (unmapped && !nodes.some((n) => n.ring >= 3 && isAppNode(n))) {
+    const placeholder: StackNode = {
+      id: UNMAPPED_BOX,
+      label: SERVICES_NOT_MAPPED,
+      title: SERVICES_NOT_MAPPED,
+      kind: PLACEHOLDER_KIND,
+      ring: 3,
+      scope: "project",
+      host: "external",
+      plane: "app",
+      liveness: "unknown",
+      surfaces: [],
+      extensions: [],
+      facts: [],
+    };
+    nodes = [...nodes, placeholder];
+  }
+
+  return {
+    topo: { ...topo, nodes, edges, hosts },
+    collapsible,
+    collapsed,
+    layoutOptions: {
+      graphbanLeft: collapsible,
+      ring3Subtitle: unmapped ? SERVICES_NOT_MAPPED : null,
+    },
+  };
 }
 
 // Ring labels as structured parts: a circled number, an uppercase ownership
@@ -67,10 +220,21 @@ const RING_LABEL: Record<number, { title: string; subtitle: string }> = {
   3: { title: "EXTERNAL SERVICES", subtitle: "we only call them, over the network" },
 };
 
-// Host column order: user machines, then agent hosts, then the compose/Railway
+// Host column order: the project's own app first (it is the code we write) with the
+// infra it runs on beside it, then user machines, agent hosts and the compose/Railway
 // stack. Anything unrecognised falls after. External hosts get their own column.
-function hostRank(id: string): number {
+// On a project that does not write Graphban, Graphban is a build lane at the LEFT edge
+// (GRPH-1099): the collapsed box, or the instance's own hosts when it is expanded.
+function hostRank(id: string, graphbanLeft = false): number {
   const s = id.toLowerCase();
+  if (s === BUILD_LANE) return -20;
+  if (s === "project_app") return -2;
+  if (s === "app_infra") return -1;
+  if (graphbanLeft) return graphbanRank(s) - 10;
+  return graphbanRank(s);
+}
+
+function graphbanRank(s: string): number {
   if (s.includes("user")) return 0;
   if (s.includes("agent") || s.includes("outpost")) return 1;
   if (s.includes("compose") || s.includes("stack") || s.includes("railway")) return 2;
@@ -101,6 +265,8 @@ const TOP = 150; // headroom for ring labels
 export const OUTPOST_PREVIEW = 4;
 
 function sizeOf(n: StackNode): { w: number; h: number } {
+  if (n.kind === GRAPHBAN_KIND) return { w: 250, h: 156 };
+  if (n.kind === PLACEHOLDER_KIND) return { w: 220, h: 92 };
   const external = n.ring >= 3;
   const surfaces = n.surfaces.length;
   const extensions = n.extensions.length;
@@ -243,7 +409,219 @@ function routePorts(
   };
 }
 
-export function buildStackLayout(topo: StackTopology): StackLayout {
+type Pt = { x: number; y: number };
+interface Span {
+  lo: number;
+  hi: number;
+}
+
+/**
+ * Interior hit, matching the geometric test (2px inside the border). A segment that
+ * only rides the border is not a crossing; a diagonal is, because a channel route is
+ * orthogonal and a diagonal would hide a miss from the axis-aligned check.
+ */
+function segmentHitsBox(a: Pt, b: Pt, bx: Box): boolean {
+  const x0 = bx.x + 2;
+  const x1 = bx.x + bx.w - 2;
+  const y0 = bx.y + 2;
+  const y1 = bx.y + bx.h - 2;
+  if (x1 <= x0 || y1 <= y0) return false;
+  if (Math.abs(a.y - b.y) < 0.5) {
+    return a.y > y0 && a.y < y1 && Math.max(a.x, b.x) > x0 && Math.min(a.x, b.x) < x1;
+  }
+  if (Math.abs(a.x - b.x) < 0.5) {
+    return a.x > x0 && a.x < x1 && Math.max(a.y, b.y) > y0 && Math.min(a.y, b.y) < y1;
+  }
+  return true;
+}
+
+function polylineClear(points: Pt[], boxes: Box[]): boolean {
+  for (let i = 0; i < points.length - 1; i++) {
+    for (const bx of boxes) {
+      if (segmentHitsBox(points[i], points[i + 1], bx)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Open intervals where no box occupies that axis: the inter-column gaps and
+ * inter-row bands, plus a pad outside the outermost boxes. Touching boxes share
+ * an edge and do not invent a gap (an open is applied before a close at the same
+ * coordinate).
+ */
+function freeSpans(intervals: Array<{ lo: number; hi: number }>, pad: number): Span[] {
+  if (!intervals.length) return [];
+  const events: { at: number; d: number }[] = [];
+  let min = Infinity;
+  let max = -Infinity;
+  for (const iv of intervals) {
+    events.push({ at: iv.lo, d: 1 }, { at: iv.hi, d: -1 });
+    min = Math.min(min, iv.lo);
+    max = Math.max(max, iv.hi);
+  }
+  events.sort((a, b) => a.at - b.at || b.d - a.d);
+  const gaps: Span[] = [];
+  let cov = 0;
+  let openAt: number | null = null;
+  for (const e of events) {
+    const before = cov;
+    cov += e.d;
+    if (before > 0 && cov === 0) openAt = e.at;
+    else if (before === 0 && cov > 0 && openAt !== null && e.at > openAt) {
+      gaps.push({ lo: openAt, hi: e.at });
+      openAt = null;
+    }
+  }
+  return [{ lo: min - pad, hi: min }, ...gaps, { lo: max, hi: max + pad }].filter(
+    (g) => g.hi - g.lo > 1,
+  );
+}
+
+const CHANNEL_INSET = 8;
+
+function placeIn(span: Span, shift: number): number {
+  const lo = span.lo + CHANNEL_INSET;
+  const hi = span.hi - CHANNEL_INSET;
+  if (!(hi > lo)) return (span.lo + span.hi) / 2;
+  return Math.max(lo, Math.min(hi, (span.lo + span.hi) / 2 + shift));
+}
+
+/** Gaps that sit strictly outward of a face, nearest first. */
+function outwardSpans(spans: Span[], at: number, side: Side): Span[] {
+  const positive = side === "right" || side === "bottom";
+  return spans
+    .filter((s) =>
+      positive ? s.lo >= at - 0.5 && s.hi > at + 0.5 : s.hi <= at + 0.5 && s.lo < at - 0.5,
+    )
+    .sort(
+      (a, b) =>
+        Math.abs((a.lo + a.hi) / 2 - at) - Math.abs((b.lo + b.hi) / 2 - at) || a.lo - b.lo,
+    );
+}
+
+function simplify(pts: Pt[]): Pt[] {
+  const out: Pt[] = [];
+  for (const p of pts) {
+    const prev = out[out.length - 1];
+    if (prev && prev.x === p.x && prev.y === p.y) continue;
+    const a = out[out.length - 2];
+    if (
+      a &&
+      prev &&
+      ((a.x === prev.x && prev.x === p.x) || (a.y === prev.y && prev.y === p.y))
+    ) {
+      out[out.length - 1] = p;
+      continue;
+    }
+    out.push(p);
+  }
+  return out;
+}
+
+function labelAnchor(points: Pt[]): Pt {
+  let best = -1;
+  let mid = points[0];
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const len = Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+    if (len > best) {
+      best = len;
+      mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    }
+  }
+  return mid;
+}
+
+function byTravel(from: number, to: number) {
+  return (a: number, b: number) =>
+    Math.abs(a - from) + Math.abs(a - to) - (Math.abs(b - from) + Math.abs(b - to)) || a - b;
+}
+
+/**
+ * Orthogonal route that stays out of every box. Adjacent faces still take the
+ * two-bend elbow: its bend already sits in the one gap between them, and that
+ * gap is box-free. A non-adjacent edge (cli → api across the agent-host column)
+ * has no such gap — the elbow's midpoint lands inside the column it crosses — so
+ * it leaves into the gutter beside its own face, crosses on a free band, and
+ * enters from the gutter beside the target.
+ */
+function routeAvoiding(
+  p0: Pt,
+  p3: Pt,
+  sSide: Side,
+  tSide: Side,
+  shift: number,
+  boxes: Box[],
+): { points: Pt[]; mid: Pt } {
+  const direct = routePorts(p0, p3, isHoriz(sSide), shift);
+  if (polylineClear(direct.points, boxes)) return direct;
+
+  const vCh = freeSpans(
+    boxes.map((b) => ({ lo: b.x, hi: b.x + b.w })),
+    80,
+  );
+  const hCh = freeSpans(
+    boxes.map((b) => ({ lo: b.y, hi: b.y + b.h })),
+    80,
+  );
+  const finish = (pts: Pt[]) => {
+    const points = simplify(pts);
+    return { points, mid: labelAnchor(points) };
+  };
+
+  if (isHoriz(sSide)) {
+    const bands = hCh.map((ch) => placeIn(ch, shift)).sort(byTravel(p0.y, p3.y));
+    for (const sg of outwardSpans(vCh, p0.x, sSide)) {
+      for (const tg of outwardSpans(vCh, p3.x, tSide)) {
+        const sx = placeIn(sg, shift);
+        const tx = placeIn(tg, -shift);
+        for (const y of bands) {
+          const routed = finish([
+            p0,
+            { x: sx, y: p0.y },
+            { x: sx, y },
+            { x: tx, y },
+            { x: tx, y: p3.y },
+            p3,
+          ]);
+          if (polylineClear(routed.points, boxes)) return routed;
+        }
+      }
+    }
+  } else {
+    const lanes = vCh.map((ch) => placeIn(ch, shift)).sort(byTravel(p0.x, p3.x));
+    for (const sb of outwardSpans(hCh, p0.y, sSide)) {
+      for (const tb of outwardSpans(hCh, p3.y, tSide)) {
+        const sy = placeIn(sb, shift);
+        const ty = placeIn(tb, -shift);
+        for (const x of lanes) {
+          const routed = finish([
+            p0,
+            { x: p0.x, y: sy },
+            { x, y: sy },
+            { x, y: ty },
+            { x: p3.x, y: ty },
+            p3,
+          ]);
+          if (polylineClear(routed.points, boxes)) return routed;
+        }
+      }
+    }
+  }
+  return direct;
+}
+
+export interface StackLayoutOptions {
+  /** Put Graphban's own hosts in a lane at the left edge, framed "Built with Graphban". */
+  graphbanLeft?: boolean;
+  /** Replaces ring 3's gloss, e.g. "services not mapped yet" before any record. */
+  ring3Subtitle?: string | null;
+}
+
+export function buildStackLayout(topo: StackTopology, opts: StackLayoutOptions = {}): StackLayout {
+  const graphbanLeft = !!opts.graphbanLeft;
   const byId: Record<string, StackNode> = Object.fromEntries(topo.nodes.map((n) => [n.id, n]));
   const boxes: Record<string, Box> = {};
 
@@ -253,7 +631,7 @@ export function buildStackLayout(topo: StackTopology): StackLayout {
 
   // Host columns for the inner (ring 1-2) nodes, ordered by host rank.
   const innerHosts = Array.from(new Set(innerNodes.map((n) => n.host))).sort((a, b) => {
-    const r = hostRank(a) - hostRank(b);
+    const r = hostRank(a, graphbanLeft) - hostRank(b, graphbanLeft);
     return r !== 0 ? r : a.localeCompare(b);
   });
 
@@ -322,12 +700,40 @@ export function buildStackLayout(topo: StackTopology): StackLayout {
   // it, didn't write it), so it belongs in the ring-2 band, not inside the lime
   // code ring. The host frame will still wrap it (a host legitimately spans the
   // code/infra line); the ownership ring must not.
+  //
+  // Only a column the ring-1 frame actually spans needs that drop. A column wholly
+  // beside the frame starts at the top: when a project's own app is its own column and
+  // every Graphban box is ring 2, dropping them all below the app made a tall staircase
+  // with an empty quadrant beside it.
   const INFRA_GAP = 28;
+  const ring1Span = ring1BoxesNow.length ? pad(bbox(ring1BoxesNow), 40) : null;
+  const besideRing1 = (x: number, w: number) =>
+    !ring1Span || x >= ring1Span.x + ring1Span.w || x + w <= ring1Span.x;
+  //
+  // The app's own infra (posted record, GRPH-1099) sits beside the first deployable that
+  // uses it: ordered by that user's top, and never higher than it. A shared db lines up
+  // with the first service that talks to it, and the rest stack below.
+  const userTop = (id: string): number => {
+    const tops = topo.edges
+      .filter((e) => e.to === id && byId[e.from]?.ring === 1 && boxes[e.from])
+      .map((e) => boxes[e.from].y);
+    return tops.length ? Math.min(...tops) : Number.POSITIVE_INFINITY;
+  };
+  const ring2Nodes = innerNodes
+    .filter((x) => x.ring === 2)
+    .map((n, i) => ({ n, i, top: n.host === APP_INFRA ? userTop(n.id) : 0 }))
+    .sort((a, b) => a.top - b.top || a.i - b.i)
+    .map((x) => x.n);
   const r2CursorY: Record<string, number> = {};
-  for (const n of innerNodes.filter((x) => x.ring === 2)) {
+  for (const n of ring2Nodes) {
     const { x, w } = colGeom[n.host] ?? { x: PAD + 40, w: sizeOf(n).w };
     const s = sizeOf(n);
-    const start = r2CursorY[n.host] ?? Math.max(ring1Bottom + INFRA_GAP, colCursorY[n.host] ?? 0);
+    let floor = besideRing1(x, w) ? TOP + 20 : ring1Bottom + INFRA_GAP;
+    if (n.host === APP_INFRA) {
+      const top = userTop(n.id);
+      if (Number.isFinite(top)) floor = Math.max(floor, top);
+    }
+    const start = Math.max(r2CursorY[n.host] ?? 0, floor, colCursorY[n.host] ?? 0);
     boxes[n.id] = { x: x + (w - s.w) / 2, y: start, w: s.w, h: s.h };
     r2CursorY[n.host] = start + s.h + V_GAP;
   }
@@ -347,6 +753,18 @@ export function buildStackLayout(topo: StackTopology): StackLayout {
     columnHostFrames.push({ id: host, label, ...hl });
   }
 
+  // The expanded instance keeps a "Built with Graphban" frame around its own hosts, so
+  // expanding the collapsed box reads as opening it in place, not as a different map.
+  let lane: HostFrame | null = null;
+  if (graphbanLeft) {
+    // Collapsed, the box is its own label; the frame is for the expanded instance only.
+    const laneBoxes = columnHostFrames.filter((h) => h.id !== BUILD_LANE &&
+      innerNodes.some((n) => n.host === h.id && !isAppNode(n)));
+    if (laneBoxes.length) {
+      lane = { id: BUILD_LANE, label: BUILT_WITH_GRAPHBAN, ...pad(bbox(laneBoxes), 22) };
+    }
+  }
+
   // Ring frames — nested bounding boxes (ring1 ⊂ ring2 ⊂ ring3-canvas).
   const ring1 = topo.nodes.filter((n) => n.ring === 1).map((n) => boxes[n.id]).filter(Boolean);
   const ring12 = topo.nodes
@@ -363,7 +781,13 @@ export function buildStackLayout(topo: StackTopology): StackLayout {
   // clear band over the canvas instead of piling onto the host labels and boxes.
   const rings: RingFrame[] = [];
   const mkRing = (ring: number, box: Box) =>
-    rings.push({ ring, num: ring, ...RING_LABEL[ring], ...box });
+    rings.push({
+      ring,
+      num: ring,
+      ...RING_LABEL[ring],
+      ...(ring === 3 && opts.ring3Subtitle ? { subtitle: opts.ring3Subtitle } : {}),
+      ...box,
+    });
   if (ring1.length) mkRing(1, pad(bbox(ring1), 40));
   if (ring12.length) mkRing(2, pad(bbox(ring12), 70));
   if (allBoxes.length) {
@@ -444,7 +868,14 @@ export function buildStackLayout(topo: StackTopology): StackLayout {
     const p3 = facePoint(p.t, p.tSide, tT);
     // Spread each edge's channel a little by its exit-port fraction, so a fan
     // from one box doesn't collapse its vertical runs onto a single line.
-    const { points, mid } = routePorts(p0, p3, isHoriz(p.sSide), (sT - 0.5) * 44);
+    const { points, mid } = routeAvoiding(
+      p0,
+      p3,
+      p.sSide,
+      p.tSide,
+      (sT - 0.5) * 44,
+      Object.values(boxes),
+    );
     return {
       from: p.e.from,
       to: p.e.to,
@@ -463,5 +894,5 @@ export function buildStackLayout(topo: StackTopology): StackLayout {
     { x: b.x + b.w, y: b.y + b.h },
   ]);
 
-  return { width, height, boxes, rings, hostFrames: columnHostFrames, edges, fitPoints };
+  return { width, height, boxes, rings, hostFrames: columnHostFrames, edges, lane, fitPoints };
 }

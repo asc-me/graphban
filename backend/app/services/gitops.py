@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.errors import Refused
 from app.models import Item, Link, Organization, Project
 from app.schemas import (
     GitopsControl,
@@ -44,7 +45,7 @@ OBSERVE_ANSWERS = ("remote", "none", "unknown")
 OBSERVE_WAITING = "waiting on Observe: remote / none / unknown"
 OBSERVE_UNKNOWN_BLOCK = "Observe answered unknown — look again before the rest"
 ALREADY_TAG = "gitops-already"
-ALREADY_TOKEN = "already"
+ALREADY_TOKEN = "already"  # nosec B105 — an evidence keyword, not a credential
 ALREADY_HINT = (
     "If this is already true, evidence `already` plus what you saw — do not create "
     "a second remote. Graphban will not mark this done from that receipt."
@@ -99,6 +100,7 @@ _RELEASE_DEFINED_MAX = 500
 _TOKENS_HELP = ", ".join("{" + t + "}" for t in NAMING_TOKENS)
 _FETCH_TIMEOUT = 3.0
 
+OBSERVE_RULE = "gitops.observe_answer_required"
 LINKED_PATCH_DETAIL = "gitops on a linked instance is owned by the org admin"
 
 MESSAGES = {
@@ -310,6 +312,27 @@ def fetch_cloud_gitops(db: Session) -> GitopsView | None:
             json.JSONDecodeError, ValueError, TypeError) as e:
         logger.warning("gitops cloud fetch failed: %s", type(e).__name__)
         return None
+
+
+def base_branches(db: Session, projects: list[Project]) -> dict[str, str | None]:
+    """`base_branch` for many projects at once, for the project switcher (GRPH-1131).
+
+    The same source `resolve` reads, without its per-project cost: on a linked box ONE cloud
+    fetch serves every project (the cloud view carries no per-project overlay, so `resolve`
+    would hand each of them the same fields), and an unreachable cloud is null for all of
+    them rather than the local `was` columns. Unlinked, the project overlay beats the org,
+    with the orgs loaded in one query. Null is unset — never `main`.
+    """
+    if not projects:
+        return {}
+    if code_sync.link_status(db)["linked"]:
+        live = fetch_cloud_gitops(db)
+        value = live.fields.base_branch.value if live is not None else None
+        return {p.id: value for p in projects}
+    org_ids = {p.org_id for p in projects if p.org_id}
+    orgs = ({o.id: o for o in db.scalars(select(Organization).where(Organization.id.in_(org_ids)))}
+            if org_ids else {})
+    return {p.id: _pick(p, orgs.get(p.org_id), "base_branch").value for p in projects}
 
 
 def resolve(db: Session, project_id: str | None) -> GitopsView:
@@ -722,9 +745,11 @@ def refuse_observe_progress(db: Session, item: Item, fields: dict) -> None:
     if _is_observe(item):
         merged = append_evidence(item.evidence, fields.get("evidence") or [])
         if observe_answer_from(merged) is None:
-            raise ValueError(
+            raise Refused(
+                409,
                 "Observe needs evidence whose first token is remote, none, or unknown "
-                "— unknown is a real answer, not a skip"
+                "— unknown is a real answer, not a skip",
+                rule_id=OBSERVE_RULE,
             )
         return
     if _is_plan_parent(item):
@@ -733,13 +758,17 @@ def refuse_observe_progress(db: Session, item: Item, fields: dict) -> None:
             return
         answer = observe_answer_from(obs.evidence)
         if answer is None:
-            raise ValueError(
+            raise Refused(
+                409,
                 "the Observe child has no remote/none/unknown answer — "
-                "the rest of the plan stays blocked"
+                "the rest of the plan stays blocked",
+                rule_id=OBSERVE_RULE,
             )
         if answer == "unknown":
-            raise ValueError(
-                "Observe answered unknown — the rest of the plan stays blocked"
+            raise Refused(
+                409,
+                "Observe answered unknown — the rest of the plan stays blocked",
+                rule_id=OBSERVE_RULE,
             )
 
 
@@ -784,9 +813,11 @@ def refuse_already_progress(db: Session, item: Item, fields: dict) -> None:
         return
     merged = append_evidence(item.evidence, fields.get("evidence") or [])
     if not merged:
-        raise ValueError(
+        raise Refused(
+            409,
             "this checklist child needs evidence: `already` plus what you saw if it "
-            "already matches, or a note of what you did. Graphban will not mark it done"
+            "already matches, or a note of what you did. Graphban will not mark it done",
+            rule_id="gitops.checklist_needs_evidence",
         )
 
 

@@ -35,7 +35,7 @@ from gban.doctor import FAIL, PASS, UNKNOWN, _line
 #: What `docs/swamp.md` §5 names. Changing either renames somebody's existing wiring, so they
 #: are constants rather than options.
 VAULT = "secrets"
-SECRET_KEY = "graphban-api-key"
+SECRET_KEY = "graphban-api-key"  # nosec B105 — the vault entry's NAME, not its value
 VAULT_TYPE = "local_encryption"
 
 #: The adapter repository, a SIBLING of the checkout — `docs/swamp.md` says "sibling, not this

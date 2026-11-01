@@ -26,7 +26,8 @@ from app.models import (
 )
 from app.security.passwords import hash_password
 
-SEED_PASSWORD = "graphban"
+# bandit B105: the local demo seed's documented login, never used outside `seed`.
+SEED_PASSWORD = "graphban"  # nosec B105
 
 PROJECTS = [
     dict(id="core", name="Core Platform", tag="CP", accent="#c6f24e", visibility="private",
@@ -234,7 +235,8 @@ def seed(db: Session) -> bool:
         gdrive_connected=False,
         # The demo roadmap is meant to be public; a stable token keeps the embed link
         # working. Freshly-created projects stay private until they opt in (AL-73).
-        public_share_enabled=True, share_token="demo-core-roadmap",
+        # bandit B106: a share token for the PUBLIC demo roadmap, public by design.
+        public_share_enabled=True, share_token="demo-core-roadmap",  # nosec B106
     ))
 
     for p in PRDS:

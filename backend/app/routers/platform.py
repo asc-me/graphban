@@ -2,7 +2,7 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -374,7 +374,10 @@ def stack_topology(project_id: str = "core", db: Session = Depends(get_db),
 
     Read-only aggregator: every node and edge comes from live sources (health,
     platform config/credentials, fleet roster, Linear status, Alembic head, MCP
-    tool count). Absences are named. Scoped through a project the caller can
+    tool count). A posted app record (POST /stack/app) replaces the code-map
+    deployables and is folded in here, with a `mapping` block that is
+    `mapped`, `stale`, `unmapped`, or `freshness_unknown` — never omitted.
+    Absences are named. Scoped through a project the caller can
     read so the AI plane stays project-scoped and cannot leak another tenant's
     wiring.
     """
@@ -411,6 +414,7 @@ class StackScanIn(BaseModel):
     category: str | None = None
     note: str = ""
     tests: dict | None = None
+    result: str | None = None
 
 
 @router.post("/stack/scans")
@@ -439,10 +443,43 @@ def record_stack_scan(body: StackScanIn, db: Session = Depends(get_db),
             path=body.path, scanned_sha=body.scanned_sha,
             findings=list(body.findings or []), scanner_version=body.scanner_version,
             category=body.category, note=body.note, tests=body.tests,
+            result=body.result,
             reported_by=fleet_svc.caller_identity(None, key),
         )
     except ValueError as e:
         raise HTTPException(422, str(e))
+
+
+class StackAppIn(BaseModel):
+    """A project app-topology post (GRPH-1098 / PRD-P55 §2).
+
+    Loose on purpose: the service lists every bad node and edge as `{path, reason}`.
+    A strict schema would 422 on the first bad type and hide the rest.
+    """
+
+    model_config = ConfigDict(extra="allow")
+    project_id: str = "core"
+
+
+@router.post("/stack/app")
+def post_stack_app(body: StackAppIn, db: Session = Depends(get_db),
+                   key: ApiKey = Depends(get_agent_key)):
+    """Replace the project's app topology record — the producer ingest path.
+
+    Same auth as `POST /api/platform/stack/scans`: a key with WRITE on the project.
+    REST only. A post with any node or edge lacking provenance, a malformed shape,
+    a dangling edge, or an env value is refused whole (422, a list of `{path, reason}`)
+    and writes nothing. A valid post replaces the one current record.
+    """
+    if not authz.can_write(db, key.user_id, body.project_id):
+        raise HTTPException(403, "write access on the project is required to post an app topology")
+    try:
+        return stack_svc.replace_app_topology(
+            db, body.project_id, body.model_dump(),
+            posted_by=fleet_svc.caller_identity(None, key),
+        )
+    except stack_svc.TopologyRefused as e:
+        raise HTTPException(422, e.errors)
 
 
 @router.get("", response_model=PlatformConfigOut)

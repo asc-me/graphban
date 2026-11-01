@@ -17,7 +17,7 @@ import time
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.orm import Session, object_session
 
 from app.models import Agent, AreaReservation, Enrolment, Item, Project
@@ -31,6 +31,44 @@ from app.services.items import DEFAULT_LEASE_SECONDS
 # `reviewer` merged into `worker` in S3 (PRD-39): a worker now claims, builds, AND reviews.
 ROLES = ("planner", "worker")
 DEFAULT_ROLE = "worker"
+
+#: One company, one spelling (GRPH-1120). The grok adapter's matrix row and the
+#: seat's `capabilities=` clause say `xai`. A child that copies the adapter name
+#: (`grok`), or the model id (`grok-4.7`), writes `grok`. The predicate used to
+#: compare those strings raw, so grok-4.7 reviewing grok-4.7 read as "different
+#: vendors". `xai` is the spelling measured cells and launch posts are already
+#: keyed by; folding the other way would split every existing `xai` row.
+#: The fleet package holds the same map on `Grok.vendor` /
+#: `adapters.canonical_vendor` and this service cannot import it (PRD-22 D-e).
+#: A third spelling is an entry in both, or the seat and the gate disagree again.
+_XAI = "xai"
+
+
+def canonical_vendor(vendor: str) -> str:
+    """The company spelling of `vendor`, or `vendor` itself when it is not an alias.
+
+    `grok`, `xai`, and a model id used as a vendor (`grok-4.7`) are xAI. An empty
+    string and `undeclared` stay as they are: two unknowns are not one vendor, and
+    a missing field must not become a company. Any other spelling is returned
+    unchanged — this is not a guess about vendors the ledger has not seen twice.
+    """
+    if not isinstance(vendor, str):
+        return vendor
+    key = vendor.strip().lower()
+    if not key or key == "undeclared":
+        return vendor
+    if key == "grok" or key == _XAI or key.startswith("grok-"):
+        return _XAI
+    return vendor
+
+
+def _canonicalize_recorded_capabilities(capabilities: dict | None) -> dict:
+    """The capabilities a registration stores. Vendor aliases collapse; nothing else moves."""
+    caps = dict(capabilities or {})
+    vendor = caps.get("vendor")
+    if isinstance(vendor, str) and vendor.strip():
+        caps["vendor"] = canonical_vendor(vendor)
+    return caps
 
 
 def _resolve_stored_role(role: str) -> str:
@@ -442,11 +480,16 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
         role = ALL_IN_ONE
     else:
         role = DEFAULT_ROLE if DEFAULT_ROLE in allowed else allowed[0]
+    # Before the row is written (GRPH-1120). A child that says `grok` and a child
+    # that says `xai` are the same adapter; storing both spellings is how the
+    # diversity receipt later calls them different vendors. Old rows are not
+    # rewritten — `review_diversity` folds them on read.
+    capabilities = _canonicalize_recorded_capabilities(capabilities)
     now = datetime.now(timezone.utc)
     agent = Agent(
         id=stored_id, number=number, project_id=project_id,
         api_key_id=getattr(api_key, "id", None),
-        label=label or "", capabilities=capabilities or {},
+        label=label or "", capabilities=capabilities,
         parent_agent_id=parent_agent_id or None,
         worktree=worktree or "", branch=branch or "",
         enrolment_id=seat.id if seat is not None else None,
@@ -616,7 +659,8 @@ def status_state(agent: Agent, *, ttl_seconds: int | None = None,
 
 def list_agents(db: Session, project_id: str | None = None, *,
                 lease_seconds: int = DEFAULT_LEASE_SECONDS,
-                now: datetime | None = None) -> list[dict]:
+                now: datetime | None = None, where=None, limit: int | None = None,
+                offset: int = 0) -> list[dict]:
     """The roster: every agent with its DERIVED presence and what it is holding.
 
     Offline agents are listed rather than hidden. An agent that died holding a branch is
@@ -626,7 +670,15 @@ def list_agents(db: Session, project_id: str | None = None, *,
     stmt = select(Agent)
     if project_id:
         stmt = stmt.where(Agent.project_id == project_id)
-    agents = list(db.scalars(stmt.order_by(Agent.project_id, Agent.number)).all())
+    # `where`, `limit` and `offset` narrow WHICH agents are built (GRPH-1253): the REST roster
+    # and Live ask for the few they show and count the rest in SQL (`roster_counts`). Left
+    # out, this is the whole roster, which is what MCP `fleet_status` keeps returning.
+    if where is not None:
+        stmt = stmt.where(where)
+    stmt = stmt.order_by(Agent.project_id, Agent.number)
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
+    agents = list(db.scalars(stmt).all())
     # A revoked credential means the agent cannot act, whatever its last heartbeat said. Read
     # as offline IMMEDIATELY rather than waiting out the TTL — and derived, not written, so
     # "End wave" never has to backdate `last_seen_at` into a time we know to be false.
@@ -712,6 +764,11 @@ def list_agents(db: Session, project_id: str | None = None, *,
             # ISO string, not a datetime: this dict crosses the MCP boundary as JSON, and a
             # raw datetime raises there rather than at the call site that built it.
             "last_seen_at": a.last_seen_at.isoformat() if a.last_seen_at else None,
+            # When this row was created. A reused worktree is not unique: the previous
+            # run stays on the roster until it ages out, and the supervisor keeps the
+            # row registered after the child started (GRPH-1088). Lean keeps this — it
+            # is not display. A JSON field on the roster is not a migration.
+            "registered_at": a.registered_at.isoformat() if a.registered_at else None,
             # What it is holding right now. The roster's second question after "who is out
             # there" is "what is stuck with them".
             # `phase` and `phase_basis` are DERIVED server-side rather than reported by the child,
@@ -744,6 +801,75 @@ _FAT_AGENT_FIELDS = ("capabilities", "credential_roles", "last_refusal", "last_s
 #: Display halves of a holding. `phase` stays — the supervisor reads it; `phase_basis` is the
 #: sentence explaining it to a person.
 _FAT_HOLDING_FIELDS = ("phase_basis", "bounced")
+
+
+def roster_clauses(db: Session, *, now: datetime,
+                   lease_seconds: int = DEFAULT_LEASE_SECONDS,
+                   recent_seconds: int | None = None) -> dict:
+    """The roster's derived facts as SQL predicates (GRPH-1253), so a scoped load and the
+    counts of what it leaves out never build a row just to drop it.
+
+    Each mirrors its Python twin: `offline` is `list_agents`' state rule (revoked credential,
+    else `presence_state`), `held` is any lease or review claim, `orphaned` is
+    `has_orphaned_branch` for an offline agent, and `collapsed` is `_collapse_kind` not None.
+    Every arm is NULL-safe, because `NOT (NULL)` would drop a row the Python rule keeps.
+    """
+    from app.models import ApiKey
+
+    recent = ROSTER_RECENT_SECONDS if recent_seconds is None else recent_seconds
+    dead = [kid for (kid,) in db.execute(select(ApiKey.id).where(ApiKey.revoked.is_(True)))]
+    ttl_cut = now - timedelta(seconds=presence_ttl_seconds(lease_seconds))
+    stale = and_(Agent.state.is_distinct_from("quarantined"),
+                 or_(Agent.last_seen_at.is_(None), Agent.last_seen_at < ttl_cut))
+    offline = (or_(and_(Agent.api_key_id.isnot(None), Agent.api_key_id.in_(dead)), stale)
+               if dead else stale)
+    held = or_(exists().where(Item.claimed_by == Agent.id),
+               exists().where(Item.review_claimed_by == Agent.id))
+    orphaned = and_(Agent.branch.isnot(None), Agent.branch != "")
+    quiet_cut = now - timedelta(seconds=recent)
+    collapsed = and_(offline, ~held, Agent.dismissed_at.is_(None),
+                     or_(orphaned, Agent.last_seen_at.is_(None),
+                         Agent.last_seen_at < quiet_cut))
+    return {"offline": offline, "held": held, "orphaned": orphaned, "collapsed": collapsed}
+
+
+def roster_counts(db: Session, project_id: str | None, *, now: datetime,
+                  lease_seconds: int = DEFAULT_LEASE_SECONDS,
+                  recent_seconds: int | None = None) -> dict:
+    """Totals for the whole roster from one grouped query (GRPH-1253): `total`, `online`,
+    `by_role` (online, as `fleet_status` counts it) and the `collapsed` block that
+    `collapse_roster` reports. Exact, and no Agent row is loaded."""
+    c = roster_clauses(db, now=now, lease_seconds=lease_seconds, recent_seconds=recent_seconds)
+    off = case((c["offline"], 1), else_=0).label("off")
+    col = case((c["collapsed"], case((c["orphaned"], 2), else_=1)), else_=0).label("col")
+    stmt = select(Agent.active_role, off, col, func.count()).group_by(
+        Agent.active_role, off, col)
+    if project_id:
+        stmt = stmt.where(Agent.project_id == project_id)
+    by_role = {r: 0 for r in ROLES}
+    by_role[ALL_IN_ONE] = 0
+    gone_roles: dict[str, int] = {}
+    kinds = {COLLAPSE_QUIET: 0, COLLAPSE_ORPHANED: 0}
+    total = online = 0
+    for role, is_off, kind, n in db.execute(stmt).all():
+        role = _resolve_stored_role(role)
+        total += n
+        if not is_off:
+            online += n
+            if role in by_role:
+                by_role[role] += n
+        if kind:
+            kinds[COLLAPSE_ORPHANED if kind == 2 else COLLAPSE_QUIET] += n
+            gone_roles[role] = gone_roles.get(role, 0) + n
+    gone = sum(kinds.values())
+    return {
+        "total": total, "online": online, "by_role": by_role,
+        "collapsed": {
+            "count": gone, "by_state": {"offline": gone}, "by_kind": kinds,
+            "by_role": gone_roles,
+            "recent_seconds": ROSTER_RECENT_SECONDS if recent_seconds is None else recent_seconds,
+        },
+    }
 
 
 def roster_view(payload: dict, view: str) -> dict:
@@ -866,7 +992,8 @@ def restore_on_work(db: Session, agent_id: str) -> None:
 def fleet_status(db: Session, project_id: str | None = None, *,
                  lease_seconds: int = DEFAULT_LEASE_SECONDS,
                  minted_by: str | None = None,
-                 caller_user_id: str | None = None) -> dict:
+                 caller_user_id: str | None = None,
+                 collapsed: bool = False) -> dict:
     """The roster plus the clock every member must obey.
 
     The intervals travel WITH the roster on purpose: an agent that does not know the
@@ -886,32 +1013,48 @@ def fleet_status(db: Session, project_id: str | None = None, *,
     `caller_user_id` is the API key's owner (PRD-37 D14): their harness profile and the
     project's fleet policy ride on this roster because it is the call a supervisor already
     makes on every tick — no new tool, no schema property.
+
+    `collapsed` (GRPH-1253) is the REST view: it returns what `collapse_roster` would make of
+    the full roster, but loads only the agents that stay in it and counts the rest in SQL.
+    MCP never sets it, so its output is unchanged.
     """
     from app.services import delegation as delegation_svc
     from app.services import fleet_matrix
     from app.services import fleet_profiles
+    from app.services import projects as projects_svc
 
     # GRPH-850: release items held by offline agents BEFORE building the roster, so the
     # supervisor sees the freed rows on the same tick it detects the absence. Idempotent —
     # a second call on the same tick finds nothing to release.
     requeue_offline_items(db, project_id=project_id, lease_seconds=lease_seconds)
-    agents = list_agents(db, project_id, lease_seconds=lease_seconds)
-    live = [a for a in agents if a["state"] != "offline"]
-    # Counted BY ROLE, not just totalled. "4 agents online" is the same number whether it is a
-    # balanced fleet or four workers with nobody to review them, and those need opposite
-    # actions — the second is a review queue about to back up. `all-in-one` is reported beside
-    # the roles rather than folded into one of them, because an unspecialised agent is the
-    # DEFAULT posture and showing it as a worker would misdescribe the commonest deployment.
-    # Pre-merge "reviewer" agents resolve to "worker" on read (S3 D-b).
-    by_role = {r: sum(1 for a in live
-                       if _resolve_stored_role(a["active_role"]) == r) for r in ROLES}
-    by_role[ALL_IN_ONE] = sum(1 for a in live if a["active_role"] == ALL_IN_ONE)
+    if collapsed:
+        now = datetime.now(timezone.utc)
+        counts = roster_counts(db, project_id, now=now, lease_seconds=lease_seconds)
+        agents = list_agents(db, project_id, lease_seconds=lease_seconds, now=now,
+                             where=~roster_clauses(db, now=now, lease_seconds=lease_seconds)[
+                                 "collapsed"])
+        by_role, online, total = counts["by_role"], counts["online"], counts["total"]
+    else:
+        agents = list_agents(db, project_id, lease_seconds=lease_seconds)
+        live = [a for a in agents if a["state"] != "offline"]
+        # Counted BY ROLE, not just totalled. "4 agents online" is the same number whether it
+        # is a balanced fleet or four workers with nobody to review them, and those need
+        # opposite actions — the second is a review queue about to back up. `all-in-one` is
+        # reported beside the roles rather than folded into one of them, because an
+        # unspecialised agent is the DEFAULT posture and showing it as a worker would
+        # misdescribe the commonest deployment. Pre-merge "reviewer" agents resolve to
+        # "worker" on read (S3 D-b).
+        by_role = {r: sum(1 for a in live
+                           if _resolve_stored_role(a["active_role"]) == r) for r in ROLES}
+        by_role[ALL_IN_ONE] = sum(1 for a in live if a["active_role"] == ALL_IN_ONE)
+        online, total = len(live), len(agents)
     seats = list_enrolments(db, project_id, minted_by=minted_by) if minted_by else None
     return {
         "agents": agents,
+        **({"collapsed": counts["collapsed"]} if collapsed else {}),
         **({"seats": seats} if seats is not None else {}),
-        "online": len(live),
-        "total": len(agents),
+        "online": online,
+        "total": total,
         "by_role": by_role,
         "posture": "fleet" if any(by_role[r] for r in ROLES) else "single-agent",
         "roles": list(ROLES),
@@ -944,7 +1087,112 @@ def fleet_status(db: Session, project_id: str | None = None, *,
         # different claim from "the server could not be reached", which never gets this far
         # (`gbfleet.mcp.read_status` catches that and spells it out instead).
         "tier_map": fleet_matrix.overrides_for(db, project_id),
+        # GRPH-1109 (PRD-P57 S2): the branch the supervisor's merge rule watches, on the call
+        # it already makes. `{ref, source}`, never a bare null: `unmeasured` means no rule is
+        # installed, and nothing here infers `main`.
+        "release_ref": projects_svc.release_ref_view(db, project_id),
     }
+
+
+#: How long an offline agent that holds nothing stays on the roster in full (GRPH-1237). One
+#: hour: long enough that an agent that just finished is still on screen when its operator
+#: looks, short enough that a day of wave churn (hundreds of short-lived children, every one
+#: offline minutes after it started) is counted rather than sent. Was 24h in GRPH-1229, which
+#: still sent ~1,000 rows on a busy project.
+ROSTER_RECENT_SECONDS = 3600
+
+#: Why an agent was folded out of the roster payload; `collapsed_agents(kind=...)` pages each.
+COLLAPSE_QUIET = "quiet"
+COLLAPSE_ORPHANED = "orphaned"
+
+
+def _collapse_kind(a: dict, cutoff: datetime) -> str | None:
+    """Why this agent folds into a count, or None if it stays in full.
+
+    Offline, holding nothing (no lease, no review claim), not dismissed — and then either only
+    an orphaned branch is left of it, or it has been quiet past the window. A lease or review
+    claim is NEVER collapsed: that is the unfinished business the roster exists to show. An
+    orphaned branch alone is not: gbfleet children leave one behind after every merge, so
+    keeping them all in full sent 3,429 of 4,182 rows (GRPH-1237). They have their own group,
+    exact in count and paged on demand, as Live already groups them. A dismissed agent is not
+    collapsed either: the view lists it under "dismissed", where it can be restored.
+    """
+    if a["state"] != "offline" or a["holdings"] or a.get("dismissed"):
+        return None
+    if a["branch_orphaned"]:
+        return COLLAPSE_ORPHANED
+    seen = a["last_seen_at"]
+    if seen is None or _aware(datetime.fromisoformat(seen)) < cutoff:
+        return COLLAPSE_QUIET
+    return None
+
+
+def collapse_roster(status: dict, *, now: datetime | None = None,
+                    recent_seconds: int = ROSTER_RECENT_SECONDS) -> dict:
+    """The REST roster: online, holding and recently-offline agents in full, the rest counted.
+
+    `fleet_status` (MCP) is untouched; this narrows only the view's payload. The counts are
+    exact — `collapsed.count` plus `len(agents)` is `total` — and `collapsed.by_kind` says how
+    many were folded for each reason, so nothing is truncated silently. The folded rows are
+    listed on demand by `collapsed_agents`. Seats are narrowed the same way: unused and expired
+    ones (actionable) stay, consumed and revoked ones are counted in `seats_collapsed`.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=recent_seconds)
+    kept, gone = [], []
+    by_kind = {COLLAPSE_QUIET: 0, COLLAPSE_ORPHANED: 0}
+    for a in status["agents"]:
+        kind = _collapse_kind(a, cutoff)
+        if kind:
+            gone.append(a)
+            by_kind[kind] += 1
+        else:
+            kept.append(a)
+    by_role: dict[str, int] = {}
+    for a in gone:
+        by_role[a["active_role"]] = by_role.get(a["active_role"], 0) + 1
+    return {
+        **status,
+        "agents": kept,
+        "collapsed": {
+            "count": len(gone),
+            "by_state": {"offline": len(gone)},
+            "by_kind": by_kind,
+            "by_role": by_role,
+            "recent_seconds": recent_seconds,
+        },
+    }
+
+
+def collapse_seats(seats: list[dict]) -> dict:
+    """Seats for the REST roster: the ones you can act on in full, the rest as exact counts."""
+    kept = [s for s in seats if s["state"] in ("unused", "expired")]
+    by_state: dict[str, int] = {}
+    for s in seats:
+        if s not in kept:
+            by_state[s["state"]] = by_state.get(s["state"], 0) + 1
+    return {"seats": kept, "seats_collapsed": {"count": sum(by_state.values()),
+                                               "by_state": by_state}}
+
+
+def collapsed_agents(db: Session, project_id: str | None, *, offset: int = 0,
+                     limit: int = 100, kind: str | None = None) -> dict:
+    """One page of the agents `collapse_roster` folded away, optionally of one `kind`."""
+    now = datetime.now(timezone.utc)
+    c = roster_clauses(db, now=now)
+    want = c["collapsed"]
+    if kind == COLLAPSE_ORPHANED:
+        want = and_(want, c["orphaned"])
+    elif kind == COLLAPSE_QUIET:
+        want = and_(want, ~c["orphaned"])
+    elif kind is not None:
+        want = and_(want, False)
+    count = select(func.count()).select_from(Agent).where(want)
+    if project_id:
+        count = count.where(Agent.project_id == project_id)
+    return {"total": db.scalar(count) or 0, "offset": offset, "limit": limit,
+            "agents": list_agents(db, project_id, now=now, where=want, limit=limit,
+                                  offset=offset)}
 
 
 def review_holds(db: Session, project_id: str | None) -> list[dict]:
@@ -1042,6 +1290,14 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # scanners and must not mint that badge. Reviewer-as-worker (PRD-39 S3) may still
     # report a scan it ran while reviewing; the self-review ban is authorship, not role.
     "record_scan": ("worker",),
+    # PRD-62 S2 (GRPH-1248). Editing the org's entitlement registry decides what capacity
+    # the fleet may route to — allocation input, so the planner's, like `assign_role`. A
+    # worker that could register an entitlement could also point routing at itself.
+    "set_entitlement": ("planner",),
+    # PRD-62 S3 (GRPH-1249). The runner's own report of what happened on an entitlement it
+    # holds — `headroom.report` refuses a reporter whose `entitlement_ids` does not name it;
+    # a reviewer has no spawn to report.
+    "report_entitlement_event": ("worker", "planner"),
 }
 
 #: Prefix marking a tool that is open because NOBODY HAS ARGUED IT, as opposed to one that is
@@ -1079,6 +1335,8 @@ OPEN_TOOLS: dict[str, str] = {
         # GRPH-1035: Stack health overlay reads — never mutate, and every role looking at
         # the board must see whether a component is clean / has findings / never scanned.
         "scan_status", "scans_due",
+        # PRD-62 S2: the entitlement registry read; the write is planner-gated above.
+        "list_entitlements",
         # GRPH-1275: document reads — governing specs, project-scoped, nothing written.
         "get_document", "search_docs",
     )},
@@ -1264,6 +1522,19 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
 
     who = resolved or f"key {getattr(api_key, 'name', '') or getattr(api_key, 'id', '?')}"
 
+    # GRPH-1129. A project write key is enough to file a scan — CI and operators do not
+    # register fleet seats. Key-only MCP calls stamp the credential (`caller_identity`);
+    # `agent_id` is optional provenance when a worker ran the scan. Planners still do not
+    # record scans; missing or invalid keys fail auth before this runs.
+    if tool == "record_scan":
+        if role == "unidentified":
+            return
+        if role == "planner":
+            raise authz.Forbidden(
+                f"planners do not record scans; {who} is registered as 'planner'",
+                hint="register as a worker or call without agent_id to attribute the credential",
+            )
+
     required = TOOL_ROLES.get(tool)
     if role == "unidentified" and (required or (tool == "update_item"
                                                 and (args or {}).get("status") in _BEYOND_WORKER)
@@ -1271,10 +1542,18 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
                                       and str((args or {}).get("branch") or "").strip())
                                   or (tool == "release_item"
                                       and (args or {}).get("to_status", "next") in _BEYOND_WORKER)):
-        raise authz.Forbidden(
+        # The evidence sentence is true of `update_item` only. `claim_next` and the
+        # other role-gated tools have no evidence fields, and attaching the sentence
+        # there tells the caller a write exists that the tool cannot do (GRPH-934).
+        message = (
             f"{tool} needs to know which agent is calling: this credential is running a fleet, "
-            "so an unidentified caller cannot be assumed to be unrestricted",
-            hint="pass agent_id — the value register_agent returned")
+            "so an unidentified caller cannot be assumed to be unrestricted"
+        )
+        if tool == "update_item":
+            message += (
+                ". Only this call is gated — evidence and other fields write without an identity"
+            )
+        raise authz.Forbidden(message, hint=_identify_hint(api_key, tool, args))
     if required and role == "expired":
         # An expired session grants NO role, so every role-gated tool refuses — but only
         # those. The shared reads stay open deliberately: `fleet_status` is how the agent
@@ -1317,7 +1596,7 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
                 "update_item(branch=…) needs to know which agent is calling: this "
                 "credential is running a fleet, so an unidentified caller cannot be "
                 "assumed to be a planner",
-                hint="pass agent_id — the value register_agent returned",
+                hint=_identify_hint(api_key, tool, args),
             )
 
     # `release_item` is how a worker hands work back — the release verb is shared across
@@ -1331,6 +1610,54 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
                 f"{who} is registered as 'worker'",
                 hint="release_item does not write `done`; the self-review ban gates sign-off",
             )
+
+
+def _identify_hint(api_key, tool: str, args: dict | None = None) -> str:
+    """The route to an identity, naming the role that clears THIS call (GRPH-934).
+
+    "Pass the agent_id register_agent returned" was a dead end for the session that hit it
+    most: a planner driving the board on the fleet's own credential, which never registered
+    because nothing it does needs a seat. `get_context` and `gban whoami` have no agent_id to
+    give it. It does not need an enrolment code — this refusal only fires on a credential
+    eligible for several roles, and `register_agent` without one grants a role the credential
+    already permits.
+
+    The role is the one the refused call needs, not a fixed planner. `update_item(status=
+    "done")` and `update_item(branch=…)` clear for a planner; a worker is past the ceiling
+    on both, so a worker hint would be refused again. Every other tool on this gate is in
+    `TOOL_ROLES`, and naming planner for `claim_next` registers a planner that is still
+    unauthorized ("claim_next requires role 'worker'"). A hint that names a route the call
+    cannot take is the same dead end, reworded.
+    """
+    role = _role_that_clears(tool, args)
+    if role not in eligible_roles(api_key):
+        role = ""
+    how = f"register_agent(role_hint={role!r})" if role else "register_agent"
+    return (f"pass agent_id. A session that never registered gets one from {how} — no "
+            "enrolment code needed on this credential — then passes the agent_id it returns")
+
+
+def _role_that_clears(tool: str, args: dict | None) -> str:
+    """The role a registration must hold for this call to pass the identity gate.
+
+    `update_item` is open to every role. The unidentified refusal on it is the ceiling:
+    `done` and a non-empty `branch` are planner work, so registering as worker would clear
+    the identity check and fail one line later. A tool in `TOOL_ROLES` clears for a role
+    that map allows. Worker is preferred where the tool accepts one — that is every worker
+    tool on this gate, including `release_item`, whose `done` ceiling is a later refusal
+    and not this one.
+    """
+    if tool == "update_item" and (
+        (args or {}).get("status") in _BEYOND_WORKER
+        or str((args or {}).get("branch") or "").strip()
+    ):
+        return "planner"
+    required = TOOL_ROLES.get(tool) or ()
+    if "worker" in required:
+        return "worker"
+    if required:
+        return required[0]
+    return ""
 
 
 def tools_off_limits(role: str) -> list[str]:
@@ -1776,6 +2103,12 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
     concrete payoff for running four heterogeneous windows rather than four identical ones.
     Preference, not requirement: a same-vendor review is far better than none.
     """
+    # GRPH-1089. Raised, not filtered to None. None is "nothing awaiting review", and a
+    # bound-only child that has finished its item would read that as an empty queue and
+    # exit believing the board was clear. The refusal names the binding. A seat without
+    # the flag is unaffected — a wave's finished workers still review each other.
+    if reason := items_svc.bound_only_refusal(db, agent_id):
+        raise items_svc.BoundOnlySeat(reason)
     me = db.get(Agent, agent_id)
     scope = items_svc.seat_scope(db, agent_id)
     stmt = select(Item).where(Item.status == "review")
@@ -1828,10 +2161,18 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
         return None
 
     my_vendor = ((me.capabilities or {}).get("vendor") if me else None)
-    if my_vendor:
-        authors = {a.id: (a.capabilities or {}).get("vendor")
-                   for a in db.scalars(select(Agent)).all()}
-        cross = [it for it in candidates if authors.get(it.built_by) != my_vendor]
+    if isinstance(my_vendor, str) and my_vendor.strip():
+        # Same folding as the receipt (GRPH-1120). Preferring a `grok` reviewer
+        # for an `xai` author would hand same-model review out as the cross-vendor
+        # case this sort exists to find.
+        mine = canonical_vendor(my_vendor)
+        authors = {}
+        for author in db.scalars(select(Agent)).all():
+            declared = (author.capabilities or {}).get("vendor")
+            authors[author.id] = (canonical_vendor(declared)
+                                  if isinstance(declared, str) and declared.strip()
+                                  else declared)
+        cross = [it for it in candidates if authors.get(it.built_by) != mine]
         candidates = cross or candidates
 
     item = candidates[0]
@@ -1967,6 +2308,20 @@ _HEADING = re.compile(r"^(#{2,3})\s+(.*?)\s*#*$")
 # An `Acceptance:` label as prose — `Acceptance: the gate names…`, `**Acceptance:** …`.
 _ACCEPTANCE_LABEL = re.compile(
     r"^[\W_]*acceptance(?:\s+criteria)?[*_]*\s*:[*_]*\s*(.*)$", re.IGNORECASE)
+# A bold or underscore label with nothing after it — `**Acceptance**`,
+# `**Acceptance criteria**`, `__Acceptance__`. The colon form is already
+# `_ACCEPTANCE_LABEL` (`**Acceptance:**`). Without this branch a planner's
+# `**Acceptance**` plus a checklist parses to nothing, and the gate records a
+# pass (GRPH-1062).
+_ACCEPTANCE_BOLD = re.compile(
+    r"^[*_]+acceptance(?:\s+criteria)?[*_]*\s*:?\s*$", re.IGNORECASE)
+# A label-shaped line neither pattern opened. `Acceptance` alone, `# Acceptance`,
+# `Acceptance criteria` — the word first, a few words, optional colon and wrapping
+# marks. A sentence that merely contains the word does not match: "The acceptance
+# of this is obvious." is the control that must stay "no clauses written".
+_UNOPENED_ACCEPTANCE = re.compile(
+    r"^(?:[#>*_~\s`]+)?acceptance\b(?:\s+[A-Za-z][A-Za-z-]*){0,4}\s*:?\s*[*_`]*\s*$",
+    re.IGNORECASE)
 _LIST_ITEM = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
 #: Task-list prefix on a list item (`- [x] the gate names the clause`). Stripped so the
 #: stored clause is the words a reviewer will quote, not the checkbox markup.
@@ -1976,7 +2331,7 @@ _CHECKBOX = re.compile(r"^\[(?:[xX]| )\]\s+")
 #: deliberately narrow: a clause that merely MENTIONS `gh` ("children are refused `gh`") is
 #: not declaring a need, and inferring one from the word would route that clause away from
 #: every child — the same stranding, pointed the other way.
-_NEEDS_TOKEN = r"[a-z0-9][a-z0-9_-]*"
+_NEEDS_TOKEN = r"[a-z0-9][a-z0-9_-]*"  # nosec B105 — a regex for a needs-token
 _NEEDS_LIST = rf"{_NEEDS_TOKEN}(?:\s*,\s*{_NEEDS_TOKEN})*"
 _NEEDS_PREFIX = re.compile(rf"^\[needs:\s*({_NEEDS_LIST})\]\s*", re.IGNORECASE)
 _NEEDS_SUFFIX = re.compile(rf"\s*\{{needs:\s*({_NEEDS_LIST})\}}\s*$", re.IGNORECASE)
@@ -2006,6 +2361,22 @@ def split_clause_needs(text: str) -> tuple[str, frozenset[str]]:
     return rest, frozenset(needs)
 
 
+def _checklist_follows(lines: list[str], index: int) -> bool:
+    """True when a checklist is the next thing after `lines[index]`.
+
+    Blank lines do not count — a label and its list are often separated by one.
+    A heading or a line of prose in between means the list belongs to something else.
+    """
+    for nxt in lines[index + 1:]:
+        stripped = nxt.strip()
+        if not stripped:
+            continue
+        if _HEADING.match(stripped):
+            return False
+        return _LIST_ITEM.match(stripped) is not None
+    return False
+
+
 def _walk_acceptance(description: str) -> tuple[list[tuple[str, frozenset[str]]], list[str]]:
     """The clauses under an acceptance heading, each with the capabilities it declared."""
     rows: list[tuple[str, frozenset[str]]] = []
@@ -2013,13 +2384,14 @@ def _walk_acceptance(description: str) -> tuple[list[tuple[str, frozenset[str]]]
     in_section = False
     section_label = ""
     section_count = 0
+    lines = (description or "").splitlines()
 
     def close() -> None:
         nonlocal section_count
         if in_section and section_count == 0:
             unreadable.append(f"{section_label} has no list items under it")
 
-    for line in (description or "").splitlines():
+    for index, line in enumerate(lines):
         stripped = line.strip()
         heading = _HEADING.match(stripped)
         if heading:
@@ -2043,6 +2415,19 @@ def _walk_acceptance(description: str) -> tuple[list[tuple[str, frozenset[str]]]
             else:
                 in_section, section_label, section_count = True, "`Acceptance:`", 0
             continue
+        # GRPH-1062. A bold label is not a heading and has no colon, so neither branch
+        # above opens it. Checked before the unopened scan: this shape IS readable.
+        if _ACCEPTANCE_BOLD.match(stripped) and not _LIST_ITEM.match(stripped):
+            close()
+            in_section, section_label, section_count = True, f"`{stripped}`", 0
+            continue
+        # Acceptance text that opened nothing, with a checklist under it. Leaving it
+        # out is how "no clauses found" becomes "no clauses written" again.
+        if (not in_section and stripped and not _LIST_ITEM.match(stripped)
+                and _UNOPENED_ACCEPTANCE.match(stripped)
+                and _checklist_follows(lines, index)):
+            unreadable.append(f'unopened "{stripped[:80]}"')
+            continue
         if not in_section or not stripped:
             continue
         item = _LIST_ITEM.match(stripped)
@@ -2059,10 +2444,12 @@ def parse_acceptance(description: str) -> tuple[list[str], list[str]]:
     """Read the acceptance clauses in an item description, and what could not be read.
 
     Returns `(clauses, unreadable)`. A clause is a markdown list item under a `## Tests`,
-    `## Acceptance` or `## Acceptance criteria` heading (`###` too), or under a bare
-    `Acceptance:` label line. `unreadable` names acceptance text that is there but is not in
-    that shape: an `Acceptance:` label with prose after it, or an acceptance heading with no
-    list under it.
+    `## Acceptance` or `## Acceptance criteria` heading (`###` too), under a bare
+    `Acceptance:` label line, or under a bold/underscore label (`**Acceptance**`,
+    `**Acceptance:**`, `**Acceptance criteria**`, `__Acceptance__`). `unreadable` names
+    acceptance text that is there but is not in that shape: an `Acceptance:` label with
+    prose after it, an acceptance heading with no list under it, or a label-shaped line
+    (`Acceptance`, `# Acceptance`) that a checklist follows and that opened no section.
 
     `unreadable` is the half GRPH-893 added, and it is why this returns two things rather than
     one. The first parser read only `## Tests`, so SA-476 (`Acceptance: …` inline) and SA-498
@@ -2459,6 +2846,10 @@ def review_diversity(reviewer: dict, builder: dict, *, built_by: str | None) -> 
     differ; every other case is False with a sentence saying why. The caller RECORDS this and
     does not gate on it: a default refusal of same-vendor review would leave a single-vendor
     shop unable to review anything, which is how a gate earns being routed around (GRPH-321).
+
+    Compared through `canonical_vendor` (GRPH-1120). The sentence still quotes the spellings
+    that were stored, so an old `grok` row beside a new `xai` row stays legible — and says
+    they are one vendor, which a raw string compare reported as two.
     """
     who = f"{reviewer['vendor']}:{reviewer['model']} (tier {reviewer['tier']})"
     if not built_by:
@@ -2471,9 +2862,12 @@ def review_diversity(reviewer: dict, builder: dict, *, built_by: str | None) -> 
         return False, (f"reviewer {who} against builder {by}; not comparable — "
                        f"{' and '.join(missing)} declared no vendor, and two undeclared "
                        "vendors are two unknowns rather than one vendor")
-    if reviewer["vendor"] != builder["vendor"]:
+    if canonical_vendor(reviewer["vendor"]) != canonical_vendor(builder["vendor"]):
         return True, f"reviewer {who} reviewed builder {by} — different vendors"
-    return False, (f"reviewer {who} reviewed builder {by} — the SAME vendor"
+    alias = ""
+    if reviewer["vendor"] != builder["vendor"]:
+        alias = f" ({reviewer['vendor']} and {builder['vendor']} are one vendor)"
+    return False, (f"reviewer {who} reviewed builder {by} — the SAME vendor{alias}"
                    + (" and the same model"
                       if reviewer["model"] == builder["model"]
                       else " on a different model"))
@@ -2872,6 +3266,8 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     item.claimed_at = None
     db.commit()
     db.refresh(item)
+    from app.services import observations as observations_svc
+    observations_svc.on_sign_off(db, item, fresh)
     return item
 
 
@@ -2920,6 +3316,8 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     item.blocker = ""
     db.commit()
     db.refresh(item)
+    from app.services import observations as observations_svc
+    observations_svc.on_bounce(db, item)
     return item
 
 
@@ -3234,7 +3632,10 @@ def requeue_offline_items(db: Session, *, project_id: str | None = None,
     from app.models import ApiKey
 
     now = datetime.now(timezone.utc)
-    stmt = select(Agent)
+    # Only an agent that holds a lease can have anything released, so only those are loaded
+    # (GRPH-1253): the sweep ran on every roster read and built all ~6,400 rows to find two.
+    stmt = select(Agent).where(
+        Agent.id.in_(select(Item.claimed_by).where(Item.claimed_by.isnot(None))))
     if project_id:
         stmt = stmt.where(Agent.project_id == project_id)
     agents = list(db.scalars(stmt).all())
@@ -3340,7 +3741,11 @@ def held_areas(db: Session, project_id: str | None = None, *,
     truncated = total > cap
     rows = rows[:cap]
 
-    agents = {a.id: a for a in db.scalars(select(Agent)).all()}
+    # Only the holders of the rows kept above are ever looked up (GRPH-1253); loading the
+    # whole table here built every agent on the instance to read a handful.
+    holder_ids = {r.agent_id for r in rows if r.agent_id}
+    agents = ({a.id: a for a in db.scalars(select(Agent).where(Agent.id.in_(holder_ids))).all()}
+              if holder_ids else {})
     keys = {k.id: k for k in db.scalars(select(ApiKey)).all()}
     users = {u.id: u for u in db.scalars(select(User)).all()}
     nodes = code_svc.list_nodes(db, project_id) if project_id else []
@@ -3518,6 +3923,18 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
                 "held_by": [], "reason": items_svc.REVIEW_ONLY_REFUSAL,
                 "scope": items_svc.seat_scope(db, agent_id)}
 
+    # GRPH-1089. A bound_only seat whose item has left in_progress may not take build work.
+    # `claim_item` raises the same sentence from inside the member loop; answered once, here,
+    # the way the review-only refusal above is, so the caller gets a reason rather than an
+    # exception out of the loop. While the item is still in_progress this is None and the
+    # bound-seat checks below still apply. It has to be here, not only in `claim_item`:
+    # `_holds_bound_item` stops matching once the lease is released, and `open_bound_item`
+    # passes an item that is in review or done.
+    if reason := items_svc.bound_only_refusal(db, agent_id):
+        return {"claimed": False, "items": [], "areas": [], "predicted": False,
+                "held_by": [], "reason": reason,
+                "scope": items_svc.seat_scope(db, agent_id)}
+
     # GRPH-886: a bound seat already holds one item. Refuse to hand out more.
     bound_item = _holds_bound_item(db, agent_id)
     if bound_item:
@@ -3540,7 +3957,9 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     taken = active_reservations(db, project_id, now=now)
     # Somebody else's areas. An agent's own reservations do not block it: a worker asking for
     # more work should not be refused because of the cluster it is already holding.
-    blocked = [r.area for r in taken if r.agent_id != agent_id]
+    # GRPH-1138: an `override` decision lets members of that one cluster overlap each other, so
+    # a reservation held for an item in an overridden cluster does not block that cluster.
+    overrides = collision_svc.override_item_sets(db, project_id)
     # GRPH-827: the seat's scope filters the POOL, before clustering, for the reason
     # `clusters_for_project` gives — a cluster is a promise that its members do not collide,
     # and dropping members afterwards hands out a promise computed over items no longer in it.
@@ -3551,6 +3970,9 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     for cluster in collision_svc.clusters_for_project(db, project_id,
                                                        lease_seconds=lease_seconds,
                                                        prd_id=scope or None):
+        members = set(cluster.get("items") or [])
+        free = set().union(*[o for o in overrides if members <= o]) if overrides else set()
+        blocked = [r.area for r in taken if r.agent_id != agent_id and r.item_id not in free]
         overlap = areas_collide(cluster.get("areas") or [], blocked)
         if overlap:
             continue
@@ -3752,7 +4174,8 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
                     reissued_from: str | None = None, item_id: str | None = None,
                     delegation_id: str | None = None,
                     prd_id: str | None = None,
-                    review_only: bool = False) -> tuple[Enrolment, str]:
+                    review_only: bool = False,
+                    bound_only: bool = False) -> tuple[Enrolment, str]:
     """Mint one SEAT and return (row, plaintext). The code is shown once.
 
     One seat per agent, never one per role: two agents redeeming the same code would share an
@@ -3780,6 +4203,13 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
         raise ValueError("a review-only seat cannot also be bound to an item: binding "
                          "build-claims the item at registration, which would make the "
                          "reviewer its author and the self-review ban would then refuse it")
+    if bound_only and review_only:
+        raise ValueError("a bound_only seat cannot also be review-only: the two flags "
+                         "answer opposite questions")
+    if bound_only and not item_id:
+        # A flag with nothing to name is a silent no-op: claim_review would keep working
+        # and the minter would believe the child had been told to stop.
+        raise ValueError("bound_only needs an item this seat is bound to")
     body = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(6))
     code = f"{role.upper().replace('-', '')}-{body}"
     row = Enrolment(
@@ -3794,6 +4224,9 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
         # GRPH-988. Stored, not inferred: a seat that may review but not build is a fact
         # about the wave that minted it, and nothing downstream can reconstruct it.
         review_only=bool(review_only),
+        # GRPH-1089. Stored, not inferred from item_id: a bound seat that may still review
+        # other items is the default, and a crash must not be what turns it off or on.
+        bound_only=bool(bound_only),
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=ENROLMENT_TTL_MINUTES),
     )
     db.add(row)
@@ -3806,7 +4239,8 @@ def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str
                       api_key, wave: str | None = None, item_id: str | None = None,
                       delegation_id: str | None = None,
                       prd_id: str | None = None,
-                      review_only: bool = False) -> tuple[Enrolment, str]:
+                      review_only: bool = False,
+                      bound_only: bool = False) -> tuple[Enrolment, str]:
     """A planner mints a seat for an agent it is about to spawn (PRD-19 E7 / D-g).
 
     An orchestrator cannot paste a code out of a UI, so the capability has to exist for an
@@ -3835,7 +4269,7 @@ def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str
             hint="mint a credential for that role in the Fleet view first")
     return issue_enrolment(db, project_id=project_id, role=role, wave=wave, minted_by=minter_id,
                            item_id=item_id, delegation_id=delegation_id, prd_id=prd_id,
-                           review_only=review_only)
+                           review_only=review_only, bound_only=bound_only)
 
 
 def reissue_enrolment(db: Session, *, enrolment_id: str) -> tuple[Enrolment, str]:
@@ -3855,7 +4289,16 @@ def reissue_enrolment(db: Session, *, enrolment_id: str) -> tuple[Enrolment, str
                            # worker seat hands the replacement child the `claim_next` its wave
                            # was forbidden, and nothing in the reissue reply would say so. A
                            # control that a crash removes is not a control.
-                           review_only=old.review_only)
+                           review_only=old.review_only,
+                           # GRPH-1089. Carried across, and the ITEM with it, only when the
+                           # flag is set. An ordinary bound seat still drops item_id on
+                           # reissue — that binding is claimed once, at the first registration.
+                           # A bound_only seat that came back unbound would be a crash that
+                           # widens the seat: the replacement child could claim_review, which
+                           # is the power the flag exists to remove.
+                           bound_only=bool(old.bound_only),
+                           item_id=old.item_id if old.bound_only else None,
+                           delegation_id=old.delegation_id if old.bound_only else None)
 
 
 def enrolment_state(row: Enrolment, *, now: datetime | None = None) -> str:
@@ -4275,12 +4718,17 @@ def _live_reviewer_tools(db: Session, agents: list[Agent],
     somebody once registered with `gh` and then left.
     """
     out: list[frozenset[str]] = []
-    for agent in agents:
-        if project_id and agent.project_id != project_id:
-            continue
-        if presence_state(agent) in ("offline", "quarantined"):
-            continue
-        if session_expired(db, agent):
+    candidates = [a for a in agents
+                  if not (project_id and a.project_id != project_id)
+                  and presence_state(a) not in ("offline", "quarantined")]
+    # One read of the seats for every candidate, not `session_expired`'s `db.get` per agent:
+    # the same test (a seat that is not `consumed`), without a statement per enrolled agent.
+    seat_ids = {a.enrolment_id for a in candidates if a.enrolment_id}
+    seats = ({e.id: e for e in db.scalars(
+        select(Enrolment).where(Enrolment.id.in_(seat_ids))).all()} if seat_ids else {})
+    for agent in candidates:
+        seat = seats.get(agent.enrolment_id) if agent.enrolment_id else None
+        if seat is not None and enrolment_state(seat) != "consumed":
             continue
         if agent.active_role not in ("worker", ALL_IN_ONE):
             continue
@@ -4371,11 +4819,15 @@ def cluster_board(db: Session, project_id: str | None = None) -> list[dict]:
         holders.setdefault(_normalise_area(r.area), r.agent_id)
 
     out = []
-    for c in collision_svc.clusters_for_project(db, project_id):
+    clusters = collision_svc.clusters_for_project(db, project_id)
+    wanted = {i for c in clusters for i in (c.get("items") or [])}
+    by_id = ({i.id: i for i in db.scalars(select(Item).where(Item.id.in_(wanted))).all()}
+             if wanted else {})
+    for c in clusters:
         areas = c.get("areas") or []
         blocking = [(a, holders[k]) for a in areas
                     if (k := _normalise_area(a)) in holders]
-        rows = [db.get(Item, i) for i in (c.get("items") or [])]
+        rows = [by_id.get(i) for i in (c.get("items") or [])]
         out.append({
             "items": [r.key for r in rows if r is not None],
             "areas": areas,
@@ -4461,13 +4913,18 @@ def propose_allocation(db: Session, project_id: str | None = None, *,
     # review queue — the place the fleet is actually short — rather than idling as a
     # separate "reviewer" role that no longer exists.
     want_with_cluster = min(len(free_clusters), n) if free_clusters else 0
+    # PRD-62 S4: the entitlement axis, after tier and matrix score. Agents whose entitlement
+    # has no headroom (or would leave no reviewer vendor) are not handed a cluster first.
+    from app.services import routing as routing_svc
+    axis = routing_svc.axis(db, project_id, [a["id"] for a in roster])
+    roster = sorted(roster, key=lambda a: bool(axis[a["id"]]) and axis[a["id"]]["entitlement_id"] is None)
     mapping = []
     for i, agent in enumerate(roster):
-        if i < want_with_cluster:
-            mapping.append({"agent": agent["id"], "role": "worker",
-                            "cluster": free_clusters[i]["items"]})
-        else:
-            mapping.append({"agent": agent["id"], "role": "worker", "cluster": []})
+        row = {"agent": agent["id"], "role": "worker",
+               "cluster": free_clusters[i]["items"] if i < want_with_cluster else []}
+        if axis[agent["id"]] is not None:
+            row["entitlement"] = axis[agent["id"]]
+        mapping.append(row)
     return {
         "workers": n,
         "reviewers": 0,
@@ -4599,7 +5056,11 @@ def collect_directive(db: Session, agent_id: str | None) -> dict | None:
     expired = session_expired(db, agent)
     directive = pending_directive(agent, expired=expired)
     if directive is None:
-        return None
+        # A human answered a question this agent asked (GRPH-1137). Delivered once, after any
+        # role change, which is the more urgent fact.
+        from app.services import waits as waits_svc
+
+        return waits_svc.answer_directive(db, agent_id)
     agent.role_acked_at = datetime.now(timezone.utc)
     db.commit()
     return directive
@@ -4654,3 +5115,303 @@ def park(db: Session, attempt, *, agent_id: str | None = None,
         interval = min(POLL_INTERVAL_SECONDS, remaining)
         slept += interval
         sleep(interval)
+
+
+# ---- observations: facts only the supervisor knows (GRPH-975) ---------------------------------
+
+
+#: What this route records today. `lease` (GRPH-1116) is a keep-alive on this same
+#: route, not a new one: the supervisor's client may not call `heartbeat`. `pushed_head`
+#: (GRPH-973) is still later — named so a post of it is a 422 that says so, not a silent
+#: no-op and not a second route somebody adds beside this one. GRPH-1236 adds two:
+#: `merged_trunk` (the trunk was merged into the branch before it was proposed) and
+#: `behind_conflict`, the one kind that also moves the item (`_send_back_behind`).
+OBSERVATION_KINDS = ("cut_from", "pr_opened", "salvage", "withheld", "merged_trunk",
+                     "behind_conflict")
+OBSERVATION_LATER = ("pushed_head",)
+
+_CUT_BASE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+class ObservationError(Exception):
+    """A refused observation. `status` is the HTTP status the route returns."""
+
+    def __init__(self, status: int, message: str):
+        self.status = status
+        super().__init__(message)
+
+
+def _supervisor_wave_key(api_key) -> bool:
+    """A credential that cuts trees: a fleet wave key, or the project key `gban setup` mints.
+
+    `planner` in `eligible_roles` is the ceiling. A worker-only key fails it. An empty
+    roles list resolves to every role, and that is what `gban setup` stores — the mint
+    posts `project_id`, `expires_in_days=None` and the fleet and prd tiers, and never
+    writes `roles`. Requiring a stored `["planner", "worker"]` would refuse the caller
+    this route exists for. An all-in-one fleet key passes the same way.
+
+    `fleet_wave` empty used to mean "hand-minted, refuse". That tag is how End wave finds
+    keys it issued. The setup key is hand-minted on purpose: project-scoped, non-expiring,
+    never swept, and the process that minted the seats. An unscoped key still fails here.
+    It has no project to bind the minted-by check to, and a wave label is not a project
+    boundary (GRPH-975). Which item the key may write about is `_wave_cut_item`. A setup
+    key has no wave string, so it matches only through the minted-by branch.
+
+    The children hold the same key material. The scope check below is what stops one of
+    them writing about an item this key's seats did not cut.
+    """
+    if "planner" not in eligible_roles(api_key):
+        return False
+    if (getattr(api_key, "fleet_wave", None) or "").strip():
+        return True
+    return bool(getattr(api_key, "project_id", None))
+
+
+def _wave_cut_item(db: Session, api_key, item: Item) -> bool:
+    """Whether a seat from this credential's wave is how this item got a tree.
+
+    The CLI's `--wave` and `ApiKey.fleet_wave` are different strings in production (the
+    flag defaults to `wave`, the minted key stores `wave-1`). Matching only those two
+    would leave the route refusing the one caller it exists for. A seat counts when it
+    is bound to the item, or its `consumed_by` is the item's claimer or author — the
+    second is how a cluster sibling is covered at PR and salvage time, after the child
+    has claimed — AND either its wave string is the key's, or the agent that minted it
+    authenticated with this key. Revoked seats still count: a late receipt is the case
+    the route is for, and a revoke must not erase the base.
+
+    A project-scoped key only matches a seat in its own project. `next_wave` restarts
+    at `wave-1` in every project, and `can_write` is the user's membership, so the wave
+    string alone would let project A's planner plant a base on an item project B's
+    first wave cut. An unscoped key has no project to compare and stays on the checks
+    below.
+    """
+    key_project = getattr(api_key, "project_id", None)
+    if key_project and key_project != item.project_id:
+        return False
+    holders = [h for h in (item.claimed_by, item.built_by) if h]
+    bound = [Enrolment.item_id == item.id]
+    if holders:
+        bound.append(Enrolment.consumed_by.in_(holders))
+    seats = list(db.scalars(
+        select(Enrolment).where(Enrolment.project_id == item.project_id, or_(*bound))
+    ).all())
+    if not seats:
+        return False
+    key_id = getattr(api_key, "id", None)
+    fleet_wave = (api_key.fleet_wave or "").strip()
+    minters: dict[str, str | None] = {}
+    minter_ids = {s.minted_by for s in seats if s.minted_by}
+    if minter_ids and key_id:
+        for agent in db.scalars(select(Agent).where(Agent.id.in_(minter_ids))).all():
+            minters[agent.id] = agent.api_key_id
+    for seat in seats:
+        if seat.wave and seat.wave == fleet_wave:
+            return True
+        if seat.minted_by and minters.get(seat.minted_by) == key_id:
+            return True
+    return False
+
+
+def _observation_receipt(kind: str, *, branch: str, base: str | None, url: str | None,
+                         commit: str | None, reason: str | None) -> dict:
+    """The note or url receipt, composed here so the caller cannot supply one.
+
+    A child holding the wave key could otherwise post an attestation-shaped receipt.
+    The bytes of the cut-from note match what `_record_cut_from` used to send, because
+    `cut_from_commits` reads that prose and nothing else.
+    """
+    if kind == "cut_from":
+        sha = (base or "").strip()
+        if not _CUT_BASE.fullmatch(sha):
+            raise ObservationError(
+                422, "cut_from base must be 7–40 lowercase hex characters")
+        return {"kind": "note", "detail": (
+            f"{items_svc.CUT_FROM_MARKER}{sha} (`{branch}`) — the base, which "
+            "carries none of this item's work"
+        )}
+    if kind == "pr_opened":
+        link = (url or "").strip()
+        if not (link.startswith("https://") or link.startswith("http://")):
+            raise ObservationError(422, "pr_opened url must be an http(s) URL")
+        return {"kind": "url",
+                "detail": f"draft PR opened by gbfleet for {branch}",
+                "url": link}
+    if kind == "salvage":
+        short = (commit or "").strip()[:12]
+        detail = f"salvaged onto `{branch}`" + (f" `{short}`" if short else "")
+        if reason and reason.strip():
+            detail += f" ({reason.strip()})"
+        detail += "; not proposed as a PR"
+        return {"kind": "note", "detail": detail}
+    if kind == "withheld":
+        why = (reason or "").strip()
+        if not why:
+            raise ObservationError(422, "withheld names why the PR was not proposed")
+        return {"kind": "note",
+                "detail": f"pushed `{branch}`; not proposed as a PR — {why}"}
+    if kind == "merged_trunk":
+        why = (reason or "").strip()
+        if not why:
+            raise ObservationError(422, "merged_trunk names the ref and the sha merged")
+        return {"kind": "note", "detail": f"gbfleet: `{branch}`: {why}"}
+    if kind == "behind_conflict":
+        why = (reason or "").strip()
+        if not why:
+            raise ObservationError(422, "behind_conflict names the ref and the files")
+        return {"kind": "note", "detail": f"gbfleet: not proposed as a PR — {why}"}
+    raise ObservationError(
+        422,
+        f"unknown observation kind {kind!r}; this route records "
+        f"{', '.join(OBSERVATION_KINDS)}. {', '.join(OBSERVATION_LATER)} extend this "
+        "same route later and are not accepted yet",
+    )
+
+
+def _send_back_behind(db: Session, item: Item, *, branch: str, reason: str) -> None:
+    """Return an item whose branch conflicts with the trunk to `next` (GRPH-1236).
+
+    The supervisor withheld the PR, and before this the item went on to `review` and
+    `done` with nothing to merge. A person then reopened it by hand. Now it goes back
+    to `next` and keeps its branch. `bounce_reason` carries the resume brief, because
+    that is what `choose_resume` reads before it resumes a branch instead of cutting a
+    new one from the base.
+
+    Not a reviewer bounce. No verdict is written and the attempt is not closed as
+    `bounced`, so the builder's vendor and model are not charged a failed review.
+    Telemetry only reads `bounce_reason` on a `bounced` outcome. A `done` item is left
+    alone: reopening finished work is a person's call.
+    """
+    if item.status not in ("in_progress", "review"):
+        return
+    release_reservations(db, item_id=item.id)
+    item.status = "next"
+    item.claimed_by = None
+    item.claimed_at = None
+    item.assignee = ""
+    item.review_claimed_by = None
+    item.review_claimed_at = None
+    item.branch = branch or item.branch
+    item.bounce_reason = reason
+
+
+def _record_lease(db: Session, item: Item, *, branch: str, agent_id: str | None,
+                  commit: str | None) -> dict:
+    """Keep `agent_id`'s lease alive while its process is, without becoming the author.
+
+    The supervisor posts this because the child cannot: a long test run makes no
+    server call, `fleet_status` then reads the agent offline, and `requeue_offline_items`
+    releases the item. Two clocks have to move. `last_seen_at` is what presence reads;
+    `claimed_at` is what `_is_claimable` reads. Moving either one through `items.heartbeat`
+    would be the worker tool this credential does not have, and it would also let
+    `onupdate` stamp `updated_at` a moment later, so a keep-alive would look like a write
+    and a child that never touched the item would keep `built_by` (GRPH-434).
+
+    The relative order is the authorship clock. A row whose `updated_at` was already
+    strictly after `claimed_at` stays strictly after; a row that was not stays not.
+    Both columns are set in one UPDATE so `onupdate` cannot reorder them.
+
+    A real commit — a sha that is not the recorded cut-from base — is written once.
+    Repeating it on every beat would fill the evidence the next reviewer reads. The
+    note does not itself move `updated_at`: `committed_by` is what `release_item` reads,
+    and moving the clock here would keep the author even with that check deleted.
+
+    Not a re-claim. When `claimed_by` is somebody else, or the item is no longer
+    `in_progress`, the answer is `extended: false` and nothing is written. Taking the
+    item back would be the supervisor doing the child's work.
+    """
+    who = (agent_id or "").strip()
+    if not who:
+        raise ObservationError(422, "lease names the agent whose pid is alive")
+    if not branch:
+        raise ObservationError(422, "an observation names the branch")
+    if item.claimed_by != who or item.status != "in_progress":
+        return {"item_id": item.key, "kind": "lease", "recorded": True, "extended": False}
+
+    now = datetime.now(timezone.utc)
+    claimed = _aware(item.claimed_at)
+    updated = _aware(item.updated_at)
+    wrote = claimed is not None and updated is not None and updated > claimed
+    if wrote:
+        kept = now + timedelta(microseconds=1)
+    elif item.updated_at is not None:
+        kept = item.updated_at
+    else:
+        kept = now
+
+    evidence = item.evidence
+    sha = (commit or "").strip().lower()
+    bases = items_svc.cut_from_commits(evidence)
+    if (_CUT_BASE.fullmatch(sha)
+            and not any(items_svc.same_commit(sha, base) for base in bases)
+            and not items_svc.committed_by(evidence, who)):
+        evidence = items_svc.append_evidence(evidence, [{
+            "kind": "note",
+            "detail": f"{items_svc.COMMITTED_MARKER}{sha} on `{branch}` by {who}",
+        }])
+
+    values: dict = {"claimed_at": now, "updated_at": kept}
+    if evidence is not item.evidence:
+        values["evidence"] = evidence
+    db.execute(update(Item).where(Item.id == item.id).values(**values))
+    db.expire(item)
+
+    agent = db.get(Agent, who)
+    if agent is not None:
+        # Presence only. `state` stays what it was: a quarantined agent is quarantined
+        # because `presence_state` reads that before the clock, and a keep-alive is not
+        # a phase change.
+        agent.last_seen_at = now
+    extend_reservations(db, agent_id=who, item_id=item.id, now=now)
+    return {"item_id": item.key, "kind": "lease", "recorded": True, "extended": True}
+
+
+def record_observation(db: Session, api_key, *, item_key: str, kind: str,
+                       branch: str = "", base: str | None = None,
+                       url: str | None = None, commit: str | None = None,
+                       reason: str | None = None, agent_id: str | None = None) -> dict:
+    """Record one supervisor fact on an item this credential's wave cut.
+
+    Does not commit — the route does, matching `post_attempt`. A credential with no
+    planner in its ceiling, or an unscoped key with no wave, is 403. An item this
+    key's seats did not cut, or one the key cannot write, is 404 with the same
+    message a missing item gets, so the refusal is not a probe.
+    """
+    from app.security import authz
+
+    if not _supervisor_wave_key(api_key):
+        raise ObservationError(
+            403,
+            "this credential is not a supervisor key: recording a cut needs planner "
+            "among its roles, and either a fleet wave or a project-scoped key (the "
+            "credential gban setup mints). A worker-only key and an unscoped key are "
+            "refused here",
+        )
+    named = (item_key or "").strip()
+    if not named:
+        raise ObservationError(422, "an observation names an item")
+    stored = keys_svc.resolve_item(db, named)
+    item = db.get(Item, stored) if stored else None
+    if item is None or not authz.can_write(db, api_key.user_id, item.project_id):
+        raise ObservationError(404, "no such item")
+    if not _wave_cut_item(db, api_key, item):
+        raise ObservationError(404, "no such item")
+    cleaned = (branch or "").strip()
+    if kind == "lease":
+        return _record_lease(
+            db, item, branch=cleaned, agent_id=agent_id, commit=commit)
+    if kind in OBSERVATION_KINDS and not cleaned:
+        raise ObservationError(422, "an observation names the branch")
+    receipt = _observation_receipt(
+        kind, branch=cleaned, base=base, url=url, commit=commit, reason=reason)
+    item.evidence = items_svc.append_evidence(item.evidence, [receipt])
+    if kind == "behind_conflict":
+        _send_back_behind(db, item, branch=cleaned, reason=(reason or "").strip())
+    if receipt.get("kind") == "url":
+        # The cooldown clock. `update_item` starts it from a url receipt; this route is
+        # now the writer of that receipt, so the clock has to start here or a draft PR
+        # the supervisor opened would not count.
+        item.pr_linked_at = items_svc.pr_linked_at([receipt], item.pr_linked_at)
+    from app.services import gitops as gitops_svc
+    gitops_svc.apply_observe_answer(db, item)
+    gitops_svc.apply_already_evidence(item)
+    return {"item_id": item.key, "kind": kind, "recorded": True}

@@ -7,7 +7,10 @@
 
 import type { ClusterLayout, OrbitRing, RankedEdge, TileRect } from "@/lib/graph/bigLayout";
 import { ORBIT_BUNDLE_CAP, topBundles } from "@/lib/graph/bigLayout";
+import type { FleetPresence } from "@/lib/types";
+import { contentionOf, indexByNode } from "@/lib/graph/presence";
 import type { Cam } from "./camera";
+import { CONTENTION_COLOR, PULSE_MEAN, type Cloud } from "./clouds";
 import {
   EDGE_CAP,
   EDGE_COLOR,
@@ -46,6 +49,12 @@ function keptKey(kept: RankedEdge[]): number {
   return h;
 }
 
+/** Build.dc.html glow: a 1.3px core at 0.95 over a 5px wash at 0.18, both in the edge colour. */
+export const GLOW_CORE_PX = 1.3;
+export const GLOW_WASH_PX = 5;
+export const GLOW_CORE_ALPHA = 0.95;
+export const GLOW_WASH_ALPHA = 0.18;
+
 export interface DrawNode {
   id: string;
   index: number;
@@ -78,6 +87,8 @@ export interface DrawRing {
   r: number;
   color: string;
   kind: "contention" | "pin" | "selection";
+  /** Omitted rings draw at 0.9. Contention uses the pulse, or the static mean. */
+  alpha?: number;
 }
 
 export interface DrawScene {
@@ -97,6 +108,8 @@ export interface DrawScene {
   revealed: string | null;
   /** Focused node's incident edges, capped at 320. Drawn above the rings. */
   glow: Stroke[];
+  /** 0→1 while a highlight eases in. The glow is drawn at this share of its alpha. */
+  focusMix?: number;
   /**
    * One alpha for the whole edge batch. A path sets 0.05 so the batch does not
    * decide, per edge, whether that edge is on the route.
@@ -104,6 +117,13 @@ export interface DrawScene {
   edgesAlpha: number;
   /** Orbit ring labels. Empty for Clusters and Map. */
   orbitRings?: OrbitRing[];
+  /** Presence blobs, already resolved for this zoom and solo. Empty is "nobody held". */
+  clouds?: readonly Cloud[];
+  /**
+   * Contention rings stay at {@link PULSE_MEAN} instead of pulsing. Set under
+   * prefers-reduced-motion. Absent means the canvas may animate them.
+   */
+  staticPresence?: boolean;
 }
 
 export interface SceneOpts {
@@ -121,6 +141,14 @@ export interface SceneOpts {
   edgesAlpha?: number;
   /** Map tile under the pointer or selected, when no node is focused. */
   tileId?: string | null;
+  /** Node ids that wear a pin ring at r+5. Positions come from the layout. */
+  pinned?: ReadonlySet<string> | null;
+  /** Live reservations. Contention rings come from this; clouds are passed in. */
+  presence?: FleetPresence | null;
+  /** Clouds for this frame. The canvas computes them so both renderers share one list. */
+  clouds?: readonly Cloud[];
+  /** Hold the contention ring at the pulse mean. The canvas sets this from matchMedia. */
+  reducedMotion?: boolean;
 }
 
 export function worldInView(x: number, y: number, r: number, cam: Cam, w: number, h: number): boolean {
@@ -173,7 +201,9 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
       color: layout.colors[i],
       kind: layout.kinds[i],
       alpha: (opts.alpha[i] ?? 255) / 255,
-      square: screenR < SQUARE_PX || layout.kinds[i] === "doc" || layout.kinds[i] === "config",
+      // LOD only. Doc's square and config's hexagon come from kindShape; forcing
+      // both kinds square here made that pair colour-only at every zoom (GRPH-1027).
+      square: screenR < SQUARE_PX,
     });
   }
 
@@ -308,6 +338,40 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
   });
 
   const rings: DrawRing[] = [];
+  // Contention sits inside the pin (r+5) and the selection (r+7). Binary:
+  // two agents of one user are not an alarm. Reduced motion is a static ring
+  // at the pulse's mean opacity; otherwise the canvas pulses this alpha.
+  if (opts.presence) {
+    const held = indexByNode(opts.presence);
+    for (const [id, holders] of held) {
+      if (!contentionOf(holders).contended) continue;
+      const i = indexOf.get(id);
+      if (i === undefined || !allow(i)) continue;
+      const x = layout.x[i];
+      const y = layout.y[i];
+      const r = layout.r[i];
+      if (!worldInView(x, y, r + 3, camera, width, height)) continue;
+      rings.push({
+        x,
+        y,
+        r: r + 3,
+        color: CONTENTION_COLOR,
+        kind: "contention",
+        alpha: opts.reducedMotion ? PULSE_MEAN : 0.9,
+      });
+    }
+  }
+  if (opts.pinned && opts.pinned.size > 0) {
+    for (const id of opts.pinned) {
+      const i = indexOf.get(id);
+      if (i === undefined || !allow(i)) continue;
+      const x = layout.x[i];
+      const y = layout.y[i];
+      const r = layout.r[i];
+      if (!worldInView(x, y, r + 5, camera, width, height)) continue;
+      rings.push({ x, y, r: r + 5, color: "#8b949e", kind: "pin" });
+    }
+  }
   const focus = opts.hoverId ?? opts.selectedId;
   const glow: Stroke[] = [];
   if (focus) {
@@ -326,16 +390,23 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
         const ia = indexOf.get(e.src);
         const ib = indexOf.get(e.dst);
         if (ia === undefined || ib === undefined) continue;
+        // Build.dc.html `gGlow`: a quadratic (bend 0.14, 0.08 on Map) in the edge
+        // type's colour. The core is 1.3px; the renderers lay a 5px wash under it.
+        const x0 = layout.x[ia];
+        const y0 = layout.y[ia];
+        const x1 = layout.x[ib];
+        const y1 = layout.y[ib];
+        const bend = layout.layout === "map" ? 0.08 : 0.14;
         glow.push({
-          kind: "line",
-          x0: layout.x[ia],
-          y0: layout.y[ia],
-          cx: 0,
-          cy: 0,
-          x1: layout.x[ib],
-          y1: layout.y[ib],
+          kind: "quad",
+          x0,
+          y0,
+          cx: (x0 + x1) / 2 - (y1 - y0) * bend,
+          cy: (y0 + y1) / 2 + (x1 - x0) * bend,
+          x1,
+          y1,
           color: EDGE_COLOR[e.type] ?? "#8b949e",
-          widthPx: 2.5,
+          widthPx: GLOW_CORE_PX,
           label: "",
         });
       }
@@ -358,6 +429,8 @@ export function buildScene(layout: ClusterLayout, opts: SceneOpts): DrawScene {
     glow,
     edgesAlpha: opts.edgesAlpha ?? 0.85,
     orbitRings: layout.orbitRings ?? [],
+    clouds: opts.clouds ?? [],
+    staticPresence: !!opts.reducedMotion,
   };
 }
 

@@ -370,9 +370,12 @@ def test_a_refused_push_is_reported_loudly(recorded, git_repo: Path, tmp_path: P
     import subprocess
 
     fleet, _ = recorded
+    # Cut first. `create` asks the remote whether the name is already taken, and a
+    # remote it cannot ask is not a free name (GRPH-1088) — this test is about the
+    # push that follows, which the dead remote refuses.
+    tree = _dirty_worktree(git_repo, tmp_path)
     subprocess.run(["git", "-C", str(git_repo), "remote", "add", "origin",
                     str(tmp_path / "nowhere.git")], check=True, capture_output=True)
-    tree = _dirty_worktree(git_repo, tmp_path)
 
     child = _exited()
     child.worktree, child.branch, child.base = tree.path, tree.branch, tree.base

@@ -205,6 +205,14 @@ claim, cannot exist. Registration itself commits regardless. The child therefore
 item before its first tool call**, and the delegation reads `claimed by <child>` immediately
 rather than eventually.
 
+`bound_only=true` (with `seat=true`) is the opt-in that stops that child taking anything
+else (GRPH-1089). Once its bound item leaves `in_progress`, `claim_review`, `claim_next`,
+`claim_item`, `claim_cluster` and `next_cluster` refuse and name the binding, and the child
+is told to exit. Omit the flag and the child may review other items after it finishes — that
+is today's behaviour. `gbfleet until` does not set the flag, because a wave relies on
+finished bound workers reviewing each other. Passing `bound_only` without `seat=true` is
+refused and writes nothing.
+
 The reply's `assigned` is the authority on what the child got:
 
 | `assigned.state` | Meaning |
@@ -277,6 +285,8 @@ clear it.
 | `<item> is pinned to its author after a bounce` | The author gets first retry. Wait for the pin to lapse. |
 | `<item> already has an open delegation from <agent>, <n>s old` | Only its owner can withdraw it; anyone else waits for it to expire. Re-delegating your **own** withdraws it silently and reports `withdrew`. |
 | `<item>'s areas are reserved by <agents>` | A bound seat would claim straight through a collision the divvy would have caught. **Nothing is written — not even the delegation row.** It deliberately does not fall back to an unbound seat: a binding that quietly downgrades is the failure the binding exists to prevent. |
+| `bound_only needs a seat bound to this item: pass seat=true` | The flag is stored on the seat. Without `seat=true` there is nothing to store it on, and the delegation is not written. |
+| `this seat is bound_only to <item>, which has left in_progress` | The child finished the one item the flag named. `claim_review`, `claim_next`, `claim_item`, `claim_cluster` and `next_cluster` all refuse. Exit. |
 | `tier 'x' is not mapped on this supervisor` | Only fires when `--tier` flags were given and this tier is not among them. Without flags it falls through to the matrix. |
 | `no harness resolves for tier 'x'` | The matrix dropped every row; the error carries the dropped rows and why. |
 | `already <n> live worker(s); max_workers is <n>` | Stop one or wait. |

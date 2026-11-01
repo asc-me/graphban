@@ -2,16 +2,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
-import type { EventsQuery, GitopsPatch, Item, LessonFilters, LogExportPatch, RequestItem } from "./types";
+import type { EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
   config: ["config"] as const,
   projects: ["projects"] as const,
+  projectSummaries: ["projects", "summaries"] as const,
   orgs: ["orgs"] as const,
   orgMembers: (id: string) => ["org-members", id] as const,
   invites: (id: string) => ["org-invites", id] as const,
-  billing: (id: string) => ["org-billing", id] as const,
   items: ["items"] as const,
   counts: (projectId?: string) => ["counts", projectId] as const,
   shards: ["shards"] as const,
@@ -19,6 +19,7 @@ export const keys = {
     ["harness", projectId, versions, windowDays ?? null] as const,
   harnessGuidance: (projectId: string, windowDays?: number) =>
     ["harness-guidance", projectId, windowDays ?? null] as const,
+  harnessCapacity: (projectId: string) => ["harness-capacity", projectId] as const,
   harnessCards: (projectId: string) => ["harness-cards", projectId] as const,
   harnessProbes: (projectId: string) => ["harness-probes", projectId] as const,
   lessons: (projectId: string, filters?: LessonFilters) =>
@@ -32,6 +33,8 @@ export const keys = {
   prds: ["prds"] as const,
   prd: (id: string) => ["prd", id] as const,
   prdVersions: (id: string) => ["prd-versions", id] as const,
+  prdRequests: (id: string) => ["prd-requests", id] as const,
+  prdSuggestions: (id: string) => ["prd-request-suggestions", id] as const,
   closeReport: (id: string) => ["close-report", id] as const,
   prdEvidence: (id: string) => ["prd-evidence", id] as const,
   auditCoverage: (id: string) => ["audit-coverage", id] as const,
@@ -151,18 +154,6 @@ export function useAdminDecideOrgRequest() {
   });
 }
 
-export function useSetOrgPlan() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (v: { orgId: string; plan: string }) => api.setOrgPlan(v.orgId, v.plan),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["admin-orgs"] });
-      qc.invalidateQueries({ queryKey: ["admin-activity"] });
-      qc.invalidateQueries({ queryKey: keys.orgs });
-    },
-  });
-}
-
 export function useOrgOverview(orgId?: string) {
   return useQuery({
     queryKey: ["org-overview", orgId],
@@ -267,14 +258,6 @@ export function useGalaxy(orgId?: string) {
   });
 }
 
-export function useBilling(orgId?: string) {
-  return useQuery({
-    queryKey: keys.billing(orgId ?? ""),
-    queryFn: () => api.orgBilling(orgId!),
-    enabled: !!orgId,
-  });
-}
-
 export function useCreateOrg() {
   const qc = useQueryClient();
   return useMutation({
@@ -283,16 +266,12 @@ export function useCreateOrg() {
   });
 }
 
-// PRD-21 D8. Each invalidates the roster AND billing: a seat freed by a removal changes
-// the seat count, and a stale meter beside a shorter table is the mismatch these screens
-// spend paragraphs explaining.
 function useMembershipMutation<T>(orgId: string, fn: (v: T) => Promise<unknown>) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: fn,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.orgMembers(orgId) });
-      qc.invalidateQueries({ queryKey: keys.billing(orgId) });
     },
   });
 }
@@ -318,10 +297,7 @@ export function useCreateInvite(orgId: string) {
   return useMutation({
     mutationFn: ({ email, role }: { email: string; role: string }) =>
       api.createInvite(orgId, email, role),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.invites(orgId) });
-      qc.invalidateQueries({ queryKey: keys.billing(orgId) }); // seat usage moved
-    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.invites(orgId) }),
   });
 }
 
@@ -329,10 +305,7 @@ export function useRevokeInvite(orgId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (inviteId: string) => api.revokeInvite(orgId, inviteId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.invites(orgId) });
-      qc.invalidateQueries({ queryKey: keys.billing(orgId) });
-    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.invites(orgId) }),
   });
 }
 
@@ -404,6 +377,28 @@ export function usePrdVersions(id: string) {
   return useQuery({ queryKey: keys.prdVersions(id), queryFn: () => api.prdVersions(id), enabled: !!id });
 }
 
+export function usePrdRequests(id: string) {
+  return useQuery({ queryKey: keys.prdRequests(id), queryFn: () => api.prdRequests(id), enabled: !!id });
+}
+
+export function usePrdRequestSuggestions(id: string) {
+  return useQuery({ queryKey: keys.prdSuggestions(id), queryFn: () => api.prdRequestSuggestions(id), enabled: !!id });
+}
+
+/** Link or unlink a request; the counts on the list and the suggestions both move. */
+export function usePrdRequestLink(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { requestId: string; add: boolean }) =>
+      v.add ? api.linkPrdRequest(id, v.requestId) : api.unlinkPrdRequest(id, v.requestId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.prdRequests(id) });
+      qc.invalidateQueries({ queryKey: keys.prdSuggestions(id) });
+      qc.invalidateQueries({ queryKey: keys.prds });
+    },
+  });
+}
+
 export function useDashboard(projectId?: string) {
   return useQuery({ queryKey: ["dashboard", projectId], queryFn: () => api.dashboard(projectId), enabled: !!projectId });
 }
@@ -418,6 +413,22 @@ export function useLinks(projectId?: string) {
 
 export function useMcpTools() {
   return useQuery({ queryKey: ["mcp-tools"], queryFn: () => api.mcpTools() });
+}
+
+/**
+ * One event by id, for a `?event=` link to a row outside the loaded page or range. The server has
+ * no by-id route, so this reads the unranged ledger (no `range` is "no time filter") and finds
+ * the id; `null` means the ledger has no such event, which the caller says out loud.
+ */
+export function useEventById(projectId: string | undefined, id: number | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ["event", projectId ?? "", id] as const,
+    enabled: enabled && id !== null,
+    queryFn: async () => {
+      const page = await api.events({ projectId, limit: 500 });
+      return page.results.find((e) => e.id === id) ?? null;
+    },
+  });
 }
 
 export function useEvents(q: EventsQuery = {}) {
@@ -485,6 +496,86 @@ export function usePlatform(projectId: string) {
 }
 
 /** Derived architecture map (GRPH-1034). Polls gently — topology changes with fleet presence. */
+/** Rules map (GRPH-1162). Stage state comes from the server; the view never recomputes it. */
+export function useRulesFlow(projectId: string) {
+  return useQuery({
+    queryKey: ["rules-flow", projectId],
+    queryFn: () => api.rulesFlow(projectId),
+    enabled: !!projectId,
+  });
+}
+
+/** Unmapped refusals (GRPH-1195): aggregated on the server over a 7-day window. */
+export function useUnmappedRefusals(projectId: string) {
+  return useQuery({
+    queryKey: ["rules-unmapped", projectId],
+    queryFn: () => api.unmappedRefusals(projectId),
+    enabled: !!projectId,
+  });
+}
+
+/** Refusal coverage (GRPH-1192): read from the server, never computed from events. */
+export function useRefusalCoverage(projectId: string) {
+  return useQuery({
+    queryKey: ["rules-refusal-coverage", projectId],
+    queryFn: () => api.refusalCoverage(projectId),
+    enabled: !!projectId,
+  });
+}
+
+/** Recommended rules (GRPH-1164). Fetched when the panel opens; the server caches briefly. */
+export function useRecommendedRules(projectId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["rules-recommended", projectId],
+    queryFn: () => api.recommendedRules(projectId),
+    enabled: !!projectId && enabled,
+  });
+}
+
+export function useDismissRecommendedRule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (suggestionId: string) => api.dismissRecommendedRule(projectId, suggestionId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["rules-recommended", projectId] }),
+  });
+}
+
+export function useDismissedRecommendedRules(projectId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["rules-recommended", projectId, "dismissed"],
+    queryFn: () => api.dismissedRecommendedRules(projectId),
+    enabled: !!projectId && enabled,
+  });
+}
+
+export function useRestoreRecommendedRule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (suggestionId: string) => api.restoreRecommendedRule(projectId, suggestionId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["rules-recommended", projectId] }),
+  });
+}
+
+export function useFleetPolicy(projectId: string) {
+  return useQuery({
+    queryKey: ["fleet-policy", projectId],
+    queryFn: () => api.fleetPolicy(projectId),
+    enabled: !!projectId,
+  });
+}
+
+/** PUT replaces the whole policy: the caller passes the full `FleetPolicy` it read. */
+export function useSaveFleetPolicy(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (policy: FleetPolicy) => api.saveFleetPolicy({ project_id: projectId, ...policy }),
+    onSuccess: (data) => {
+      qc.setQueryData(["fleet-policy", projectId], data);
+      qc.invalidateQueries({ queryKey: ["rules-flow"] });
+    },
+  });
+}
+
 export function useStack(projectId: string) {
   return useQuery({
     queryKey: ["stack", projectId],
@@ -510,7 +601,7 @@ export function useStackHealth(projectId: string, enabled = true) {
 export function useFileFromStack(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (bodies: Partial<Item>[]) =>
+    mutationFn: (bodies: Partial<ItemDetail>[]) =>
       bodies.reduce<Promise<Item[]>>(
         (acc, body) => acc.then(async (done) => [...done, await api.createItem(projectId, body)]),
         Promise.resolve([]),
@@ -535,6 +626,26 @@ export function useMintIngestToken() {
 // is one per instance and the payload already carries every readable project's state.
 export function useSyncStatus() {
   return useQuery({ queryKey: ["sync-status"], queryFn: () => api.syncStatus() });
+}
+
+// The Organization window (GRPH-1225). The server caches the cloud's answer 30 s; Retry
+// refetches it. Asked only while the window is open on a linked box.
+export function useSyncOrg(enabled: boolean) {
+  return useQuery({ queryKey: ["sync-org"], queryFn: () => api.syncOrg(), enabled, retry: false });
+}
+
+/** `DELETE /api/sync/link` from the Organization window. The link is instance-wide, so the
+ *  gitops views drop with it rather than first-painting a pre-unlink contract. */
+export function useSyncUnlink() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.syncUnlink(),
+    onSuccess: () => {
+      qc.removeQueries({ queryKey: ["gitops"] });
+      qc.invalidateQueries({ queryKey: ["sync-status"] });
+      qc.invalidateQueries({ queryKey: ["sync-org"] });
+    },
+  });
 }
 
 export function useUpdateCheck() {
@@ -620,7 +731,11 @@ export function useUpdateGitops(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: GitopsPatch) => api.updateGitops(projectId, body),
-    onSuccess: (data) => qc.setQueryData(keys.gitops(projectId), data),
+    onSuccess: (data) => {
+      qc.setQueryData(keys.gitops(projectId), data);
+      // The Rules map draws the saved value and recomputes the stage pill from the server.
+      qc.invalidateQueries({ queryKey: ["rules-flow"] });
+    },
   });
 }
 
@@ -636,20 +751,33 @@ export function useProjects() {
   return useQuery({ queryKey: keys.projects, queryFn: () => api.projects() });
 }
 
+/** Switcher rows for every readable project (GRPH-1131). One aggregate read, not N collections. */
+export function useProjectSummaries(enabled = true) {
+  return useQuery({ queryKey: keys.projectSummaries, queryFn: () => api.projectSummaries(), enabled });
+}
+
 export function useItems(projectId?: string) {
   return useQuery({ queryKey: [...keys.items, projectId], queryFn: () => api.items(projectId), enabled: !!projectId });
+}
+
+/** One item's full record — description, evidence, bounce reason — which the list omits. */
+export function useItem(id: string | undefined, enabled = true) {
+  return useQuery({ queryKey: [...keys.items, "detail", id], queryFn: () => api.item(id!), enabled: !!id && enabled });
 }
 
 export function useUpdateItem() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, body }: { id: string; body: Partial<Item> }) => api.updateItem(id, body),
+    mutationFn: ({ id, body }: { id: string; body: Partial<ItemDetail> }) => api.updateItem(id, body),
     onMutate: async ({ id, body }) => {
       await qc.cancelQueries({ queryKey: keys.items });
-      const prev = qc.getQueriesData<Item[]>({ queryKey: keys.items });
-      qc.setQueriesData<Item[]>({ queryKey: keys.items }, (old) =>
-        old?.map((it) => (it.id === id ? { ...it, ...body } : it)),
-      );
+      // The `items` prefix holds both the project lists (Item[]) and the per-item detail
+      // (ItemDetail, see useItem) — patch each by its shape, never .map an object.
+      const prev = qc.getQueriesData<Item[] | ItemDetail>({ queryKey: keys.items });
+      qc.setQueriesData<Item[] | ItemDetail>({ queryKey: keys.items }, (old) => {
+        if (Array.isArray(old)) return old.map((it) => (it.id === id ? { ...it, ...body } : it));
+        return old && old.id === id ? { ...old, ...body } : old;
+      });
       return { prev };
     },
     onError: (_e, _v, ctx) => ctx?.prev?.forEach(([key, data]) => qc.setQueryData(key, data)),
@@ -669,7 +797,7 @@ export function useOwnerClose() {
 export function useCreateItem(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Partial<Item>) => api.createItem(projectId, body),
+    mutationFn: (body: Partial<ItemDetail>) => api.createItem(projectId, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.items }),
   });
 }
@@ -680,9 +808,10 @@ export function useReorderItems() {
     mutationFn: (orderedIds: string[]) => api.reorderItems(orderedIds),
     onMutate: async (orderedIds) => {
       await qc.cancelQueries({ queryKey: keys.items });
-      const prev = qc.getQueriesData<Item[]>({ queryKey: keys.items });
-      qc.setQueriesData<Item[]>({ queryKey: keys.items }, (old) => {
-        if (!old) return old;
+      const prev = qc.getQueriesData<Item[] | ItemDetail>({ queryKey: keys.items });
+      // Only the lists reorder; a cached ItemDetail under the same prefix is left alone.
+      qc.setQueriesData<Item[] | ItemDetail>({ queryKey: keys.items }, (old) => {
+        if (!Array.isArray(old)) return old;
         const map = new Map(old.map((i) => [i.id, i]));
         return orderedIds.map((id, idx) => ({ ...map.get(id)!, sort_order: idx }));
       });
@@ -797,6 +926,8 @@ function invalidateReview(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ["shard-scored"] });
   qc.invalidateQueries({ queryKey: ["shard-auto-actions"] });
   qc.invalidateQueries({ queryKey: ["memory-judge-status"] });
+  qc.invalidateQueries({ queryKey: ["memory-queues"] });
+  qc.invalidateQueries({ queryKey: ["memory-stale"] });
   qc.invalidateQueries({ queryKey: keys.shards });
 }
 
@@ -831,6 +962,48 @@ export function useJudgeShard() {
   });
 }
 
+/** GRPH-1175: the five queue counts. A queue whose source failed arrives as `failed`. */
+export function useMemoryQueues(projectId?: string) {
+  return useQuery({
+    queryKey: ["memory-queues", projectId],
+    queryFn: () => api.memoryQueues(projectId!),
+    enabled: !!projectId,
+  });
+}
+
+/** GRPH-1175: published shards that are stale or reported wrong, with the judge's call. */
+export function useStaleShards(projectId?: string) {
+  return useQuery({
+    queryKey: ["memory-stale", projectId],
+    queryFn: () => api.staleShards(projectId!),
+    enabled: !!projectId,
+  });
+}
+
+/** Retire a published shard (restorable for 14 days), restore it, keep it (resets staleness), or apply the judge's
+ *  recommendations in bulk. Each re-reads the queues: a retire moves a row out of Stale. */
+export function useSetShardClass() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; shardClass: ShardClass | "" }) => api.setShardClass(v.id, v.shardClass),
+    onSuccess: () => invalidateReview(qc),
+  });
+}
+
+export function useStaleActions() {
+  const qc = useQueryClient();
+  const invalidate = () => invalidateReview(qc);
+  return {
+    retire: useMutation({ mutationFn: (id: string) => api.retireShard(id), onSuccess: invalidate }),
+    restore: useMutation({ mutationFn: (id: string) => api.restoreShard(id), onSuccess: invalidate }),
+    keep: useMutation({ mutationFn: (id: string) => api.keepShard(id), onSuccess: invalidate }),
+    apply: useMutation({
+      mutationFn: (ids: string[]) => api.applyRecommendations(ids),
+      onSuccess: invalidate,
+    }),
+  };
+}
+
 export function usePromoteCluster() {
   const qc = useQueryClient();
   return useMutation({
@@ -858,6 +1031,17 @@ export function useHarnessGuidance(projectId?: string, opts: { windowDays?: numb
     queryKey: keys.harnessGuidance(projectId ?? "", opts.windowDays),
     queryFn: () => api.harnessGuidance(projectId!, { windowDays: opts.windowDays }),
     enabled: !!projectId,
+  });
+}
+
+/** PRD-62 S5: per-entitlement headroom and the org utilization rollup. A 402 (org off a
+ *  capacity plan) is an error the panel hides on, so it does not retry. */
+export function useHarnessCapacity(projectId?: string) {
+  return useQuery({
+    queryKey: keys.harnessCapacity(projectId ?? ""),
+    queryFn: () => api.harnessCapacity(projectId!),
+    enabled: !!projectId,
+    retry: false,
   });
 }
 
@@ -960,6 +1144,15 @@ export function useTriageQueue(projectId: string) {
   });
 }
 
+/** The unified triage feed. Not polled: the queue under a keyboard must not shift mid-press. */
+export function useTriageFeed(projectId: string) {
+  return useQuery({
+    queryKey: ["triage-feed", projectId],
+    queryFn: () => api.projectTriage(projectId),
+    enabled: !!projectId,
+  });
+}
+
 export function useAcceptRequest(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -1014,13 +1207,56 @@ export function useUnpublishRequest() {
   });
 }
 
+export function useRequestComments(id: string) {
+  return useQuery({
+    queryKey: ["request-comments", id],
+    queryFn: () => api.requestComments(id),
+    enabled: !!id,
+  });
+}
+
 export function useCreateRequestComment() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, body, visibility }: { id: string; body: string; visibility: "public" | "private" }) =>
       api.createRequestComment(id, body, visibility),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.requests }),
+    onSuccess: (_d, { id }) => {
+      void qc.invalidateQueries({ queryKey: ["request-comments", id] });
+      void qc.invalidateQueries({ queryKey: keys.requests });
+    },
   });
+}
+
+/**
+ * GRPH-1229: at most one roster read in flight per project, and at most one queued behind it.
+ *
+ * The interval was never the overlap — React Query restarts it on every fetch and joins an
+ * in-flight read. `refetch()` and `invalidateQueries` are: both default to `cancelRefetch`,
+ * which abandons the pending read and starts another, while the server (which never sees the
+ * abandon — `api.fleet` takes no signal) keeps computing the first. With a 10s roster every
+ * roster action stacked one more full read on the server. A read asked for while one is
+ * pending now waits for it and then runs once, so it still sees the write that prompted it;
+ * any further asks in that window join the queued read rather than adding their own.
+ */
+type FleetRead = ReturnType<typeof api.fleet>;
+const fleetReads = new Map<string, { running: Promise<unknown>; queued?: FleetRead }>();
+
+function readFleet(projectId?: string): FleetRead {
+  const k = projectId ?? "";
+  const slot = fleetReads.get(k);
+  if (slot?.queued) return slot.queued;
+  const start = (): FleetRead => {
+    const read = api.fleet(projectId);
+    const running: Promise<unknown> = read.catch(() => {}).finally(() => {
+      const cur = fleetReads.get(k);
+      if (cur?.running === running && !cur.queued) fleetReads.delete(k);
+    });
+    fleetReads.set(k, { running });
+    return read;
+  };
+  if (!slot) return start();
+  slot.queued = slot.running.then(start);
+  return slot.queued;
 }
 
 export function useFleet(projectId?: string) {
@@ -1028,7 +1264,7 @@ export function useFleet(projectId?: string) {
   // passes. Without a refetch an agent that died stays green until somebody navigates away.
   return useQuery({
     queryKey: ["fleet", projectId],
-    queryFn: () => api.fleet(projectId),
+    queryFn: () => readFleet(projectId),
     // Gated: without a project the server resolves the request against its default one,
     // so an ungated call renders another project's fleet for a frame before the real
     // one arrives. Harmless-looking, and exactly the class of thing D1 deleted.
@@ -1116,6 +1352,16 @@ export function useLiveFeed(projectId: string | undefined, agentId: string, inte
   return useQuery({
     queryKey: ["live-feed", projectId, agentId],
     queryFn: () => api.liveFeed(projectId!, agentId),
+    refetchInterval: intervalMs,
+    enabled: enabled && !!projectId,
+  });
+}
+
+/** The project-wide stream: the last calls across every agent, newest first. */
+export function useLiveProjectFeed(projectId: string | undefined, intervalMs: number, enabled: boolean) {
+  return useQuery({
+    queryKey: ["live-feed", projectId, "project"],
+    queryFn: () => api.liveProjectFeed(projectId!),
     refetchInterval: intervalMs,
     enabled: enabled && !!projectId,
   });

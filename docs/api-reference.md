@@ -1,16 +1,18 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 170 of the 252 paths
-the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
-page exists for the endpoints whose *authority* needs explaining, which a schema has no field
-for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
-is the only accepted credential in hosted mode.
+**This names every path the app serves** — 294 of the 294. The OpenAPI schema at **`/docs`**
+is the schema (bodies and status codes). This page is where a route's *authority* is
+explained, which a schema has no field for: why `code/health` accepts an agent key and
+`fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
 
-Everything listed here is checked to still exist, and a route added without a line here fails
-in CI on the PR that adds it. The gap is tracked in `docs/completeness-baseline.json` and can
-only shrink.
+A route added without a line here fails in CI on the PR that adds it.
+`docs/completeness-baseline.json` records any path this page does not name, and that list
+can only shrink.
 
-All endpoints are under `/api` (proxied by the web tier and served directly by the API).
+Most endpoints are under `/api` (proxied by the web tier and served directly by the API).
+Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
+`/{path_id}/issues`, `/{path_id}/requests`, `/{path_id}/roadmap`, and
+`/{path_id}/t/{track_token}`.
 
 **Auth legend:** **JWT** = `Authorization: Bearer <access-jwt>` · **MCP** = API key via
 `X-API-Key` / `Authorization: Bearer gb_sk_…` · **public** = no auth (rate-limited).
@@ -20,6 +22,12 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | Method | Path | Auth |
 | --- | --- | --- |
 | GET | `/health` | none |
+
+## Config
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/config` | none | Hosted mode and whether signup is open. The two switches the SPA needs before login. No secrets |
 
 ## Auth
 
@@ -31,8 +39,11 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | POST | `/api/auth/password-reset` | none | Ask for a reset link. **Always 202 with the same body**, registered address or not — otherwise it is an account-enumeration oracle. Rate-limited on its own bucket so reset attempts cannot lock the account out of `login` |
 | POST | `/api/auth/password-reset/confirm` | none | Spend the link once and set a new password → tokens. Every prior session is revoked |
 | POST | `/api/auth/logout` | JWT | Bump `token_version`, so every access AND refresh token issued so far — on any device — stops validating immediately. What `gb logout` calls, which is why criterion 3 of PRD-40 checks the token against the server rather than checking that a file was deleted |
+| POST | `/api/auth/me/password` | JWT | Change the caller's password. Bumps `token_version`, so every previously issued token stops working, including the caller's, and returns a fresh pair so the caller stays signed in |
 | GET | `/api/auth/me` | JWT | Current user |
 | GET | `/api/auth/me/memberships` | JWT | Current user's project access |
+| GET | `/api/auth/me/preferences` | JWT | This user's UI preference document (PRD-60 D1): `{saved, preferences}`. `saved: false` means the server has never held one — **not** the same answer as `saved: true` with `{}`, which means an empty document was written on purpose. The document comes back exactly as stored, with no server-side defaults filled in |
+| PUT | `/api/auth/me/preferences` | JWT | Replace the whole document; last write wins across devices. Keys: `nav.collapsed`, `plan.condensed`, `tracker.layout` (`board`\|`list`), `tracker.board.columns` (`{status: shown\|collapsed\|hidden}`, keyed by real item statuses), `views.{tracker,prds}.saved[]` (`{id,label,status,window,hide}`) and `views.{tracker,prds}.default`. An unknown key — at any depth — or a value outside its vocabulary is 422 naming the field. A key not sent stays absent rather than materialising as a default. **Migration contract for clients:** the server copy wins. If `saved` is false, upload your localStorage values once and then stop writing them locally; if it is true, upload nothing and read the server copy — which is what stops a second device flattening the first one's layout. Not reachable with an agent API key: these are a human's UI settings |
 
 ## Projects
 
@@ -40,11 +51,14 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | --- | --- | --- | --- |
 | GET | `/api/projects` | JWT | List projects (each carries its `tag`) |
 | POST | `/api/projects` | JWT | Create a project. `tag` is optional — derived from `name` when omitted, refused with 422 when taken or malformed |
-| GET | `/api/projects/tag-suggestion?name=` | JWT | A free tag derived from a project name (prefills the creation form) |
-| GET | `/api/projects/tag-check?tag=` | JWT | `{tag, available, reason}` for live form feedback |
+| GET | `/api/projects/summaries` | JWT | Project switcher rows for every project the caller can read: `item_count`, `agent_count` (roster, dismissed excluded), `live_agents` (heartbeat inside the presence TTL, not quarantined), `default_branch` (gitops `base_branch`; `null` is unset, never `main`) and `last_activity_at` (latest item change or audit event; `null` when there is none). Fixed statement count, whatever the item count |
+| GET | `/api/projects/tag-suggestion` | JWT | A free tag derived from a project name (`?name=`). Prefills the creation form |
+| GET | `/api/projects/tag-check` | JWT | `{tag, available, reason}` for live form feedback (`?tag=`) |
+| GET | `/api/projects/{id}/counts` | JWT | The badge numbers the shell renders, a few integers instead of the four full lists |
 | POST | `/api/projects/{id}/retag` | JWT (write) | Move the project's tag. One UPDATE + one tag-history row + one audit event; **no other row in the database changes**. Retired tags are never reusable |
 | PATCH | `/api/projects/{id}` | JWT | Update project config. **Not** the tag — changing that has to record tag history |
 | GET | `/api/projects/{id}/members` | JWT | List members (role/access) |
+| GET | `/api/projects/{id}/triage` | JWT | Unified triage inbox: untriaged requests (bug/feature/enhancement, with likely duplicate and suggested PRD), blocked items (decision question/options or `waiting_on`) and unanswered collision clusters (`id` keyed by member set, `risk` serialize\|blocked). Blockers sort first; `counts` per tab (all/bugs/requests/blockers/collisions). Snoozed and decided rows are absent. A failing source is named in `failed_sources` while the others still return |
 | GET | `/api/projects/{id}/gitops` | JWT | Live delivery contract (fetches the org when this box is linked). Unset is unmeasured, not `main` |
 | PATCH | `/api/projects/{id}/gitops` | JWT | Project overlay / local columns. Omit = no change; JSON `null` = clear. Linked self-host is **403** |
 
@@ -56,7 +70,40 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | --- | --- | --- | --- |
 | GET | `/api/orgs/{id}/gitops` | JWT (org member) | House process + every org project (identity only). Calls `resolve_org` |
 | PATCH | `/api/orgs/{id}/gitops` | JWT (org admin) | House process. Overlay is the project PATCH |
+| GET | `/api/orgs/{id}/entitlements` | JWT (org member) | Capacity-routing registry (PRD-62 S2): each entitlement with `headroom` (S3: derived `state`, verbatim `vendor_text`, `in_flight`, `spend` with `unreported` a count) and `declared_by`, the runners that declared it at `register_agent` — self-declared, not verified, and `declaration` says so. 402 / `quota_exceeded` off `team`/`enterprise` |
+| POST | `/api/orgs/{id}/entitlements` | JWT (org admin) | Register one: `vendor`, `kind` (`subscription`/`api_key`/`cloud`/`local`), `owner_user_id` (required for a subscription), `runner`, `plan_label`, `reset_cadence`, `token_budget`, and `secret_ref` for `api_key`/`cloud` only — the NAME of the secret on the runner, never the key. Unknown fields are refused, never dropped; a secret on a subscription is refused here and by a CHECK constraint. 402 off `team`/`enterprise` |
+| PATCH | `/api/orgs/{id}/entitlements/{entitlement_id}` | JWT (org admin) | Patch one; omitted fields unchanged, `null` clears. The result is re-validated, so a kind change cannot leave a subscription holding a `secret_ref` |
 | GET | `/api/sync/gitops` | MCP (sync key) | Cloud receiver. `resolve_local` of `targets[0]` — never outbound, never a query-string project |
+
+## Cloud link and the Organization window (GRPH-1223)
+
+Linking acts on the whole deployment, so it is a **box admin** act: on a self-host, the box's
+first account (its operator) or someone they made owner/admin of a project they own; on a hosted
+box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_needs_box_admin`
+(`code_sync.is_box_admin`). Owning a project you created yourself does not count.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| POST | `/api/sync/link` | JWT (box admin) | Link this box to a cloud org with a `sync` key (encrypted at rest; a blank key on a re-link keeps the stored one) |
+| DELETE | `/api/sync/link` | JWT (box admin) | Unlink — stops all sync; local data untouched |
+| GET | `/api/sync/org` | JWT | The Organization window: org `name`/`host`/`plan`, the linking credential's org `role`, `counts` (members, teams, org policy rules, deployments) and every deployment with `projects`, `here` and `last_sync_at`. Fetched from the cloud and cached 30 s. Unreachable → `reachable: false`, `unreachable_since` (first failure), the last known identity, **`counts: null`** and null deployment figures — never stale numbers shown as current — except this box's own `last_sync_at`. Linked answers also carry `can_unlink` — whether the *viewer* is a box admin (`role` is the linking credential's, not theirs). Unlinked → `{"linked": false}` and nothing else |
+| GET | `/api/sync/org-overview` | MCP (sync key) | Cloud side of the above. The org is resolved from the credential's project, never the request; `404` for a non-sync key or a project in no org. Deployments are sync keys grouped by name ("one key is one deployment") |
+
+## Rules (PRD-61)
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/rules` | JWT (project reader) | The rule registry (`services/rules.py`): every delivery rule with its enforcement, typed enforcer and truth. Gitops rows carry the effective value and `source` from `gitops.resolve`; a gitops rule is `advisory` (or `unmeasured`), never `enforced` |
+| GET | `/api/rules/flow` | JWT (project reader) | The registry placed on the Rules map's seven fixed stages (`rules.flow`): each stage's `state` is the weakest of its used rules, `not_used` only when every rule on it is unused under the project's gitops `model`, and `unmeasured` when no rule is registered. Unused rules stay listed with `used: false` |
+| GET | `/api/rules/refusal-coverage` | JWT (project reader) | The "N of M refusal sites name their rule" number the build of this package published (`rules.refusal_coverage`, GRPH-1192): `{published, n, m, commit, published_at}`. Read from package data, never computed at request time; a build that did not publish returns `published: false` with null `n`, `m`, `commit` and `published_at` — not zero |
+| GET | `/api/rules/recommended` | JWT (project reader) | Recommended-rules suggestions (`services/rules_recommend.py`): `suggestions[]` (`kind` value\|code, `evidence[]`, `fingerprint`) and an always-present `sources[]` (`read` or `not_available` + reason such as `not_connected`). Computed on open, cached ~60s per project; never writes a rule, and a saved value suggestion is advisory |
+| POST | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Dismiss a suggestion for the project, keyed on id + evidence fingerprint; it returns when the evidence changes. 204, or 404 for an unknown id |
+| GET | `/api/rules/recommended/dismissed` | JWT (project reader) | Suggestions currently dismissed against their present evidence, for the panel's "Show dismissed (N)" |
+| DELETE | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Restore a dismissed suggestion. 204, or 404 when it was not dismissed |
+| GET | `/api/rules/observations` | JWT (project reader) | The fleet observations ledger (PRD-63 S1, `services/observations.py`), newest first: `observations[]`, `total`, and `counts` by kind for the whole filtered set. Filters `stage`, `kind` (422 on an unknown value), `limit`, `offset`. Rows hold ids and counts, never text |
+| POST | `/api/rules/observations/backfill` | JWT (project writer) | Derive observations from the project's history (events, evidence, attestations). Idempotent; returns what it added by kind. Sabotage verdicts, reopenings and bounces are live-only — history cannot attribute or date them |
+| GET | `/api/orgs/{org_id}/rules/observations` | JWT (org member) | The same ledger across the org's projects the caller can read |
+| GET | `/api/rules/refusals/unmapped` | JWT (project reader) | `?project_id=&days=7` (1–90). `refusal_unmapped` events grouped by `where`+`status` over the whole window, no row cap, ranked by count: `groups[]` `{where, status, platform, count, last_at, daily[days]}` plus `recording_since` (earliest refusal event in the same scope as the groups; null = none ever recorded there). Attribution: an event belongs to the project it was recorded against (MCP: the calling key's project or the call's `project_id`); one naming no project is the platform bucket, returned with `platform: true` only to a platform admin, or on a self-hosted instance to the project's owner — never to a hosted owner who is not a platform admin |
 
 ## Items (tracker)
 
@@ -65,8 +112,20 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | GET | `/api/items` (`?status=`, `?project_id=`) | JWT |
 | POST | `/api/items` | JWT |
 | PATCH | `/api/items/reorder` | JWT |
+| GET | `/api/items/collision-clusters` | JWT | Non-colliding clusters over a project's items: sets whose touch-areas do not overlap |
+| GET | `/api/items/collision-triage` (`?project_id=`) | JWT | Colliding clusters with no live decision (GRPH-1138). |
+| GET | `/api/items/collision-decisions` (`?project_id=`) | JWT | Live decisions: serialize, parallel, hold, override, snooze. |
+| POST | `/api/items/collision-decisions` | JWT (override: project owner) | Body: `{project_id, members, decision, order?, snooze_until?}`. Serialize/hold add dependency links in `order`; override is refused (403) for non-owners. Writes a `collision_decide` event. |
+| DELETE | `/api/items/collision-decisions/{id}` | JWT | Undo: removes exactly the links the decision added. Writes `collision_undo`. |
 | GET | `/api/items/{id}` | JWT |
 | PATCH | `/api/items/{id}` | JWT |
+| GET | `/api/items/blockers` | JWT (read) | Blocked items for triage, snoozed ones hidden; decision waits carry `decision: {question, options, answer?}` (GRPH-1137). |
+| POST | `/api/items/{id}/answer` | JWT (write) | Answer a decision wait. Body: `{option?, text?}`; stores the answer, marks the wait done and returns the blocked item to `next`. 409 if already answered, 422 if `option` is not one of the options. |
+| POST | `/api/items/{id}/unblock` | JWT (write) | Clear the blocker: `next`, or `in_progress` while the lease is live. Writes one `blocker.*` event (as do the rest below). |
+| POST | `/api/items/{id}/release-claim` | JWT (write) | Drop the lease and return the item to `next` with no holder. |
+| POST | `/api/items/{id}/escalate` | JWT (write) | Record an event and email the project owner when SMTP is set. |
+| POST | `/api/items/{id}/snooze` | JWT (write) | Body `{until}`; hides the blocker from triage until then. |
+| POST | `/api/items/{id}/undo` | JWT (write) | Undo the newest blocker action on the item; 409 once anything else changed it. Escalate's email cannot be unsent. |
 | POST | `/api/items/{id}/owner-close` | JWT (project owner) | Close a hand-merged item. Body: `{commit, pr_url?}`. Writes an `owner.close` attestation, not `fleet.sign_off`. |
 
 ## Requests
@@ -74,9 +133,15 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | Method | Path | Auth |
 | --- | --- | --- |
 | GET | `/api/requests` (`?type=`) | JWT |
+| GET | `/api/requests/triage` | JWT | What is waiting to be triaged, each row carrying its closest duplicate |
 | POST | `/api/requests` | JWT |
 | POST | `/api/requests/{id}/vote` | JWT |
 | POST | `/api/requests/{id}/link` | JWT |
+| POST | `/api/requests/{id}/accept` | JWT. Body `{status: backlog\|next, prd_id?}`; returns `action_id` for undo |
+| POST | `/api/requests/{id}/merge` | JWT. Body `{target_id}` (item or request); carries votes, follows merge chains, 409 on a cycle |
+| POST | `/api/requests/{id}/decline` | JWT. Body `{reason?}`; emails the submitter when an address is held |
+| POST | `/api/requests/{id}/snooze` | JWT. Body `{until}`; hidden from triage until then |
+| POST | `/api/requests/{id}/undo` | JWT. Body `{action_id}`; 409 with the reason if the record changed since |
 
 ## Memory & agent chat
 
@@ -88,12 +153,23 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | POST | `/api/memory/lessons/{id}/outcomes` | JWT | Record caught / missed / contradicted. Human only |
 | POST | `/api/memory/lessons/{id}/promote-org` | JWT | Promote `reach` to org. Unverifiable cannot be overridden. X-API-Key → 401 |
 | GET | `/api/memory/candidates` | JWT | The review queue — agent shards awaiting publish (AL-49) |
+| GET | `/api/memory/candidates/scored` | JWT | The review queue with advisory accept/reject suggestions |
+| GET | `/api/memory/auto-actions` | JWT | Shards the scorer published or rejected on its own |
+| POST | `/api/memory/shards/{id}/undo-auto` | JWT | Return an auto-action shard to the candidate queue |
+| GET | `/api/memory/candidate-clusters` | JWT | Candidate shards grouped by similarity, so a recurring lesson is one cluster |
+| POST | `/api/memory/promote-cluster` | JWT | Publish the representative of a cluster and reject the rest |
 | GET | `/api/memory/judge-status` | JWT | Which judge will grade this project's next candidate (`decider` / `chat` / `similarity` / `off`) and whether that was imposed rather than chosen — `falling_back` with a `reason` naming the credential that could not be reached (GRPH-995). Read-only: resolves the pointer, never calls a model |
 | POST | `/api/memory/shards` | JWT | Human-authored → published immediately |
-| PATCH | `/api/memory/shards/{id}` | JWT | |
+| PATCH | `/api/memory/shards/{id}` | JWT | Edit `text` (re-embeds) and/or `shard_class` (`pitfall`/`convention`/`principle`; `""` or null clears; other values 422; never re-embeds). Rows carry `shard_class`, `""` = unclassified |
 | POST | `/api/memory/shards/{id}/publish` | JWT | Promote a candidate into the trusted retrieval path |
 | POST | `/api/memory/shards/{id}/reject` | JWT | Reject a candidate (kept for provenance, never searched) |
 | POST | `/api/memory/shards/{id}/judge` | JWT | On-demand LLM judge for a candidate. Advisory — never mutates status. A missing verdict is a cause, not quality 0 |
+| GET | `/api/memory/queues` | JWT | The five triage-queue counts (`needs_decision`, `conflicts`, `duplicate_clusters`, `stale_or_wrong`, `published_unreviewed`) in one call. A queue whose source failed is `state: failed` with `count: null`, never 0 (GRPH-1175) |
+| GET | `/api/memory/stale` | JWT | Published shards that are stale or reported wrong, each with `why` and the judge's `recommendation` `{action: keep\|revise\|retire\|verify, confidence, reason}`. Judge off/unreachable/capped → `ungraded: true` with `ungraded_reason`, no recommendation |
+| POST | `/api/memory/shards/{id}/retire` | JWT | Retire a published shard; restorable for 14 days. 409 if not published |
+| POST | `/api/memory/shards/{id}/keep` | JWT | Confirm a stale published shard is still right: stays published, staleness clock resets, records a `keep_shard` event. 409 if not published |
+| POST | `/api/memory/shards/{id}/restore` | JWT | Undo a retire; 409 once the 14-day window has closed |
+| POST | `/api/memory/apply-recommendations` | JWT | `{shard_ids, min_confidence=0.85}`: apply each shard's recommendation at/above the floor. `retire` mutates (`undo: restore`) and `keep` calls the keep path; `revise`/`verify` are left for a person. Per-id result |
 | POST | `/api/memory/search` | JWT | Published-only semantic search |
 | POST | `/api/memory/backfill` | JWT |
 | GET | `/api/memory/export` | JWT |
@@ -189,28 +265,32 @@ failure the propose-only boundary exists to prevent.
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
-| GET | `/api/fleet` | JWT | Roster + review queue + cluster board in one read. A review-queue row carries `reviewed_by` (the LIVE claim, not the verdict), `held_for_seconds` and `holder_state` — a hold rendered identically to progress until GRPH-771, so a stalled review and one under way were the same row. `review_takes` counts how many times it has been picked up WITHOUT a verdict — a loop that re-takes an item each time its hold lapses is indistinguishable from a fresh review on any single read. `null` for the first three when nothing holds it. `lapsed_holder` (GRPH-991) names who held a claim that has since lapsed — on the clock, or because its holder stopped heartbeating — and `holder_state` then carries the presence state that released it, so the row is not silent about a reviewer that died: `reviewed_by` is `null` for both "nobody has opened this" and "its reviewer is gone", and those are not the same claim. `matrix` is the committed harness × model × tier catalog (GRPH-866); `mix` is `{n, by_harness, unreported}` over the last 20 launches (n=0 unmeasured) |
+| GET | `/api/fleet` | JWT | Roster + review queue + cluster board in one read. A review-queue row carries `reviewed_by` (the LIVE claim, not the verdict), `held_for_seconds` and `holder_state` — a hold rendered identically to progress until GRPH-771, so a stalled review and one under way were the same row. `review_takes` counts how many times it has been picked up WITHOUT a verdict — a loop that re-takes an item each time its hold lapses is indistinguishable from a fresh review on any single read. `null` for the first three when nothing holds it. `lapsed_holder` (GRPH-991) names who held a claim that has since lapsed — on the clock, or because its holder stopped heartbeating — and `holder_state` then carries the presence state that released it, so the row is not silent about a reviewer that died: `reviewed_by` is `null` for both "nobody has opened this" and "its reviewer is gone", and those are not the same claim. `matrix` is the committed harness × model × tier catalog (GRPH-866); `mix` is `{n, by_harness, unreported}` over the last 20 launches (n=0 unmeasured). `agents` carries online agents, anything holding a lease, review claim or orphaned branch, and agents seen in the last hour; every other offline agent is folded into `collapsed` (`count`, `by_state`, `by_role`, `by_kind` = `quiet`/`orphaned`) — an offline agent holding nothing but an orphaned branch is folded too (GRPH-1237); `len(agents) + collapsed.count == total`, exact (GRPH-1229). `seats` carries unused and expired seats; consumed and revoked ones are counted in `seats_collapsed`. The MCP `fleet_status` is unchanged |
+| GET | `/api/fleet/agents/collapsed` | JWT | One page (`offset`, `limit` ≤ 500, optional `kind` = `quiet`\|`orphaned`) of the offline agents holding nothing that `/api/fleet` folds into `collapsed.count`; `total` is exact |
 | POST | `/api/fleet/keys` | JWT | Mint a credential narrowed to one role and tagged to a wave. `also` adds further roles to the CEILING (GRPH-780), which is what makes an agent on the key re-taskable later — a role change cannot climb past the credential the agent already holds, so a one-role key can never be promoted without restarting the agent. One role stays the default; `all-in-one` is a posture and cannot be combined (422). Scopes and tool tiers follow the widest role permitted |
 | POST | `/api/fleet/seats` | JWT | Issue a wave of seats — `roles` is ONE ENTRY PER AGENT, repeats included (`["planner", "worker", "worker"]`), because two agents sharing a seat share a session and cannot review each other. A blank `wave` means the next one, computed server-side. Each enrolment code is returned **once** and is not stored anywhere in plaintext |
 | POST | `/api/fleet/seats/{seat_id}/reissue` | JWT | Replace a spent seat. The dead row stays, as the record that something died |
 | POST | `/api/fleet/seats/revoke-unused` | JWT | Throw away seats nobody redeemed, for a `wave` or the whole project. Consumed seats are untouched — they record which agent took what, and ending the wave is what stops live sessions |
 | POST | `/api/fleet/keys/revoke-expired` | JWT | Revoke credentials that have already expired. Expired only: a live key is somebody's running agent |
 | PUT | `/api/fleet/agents/{agent_id}/role` | JWT | Re-task a live agent as the human who owns the credential (GRPH-774): `{role, reason}`. Takes the project's WRITE gate. The credential ceiling still decides — a role the key does not permit is 409, and an all-in-one posture refuses; widening a ceiling means minting a different credential. Lands on the agent's next poll. A refusal is 409 with `{message, hint}` — the hint travels, because the same refusal was actionable over MCP and a dead end over REST |
+| POST | `/api/fleet/agents/{agent_id}/dismiss` | JWT | Hide an agent from the roster. Never deletes the row |
 | GET | `/api/fleet/end-wave` | JWT | What ending the wave would destroy, for the confirm |
 | POST | `/api/fleet/end-wave` | JWT | Revoke the wave's keys and release everything they hold |
 | GET | `/api/fleet/profile` | JWT | The caller's harness preferences (PRD-37 / PRD-41 D20 / GRPH-865): default and per-project override side by side, plus which one is in force. Includes `budget_tokens` (soft per-sign-off target, null = none) and `mix` (harness→share of recent launches, null = winner-take-all). `project_id` optional |
 | PUT | `/api/fleet/profile` | JWT | Write the caller's own profile — `defaults` (ordered allowlist), `weights` (0–1 per axis), `excludes`, `budget_tokens`, `mix`; `project_id` makes it an override. 422 names the field it refuses. Empty `mix` stores null |
 | DELETE | `/api/fleet/profile` | JWT | Remove the caller's default (no `project_id`) or their override for a project |
-| GET | `/api/fleet/policy` | JWT | The project's fleet policy (PRD-37 D4 / PRD-41 D20): `local_only`, `reviewer_cross_vendor`, `allowed_harnesses`, `caps` (`per_attempt_tokens`, `per_item_tokens`, `per_period_tokens` + `period`), `cluster_ceiling` (`{frontend, backend, mixed}` → most items one `claim_cluster` may lease; `frontend: 1` when unset, and a `mixed` cluster is held to it too); `null` = no constraint |
+| GET | `/api/fleet/policy` | JWT | The project's fleet policy (PRD-37 D4 / PRD-41 D20): `local_only`, `reviewer_cross_vendor`, `allowed_harnesses`, `caps` (`per_attempt_tokens`, `per_item_tokens`, `per_period_tokens` + `period`), `cluster_ceiling` (`{frontend, backend, mixed}` → most items one `claim_cluster` may lease; `frontend: 1` when unset, and a `mixed` cluster is held to it too); `null` = no constraint. Also returns `writable`: whether the caller may PUT it (the project's write gate), so a client can show read-only text instead of an editor |
 | PUT | `/api/fleet/policy` | JWT | Write the policy; takes the project's write gate. Every constraint off stores `null`. A cap is a filter: unreporting rows are dropped |
 | GET | `/api/fleet/tier-map` | JWT | The **tier map** (GRPH-1003) — which model each harness runs for a tier. `{rows, cells, overridden}`: `rows` is the committed catalog and `cells` is one entry per harness × tier carrying `packaged_model`, `override`, `effective_model`, `models` (the picklist — what the catalog names for that cell, empty where the harness runs its own default) and `graded_model` (best measured above the floor; `null` means **not measured**, never a borrowed default). The same object rides on `GET /api/fleet` as `matrix` and on `fleet_status` as `tier_map` for the supervisor |
 | PUT | `/api/fleet/tier-map` | JWT | Save the tier map. Takes the project's WRITE gate, because this is how a wave routes. REPLACE semantics: a cell absent from the body, or sent with an empty `model`, is cleared — the panel saves its whole draft. 422 names the cell it refuses and writes **nothing**: an override pins a committed row, so a model the catalog does not carry for that harness and tier is refused rather than invented, and one invalid cell does not let a valid one through |
 | DELETE | `/api/fleet/tier-map` | JWT | Clear every override and return the **packaged** map. Deletes rows rather than blanking them, so "cleared" and "never set" are one state; the reply is never an empty cell list, because an empty tier map would route nothing while reading as a clean result |
 | POST | `/api/fleet/attempts` | API key | Harness telemetry (PRD-38 D3), in two shapes on one route. At launch: `enrolment_code` + `winner`/`runner_up`/`source`/`adapter`, what the supervisor resolved before starting a child. At exit: `delegation_id` or `enrolment_id` + `binary_version`, `turns_used`, `turn_budget`, `wall_seconds`, `tokens_in`/`tokens_out`, `exit_meaning`. Upserts; a post merges non-null fields and never writes a null over a value; 202 while the outcome is still to come; 404 (never 403) for a project the key cannot write |
-| GET | `/api/harness/guidance` | JWT | PRD-47 S12 — routing per function and effort band (derived from `fleet_status.measured`), the R1–R6 grading rules with thresholds, a generation stamp (window, floor, attempts, supervisors served), and the verbatim `fleet_status` JSON the supervisor receives. Optional `window_days` (default 90) |
+| POST | `/api/fleet/observations` | API key | Facts only a supervisor wave knows about a tree it cut (GRPH-975). `kind` is `cut_from` (base sha + branch), `pr_opened` (http(s) url + branch), `salvage` (branch, optional commit and reason), `withheld` (branch + reason), `merged_trunk` (branch + reason: the trunk was merged into the branch before it was proposed, GRPH-1236) or `behind_conflict` (branch + reason, GRPH-1236): the branch conflicts with the trunk, so the server also returns an `in_progress` or `review` item to `next`, keeps its branch and stores the reason as `bounce_reason` so the next spawn resumes it. That is not a review verdict, and the attempt is not closed as `bounced`. The server composes the note or url receipt — the body is those facts, not an evidence array, so the caller cannot post an attestation. Requires a fleet key with `fleet_wave` set and `planner` among its roles; 403 otherwise. 404 (never 403) when the key cannot write the item, when a project-scoped key names an item in another project (`wave-1` restarts in every project, and the user's write grant is not the key's), or when no seat from that wave is bound to the item or was consumed by its claimer or author. `lease` (GRPH-1116) is the keep-alive on this route: `agent_id`, `branch`, optional `commit`. While that agent still holds the item `in_progress`, the server stamps `claimed_at` and the agent's `last_seen_at` and extends that agent's reservations for the item. It does not re-claim a lapsed hold (`extended: false`, nothing written) and it does not change `built_by`. A `commit` that is not a recorded cut-from base is written once as a note (`gbfleet: committed <sha> on \`<branch>\` by <agent>`); `release_item` then keeps that agent's `built_by`, so a later move to review does not become the author. `pushed_head` (GRPH-973) is still 422 |
+| GET | `/api/harness/guidance` | JWT | PRD-47 S12 — routing per function and effort band (derived from `fleet_status.measured`), the R1–R7 grading rules with thresholds, a generation stamp (window, floor, attempts, supervisors served), and the verbatim `fleet_status` JSON the supervisor receives. Optional `window_days` (default 90) |
+| GET | `/api/harness/capacity` | JWT | PRD-62 S5 — per entitlement of the project's org: headroom state, reset cadence, this week's tokens (unreported is a count) and a projected exhaustion time or the reason there is none; plus the org rollup: share of stated headroom used last week (null when no budget is stated; with any unreported spend, `share_is_lower_bound` is true and the share is a floor, shown as "≥N% (+M unreported)") and waves ended by capacity / items deferred to a reset, reported as not recorded (null), never 0. `project_id` required; 402 off team/enterprise |
 | POST | `/api/harness/surface` | API key | Skill and MCP server **names** a child on this host would load, posted by `gbfleet surface` / `gbfleet doctor`. Source type only (`user`, `project`, `seat`, `claudeJson`) — URLs, headers and paths are dropped. A list marked `checked` but omitted is stored as `unknown`, not as empty. 404 (never 403) when the key cannot write the project. The Harness page reads the newest report per project |
 | GET | `/api/harness` | JWT | The Harness page's whole read (PRD-38 PR 2, re-keyed PRD-41 S1/S3): family rollups of vendor x model x version x capability x size band, each with nested leaves (grey under the floor), `n`, `below_floor`, sampling counts, skew badge, median seconds, a cost proxy that states when it will not compare, utilization (tokens per sign-off or its reason, median turns against budget, budget-exhaustion share, each with a reporting count), and two sampling sides (`samples.natural` and `samples.probe`) that are never summed. `review_cells` are F1–F3, grey below five checked verdicts, labelled "by touchpoint overlap". `probe_suggestions` fire on a newly declared vendor/model/version, never on a schedule. Serves the capability enum (`capability_set`) and the derivation's coverage. `window_days` (default 90); `versions=current` (default, newest binary per vendor+model plus the previous one across a version change) or `all` |
-| GET | `/api/harness/recommendations` | JWT | Cards R1–R6 produce (R5 a cell vs its per-capability prior, R6 a better measured row dropped as not installed or an unenforceable cap): each with the cells it fired on, the sibling cells it did not, its thresholds, drafted text or target, and a **replay** re-ranking the resolutions recorded at launch under the proposed change. `org_id` (org admin) names the projects on each card. Hides cards this caller already accepted or dismissed at the same `evidence_hash` (`include_seen=true` shows them). Reading also drafts lesson candidates for cells that just crossed the sample floor; nothing is published |
+| GET | `/api/harness/recommendations` | JWT | Cards R1–R7 produce (R7 an entitlement that routinely resets with headroom unused or runs out early, PRD-62 S5; R5 a cell vs its per-capability prior, R6 a better measured row dropped as not installed or an unenforceable cap): each with the cells it fired on, the sibling cells it did not, its thresholds, drafted text or target, and a **replay** re-ranking the resolutions recorded at launch under the proposed change. `org_id` (org admin) names the projects on each card. Hides cards this caller already accepted or dismissed at the same `evidence_hash` (`include_seen=true` shows them). Reading also drafts lesson candidates for cells that just crossed the sample floor; nothing is published |
 | POST | `/api/harness/recommendations/mark` | JWT | Record that this caller accepted or dismissed a card at this evidence (`card_key`, `evidence_hash`, `action`). **Applies nothing** — R1/R2 accept by a commit somebody makes, R3/R4 by PUTting the PRD-37 profile or policy routes. An accepted card drafts a lesson candidate; when its numbers move the hash moves and the card returns |
 | PUT | `/api/harness/platform/share` | JWT | Opt into or out of the platform average (PRD-38 D13 / PRD-41 D11). Hosted: org admin, `org_id` required, opting out recomputes immediately. Self-hosted: instance toggle; opting out stops the nightly contribution and the hosted recompute drops this contributor |
 | GET | `/api/harness/probe/candidates` | JWT | Closed items with a red sabotage, grouped by leaf capability, with family fallback when a leaf is below the floor. Carries the estimated token cost from the panel's history so a person can see it before starting a run (PRD-41 D7) |
@@ -228,7 +308,8 @@ failure the propose-only boundary exists to prevent.
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
-| GET | `/api/live` | JWT | Observe Live board: humans → agents → leases → recorded PRs. `project_id` required; `user` filters. JWT only, same posture as `/api/fleet/presence`. No MCP tool. |
+| GET | `/api/live` | JWT | Observe Live board: humans → agents → leases → recorded PRs. `project_id` required; `user` filters. `online_agents` counts by the shell badge's `live_agents` rule (heartbeat inside the presence TTL, not quarantined): a quarantined agent is always `state: offline` and carries `quarantined: true`. JWT only, same posture as `/api/fleet/presence`. No MCP tool. |
+| GET | `/api/live/feed` | JWT | The project-wide stream: the last calls across every agent on `project_id`, newest first, each row naming `agent_id` and `agent_label`. Unattributed calls are not in it. `limit` ≤ 200. `state: never` is the empty. |
 | GET | `/api/live/{agent_id}/feed` | JWT | What one agent did, newest first (PRD-34): every MCP call it made, reads included, `source: observed`, or `reported` from a heartbeat that carried a status. Each row says `write` by the dispatcher's own read-only set. `project_id` required; `limit` ≤ 200. `state: never` is the empty. 404 for an agent off this project. |
 | POST | `/api/live/sweep` | JWT (writable) | Run the feed's retention sweep (`AGENT_CALL_RETENTION_DAYS`) by hand for `project_id`. Same code path as the amortised sweep on the write path; `/health` counts that one's failures as `agent_calls_sweep_failed`. |
 
@@ -251,12 +332,36 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | GET / PATCH | `/api/prds/{id}` | JWT |
 | GET / POST | `/api/prds/{id}/versions` | JWT |
 | POST | `/api/prds/{id}/link` | JWT |
+| GET / POST | `/api/prds/{id}/requests` | JWT | PRD↔request links (many-to-many; GRPH-1140). `POST {request_id}` links; refused 409 on a closed PRD, 404 for a request in another project.
+| DELETE | `/api/prds/{id}/requests/{request_id}` | JWT | Unlink (same refusals). `GET /api/prds` summaries carry `request_count`, `request_votes`, `request_types`. |
+| GET | `/api/prds/{id}/request-suggestions` | JWT | Unlinked requests scored against the PRD's sections (`{available, suggestions[{request_id,title,type,votes,score}]}`, score ≥ 0.55). `{available:false, suggestions:[]}` when the embedder fails — not an empty match list |
 | POST | `/api/prds/{id}/ai` | JWT | one-shot AI command (expand/risks/summarize/grill) |
 | POST | `/api/prds/{id}/grill/stream` | JWT (SSE) | interactive grill — clarifying questions (AL-67) |
 | POST | `/api/prds/{id}/grill/apply` | JWT | fold grill decisions into a proposed PRD body |
 | POST | `/api/prds/{id}/grill/prototype` | JWT | emit the paste-ready prompt-pack for one high-fidelity question; records the handoff as a grill turn (GRPH-235) |
 | POST | `/api/prds/{id}/grill/prototype/verdict` | JWT | carry the prototype's human verdict back into the grill (screenshot attachment cited); PROPOSES the high→low fidelity flip — never applies it (GRPH-235) |
 | GET / POST | `/api/prds/{id}/evaluate` | JWT | pre-approval quality (GRPH-80). GET is mechanical (sections + coverage gaps, no chat). POST asks the LLM for ambiguity/testability. Ungraded is not a fail; never mutates status |
+| GET | `/api/prds/{id}/coverage` | JWT | Per-section task rollup. `gap` is a missing task on a buildable section; `empty` is a heading with no substance. Does not emit an occupancy percentage |
+| POST | `/api/prds/{id}/decompose` | JWT | Propose one tracked task per uncovered section. `create=true` files them and requires approval; a dry run still proposes on a draft. Framing sections are skipped unless `include_prose=true` |
+| GET | `/api/prds/{id}/grill` | JWT | The grill as the server knows it. No client transcript |
+| POST | `/api/prds/{id}/grill/defer` | JWT | Deliberately leave a dimension open |
+| GET | `/api/prds/{id}/baseline` | JWT | The agreed spec, or null if this PRD has never been approved |
+| GET | `/api/prds/{id}/baselines` | JWT | The whole baseline chain, oldest first |
+| POST | `/api/prds/{id}/rebaseline` | JWT | Ask for new frozen intent. Re-opens the grill and does not approve anything |
+| GET | `/api/prds/{id}/intent-diff` | JWT | What a rebaseline would change, section by section |
+| GET | `/api/prds/{id}/drift` | JWT | Structural divergence from the governing baseline |
+| GET | `/api/prds/{id}/scope-drift` | JWT | Mechanical scope drift. No model, no opinion |
+| GET | `/api/prds/{id}/completeness` | JWT | What the governing baseline demands that has nothing delivered |
+| GET | `/api/prds/{id}/classifications` | JWT | The platform judge's read on each completed item |
+| GET | `/api/prds/{id}/evidence` | JWT | What the delivered work offers as proof, bound to the intent it supports |
+| GET | `/api/prds/{id}/close-readiness` | JWT | Whether this PRD can close, in which mode, and what is outstanding |
+| GET | `/api/prds/{id}/close-report` | JWT | Delivered work against the original intent |
+| POST | `/api/prds/{id}/close` | JWT | Close a PRD. The terminal state |
+| GET | `/api/prds/{id}/lineage` | JWT | Where this PRD's dropped intent came from and went |
+| POST | `/api/prds/{id}/promote` | JWT | Promote dropped intent into a backlog item or a successor PRD |
+| GET | `/api/prds/{id}/verdicts` | JWT | Sign-off verdicts recorded against this PRD. Claims with provenance |
+| GET | `/api/prds/{id}/audit-brief` | JWT | Everything a repo-holding agent needs to audit this PRD, in one read |
+| GET | `/api/prds/{id}/audit-coverage` | JWT | Which intent elements actually carry a verdict |
 
 ## Analytics
 
@@ -266,6 +371,7 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | GET | `/api/roadmap` | JWT | Phases + milestones + progress |
 | GET | `/api/links` | JWT | Typed links |
 | GET | `/api/mcp/tools` | JWT | Tool schemas + live call counts |
+| GET | `/api/events` | JWT | The audit ledger: who did what, most recent first, scoped to projects the caller can read. The Activity view's filters ride on this same read |
 | GET | `/api/usage` | JWT | The Usage page's one aggregate (PRD-47 S14) over every project the caller can read: KPIs with deltas and sparklines, a per-project stacked series, the by-project table, plan limits (`declared: false` on self-host, never a fake zero), and `model_usage` — spawns, tokens and estimated cost per harness and model, from PRD-38 attempt records. There `tokens` is `null` for a pair nobody measured and `cost_usd` is `null` when no list price matches, while `0` is reserved for local compute that really is free, and `tokens_reported` is the count each sum rests on. `coverage` is `partial` when agent-call retention is shorter than the range. `range_days` is 7, 30 or 90 (anything else falls back to 30); `format=csv` exports the by-project table only |
 
 ## Platform & integrations
@@ -282,13 +388,19 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | GET | `/api/platform/stack` | JWT | Derived architecture map for the Stack Build view (GRPH-1034): deployables, datastores and wired external services as nodes with per-node liveness and provenance, scoped to a readable project. Read-only aggregate over `/health`, platform providers/credentials/model-loads, and fleet presence |
 | GET | `/api/platform/stack/health` | JWT | Per-deployable code-health overlay for Stack (GRPH-1035): three-state rollup (`clean_at_sha` / `has_findings` / `never_scanned` / `stale`) per component from `code_scans`, never a single fabricated score. Head sha comes from the running API identity. Absence is never clean |
 | POST | `/api/platform/stack/scans` | API key (project write) | Record a code-health scan for the Stack overlay (GRPH-1047) — the producer ingest path GRPH-P51 §3 deferred, the same write as the MCP `record_scan` tool but reachable by any project-write key so an operator or CI can populate the overlay without a fleet worker. `reported_by` is the posting credential (never caller-supplied); a summary-less finding is a 422 and nothing is stored (absence never reads clean); empty findings is a deliberate clean result. A `tests` scan (GRPH-1061) must send `tests: {passed, failed, skipped}` — missing counts, or fewer findings than failures, is a 422 |
+| POST | `/api/platform/stack/app` | API key (project write) | Replace the one current app-topology record for a project (GRPH-1098 / PRD-P55 §2). REST only, same auth as `/api/platform/stack/scans`. Body: `producer_id`, `producer_version`, `mapped_sha`, `components` (`dir`; `""` is the repo root), `infrastructure`, `external`, `unresolved`, `edges` (`from`, `to`, `protocol`, `label`). Every node and edge needs `provenance` `{file, rule, line?}`. An edge may also carry `state` (`set` or `documented`; a commented `.env.example` key is `documented`) and `provenances` (every source of that same edge, so a template line is still visible after it folds into a compose edge). A post with any missing provenance, malformed shape, dangling edge, or env value is **422** with a list of `{path, reason}` (for example `edges[3].provenance` / `missing`) and writes nothing — the previous record stays. An edge may name only a node this post defines; an unknown endpoint is an `unresolved` node with provenance, never a dangling edge. Env **values** are refused (`://`, credential assignments, token prefixes); a bare variable name in `env` is stored. `mapped_sha` of `unknown` is refused — that sentinel is not a commit. Last valid post wins, atomically. `posted_by` is the posting credential, not the declared producer. GET `/api/platform/stack` folds the record's nodes and edges (code-map deployables stay only until the first record) and always includes `mapping`: `mapped` when `mapped_sha` equals the API head, `stale` with both shas when it does not, `unmapped` when nobody has posted, `freshness_unknown` when a record exists but the head is missing or `unknown` — that is never current. `previous_mapped_sha` is the replaced record's sha, empty on the first post |
 | POST / GET | `/api/platform/reindex` | JWT | Start a re-index of every embedded row in the scope, or read its per-table progress (PRD-25 S4b) |
 | POST | `/api/platform/credentials/{id}/retry` | JWT |
 | PUT | `/api/platform/credentials/defaults` | JWT | Set the scope's default / fallback / embedding / **decider** credential (`decider_credential_id`). `422` for one that has never been validated |
 | PUT | `/api/platform/credentials/project` | JWT | Point a project at a credential, with an optional `model_override` and `decider_credential_id`. `409` `UNPROVEN` if the named decider has never been validated (PRD-45 S2) |
 | PUT | `/api/platform/credentials/roles` | JWT | Per-task chat overrides (GRPH-316). Unset inherits the project credential. A named unusable credential is ungraded, not a quieter model |
-| POST | `/api/platform/github/connect` · `/disconnect` · `/create-issue` | JWT |
-| POST | `/api/platform/gdrive/connect` · `/disconnect` | JWT |
+| GET | `/api/platform/providers` | JWT | The AI-provider catalog Settings renders: id, label, kind, whether it embeds, defaults |
+| POST | `/api/platform/github/connect` | JWT | Record the GitHub account and repo for this project |
+| POST | `/api/platform/github/disconnect` | JWT | Clear that connection |
+| POST | `/api/platform/github/create-issue` | JWT | Create a local tracker item for a GitHub issue. Does not push to GitHub |
+| POST | `/api/platform/gdrive/connect` | JWT | Record the Drive account and folder for this project |
+| POST | `/api/platform/gdrive/disconnect` | JWT | Clear that connection |
+| POST | `/api/platform/gdrive/sync` | JWT | Two-way sync of this project's PRDs with the connected folder's `PRDs/` subdirectory |
 
 ## Deployment settings (PRD-47 S15)
 
@@ -480,12 +592,9 @@ which is what keeps the cross-tenant isolation guarantee honest.
 | GET | `/api/admin/org-requests` | Pending additional-org requests |
 | POST | `/api/admin/org-requests/{id}` | Approve or deny one |
 
-Plan assignment is `PUT /api/orgs/{id}/plan`, operator-gated the same way. Self-serve
-upgrades (GRPH-82) are org-admin, not operator: `/api/orgs/{id}/billing/checkout` and
-`/api/orgs/{id}/billing/portal` — 404 when Stripe is unset, so a manual-assignment
-deploy does not look broken. `GET /billing` carries `self_serve` and `has_customer`
-(a Stripe customer id exists). False is manual assignment / never checked out, not a
-broken page. There is no suspend, restore, or impersonate — those endpoints do not exist.
+Org plan assignment, Stripe Checkout, the customer portal, and the Stripe webhook are
+not on this product — they live on the Graphban control plane (GBC-35). There is no
+suspend, restore, or impersonate on the operator console either; those endpoints do not exist.
 
 Two response fields carry a distinction the UI depends on:
 
@@ -531,7 +640,9 @@ See [MCP tools](mcp.md) for the tool catalog.
 | POST | `/api/public/requests/{request_id}/vote` | Anonymous upvote on a published row. Sets `gb_vote` cookie; unpublished → 404 |
 | GET | `/api/public/slugs/validate` | Check a vanity slug without claiming it |
 | POST | `/api/public/github/webhook` | Inbound GitHub issue → tracker item |
-| POST | `/api/public/stripe/webhook` | Stripe → `Organization.plan`. 404 when Stripe is unset; 401 on a bad signature. Never applies an unsigned payload |
+| POST | `/api/public/attachments` | Upload a screenshot for a feedback submission. Returns its id and public url |
+| GET | `/api/public/attachments/{id}` | Serve those bytes. The id is the capability |
+| GET | `/api/public/widget-config` | What the embedded widget needs before it renders, including whether to show Turnstile |
 
 ## Public (operator, JWT)
 
@@ -544,8 +655,90 @@ These share the public router so the Feedback Kit and Settings can share one ori
 | POST | `/api/public/requests/{request_id}/publish` | Put a request on the matching public board |
 | POST | `/api/public/requests/{request_id}/unpublish` | Take it off; tracking URL still works |
 | POST | `/api/public/requests/{request_id}/comments` | Operator comment. Default `visibility=private` |
+| POST | `/api/public/t/{track_token}/comments` | Submitter reply, authenticated by the tracking token (404 without it). Always public; notifies no one |
+| GET | `/api/requests/{request_id}/comments` | Operator thread: public and internal comments with `author`, `role` (`submitter`, `team` or `internal`) and `created_at`. A public operator reply emails the submitter once when a contact email was given; every comment writes a `request_comment` event |
 | POST | `/api/public/slugs/org-host` | Claim `{org}.graphban.dev` (enterprise; org admin) |
 | POST | `/api/public/slugs/project-path` | Claim the `{project_id}` path segment |
 | GET | `/api/public/slugs/redirect` | Resolve upgrade 301: old host → new host |
 
 All public endpoints share a per-IP sliding-window rate limit (20/60s).
+
+## Host surfaces (hosted only, PRD-43)
+
+Mounted at the root, not under `/api`. They answer when hosted mode is on and the `Host`
+header is an org's subdomain. The path segment is the project's public path.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/{path_id}/feedback` | public | The public feedback form |
+| GET | `/{path_id}/issues` | public | The public issues board |
+| GET | `/{path_id}/requests` | public | The public requests board |
+| GET | `/{path_id}/roadmap` | public | The public roadmap |
+| GET | `/{path_id}/t/{track_token}` | public | The submitter's tracking page |
+
+## Assistant
+
+Threads are scoped to one item or PRD. A write the model proposes is staged and does not
+run until someone applies it.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| POST | `/api/assistant/threads` | JWT | Open a thread. The provider defaults to the project's active chat provider |
+| GET | `/api/assistant/threads` | JWT | List threads for a project, optionally one entity |
+| GET | `/api/assistant/threads/{id}` | JWT | One thread, including its messages |
+| POST | `/api/assistant/threads/{id}/model` | JWT | Pin the provider and model for this thread |
+| POST | `/api/assistant/threads/{id}/message` | JWT (SSE) | Send a message. Streams deltas, tool calls, and any proposed write |
+| GET | `/api/assistant/providers` | JWT | The model picker's catalog for this project |
+| POST | `/api/assistant/actions/{id}/apply` | JWT (write) | Execute one staged write and record the prior value |
+| POST | `/api/assistant/actions/{id}/reject` | JWT (write) | Discard a staged write. Nothing was mutated |
+
+## Organizations (hosted only)
+
+Every route on this router 404s when hosted mode is off. Founding a second org needs a
+plan entitlement or an approved one-time request.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/orgs` | JWT | Orgs the caller sits in, each with their role |
+| POST | `/api/orgs` | JWT | Found an org. The first is free. Another spends an entitlement or an approved request |
+| POST | `/api/orgs/requests` | JWT | Ask an operator for permission to found another org |
+| GET | `/api/orgs/requests/mine` | JWT | The caller's latest additional-org request |
+| GET | `/api/orgs/{id}/members` | JWT (member) | Seats, with project access and last write |
+| GET | `/api/orgs/{id}/invites` | JWT (org admin) | Pending invites |
+| POST | `/api/orgs/{id}/invites` | JWT (org admin) | Invite an email into this org |
+| DELETE | `/api/orgs/{id}/invites/{invite_id}` | JWT (org admin) | Revoke a pending invite |
+| GET | `/api/invites/{token}/preview` | none | What a token invites, for the accept page before login. Used, expired, and unknown tokens 404 the same way |
+| POST | `/api/invites/accept` | JWT | Spend the token and take the seat |
+
+## Linear
+
+The tracker stays authoritative. This surface reads issues, takes webhooks, and writes back
+status, comments, and assignee. Tokens are stored encrypted and are never returned.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/linear/status` | JWT | Whether this org is linked. Never the token |
+| GET | `/api/linear/oauth` | JWT | The Linear authorization URL and the CSRF `state` |
+| GET | `/api/linear/callback` | none | Linear's redirect. Exchanges `code` and stores the integration |
+| DELETE | `/api/linear/link` | JWT | Unlink. Mirrored rows stay |
+| GET | `/api/linear/issues` | JWT | Issues from the linked workspace. Requires a team |
+| POST | `/api/linear/issues/{id}/status` | JWT | Write a status back |
+| POST | `/api/linear/issues/{id}/comment` | JWT | Add a comment |
+| POST | `/api/linear/issues/{id}/assignee` | JWT | Set or clear the assignee |
+| POST | `/api/linear/webhook` | HMAC | Linear's webhook. A bad signature is rejected |
+
+## Code-graph sync
+
+Ingest and purge of the cloud copy authenticate with a **sync-scoped API key**, and the
+project is taken from that key. Linking is the box admin on the Cloud link routes above.
+Pushing and the portable bundle are a JWT on this box.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/sync/status` | JWT | Link state, never the credential, plus per-project sync state |
+| POST | `/api/sync/push` | JWT (write) | Push this project's code graph to the linked cloud. 409 when this box is not linked |
+| POST | `/api/sync/purge` | JWT (write) | Delete this project's graph from the linked cloud and reset the local manifest. 409 when not linked |
+| POST | `/api/sync/code-graph` | MCP (sync scope) | Ingest nodes and edges. The cloud re-embeds. `remove` marks paths stale; `prune` marks everything absent from this batch |
+| DELETE | `/api/sync/code-graph` | MCP (sync scope) | Delete every node and edge in the key's project |
+| GET | `/api/sync/export` | JWT | A portable bundle of summaries and structure, without vectors |
+| POST | `/api/sync/import` | JWT (write) | Import a bundle. This instance re-embeds on arrival |

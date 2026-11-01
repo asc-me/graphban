@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
 from . import adopt as adopt_mod
+from .heartbeat import keep as keep_leases
 from . import worktree as wt_mod
 from . import adapters
 from .adapters import explain_exit
@@ -173,6 +174,11 @@ class Partition:
     """
 
     ceiling: float | None = None
+    #: How often to post `kind=lease` (GRPH-1116). The server's
+    #: `heartbeat_interval_seconds` from the last roster, or None until one has
+    #: answered. None is not "never": the keeper uses its own fallback, so the first
+    #: ticks are not silent for the whole time the server has not yet been asked.
+    heartbeat_interval: float | None = None
     #: Monotonic time contact was lost, or None while the server is answering.
     since: float | None = None
     longest: float = 0.0
@@ -240,10 +246,16 @@ class Wave:
     spawned: list[Child] = field(default_factory=list)
     reaped: list[Reaped] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
-    #: Seats handed in but never redeemed, because the wave stopped early. Named so a
-    #: caller does not have to infer it from len(spawned) < len(seats) — an inference
-    #: that reads as "nothing went wrong" when the list is short for a bad reason.
+    #: Seats handed in but never redeemed, because the wave stopped, the machine was
+    #: full, the server was unreachable, or `--max-children` was already spent. Not a
+    #: seat that was merely past `--max-workers`: those run when a slot frees
+    #: (GRPH-929). A count alone cannot say which seat. `unredeemed` names each one.
     unused_seats: int = 0
+    #: "<enrolment code>: <why>", one line per seat in `unused_seats`. The code is the
+    #: name in the seats file, which is the only name the operator has for a seat that
+    #: never became a child. Printed on the wave report and kept out of the observe
+    #: log: a log outlives the seat.
+    unredeemed: list[str] = field(default_factory=list)
     #: What `hostos.available_memory` read when the launch loop began (GRPH-842), or
     #: None where the host cannot be asked. Reported beside `gated` because an empty
     #: `gated` has two meanings and they are opposites: nothing was refused, or nothing
@@ -304,11 +316,27 @@ class Wave:
     #: branch -> (commits behind, the ref it was measured against). How much had landed on
     #: the trunk that this worker never had in front of it (GRPH-786). A reviewer reading a
     #: branch cut from a base the trunk has moved past is reading a diff against a world
-    #: that no longer exists, and nothing said so.
+    #: that no longer exists, and nothing said so. The count is the measurement; whether it
+    #: blocks a proposal is `behind_clean` / `behind_block` (GRPH-1087).
     stale: dict[str, tuple] = field(default_factory=dict)
     #: Set when the trunk could not be fetched. "We could not ask" is not "nothing moved",
     #: and reporting the second for the first is the failure this whole check is about.
     stale_unmeasured: str = ""
+    #: branch -> "N behind ref, no shared files, merges clean", and ONLY when both checks
+    #: ran and neither fired (GRPH-1087). Present means the branch may be proposed despite
+    #: `stale`. Absent does not mean that: a stale branch with no entry here is refused.
+    behind_clean: dict[str, str] = field(default_factory=dict)
+    #: branch -> why being behind blocks the proposal, when the check ran and found a
+    #: shared file, a merge-tree conflict, or could not be asked. The unclassified stale
+    #: case (no entry here either) still refuses, with the older "rebase before proposing".
+    behind_block: dict[str, str] = field(default_factory=dict)
+    #: branch -> (commits behind, ref, shared files) for a branch that shares files with
+    #: the missed commits and still merges clean (GRPH-1236). `propose_branch` merges `ref`
+    #: in, pushes, and proposes. If that fails, the branch is refused as before.
+    behind_merge: dict[str, tuple] = field(default_factory=dict)
+    #: branch -> (ref, conflicted files) where merge-tree found a real conflict (GRPH-1236).
+    #: The PR is withheld and the item goes back to `next` with a resume brief.
+    behind_conflict: dict[str, tuple] = field(default_factory=dict)
     #: PRD-41 D21: each matrix resolution this wave made, with every stage. `until`
     #: prints the list on its report (empty = looked, none resolved — not an absence).
     resolutions: list = field(default_factory=list)
@@ -335,9 +363,22 @@ class Wave:
     debug_gaps: list[str] = field(default_factory=list)
     #: Why this wave ended. `ok` is true only for the two idle reasons (P30 D6).
     #: Empty until something decides: `up` writes `idle` when the children left and
-    #: nothing failed; `until` (D1) writes `idle-with-waits` when only typed human
-    #: waits remain.
+    #: nothing failed; `seats-unredeemed` when children left cleanly and seats were
+    #: still never started; `until` (D1) writes `idle-with-waits` when only typed
+    #: human waits remain.
     reason: str = ""
+    #: GRPH-1247. Adapters whose vendor account said it is out of quota this wave, keyed by
+    #: adapter name: {"adapter", "said" (the vendor's own words), "seen_at" (epoch seconds)}.
+    #: Never retried before its reset; reported in the terminal JSON.
+    exhausted: dict[str, dict] = field(default_factory=dict)
+    #: PRD-62 S1↔S3 (GRPH-1258). Entitlement ids each adapter runs on, as the operator named
+    #: them (`--entitlement ADAPTER=ID`). Empty means the wave reports nothing to the headroom
+    #: ledger, which is S1 exactly as it was.
+    entitlements: dict[str, list[str]] = field(default_factory=dict)
+    #: Why the ledger stopped being written this wave ("" while it is). Set on the first
+    #: refusal — a plan without capacity routing answers every event with 402 — so one
+    #: refusal ends the attempts instead of repeating on every spawn.
+    ledger_off: str = ""
     #: Child exit 75 — stuck, evidence written, item released. Visible, not a
     #: supervisor failure (P30 D6). Exit 70 is a failure and lives in `failures`.
     give_ups: list[str] = field(default_factory=list)
@@ -345,12 +386,18 @@ class Wave:
     resumed: list[str] = field(default_factory=list)
     #: Resume attempted and abandoned — spawn from HEAD, leftover ref stays listed.
     resume_misses: list[str] = field(default_factory=list)
+    #: Names this wave refused because the remote already had them (GRPH-1088). The
+    #: next free slot is cut instead. Recorded as the refusal `create` raised, so the
+    #: report says which name and which commit were left alone.
+    remote_taken: list[str] = field(default_factory=list)
     #: Items a reaped child no longer held, so reap did not release them (GRPH-949). INFO,
     #: not `failures`: the child delivered to review, or its lease lapsed and moved on, and
     #: the server would rightly refuse the release. One line per item.
     lease_moved: list[str] = field(default_factory=list)
     #: Branches pushed but NOT proposed as a PR, with why (GRPH-949): a change outside every
-    #: declared touchpoint, or a base the trunk has moved past. Also in `proposed` as skipped.
+    #: declared touchpoint, or a base the trunk has moved past in a way that matters — a
+    #: shared file, a merge conflict, or a behind-check that could not be asked (GRPH-1087).
+    #: Also in `proposed` as skipped.
     unproposed: dict[str, str] = field(default_factory=dict)
     #: branch -> the head this wave pushed while its child was STILL RUNNING, because one of
     #: the child's items had already reached `review` (GRPH-987). Kept apart from `published`,
@@ -428,6 +475,9 @@ def _roster(client: Graphban, partition: Partition) -> dict | None:
     ttl = payload.get("presence_ttl_seconds")
     if isinstance(ttl, (int, float)) and ttl > 0:
         partition.ceiling = float(ttl)
+    gap = payload.get("heartbeat_interval_seconds")
+    if isinstance(gap, (int, float)) and gap > 0:
+        partition.heartbeat_interval = float(gap)
 
     holdings = _holdings(payload)
     if partition.since is not None:
@@ -555,6 +605,87 @@ def _rooted(repo: Path | str, workspace: Path | str | None) -> tuple[Path, Path]
                          else root.parent / f"{root.name}-gbfleet")
 
 
+class NotAdmitted(VendorLimit):
+    """The headroom ledger refused `spawn_start` (`admitted: false`) for this adapter's
+    entitlement. A VendorLimit so S1's failover takes the next adapter, with the server's
+    own reason as the words — nothing was launched, so nothing is reported as a limit hit."""
+
+
+def _report_event(wave: Wave, ledger: Graphban | None, seat: Seat, event: str,
+                  text: str = "") -> list[str]:
+    """Report `event` for each entitlement the seat's adapter runs on; return the refusals.
+
+    Best effort, except that a `spawn_start` the server refuses (`admitted: false`) is
+    returned for the caller to honour. Any other failure — a plan without capacity routing
+    (402), an unreachable server, a revoked tool — turns the ledger off for the wave and
+    the wave goes on as S1 does without it.
+    """
+    refused: list[str] = []
+    if ledger is None or wave.ledger_off or not seat.entitlements:
+        return refused
+    for ent in seat.entitlements:
+        args = {"id": ent, "event": event}
+        if text:
+            args["vendor_text"] = text
+        try:
+            got = ledger.call("report_entitlement_event", **args)
+        except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+            wave.ledger_off = f"{event} {ent}: {exc}"
+            observe.emit("ledger_off", detail=wave.ledger_off)
+            return refused
+        if event == "spawn_start" and got.get("admitted") is False:
+            refused.append(str(got.get("reason") or "not admitted"))
+    return refused
+
+
+def _note_unredeemed(wave: Wave, seat: Seat, reason: str) -> None:
+    """One seat that never got a child, and why.
+
+    The count in `unused_seats` cannot say which seat. A wave that prints only
+    the count reads as a bug in the fleet, which is the report an operator
+    chased when the machine was full. The enrolment code is the name in the
+    seats file. It stays on the wave, for the report, and is not emitted: the
+    observe log outlives the seat.
+    """
+    text = reason.splitlines()[0].strip() if reason else "unspecified"
+    line = f"{seat.code}: {text[:240]}"
+    if line in wave.unredeemed:
+        return
+    wave.unredeemed.append(line)
+    wave.unused_seats += 1
+
+
+def _park(wave: Wave, pending: list[Seat], reason: str) -> None:
+    """Name every seat still waiting, then forget them so a later pass cannot."""
+    for seat in pending:
+        _note_unredeemed(wave, seat, reason)
+    pending.clear()
+
+
+def _free_slots(limits: Limits, children: Sequence[Child]) -> int:
+    """How many more children may start right now.
+
+    `--max-workers` is concurrent. `--max-children` is the total this `up` may
+    spawn, including children adopted from a supervisor that died. The old `up`
+    took the minimum once, as the size of its only batch, and dropped the rest.
+    """
+    live = sum(1 for child in children if child.running)
+    return max(0, min(limits.max_workers - live, limits.max_children - len(children)))
+
+
+def _no_slot_reason(limits: Limits, children: Sequence[Child]) -> str:
+    live = sum(1 for child in children if child.running)
+    if limits.max_workers - live <= 0:
+        return (
+            f"--max-workers {limits.max_workers} leaves no free slot "
+            f"({live} still running)"
+        )
+    return (
+        f"--max-children {limits.max_children} reached "
+        f"({len(children)} child process(es) already in this wave)"
+    )
+
+
 def up(
     repo: Path,
     seats: Sequence[Seat],
@@ -626,15 +757,15 @@ def up(
             # D-i: no new spawns while the server is unreachable. A child that cannot
             # register has no identity, no consumed seat and no claim — spawning one
             # spends money to produce a process nobody can account for.
-            wave.unused_seats = len(seats)
+            _park(wave, list(seats), "server unreachable; no child was started")
             return wave
-
-        cap = max(0, min(limits.max_workers, limits.max_children) - len(leftover))
-        wanted = min(len(seats), cap)
-        wave.unused_seats = len(seats) - wanted
 
         children: list[Child] = list(leftover)
         roster_path = adopt_mod.children_path(repo, state)
+        # Seats past the concurrent cap stay here and start when a child exits
+        # (GRPH-929). Dropping them at the cap was `up --max-workers 1` finishing
+        # after the first child and reporting the rest as never redeemed.
+        pending: list[Seat] = list(seats)
 
         def persist() -> None:
             adopt_mod.persist(roster_path, children)
@@ -652,15 +783,78 @@ def up(
             items = item_status(client)
         # The declaration snapshot the divvy used: the reap-time fallback (GRPH-1025).
         _declared_into(wave, items)
-        _start(
-            wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client,
-            limits, debug=debug, occupied=occupied, items=items,
-            into=children, persist=persist,
-            room=room, base=base,
-        )
-        persist()
+
+        def refill() -> bool:
+            """Start the next seats that fit. False when nothing more will start.
+
+            `--max-workers` is how many run at once. `--max-children` is how many
+            this wave may spawn in total, adopted leftovers included. A launch
+            failure, a full machine, or a server this wave can no longer reach
+            stops the rest: the same refusal would meet every seat still waiting,
+            and naming them is the result.
+
+            A cap that is merely full — workers still running, and
+            `--max-children` not spent — is not that refusal. Those seats stay
+            pending and start when one child exits. Parking them on a full cap
+            would be the old drop, one tick later.
+            """
+            if not pending:
+                return False
+            # D-i. The check before the first batch only sees `wave.offline`,
+            # which is the allocation read. A partition that opens later sets
+            # `partition.offline` and stops the running children at the ceiling;
+            # the next refill used to start a batch that cannot register
+            # (GRPH-929 bounce). Each of those children costs a worktree and a
+            # vendor process to record never-registered.
+            if wave.offline or wave.partition.offline:
+                _park(wave, pending, "server unreachable; no child was started")
+                return False
+            for child in children:
+                if child.branch:
+                    occupied.add(child.branch)
+            for branch in wave.resumed:
+                occupied.add(branch)
+            slots = _free_slots(limits, children)
+            if slots <= 0:
+                still_running = any(child.running for child in children)
+                child_cap_open = limits.max_children - len(children) > 0
+                if still_running and child_cap_open:
+                    return False
+                _park(wave, pending, _no_slot_reason(limits, children))
+                return False
+            batch = pending[:slots]
+            del pending[:slots]
+            fail_before = len(wave.failures)
+            gated_before = len(wave.gated)
+            spawned_before = len(wave.spawned)
+            try:
+                _start(
+                    wave, batch, launch_factory, repo, workspace, wave_name, client,
+                    limits, debug=debug, occupied=occupied, items=items,
+                    into=children, persist=persist,
+                    room=room, base=base,
+                )
+            except VendorLimit:
+                _park(wave, pending, "vendor account is out of quota; the wave stopped")
+                raise
+            if len(wave.failures) > fail_before or len(wave.gated) > gated_before:
+                if len(wave.gated) > gated_before:
+                    reason = wave.gated[-1]
+                else:
+                    reason = "wave stopped: the launch failure is the same for every later seat"
+                _park(wave, pending, reason)
+                return False
+            persist()
+            return len(wave.spawned) > spawned_before
+
+        refill()
         _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
-                  persist=persist, merger=merger, base_branch=base)
+                  persist=persist, merger=merger, base_branch=base, refill=refill)
+        # A seat still in `pending` was neither started nor named. Leaving it
+        # there reports a clean wave — unused stays 0 — which is the silent
+        # drop this command exists to make loud.
+        if pending:
+            _park(wave, pending, "the wave ended before this seat was started")
         _reap_all(wave, children, client=client, base_branch=base)
         persist()
         if merger is not None:
@@ -671,7 +865,10 @@ def up(
 
         wave.after = _read_allocation(client, wave)
         if not wave.failures and not wave.offline:
-            wave.reason = "idle"
+            # A clean exit that still dropped seats is the failure this command
+            # exists to not look like. `ok` is false for any reason but the two
+            # idle ones, so the process exits non-zero and the report names them.
+            wave.reason = "seats-unredeemed" if wave.unused_seats else "idle"
 
     return wave
 
@@ -891,6 +1088,7 @@ def _start(
     persist: Callable[[], None] | None = None,
     room: Headroom | None = None,
     base: str = "",
+    ledger: Graphban | None = None,
 ) -> Iterable[Child]:
     """Create a worktree per seat, spawn into it, and wait for it to register.
 
@@ -918,7 +1116,8 @@ def _start(
             verdict = room.allow(len(started))
             if not verdict.allowed:
                 wave.gated.append(verdict.reason)
-                wave.unused_seats += planned - index
+                for skipped in seats[index:]:
+                    _note_unredeemed(wave, skipped, verdict.reason)
                 observe.emit(
                     "memory_gated",
                     running=len(started),
@@ -995,8 +1194,17 @@ def _start(
                     continue
                 try:
                     tree = _tree_for(repo, workspace, wave_name, slot, base=base)
-                except wt_mod.BranchExists:
+                except wt_mod.BranchExists as exc:
                     taken.add(branch)
+                    if isinstance(exc, wt_mod.RemoteBranchTaken):
+                        wave.remote_taken.append(str(exc))
+                    # The pre-check above caps a local collision at 1000. A remote
+                    # that already has the name raises here instead, and an uncapped
+                    # continue would spin for as long as every name is taken.
+                    if slot_n > 1000:
+                        raise wt_mod.BranchExists(
+                            f"no free gb/{wave_name}-* slot under 1000"
+                        )
                     continue
                 break
             def remember(child: Child) -> None:
@@ -1023,11 +1231,24 @@ def _start(
             # BEFORE the child starts, so the base is on the record before anything it does
             # can attest against it (GRPH-970).
             _record_cut_from(wave, client, seat.item, tree.branch, tree.base)
-            start_one(
-                tree, seat, launch_factory, client, limits, wave.partition,
-                workspace=workspace, wave_name=wave_name, slot=slot,
-                on_spawned=remember, debug_file=debug_file,
-            )
+            refused = _report_event(wave, ledger, seat, "spawn_start")
+            if refused:
+                raise NotAdmitted(
+                    f"entitlement {', '.join(seat.entitlements)} not admitted: {refused[0]}",
+                    said=refused[0])
+            try:
+                start_one(
+                    tree, seat, launch_factory, client, limits, wave.partition,
+                    workspace=workspace, wave_name=wave_name, slot=slot,
+                    on_spawned=remember, debug_file=debug_file,
+                )
+            except VendorLimit as limit:
+                _report_event(wave, ledger, seat, "limit_hit", limit.said or str(limit))
+                raise
+            except LaunchFailed as failed:
+                _report_event(wave, ledger, seat, "spawn_failed", str(failed))
+                raise
+            _report_event(wave, ledger, seat, "registered")
         except (LaunchFailed, wt_mod.GitError, wt_mod.BranchExists, SetupFailed) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")
             vendor_limit = isinstance(exc, VendorLimit)
@@ -1041,8 +1262,14 @@ def _start(
             # The one that failed AND every one after it. Counting only the failure
             # leaves the caller to work the rest out from len(spawned), which is the
             # inference this field exists to remove — and a short list reads as
-            # "nothing went wrong".
-            wave.unused_seats += planned - index
+            # "nothing went wrong". The seats after this one never launched; saying
+            # so with this seat's stderr would read as each of them having crashed.
+            first = str(exc).splitlines()[0][:240]
+            for offset, skipped in enumerate(seats[index:]):
+                why = first if offset == 0 else (
+                    f"wave stopped after {seat.code} failed to launch"
+                )
+                _note_unredeemed(wave, skipped, why)
             if vendor_limit:
                 # GRPH-829. Not this slot's problem: the account is out of quota, so the next
                 # child would fail identically in under a second and the one after that too.
@@ -1095,13 +1322,20 @@ def watch_tick(
     persist: Callable[[], None] | None = None,
     base_branch: str = "",
 ) -> None:
-    """One pass of the watch loop: wall-clock, output pulse, lease, disowned.
+    """One pass of the watch loop: keep the lease, then wall-clock, output, disowned.
 
     Shared by `up`'s `_wait_out` and `gbfleet mcp` (P30 D6). Silence is a report, not
     a kill — a long `run_tests` is legitimate quiet. The kill conditions stay the
     PRD-22 four (wall-clock, never-registered, seat-gone, lease-lapsed), plus the
     planner's `stop`.
+
+    The keep-alive is first, before `_roster` (GRPH-1116). `fleet_status` requeues an
+    agent whose presence has lapsed, and a child blocked in a test suite does not
+    heartbeat itself. Posting `kind=lease` while the pid is alive is what keeps that
+    requeue from firing. Once the process has exited, nothing here posts, and the
+    server clock lapses the lease as before.
     """
+    keep_leases(wave, children, client)
     roster = _roster(client, wave.partition)
     _remember_holdings(children, wave.partition)
 
@@ -1137,13 +1371,16 @@ def watch_tick(
     # (GRPH-987). A bound seat keeps running after it moves its item to review, so waiting for
     # the reap left the branch local for the rest of that run — long enough for a reviewer in
     # any other checkout to be handed the item and bounce it for a reason that is not the diff.
+    # A bound_only seat (GRPH-1089) is told to exit at that moment instead of reviewing. This
+    # publish still has to land before that exit: the flag changes what the child does next,
+    # not whether its branch is on the remote when a reviewer arrives.
     #
-    # The order is not cosmetic. `_reap_exited` owns a child that has EXITED and does the fuller
-    # job — salvage, touchpoints, receipts — while `_reap_all` at the end of a wave writes the
-    # give-up line and the observe record only for children it reaped itself. Giving this the
-    # first turn put three local git calls ahead of the reap, which was enough wall time for a
-    # child to die mid-tick and be taken by the wrong one of the two: fifteen tests lost their
-    # records. A child that exits during this tick belongs to the reap, exactly as it did before.
+    # The order is not cosmetic. `_reap_exited` owns a child that has EXITED and does the
+    # fuller job — salvage, touchpoints, receipts, and the same exit line and observe record
+    # `_reap_all` writes. `_reap_all` skips a child already reaped. Giving the publish the
+    # first turn put three local git calls ahead of the reap, which was enough wall time for
+    # a child to die mid-tick and be taken by the wrong one of the two. A child that exits
+    # during this tick belongs to the reap.
     _publish_in_review(wave, children, client)
     _report_exits(children, client, wave)
     if persist is not None:
@@ -1276,6 +1513,7 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
             target, why = wave.diverted.get(tree.branch, (tree.branch, ""))
             _note_salvage(wave, client, tree.repo, target, held, reaped.siblings,
                           commit or "", base=tree.base, reason=why)
+        _record_reaped(wave, child, reaped)
 
 
 def _declared_into(wave: Wave, items: dict) -> dict:
@@ -1301,8 +1539,9 @@ def _note_staleness(wave: Wave, tree: Worktree) -> None:
 
     Fetches the trunk once per wave before measuring, because a remote-tracking ref is only
     as fresh as the last fetch and a check that never fetched would report every branch as
-    current. Rebasing somebody's work is not the supervisor's call; since GRPH-949 a BEHIND
-    branch is still pushed but not proposed as a PR (`_refuse_proposal`).
+    current. Rebasing somebody's work is not the supervisor's call. Since GRPH-949 a branch
+    that is behind is still pushed; since GRPH-1087 it is proposed unless the missed commits
+    share a file with it or `git merge-tree --write-tree` conflicts (`_classify_behind`).
     """
     if wave.stale_unmeasured or not tree.base:
         return
@@ -1317,6 +1556,124 @@ def _note_staleness(wave: Wave, tree: Worktree) -> None:
     behind = wt_mod.behind_ref(tree.repo, tree.base, ref)
     if behind:
         wave.stale[tree.branch] = (behind, ref)
+        _classify_behind(wave, tree, behind, ref)
+
+
+def _classify_behind(wave: Wave, tree: Worktree, behind: int, ref: str) -> None:
+    """What being `behind` commits behind `ref` does to the proposal (GRPH-1087, GRPH-1236).
+
+    The count in `wave.stale` stays either way — the BEHIND line is how far the trunk
+    moved, and that fact does not go away because the merge is clean. What changes is
+    the proposal:
+
+    1. `git merge-tree --write-tree ref branch` reports a conflict: refuse, and record
+       the conflicted files so `propose_branch` can send the item back to `next`.
+    2. It merges clean but the missed commits (`base`..`ref`) change a file the branch
+       also changes: `propose_branch` merges `ref` in first, so the reviewer reads the
+       head that will actually merge. Refusing this case left items `done` with no PR.
+    3. Clean and no shared files: record "N behind ref, no shared files, merges clean"
+       for the PR body and the BEHIND line, and propose as is.
+
+    A check that cannot be asked is a refusal, not a clean note: an empty file list we
+    failed to compute is how "1 behind, overlapping" would be proposed.
+    """
+    shared = wt_mod.shared_with_missed(tree.repo, tree.base, ref, tree.branch)
+    if shared is None:
+        wave.behind_block[tree.branch] = (
+            f"{behind} commit(s) behind {ref}; could not list the files those "
+            "commits change, so not proposing"
+        )
+        return
+    conflicts = wt_mod.conflicted_paths(tree.repo, ref, tree.branch)
+    if conflicts is None:
+        wave.behind_block[tree.branch] = (
+            f"{behind} commit(s) behind {ref}; merge-tree could not be asked, "
+            "so not proposing"
+        )
+        return
+    if conflicts:
+        wave.behind_block[tree.branch] = (
+            f"{behind} commit(s) behind {ref}; merge-tree conflicts in {_shown(conflicts)}"
+        )
+        wave.behind_conflict[tree.branch] = (ref, conflicts)
+        return
+    if shared:
+        wave.behind_merge[tree.branch] = (behind, ref, shared)
+        return
+    wave.behind_clean[tree.branch] = (
+        f"{behind} behind {ref}, no shared files, merges clean"
+    )
+
+
+def _shown(paths: list[str]) -> str:
+    return ", ".join(paths[:5]) + (f" (+{len(paths) - 5} more)" if len(paths) > 5 else "")
+
+
+def _merge_behind(wave: Wave, repo: Path, branch: str, base: str, items: list[str], *,
+                  client: Graphban | None) -> None:
+    """Bring a clean-but-overlapping branch up to date before it is proposed (GRPH-1236).
+
+    A real merge commit, never a rebase and never a force-push. The branch's pushed commits
+    keep their shas, and the push is a fast-forward. On success the note goes where the
+    clean note goes, in the PR body and on the BEHIND line, and that is how the reviewer
+    knows the head they sign off includes `ref`. If the merge or the push fails, the branch is
+    refused with that reason, as it was before this existed.
+    """
+    pending = wave.behind_merge.pop(branch, None)
+    if pending is None:
+        return
+    behind, ref, shared = pending
+    if len(items) > 1:
+        # Split per item (GRPH-1086): each item's commits are replayed onto the current
+        # trunk, so no per-item branch is behind. A merge commit here would name no item
+        # and stop the split.
+        wave.behind_clean[branch] = (
+            f"{behind} behind {ref}, shares {_shown(shared)}, merges clean; "
+            "each item is replayed onto it"
+        )
+        return
+    refusal = (f"{behind} commit(s) behind {ref}; missed commits also change "
+               f"{_shown(shared)}")
+    merged = wt_mod.merge_ref_into(repo, branch, ref)
+    if not merged.ok:
+        wave.behind_block[branch] = f"{refusal}; {merged.reason}"
+        return
+    pushed = wt_mod.push_branch(repo, branch, base)
+    if not pushed.ok:
+        wave.behind_block[branch] = (
+            f"{refusal}; merged {ref} locally but the push failed: "
+            f"{pushed.reason or 'not pushed'}"
+        )
+        return
+    wave.published[branch] = pushed
+    note = (f"merged {ref}@{merged.ref_sha[:12]} into the branch before proposing "
+            f"({behind} behind; shared files: {_shown(shared)})")
+    wave.behind_clean[branch] = note
+    for item_id in items:
+        _observe(wave, client, item_id, "trunk merge not recorded",
+                 kind="merged_trunk", branch=branch, reason=note)
+
+
+def _send_back_conflicted(wave: Wave, client: Graphban | None, items: list[str],
+                          branch: str) -> None:
+    """A branch that conflicts with the trunk goes back to `next`, not on to `done` (GRPH-1236).
+
+    Withholding the PR on its own left the item going to review and sign-off with nothing to
+    merge. The server moves the item. This client may not call `update_item`, and the
+    observation is the route it has. The reason is the next attempt's resume brief.
+    """
+    found = wave.behind_conflict.get(branch)
+    if found is None:
+        return
+    ref, files = found
+    brief = (
+        f"Branch {branch} conflicts with {ref} ({_shown(files)}). Next attempt: resume "
+        f"from {branch}, `git merge {ref}` (no rebase, no force-push), resolve keeping "
+        "both sides, rerun tests, hand to review."
+    )
+    for item_id in items:
+        _observe(wave, client, item_id, "conflict send-back not recorded",
+                 kind="behind_conflict", branch=branch, reason=brief)
 
 
 def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) -> None:
@@ -1345,8 +1702,13 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
     measured = wave.touched.get(child.branch) or []
     if not measured:
         return
+    # Before the comparison, so an older roster's missing history is part of the operand
+    # and not a note written after the branch was already judged against too little.
+    history = _restore_authored(child, client)
     declared: list[str] = []
     unread: list[str] = []
+    if history:
+        unread.append(history)
     for item_id in _branch_items(child):
         now, why = _declared_now(client, item_id)
         if now is None:
@@ -1364,6 +1726,76 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
     wave.collided = tp_mod.overlaps(wave.touched)
 
 
+def _restore_authored(child, client) -> str:
+    """Fill `ever_held` from the ledger when the roster never recorded it (GRPH-1085).
+
+    An older children file has no `ever_held`. The live roster only knows what the child
+    holds now, so items it already handed to review are gone from that reading and the
+    branch is judged against too few declarations. Those items name this agent as
+    `built_by`. That read is the fallback, and only the fallback: a roster that recorded
+    the list, even an empty one, is the history and is not second-guessed.
+
+    Returns "" when the history is known. A non-empty string is why it is not, for the
+    caller to record — an unreadable authorship must not look like a child that held
+    only what it holds now.
+    """
+    if getattr(child, "ever_held_known", True):
+        return ""
+    agent = str(getattr(child, "agent_id", None) or "").strip()
+    authored, why = _authored_by(client, agent)
+    if authored is None:
+        return f"ever_held was not in the roster and authorship could not be read ({why})"
+    seen = getattr(child, "ever_held", None)
+    if not isinstance(seen, list):
+        child.ever_held = []
+        seen = child.ever_held
+    for item_id in authored:
+        if item_id not in seen:
+            seen.append(item_id)
+    child.ever_held_known = True
+    return ""
+
+
+def _authored_by(client, agent_id: str) -> tuple[list[str] | None, str]:
+    """Item ids whose `built_by` is `agent_id`, or (None, why that list was not read).
+
+    `[]` means the listing was read and this agent authored nothing in it. None means
+    it was not read, or it does not report authorship. A lean page carries no `built_by`,
+    and a missing field is not "nobody built this".
+    """
+    if not agent_id:
+        return None, "the adopted child has no agent id"
+    if client is None:
+        return None, "no client to read items with"
+    allowed = getattr(client, "allowed", None)
+    if allowed is not None and "search_items" not in allowed:
+        return None, "this client may not list items"
+    try:
+        payload = client.call("search_items", fields="full", limit=10_000)
+    except Exception as exc:  # noqa: BLE001 — any failed read is reported, not treated as none
+        return None, str(exc) or type(exc).__name__
+    if not isinstance(payload, dict):
+        return None, "item listing was not a record"
+    if payload.get("has_more"):
+        return None, "item listing was truncated"
+    fields = payload.get("fields")
+    if isinstance(fields, list) and "built_by" not in fields:
+        return None, "the listing does not report built_by"
+    rows = payload.get("results")
+    if not isinstance(rows, list):
+        return None, "item listing carried no results list"
+    out: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or "built_by" not in row:
+            return None, "a row did not report built_by"
+        if str(row.get("built_by") or "") != agent_id:
+            continue
+        item_id = str(row.get("id") or "").strip()
+        if item_id and item_id not in out:
+            out.append(item_id)
+    return out, ""
+
+
 def _branch_items(child) -> list[str]:
     """Every item whose work can be on this child's branch, bound item first (GRPH-1079).
 
@@ -1374,7 +1806,9 @@ def _branch_items(child) -> list[str]:
     now. Not live roster holdings either: `_roster` is overwritten after `release_item`, so
     at reap the live view is empty.
 
-    `getattr` because a Child rebuilt by hand or by `adopt` may carry only `held_items`.
+    `getattr` because a Child rebuilt by hand may carry only `held_items`. `adopt`
+    restores `ever_held` from the roster; a file that predates the field is filled by
+    `_restore_authored` before this runs, from items this agent authored.
     """
     ids: list[str] = []
     assigned = getattr(child, "assigned", None)
@@ -1835,6 +2269,25 @@ def _branch_head(repo: Path, branch: str) -> str:
         return ""
 
 
+def _observe(wave: Wave, client: Graphban | None, item_id: str, failure: str,
+             **payload) -> None:
+    """Post one fact to the observations route (GRPH-975). Never fatal.
+
+    The supervisor client may not call `update_item` (PRD-22 §4). These receipts used to,
+    and every wave logged `not recorded` while `sign_off` reported the base uncompared.
+    `post_observation` raises on a refusal — telemetry's post swallows one, and a swallowed
+    base is the defect — so this except is what puts the reason on the wave. There is no
+    fallback call: a fallback would be the forbidden tool, and the test that drives the
+    real client would stay green while production kept failing.
+    """
+    if client is None or not item_id:
+        return
+    try:
+        client.post_observation(item_id=item_id, **payload)
+    except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
+        wave.failures.append(f"{item_id}: {failure} ({exc})")
+
+
 def _record_salvage_receipt(wave: Wave, client: Graphban | None, items: list[str],
                             branch: str, commit: str, *, reason: str = "") -> None:
     """Name the salvage on the item without opening a PR (GRPH-926).
@@ -1842,22 +2295,15 @@ def _record_salvage_receipt(wave: Wave, client: Graphban | None, items: list[str
     GRPH-830 still holds: the work must be findable from the item. A `/pull/` URL was
     the wrong receipt — those drafts were mergeable and titled `WIP: salvaged by gbfleet`.
     `reason` is set when the push went to a side branch so the original ref was not moved.
+
+    The server composes the note. This sends the branch, the commit and the reason.
     """
     if client is None or not items:
         return
-    short = (commit or "")[:12]
-    detail = f"salvaged onto `{branch}`" + (f" `{short}`" if short else "")
-    if reason:
-        detail += f" ({reason})"
-    detail += "; not proposed as a PR"
     for item_id in items:
-        try:
-            client.call("update_item", id=item_id, evidence=[{
-                "kind": "note",
-                "detail": detail,
-            }])
-        except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
-            wave.failures.append(f"{item_id}: salvage not recorded ({exc})")
+        _observe(wave, client, item_id, "salvage not recorded",
+                 kind="salvage", branch=branch, commit=commit or None,
+                 reason=reason or None)
 
 
 def _record_cut_from(wave: Wave, client, item_id: str | None, branch: str, base: str) -> None:
@@ -1872,10 +2318,10 @@ def _record_cut_from(wave: Wave, client, item_id: str | None, branch: str, base:
 
     A NOTE, and not the attestation it wants to be. Writing `kind: attestation` needs the
     `gate` scope, and a supervisor runs on whatever `GBFLEET_API_KEY` holds — `["read",
-    "write"]` on every wave measured here. The attestation would have been refused, this
-    `except` would have logged a wave failure nobody reads, and the gate would have found no
-    base and reported "not compared" for ever. A guard that does nothing is the defect being
-    fixed, so the carrier is the one a wave's own key can actually write.
+    "write"]` on every wave measured here. The attestation would have been refused, the
+    wave would have logged a failure nobody reads, and the gate would have found no base
+    and reported "not compared" for ever. The server writes the note from the facts posted
+    here (`fleet.record_observation`); this client still may not call `update_item`.
     `items.CUT_FROM_MARKER` is the other half of the pair.
 
     Never fatal. A wave is not broken by a missing receipt — but unlike the salvage note, the
@@ -1884,25 +2330,24 @@ def _record_cut_from(wave: Wave, client, item_id: str | None, branch: str, base:
     """
     if client is None or not item_id or not base:
         return
-    try:
-        client.call("update_item", id=item_id, evidence=[{
-            "kind": "note",
-            "detail": f"gbfleet: branch cut from {base} (`{branch}`) — the base, which "
-                      "carries none of this item's work",
-        }])
-    except Exception as exc:  # noqa: BLE001 — see the docstring: never fatal
-        wave.failures.append(f"{item_id}: base not recorded ({exc})")
+    _observe(wave, client, item_id, "base not recorded",
+             kind="cut_from", branch=branch, base=base)
 
 
 def _refuse_proposal(wave: Wave, branch: str) -> str:
-    """Why this branch must not be proposed as a PR, or "" (GRPH-949).
+    """Why this branch must not be proposed as a PR, or "" (GRPH-949, GRPH-1087).
 
     UNDECLARED and BEHIND were recorded and printed and never acted on, so one wave proposed
     a branch that changed nine undeclared files (App.tsx among them) and another three
     commits behind the trunk. A PR is a request to merge; asking for one on a branch whose
-    partition was wrong, or whose diff is against a trunk that no longer exists, hands the
-    reviewer a question the supervisor already had the answer to. Rebasing is not the
-    supervisor's call, so the branch is refused and the person decides.
+    partition was wrong hands the reviewer a question the supervisor already had the answer
+    to. Rebasing is not the supervisor's call.
+
+    Being behind is not itself that answer (GRPH-1087). A trunk that landed unrelated
+    commits during the build merges clean and shares no files, and refusing it made the
+    guard mostly refuse work that needed no rebase. Refuse the behind-ness only when
+    `_classify_behind` recorded a block, or when staleness was recorded and nobody
+    classified it — an unclassified stale mark is not a clean merge.
     """
     reasons = []
     missing = wave.undeclared.get(branch) or []
@@ -1910,9 +2355,13 @@ def _refuse_proposal(wave: Wave, branch: str) -> str:
         shown = ", ".join(missing[:5]) + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else "")
         reasons.append(f"changed file(s) outside every declared touchpoint: {shown}")
     stale = wave.stale.get(branch)
-    if stale:
-        behind, ref = stale
-        reasons.append(f"{behind} commit(s) behind {ref}; rebase before proposing")
+    if stale and branch not in wave.behind_clean:
+        block = wave.behind_block.get(branch)
+        if block:
+            reasons.append(block)
+        else:
+            behind, ref = stale
+            reasons.append(f"{behind} commit(s) behind {ref}; rebase before proposing")
     return "; ".join(reasons)
 
 
@@ -1949,6 +2398,7 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
                 own = branch
             _record_salvage_receipt(wave, client, [item], own, _branch_head(repo, own))
         return
+    _merge_behind(wave, repo, branch, base, items, client=client)
     refused = _refuse_proposal(wave, branch)
     if refused:
         # Pushed already, so the work is readable; only the merge request is withheld.
@@ -1956,6 +2406,7 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
         wave.unproposed[branch] = refused
         wave.failures.append(f"{branch}: not proposed — {refused}")
         _record_withheld(wave, client, items, branch, refused)
+        _send_back_conflicted(wave, client, items, branch)
         return
     if len(items) > 1:
         _propose_per_item(wave, repo, branch, items, base, client=client)
@@ -1964,9 +2415,19 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
 
 
 def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, subj: str, *,
-             client: Graphban | None) -> None:
-    """One draft PR for one branch carrying at most one item, and the receipt on that item."""
-    title, body = propose_mod.describe(branch, items, subj)
+             client: Graphban | None, attest: bool = False) -> None:
+    """One draft PR for one branch carrying at most one item, and the receipt on that item.
+
+    `attest` writes `Attests: <item>` into the body. The per-item split asks for it; a
+    single-item branch does not, and its body stays the one it had.
+    """
+    title, body = propose_mod.describe(branch, items, subj, attest=attest)
+    note = wave.behind_clean.get(branch)
+    if note:
+        # The same sentence the BEHIND line prints (GRPH-1087). The reviewer reads the
+        # PR, not the supervisor's stdout, so a clean-but-behind branch that says so
+        # only in the log is a branch whose staleness the reviewer never sees.
+        body = body.rstrip() + "\n\n" + note + "\n"
     got = propose_mod.propose(repo, branch, base, title=title, body=body)
     wave.proposed[branch] = got
     if got.reason and not got.url:
@@ -1979,14 +2440,10 @@ def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, s
     # PR-cooldown reads from (`items.pr_linked_at`). Starting that clock is the intended
     # effect: `done` should not be claimable the same minute the PR appeared.
     for item_id in items:
-        try:
-            client.call("update_item", id=item_id, evidence=[{
-                "kind": "url",
-                "detail": f"draft PR opened by gbfleet for {branch}",
-                "url": got.url,
-            }])
-        except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
-            wave.failures.append(f"{item_id}: PR opened but not recorded ({exc})")
+        # The server writes the url receipt and starts `pr_linked_at`. Sending the URL as
+        # an evidence array would be `update_item`, which this client may not call.
+        _observe(wave, client, item_id, "PR opened but not recorded",
+                 kind="pr_opened", branch=branch, url=got.url)
 
 
 def _record_withheld(wave: Wave, client: Graphban | None, items: list[str], branch: str,
@@ -1999,12 +2456,9 @@ def _record_withheld(wave: Wave, client: Graphban | None, items: list[str], bran
     """
     if client is None or not items:
         return
-    detail = f"pushed `{branch}`; not proposed as a PR — {reason}"
     for item_id in items:
-        try:
-            client.call("update_item", id=item_id, evidence=[{"kind": "note", "detail": detail}])
-        except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
-            wave.failures.append(f"{item_id}: withheld PR not recorded ({exc})")
+        _observe(wave, client, item_id, "withheld PR not recorded",
+                 kind="withheld", branch=branch, reason=reason)
 
 
 def _publish_item_branch(wave: Wave, repo: Path, name: str, base: str) -> bool:
@@ -2019,54 +2473,65 @@ def _publish_item_branch(wave: Wave, repo: Path, name: str, base: str) -> bool:
     return pushed.ok
 
 
+def _refuse_mixed(wave: Wave, branch: str, items: list[str], why: str, *,
+                  client: Graphban | None) -> None:
+    """The branch stays pushed and no PR is opened. The reason names the commit when
+    one commit is why (GRPH-1086)."""
+    reason = (f"carries {len(items)} items ({', '.join(items)}) and {why}; "
+              "one PR per item, so split it by hand")
+    wave.proposed[branch] = propose_mod.Proposed(branch=branch, skipped=True, reason=reason)
+    wave.unproposed[branch] = reason
+    wave.failures.append(f"{branch}: not proposed — {reason}")
+    _record_withheld(wave, client, items, branch, reason)
+
+
 def _propose_per_item(wave: Wave, repo: Path, branch: str, items: list[str], base: str, *,
                       client: Graphban | None) -> None:
-    """One branch and one PR per item, for a branch that carries several (GRPH-948).
+    """One branch and one PR per item, each cut from the base (GRPH-948, GRPH-1086).
 
-    A cluster claim is a scheduling unit, not a delivery unit. The reported child built four
-    items on one branch and the one PR it became — titled with three of them — was 19 files
-    and ~2,500 lines, merged before review, and needed four fix PRs.
+    A cluster claim is a scheduling unit, not a delivery unit. The reported child built
+    four items on one branch and the one PR it became carried all of them. Stacking the
+    PRs still left the later branch containing the earlier item's commits, so one merge
+    carried unreviewed work.
 
-    Each item's work ends at a commit on the branch (`split_by_item`); a branch is cut there
-    per item and the PRs are STACKED, each against the previous item's branch, so each diff is
-    that item's alone. A branch whose commits do not separate its items is not proposed at
-    all: a PR carrying two items is the defect, and the person splits it.
+    Each item's own commits are replayed onto the base and proposed against the base.
+    The body carries `Attests:` for that item alone. A commit that names no item, names
+    two, or will not apply without another item's commit refuses the whole branch:
+    opening the ones that did apply would merge part of a history that does not separate.
     """
     blocks, why = propose_mod.split_by_item(repo, branch, base, items)
     if why:
-        reason = (f"carries {len(items)} items ({', '.join(items)}) and {why}; "
-                  "one PR per item, so split it by hand")
-        wave.proposed[branch] = propose_mod.Proposed(branch=branch, skipped=True, reason=reason)
-        wave.unproposed[branch] = reason
-        wave.failures.append(f"{branch}: not proposed — {reason}")
+        _refuse_mixed(wave, branch, items, why, client=client)
         return
+    cut: list[tuple[str, str, str]] = []
+    for item, shas in blocks:
+        sha, err = propose_mod.replay_onto(repo, base, shas)
+        if err:
+            _refuse_mixed(wave, branch, items, err, client=client)
+            return
+        name = wt_mod.item_branch(branch, item)
+        if wt_mod.branch_exists(repo, name) and _branch_head(repo, name) != sha:
+            # Never moved: an existing branch at another commit is somebody's work.
+            _refuse_mixed(wave, branch, items, f"{name} exists at another commit", client=client)
+            return
+        cut.append((item, name, sha))
+    for item, name, sha in cut:
+        if wt_mod.branch_exists(repo, name):
+            continue
+        try:
+            wt_mod._git(repo, "branch", name, sha)
+        except wt_mod.GitError as exc:
+            wave.failures.append(f"{name}: could not be cut ({exc}); {item} not proposed")
+            return
     wave.proposed[branch] = propose_mod.Proposed(
         branch=branch, skipped=True,
-        reason=f"split into {len(blocks)} per-item branches, one PR each")
-    remote = wt_mod.remote_for(repo)
-    prev = base
-    for item, sha in blocks:
-        name = wt_mod.item_branch(branch, item)
-        if wt_mod.branch_exists(repo, name):
-            if _branch_head(repo, name) != sha:
-                # Never moved: an existing branch at another commit is somebody's work.
-                wave.failures.append(f"{name}: exists at another commit; {item} not proposed")
-                return
-        else:
-            try:
-                wt_mod._git(repo, "branch", name, sha)
-            except wt_mod.GitError as exc:
-                wave.failures.append(f"{name}: could not be cut ({exc}); {item} not proposed")
-                return
-        if not _publish_item_branch(wave, repo, name, prev):
-            wave.failures.append(f"{name}: not published, so {item} and every item stacked "
-                                 "on it were not proposed")
+        reason=f"split into {len(cut)} per-item branches, one PR each")
+    for item, name, _sha in cut:
+        if not _publish_item_branch(wave, repo, name, base):
+            wave.failures.append(f"{name}: not published, so {item} was not proposed")
             return
-        _open_pr(wave, repo, name, [item], prev, propose_mod.subject(repo, name, prev),
-                 client=client)
-        # `propose` passes the part after the remote to `gh --base`, so the next item's base
-        # is named as a remote-tracking ref, which the push has just written.
-        prev = f"{remote}/{name}"
+        _open_pr(wave, repo, name, [item], base, propose_mod.subject(repo, name, base),
+                 client=client, attest=True)
 
 
 def _note_salvage(wave: Wave, client: Graphban | None, repo: Path, branch: str,
@@ -2250,12 +2715,20 @@ class Merger:
         # GRPH-880: discover candidates from the attestation, not from observing departures.
         self._discover_candidates()
         merged_any = False
+        release: str | None = None
         for item_id in list(self.watching):
             stamp = now()
             if stamp - self.asked_at.get(item_id, -1e9) < MERGE_RECHECK_S:
                 continue
+            if release is None:
+                # GRPH-P57 D1: read per tick, so unsetting the ref (the manual override) or
+                # setting it takes effect on the next tick. Unreadable is not "unset" — an
+                # unread rule must not read as an absent one — so nothing is asked.
+                release = self._release()
+                if release is None:
+                    break
             self.asked_at[item_id] = stamp
-            got = self._attempt(wave, item_id)
+            got = self._attempt(wave, item_id, release)
             if got is None:
                 continue
             wave.merged[item_id] = got
@@ -2316,7 +2789,20 @@ class Merger:
             self._seen.add(item_id)
             self.watching.setdefault(item_id, str(row.get("branch") or ""))
 
-    def _attempt(self, wave: Wave, item_id: str) -> "propose_mod.Merged | None":
+    def _release(self) -> str | None:
+        """The project's release ref ("" when unset), or None when it could not be read."""
+        try:
+            roster = self.client.call("fleet_status")
+        except NotPermitted as exc:
+            self._disable(f"cannot read the release ref: {exc}")
+            return None
+        except (ToolFailed, ServerUnreachable) as exc:
+            observe.emit("merge_unread", item="", detail=f"release ref: {exc}")
+            return None
+        return propose_mod.release_ref(roster if isinstance(roster, dict) else None)
+
+    def _attempt(self, wave: Wave, item_id: str,
+                 release: str = "") -> "propose_mod.Merged | None":
         try:
             item = self.client.call("get_item_details", id=item_id) or {}
         except NotPermitted as exc:
@@ -2337,6 +2823,9 @@ class Merger:
             reviewed=propose_mod.reviewed_commit(item),
             green=propose_mod.green_commits(item),
             paths=item.get("touchpoints") or [],
+            release=release,
+            scans=propose_mod.scans_clean_verdicts(item),
+            siblings=propose_mod.pr_receipts(item),
         )
         if got.ok and got.commit:
             got = self._record(wave, got)
@@ -2370,13 +2859,13 @@ class Merger:
         return got
 
     def _say(self, item_id: str, got: "propose_mod.Merged") -> None:
-        key = f"{got.ok}|{got.pending}|{got.skipped}|{got.reason}"
+        key = f"{got.ok}|{got.pending}|{got.skipped}|{got.reason}|{got.release}"
         if self.said.get(item_id) == key:
             return
         self.said[item_id] = key
         observe.emit("merge", item=item_id, ok=got.ok, pending=got.pending,
                      skipped=got.skipped, commit=got.commit, url=got.url,
-                     checked=list(got.checked), detail=got.reason)
+                     checked=list(got.checked), release=got.release, detail=got.reason)
 
     def _disable(self, why: str) -> None:
         self.disabled_because = why
@@ -2515,6 +3004,7 @@ def _wait_out(
     persist: Callable[[], None] | None = None,
     merger: "Merger | None" = None,
     base_branch: str = "",
+    refill: Callable[[], bool] | None = None,
 ) -> None:
     """Wait for children to exit on their own, stopping any that overrun or outlive their claim.
 
@@ -2527,18 +3017,40 @@ def _wait_out(
     cannot reach the server may keep building until its own deadline and not past it:
     that is not optimism, it is what the lease promises. Past it, the server has given
     the item to somebody else and a second agent is already working it.
+
+    `refill` starts the next seat as soon as one slot is free (GRPH-929), including
+    while a sibling is still running. `--max-workers` is concurrent; one long child
+    must not hold the other slots idle.
+
+    Once NOTHING is running, `_reap_all` runs before any `watch_tick`. Calling
+    `watch_tick` on a batch that has already exited spends the publish's git calls
+    before the end-of-wave reap, and a child that dies in that gap is taken by the
+    wrong reaper. A child that exits while a sibling is still in the loop is reaped
+    by `watch_tick`'s `_reap_exited`, which writes the same exit line and observe
+    record `_reap_all` does, so that path is not a silent drop either.
     """
-    while any(child.running for child in children):
-        # GRPH-1056. Waiting on children is the work. Without this, a wave longer
-        # than the idle threshold is reclaimed out from under its own children.
-        if wave.lock is not None:
-            wave.lock.touch()
-        watch_tick(wave, children, limits, client, debug=debug, persist=persist,
-                   base_branch=base_branch)
-        if merger is not None:
-            merger.tick(wave)
-        if any(child.running for child in children):
-            sleep(poll)
+    while True:
+        while any(child.running for child in children):
+            # GRPH-1056. Waiting on children is the work. Without this, a wave longer
+            # than the idle threshold is reclaimed out from under its own children.
+            if wave.lock is not None:
+                wave.lock.touch()
+            watch_tick(wave, children, limits, client, debug=debug, persist=persist,
+                       base_branch=base_branch)
+            if merger is not None:
+                merger.tick(wave)
+            # A child may have exited inside that tick. Take the free slot now,
+            # while any sibling is still running. `refill` leaves seats pending
+            # when the cap is merely full, and parks them when the server is gone.
+            if refill is not None:
+                refill()
+            if any(child.running for child in children):
+                sleep(poll)
+        # Nothing is running. Reap before the next refill, and do not watch_tick.
+        if not any(child.running for child in children):
+            _reap_all(wave, children, client=client, base_branch=base_branch)
+        if refill is None or not refill():
+            break
 
     # One last read, so a partition that ended just as the children did is still
     # reconciled rather than left as the last thing that happened.
@@ -2733,8 +3245,10 @@ def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = No
     credentials BEST is the one that leaves one behind.
 
     **`client` is the one that records PR receipts on the item** (GRPH-869). The planner
-    in `until`, the single client in `up`. A supervisor-allowlist client raises
-    `NotPermitted` on `update_item`; passing it here is the bug this parameter fixes.
+    in `until`, the single client in `up`. Those receipts are an observations post
+    (GRPH-975), which a supervisor-allowlist client may make — they are not `update_item`.
+    The merge receipt further down still calls `update_item`, and that call stays on a
+    client whose tool allowlist includes it.
     """
     for child in children:
         if child.reaped:
@@ -2786,48 +3300,66 @@ def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = No
         if not _inside(child.seat_path, child.worktree):
             seat_mod.remove(child.seat_path)
 
-        code = child.process.returncode
-        # gbagent.loop: 70 = handoff could not be written (item still claimed);
-        # 75 = stuck, evidence written, item released. P30 D6: 70 is a supervisor
-        # failure; 75 is a completed give-up, visible, not a failure by itself.
-        if code == 70:
-            wave.failures.append(
-                f"{child.adapter} pid {child.pid}: handoff-failed (exit 70); "
-                "the item is still claimed"
-            )
-        elif code == 75:
-            wave.give_ups.append(
-                f"{child.adapter} pid {child.pid}: stuck (exit 75); item released, "
-                "worktree salvaged"
-            )
+        _record_reaped(wave, child, reaped)
 
-        observe.child(ChildRecord(
-            adapter=child.adapter,
-            binary_version=child.binary_version,
-            worktree=str(child.worktree),
-            branch=child.branch,
-            pid=child.pid,
-            seat_id=child.seat_id,
-            agent_id=child.agent_id,
-            # None means it never registered, and that is the whole point of the field:
-            # a process that ran, spent money and produced nothing, while the roster
-            # showed one agent fewer. Omitting it would read as nothing to report;
-            # zeroing it would read as instant.
-            registration_latency=(
-                child.registration_latency
-                if child.registration_latency is not None
-                else NEVER_REGISTERED
-            ),
-            exit_code=child.process.returncode,
-            exit_meaning=explain_exit(child.adapter, child.process.returncode),
-            stopped_because=child.stopped_because.value if child.stopped_because else None,
-            reap=reaped.disposition.value,
-            salvage_commit=reaped.salvage.commit if reaped.salvage else None,
-            credential_in_history=(
-                list(reaped.salvage.credential_in_history) if reaped.salvage else []
-            ),
-            touched=wave.touched.get(child.branch, []),
-        ))
+
+def _record_reaped(wave: Wave, child: Child, reaped: Reaped) -> None:
+    """The exit line and the observe record for a child this wave just reaped.
+
+    Both reapers call this. `_reap_exited` takes a child the moment it exits,
+    which is while a sibling may still be running. `_reap_all` takes whoever is
+    left once nothing is running, and it skips a child already marked reaped.
+    These two writes used to live only in `_reap_all`, so the watch loop's reap
+    was a silent drop: a fast child lost its record, and so did a one-child wave
+    whose last tick ran `watch_tick` first.
+    """
+    # `returncode` is what Popen stores after `poll`. The watch-loop tests hand
+    # in a process double that only implements `poll`, and reading the missing
+    # attribute here used to crash the tick after a successful salvage.
+    code = getattr(child.process, "returncode", None)
+    if code is None:
+        code = child.process.poll()
+    # gbagent.loop: 70 = handoff could not be written (item still claimed);
+    # 75 = stuck, evidence written, item released. P30 D6: 70 is a supervisor
+    # failure; 75 is a completed give-up, visible, not a failure by itself.
+    if code == 70:
+        wave.failures.append(
+            f"{child.adapter} pid {child.pid}: handoff-failed (exit 70); "
+            "the item is still claimed"
+        )
+    elif code == 75:
+        wave.give_ups.append(
+            f"{child.adapter} pid {child.pid}: stuck (exit 75); item released, "
+            "worktree salvaged"
+        )
+
+    observe.child(ChildRecord(
+        adapter=child.adapter,
+        binary_version=child.binary_version,
+        worktree=str(child.worktree),
+        branch=child.branch,
+        pid=child.pid,
+        seat_id=child.seat_id,
+        agent_id=child.agent_id,
+        # None means it never registered, and that is the whole point of the field:
+        # a process that ran, spent money and produced nothing, while the roster
+        # showed one agent fewer. Omitting it would read as nothing to report;
+        # zeroing it would read as instant.
+        registration_latency=(
+            child.registration_latency
+            if child.registration_latency is not None
+            else NEVER_REGISTERED
+        ),
+        exit_code=code,
+        exit_meaning=explain_exit(child.adapter, code),
+        stopped_because=child.stopped_because.value if child.stopped_because else None,
+        reap=reaped.disposition.value,
+        salvage_commit=reaped.salvage.commit if reaped.salvage else None,
+        credential_in_history=(
+            list(reaped.salvage.credential_in_history) if reaped.salvage else []
+        ),
+        touched=wave.touched.get(child.branch, []),
+    ))
 
 
 def _inside(path: Path, root: Path) -> bool:

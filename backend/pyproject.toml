@@ -1,6 +1,6 @@
 [project]
 name = "graphban-api"
-version = "2026.10.11"
+version = "2026.10.27"
 description = "Graphban backend — linear tracker + agent memory + MCP tools"
 license = "LicenseRef-FSL-1.1-Apache-2.0"
 requires-python = ">=3.12"
@@ -20,6 +20,7 @@ dependencies = [
     "httpx>=0.28",
     "cryptography>=43",
     "redis>=5.2",
+    "numpy>=2.0",
 ]
 
 [project.scripts]
@@ -32,9 +33,6 @@ agentledger = "app.cli:main"
 # Cloud chat/extraction via Claude. Local (Ollama) and stub need no extra deps.
 cloud = [
     "anthropic>=0.40",
-]
-billing = [
-    "stripe>=11",
 ]
 dev = [
     "pytest>=8.3",
@@ -59,7 +57,27 @@ build-backend = "hatchling.build"
 # metadata. The guard that the installed wheel ships them is the
 # `backend-packaging` job in ci.yml.
 packages = ["app"]
+# Refusal coverage is a build artefact (GRPH-1185): `scripts/refusal_ratchet.py publish` writes
+# it before the build and .gitignore keeps it out of git — which would also keep it out of this
+# wheel, since hatchling honours .gitignore. `artifacts` ships it when present; absent, the
+# install reports `published: false`. Guarded by the `backend-packaging` job in ci.yml.
+artifacts = ["app/data/refusal_coverage.json", "app/data/gban_skills.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+# Read by `scripts/scan_ci.py` (`bandit -c pyproject.toml -r .`, GRPH-1110). No rule is skipped
+# here: each finding in `app/` is fixed or carries a line-level `# nosec <id>` with its reason.
+[tool.bandit]
+exclude_dirs = [
+    # Test code asserts by design (B101) and builds fixtures with literal secrets and SQL. It
+    # never ships: `packages = ["app"]` above is the whole wheel.
+    "tests",
+    # Append-only migration history. Its B608s interpolate module-level table and column
+    # constants into DDL run once by the operator; no request reaches them, and rewriting
+    # applied revisions to carry markers is churn on history.
+    "alembic/versions",
+    # A local virtualenv is third-party code, audited by pip-audit, not ours to lint.
+    ".venv",
+]

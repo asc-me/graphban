@@ -7,12 +7,15 @@ while multi-project callers can still be explicit.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app import tagging
 from app.models import (
+    Agent,
+    Event,
     Item,
     LegacyEntityKey,
     Membership,
@@ -271,6 +274,20 @@ def retag_project(db: Session, project_id: str, new_tag: str) -> Project:
 # views already use (`requests.untriaged_clause`, `memory.published_lessons_where`).
 # A second copy would drift, and loading the rows to call len() is the cost GRPH-431
 # removed. The statement count does not grow with the queue.
+#
+# The sidebar badges (GRPH-1132, PRD-P59 §D4) each restate the population of the page they
+# sit on, so each is defined by that page and not by a fresh reading of the word:
+#   items_open          Tracker — every status except `done`.
+#   requests_untriaged  Requests — `requests.untriaged_count`, the triage queue's own rule.
+#   code_nodes          Code graph — `code_graph.count_nodes`, the map's own total.
+#   mcp_tools           MCP Tools — `len(TOOLS)`, what `/mcp/tools` lists. Instance-wide by
+#                       nature (the catalog has no project), so it is the one non-zero
+#                       field a scoped call shares with every project.
+#   fleet_agents        Fleet — roster rows not dismissed (FleetView's `kept`, Live's total).
+#   outposts            Outposts — distinct hosts among those rows, grouped the way
+#                       `groupOutposts` does it, unspecified hosts as one bucket.
+#   live_agents         Live — those rows not offline: seen inside the presence TTL on a
+#                       credential that is not revoked (`fleet.list_agents`' rule, in SQL).
 def shell_counts(db: Session, project_id: str | None) -> dict:
     """The integers the shell draws, without the collections it used to draw them from."""
     from app.services import memory as mem_svc
@@ -282,6 +299,7 @@ def shell_counts(db: Session, project_id: str | None) -> dict:
         return {
             "items": 0, "items_in_progress": 0, "requests": 0, "review": 0,
             "triage_new": 0, "lessons_published": 0,
+            **{k: 0 for k in BADGE_FIELDS},
         }
 
     def _count(model, **where) -> int:
@@ -304,4 +322,187 @@ def shell_counts(db: Session, project_id: str | None) -> dict:
         "review": review,
         "triage_new": req_svc.untriaged_count(db, project_id),
         "lessons_published": mem_svc.count_published_lessons(db, project_id),
+        **badge_counts(db, project_id),
     }
+
+
+#: The fields GRPH-1132 added for the sidebar badges, in the order the nav draws them.
+BADGE_FIELDS = ("items_open", "requests_untriaged", "code_nodes", "mcp_tools",
+                "fleet_agents", "outposts", "live_agents")
+
+# `groupOutposts` (web/src/features/fleet/outposts.ts): a label like `opus @ mac:wt-2`.
+_LABEL_HOST = re.compile(r"@\s*([^:\s]+)")
+
+
+def outpost_host(capabilities_host: object, label: str | None) -> str:
+    """The host an agent is grouped under on the Outposts page; "" is unspecified."""
+    if isinstance(capabilities_host, str) and capabilities_host.strip():
+        return capabilities_host.strip()
+    match = _LABEL_HOST.search(label or "")
+    return match.group(1).strip() if match else ""
+
+
+def badge_counts(db: Session, project_id: str) -> dict[str, int]:
+    """The Build/Observe badge numbers (GRPH-1132). One statement each, none per row."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import or_
+
+    from app.mcp_server import LIVE_TOOL_COUNT
+    from app.models import Agent, ApiKey
+    from app.services import code_graph as code_svc
+    from app.services import fleet as fleet_svc
+    from app.services import requests as req_svc
+
+    roster = (Agent.project_id == project_id, Agent.dismissed_at.is_(None))
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=fleet_svc.presence_ttl_seconds())
+    live = db.scalar(
+        select(func.count()).select_from(Agent)
+        .outerjoin(ApiKey, ApiKey.id == Agent.api_key_id)
+        .where(*roster, Agent.last_seen_at >= cutoff, Agent.state != "quarantined",
+               or_(ApiKey.id.is_(None), ApiKey.revoked.is_(False)))
+    ) or 0
+
+    # Outposts are grouped by a host that may live in a JSON capability OR be parsed out of
+    # the label, which no portable SQL expression does on both engines. So the database
+    # collapses rows to their distinct (host, label) pairs and Python applies the page's
+    # rule to those: still one statement, and it reads pairs rather than agents. A count
+    # written as `count(distinct host)` would drop the label-derived and unspecified
+    # buckets and disagree with the page it links to.
+    pairs = db.execute(
+        select(Agent.capabilities["host"].as_string(), Agent.label)
+        .where(*roster).distinct()
+    ).all()
+    hosts = {outpost_host(host, label) for host, label in pairs}
+
+    return {
+        "items_open": db.scalar(
+            select(func.count()).select_from(Item)
+            .where(Item.project_id == project_id, Item.status != "done")
+        ) or 0,
+        "requests_untriaged": req_svc.untriaged_count(db, project_id),
+        "code_nodes": code_svc.count_nodes(db, project_id),
+        "mcp_tools": LIVE_TOOL_COUNT,
+        "fleet_agents": db.scalar(select(func.count()).select_from(Agent).where(*roster)) or 0,
+        "outposts": len(hosts),
+        "live_agents": live,
+    }
+
+
+# ---- project switcher summaries (GRPH-1131 / PRD-P59 D3) -----------------------------------
+
+def _aware(dt: datetime | None) -> datetime | None:
+    # SQLite hands back naive datetimes, Postgres aware ones; both are UTC here.
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def project_summaries(db: Session, readable_ids: list[str]) -> list[dict]:
+    """One switcher row per readable project, from grouped aggregates (GRPH-1131).
+
+    The caller passes the authz-resolved readable ids and every query is filtered by them, so
+    a project outside the list is neither returned nor counted. The statement count is fixed —
+    one per source, never one per project or item — because fetching each project's
+    collections to count them is the GRPH-431 hang.
+
+    - `agent_count` is the roster `list_agents` shows: every agent not dismissed.
+    - `live_agents` is fleet presence: heartbeat inside the presence TTL, not quarantined.
+    - `last_activity_at` is the latest item change or audit event; null when there is none.
+    """
+    from app.services import fleet as fleet_svc
+    from app.services import gitops
+
+    if not readable_ids:
+        return []
+    projects = list(db.scalars(
+        select(Project).where(Project.id.in_(readable_ids)).order_by(Project.name)).all())
+    if not projects:
+        return []
+    ids = [p.id for p in projects]
+
+    items = {pid: (n, latest) for pid, n, latest in db.execute(
+        select(Item.project_id, func.count(), func.max(Item.updated_at))
+        .where(Item.project_id.in_(ids)).group_by(Item.project_id))}
+
+    live_cutoff = datetime.now(timezone.utc) - timedelta(seconds=fleet_svc.presence_ttl_seconds())
+    is_live = (Agent.last_seen_at >= live_cutoff) & (Agent.state != "quarantined")
+    agents = {pid: (n, live or 0) for pid, n, live in db.execute(
+        select(Agent.project_id, func.count(), func.sum(case((is_live, 1), else_=0)))
+        .where(Agent.project_id.in_(ids), Agent.dismissed_at.is_(None))
+        .group_by(Agent.project_id))}
+
+    events = dict(db.execute(
+        select(Event.project_id, func.max(Event.ts))
+        .where(Event.project_id.in_(ids)).group_by(Event.project_id)).all())
+
+    branches = gitops.base_branches(db, projects)
+
+    out = []
+    for p in projects:
+        item_count, item_latest = items.get(p.id, (0, None))
+        agent_count, live = agents.get(p.id, (0, 0))
+        stamps = [t for t in (_aware(item_latest), _aware(events.get(p.id))) if t is not None]
+        out.append({
+            "id": p.id,
+            "name": p.name,
+            "tag": p.tag,
+            "accent": p.accent,
+            "item_count": item_count,
+            "agent_count": agent_count,
+            "live_agents": int(live),
+            "default_branch": branches.get(p.id),
+            "last_activity_at": max(stamps) if stamps else None,
+        })
+    return out
+
+
+# ---- release ref (GRPH-1109 / PRD-P57 S2) ----------------------------------------------------
+
+RELEASE_REF_LITERAL = "release_ref stores one literal ref, not a pattern"
+
+
+def normalize_release_ref(raw: str | None) -> str | None:
+    """`None` or blank clears; anything else must be ONE literal branch name.
+
+    Globs are refused with the same metacharacters gitops refuses on its branch literals
+    (`gitops.GLOB_METACHARS`), and so are naming tokens and whitespace: this column stores
+    the one ref the merge rule watches, so `release/*` has no single answer to give.
+    """
+    from app.services.gitops import GLOB_METACHARS
+
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if any(ch in value for ch in GLOB_METACHARS) or "{" in value or "}" in value:
+        raise ValueError(f"{RELEASE_REF_LITERAL}: {value!r} is a pattern")
+    if any(ch.isspace() for ch in value):
+        raise ValueError(f"{RELEASE_REF_LITERAL}: {value!r} contains whitespace")
+    return value
+
+
+def set_release_ref(db: Session, project: Project, raw: str | None) -> str | None:
+    """Store (or clear) the project's release ref. Caller commits.
+
+    No linked-box check, on purpose: the gitops PATCH refusal on a linked box guards the
+    org's delivery contract, and this is a fact about this box's own repository.
+    """
+    project.release_ref = normalize_release_ref(raw)
+    return project.release_ref
+
+
+def release_ref_view(db: Session, project_id: str | None) -> dict:
+    """`{ref, source}` for a reader that must not mistake unset for `main`.
+
+    `source` is `project` when set and `unmeasured` when not — the gitops word for the
+    same state, so a supervisor never has to treat a bare null as an answer. A missing
+    project is `unknown`: nobody could look, which is not the same as nothing set.
+    """
+    project = db.get(Project, project_id) if project_id else None
+    if project is None:
+        return {"ref": None, "source": "unknown"}
+    if project.release_ref:
+        return {"ref": project.release_ref, "source": "project"}
+    return {"ref": None, "source": "unmeasured"}

@@ -54,11 +54,22 @@ describe("the org plane is absent on self-host, not guarded", () => {
     expect(app).toMatch(/path=\{`\/\$\{path\}`\}/);
   });
 
-  it("names Fleet.v1 and Fleet.v2 as pages, and aliases /fleet to v2", () => {
-    expect(app).toContain('["fleet.v1"');
-    expect(app).toContain('["fleet.v2"');
-    expect(app).toContain("FleetAliasRedirect");
-    expect(app).toContain('"/fleet.v2"');
+  it("names Fleet as one page, and redirects fleet.v1 / fleet.v2 to its tabs", () => {
+    expect(app).toContain('["fleet"');
+    expect(app).not.toContain('["fleet.v');
+    expect(app).toContain("FleetTabRedirect");
+    expect(app).toContain('tab="harness"');
+  });
+
+  it("names Memory as one page, and redirects memory-review / memory-triage to it (hosted and flat)", () => {
+    expect(app).toContain('["memory"');
+    expect(app).not.toContain('["memory-review"');
+    expect(app).not.toContain("MemoryTriageView");
+    for (const old of ["memory-review", "memory-triage"]) {
+      expect(app).toContain(`path="/${old}" element={<MemoryRedirect />}`);
+      expect(app).toContain(`path="/p/:tag/${old}" element={<MemoryRedirect />}`);
+      expect(app).toContain(`path="/${old}" element={<FlatRedirect to="memory" />}`);
+    }
   });
 
   it("clears org state on boot for a self-host build", () => {

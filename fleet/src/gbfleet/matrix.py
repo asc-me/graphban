@@ -1000,12 +1000,19 @@ def apply_tier_overrides(matrix: "Matrix",
 
 
 def vendor_of(harness: str, matrix: "Matrix | None" = None) -> str:
-    """The vendor a matrix row gives this harness, else the harness name itself."""
+    """The vendor a matrix row gives this harness, else the harness name itself.
+
+    Folded through `adapters.canonical_vendor` (GRPH-1120). A grok row that still
+    says `grok`, and the harness-name fallback, come out as `xai` — the spelling
+    `Grok.vendor` declares — so a new capability row cannot carry the other one.
+    """
     rows = (matrix or load()).rows
+    declared = harness
     for r in rows:
         if r.harness == harness:
-            return r.vendor
-    return harness
+            declared = r.vendor
+            break
+    return adapters_mod.canonical_vendor(declared)
 
 
 def declaration(harness: str, model: str = "", tier: str | None = None,

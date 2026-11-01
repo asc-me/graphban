@@ -38,8 +38,8 @@ An agent's `create_item` over MCP and a user's "New item" in the web app run the
 code, which is why an MCP write appears instantly in the UI.
 
 - **REST** (`routers/*.py`) — thin: parse/validate → call a service → serialize. JWT auth.
-- **MCP** (`mcp_server.py`) — a JSON-RPC 2.0 HTTP endpoint (`POST /api/mcp`) exposing 11
-  tools, authed by a scoped API key, dispatching to the same services. Each `tools/call`
+- **MCP** (`mcp_server.py`) — a JSON-RPC 2.0 HTTP endpoint (`POST /api/mcp`) exposing 66 MCP tools,
+  authed by a scoped API key, dispatching to the same services. Each `tools/call`
   is metered (`mcp_tool_stats`) for the MCP Tools page.
 - **Public** (`routers/public.py`) — unauthenticated, rate-limited intake for the embed
   widgets and the GitHub webhook.
@@ -66,32 +66,30 @@ because the pgvector column dimension is fixed at migration time.
 ## Semantic memory
 
 Memory shards are embedded on write and searched by cosine similarity. On Postgres this
-uses the pgvector `<=>` operator with an ivfflat index; a Python cosine fallback covers
-the SQLite/no-extension path. A dialect-aware `EmbeddingType` stores a real `vector`
+uses the pgvector `<=>` operator with an HNSW index (migration 0016 replaced ivfflat);
+a Python cosine fallback covers the SQLite/no-extension path. A dialect-aware
+`EmbeddingType` stores a real `vector`
 column on Postgres and JSON on SQLite. Editing a shard re-embeds it (fixes stale
 embeddings); `POST /api/memory/backfill` re-embeds everything after a provider switch.
 
 ## Streaming (F3, chat)
 
 `POST /api/agent/chat/stream` returns `text/event-stream`: a `shards` event, then `delta`
-token events, then `done`. Each `ChatModel` has a native `stream()` (stub chunks; Ollama
-reads ndjson; Anthropic uses `messages.stream`), with a non-streaming fallback. The SPA
-reads it via `fetch` + `ReadableStream` (not `EventSource`, so it can send the JWT header)
-and appends deltas into the agent bubble. Per-project live-invalidation SSE is a
-follow-on; only chat streaming is wired today.
+token events, then `done`. The same shape is used by code chat
+(`POST /api/agent/code/stream`, a `nodes` event first), the PRD grill
+(`POST /api/prds/{id}/grill/stream`), and the assistant
+(`POST /api/assistant/threads/{id}/message`). Each `ChatModel` has a native `stream()`
+(stub chunks; Ollama reads ndjson; Anthropic uses `messages.stream`), with a
+non-streaming fallback. The SPA reads chat via `fetch` + `ReadableStream` (not
+`EventSource`, so it can send the JWT header) and appends deltas into the agent bubble.
 
 ## Persistence & migrations (F2)
 
-Postgres schema is owned by **Alembic** and runs on API startup; SQLite (tests, zero-infra
-dev) uses `create_all`. Migrations to date:
-
-```
-0001 initial     users, projects, memberships, items, memory_shards (pgvector + ivfflat),
-                 requests, links, api_keys
-0002 prds        prds, prd_versions
-0003 roadmap_mcp milestones, mcp_tool_stats
-0004 platform    platform_config
-```
+Postgres schema is owned by **Alembic** (`backend/alembic/versions/`) and runs on API
+startup; SQLite (tests, zero-infra dev) uses `create_all`. The head of the chain is the
+range `AGENTS.md` states (`currently 0001–…`), and a test keeps that sentence current, so
+this file does not copy the number. Vector indexes are **HNSW**. Migration 0016 replaced
+the ivfflat indexes created in 0001 and 0013.
 
 ## Auth
 
@@ -109,8 +107,9 @@ Vite + React 19 + TypeScript. Tailwind v4 with the design tokens as CSS variable
 (dark-only). Data via TanStack Query over a typed `lib/api.ts` (auth pipeline with refresh)
 and a separate `lib/publicApi.ts` (unauthenticated). UI primitives are shadcn-style
 (Radix + cva) themed to the design. A dependency-free markdown renderer (`lib/markdown.tsx`)
-and LCS line-diff (`lib/diff.ts`) power the PRD editor; the Links graph uses a small
-deterministic force-directed layout. Charts follow the dataviz method (status/type palettes
+and LCS line-diff (`lib/diff.ts`) power the PRD editor; the Links graph and the code
+graph share one deterministic force-directed layout (`web/src/lib/graph`). Charts follow
+the dataviz method (status/type palettes
 with labels, rounded ends, 2px gaps, ink-token text).
 
 ## Directory layout
@@ -128,7 +127,7 @@ backend/app/
   routers/           auth · projects · items · requests · memory · agent · apikeys ·
                      prds · analytics · platform · reports · public · admin ·
                      artifacts · assistant · fleet · learning · orgs · sync
-  mcp_server.py      JSON-RPC MCP endpoint (63 tools) + metering
+  mcp_server.py      JSON-RPC MCP endpoint (66 tools) + metering
   seed.py            the design dataset
 alembic/             migration chain (0001 → head)
 

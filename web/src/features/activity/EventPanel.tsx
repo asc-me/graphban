@@ -5,6 +5,7 @@ import { cn } from "@/lib/cn";
 import type { Event } from "@/lib/types";
 
 import { VerdictChip } from "./EventRow";
+import { RefusalRuleLink } from "./RefusalRuleLink";
 import { absTime, relTime, summarizeMeta, verdictOf } from "./model";
 
 /**
@@ -71,6 +72,8 @@ export function EventPanel({
             ))}
           </ol>
         </Section>
+
+        <RefusalRule event={e} />
 
         <Section title="Record">
           <dl className="flex flex-col gap-1">
@@ -255,5 +258,20 @@ function NotRecorded({ label, detail }: { label: string; detail: string }) {
         Not recorded. {detail}
       </p>
     </div>
+  );
+}
+
+/**
+ * Refusal → rule (GRPH-1164, frames 4a1–4b2). A mapped refusal links to its rule on the Rules
+ * map; an unmapped one says so plainly and links to the unfocused map — it must never read as
+ * a broken link or as "no rule applies".
+ */
+function RefusalRule({ event: e }: { event: Event }) {
+  if (e.action !== "refusal" && e.action !== "refusal_unmapped") return null;
+  const ruleId = typeof e.meta?.rule_id === "string" && e.meta.rule_id ? e.meta.rule_id : null;
+  return (
+    <Section title="Rule">
+      <RefusalRuleLink ruleId={e.action === "refusal" ? ruleId : null} eventId={e.id} testId="refusal-rule" />
+    </Section>
   );
 }

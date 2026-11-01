@@ -1,4 +1,15 @@
-import { Bot, X } from "lucide-react";
+import {
+  Activity,
+  BarChart3,
+  BookMarked,
+  Bot,
+  Inbox,
+  ListChecks,
+  Network,
+  Radar,
+  Users,
+  X,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -15,7 +26,6 @@ import {
   useCodeMap,
   useCounts,
   useDashboard,
-  useFleet,
   useGalaxy,
   useOrgs,
 } from "@/lib/queries";
@@ -80,13 +90,12 @@ export function ProjectHome() {
   const dashQ = useDashboard(projectId) as Read<DashboardData>;
   const countsQ = useCounts(projectId) as Read<ShellCounts>;
   const mapQ = useCodeMap(projectId) as Read<{ node_count?: number }>;
-  const fleetQ = useFleet(projectId) as Read<{ online?: number }>;
   const orgsQ = useOrgs(hosted);
   const galaxyQ = useGalaxy(hosted ? orgsQ.data?.[0]?.id : undefined);
 
   if (!active) return null;
 
-  const reads = [dashQ, countsQ, mapQ, fleetQ];
+  const reads = [dashQ, countsQ, mapQ];
   const settling = reads.some(waiting);
   const failed = reads.filter(missed);
   // A failed refresh after a good read. The numbers below are that read, not a new one.
@@ -96,7 +105,6 @@ export function ProjectHome() {
   const dashOk = dash !== undefined;
   const countsOk = counts !== undefined;
   const mapOk = mapQ.data !== undefined;
-  const fleetOk = fleetQ.data !== undefined;
 
   // Dashboard wins the figure. The shell count is the fallback when that field was
   // not in a successful payload, and it is also its own measurement: a dashboard 0
@@ -110,7 +118,8 @@ export function ProjectHome() {
   const blocked = num(dashOk, dash?.blocked_count);
   const shards = num(dashOk, dash?.shard_count);
   const nodes = num(mapOk, mapQ.data?.node_count);
-  const online = num(fleetOk, fleetQ.data?.online);
+  // The server's one "live" definition, the same field the sidebar badge reads.
+  const online = num(countsOk, counts?.live_agents);
   const requests = num(dashOk, dash?.requests_total);
   const prds = num(dashOk, dash?.prd_count);
   const triageNew = num(countsOk, counts?.triage_new);
@@ -188,7 +197,7 @@ export function ProjectHome() {
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_1fr]">
             <div className="space-y-6">
-              <Panel title="Item status distribution">
+              <Section title="Items" subtitle="Where the stream stands.">
                 <CountOr
                   value={num(dashOk, dash?.items_total)}
                   zero={
@@ -200,8 +209,8 @@ export function ProjectHome() {
                   }
                   ready={<StatusBar data={dash!} />}
                 />
-              </Panel>
-              <Panel title="Requests by type">
+              </Section>
+              <Section title="Requests" subtitle="From the public form, by type.">
                 <CountOr
                   value={requests}
                   zero={
@@ -213,15 +222,15 @@ export function ProjectHome() {
                   }
                   ready={<TypeBars data={dash!} />}
                 />
-              </Panel>
+              </Section>
             </div>
-            <Panel title="Recent activity">
+            <Section title="Recent activity" subtitle="Latest moves in the stream.">
               <CountOr
                 value={dash ? dash.recent_items.length : null}
                 zero={<p className="text-body leading-relaxed text-muted">Nothing has happened here yet.</p>}
                 ready={dash ? <ActivityList items={dash.recent_items} href={to("tracker")} /> : null}
               />
-            </Panel>
+            </Section>
           </div>
 
           <JumpTo
@@ -262,7 +271,7 @@ function Figure({ value, tone }: { value: number | null; tone?: string }) {
   const unknown = value === null;
   return (
     <div
-      className={`text-[22px] font-semibold leading-none tracking-tight ${unknown ? "text-faint" : (tone ?? "text-fg")}`}
+      className={`mt-2 text-[22px] font-semibold leading-none tracking-tight ${unknown ? "text-faint" : (tone ?? "text-fg")}`}
       title={unknown ? "Not read — the request failed" : undefined}
     >
       {unknown ? "—" : value.toLocaleString()}
@@ -292,8 +301,10 @@ function StatGrid({
     <div className="mt-4 grid grid-cols-2 gap-px overflow-hidden rounded-[13px] border border-line bg-line sm:grid-cols-3 lg:grid-cols-6">
       {cells.map((cell) => (
         <div key={cell.label} className="bg-surface px-3.5 py-3">
+          <span className="block font-mono text-[10px] uppercase tracking-[0.07em] text-faint-2">
+            {cell.label}
+          </span>
           <Figure value={cell.value} tone={cell.tone} />
-          <div className="mt-1.5 text-[11.5px] text-muted">{cell.label}</div>
         </div>
       ))}
     </div>
@@ -331,12 +342,12 @@ function ActivityList({
   href: string;
 }) {
   return (
-    <div className="space-y-1.5">
+    <div className="divide-y divide-line-2">
       {items.map((it) => (
         <Link
           key={it.id}
           to={href}
-          className="flex items-center gap-2.5 rounded-lg border border-line-2 bg-surface-2 px-3 py-2 transition-colors hover:border-line-hover"
+          className="flex items-center gap-2.5 px-1 py-2 transition-colors first:pt-0 last:pb-0 hover:bg-surface-2"
         >
           <span
             className="h-1.5 w-1.5 flex-none rounded-full"
@@ -351,12 +362,23 @@ function ActivityList({
   );
 }
 
-function Panel({ title, children }: { title: string; children: ReactNode }) {
+function SectionHead({ title, subtitle }: { title: string; subtitle: string }) {
   return (
-    <div className="rounded-[14px] border border-line-2 bg-surface/40 p-4">
-      <div className="mb-3 text-[13px] font-semibold text-fg">{title}</div>
-      {children}
+    <div className="mb-2.5 flex flex-wrap items-baseline gap-x-1.5">
+      <h2 className="text-[13.5px] font-semibold tracking-[-0.2px]">{title}</h2>
+      <span aria-hidden className="text-faint">·</span>
+      <p className="text-[12px] text-muted">{subtitle}</p>
     </div>
+  );
+}
+
+/** The heading sits outside the card; the card holds only the section's content. */
+function Section({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
+  return (
+    <section>
+      <SectionHead title={title} subtitle={subtitle} />
+      <div className="rounded-[14px] border border-line-2 bg-surface/40 p-4">{children}</div>
+    </section>
   );
 }
 
@@ -391,6 +413,10 @@ function StatusBar({ data }: { data: DashboardData }) {
   );
 }
 
+function titleCase(label: string): string {
+  return label.charAt(0).toUpperCase() + label.slice(1).toLowerCase();
+}
+
 function TypeBars({ data }: { data: DashboardData }) {
   const max = Math.max(1, ...Object.values(data.requests_by_type));
   const types = Object.keys(TYPE_META) as RequestType[];
@@ -401,12 +427,11 @@ function TypeBars({ data }: { data: DashboardData }) {
         return (
           <div key={t} className="flex items-center gap-3">
             <span
-              className="w-[92px] flex-none font-mono text-[10px] uppercase tracking-wide"
-              style={{ color: TYPE_META[t].color }}
+              className="w-[92px] flex-none text-[12px] text-fg-2"
             >
-              {TYPE_META[t].label}
+              {titleCase(TYPE_META[t].label)}
             </span>
-            <div className="h-2.5 flex-1">
+            <div data-testid="request-track" className="h-2.5 flex-1 rounded-[3px] bg-surface-2">
               <div
                 className="h-full rounded-[3px]"
                 style={{
@@ -436,6 +461,10 @@ type JumpProps = {
   online?: number | null;
 };
 
+function isLive(value: number | null | undefined): boolean {
+  return typeof value === "number" && value > 0;
+}
+
 function metaText(value: number | null | undefined, phrase: (n: number) => string): ReactNode {
   if (value === null || value === undefined) return "—";
   return phrase(value);
@@ -444,36 +473,39 @@ function metaText(value: number | null | undefined, phrase: (n: number) => strin
 function JumpTo({
   to, pending, inFlight, triageNew, prds, nodes, review, lessons, online,
 }: JumpProps) {
-  const tiles: { sub: string; label: string; meta: ReactNode }[] = [
-    { sub: "tracker", label: "Tracker", meta: metaText(inFlight ?? null, (n) => `${n} in flight`) },
-    { sub: "triage", label: "Triage", meta: metaText(triageNew ?? null, (n) => `${n} new`) },
-    { sub: "prds", label: "PRDs", meta: metaText(prds ?? null, (n) => `${n} docs`) },
+  const tiles: { sub: string; label: string; icon: ReactNode; meta: ReactNode; live: boolean }[] = [
+    { sub: "tracker", icon: <ListChecks size={14} />, label: "Tracker", meta: metaText(inFlight ?? null, (n) => `${n} in flight`), live: isLive(inFlight) },
+    { sub: "triage", icon: <Radar size={14} />, label: "Triage", meta: metaText(triageNew ?? null, (n) => `${n} new`), live: isLive(triageNew) },
+    { sub: "prds", icon: <BarChart3 size={14} />, label: "PRDs", meta: metaText(prds ?? null, (n) => `${n} docs`), live: isLive(prds) },
     {
       sub: "code",
+      icon: <Network size={14} />,
       label: "Code graph",
       meta: nodes === 0
         ? <span className="text-st-review">not pushed</span>
         : metaText(nodes ?? null, (n) => `${n} nodes`),
+      live: isLive(nodes),
     },
-    { sub: "memory-review", label: "Memory", meta: metaText(review ?? null, (n) => `${n} to review`) },
-    { sub: "lessons", label: "Lessons", meta: metaText(lessons ?? null, (n) => `${n} published`) },
+    { sub: "memory", icon: <Inbox size={14} />, label: "Memory", meta: metaText(review ?? null, (n) => `${n} to review`), live: isLive(review) },
+    { sub: "lessons", icon: <BookMarked size={14} />, label: "Lessons", meta: metaText(lessons ?? null, (n) => `${n} published`), live: isLive(lessons) },
     // One server integer. Filtering `agents` here would be a list length (GRPH-431).
-    { sub: "fleet.v1", label: "Fleet", meta: metaText(online ?? null, (n) => `${n} online`) },
-    { sub: "live", label: "Live", meta: metaText(online ?? null, (n) => `${n} on now`) },
+    { sub: "fleet", icon: <Users size={14} />, label: "Fleet", meta: metaText(online ?? null, (n) => `${n} online`), live: isLive(online) },
+    { sub: "live", icon: <Activity size={14} />, label: "Live", meta: metaText(online ?? null, (n) => `${n} on now`), live: isLive(online) },
   ];
   return (
     <section className="mt-6" aria-label="Jump to">
-      <h2 className="text-[13.5px] font-semibold tracking-[-0.2px]">Jump to</h2>
-      <div className="mt-2.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <SectionHead title="Jump to" subtitle="Live counts from each surface." />
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
         {tiles.map((tile) => (
           <Link
             key={tile.sub}
             to={to(tile.sub)}
-            className="rounded-[11px] border border-line bg-surface-2 px-3 py-2.5 transition-colors hover:border-line-hover"
+            className="flex items-center gap-2 rounded-[11px] border border-line bg-surface-2 px-3 py-2 transition-colors hover:border-line-hover"
           >
-            <div className="text-[13px] font-semibold">{tile.label}</div>
+            <span className="flex-none text-muted">{tile.icon}</span>
+            <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-fg">{tile.label}</span>
             {!pending && (
-              <div className="mt-0.5 text-[11.5px] text-muted">{tile.meta}</div>
+              <span className={`flex-none font-mono text-[10.5px] ${tile.live ? "text-accent" : "text-muted"}`}>{tile.meta}</span>
             )}
           </Link>
         ))}

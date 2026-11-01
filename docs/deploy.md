@@ -39,6 +39,25 @@ recovered; if you lose them, mint a new key in Settings → API Keys.
 Issuing that first credential is an authority gate, which is why it is a script an
 operator runs rather than something an agent does — see PRD-14.
 
+### Workers and `WEB_CONCURRENCY` (GRPH-1241)
+
+The API container runs `min(4, cpu_count)` uvicorn workers by default; set `WEB_CONCURRENCY` to
+override (`1` = single process). SQLite is always one worker. Single-process assumptions and
+how each is handled under N workers:
+
+- Migrations, `SEED_ON_START`, credential migration: serialised by a Postgres advisory lock; later workers find the work done.
+- `_credential_retry_loop`, `_log_export_loop`: only the worker holding a second advisory lock (the leader) starts them; Postgres frees it if that worker dies and a respawned worker can claim it. Check: `credential retry loop started` appears once per boot in the logs.
+- Rate limiter (`services/spam.py`), `rules_recommend` cache, `code_sync` org cache, `lru_cache`d providers: per-worker copies, accepted. Rate limits are per worker (up to N× the configured limit). Runtime LLM/embedder reconfiguration reaches only the serving worker until restart.
+- Log-export status panel: "exporter running" means *some* worker holds the leader lock (read from `pg_locks`) with `LOG_EXPORT_SECONDS > 0`, not "this process runs the loop", so every worker reports the same state and queue depth.
+- Known limit: the leader is claimed once, at worker boot. If the leader's Postgres session drops (DB restart, failover) the lock is gone but its loops keep running and nobody re-claims; a worker started afterwards can claim it too, giving two runners until restart. Two exporters can then send the same records to the collector twice. Workers other than the old leader read `pg_locks`, so they show "not running" in that window rather than a false all-clear. Restart the API after a database failover.
+
+Verified 2026-10-31 against an empty `pgvector/pgvector:pg16` database with `WEB_CONCURRENCY=2`:
+one `Running upgrade  -> 0001` (the chain ran once, to head), one `credential retry loop started`,
+one `log export loop started`, and one `background loops: not the leader` from the second worker.
+With export enabled, a third process holding no lock read the panel status as `exporting` with a
+numeric queue depth while the two workers ran, and `not_running` / `None` after they stopped.
+`tests/test_serve_workers.py` exercises both locks against Postgres across two sessions.
+
 ### Rate limits and `TRUSTED_HOPS` (GRPH-439, GRPH-553)
 
 The compose stack puts **nginx in front of uvicorn** — the same topology as the hosted

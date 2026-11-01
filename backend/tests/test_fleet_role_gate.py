@@ -100,11 +100,19 @@ def test_the_refusal_reaches_the_ledger_with_the_agent_and_the_principal(client,
     me = _register(client, agent_key, "worker")
     claimed = _ok(client, agent_key, "claim_next", {"agent_id": me["agent_id"]})
 
-    _refused(client, agent_key, "update_item",
-             {"id": claimed["item"]["id"], "status": "done", "agent_id": me["agent_id"]})
+    err = _refused(client, agent_key, "update_item",
+                   {"id": claimed["item"]["id"], "status": "done", "agent_id": me["agent_id"]})
+    # The rule rides in the tool error, so an agent can branch on it without parsing prose.
+    assert err["code"] == "unauthorized" and err["rule_id"] == "review.role_gated_tools"
 
-    ev = db.query(Event).filter(Event.action == "role_refused").order_by(Event.id.desc()).first()
+    ev = db.query(Event).filter(Event.action == "refusal").order_by(Event.id.desc()).first()
     assert ev is not None, "the refusal was not audited"
+    # Typed and recorded once, naming its rule (GRPH-1158) — not also as `role_refused`.
+    assert ev.meta["rule_id"] == "review.role_gated_tools"
+    # Attached to the item the call targeted (GRPH-1197); the agent rides in meta.
+    assert (ev.target_type, ev.target_id) == ("item", claimed["item"]["id"])
+    assert ev.meta["agent_id"] == me["agent_id"]
+    assert db.query(Event).filter(Event.action == "role_refused").count() == 0
     assert ev.meta["agent_id"] == me["agent_id"]
     assert ev.meta["tool"] == "update_item"
     assert ev.meta["principal"]["id"], "the human behind the key is named"
@@ -121,7 +129,7 @@ def test_the_principal_cannot_be_spoofed_by_the_client(client, agent_key, db):
              {"id": claimed["item"]["id"], "status": "done", "agent_id": me["agent_id"],
               "principal": {"id": "u_attacker", "label": "someone else"}})
 
-    ev = db.query(Event).filter(Event.action == "role_refused").order_by(Event.id.desc()).first()
+    ev = db.query(Event).filter(Event.action == "refusal").order_by(Event.id.desc()).first()
     assert ev.meta["principal"]["id"] != "u_attacker"
 
 

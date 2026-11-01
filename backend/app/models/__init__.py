@@ -11,6 +11,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -20,6 +21,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     false,
     true,
 )
@@ -83,6 +85,29 @@ class User(Base):
 
     memberships: Mapped[list[Membership]] = relationship(back_populates="user")
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="user")
+
+
+class UserPreference(Base):
+    """One user's UI preference document (PRD-60 D1 / GRPH-1133).
+
+    `user_id` IS the primary key rather than a surrogate beside it: a user has at most one
+    document, and saying so in the schema is what makes "no row" mean "never written" instead
+    of meaning "nobody checked". That distinction is the whole reason `GET` can answer
+    `saved: false` — an absent row and an empty document are different facts, and a client
+    migrating off localStorage has to be able to tell them apart (the server copy wins only
+    once the server HAS a copy).
+
+    The document is stored as written. It is validated on the way in
+    (`app/schemas/__init__.py:PreferencesIn`) and never filled out with defaults on the way
+    out, so a key the client did not send stays absent rather than arriving as a server-side
+    guess about what the UI should look like.
+    """
+
+    __tablename__ = "user_preferences"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    doc: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 def _key_of(owner, stored_id: str | None, kind: str) -> str | None:
@@ -178,6 +203,21 @@ class Project(Base):
     memory_llm_judge: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false(), nullable=False
     )
+    # Days a candidate nothing has repeated survives before `age_state` reads it `expired`
+    # (GRPH-1212). 45 is the platform default, so existing projects behave as before.
+    memory_candidate_expiry_days: Mapped[int] = mapped_column(
+        Integer, default=45, server_default="45", nullable=False
+    )
+    # Flag a published shard in the stale queue when the code its item cited changed after
+    # publish (GRPH-1213). On by default; `gone` is flagged either way.
+    memory_flag_on_code_change: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False
+    )
+    # Shard classes a human must publish (GRPH-1214): a candidate of one of these is never
+    # auto- or trusted-published, whatever its confidence. Auto-reject still applies.
+    memory_human_review_classes: Mapped[list] = mapped_column(
+        JSON, default=lambda: ["principle"], server_default='["principle"]', nullable=False
+    )
     # The fleet's hard constraints (PRD-37 D4): `{local_only, reviewer_cross_vendor,
     # allowed_harnesses}`. A FILTER the supervisor applies before any preference is scored, so
     # a strong taste cannot outvote a rule. NULL is no constraint — the resolver reads absence
@@ -207,6 +247,12 @@ class Project(Base):
         Boolean, default=False, server_default=false(), nullable=False
     )
     embed_model: Mapped[str] = mapped_column(String, default="stub-384")
+    # The branch a release is cut from (PRD-P57 D1/D7): ONE literal ref, set on this box.
+    # NULL is unmeasured, and unmeasured means the merge rule is not installed — nothing
+    # infers `main`, the remote's default, or `gitops_base_branch`. Deliberately not a
+    # gitops column: a linked box can still set it locally, and the gitops contract is
+    # untouched. Written only through services/projects.set_release_ref.
+    release_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     # Hosted SaaS only (AL-74): the owning organization. NULL on self-host, where
     # the org layer is inert. In hosted mode authz additionally requires the caller
     # to belong to this org, so a project never leaks outside its tenant.
@@ -648,6 +694,17 @@ class Item(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+    # When the item last ARRIVED at `done` (GRPH-1134 / PRD-60 D2), for "done in the last N
+    # days" windows and auto-hide. `updated_at` cannot answer it: retitling a finished item
+    # bumps it. NULL whenever the status is not `done`. Written by `_stamp_done_at` below,
+    # never by hand. Migration 0145 backfilled rows that were already done.
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # A structured decision wait (GRPH-1137 / PRD-60 D7): `{question, options, answer, notify}`
+    # on a `wait:decision` item. NULL on every other item. `answer` is written once by
+    # `waits.answer_wait`; `notify` names the live holders to tell, `notified` those told.
+    decision: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Hide this blocker from triage until then (GRPH-1137). NULL = not snoozed.
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # The backstop for the mint path (services/items.py): even if minting is bypassed
     # or two agents race, the database refuses a duplicate number within a project.
@@ -663,6 +720,23 @@ class Item(Base):
     @property
     def prd_key(self) -> str | None:
         return _key_of(self, self.prd_id, "prd")
+
+
+@event.listens_for(Item.status, "set", active_history=True)
+def _stamp_done_at(item: Item, value, oldvalue, _initiator) -> None:
+    """Keep `done_at` in step with `status` on EVERY writer (GRPH-1134).
+
+    An attribute event rather than a line in `update_item`, because status is written in at
+    least five places (update_item, sign_off, release_item, gitops, waits) and a
+    sixth will be added. A stamp in only one of them would leave items signed off with no
+    `done_at`. Re-setting `done` on a done item keeps the original time. Leaving `done` clears
+    it, so a reopened item that is finished again gets a new time.
+    """
+    if value == "done":
+        if oldvalue != "done":
+            item.done_at = utcnow()
+    else:
+        item.done_at = None
 
 
 class ArtifactRecommendation(Base):
@@ -866,6 +940,14 @@ class Enrolment(Base):
     #: build. False is the default and what every seat minted before this column was.
     review_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
                                               nullable=False)
+    #: A BOUND-ONLY seat (GRPH-1089). Opt-in. Once the item this seat is bound to has left
+    #: `in_progress`, `claim_review` and `claim_next` refuse and name that item. False — the
+    #: default, and every seat minted before this column — keeps today's behaviour: a bound
+    #: child finishes its item and then reviews other agents' work. `gbfleet until` does not
+    #: set it, because a wave relies on that review. Mutually exclusive with `review_only`,
+    #: and meaningless without `item_id`; both combinations are refused at mint.
+    bound_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
+                                             nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     consumed_by: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -973,6 +1055,13 @@ class Agent(Base):
     status_text: Mapped[str] = mapped_column(String(200), default="", server_default="")
     status_files: Mapped[list] = mapped_column(JSON, default=list)
     status_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: The `Entitlement` ids this runner says it can run (PRD-62 S2), declared at
+    #: `register_agent`. TRUSTED, NOT VERIFIED: the server checks the ids exist in the
+    #: project's org and nothing more — it cannot see a vendor sign-in. A runner that claims
+    #: one it does not hold costs a failed spawn (§11). A column rather than a key inside
+    #: `capabilities`, because `capabilities` is accepted verbatim and this one is validated
+    #: and plan-gated on the way in.
+    entitlement_ids: Mapped[list] = mapped_column(JSON, default=list)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
@@ -1067,6 +1156,12 @@ class MemoryShard(Base):
         String, default="", server_default="", nullable=False
     )
     review_judge_verdict: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The keep/quality judge's last verdict (GRPH-1242), so the stale queue can show a
+    # recommendation without asking a model on page load. Carries `key` (judge identity +
+    # text) and `text_sha` (the text alone) beside the verdict: a background pass re-asks on
+    # a key mismatch, and a read refuses a verdict about words the shard no longer says.
+    # Successful verdicts only, for the same reason as `review_judge_verdict`.
+    keep_judge_verdict: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     scope: Mapped[str] = mapped_column(String, default="global")  # global/item
     source: Mapped[str] = mapped_column(String, default="")
     # Lifecycle (AL-49): agent self-reports enter as `candidate` and only reach the
@@ -1095,6 +1190,11 @@ class MemoryShard(Base):
     lesson_class: Mapped[str] = mapped_column(
         String, default="", server_default="", nullable=False
     )
+    # pitfall | convention | principle; "" = unclassified. Not `lesson_class` (a different
+    # taxonomy on the Lessons catalog). Existing rows stay "" — no backfill guess.
+    shard_class: Mapped[str] = mapped_column(
+        String, default="", server_default="", nullable=False
+    )
     # NULL is unmeasured. SET NULL so a deleted user does not stay a countable ghost.
     actor_user_id: Mapped[str | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -1104,6 +1204,18 @@ class MemoryShard(Base):
         ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Set when a human or an applied recommendation retires a published shard. NULL means
+    # never retired. Restorable for `RETIRE_RECOVERY_DAYS` after this; finality is computed
+    # from this timestamp, so there is no sweep to forget to run.
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set when a person confirms a stale shard is still right (Keep). `age_state` measures
+    # the staleness clock from the later of this and `created_at`.
+    kept_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # {path: content_hash} of the code-graph nodes behind the originating item's touchpoints,
+    # taken at publish and again at Keep (GRPH-1213). `origin_path_state` reports `changed`
+    # only when a current hash differs from this. NULL means no baseline was taken (a shard
+    # published before this existed, or with nothing hashed to cite), which reads `unknown`.
+    cited_code_hashes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     @property
     def item_key(self) -> str | None:
@@ -1141,7 +1253,7 @@ class Request(Base):
     detail: Mapped[str] = mapped_column(Text, default="")  # submitter's full description
     by: Mapped[str] = mapped_column(String, default="")
     votes: Mapped[int] = mapped_column(Integer, default=0)
-    status: Mapped[str] = mapped_column(String, default="new")  # new/triaging/linked
+    status: Mapped[str] = mapped_column(String, default="new")  # new/triaging/linked/declined/merged/snoozed
     linked_to: Mapped[str | None] = mapped_column(ForeignKey("items.id"), nullable=True)
     ago: Mapped[str] = mapped_column(String, default="")  # display string from design
     source_url: Mapped[str] = mapped_column(String, default="")  # page the widget was on
@@ -1152,6 +1264,11 @@ class Request(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # PRD-43 D3: unguessable tracking token (stored hashed). The URL is the capability.
     track_token_hash: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+    # PRD-60 D6: triage actions. `snoozed_until` hides a `snoozed` request from the queue until
+    # then. `merged_into` is the frozen id of the request or item a `merged` request points at
+    # (no FK: it may name either table).
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    merged_into: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (UniqueConstraint("project_id", "number", name="uq_request_number"),)
 
@@ -1254,6 +1371,12 @@ class Prd(Base):
     @property
     def linked_keys(self) -> list[str]:
         return [_key_of(self, i, "item") for i in (self.linked or [])]
+
+    @property
+    def closed_at(self) -> datetime | None:
+        """When close_prd ran, from the close record; None if never closed (legacy rows too)."""
+        raw = (self.close_record or {}).get("closed_at")
+        return datetime.fromisoformat(raw) if raw else None
 
 
 class GrillTurn(Base):
@@ -1532,6 +1655,45 @@ class Link(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class PrdRequestLink(Base):
+    """Many-to-many PRD <-> request link (PRD-60 D10 / GRPH-1140)."""
+    __tablename__ = "prd_request_links"
+
+    prd_id: Mapped[str] = mapped_column(ForeignKey("prds.id"), primary_key=True)
+    request_id: Mapped[str] = mapped_column(ForeignKey("requests.id"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CollisionDecision(Base):
+    """A person's (or planner's) answer to one collision cluster (PRD-60 D8 / GRPH-1138).
+
+    Clustering is computed on every read and never decided; this is the decision. It is keyed
+    by the cluster's MEMBER SET (`member_key`, the sorted ids joined), so it expires on its
+    own when a member is added or removed: the cluster that now exists is not the one anybody
+    answered. Expiry is judged on read against the live partition and stamped in `expired_at`.
+
+    `links_added` is the exact list of dependency links this decision created, as [a, b]
+    pairs, so undoing a serialize removes those and nothing a person authored.
+    """
+
+    __tablename__ = "collision_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    member_key: Mapped[str] = mapped_column(String, index=True)
+    members: Mapped[list] = mapped_column(JSON, default=list)
+    # serialize | parallel | hold | override | snooze  (services/collision.py:DECISIONS)
+    decision: Mapped[str] = mapped_column(String)
+    # The order serialize/hold used, leader first.
+    order: Mapped[list] = mapped_column(JSON, default=list)
+    links_added: Mapped[list] = mapped_column(JSON, default=list)
+    snooze_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_by: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class ProjectEdge(Base):
     """An evidenced dependency between two projects in one org (PRD-21 D3).
 
@@ -1680,9 +1842,11 @@ class CodeScan(Base):
     # is distinguishable from a thorough one's.
     reported_by: Mapped[str] = mapped_column(String, default="", server_default="")
     note: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # Producer outcome (GRPH-1125): complete | tool_missing | not_applicable | incomplete.
+    result: Mapped[str] = mapped_column(String, default="complete", server_default="complete")
 
     __table_args__ = (
-        # One live result per scanner+path: re-recording replaces (service deletes prior).
+        # Every report is a row; the newest per scanner+path is the cell (GRPH-1128).
         Index("ix_code_scans_project_scanner_path", "project_id", "scanner_id", "path"),
         Index("ix_code_scans_project_category_path", "project_id", "category", "path"),
     )
@@ -1702,11 +1866,45 @@ class ScanFinding(Base):
     # Optional link into tracker / code graph / PRD — empty means none.
     link_kind: Mapped[str] = mapped_column(String, default="", server_default="")  # item|code|prd|""
     link_ref: Mapped[str] = mapped_column(String, default="", server_default="")
+    # Optional grain (GRPH-1127): npm audit identity, knip rollups, etc.
+    advisory_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    dependency: Mapped[str] = mapped_column(String, default="", server_default="")  # direct|transitive
+    fixed_version: Mapped[str] = mapped_column(String, default="", server_default="")
+    kind: Mapped[str] = mapped_column(String, default="", server_default="")
+    count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         Index("ix_scan_findings_scan_id", "scan_id"),
         Index("ix_scan_findings_project_id", "project_id"),
     )
+
+
+class AppTopology(Base):
+    """One current app-topology record per project (GRPH-1098 / PRD-P55 §2).
+
+    The server never holds the repo, so a producer that does posts the map. One row
+    per project; a valid post replaces it. `previous_mapped_sha` is the sha the
+    replaced row was mapped at, kept for display — not a history of the map.
+    No row means unmapped, which is not "this app calls nothing".
+    """
+
+    __tablename__ = "app_topologies"
+
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    producer_id: Mapped[str] = mapped_column(String, default="")
+    producer_version: Mapped[str] = mapped_column(String, default="")
+    mapped_sha: Mapped[str] = mapped_column(String, default="")
+    mapped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # The replaced record's mapped sha. "" on the first post — there was no previous.
+    previous_mapped_sha: Mapped[str] = mapped_column(String, default="", server_default="")
+    # The posting credential. Distinct from producer_id, which the producer declares
+    # (gban's name and version). A caller-supplied producer is not who held the key.
+    posted_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    components: Mapped[list] = mapped_column(JSON, default=list)
+    infrastructure: Mapped[list] = mapped_column(JSON, default=list)
+    external_services: Mapped[list] = mapped_column(JSON, default=list)
+    unresolved: Mapped[list] = mapped_column(JSON, default=list)
+    edges: Mapped[list] = mapped_column(JSON, default=list)
 
 
 class Milestone(Base):
@@ -1815,12 +2013,36 @@ class RequestComment(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)  # rcom_...
     request_id: Mapped[str] = mapped_column(ForeignKey("requests.id"), index=True)
-    author_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    # NULL for a submitter comment: the submitter has no user row, the tracking token is
+    # their credential (PRD-60 D9 / GRPH-1139).
+    author_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    author_kind: Mapped[str] = mapped_column(
+        String, default="operator", server_default="operator", nullable=False
+    )  # operator | submitter
     body: Mapped[str] = mapped_column(Text, default="")
     visibility: Mapped[str] = mapped_column(
         String, default="private", server_default="private", nullable=False
     )  # private | public; absence of the tag is private (PRD-43 D7)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RequestAction(Base):
+    """PRD-60 D6: one triage action on a request, with what undo needs to reverse it.
+
+    `prior` is the request's state before the action; `after` is its state right after, which
+    undo compares to the live row so a change made since is refused rather than overwritten.
+    `data` holds action-specific restore detail (created item id, moved voter rows)."""
+
+    __tablename__ = "request_actions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # ract_...
+    request_id: Mapped[str] = mapped_column(ForeignKey("requests.id"), index=True)
+    action: Mapped[str] = mapped_column(String)  # accept/merge/decline/snooze
+    prior: Mapped[dict] = mapped_column(JSON, default=dict)
+    after: Mapped[dict] = mapped_column(JSON, default=dict)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class RequestVote(Base):
@@ -3098,6 +3320,149 @@ class LogExportBatch(Base):
     __table_args__ = (
         Index("ix_log_export_batches_kind_ts", "kind", "ts"),
     )
+
+
+class RuleSuggestionDismissal(Base):
+    """A Recommended-rules suggestion a person dismissed for one project (GRPH-1160).
+
+    Keyed on (project, suggestion id); `fingerprint` hashes the evidence the suggestion was
+    dismissed against, so it comes back when the evidence changes. Outlives the on-open cache.
+    """
+
+    __tablename__ = "rule_suggestion_dismissals"
+
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    suggestion_id: Mapped[str] = mapped_column(String, primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String, default="")
+    dismissed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Observation(Base):
+    """One typed fact about how work went, derived from a record the server already holds
+    (PRD-63 S1 / D2): a sabotage receipt, an attestation, a status move, a typed refusal.
+
+    **Links and counts, never copied text** (D2) — `ref` carries ids, names of predicates and
+    numbers, so the table is safe to aggregate across projects (D8). `dedupe_key` is unique per
+    project, which is what lets a live write and the backfill describe the same fact without
+    counting it twice. `origin` says which wrote it.
+    """
+
+    __tablename__ = "observations"
+    __table_args__ = (
+        UniqueConstraint("project_id", "dedupe_key", name="uq_observation_dedupe"),
+        Index("ix_observations_project_kind", "project_id", "kind"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    item_id: Mapped[str | None] = mapped_column(ForeignKey("items.id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(40))
+    stage: Mapped[str] = mapped_column(String(16))
+    #: The library rule this implies, when the fact itself names one (a refusal does).
+    rule_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    commit: Mapped[str | None] = mapped_column(String, nullable=True)
+    dedupe_key: Mapped[str] = mapped_column(String)
+    origin: Mapped[str] = mapped_column(String(16), default="live", server_default="live")
+    ref: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Entitlement(Base):
+    """One AI entitlement an org holds: a subscription seat, an API key, a cloud account, or a
+    local model (PRD-62 S2). The registry capacity routing reads; headroom is S3's.
+
+    **Credentials never move; work does** (D1). A `subscription` row is a fact about a person's
+    own vendor sign-in on their own runner, and it has NO secret field (D2): the CHECK below
+    makes `secret_ref` NULL for every kind but `api_key` and `cloud`, so the server cannot hold
+    one even if a code path forgot to refuse it. For those two kinds `secret_ref` is a HANDLE —
+    an env var or secrets-manager name the runner resolves — never the key itself (D3).
+
+    The kind list in the CHECK is a literal because a model cannot import the service that owns
+    the enum (`services/entitlements.SECRET_KINDS`); a test asserts the two agree.
+
+    `token_budget` NULL means no budget was stated, never zero. `runner` names the runner this
+    entitlement is bound to ("" = not bound); which runners actually DECLARE it is
+    `Agent.entitlement_ids`, self-reported and unverified.
+    """
+
+    __tablename__ = "entitlements"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # ent_...
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    vendor: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String)  # subscription | api_key | cloud | local
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True,
+                                                      index=True)
+    runner: Mapped[str] = mapped_column(String, default="", server_default="")
+    plan_label: Mapped[str] = mapped_column(String, default="", server_default="")
+    reset_cadence: Mapped[str] = mapped_column(String, default="", server_default="")
+    secret_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    token_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: When the owner says this entitlement next resets. Stated, never parsed from vendor text
+    #: (D5); NULL = not stated, ranked after every entitlement that did state one (S4).
+    next_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                 onupdate=utcnow)
+
+    __table_args__ = (
+        CheckConstraint("secret_ref IS NULL OR kind IN ('api_key', 'cloud')",
+                        name="ck_entitlements_secret_only_api_key_cloud"),
+    )
+
+
+class EntitlementEvent(Base):
+    """One thing a runner reported about one entitlement (PRD-62 S3, the headroom ledger).
+
+    Append-only: the D4 state is DERIVED from these rows on read (`services/headroom.py`),
+    never stored, so there is no state column to drift from the events behind it. `tokens` is
+    NULL when the runner reported a spend without a number — unreported, never zero.
+    """
+
+    __tablename__ = "entitlement_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entitlement_id: Mapped[str] = mapped_column(ForeignKey("entitlements.id"), index=True)
+    #: spawn_start | registered | limit_hit | spawn_failed | spend | declared (register_agent)
+    event: Mapped[str] = mapped_column(String(16))
+    agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: The vendor's own words for a limit hit or a failure, verbatim (D5).
+    vendor_text: Mapped[str] = mapped_column(String, default="", server_default="")
+    tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+
+class RoutingDecision(Base):
+    """One capacity-routing decision about one item (PRD-62 S4): the attempt-record row that
+    says which entitlement was chosen and why, beside the vendor and model of whoever then
+    claimed it, so a claim that did not match its reservation is visible.
+
+    `kind` is `reservation` (a soft hold, D10: `reserved_until` is its TTL, `ended_at` /
+    `ended_reason` say how it stopped) or `claim` (a routed claim). A reservation is LIVE while
+    `ended_at` is NULL and `reserved_until` is in the future; it ends at once when its holder
+    reports a limit or a failure, not when the clock runs out.
+    """
+
+    __tablename__ = "routing_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    entitlement_id: Mapped[str | None] = mapped_column(ForeignKey("entitlements.id"),
+                                                       nullable=True, index=True)
+    reason: Mapped[str] = mapped_column(String, default="", server_default="")
+    reserved_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_reason: Mapped[str] = mapped_column(String, default="", server_default="")
+    agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    agent_vendor: Mapped[str] = mapped_column(String, default="", server_default="")
+    agent_model: Mapped[str] = mapped_column(String, default="", server_default="")
+    #: Did the claimant hold the entitlement the decision named? NULL until someone claims.
+    matched: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Document(Base):

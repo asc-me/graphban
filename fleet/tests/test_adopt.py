@@ -595,6 +595,222 @@ def test_wall_clock_cap_survives_an_older_supervisor(tmp_path: Path):
     assert loaded[0].wall_clock_cap is None
 
 
+class _Touchpoints:
+    """`get_item_details` only. No `search_items`, so a missing `ever_held` cannot be
+    papered over by the authorship fallback — the adoption test has to restore the list."""
+
+    def __init__(self, items: dict[str, list[str]]):
+        self.allowed = frozenset({"get_item_details"})
+        self.items = items
+        self.calls: list[str] = []
+
+    def call(self, tool, **kw):
+        self.calls.append(tool)
+        if tool != "get_item_details":
+            raise AssertionError(tool)
+        return {"id": kw["id"], "touchpoints": list(self.items.get(kw["id"]) or [])}
+
+
+class _Authorship:
+    """Full listing, so an older roster can be filled from `built_by`."""
+
+    def __init__(self, rows: list[dict]):
+        self.allowed = frozenset({"get_item_details", "search_items"})
+        self.rows = rows
+        self.calls: list[tuple[str, str]] = []
+
+    def call(self, tool, **kw):
+        self.calls.append((tool, kw.get("id", "")))
+        if tool == "search_items":
+            return {"results": self.rows, "has_more": False}
+        if tool == "get_item_details":
+            row = next(r for r in self.rows if r["id"] == kw["id"])
+            return {"id": kw["id"], "touchpoints": list(row.get("touchpoints") or [])}
+        raise AssertionError(tool)
+
+
+def _running_child(proc, tree, *, agent_id, held, ever):
+    from gbfleet.spawn import Child
+
+    return Child(
+        adapter="fake", worktree=tree.path, branch=tree.branch, base=tree.base,
+        seat_path=tree.path / ".gbfleet-seat", process=proc,
+        started_at=time.monotonic(), log_dir=tree.path / "logs",
+        agent_id=agent_id, held_items=list(held), ever_held=list(ever),
+    )
+
+
+def test_an_adopted_child_keeps_the_items_it_handed_off(
+    git_repo: Path, tmp_path: Path, state: Path, monkeypatch
+):
+    """GRPH-1085. The child built GRPH-X, moved it to review, and holds GRPH-Y when the
+    supervisor is adopted. Reap still counts GRPH-X's touchpoints.
+
+    Sabotage: drop `ever_held` from `_as_dict` (or stop `snapshot_of` copying it, or
+    stop `attach` restoring it). The recovered child no longer carries GRPH-X, and
+    `fleet/src/gbfleet/adopt.py` is undeclared against GRPH-Y alone.
+    """
+    from gbfleet.supervisor import Partition, Wave, _note_touchpoints, _remember_holdings
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        monkeypatch.setattr(adopt, "process_start_token", lambda pid: "tok")
+        monkeypatch.setattr(adopt, "pid_is_alive", lambda pid: pid == sleeper.pid)
+        tree = create(git_repo, workspace / "wave-1", "wave", "1")
+        child = _running_child(
+            sleeper, tree, agent_id="GRPH-A9",
+            held=["GRPH-Y"], ever=["GRPH-X", "GRPH-Y"],
+        )
+        path = adopt.children_path(git_repo, state)
+        adopt.persist(path, [child])
+        written = json.loads(path.read_text(encoding="utf-8"))["children"][0]
+        assert written["ever_held"] == ["GRPH-X", "GRPH-Y"]
+        assert written["ever_held_known"] is True
+
+        leftover, occupied, _notes = adopt.recover(git_repo, workspace, state)
+        assert leftover and leftover[0].pid == sleeper.pid
+        assert tree.branch in occupied
+        restored = leftover[0]
+        assert restored.ever_held == ["GRPH-X", "GRPH-Y"], restored.ever_held
+        assert restored.ever_held_known is True
+
+        part = Partition()
+        part.held = {"GRPH-A9": ["GRPH-Y"]}
+        _remember_holdings([restored], part)
+        assert restored.held_items == ["GRPH-Y"]
+        assert "GRPH-X" in restored.ever_held
+
+        wave = Wave()
+        wave.touched[tree.branch] = [
+            "fleet/src/gbfleet/adopt.py",
+            "fleet/src/gbfleet/supervisor.py",
+        ]
+        ledger = _Touchpoints({
+            "GRPH-X": ["fleet/src/gbfleet/adopt.py"],
+            "GRPH-Y": ["fleet/src/gbfleet/supervisor.py"],
+        })
+        _note_touchpoints(wave, restored, ledger)
+        assert wave.undeclared == {}
+        assert wave.declared_unread == {}
+        assert ledger.calls == ["get_item_details", "get_item_details"]
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=10)
+
+
+def test_a_roster_written_before_ever_held_still_loads(tmp_path: Path):
+    """A children file from before the field has no key. It loads, the history is
+    empty, and it is unknown rather than "held nothing" — an empty known list would
+    tell reap not to ask the server."""
+    path = tmp_path / "children.json"
+    path.write_text(json.dumps({
+        "generation": 1,
+        "children": [{
+            "pid": os.getpid(),
+            "start_token": "tok",
+            "worktree": "/wt",
+            "branch": "gb/wave-1",
+            "adapter": "gbagent",
+            "agent_id": "GRPH-A1",
+            "held_items": ["GRPH-Y"],
+        }],
+    }), encoding="utf-8")
+    loaded = load(path)
+    assert not isinstance(loaded, UnadoptableFile)
+    assert loaded[0].ever_held == []
+    assert loaded[0].ever_held_known is False
+    assert loaded[0].held_items == ["GRPH-Y"]
+
+
+def test_an_older_roster_is_judged_by_what_the_agent_authored(
+    git_repo: Path, tmp_path: Path, state: Path, monkeypatch
+):
+    """The file predates `ever_held`. The child holds GRPH-Y. The server says this
+    agent built GRPH-X as well, so reap counts GRPH-X. A file neither declares is
+    still refused. `recover` rewrites the roster and must not turn "unknown" into
+    "held nothing", or the next takeover skips the fallback.
+
+    Sabotage: treat a missing `ever_held` as a known empty list. GRPH-X is never
+    read and `fleet/src/gbfleet/adopt.py` is undeclared.
+    """
+    from gbfleet import spawn as spawn_mod
+    from gbfleet.supervisor import Partition, Wave, _note_touchpoints, _remember_holdings
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        # `recover` rewrites the roster through `persist`, which keeps a child only
+        # while `AttachedProcess` still believes the pid is the one it adopted.
+        # That check lives on `spawn`, not on `adopt`, so the fake token has to
+        # agree in both places or the rewrite drops the child and the file is empty.
+        monkeypatch.setattr(adopt, "process_start_token", lambda pid: "tok")
+        monkeypatch.setattr(adopt, "pid_is_alive", lambda pid: pid == sleeper.pid)
+        monkeypatch.setattr(spawn_mod, "process_start_token", lambda pid: "tok")
+        monkeypatch.setattr(spawn_mod, "pid_is_alive", lambda pid: pid == sleeper.pid)
+        tree = create(git_repo, workspace / "wave-1", "wave", "1")
+        path = adopt.children_path(git_repo, state)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "generation": 1,
+            "children": [{
+                "pid": sleeper.pid,
+                "start_token": "tok",
+                "worktree": str(tree.path),
+                "branch": tree.branch,
+                "adapter": "fake",
+                "slot": "1",
+                "base": tree.base,
+                "agent_id": "GRPH-A9",
+                "held_items": ["GRPH-Y"],
+                "started_wall": time.time(),
+            }],
+        }), encoding="utf-8")
+
+        leftover, _occupied, _notes = adopt.recover(git_repo, workspace, state)
+        assert leftover and leftover[0].attached
+        restored = leftover[0]
+        assert restored.ever_held == []
+        assert restored.ever_held_known is False
+
+        rewritten = load(path)
+        assert not isinstance(rewritten, UnadoptableFile)
+        assert rewritten[0].ever_held_known is False, (
+            "recover rewrote an older roster as a complete empty history"
+        )
+
+        part = Partition()
+        part.held = {"GRPH-A9": ["GRPH-Y"]}
+        _remember_holdings([restored], part)
+
+        wave = Wave()
+        wave.touched[tree.branch] = [
+            "fleet/src/gbfleet/adopt.py",
+            "fleet/src/gbfleet/supervisor.py",
+            "web/src/App.tsx",
+        ]
+        ledger = _Authorship([
+            {"id": "GRPH-X", "built_by": "GRPH-A9",
+             "touchpoints": ["fleet/src/gbfleet/adopt.py"]},
+            {"id": "GRPH-Y", "built_by": "GRPH-A9",
+             "touchpoints": ["fleet/src/gbfleet/supervisor.py"]},
+            {"id": "GRPH-Z", "built_by": "GRPH-OTHER",
+             "touchpoints": ["web/src/No.py"]},
+        ])
+        _note_touchpoints(wave, restored, ledger)
+        assert wave.undeclared == {tree.branch: ["web/src/App.tsx"]}
+        assert wave.declared_unread == {}
+        assert restored.ever_held_known is True
+        assert "GRPH-X" in restored.ever_held
+        # Y was the live holding, so it is already in ever_held; X is appended from built_by.
+        assert [item for _tool, item in ledger.calls if item] == ["GRPH-Y", "GRPH-X"]
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=10)
+
+
 # --- GRPH-1011: gbfleet gc -----------------------------------------------------------
 #
 # `worktree.reap` runs inside the supervisor that owns the repository, and `recover`

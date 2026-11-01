@@ -5,6 +5,18 @@ import pytest
 
 from app.mcp_server import LIVE_TOOL_COUNT, TOOLS
 from app.services import scans as scans_svc
+from tests.scan_topology_fixtures import seed_core_topology
+
+
+@pytest.fixture(autouse=True)
+def _seed_core_topology(client):
+    from app.db import SessionLocal
+
+    s = SessionLocal()
+    try:
+        seed_core_topology(s)
+    finally:
+        s.close()
 
 
 @pytest.fixture()
@@ -18,6 +30,30 @@ def db(client):
         s.close()
 
 
+def _api(db, head_sha="h1"):
+    return next(c for c in scans_svc.component_health(db, "core", head_sha=head_sha)["components"]
+                if c["id"] == "api")
+
+
+def _api_sec(db, head_sha="h1"):
+    return next(
+        c for c in scans_svc.component_health(db, "core", head_sha=head_sha)["components"]
+        if c["path"] == "backend/pyproject.toml"
+    )
+
+
+def _web(db, head_sha="h1"):
+    return next(c for c in scans_svc.component_health(db, "core", head_sha=head_sha)["components"]
+                if c["id"] == "web")
+
+
+def _web_sec(db, head_sha="h1"):
+    return next(
+        c for c in scans_svc.component_health(db, "core", head_sha=head_sha)["components"]
+        if c["path"] == "web/package-lock.json"
+    )
+
+
 def test_record_scan_tools_are_in_the_manifest():
     names = {t["name"] for t in TOOLS}
     assert "record_scan" in names
@@ -29,9 +65,9 @@ def test_record_scan_tools_are_in_the_manifest():
 def test_empty_findings_is_clean_at_sha_not_never_scanned(db):
     scans_svc.record_scan(
         db, project_id="core", scanner_id="pip-audit", scanner_version="2.7.3",
-        path="backend/", scanned_sha="abc1234", findings=[], reported_by="GRPH-A1",
+        path="backend/pyproject.toml", scanned_sha="abc1234", findings=[], result="complete", reported_by="GRPH-A1",
     )
-    st = scans_svc.scan_status(db, "core", path="backend/", head_sha="abc1234")
+    st = scans_svc.scan_status(db, "core", path="backend/pyproject.toml", head_sha="abc1234")
     assert st["scans"], "a recorded clean scan must appear"
     row = st["scans"][0]
     assert row["state"] == "clean_at_sha"
@@ -41,31 +77,31 @@ def test_empty_findings_is_clean_at_sha_not_never_scanned(db):
 
 def test_absence_is_never_scanned_not_clean(db):
     health = scans_svc.component_health(db, "core", head_sha="abc1234")
-    web = next(c for c in health["components"] if c["id"] == "web")
+    web_sec = next(c for c in health["components"] if c["path"] == "web/package-lock.json")
     # Security has no producer yet → never_scanned. Must not roll up to CLEAN
     # unless every category is clean (coverage/work may be clean_at_sha derived).
-    assert web["categories"]["security"]["state"] == "never_scanned"
-    assert web["rollup"]["state"] != "clean_at_sha"
-    assert web["rollup"]["label"] in ("NOT SCANNED", "STALE", "FINDINGS")
+    assert web_sec["categories"]["security"]["state"] == "never_scanned"
+    assert web_sec["rollup"]["state"] != "clean_at_sha"
+    assert web_sec["rollup"]["label"] in ("NOT SCANNED", "STALE", "FINDINGS")
 
 
 def test_findings_and_stale_are_distinct(db):
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="bandit", path="backend/",
+        db, project_id="core", scanner_id="bandit", path="backend/pyproject.toml",
         scanned_sha="oldsha01",
         findings=[{"severity": "high", "summary": "assert used", "path": "backend/app/x.py"}],
     )
     # Against a moved head → still has_findings (findings remain visible).
-    st = scans_svc.scan_status(db, "core", path="backend/", head_sha="newsha02")
+    st = scans_svc.scan_status(db, "core", path="backend/pyproject.toml", head_sha="newsha02")
     assert st["scans"][0]["state"] == "has_findings"
     assert len(st["scans"][0]["findings"]) == 1
 
     # Clean at old sha, head moved → stale.
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="bandit", path="backend/",
-        scanned_sha="oldsha01", findings=[],
+        db, project_id="core", scanner_id="bandit", path="backend/pyproject.toml",
+        scanned_sha="oldsha01", findings=[], result="complete",
     )
-    st2 = scans_svc.scan_status(db, "core", path="backend/", head_sha="newsha02")
+    st2 = scans_svc.scan_status(db, "core", path="backend/pyproject.toml", head_sha="newsha02")
     assert st2["scans"][0]["state"] == "stale"
 
 
@@ -73,7 +109,7 @@ def test_record_scan_requires_scanned_sha(db):
     with pytest.raises(ValueError, match="scanned_sha"):
         scans_svc.record_scan(
             db, project_id="core", scanner_id="pip-audit",
-            path="backend/", scanned_sha="", findings=[],
+            path="backend/", scanned_sha="", findings=[], result="complete",
         )
 
 
@@ -83,10 +119,10 @@ def test_stack_health_endpoint(client, auth):
     body = r.json()
     assert body["scored"] is False
     ids = {c["id"] for c in body["components"]}
-    assert ids == {"web", "api", "fleet", "cli"}
-    for c in body["components"]:
-        assert "rollup" in c and "categories" in c
-        assert set(c["categories"]) >= {"security", "coverage", "work"}
+    assert {"web", "api", "fleet", "cli"} <= ids
+    api = next(c for c in body["components"] if c["id"] == "api")
+    assert set(api["categories"]) >= {"work", "deadcode"}
+    assert body["mapping"]["state"] in ("mapped", "stale", "freshness_unknown")
 
 
 def _mcp(client, headers, name, arguments, call_id=1):
@@ -104,7 +140,7 @@ def test_mcp_record_scan_round_trip(client, auth):
     r = _mcp(client, headers, "record_scan", {
         "scanner_id": "pip-audit",
         "scanner_version": "2.7.3",
-        "path": "web/",
+        "path": "web/package-lock.json",
         "scanned_sha": "deadbeef",
         "findings": [
             {"severity": "med", "summary": "lodash advisory", "path": "web/package.json"},
@@ -119,7 +155,7 @@ def test_mcp_record_scan_round_trip(client, auth):
     assert sc["clean"] is False
 
     st = _mcp(client, headers, "scan_status", {
-        "path": "web/", "head_sha": "deadbeef", "project_id": "core",
+        "path": "web/package-lock.json", "head_sha": "deadbeef", "project_id": "core",
     }, call_id=2)
     assert st.status_code == 200, st.text
     path_payload = st.json()["result"]["structuredContent"]
@@ -134,7 +170,7 @@ def test_mcp_record_scan_round_trip(client, auth):
     ov = overlay.json()["result"]["structuredContent"]
     assert ov["scored"] is False
     assert "generated_at" in ov
-    assert {c["id"] for c in ov["components"]} == {"web", "api", "fleet", "cli"}
+    assert {"web", "api", "fleet", "cli"} <= {c["id"] for c in ov["components"]}
 
     due = _mcp(client, headers, "scans_due", {
         "head_sha": "deadbeef", "project_id": "core",
@@ -149,7 +185,7 @@ def test_sabotage_caller_dropping_scanned_sha_is_refused(db):
     with pytest.raises(ValueError):
         scans_svc.record_scan(
             db, project_id="core", scanner_id="pip-audit",
-            path="backend/", scanned_sha="   ", findings=[],
+            path="backend/", scanned_sha="   ", findings=[], result="complete",
         )
 
 
@@ -160,20 +196,19 @@ def test_nested_clean_scan_does_not_hide_parent_findings(db):
     """
     sha = "abc1234"
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="bandit", path="backend/",
+        db, project_id="core", scanner_id="vulture", path="backend/",
         scanned_sha=sha,
         findings=[{"severity": "high", "summary": "assert used", "path": "backend/app/x.py"}],
     )
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="bandit",
+        db, project_id="core", scanner_id="vulture",
         path="backend/app/routers/platform.py",
-        scanned_sha=sha, findings=[],
+        scanned_sha=sha, findings=[], result="complete",
     )
-    health = scans_svc.component_health(db, "core", head_sha=sha)
-    api = next(c for c in health["components"] if c["id"] == "api")
-    assert api["categories"]["security"]["state"] == "has_findings"
+    api = _api(db, head_sha=sha)
+    assert api["categories"]["deadcode"]["state"] == "has_findings"
     assert any(
-        f.get("severity") == "high" for f in api["categories"]["security"]["findings"]
+        f.get("severity") == "high" for f in api["categories"]["deadcode"]["findings"]
     )
     assert api["rollup"]["state"] == "has_findings"
 
@@ -209,14 +244,13 @@ def test_nested_only_clean_is_not_component_clean(db):
     """
     sha = "headsha1"
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="bandit",
+        db, project_id="core", scanner_id="vulture",
         path="backend/app/routers/platform.py",
-        scanned_sha=sha, findings=[],
+        scanned_sha=sha, findings=[], result="complete",
     )
-    health = scans_svc.component_health(db, "core", head_sha=sha)
-    api = next(c for c in health["components"] if c["id"] == "api")
-    assert api["categories"]["security"]["state"] != "clean_at_sha", api["categories"]["security"]
-    assert api["categories"]["security"]["state"] == "stale"
+    api = _api(db, head_sha=sha)
+    assert api["categories"]["deadcode"]["state"] != "clean_at_sha", api["categories"]["deadcode"]
+    assert api["categories"]["deadcode"]["state"] == "stale"
     assert api["rollup"]["state"] != "clean_at_sha"
 
 
@@ -224,12 +258,11 @@ def test_root_clean_at_head_is_clean_at_sha(db):
     """A clean scan that covers the component root at head may read clean_at_sha."""
     sha = "headsha2"
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="bandit",
-        path="backend/", scanned_sha=sha, findings=[],
+        db, project_id="core", scanner_id="vulture",
+        path="backend/", scanned_sha=sha, findings=[], result="complete",
     )
-    health = scans_svc.component_health(db, "core", head_sha=sha)
-    api = next(c for c in health["components"] if c["id"] == "api")
-    assert api["categories"]["security"]["state"] == "clean_at_sha"
+    api = _api(db, head_sha=sha)
+    assert api["categories"]["deadcode"]["state"] == "clean_at_sha"
 
 
 def test_summary_less_finding_is_refused_and_writes_nothing(db):
@@ -242,7 +275,7 @@ def test_summary_less_finding_is_refused_and_writes_nothing(db):
 
     with pytest.raises(ValueError, match=r"findings\[0\].*summary"):
         scans_svc.record_scan(
-            db, project_id="core", scanner_id="bandit", path="backend/",
+            db, project_id="core", scanner_id="bandit", path="backend/pyproject.toml",
             scanned_sha="head1234",
             findings=[{"severity": "high", "issue_text": "B602 subprocess shell=True"}],
         )
@@ -250,7 +283,7 @@ def test_summary_less_finding_is_refused_and_writes_nothing(db):
 
     with pytest.raises(ValueError, match=r"findings\[1\].*object"):
         scans_svc.record_scan(
-            db, project_id="core", scanner_id="bandit", path="backend/",
+            db, project_id="core", scanner_id="bandit", path="backend/pyproject.toml",
             scanned_sha="head1234",
             findings=[
                 {"severity": "high", "summary": "real finding"},
@@ -260,10 +293,9 @@ def test_summary_less_finding_is_refused_and_writes_nothing(db):
     assert db.query(CodeScan).filter(CodeScan.project_id == "core").count() == 0
 
     # After a refused write the path is still never_scanned — not clean.
-    health = scans_svc.component_health(db, "core", head_sha="head1234")
-    api = next(c for c in health["components"] if c["id"] == "api")
-    assert api["categories"]["security"]["state"] == "never_scanned"
-    assert api["rollup"]["state"] != "clean_at_sha"
+    sec = _api_sec(db, head_sha="head1234")
+    assert sec["categories"]["security"]["state"] == "never_scanned"
+    assert sec["rollup"]["state"] != "clean_at_sha"
 
 
 def test_touches_component_requires_path_boundary():
@@ -283,7 +315,7 @@ def test_mcp_record_scan_key_only_call_stamps_the_credential(client, auth):
     key = client.post("/api/api-keys", json={"name": "scan-prov"}, headers=auth).json()["plaintext"]
     r = _mcp(client, {"X-API-Key": key}, "record_scan", {
         "scanner_id": "bandit", "path": "backend/", "scanned_sha": "f00d",
-        "findings": [], "project_id": "core",
+        "findings": [], "result": "complete", "project_id": "core",
     })
     sc = r.json()["result"]["structuredContent"]
     assert sc["reported_by"] == "key:scan-prov"
@@ -293,36 +325,86 @@ def test_mcp_record_scan_with_agent_id_stamps_the_agent(client, auth):
     key = client.post("/api/api-keys", json={"name": "scan-prov2"}, headers=auth).json()["plaintext"]
     r = _mcp(client, {"X-API-Key": key}, "record_scan", {
         "scanner_id": "bandit", "path": "backend/", "scanned_sha": "f00d",
-        "findings": [], "project_id": "core", "agent_id": "GRPH-A9",
+        "findings": [], "result": "complete", "project_id": "core", "agent_id": "GRPH-A9",
     })
     assert r.json()["result"]["structuredContent"]["reported_by"] == "GRPH-A9"
 
 
-def _api(db):
-    return next(c for c in scans_svc.component_health(db, "core", head_sha="h1")["components"]
-                if c["id"] == "api")
+@pytest.fixture()
+def fleet_scan_key(client, auth):
+    return client.post(
+        "/api/api-keys", json={"name": "scan-fleet", "scopes": ["read", "write"]},
+        headers=auth,
+    ).json()["plaintext"]
+
+
+def _live_worker_on_key(client, key):
+    r = _mcp(client, {"X-API-Key": key}, "register_agent", {"label": "w", "role_hint": "worker"})
+    sc = r.json()["result"]["structuredContent"]
+    assert sc["active_role"] == "worker"
+    return sc["agent_id"]
+
+
+def test_mcp_record_scan_key_only_on_a_live_fleet_credential(client, fleet_scan_key):
+    """THE CALL. Sabotage: drop the unidentified bypass for record_scan — this fails."""
+    _live_worker_on_key(client, fleet_scan_key)
+    r = _mcp(client, {"X-API-Key": fleet_scan_key}, "record_scan", {
+        "scanner_id": "bandit", "path": "backend/", "scanned_sha": "f00d",
+        "findings": [], "result": "complete", "project_id": "core",
+    })
+    assert r.status_code == 200, r.text
+    sc = r.json()["result"]["structuredContent"]
+    assert "error" not in sc, sc
+    assert sc["reported_by"] == "key:scan-fleet"
+
+
+def test_mcp_record_scan_refuses_a_registered_planner(client, fleet_scan_key):
+    _live_worker_on_key(client, fleet_scan_key)
+    pr = _mcp(client, {"X-API-Key": fleet_scan_key}, "register_agent",
+              {"label": "p", "role_hint": "planner"})
+    agent_id = pr.json()["result"]["structuredContent"]["agent_id"]
+    r = _mcp(client, {"X-API-Key": fleet_scan_key}, "record_scan", {
+        "scanner_id": "bandit", "path": "backend/", "scanned_sha": "f00d",
+        "findings": [], "result": "complete", "project_id": "core", "agent_id": agent_id,
+    })
+    err = r.json()["result"]["structuredContent"]["error"]
+    assert err["code"] == "unauthorized", err
+    assert "planners do not record scans" in err["message"]
+    assert "planner" in err["message"]
+
+
+def test_mcp_record_scan_allows_a_registered_worker(client, fleet_scan_key):
+    agent_id = _live_worker_on_key(client, fleet_scan_key)
+    r = _mcp(client, {"X-API-Key": fleet_scan_key}, "record_scan", {
+        "scanner_id": "bandit", "path": "backend/", "scanned_sha": "f00d",
+        "findings": [], "result": "complete", "project_id": "core", "agent_id": agent_id,
+    })
+    assert r.status_code == 200, r.text
+    sc = r.json()["result"]["structuredContent"]
+    assert "error" not in sc, sc
+    assert sc["reported_by"] == agent_id
 
 
 def test_findings_carry_a_filed_key_and_filing_marks_them(db):
     from app.services import items as items_svc
 
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="pip-audit", path="backend/", scanned_sha="h1",
+        db, project_id="core", scanner_id="pip-audit", path="backend/pyproject.toml", scanned_sha="h1",
         findings=[{"severity": "high", "summary": "multipart DoS", "path": "backend/pyproject.toml"}],
     )
-    f = _api(db)["categories"]["security"]["findings"][0]
+    f = _api_sec(db)["categories"]["security"]["findings"][0]
     assert f["filed_key"].startswith(scans_svc.FILED_TAG_PREFIX)
     assert f["filed_item"] is None  # not filed is an explicit None, never a missing field
 
     # Same finding re-reported → same key (a re-scan must not re-offer filed work).
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="pip-audit", path="backend/", scanned_sha="h1",
+        db, project_id="core", scanner_id="pip-audit", path="backend/pyproject.toml", scanned_sha="h1",
         findings=[{"severity": "high", "summary": "multipart DoS", "path": "backend/pyproject.toml"}],
     )
-    assert _api(db)["categories"]["security"]["findings"][0]["filed_key"] == f["filed_key"]
+    assert _api_sec(db)["categories"]["security"]["findings"][0]["filed_key"] == f["filed_key"]
 
     it = items_svc.create_item(db, project_id="core", title="Defrag", tags=["defrag", f["filed_key"]])
-    f2 = _api(db)["categories"]["security"]["findings"][0]
+    f2 = _api_sec(db)["categories"]["security"]["findings"][0]
     assert f2["filed_item"] == it.key
 
 
@@ -338,7 +420,7 @@ def test_open_work_findings_offer_no_defrag(db):
 
 def test_stale_and_never_scanned_cells_offer_a_cta(db):
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="radon", path="backend/", scanned_sha="old", findings=[],
+        db, project_id="core", scanner_id="radon", path="backend/", scanned_sha="old", findings=[], result="complete",
     )
     cats = _api(db)["categories"]
     assert cats["refactor"]["state"] == "stale"
@@ -348,12 +430,12 @@ def test_stale_and_never_scanned_cells_offer_a_cta(db):
     # A rerun offer is per stale revision: going stale again later is a new offer.
     first = cats["refactor"]["cta"]["filed_key"]
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="radon", path="backend/", scanned_sha="older", findings=[],
+        db, project_id="core", scanner_id="radon", path="backend/", scanned_sha="older", findings=[], result="complete",
     )
     assert _api(db)["categories"]["refactor"]["cta"]["filed_key"] != first
     # Clean at head offers nothing.
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="radon", path="backend/", scanned_sha="h1", findings=[],
+        db, project_id="core", scanner_id="radon", path="backend/", scanned_sha="h1", findings=[], result="complete",
     )
     assert _api(db)["categories"]["refactor"]["cta"] is None
 
@@ -361,10 +443,10 @@ def test_stale_and_never_scanned_cells_offer_a_cta(db):
 # ── GRPH-1061 · tests category ──────────────────────────────────────────────
 
 def _tests_scan(db, *, sha="h1", path="backend/", findings=None, counts=None, scanner="pytest",
-                **kw):
+                result="complete", **kw):
     return scans_svc.record_scan(
         db, project_id="core", scanner_id=scanner, path=path, scanned_sha=sha,
-        findings=findings or [], tests=counts, **kw,
+        findings=findings or [], tests=counts, result=result, **kw,
     )
 
 
@@ -428,14 +510,14 @@ def test_dead_code_scanners_infer_the_deadcode_category(db, scanner):
     assert dead["label"] == "Dead code · unused"
     assert dead["state"] == "has_findings"
     # It landed in deadcode only — not the security default.
-    assert _api(db)["categories"]["security"]["state"] == "never_scanned"
+    assert _api_sec(db)["categories"]["security"]["state"] == "never_scanned"
 
 
 def test_dead_code_absence_is_never_scanned_and_blocks_a_clean_rollup(db):
     # Every other scanned category clean at head; dead code never run.
     for sid in ("pip-audit", "radon", "stubscan"):
         scans_svc.record_scan(
-            db, project_id="core", scanner_id=sid, path="backend/", scanned_sha="h1", findings=[],
+            db, project_id="core", scanner_id=sid, path="backend/", scanned_sha="h1", findings=[], result="complete",
         )
     api = _api(db)
     assert api["categories"]["deadcode"]["state"] == "never_scanned"
@@ -445,11 +527,11 @@ def test_dead_code_absence_is_never_scanned_and_blocks_a_clean_rollup(db):
 
 def test_dead_code_clean_at_head_vs_older_sha(db):
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="vulture", path="backend/", scanned_sha="h1", findings=[],
+        db, project_id="core", scanner_id="vulture", path="backend/", scanned_sha="h1", findings=[], result="complete",
     )
     assert _api(db)["categories"]["deadcode"]["state"] == "clean_at_sha"
     scans_svc.record_scan(
-        db, project_id="core", scanner_id="vulture", path="backend/", scanned_sha="old", findings=[],
+        db, project_id="core", scanner_id="vulture", path="backend/", scanned_sha="old", findings=[], result="complete",
     )
     assert _api(db)["categories"]["deadcode"]["state"] == "stale"
     due = scans_svc.scans_due(db, "core", head_sha="h1")["due"]
@@ -514,7 +596,7 @@ def test_mcp_and_rest_carry_tests_counts(client, auth):
 
     rest = client.post("/api/platform/stack/scans", headers=headers, json={
         "project_id": "core", "scanner_id": "pytest", "path": "backend/", "scanned_sha": "abc",
-        "tests": {"passed": 4, "failed": 0, "skipped": 1},
+        "tests": {"passed": 4, "failed": 0, "skipped": 1}, "result": "complete",
     })
     assert rest.status_code == 200, rest.text
     assert rest.json()["tests"] == {"passed": 4, "failed": 0, "skipped": 1}
@@ -527,7 +609,7 @@ def test_mcp_and_rest_carry_tests_counts(client, auth):
 def test_dead_code_nested_clean_does_not_roll_up_clean(db):
     scans_svc.record_scan(
         db, project_id="core", scanner_id="vulture", path="backend/app/sync/",
-        scanned_sha="h1", findings=[],
+        scanned_sha="h1", findings=[], result="complete",
     )
     assert _api(db)["categories"]["deadcode"]["state"] != "clean_at_sha"
 
@@ -546,3 +628,277 @@ def test_dead_code_finding_files_once(db):
         tags=["defrag", "tech-debt", f["filed_key"]],
     )
     assert _api(db)["categories"]["deadcode"]["findings"][0]["filed_item"] == it.key
+
+
+# ── GRPH-1108 · an unknown scanner with no category is refused, never defaulted ──
+
+
+
+
+def test_unknown_scanner_without_category_is_refused_and_stores_nothing(db):
+    with pytest.raises(ValueError) as e:
+        scans_svc.record_scan(
+            db, project_id="core", scanner_id="coderabbit", path="web/package-lock.json",
+            scanned_sha="h1", findings=[], result="complete",
+        )
+    msg = str(e.value)
+    # A repair hint: the valid categories and the known security scanners.
+    for cat in scans_svc.CATEGORIES:
+        assert cat in msg
+    for sid in ("pip-audit", "bandit", "semgrep", "npm-audit"):
+        assert sid in msg
+    # One empty unknown row at head must not paint security clean_at_sha.
+    assert _web_sec(db)["categories"]["security"]["state"] == "never_scanned"
+    assert scans_svc.scan_status(db, "core", path="web/package-lock.json", head_sha="h1")["scans"] == []
+
+
+def test_unknown_scanner_with_an_explicit_category_is_stored_as_given(db):
+    row = scans_svc.record_scan(
+        db, project_id="core", scanner_id="coderabbit", path="web/",
+        scanned_sha="h1", findings=[], result="complete", category="refactor",
+    )
+    assert row["category"] == "refactor"
+    assert _web_sec(db)["categories"]["security"]["state"] == "never_scanned"
+
+
+def test_a_known_security_scanner_is_still_inferred_as_security(db):
+    row = scans_svc.record_scan(
+        db, project_id="core", scanner_id="pip-audit", path="web/package-lock.json",
+        scanned_sha="h1", findings=[], result="complete",
+    )
+    assert row["category"] == "security"
+
+
+def test_mcp_record_scan_refuses_an_unknown_scanner_without_category(client, auth):
+    key = client.post("/api/api-keys", json={"name": "scan-unknown"}, headers=auth).json()["plaintext"]
+    headers = {"X-API-Key": key}
+    r = _mcp(client, headers, "record_scan", {
+        "scanner_id": "coderabbit", "path": "web/package-lock.json", "scanned_sha": "h1",
+        "findings": [], "project_id": "core",
+    })
+    assert r.status_code == 200, r.text
+    result = r.json()["result"]
+    assert result["isError"] is True
+    err = result["structuredContent"]["error"]
+    assert err["code"] == "validation"
+    assert "security" in err["message"] and "pip-audit" in err["message"]
+
+    h = client.get("/api/platform/stack/health?project_id=core&head_sha=h1", headers=auth).json()
+    web_sec = next(c for c in h["components"] if c["path"] == "web/package-lock.json")
+    assert web_sec["categories"]["security"]["state"] == "never_scanned"
+
+
+# ── GRPH-1125 · producer result states ───────────────────────────────────────
+
+
+def test_empty_findings_without_result_is_refused_and_prior_row_stays(db):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="semgrep", path="web/", scanned_sha="h1",
+        findings=[{"severity": "high", "summary": "rule hit", "path": "web/x.ts"}],
+    )
+    with pytest.raises(ValueError, match="result is required when findings is empty"):
+        scans_svc.record_scan(
+            db, project_id="core", scanner_id="semgrep", path="web/", scanned_sha="h2",
+            findings=[],
+        )
+    st = scans_svc.scan_status(db, "core", path="web/", scanner_id="semgrep", head_sha="h1")
+    assert st["scans"][0]["state"] == "has_findings"
+
+
+def test_tool_missing_is_not_never_scanned_and_stays_due(db):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="semgrep", path="web/package-lock.json", scanned_sha="h1",
+        findings=[], result="tool_missing",
+    )
+    cell = _web_sec(db, head_sha="h1")["categories"]["security"]
+    assert cell["state"] == "tool_missing"
+    due = scans_svc.scans_due(db, "core", head_sha="h1")["due"]
+    assert {"component": "sec:web-lock", "category": "security"} in [
+        {"component": d["component"], "category": d["category"]} for d in due
+    ]
+
+
+def test_not_applicable_stops_scans_due(db):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="pip-audit", path="web/package-lock.json", scanned_sha="h1",
+        findings=[], result="not_applicable",
+    )
+    cell = _web_sec(db, head_sha="h1")["categories"]["security"]
+    assert cell["state"] == "not_applicable"
+    due = scans_svc.scans_due(db, "core", head_sha="h1")["due"]
+    assert not any(d["component"] == "sec:web-lock" and d["category"] == "security" for d in due)
+
+
+def test_incomplete_with_findings_is_not_clean(db):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="knip", path="web/", scanned_sha="h1",
+        findings=[{"severity": "low", "summary": "unused export", "path": "web/x.ts"}],
+        result="incomplete",
+    )
+    cell = _web(db, head_sha="h1")["categories"]["deadcode"]
+    assert cell["state"] == "incomplete"
+    assert cell["findings"]
+
+
+def test_tool_missing_at_old_sha_is_stale(db):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="trivy", path="web/package-lock.json", scanned_sha="old",
+        findings=[], result="tool_missing",
+    )
+    cell = _web_sec(db, head_sha="h1")["categories"]["security"]
+    assert cell["state"] == "stale"
+
+
+def test_coverage_without_code_graph_is_not_computable_once(db):
+    from datetime import datetime, timezone
+
+    from app.models import AppTopology, CodeNode
+
+    db.query(CodeNode).filter(CodeNode.project_id == "core").delete()
+    db.query(AppTopology).filter(AppTopology.project_id == "core").delete()
+    db.add(AppTopology(
+        project_id="core", mapped_sha="s1", mapped_at=datetime.now(timezone.utc),
+        components=[
+            {"id": d, "dir": d, "label": d,
+             "provenance": {"file": f"{d}/index.ts", "rule": "main", "line": 1}}
+            for d in ("src", "apps/desk")
+        ],
+    ))
+    db.commit()
+    comps = scans_svc.component_health(db, "core", head_sha="h1")["components"]
+    cov = [c["categories"]["coverage"] for c in comps if "coverage" in c["categories"]]
+    assert [c["state"] for c in cov] == ["not_computable"]
+    assert cov[0]["result"] is None
+
+
+def test_mcp_empty_findings_without_result_is_validation_error(client, auth):
+    key = client.post("/api/api-keys", json={"name": "scan-result"}, headers=auth).json()["plaintext"]
+    headers = {"X-API-Key": key}
+    r = _mcp(client, headers, "record_scan", {
+        "scanner_id": "pip-audit", "path": "web/", "scanned_sha": "h1",
+        "findings": [], "project_id": "core",
+    })
+    err = r.json()["result"]
+    assert err["isError"] is True
+    assert err["structuredContent"]["error"]["code"] == "validation"
+    assert "complete" in err["structuredContent"]["error"]["message"]
+
+
+# ── GRPH-1126 · first-time due ───────────────────────────────────────────────
+
+
+def test_has_findings_at_head_is_not_due(db):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="npm-audit", category="security",
+        path="web/package-lock.json", scanned_sha="h1",
+        findings=[{"severity": "high", "summary": "advisory", "path": "web/package-lock.json"}],
+        result="complete",
+    )
+    assert _web_sec(db)["categories"]["security"]["state"] == "has_findings"
+    due = scans_svc.scans_due(db, "core", head_sha="h1")["due"]
+    assert not any(d["path"] == "web/package-lock.json" for d in due)
+    assert any(d["path"] == "backend/pyproject.toml" for d in due)
+
+
+def test_incomplete_stays_due(db):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id="knip", path="web/", scanned_sha="h1",
+        findings=[{"severity": "low", "summary": "unused export", "path": "web/x.ts"}],
+        result="incomplete",
+    )
+    due = scans_svc.scans_due(db, "core", head_sha="h1")["due"]
+    assert any(d["component"] == "web" and d["category"] == "deadcode" for d in due)
+
+
+_SOURCE_DIRS = ("web/", "backend/", "fleet/", "cli/")
+_MANIFESTS = (("pip-audit", "backend/pyproject.toml"), ("npm-audit", "web/package-lock.json"))
+
+
+def _report_every_topology_cell(db, *, findings, head_sha="h1"):
+    """One complete report on every scanner cell the seeded topology names.
+
+    Security sits on the manifest cells; refactor/stub/deadcode/tests on the source dirs.
+    """
+    counts = {"passed": 1, "failed": 1 if findings else 0, "skipped": 0}
+    for sid, path in _MANIFESTS:
+        scans_svc.record_scan(
+            db, project_id="core", scanner_id=sid, category="security", path=path,
+            scanned_sha=head_sha, result="complete",
+            findings=[{"severity": "crit", "summary": "bad", "path": path}] if findings else [],
+        )
+    for prefix in _SOURCE_DIRS:
+        for sid in ("radon", "stubscan", "vulture", "pytest"):
+            kw = {"tests": counts} if sid == "pytest" else {}
+            scans_svc.record_scan(
+                db, project_id="core", scanner_id=sid, path=prefix, scanned_sha=head_sha,
+                findings=(
+                    [{"severity": "crit", "summary": "bad", "path": f"{prefix}m.py"}]
+                    if findings else []
+                ),
+                result="complete", **kw,
+            )
+
+
+def _describe_every_source_dir(db, revision="h1"):
+    """Make coverage computable: code-graph nodes under each source dir at head."""
+    from app.services import code_graph as code_svc
+
+    code_svc.describe_code(
+        db, project_id="core", revision=revision,
+        nodes=[{"path": f"{prefix}m.py", "kind": "module", "summary": "m"} for prefix in _SOURCE_DIRS],
+    )
+
+
+def test_first_time_cells_are_due_in_every_scanner_category(db):
+    """Stub, dead code, refactor and tests are due before any report exists."""
+    out = scans_svc.scans_due(db, "core", head_sha="h1")
+    pairs = {(d["path"], d["category"]) for d in out["due"]}
+    for prefix in _SOURCE_DIRS:
+        for cat in ("refactor", "stub", "deadcode", "tests"):
+            assert (prefix, cat) in pairs, (prefix, cat)
+    for _, path in _MANIFESTS:
+        assert (path, "security") in pairs
+    assert all(d["state"] == "never_scanned" for d in out["due"])
+    # No graph → one not_computable coverage cell, never a demand to scan a phantom path.
+    assert not any(d["category"] == "coverage" for d in out["due"])
+    assert out["empty_reason"] is None
+
+
+def test_no_graph_project_empty_due_is_coverage_not_computable(db):
+    _report_every_topology_cell(db, findings=False)
+    out = scans_svc.scans_due(db, "core", head_sha="h1")
+    assert out["due_count"] == 0, out["due"]
+    assert out["empty_reason"] == "coverage_not_computable"
+
+
+def test_unmapped_project_empty_due_is_unmapped(db):
+    from app.models import Project
+
+    pid = "unmapped-due-p58"
+    if not db.get(Project, pid):
+        db.add(Project(id=pid, name="Unmapped due", tag="UMDP"))
+        db.commit()
+    out = scans_svc.scans_due(db, pid, head_sha="h1")
+    assert out["due_count"] == 0
+    assert out["empty_reason"] == "unmapped"
+
+
+def test_findings_everywhere_empty_due_is_has_findings_not_all_clean(db):
+    """Bounce: has_findings cells fell through to all_clean_or_not_applicable."""
+    _describe_every_source_dir(db)
+    _report_every_topology_cell(db, findings=True)
+    out = scans_svc.scans_due(db, "core", head_sha="h1")
+    assert out["due_count"] == 0, out["due"]
+    assert out["empty_reason"] == "has_findings"
+
+
+def test_all_clean_with_computable_coverage_is_all_clean(db):
+    _describe_every_source_dir(db)
+    _report_every_topology_cell(db, findings=False)
+    health = scans_svc.component_health(db, "core", head_sha="h1")
+    cov = [c["categories"]["coverage"]["state"] for c in health["components"]
+           if "coverage" in c["categories"]]
+    assert cov and "not_computable" not in cov, cov
+    out = scans_svc.scans_due(db, "core", head_sha="h1")
+    assert out["due_count"] == 0, out["due"]
+    assert out["empty_reason"] == "all_clean_or_not_applicable"

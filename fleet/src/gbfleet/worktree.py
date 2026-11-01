@@ -17,6 +17,7 @@ the tool this PRD refused, running slower.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field, replace
@@ -92,6 +93,34 @@ class BranchExists(RuntimeError):
     else's history, and the second one also makes the branch name stop identifying
     the agent, which is the only thing it is for.
     """
+
+
+class RemoteBranchTaken(BranchExists):
+    """This name is already on the remote. The slot loop takes the next one.
+
+    A local collision and a remote collision are the same refusal (GRPH-1088). The
+    subclass is how the slot loop records WHY — a push onto the old name can
+    fast-forward when the old tip is an ancestor of the new cut, so the refusal
+    has to happen here, at the name. An `ls-remote` that fails is not this class:
+    that is unknown, and `create` raises `GitError` so the wave stops on one line
+    instead of burning every slot.
+    """
+
+
+@dataclass(frozen=True)
+class RemoteName:
+    """Whether `branch` is already a head on the remote.
+
+    `known=False` means the question was not answered. That is not "the name is
+    free". A repository with no remote is known: there is nowhere for the name
+    to already be.
+    """
+
+    known: bool
+    exists: bool
+    remote: str = ""
+    sha: str = ""
+    reason: str = ""
 
 
 class Disposition(str, Enum):
@@ -186,6 +215,21 @@ def create(
             f"{branch} already exists in {repo}. Refusing to spawn: forcing would "
             "attach this worker to somebody else's history, and auto-suffixing would "
             "make the branch stop identifying the agent. Reap or rename it first."
+        )
+    # Before any worktree exists. A name the remote already has is an earlier run's
+    # branch (GRPH-1088). Cutting it and pushing later fast-forwards that ref when
+    # the old tip is an ancestor — `push_branch` is right to allow that for a branch
+    # this process just published, so the refusal is choosing a different name.
+    named = remote_name(repo, branch)
+    if not named.known:
+        raise GitError(
+            f"could not ask {named.remote} whether {branch} already exists "
+            f"({named.reason}); not cutting a name that might be an earlier run's"
+        )
+    if named.exists:
+        raise RemoteBranchTaken(
+            f"{branch} exists on {named.remote} at {named.sha[:12]}; refusing to "
+            "cut onto a branch the remote already has"
         )
     base_sha = _git(repo, "rev-parse", base).strip()
 
@@ -498,6 +542,38 @@ def commits_beyond_base(repo: Path | str, branch: str, base: str) -> int:
         return int(out)
     except ValueError:
         return 0
+
+
+def remote_name(repo: Path | str, branch: str) -> RemoteName:
+    """Ask the remote whether `branch` is already a head.
+
+    `ls-remote`'s pattern is broader than one ref, so the answer is the line whose
+    ref is exactly `refs/heads/<branch>`. No remote is a known absence. A non-zero
+    exit is unknown, and the reason is kept so the wave can say why it stopped.
+    """
+    remote = remote_for(repo)
+    if not remote:
+        return RemoteName(known=True, exists=False)
+    proc = subprocess.run(
+        ["git", "ls-remote", "--heads", remote, f"refs/heads/{branch}"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        reason = (proc.stderr or proc.stdout or "").strip().replace("\n", " ")
+        if len(reason) > 200:
+            reason = reason[:200]
+        return RemoteName(
+            known=False, exists=False, remote=remote,
+            reason=reason or "ls-remote failed",
+        )
+    want = f"refs/heads/{branch}"
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == want:
+            return RemoteName(known=True, exists=True, remote=remote, sha=parts[0])
+    return RemoteName(known=True, exists=False, remote=remote)
 
 
 def remote_for(repo: Path | str) -> str:
@@ -1171,6 +1247,10 @@ def behind_ref(repo: Path | str, base: str, ref: str) -> int:
     Zero when the ref cannot be resolved, which is the honest answer for a repository with
     no remote or an unfetched one — and the caller reports "not measured" rather than "not
     behind", because those are different facts (GRPH-786).
+
+    The count is not a verdict on whether the branch can be proposed. A trunk that moved
+    in files this branch never touches still counts, and refusing on the count alone is
+    what GRPH-1087 stops. `shared_with_missed` and `merge_tree_conflicts` are that check.
     """
     if not base or not ref:
         return 0
@@ -1179,6 +1259,176 @@ def behind_ref(repo: Path | str, base: str, ref: str) -> int:
         return int(out)
     except ValueError:
         return 0
+
+
+def changed_paths(repo: Path | str, old: str, new: str) -> list[str] | None:
+    """Paths that differ between two commits. None when git cannot answer.
+
+    None is not an empty list. An empty list means the trees were compared and nothing
+    differs; None means the comparison was not made, and a caller that treats the two
+    alike will propose a branch it never looked at.
+    """
+    if not (old or "").strip() or not (new or "").strip():
+        return None
+    proc = subprocess.run(
+        ["git", "diff", "--name-only", old, new],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    return [line for line in proc.stdout.splitlines() if line.strip()]
+
+
+def shared_with_missed(repo: Path | str, base: str, ref: str, branch: str) -> list[str] | None:
+    """Files the missed commits (`base`..`ref`) change that `branch` also changes.
+
+    Net tree diff, not every path a commit in the range happened to touch: a change the
+    trunk made and then reverted is not a file the branch has to reconcile. None when
+    either side cannot be listed — "we could not look" is not "no shared files"
+    (GRPH-1087).
+    """
+    missed = changed_paths(repo, base, ref)
+    own = changed_paths(repo, base, branch)
+    if missed is None or own is None:
+        return None
+    return sorted(set(missed) & set(own))
+
+
+def merge_tree_conflicts(repo: Path | str, ref: str, branch: str) -> bool | None:
+    """Does `git merge-tree --write-tree ref branch` report a conflict?
+
+    False when git exits 0 (a clean merge). True when it exits 1 (conflicts). None on
+    any other status — a missing ref, a git that cannot run the merge — because that is
+    "could not be asked", and it must not read as a clean merge (GRPH-1087).
+
+    This is the check the path intersection cannot be: a rename on one side and an edit
+    of the old path on the other need not share a name in `git diff --name-only`, and
+    they still conflict.
+    """
+    if not (ref or "").strip() or not (branch or "").strip():
+        return None
+    proc = subprocess.run(
+        ["git", "merge-tree", "--write-tree", ref, branch],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    if proc.returncode == 0:
+        return False
+    if proc.returncode == 1:
+        return True
+    return None
+
+
+def conflicted_paths(repo: Path | str, ref: str, branch: str) -> list[str] | None:
+    """The files `git merge-tree --write-tree ref branch` reports conflicted (GRPH-1236).
+
+    Empty on a clean merge. None when merge-tree could not be asked, for the same reason
+    `merge_tree_conflicts` returns None: "could not ask" is not "clean".
+    """
+    if not (ref or "").strip() or not (branch or "").strip():
+        return None
+    proc = subprocess.run(
+        ["git", "merge-tree", "--write-tree", "--name-only", "--no-messages", ref, branch],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    if proc.returncode == 0:
+        return []
+    if proc.returncode != 1:
+        return None
+    # The first line is the tree; the conflicted names follow it, one per line.
+    return sorted({line.strip() for line in proc.stdout.splitlines()[1:] if line.strip()})
+
+
+@dataclass
+class Merged:
+    """`ref` merged into a branch (GRPH-1236). `sha` is the new head, `ref_sha` is what merged."""
+
+    branch: str
+    ref: str
+    sha: str = ""
+    ref_sha: str = ""
+    reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.sha)
+
+
+def _checkout_of(repo: Path | str, branch: str) -> Path | None:
+    """The worktree that has `branch` checked out, or None."""
+    out = _git(repo, "worktree", "list", "--porcelain", check=False)
+    path: Path | None = None
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            path = Path(line[len("worktree "):].strip())
+        elif line.strip() == f"branch refs/heads/{branch}":
+            return path
+    return None
+
+
+def _identity_env(cwd: Path | str) -> dict[str, str]:
+    """Committer env for a repo with no identity of its own. A real one always wins."""
+    env = dict(os.environ)
+    if not _git(cwd, "config", "user.email", check=False).strip():
+        env.setdefault("GIT_AUTHOR_NAME", "gbfleet")
+        env.setdefault("GIT_AUTHOR_EMAIL", "gbfleet@localhost")
+        env.setdefault("GIT_COMMITTER_NAME", "gbfleet")
+        env.setdefault("GIT_COMMITTER_EMAIL", "gbfleet@localhost")
+    return env
+
+
+def merge_ref_into(repo: Path | str, branch: str, ref: str) -> Merged:
+    """Merge `ref` into `branch` with a real merge commit (GRPH-1236). Never a rebase.
+
+    The branch's own commits keep their shas, so nothing already pushed is rewritten and
+    the push that follows is a fast-forward. Where the branch is checked out, this is
+    `git merge --no-ff --no-edit <ref>` in that worktree, so its files follow the ref.
+    A merge that fails is aborted and reported, and the branch is left where it was.
+
+    Where nothing has the branch checked out, the same commit is built from
+    `git merge-tree --write-tree` and `git commit-tree` with both parents. The ref only
+    moves if it still points at the head the merge was built on.
+    """
+    head = _git(repo, "rev-parse", "--verify", "-q", f"refs/heads/{branch}",
+                check=False).strip()
+    ref_sha = _git(repo, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}",
+                   check=False).strip()
+    if not head or not ref_sha:
+        return Merged(branch=branch, ref=ref, reason=f"could not resolve {branch} or {ref}")
+    message = f"Merge {ref} into {branch} before proposing (gbfleet)"
+    tree = _checkout_of(repo, branch)
+    if tree is not None and tree.exists():
+        env = _identity_env(tree)
+        proc = subprocess.run(
+            ["git", "merge", "--no-ff", "--no-edit", "-m", message, ref_sha],
+            cwd=str(tree), capture_output=True, text=True, env=env,
+        )
+        if proc.returncode != 0:
+            subprocess.run(["git", "merge", "--abort"], cwd=str(tree),
+                           capture_output=True, text=True)
+            why = (proc.stderr.strip() or proc.stdout.strip())[:200]
+            return Merged(branch=branch, ref=ref, ref_sha=ref_sha,
+                          reason=f"git merge {ref} failed: {why}")
+        sha = _git(tree, "rev-parse", "HEAD").strip()
+        return Merged(branch=branch, ref=ref, sha=sha, ref_sha=ref_sha)
+    written = subprocess.run(["git", "merge-tree", "--write-tree", ref_sha, head],
+                             cwd=str(repo), capture_output=True, text=True)
+    if written.returncode != 0:
+        return Merged(branch=branch, ref=ref, ref_sha=ref_sha,
+                      reason=f"merge-tree did not merge {ref} cleanly")
+    oid = written.stdout.splitlines()[0].strip()
+    made = subprocess.run(
+        ["git", "commit-tree", oid, "-p", head, "-p", ref_sha, "-m", message],
+        cwd=str(repo), capture_output=True, text=True, env=_identity_env(repo),
+    )
+    if made.returncode != 0:
+        return Merged(branch=branch, ref=ref, ref_sha=ref_sha,
+                      reason=f"commit-tree failed: {made.stderr.strip()[:200]}")
+    sha = made.stdout.strip()
+    try:
+        _git(repo, "update-ref", f"refs/heads/{branch}", sha, head)
+    except GitError as exc:
+        return Merged(branch=branch, ref=ref, ref_sha=ref_sha, reason=str(exc)[:200])
+    return Merged(branch=branch, ref=ref, sha=sha, ref_sha=ref_sha)
 
 
 def reaches(repo: Path | str, base: str, commit: str) -> bool | None:

@@ -33,6 +33,12 @@ export interface Project {
   memory_auto_reject: boolean;
   memory_write_mode: string;
   memory_llm_judge: boolean;
+  /** Days an uncorroborated candidate lives before it expires (GRPH-1212); default 45. */
+  memory_candidate_expiry_days?: number;
+  /** Flag a published lesson when the code it cited changed (GRPH-1213); default on. */
+  memory_flag_on_code_change?: boolean;
+  /** Shard classes kept out of auto-publish for a human (GRPH-1214); default ["principle"]. */
+  memory_human_review_classes?: string[];
   agent_adjudication: boolean;
   /** Danger mode: an agent may sign off its own work, but only when no independent agent exists. */
   allow_self_review: boolean;
@@ -44,6 +50,21 @@ export interface Project {
   chat_roles?: Record<string, { credential_id?: string; model_override?: string }>;
   /** The project's decider credential pointer (PRD-45 S2). Null = no decider. */
   decider_credential_id?: string | null;
+}
+
+/** One project switcher row (GRPH-1131), counted server-side so the switcher never fetches collections. */
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  tag: string;
+  accent: string;
+  item_count: number;
+  agent_count: number;
+  live_agents: number;
+  /** Gitops base branch. Null when unset — never a guessed `main`. */
+  default_branch: string | null;
+  /** Null when nothing has ever happened, not an epoch. */
+  last_activity_at: string | null;
 }
 
 // ── Deploy config + Organizations (hosted-only, AL-74b) ────────────────────
@@ -74,6 +95,13 @@ export interface UpdateCheck {
   via: "" | "compose" | "native";
   hosted: boolean;
   note: string;
+}
+
+/** `/health` — the cut this box is serving. Install polls it, not update-check. */
+export interface BoxHealth {
+  status: string;
+  version: string;
+  git_sha: string;
 }
 
 /** PRD-47 S14 — one aggregate for the deployment-wide Usage page. */
@@ -391,16 +419,6 @@ export interface Usage {
   calls_this_month: number;
 }
 
-export interface Billing {
-  plan: string;
-  limits: PlanLimits;
-  usage: Usage;
-  /** Stripe checkout is live. False is manual assignment, not a broken billing page. */
-  self_serve?: boolean;
-  /** A Stripe customer id exists. False is never checked out, not a broken portal. */
-  has_customer?: boolean;
-}
-
 // ── Operator console (hosted + platform-admin only, AL-94) ────────────────
 // Metadata only by design — no tenant content ever crosses this boundary.
 export interface AdminOrgMember {
@@ -509,20 +527,18 @@ export interface Item {
   id: string;
   project_id: string;
   title: string;
-  description: string;
   status: Status;
   tags: string[];
   touchpoints: string[];
   effort: number;
   sort_order: number;
   blocker: string;
-  /** Why a reviewer sent it back. Survives the pin — the author reads it after reclaiming. */
-  bounce_reason: string;
   date: string;
   reporter: Reporter;
   pr: PR | null;
   github_url: string;
-  evidence: EvidenceReceipt[];
+  /** A valid attestation receipt exists, so `done` will not 409 (GRPH-1228: the list omits `evidence`). */
+  has_attestation?: boolean;
   assignee: string;
   claimed_by: string | null;
   prd_id: string | null;
@@ -532,9 +548,24 @@ export interface Item {
   reach: Reach;
   created_at: string;
   updated_at: string;
+  /** When it last reached `done` (GRPH-1134); null while it is not done. */
+  done_at: string | null;
 }
 
-export type ShardStatus = "candidate" | "published" | "rejected";
+/** The full record: `GET /items/{id}`, or the list with `?fields=full`. The project list
+ * returns `Item` only — no description, evidence or bounce reason (GRPH-1228). */
+export interface ItemDetail extends Item {
+  description: string;
+  evidence: EvidenceReceipt[];
+  /** Why a reviewer sent it back. Survives the pin — the author reads it after reclaiming. */
+  bounce_reason: string;
+}
+
+/** `retired` (GRPH-1175): unpublished from Memory, restorable for 14 days. */
+export const SHARD_CLASSES = ["pitfall", "convention", "principle"] as const;
+export type ShardClass = (typeof SHARD_CLASSES)[number];
+
+export type ShardStatus = "candidate" | "published" | "rejected" | "retired";
 
 export interface Shard {
   id: string;
@@ -549,6 +580,8 @@ export interface Shard {
   /** AL-227: "" = human-only; else the signal that auto-acted ("similarity" | "llm"). */
   scoring_source: string;
   auto_confidence: number | null;
+  /** "" = unclassified. */
+  shard_class: ShardClass | "";
   created_at: string;
 }
 
@@ -734,6 +767,46 @@ export interface ScoredCandidate {
   judge_source?: string;
 }
 
+/** GRPH-1175: the five Memory triage queues, counted in one call. */
+export type MemoryQueueKey =
+  | "needs_decision"
+  | "conflicts"
+  | "duplicate_clusters"
+  | "stale_or_wrong"
+  | "published_unreviewed";
+
+/** `count` is null only when `state` is `failed` — 0 is a measured zero, never a failure. */
+export interface MemoryQueueCount {
+  count: number | null;
+  state: "ok" | "failed";
+  error: string;
+}
+
+export interface StaleRecommendation {
+  action: "keep" | "revise" | "retire" | "verify";
+  confidence: number;
+  reason: string;
+}
+
+/** A published shard that is stale or reported wrong. `ungraded` means the judge did not
+ *  answer — `recommendation` is null then, never an invented one. */
+export interface StaleShardRow {
+  shard: Shard;
+  why: string[];
+  ungraded: boolean;
+  ungraded_reason: string;
+  recommendation: StaleRecommendation | null;
+}
+
+export interface ApplyRecommendationResult {
+  shard_id: string;
+  action: string | null;
+  confidence: number | null;
+  applied: boolean;
+  reason: string;
+  undo: "restore" | null;
+}
+
 /** On-demand LLM judge (GRPH-650). `verdict` XOR `cause` — a missing quality is not 0. */
 export interface JudgeVerdict {
   keep: boolean;
@@ -782,12 +855,70 @@ export interface RequestItem {
   published_at: string | null;
 }
 
+/** One comment on a request's operator thread (PRD-60 D9). `internal` is a private note. */
+export interface RequestComment {
+  id: string;
+  body: string;
+  visibility: "public" | "private";
+  role: "submitter" | "team" | "internal";
+  /** Display name; empty when the operator account is gone. */
+  author: string;
+  created_at: string;
+}
+
 /** A request or item that looks like this one. Advisory — never auto-merged. */
 export interface DuplicateHint {
   kind: "request" | "item";
   id: string;
   title: string;
   score: number;
+}
+
+/** One row of the unified triage feed (GRPH-1135). `kind` picks the shape of the rest. */
+export type TriageTab = "all" | "bugs" | "requests" | "blockers" | "collisions";
+
+interface TriageFeedBase {
+  id: string;
+  title: string;
+  age_seconds: number;
+  paths: string[];
+}
+
+export interface TriageRequestRow extends TriageFeedBase {
+  kind: "bug" | "feature" | "enhancement" | "feedback";
+  by: string;
+  votes: number;
+  source: string;
+  body: string;
+  duplicate: { id: string; title: string; score: number; status: string } | null;
+  /** Absent when nothing fits or the embedder is down — advisory, not a verdict. */
+  suggested_prd?: { id: string; score: number };
+}
+
+export interface TriageBlockerRow extends TriageFeedBase {
+  kind: "blocker";
+  owner: string | null;
+  blocked_seconds: number;
+  reason: string;
+  decision?: { question: string; options: string[] };
+  waiting_on?: { id: string; title: string; status: string };
+}
+
+export interface TriageCollisionRow extends TriageFeedBase {
+  kind: "collision";
+  risk: "blocked" | "serialize";
+  predicted: boolean;
+  members: { id: string; title: string; owner: string | null; status: string }[];
+  recommendation: string;
+}
+
+export type TriageFeedRow = TriageRequestRow | TriageBlockerRow | TriageCollisionRow;
+
+export interface TriageFeed {
+  rows: TriageFeedRow[];
+  counts: Record<TriageTab, number>;
+  /** Sources that did not answer; their kinds are missing from `rows`, not clear. */
+  failed_sources: string[];
 }
 
 export interface TriageRow {
@@ -945,6 +1076,31 @@ export interface SyncStatus {
   last_redacted_models?: number | null;
   last_snapshot_at?: string | null;
   projects: SyncProjectState[];
+}
+
+/** `GET /api/sync/org` — the Organization window (GRPH-1223/1225). Unlinked is `{linked: false}`
+ *  and nothing else. Unreachable keeps the last known identity, but `counts` is null and every
+ *  other deployment's figures are null — never the last numbers shown as current. */
+export interface SyncOrgDeployment {
+  name: string;
+  projects: number | null;
+  here: boolean;
+  last_sync_at: string | null;
+}
+
+export interface SyncOrgOverview {
+  linked: boolean;
+  reachable?: boolean;
+  unreachable_since?: string | null;
+  fetched_at?: string | null;
+  /** `host` is the org's `<slug>` (or a full host); null when it has not claimed one. */
+  org?: { name: string; host: string | null; plan: string | null } | null;
+  /** The LINKING credential's org role — not the viewer's. */
+  role?: string | null;
+  counts?: { members: number; teams: number; policy_rules: number; deployments: number } | null;
+  deployments?: SyncOrgDeployment[] | null;
+  /** Whether the viewer is a box admin, so may unlink. */
+  can_unlink?: boolean;
 }
 
 // ── Gitops delivery contract (GRPH-P31) ────────────────────────────────────
@@ -1127,6 +1283,27 @@ export interface StackNode {
   facts: StackFact[];
   outposts?: { host: string; online: number; agents: number }[];
   provider_kind?: string;
+  /** `app` for the project's own boxes (code map or posted record), `graphban` for the
+   * instance. Absent on an older API: treat as `graphban` unless the id is an app id. */
+  plane?: "app" | "graphban" | string;
+  /** Client-only: the boxes a collapsed "Built with Graphban" box stands for. */
+  members?: string[];
+  /** Where a posted-record box was read from (GRPH-1098). */
+  provenance?: { file?: string; rule?: string; line?: number };
+}
+
+/** Freshness of the posted app topology record (GRPH-1098 / PRD-P55 §2). */
+export type StackMappingState = "mapped" | "stale" | "unmapped" | "freshness_unknown";
+
+export interface StackMapping {
+  state: StackMappingState | string;
+  mapped_sha: string | null;
+  head_sha: string | null;
+  previous_mapped_sha: string | null;
+  producer_id: string | null;
+  producer_version: string | null;
+  mapped_at: string | null;
+  posted_by: string | null;
 }
 
 export interface StackEdge {
@@ -1134,6 +1311,11 @@ export interface StackEdge {
   to: string;
   protocol: string;
   label: string;
+  /** `set` is a live assignment. `documented` is a commented template key. */
+  state?: "set" | "documented" | string;
+  provenance?: { file?: string; rule?: string; line?: number };
+  /** Every source of this edge. The first is also `provenance`. */
+  provenances?: { file?: string; rule?: string; line?: number }[];
 }
 
 export interface StackTopology {
@@ -1156,6 +1338,10 @@ export interface StackTopology {
     db_engine: string | null;
     mcp_tools: number;
   };
+  /** Does this project write Graphban's source (#1020 markers)? Absent on an older API. */
+  graphban_source?: "owned" | "not_owned" | "unknown" | string;
+  /** Absent on an older API, which reads as unmapped — never as mapped. */
+  mapping?: StackMapping;
 }
 
 /** GET /api/platform/stack/health — code-health overlay (GRPH-1035 / PRD-P51 §3). */
@@ -1171,6 +1357,11 @@ export interface StackScanFinding {
   path: string;
   link_kind?: string | null;
   link_ref?: string | null;
+  advisory_id?: string;
+  dependency?: "direct" | "transitive";
+  fixed_version?: string;
+  kind?: string;
+  count?: number;
   /** Tag an item filed from this finding carries; absent on open-work findings. */
   filed_key?: string | null;
   /** The item already filed for it, if any. */
@@ -1249,6 +1440,39 @@ export interface PrdSummary {
   version: string;
   linked: string[];
   updated_at: string;
+  /** When the PRD closed (from its close record); null if not closed. */
+  closed_at?: string | null;
+  /** GRPH-1140 rollup of linked requests; absent on older servers. */
+  request_count?: number;
+  request_votes?: number;
+  request_types?: Partial<Record<RequestType, number>>;
+}
+
+/** One request linked to a PRD (GET /prds/{id}/requests). */
+export interface PrdLinkedRequest {
+  id: string;
+  title: string;
+  type: RequestType;
+  votes: number;
+  status: string;
+  by: string;
+  created_at: string | null;
+  /** The linked item's key (e.g. GRPH-123); null when unlinked. */
+  linked_to: string | null;
+}
+
+export interface PrdRequestSuggestion {
+  request_id: string;
+  title: string;
+  type: RequestType;
+  votes: number;
+  score: number;
+}
+
+/** `available: false` means the embedder failed — NOT "nothing matches". */
+export interface PrdRequestSuggestions {
+  available: boolean;
+  suggestions: PrdRequestSuggestion[];
 }
 
 export interface Prd extends PrdSummary {
@@ -1849,6 +2073,11 @@ export interface FleetPresence {
 
 export interface FleetOverview {
   agents: FleetAgent[];
+  /** Offline agents holding nothing, folded into an exact count (GRPH-1229). */
+  collapsed?: { count: number; by_state: Record<string, number>; by_role: Record<string, number>;
+                /** Why each was folded (GRPH-1237): quiet past the window, or only an orphaned branch. */
+                by_kind?: { quiet: number; orphaned: number };
+                recent_seconds: number };
   online: number;
   total: number;
   /** Live agents per role, plus `all-in-one` — the unspecialised single-dev posture. */
@@ -1888,6 +2117,8 @@ export interface FleetOverview {
   /** Seats for this project. No part of the code ever comes back — a seat is named by role
    *  and wave, and lives thirty minutes. */
   seats: FleetSeat[];
+  /** Consumed and revoked seats, counted rather than sent (GRPH-1237). */
+  seats_collapsed?: { count: number; by_state: Record<string, number> };
   /** Credentials that reach this project. Display prefix only, never key material. */
   credentials: FleetCredential[];
   /** Waves that still own an un-revoked seat or key — newest first. History is not offered:
@@ -1948,6 +2179,13 @@ export interface FleetTierCell {
   /** Best-measured model per performance grading, or null when NOT MEASURED. A null here must
    *  never be filled in by a guess (PRD-47 G3). */
   graded_model: string | null;
+  /** Finished attempts for `effective_model` over the last 30 days, or null when none finished
+   *  (never zeros). `below_floor` means too few runs to call it graded. */
+  measured: {
+    runs: number; signed_off: number; pass_rate: number; below_floor: boolean;
+    /** Null when below the floor: not enough data is never an F. */
+    grade: "A" | "B" | "C" | "D" | "F" | null;
+  } | null;
 }
 
 /** The catalog facts and this deployment's overrides, served together. */
@@ -2007,6 +2245,8 @@ export interface FleetPolicy {
   allowed_harnesses: string[];
   /** PRD-41 D20: a FILTER. Absent / empty is no cap. */
   caps?: FleetPolicyCaps | null;
+  /** Stored by `normalise_policy`; PUT replaces the whole policy, so it must be sent back. */
+  cluster_ceiling?: Record<string, unknown> | null;
 }
 
 export interface FleetProfileRead {
@@ -2083,6 +2323,14 @@ export type ShellCounts = {
   review: number;
   triage_new: number;
   lessons_published: number;
+  /** The sidebar badges (GRPH-1132): each restates the population of the page it sits on. */
+  items_open: number;
+  requests_untriaged: number;
+  code_nodes: number;
+  mcp_tools: number;
+  fleet_agents: number;
+  outposts: number;
+  live_agents: number;
 };
 
 /** A deployment credential (PRD-25). `used_by` and `falling_back` are DERIVED server-side. */
@@ -2169,6 +2417,9 @@ export interface LiveFeedRow {
   duration_ms?: number;
   status?: string;
   files?: string[];
+  /** Present on the project-wide stream, which spans agents. */
+  agent_id?: string;
+  agent_label?: string;
 }
 
 /** GET /api/live/{agent_id}/feed. `state: "never"` with no rows is the empty. */
@@ -2185,6 +2436,8 @@ export interface LiveBoard {
   presence_ttl_seconds: number;
   truncated: boolean;
   total_agents: number;
+  /** Agents not dismissed and inside the presence TTL — the one "live" count (same rows as ShellCounts.live_agents). */
+  online_agents: number;
   unattributed_count: number;
   by_role: Record<string, number>;
   roles: string[];
@@ -2252,6 +2505,8 @@ export interface LiveAgent {
   label: string;
   role: string | null;
   state: string;
+  /** Quarantine verdict, shown apart from presence: a quarantined agent is always `offline`. */
+  quarantined?: boolean;
   last_seen_at: string | null;
   worktree: string | null;
   branch: string | null;
@@ -2539,6 +2794,56 @@ export interface HarnessRecommendations {
   floor: number;
 }
 
+/** PRD-62 S5: a count the supervisor does not report yet is null, never 0. */
+export interface HarnessCapacityEntitlement {
+  id: string;
+  vendor: string;
+  kind: string;
+  plan_label: string;
+  state: "available" | "unknown" | "exhausted" | "broken" | "unreachable";
+  vendor_text: string;
+  since: string | null;
+  reset_cadence: string | null;
+  token_budget: number | null;
+  week: { tokens: number; reported: number; unreported: number; limit_hits: number };
+  projected_exhaustion: { at: string | null; reason: string; basis?: string };
+  /** D4: on a `broken` entitlement, the runner that reported the failure, and who declares it. */
+  reported_by: HarnessCapacityRunner | null;
+  declared_by: HarnessCapacityRunner[];
+}
+
+export interface HarnessCapacityRunner {
+  agent_id: string;
+  label: string;
+  worktree: string;
+}
+
+export interface HarnessCapacity {
+  org_id: string;
+  as_of: string;
+  /** D7, per builder vendor: `vendors` can review and hold headroom; `empty_for` / `only_unknown_for`
+   * name the builder vendors whose reserve (another eligible vendor) is empty or unknown-only. */
+  review_reserve: {
+    vendors: string[]; empty: boolean; empty_for: string[];
+    only_unknown: boolean; only_unknown_for: string[]; warning: string | null;
+  };
+  entitlements: HarnessCapacityEntitlement[];
+  utilization: {
+    week_start: string;
+    week_end: string;
+    share_used: number | null;
+    /** True when some spend reported no token count: `share_used` is then a floor. */
+    share_is_lower_bound: boolean;
+    tokens_used: number;
+    budget: number | null;
+    entitlements_with_budget: number;
+    entitlements_without_budget: number;
+    unreported_spends: number;
+    waves_ended_by_capacity: { count: number | null; note: string };
+    items_deferred_to_reset: { count: number | null; note: string };
+  };
+}
+
 export interface HarnessGradingRule {
   id: string;
   title: string;
@@ -2569,4 +2874,135 @@ export interface HarnessGuidance {
     generated_at: string;
   };
   fleet_status_text: string;
+}
+
+// ── Rules map (GRPH-P61 §3–§4, GRPH-1162) ────────────────────────────────────
+/** `services/rules.py:ENFORCEMENT_ORDER`, strongest first. */
+export type RuleEnforcement = "enforced" | "checked" | "external" | "advisory" | "unmeasured";
+/** A stage reads `not_used` only when every rule on it is unused under the gitops model. */
+export type RuleStageState = RuleEnforcement | "not_used";
+
+export interface RuleEnforcer {
+  /** `services/rules.py:ENFORCER_KINDS`. */
+  kind: string;
+  ref: string;
+  /** Empty when the server has no link for it. */
+  url: string;
+}
+
+export interface RuleResult {
+  outcome: "pass" | "fail";
+  at: string;
+  item: string;
+  commit: string;
+}
+
+export interface RuleFlowRule {
+  id: string;
+  stage: string;
+  title: string;
+  summary: string;
+  enforcement: RuleEnforcement;
+  channel: string | null;
+  enforcer: RuleEnforcer;
+  truth: "db" | "code" | "repo_file" | "derived";
+  scope: string;
+  models: string[];
+  value: string | boolean | null;
+  source: string | null;
+  used: boolean;
+  label: string | null;
+  /** Sent (as null) on every rule; a list only on the skills pack. Null on the pack: the gban
+   *  package was not readable on the server. */
+  skills: { name: string; url: string }[] | null;
+  /** The gban version the skills ship at (cli-v<version> in each url); null with `skills`. */
+  skills_version?: string | null;
+  /** Only on a `checked` rule; null when nothing has been recorded. */
+  last_result?: RuleResult | null;
+}
+
+export interface RuleStage {
+  id: string;
+  title: string;
+  summary: string;
+  state: RuleStageState;
+  rules: RuleFlowRule[];
+}
+
+/** `published: false` carries null numbers; the UI never shows 0 or computes one (GRPH-1192). */
+export interface RefusalCoverage {
+  published: boolean;
+  n: number | null;
+  m: number | null;
+  commit: string | null;
+  published_at: string | null;
+}
+
+/** Which plane holds the gitops contract; the flow carries it so the view fetches gitops once. */
+export interface RuleFlowControl {
+  state: string;
+  writable: boolean;
+  message: string;
+  org_name: string;
+}
+
+export interface RulesFlow {
+  version: string;
+  control: RuleFlowControl;
+  /** Null when the project's gitops model is unmeasured. */
+  model: string | null;
+  stages: RuleStage[];
+  edges: [string, string][];
+}
+
+// ── Recommended rules (GRPH-1160, GRPH-1164) ──────────────────────────────────
+export interface SuggestionEvidence {
+  text: string;
+  source: string;
+  link: string;
+}
+
+export interface RuleSuggestion {
+  id: string;
+  stage: string;
+  level: string;
+  title: string;
+  why: string;
+  /** `value` is a gitops value the editor can prefill; `code` needs a change that has not shipped. */
+  kind: "value" | "code" | string;
+  rule_id: string | null;
+  value: string | null;
+  evidence: SuggestionEvidence[];
+  fingerprint: string;
+}
+
+export interface SuggestionSource {
+  source: string;
+  /** `not_available` carries a `reason`; an empty suggestion list never stands in for it. */
+  state: "read" | "not_available" | string;
+  read_at: string | null;
+  reason: string | null;
+}
+
+/** One ranked group of `refusal_unmapped` events (GRPH-1195). `daily` is oldest day first. */
+export interface UnmappedGroup {
+  where: string;
+  status: number | null;
+  /** The platform bucket: a refusal that named no project, returned to the project's owner only. */
+  platform: boolean;
+  count: number;
+  last_at: string | null;
+  daily: number[];
+}
+
+export interface UnmappedRefusals {
+  days: number;
+  /** Earliest refusal event recorded; null means none ever, which is not "zero since". */
+  recording_since: string | null;
+  groups: UnmappedGroup[];
+}
+
+export interface RecommendedRules {
+  suggestions: RuleSuggestion[];
+  sources: SuggestionSource[];
 }

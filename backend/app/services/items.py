@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Agent, Enrolment, Item, Prd, Project, utcnow
 from app.services import keys
+from app.services import routing as routing_svc
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +98,12 @@ def create_item(
     prd_section: str = "",
     fidelity: str = "low",
     commit: bool = True,
+    question: str | None = None,
+    options: list[str] | None = None,
 ) -> Item:
     """Create a tracked item.
+
+    `question`/`options` file it as a structured decision wait (`waits.set_decision`).
 
     ``commit=False`` leaves the row flushed but uncommitted so a caller can make the item
     and something that references it one transaction — `accept_request` needs the item and
@@ -145,6 +150,9 @@ def create_item(
         prd_section=prd_section or "",
         fidelity=fidelity,
     )
+    if question or options:
+        from app.services.waits import set_decision
+        set_decision(item, question, options)
     db.add(item)
     if commit:
         db.commit()
@@ -375,6 +383,12 @@ def normalize_evidence_report(raw) -> tuple[list[dict], list[dict]]:
                             if e.get(k) is not None]
                     row["detail"] = ("incomplete attestation receipt (" + ", ".join(said) + ")"
                                      if said else "")
+        elif kind == "note":
+            # The one structured fact a note can carry (PRD-63 D2): `done: false` marks work
+            # the builder says was NOT done. A bool and nothing else, so the observation
+            # ledger counts a flag and never reads the prose beside it.
+            if e.get("done") is False:
+                row["done"] = False
         elif kind == "url":
             # A `url` may name the COMMIT it points at (GRPH-846). The fleet's merge receipt
             # is the reason: after `gh pr merge --squash` the reviewed commit is not an
@@ -656,8 +670,10 @@ _COMMIT = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
 #: Prose is a worse carrier than a field and is used anyway, because `normalize_evidence`
 #: keeps only `kind`/`detail`/`url` on a note and inventing a field for this would change
 #: the evidence schema for one caller. It is written in exactly one place
-#: (`gbfleet.supervisor._record_cut_from`) and read in exactly one place (below), and the
-#: pair is pinned by test_fleet_base_commit_gate.
+#: (`fleet.record_observation`, the supervisor observations route — GRPH-975) and read in
+#: exactly one place (below), and the pair is pinned by test_fleet_base_commit_gate.
+#: The supervisor posts the facts; it does not compose this sentence, because its client
+#: may not call `update_item`.
 CUT_FROM_MARKER = "gbfleet: branch cut from "
 
 _SHA = re.compile(r"\b([0-9a-f]{7,40})\b")
@@ -697,6 +713,41 @@ def cut_from_commits(evidence) -> list[str]:
             if found:
                 out.append(found.group(1))
     return out
+
+
+#: How a supervisor says a child committed on the branch it cut (GRPH-1116).
+#:
+#: A git commit does not touch the item row, so `updated_at <= claimed_at` still
+#: reads "wrote nothing" after the sha landed. `release_item` would then clear
+#: `built_by`, and the next agent to move the item to review — often the planner —
+#: would be stamped as the author. The supervisor may not call `update_item`, so the
+#: fact rides this note, written by `fleet.record_observation` and read only here.
+COMMITTED_MARKER = "gbfleet: committed "
+
+
+def committed_by(evidence, agent_id: str) -> bool:
+    """Whether `agent_id` is the agent named on a supervisor commit note (GRPH-1116).
+
+    The sentence is "gbfleet: committed <sha> on `<branch>` by <agent>". A note that
+    names somebody else does not keep this holder's authorship: the agent who is
+    leaving is the one the sentence has to name. A marker with no sha is not a commit.
+    """
+    who = (agent_id or "").strip()
+    if not who:
+        return False
+    for e in (evidence or []):
+        if not isinstance(e, dict):
+            continue
+        detail = str(e.get("detail") or "")
+        if COMMITTED_MARKER not in detail:
+            continue
+        named = detail.rsplit(" by ", 1)[-1].strip() if " by " in detail else ""
+        if named != who:
+            continue
+        tail = detail[detail.index(COMMITTED_MARKER) + len(COMMITTED_MARKER):]
+        if _SHA.search(tail):
+            return True
+    return False
 
 
 def same_commit(a: str | None, b: str | None) -> bool:
@@ -845,6 +896,14 @@ def failing_predicates(evidence, *, commit: str | None = None) -> set[str]:
     return names
 
 
+#: Refusal kinds that are an expected wait rather than a lesson: the evidence note is
+#: written, a memory shard is not. `pr_cooldown` resolves itself, and a shard saying "the
+#: cooldown had 18s left" would ride every later brief as a lesson (GRPH-1234). Every other
+#: kind (`attestation_missing`, the failed-predicate refusals) names something to change, so
+#: it still writes.
+_NO_SHARD_REFUSALS = frozenset({"pr_cooldown"})
+
+
 def record_refusal(db: Session, item: Item, *, predicate: str, detail: str) -> None:
     """Write a gate refusal where the next agent will meet it (GRPH-550).
 
@@ -880,6 +939,9 @@ def record_refusal(db: Session, item: Item, *, predicate: str, detail: str) -> N
     receipt = {"kind": "note",
                "detail": f"refused at `done` ({predicate}): {detail}"}
     item.evidence = append_evidence(item.evidence, [receipt])
+    if predicate in _NO_SHARD_REFUSALS:
+        db.commit()
+        return
 
     # Keyed on (item, predicate) — NOT on the commit. A non-functional refactor changes the
     # SHA, so including it would re-emit the same unresolved refusal as a fresh shard and
@@ -1484,6 +1546,11 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
     # Reopening counts as a touchpoint change: a done item holds no `code` links (GRPH-1068),
     # so leaving `done` is when it regains them, to whatever open work it now overlaps.
     reopened = prev_status == "done" and item.status != "done"
+    from app.services import observations as observations_svc
+    if reopened:
+        observations_svc.on_reopen(db, item)
+    if fields.get("evidence"):
+        observations_svc.on_evidence(db, item)
     if (("touchpoints" in fields and fields["touchpoints"] is not None) or reopened) \
             and item.touchpoints:
         from app.services.clustering import sync_code_links
@@ -1803,6 +1870,27 @@ def item_dict(item: Item) -> dict:
         # needs the value that IS there, not a field that is always present and
         # usually blank.
         out["branch"] = item.branch
+    if item.review_claimed_by:
+        # WHY the review hold above is no longer live, PRESENT ONLY WHEN IT HAS LAPSED
+        # (GRPH-1254). `review_claimed_by` is the raw column and stays set after its holder
+        # dies, so a supervisor reading it alone saw a dead reviewer as a live one and never
+        # spawned the reviewer that `claim_review` would already have let take the item over.
+        # The reason comes from `review_claim_lapse`, the one definition of a live hold, so no
+        # client re-derives presence. Reply-only, like `review_claimed_by`.
+        from app.services.fleet import review_claim_lapse
+        lapse = review_claim_lapse(item)
+        if lapse:
+            out["review_claim_lapse"] = lapse
+    if item.decision:
+        # The agent's question and options, and the answer once given (GRPH-1137). Present
+        # only on a decision wait; `notify` bookkeeping stays server-side. Reply-only.
+        from app.services.waits import decision_dict
+        out["decision"] = decision_dict(item)
+    if item.done_at is not None:
+        # When it last reached `done` (GRPH-1134), a unix timestamp like `claimed_at`. Shown
+        # only when set, like `branch`: every open row would otherwise carry an empty field.
+        # Reply-only, for the same token-ceiling reason as `claimed_at`.
+        out["done_at"] = int(item.done_at.timestamp())
     if item.reviewed_by_capabilities:
         # The reviewer's tier, vendor and model (GRPH-945), so a cheap-on-cheap sign-off reads
         # differently from a frontier or human one. Present only once somebody signed it off,
@@ -1857,6 +1945,11 @@ def render_ref(db: Session, stored_id: str, readable: list[str] | None = None) -
     return stored_id
 
 
+# Shard statuses an item read and a brief leave out: memory a person or migration took out of
+# retrieval (GRPH-1234).
+HIDDEN_SHARD_STATUSES = ("retired", "rejected")
+
+
 def get_item_details(db: Session, item_id: str, readable: list[str] | None = None) -> dict | None:
     from app.models import Link, MemoryShard, Request
 
@@ -1868,7 +1961,11 @@ def get_item_details(db: Session, item_id: str, readable: list[str] | None = Non
     # a pre-tag legacy id — while these columns hold the frozen stored id. Using the
     # caller's string made linked memory and requests silently vanish the moment a
     # project was retagged and an agent looked the item up by its new key (PRD-13).
-    shards = db.scalars(select(MemoryShard).where(MemoryShard.item_id == item.id)).all()
+    # A retired or rejected shard is out of memory; it must not ride the item read either
+    # (GRPH-1234: retired pr_cooldown refusals kept showing up as linked memory).
+    shards = db.scalars(select(MemoryShard).where(
+        MemoryShard.item_id == item.id,
+        MemoryShard.status.notin_(HIDDEN_SHARD_STATUSES))).all()
     reqs = db.scalars(select(Request).where(Request.linked_to == item.id)).all()
     links = db.scalars(select(Link).where(or_(Link.a == item.id, Link.b == item.id))
                        .order_by(Link.id)).all()
@@ -2082,6 +2179,134 @@ def held_by_a_seat(db: Session, agent_id: str | None) -> bool:
     return bool(agent is not None and agent.enrolment_id)
 
 
+class BoundOnlySeat(Exception):
+    """This agent's seat was minted for one item and that item has left in_progress (GRPH-1089).
+
+    Deliberately NOT a subclass of `OutOfScope`, for the reason `ReviewOnlySeat` gives. A skip
+    loop would sweep the board and hand back an empty batch, and "nothing was ready" is the
+    reassuring reading of "you were told to stop". The flag is opt-in: a seat minted without
+    it reviews other items after its own, which is what a `gbfleet until` wave relies on.
+    """
+
+
+def _bound_only_item(db: Session, agent_id: str | None) -> tuple[Enrolment | None, Item | None]:
+    """The seat and its bound row for an agent on a `bound_only` seat, else (None, None).
+
+    The row may itself be None — a bound item that has been deleted — and the seat is still
+    returned so the caller can say which item it was.
+    """
+    if not agent_id:
+        return None, None
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return None, None
+    seat = db.get(Enrolment, agent.enrolment_id)
+    if seat is None or not seat.bound_only or not seat.item_id:
+        return None, None
+    return seat, db.get(Item, seat.item_id)
+
+
+def reclaimable_bound_item(db: Session, agent_id: str | None, *,
+                           lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item | None:
+    """The bound item, when a `bound_only` seat may take it back right now (GRPH-1101).
+
+    A lease lapse requeues the item to `next` with `claimed_by` empty — or leaves it
+    `in_progress` under a stale lease until something rewrites it. Either way the seat's
+    work is not delivered and nobody live holds it, so the seat may reclaim exactly this
+    row. Review and done are delivered; a live lease, a blocker or a bounce pin for somebody
+    else make it not this seat's to take.
+    """
+    _seat, bound = _bound_only_item(db, agent_id)
+    if bound is None or bound.status in ("review", "done"):
+        return None
+    if not claimable(bound, lease_seconds=lease_seconds) or pinned_elsewhere(bound, agent_id):
+        return None
+    return bound
+
+
+def bound_only_refusal(db: Session, agent_id: str | None, item: Item | None = None, *,
+                       lease_seconds: int = DEFAULT_LEASE_SECONDS) -> str | None:
+    """Why this seat may not take another item or another review, or None when it may.
+
+    Only a seat minted `bound_only` is ever refused. For one, keyed on its bound item:
+
+    - `in_progress` under this agent: None. The seat is doing the work it was minted for,
+      and reviewing someone else's item is still allowed.
+    - review or done: refused. The work is delivered; the run is over (GRPH-1089).
+    - held under a live lease by another agent: refused, naming the holder.
+    - reclaimable — requeued by a lease lapse, or a stale lease (GRPH-1101): refused for
+      everything EXCEPT `item` being the bound row itself. The seat reclaims its own item
+      and nothing else. `claim_next` resolves to it; see `reclaimable_bound_item`.
+    - anything else (blocked, pinned to another agent): refused.
+
+    An unbound seat, a seat without the flag, and an agent with no enrolment all read None
+    and behave exactly as they did.
+
+    The sentence is one, and every door says it: `claim_review`, `claim_next`, `claim_item`
+    (which is where `claim_cluster`'s members and `next_cluster`'s neighbours claim), and
+    `claim_cluster` itself, which returns the sentence before its loop. A door that does not
+    consult this hands the seat more build work once the lease is dropped, because
+    `_holds_bound_item` only matches a live `claimed_by` and `open_bound_item` returns None
+    for review and done.
+    """
+    seat, bound = _bound_only_item(db, agent_id)
+    if seat is None:
+        return None
+    doors = ("claim_review, claim_next, claim_item, claim_cluster and next_cluster are "
+             "refused. ")
+    if bound is None:
+        return (
+            f"this seat is bound_only to {seat.item_id}, which is gone. " + doors
+            + "Exit — that is the normal end of a bound-only run, not a failure."
+        )
+    if bound.status == "in_progress" and bound.claimed_by == agent_id:
+        return None
+    if bound.status in ("review", "done"):
+        return (
+            f"this seat is bound_only to {bound.key}, which has left in_progress "
+            f"(status {bound.status}). " + doors
+            + "Exit — that is the normal end of a bound-only run, not a failure."
+        )
+    # Not "left in_progress" (GRPH-1101). A lapsed lease is not a delivered item: before this
+    # the seat was refused its OWN item and exited having changed nothing.
+    if reclaimable_bound_item(db, agent_id, lease_seconds=lease_seconds) is not None:
+        if item is not None and item.id == bound.id:
+            return None
+        return (
+            f"this seat is bound_only to {bound.key}, which is back in {bound.status} with "
+            "no live claimant — its lease lapsed. Reclaim it: claim_item on "
+            f"{bound.key}, or claim_next, which resolves to it. Any other item, "
+            "claim_review, claim_cluster and next_cluster are refused until it is delivered."
+        )
+    if bound.claimed_by and bound.claimed_by != agent_id:
+        return (
+            f"this seat is bound_only to {bound.key}, which is now held by "
+            f"{bound.claimed_by}. " + doors
+            + "Exit — the item is somebody else's to deliver."
+        )
+    return (
+        f"this seat is bound_only to {bound.key}, which has left in_progress "
+        f"(status {bound.status}) and cannot be reclaimed. " + doors
+        + "Exit — that is the normal end of a bound-only run, not a failure."
+    )
+
+
+def bound_only_seat(db: Session, agent_id: str | None) -> bool:
+    """Is this agent on a seat minted BOUND-ONLY (GRPH-1089)?
+
+    Echoed on `register_agent`, always, so a child can tell "the flag is false" from "this
+    server has never heard of it". The gate is `bound_only_refusal`; this only reports the
+    flag, including while the bound item is still `in_progress` and the gate is silent.
+    """
+    if not agent_id:
+        return False
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return False
+    seat = db.get(Enrolment, agent.enrolment_id)
+    return bool(seat is not None and seat.bound_only)
+
+
 def review_only_seat(db: Session, agent_id: str | None) -> bool:
     """Is this agent on a seat minted REVIEW-ONLY (GRPH-988)?
 
@@ -2183,6 +2408,21 @@ def claim_next(
     # the answer different.
     if review_only_seat(db, agent_id):
         raise ReviewOnlySeat(REVIEW_ONLY_REFUSAL)
+    # GRPH-1089. Same shape as the review-only check, and checked BEFORE the live-lease
+    # refusal below. A bound child that has just moved its item to review still holds that
+    # lease, so `AlreadyHolding` would answer first and the reason would name the lease
+    # instead of the binding — and deleting this check would then leave the suite green,
+    # because the lease refusal looks like a refusal. The binding is a property of the SEAT:
+    # no release makes the answer different once the item has left in_progress.
+    #
+    # GRPH-1101. Before the refusal: a seat whose lease lapsed and whose item was requeued
+    # asks for "whatever is next", and the only answer it may have is its own item. Unless
+    # it declined it this round — then the refusal says why there is nothing else.
+    own = reclaimable_bound_item(db, agent_id, lease_seconds=lease_seconds)
+    if own is not None and own.id not in declined and own.key not in declined:
+        return claim_item(db, own.id, agent_id, lease_seconds=lease_seconds)
+    if reason := bound_only_refusal(db, agent_id, lease_seconds=lease_seconds):
+        raise BoundOnlySeat(reason)
     # ONE AT A TIME (GRPH-504). Checked before any candidate is considered, so a caller that
     # already holds something is refused rather than quietly given a second item to abandon.
     held = live_claim(db, agent_id, lease_seconds=lease_seconds)
@@ -2216,8 +2456,13 @@ def claim_next(
             continue
         if pinned_elsewhere(cand, agent_id):
             continue
+        # PRD-62 S4: capacity routing. Skipped like the pin, for the same reason: the caller
+        # asked for "whatever is next" and the next may be held for a runner with headroom.
+        if routing_svc.held_back(db, cand, agent_id):
+            continue
         claimed = _try_claim(db, cand, agent_id)
         if claimed is not None:
+            routing_svc.record_claim(db, claimed, agent_id)
             return claimed
         # Lost the race for this candidate — try the next.
     return None
@@ -2343,6 +2588,19 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
     # can. `claim_next` says the same sentence; see REVIEW_ONLY_REFUSAL.
     if review_only_seat(db, agent_id):
         raise ReviewOnlySeat(REVIEW_ONLY_REFUSAL)
+    # GRPH-1089. Beside the review-only check, and for the same reason it lives in
+    # `claim_next`: this is the write `claim_cluster`'s members and `next_cluster`'s
+    # neighbours share. A check that exists only on `claim_next` leaves both open once the
+    # bound item has left in_progress — `_holds_bound_item` stops matching when the lease is
+    # released, and `open_bound_item` below returns None for review and done. Raised rather
+    # than returned as None, for the reason `ReviewOnlySeat` gives: None is "not claimable".
+    #
+    # Passed the candidate, because the bound item itself is the one claim that must land
+    # while it is `next`: registration claims it through here, and so does a seat taking it
+    # back after its lease lapsed (GRPH-1101). Refusing that refuses the seat's only job. A
+    # different item is the hole the bounce reproduced.
+    if reason := bound_only_refusal(db, agent_id, it, lease_seconds=lease_seconds):
+        raise BoundOnlySeat(reason)
     if (it.reach or "repo") == "deploy" and held_by_a_seat(db, agent_id):
         # GRPH-832. The reported escape was SELF-CLAIMED, not delegated: the ops item was the
         # highest-scored row in the project, so it sat at the top of every worker's queue and
@@ -2368,7 +2626,13 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
             f"taking work it did not choose."
             + ("" if it.prd_id else
                f" ({it.key} carries no PRD at all, so no scoped wave can reach it.)"))
-    return _try_claim(db, it, agent_id)
+    # PRD-62 S4: held for a runner with headroom. None, like the pin above — not a lost race.
+    if routing_svc.held_back(db, it, agent_id):
+        return None
+    claimed = _try_claim(db, it, agent_id)
+    if claimed is not None:
+        routing_svc.record_claim(db, claimed, agent_id)
+    return claimed
 
 
 def heartbeat(db: Session, item_id: str, agent_id: str,
@@ -2556,8 +2820,13 @@ def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "nex
     # evidence the guard below needs (GRPH-435).
     reserved = fleet_svc.holds_reservation(db, agent_id=agent_id, item_id=item.id)
     fleet_svc.release_reservations(db, item_id=item.id)
-    from app.services import delegation as delegation_svc
-    delegation_svc.on_outcome(db, item, "released")
+    # An item in `review` has been handed in: the attempt is finished and waits on a verdict.
+    # Handing back the build lease afterwards (gbfleet reap at child exit) must not close it as
+    # `released` — `on_outcome` keeps the FIRST outcome, so that would pre-empt the `signed_off`
+    # / `bounced` the reviewer writes (GRPH-1226). Only unfinished work handed back is released.
+    if item.status != "review":
+        from app.services import delegation as delegation_svc
+        delegation_svc.on_outcome(db, item, "released")
     # AUTHORSHIP IS NOT EARNED BY CLAIMING (GRPH-434). `built_by` is written at claim and never
     # cleared, which is right — releasing a lease must not destroy the record of who made the
     # thing (GRPH-376/377). But an agent that claimed, wrote nothing and handed the item back
@@ -2582,8 +2851,15 @@ def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "nex
     # counted. A heartbeat is about the agent's liveness rather than the item, and linking two
     # items is work but not necessarily work on this one. The reservation is different in
     # kind: the row names this agent and this item and nothing else.
+    #
+    # A git commit is the third place work hides (GRPH-1116). It does not touch this row, so
+    # the clock still says "wrote nothing" after the sha landed, and clearing `built_by` here
+    # is what lets the planner who next moves the item to review become the author. The
+    # supervisor records the sha once — it may not call `update_item` — and `committed_by`
+    # is that note. A note naming a different agent does not save the holder who is leaving.
     if (item.built_by == agent_id and item.claimed_at
-            and item.updated_at <= item.claimed_at and not reserved):
+            and item.updated_at <= item.claimed_at and not reserved
+            and not committed_by(item.evidence, agent_id)):
         item.built_by = None
     # AFTER the authorship decision, never before: a handback note is a write to `evidence`, so
     # it moves `updated_at`, and the test above reads `updated_at` to decide whether this agent

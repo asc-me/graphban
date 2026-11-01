@@ -2,34 +2,31 @@ import type { LayoutEdge, Pos } from "./layout";
 import { adjacency, degrees } from "./metrics";
 
 /**
- * The galaxy view (PRD-20 D9): above the detail budget, change WHAT is drawn rather than
- * drawing the same thing slower.
+ * What the within-repo galaxy view (PRD-20 D9) left behind after PRD-52 D8.
  *
- * Components collapse into super-nodes labelled by their highest-inbound member, edges between
- * them aggregate, and entering a component lays out only that component at full detail. The
- * point is what this does to the bound: layout cost goes from O(n²) over the whole repo to
- * O(k²) over k components plus O(m²) inside the one you are in, so **the ceiling becomes the
- * size of the largest component, not the size of the repository**.
+ * `collapse`, `enterComponent`, `superRadius` and `worthCollapsing` are gone. Above
+ * `DETAIL_BUDGET` the code graph draws every node on the canvas; it does not collapse
+ * components into super-nodes.
  *
- * `iterationsFor` documents the ~821-node crossover where the quality floor starts binding and
- * iteration-scaling can no longer hold D1's latency budget. That crossover is what this view
- * exists to answer.
+ * Still here, because something else reads them:
+ * - `DETAIL_BUDGET` — the mode switch in `CodeGraphView`.
+ * - `componentsOf` — the client mirror of `code_graph.components()` over the edges
+ *   currently drawn. The view no longer calls it. The suite pins it to the same fixture
+ *   as the server so the two pictures cannot drift unnoticed.
+ * - `convexHull` / `hullPath` — SVG-mode regions. They stay in this file because it is
+ *   not empty; D8 moves them to `hulls.ts` only if it would be.
+ * - `orderWithin` — degree order inside one set of ids.
  */
-
-/** Above this many nodes the flat view stops being able to hold D1's 1.5s budget. */
-export const DETAIL_BUDGET = 800;
 
 /**
- * Collapsing has to explain something. Above this share in one component, it does not.
- *
- * Measured on the live project during the PRD-20 acceptance walk: components came back as
- * [146, 3, 1, 1, 1, 1] — 95% of the graph in one. Real code looks like this, because almost
- * everything is reachable from the models module.
+ * Above this many nodes the code graph is canvas mode. Zero: every non-empty map
+ * is drawn on the canvas, at every size. The SVG view below 800 opened on an
+ * empty frame and its Fit only reset to 100%.
  */
-export const DOMINANCE_LIMIT = 0.6;
+export const DETAIL_BUDGET = 0;
 
 export interface Component {
-  /** Highest-inbound member — the label a collapsed component wears. */
+  /** Highest-inbound member — the label a component wears. */
   anchor: string;
   members: string[];
 }
@@ -84,122 +81,8 @@ export function componentsOf(ids: string[], edges: LayoutEdge[]): Component[] {
   }));
 }
 
-export interface SuperNode {
-  /** Stable id: the anchor, so entering and leaving a component keeps its identity. */
-  id: string;
-  anchor: string;
-  members: string[];
-  size: number;
-}
-
-export interface SuperEdge {
-  a: string;
-  b: string;
-  /** How many real edges this one line stands for. */
-  weight: number;
-}
-
-export interface Galaxy {
-  superNodes: SuperNode[];
-  superEdges: SuperEdge[];
-  /** Which super-node each real node belongs to. */
-  componentOf: Record<string, string>;
-}
-
 /**
- * Would collapsing this graph actually explain anything? (GRPH-403)
- *
- * The first guard asked only whether there was MORE THAN ONE component. That catches the
- * degenerate case — a single component collapsing to a single dot — and misses the
- * near-degenerate one, which is what real repositories are.
- *
- * Measured on the live project during the PRD-20 acceptance walk, `components()` returned
- * [146, 3, 1, 1, 1, 1]: 95% of the graph in one component, because almost everything is
- * reachable from the models module. Six components passes a count check and renders one huge
- * dot beside five specks — worse than the honest mess, since it hides the structure while
- * claiming to summarise it.
- *
- * D9's own unit tests used ten equal components of 90. That is the friendly case, and I
- * invented it; real topology went unchecked until the walk ran.
- */
-export function worthCollapsing(components: { members: string[] }[], total: number): boolean {
-  if (components.length <= 1) return false;
-  const largest = Math.max(...components.map((c) => c.members.length));
-  // No `total <= 0` guard: a sabotage pass proved it could not change an outcome. `n / 0` is
-  // Infinity and `0 / 0` is NaN, and both fail this comparison, so the degenerate cases already
-  // return false. A condition that cannot change an outcome reads as protection and provides
-  // none — the same dead guard found in `area_matches` during D4.
-  return largest / total <= DOMINANCE_LIMIT;
-}
-
-/**
- * Collapse a graph into components and the edges between them.
- *
- * Connected components have no edges BETWEEN them by definition, so `superEdges` is empty for a
- * plain component collapse. It is computed anyway rather than hardcoded to `[]`, because the
- * same shape has to hold if this is ever fed a coarser grouping than components — and an
- * aggregation that silently assumed emptiness would be wrong in exactly that case without
- * saying so.
- */
-export function collapse(ids: string[], edges: LayoutEdge[]): Galaxy {
-  const comps = componentsOf(ids, edges);
-  const componentOf: Record<string, string> = {};
-  for (const c of comps) for (const m of c.members) componentOf[m] = c.anchor;
-
-  const weights = new Map<string, number>();
-  for (const e of edges) {
-    const ca = componentOf[e.a];
-    const cb = componentOf[e.b];
-    if (!ca || !cb || ca === cb) continue;
-    const [x, y] = ca < cb ? [ca, cb] : [cb, ca];
-    // JSON rather than a delimiter: these keys are PATHS, and every printable separator is
-    // legal inside one. A previous version joined on a literal NUL, which is collision-proof
-    // and made the file binary to git — see the comment on `superEdges` below.
-    const key = JSON.stringify([x, y]);
-    weights.set(key, (weights.get(key) ?? 0) + 1);
-  }
-
-  return {
-    superNodes: comps.map((c) => ({
-      id: c.anchor,
-      anchor: c.anchor,
-      members: c.members,
-      size: c.members.length,
-    })),
-    superEdges: [...weights.entries()]
-      .map(([key, weight]) => {
-        const [a, b] = JSON.parse(key) as [string, string];
-        return { a, b, weight };
-      })
-      .sort((p, q) => (p.a === q.a ? (p.b < q.b ? -1 : 1) : p.a < q.a ? -1 : 1)),
-    componentOf,
-  };
-}
-
-/** The subgraph for one component — what "entering" it lays out at full detail. */
-export function enterComponent(
-  galaxy: Galaxy,
-  anchor: string,
-  edges: LayoutEdge[],
-): { ids: string[]; edges: LayoutEdge[] } {
-  const node = galaxy.superNodes.find((s) => s.id === anchor);
-  if (!node) return { ids: [], edges: [] };
-  const inside = new Set(node.members);
-  return {
-    ids: node.members,
-    edges: edges.filter((e) => inside.has(e.a) && inside.has(e.b)),
-  };
-}
-
-/** Radius for a collapsed component — area grows with membership, not radius. */
-export function superRadius(size: number): number {
-  // Linear radius would make a 400-node component forty times the width of a 10-node one and
-  // swallow the canvas; area-proportional keeps the visual weight honest.
-  return Math.max(10, Math.min(46, 9 * Math.sqrt(size)));
-}
-
-/**
- * Convex hull by monotone chain, with padding — the presence hull for a (user, component).
+ * Convex hull by monotone chain, with padding — a region around a set of points.
  *
  * Convex rather than an alpha shape, per the grill: deterministic, cheap, and a working region
  * should read as one blob rather than a concave outline tracing individual nodes. Returns an
@@ -246,7 +129,7 @@ export function hullPath(points: Pos[]): string {
   return `${points.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ")} Z`;
 }
 
-/** Degree order within one component — reused for tab order and label level-of-detail. */
+/** Degree order within one set of ids — reused for tab order and label level-of-detail. */
 export function orderWithin(ids: string[], edges: LayoutEdge[]): string[] {
   const d = degrees(ids, edges);
   return [...ids].sort((a, b) => d[b] - d[a] || (a < b ? -1 : a > b ? 1 : 0));

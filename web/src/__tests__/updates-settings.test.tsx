@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { docFor } from "@/features/docs/content";
 import { ProjectProvider } from "@/features/ProjectContext";
 import { SettingsView } from "@/features/settings/SettingsView";
+import { installTiming, pageReload } from "@/features/settings/UpdatesPanel";
 import { settingsPath } from "@/lib/routes";
 import type { Project, UpdateCheck } from "@/lib/types";
 
@@ -47,9 +48,19 @@ function payload(over: Partial<UpdateCheck> = {}): UpdateCheck {
   };
 }
 
-const { updateCheckSpy, updateApplySpy, projectsSpy, configSpy } = vi.hoisted(() => ({
+function available(): UpdateCheck {
+  return payload({
+    state: "available",
+    apply: true,
+    via: "compose",
+    latest: { tag: "2026.10.1", url: "https://example/2026.10.1" },
+  });
+}
+
+const { updateCheckSpy, updateApplySpy, healthSpy, projectsSpy, configSpy } = vi.hoisted(() => ({
   updateCheckSpy: vi.fn(async () => payload()),
   updateApplySpy: vi.fn(async (tag: string) => ({ ok: true, started: true, tag })),
+  healthSpy: vi.fn(async (_timeoutMs: number) => ({ status: "ok", version: "2026.09.1", git_sha: "d596e57" })),
   projectsSpy: vi.fn(async () => [proj]),
   configSpy: vi.fn(async () => ({ hosted_mode: false, signup_mode: "closed" })),
 }));
@@ -60,6 +71,7 @@ vi.mock("@/lib/api", () => ({
     config: configSpy,
     updateCheck: updateCheckSpy,
     updateApply: updateApplySpy,
+    health: healthSpy,
     credentials: vi.fn(async () => []),
     platform: vi.fn(async () => null),
     syncStatus: vi.fn(async () => ({ linked: false, url: "", projects: [] })),
@@ -88,9 +100,13 @@ function renderPage(path = settingsPath("deployment/updates"), hosted = false) {
 describe("Updates Settings page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.restoreAllMocks();
+    healthSpy.mockReset().mockResolvedValue({ status: "ok", version: "2026.09.1", git_sha: "d596e57" });
+    updateApplySpy.mockReset().mockImplementation(async (tag: string) => ({ ok: true, started: true, tag }));
     localStorage.setItem("gb_last_project_tag", "APP");
     projectsSpy.mockResolvedValue([proj]);
     updateCheckSpy.mockResolvedValue(payload());
+    Object.assign(installTiming, { pollMs: 1, requestMs: 50, budgetMs: 2000, reloadMs: 1 });
   });
 
   it("sits under This box as Updates", async () => {
@@ -139,33 +155,97 @@ describe("Updates Settings page", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /^install$/i })).toBeEnabled());
   });
 
-  it("THE CALL: Confirm install posts the advertised tag", async () => {
+  it("THE CALL: Confirm install posts the advertised tag, says it installed, and reloads", async () => {
     const user = userEvent.setup();
-    updateCheckSpy.mockResolvedValue(
-      payload({
-        state: "available",
-        apply: true,
-        via: "compose",
-        latest: { tag: "2026.10.1", url: "https://example/2026.10.1" },
-      }),
-    );
-    updateApplySpy.mockImplementation(async (tag: string) => {
-      updateCheckSpy.mockResolvedValue(
-        payload({
-          state: "current",
-          apply: true,
-          via: "compose",
-          running: { version: "2026.10.1", git_sha: "newsha" },
-          latest: { tag: "2026.10.1", url: "https://example/2026.10.1" },
-        }),
-      );
-      return { ok: true, started: true, tag };
-    });
+    const reload = vi.spyOn(pageReload, "run").mockImplementation(() => {});
+    updateCheckSpy.mockResolvedValue(available());
+    healthSpy.mockResolvedValue({ status: "ok", version: "2026.10.1", git_sha: "newsha" });
     renderPage();
     await user.click(await screen.findByRole("button", { name: /^install$/i }));
     await user.click(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i }));
     await waitFor(() => expect(updateApplySpy).toHaveBeenCalledWith("2026.10.1"));
-    expect((await screen.findAllByText(/on the latest release/i)).length).toBeGreaterThan(0);
+    expect(await screen.findByText(/installed 2026\.10\.1/i)).toBeInTheDocument();
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+  });
+
+  it("install walks building, then restarting, then installed", async () => {
+    const user = userEvent.setup();
+    const reload = vi.spyOn(pageReload, "run").mockImplementation(() => {});
+    let serving: "old" | "down" | "new" = "old";
+    healthSpy.mockImplementation(async () => {
+      if (serving === "down") throw new TypeError("Failed to fetch");
+      return { status: "ok", version: serving === "old" ? "2026.09.1" : "2026.10.1", git_sha: "x" };
+    });
+    updateCheckSpy.mockResolvedValue(available());
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i }));
+    expect(await screen.findByText(/building 2026\.10\.1\. this box keeps serving 2026\.09\.1/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /installing/i })).toBeDisabled();
+    expect(reload).not.toHaveBeenCalled();
+    serving = "down";
+    expect(await screen.findByText(/restarting on 2026\.10\.1/i)).toBeInTheDocument();
+    serving = "new";
+    expect(await screen.findByText(/installed 2026\.10\.1/i)).toBeInTheDocument();
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+  });
+
+  it("the install poll reads /health, not the GitHub-backed update check", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(pageReload, "run").mockImplementation(() => {});
+    let polls = 0;
+    healthSpy.mockImplementation(async () => {
+      polls += 1;
+      return { status: "ok", version: polls > 20 ? "2026.10.1" : "2026.09.1", git_sha: "x" };
+    });
+    updateCheckSpy.mockResolvedValue(available());
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    const before = updateCheckSpy.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i }));
+    expect(await screen.findByText(/installed 2026\.10\.1/i)).toBeInTheDocument();
+    expect(polls).toBeGreaterThan(20);
+    // One refetch after success so the panel shows the new cut; none per poll.
+    expect(updateCheckSpy.mock.calls.length - before).toBeLessThanOrEqual(1);
+  });
+
+  it("a box that never serves the tag ends in an error that names the helper log", async () => {
+    const user = userEvent.setup();
+    const reload = vi.spyOn(pageReload, "run").mockImplementation(() => {});
+    Object.assign(installTiming, { budgetMs: 60 });
+    updateCheckSpy.mockResolvedValue(available());
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i }));
+    expect(await screen.findByText(/still not serving 2026\.10\.1/i)).toBeInTheDocument();
+    expect(screen.getByText(/deploy\.log/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /installing/i })).not.toBeInTheDocument();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("a refused apply says why and does not poll", async () => {
+    const user = userEvent.setup();
+    updateApplySpy.mockRejectedValueOnce(
+      Object.assign(new Error(JSON.stringify({ detail: "tag is not the advertised cut" })), { status: 409 }),
+    );
+    updateCheckSpy.mockResolvedValue(available());
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i }));
+    expect(await screen.findByText(/install was refused: tag is not the advertised cut/i)).toBeInTheDocument();
+    expect(healthSpy).not.toHaveBeenCalled();
+  });
+
+  it("a dropped apply request is the apply starting, so it still polls", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(pageReload, "run").mockImplementation(() => {});
+    updateApplySpy.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    healthSpy.mockResolvedValue({ status: "ok", version: "2026.10.1", git_sha: "newsha" });
+    updateCheckSpy.mockResolvedValue(available());
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i }));
+    expect(await screen.findByText(/installed 2026\.10\.1/i)).toBeInTheDocument();
   });
 
   it("unknown does not look current", async () => {

@@ -26,6 +26,9 @@ from __future__ import annotations
 
 import itertools
 import json
+import logging
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
@@ -54,7 +57,12 @@ ATTEMPTS_PATH = "/api/fleet/attempts"
 #: The same rule as attempts: a REST route on this credential is a deliberate widening,
 #: and the body is names only — the scanner drops URLs, headers and paths before posting.
 SURFACE_PATH = "/api/harness/surface"
-ALLOWED_PATHS: frozenset[str] = frozenset({ATTEMPTS_PATH, SURFACE_PATH})
+#: Facts only the supervisor knows about a tree it cut (GRPH-975): the base, the draft PR,
+#: a salvage, a withheld proposal. One route, so a later kind extends it rather than adding
+#: a path. The body is those facts; the server composes the note. Not a tool — widening
+#: `ALLOWED_TOOLS` for this is the thing PRD-22 §4 forbids.
+OBSERVATIONS_PATH = "/api/fleet/observations"
+ALLOWED_PATHS: frozenset[str] = frozenset({ATTEMPTS_PATH, SURFACE_PATH, OBSERVATIONS_PATH})
 
 #: Short on purpose. This is a measurement posted beside real work; a supervisor waiting on it
 #: is a supervisor not starting a child.
@@ -65,6 +73,17 @@ class NotPermitted(RuntimeError):
     """The supervisor tried to make a call PRD-22 §4 says it may not make."""
 
 
+class ObservationRefused(RuntimeError):
+    """The observations route refused, or never answered (GRPH-975).
+
+    Telemetry swallows a failure and returns None, because a measurement that could fail a
+    spawn is worse than no measurement. A base or a PR receipt is the opposite: None would
+    read as landed, `sign_off` would report the commit uncompared, and the wave log — the
+    only place the refusal used to be visible — would say nothing. The caller records the
+    reason on the wave and carries on. It does not raise out of the wave.
+    """
+
+
 class ServerUnreachable(RuntimeError):
     """No answer from Graphban.
 
@@ -72,6 +91,10 @@ class ServerUnreachable(RuntimeError):
     stop spawning and let each child run to its own lease deadline. A refused call or a
     tool error means the server is fine and answered.
     """
+
+    def __init__(self, message: str = "", tool: str = "") -> None:
+        super().__init__(message)
+        self.tool = tool
 
 
 class ProtocolError(RuntimeError):
@@ -99,6 +122,9 @@ class Graphban:
     base_url: str
     api_key: str
     timeout: float = 30.0
+    #: TOTAL seconds one request may take, start to last byte (GRPH-1179). `timeout` is per
+    #: read, so a server that trickles bytes can hold a call open indefinitely.
+    deadline: float = 90.0
     #: Injected by tests via `httpx.MockTransport`. Production leaves it None and gets
     #: httpx's default — there is no second code path, which is the point.
     transport: httpx.BaseTransport | None = None
@@ -123,10 +149,16 @@ class Graphban:
     def _client(self) -> httpx.Client:
         # One connection pool for the life of the supervisor. It polls; opening a new
         # pool per poll is the kind of waste that only shows up as latency.
-        if self._http is None:
+        # GRPH-1235: `_post_within`'s watchdog closes the client at the deadline, and it can
+        # fire after the reply was read and returned. A closed client raises RuntimeError, not
+        # an httpx error, so every caller would leak it — replace it here, once, for all.
+        if self._http is None or self._http.is_closed:
+            # GRPH-1244: keepalive so a vanished peer is noticed even between calls. Only for
+            # the real transport; a caller-supplied one (tests) is used as given.
+            transport = self.transport or httpx.HTTPTransport(socket_options=_keepalive_options())
             self._http = httpx.Client(
                 timeout=self.timeout,
-                transport=self.transport,
+                transport=transport,
                 headers={"X-API-Key": self.api_key},
             )
         return self._http
@@ -196,7 +228,25 @@ class Graphban:
         """
         return self._post(SURFACE_PATH, payload, timeout=10.0)
 
-    def _post(self, path: str, payload: dict, *, timeout: float) -> dict | None:
+    def post_observation(self, **payload: Any) -> dict:
+        """One fact about a tree this supervisor cut (GRPH-975).
+
+        Raises on a refusal. `post_attempt` returns None because a lost measurement must
+        not stop a child; a lost base is the defect that made `sign_off` waive every item
+        by hand. The wave catches this and logs the reason. It does not fall back to a
+        tool call — that tool is not in `ALLOWED_TOOLS`, and a fallback would hide the
+        refusal the route exists to make visible.
+
+        Goes through `_post` (strict). A second method that called `.post` itself would
+        be a third door, which `test_client.py` pins shut.
+        """
+        got = self._post(OBSERVATIONS_PATH, payload, timeout=10.0, strict=True)
+        if not isinstance(got, dict):
+            raise ObservationRefused(f"{OBSERVATIONS_PATH}: empty reply")
+        return got
+
+    def _post(self, path: str, payload: dict, *, timeout: float,
+              strict: bool = False) -> dict | None:
         if path not in ALLOWED_PATHS:
             raise NotPermitted(
                 f"this client may not POST {path!r}. Permitted: {sorted(ALLOWED_PATHS)}. "
@@ -207,14 +257,27 @@ class Graphban:
         body = {k: v for k, v in payload.items() if v is not None}
         try:
             reply = self._client().post(url, json=body, timeout=timeout)
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            if strict:
+                raise ObservationRefused(f"{path}: {exc}") from exc
             return None
         if reply.status_code >= 400:
+            if strict:
+                raise ObservationRefused(
+                    f"{path}: HTTP {reply.status_code}: {reply.text[:300]}"
+                )
             return None
         try:
-            return reply.json()
+            parsed = reply.json()
         except ValueError:
+            if strict:
+                raise ObservationRefused(f"{path}: reply was not JSON")
             return None
+        if not isinstance(parsed, dict):
+            if strict:
+                raise ObservationRefused(f"{path}: reply was not an object")
+            return None
+        return parsed
 
     def list_tools(self) -> list[dict]:
         """The server's own tool manifest — name, description and input schema.
@@ -242,16 +305,21 @@ class Graphban:
             "params": params,
         }
         try:
-            response = self._client().post(self.endpoint, json=body)
+            response = _post_within(self._client(), self.endpoint, body, self.deadline)
         except httpx.HTTPError as exc:
-            raise ServerUnreachable(f"{self.endpoint}: {exc}") from exc
+            if isinstance(exc, _Abandoned):
+                # The abandoned client is being closed on a background thread. Drop it here, in
+                # the caller's thread, so the next call cannot pick it up before that close
+                # lands and get httpx's RuntimeError mid-request (the GRPH-1235 hazard).
+                self._http = None
+            raise ServerUnreachable(f"{self.endpoint}: {exc!r}", tool=label) from exc
 
         if response.status_code >= 500:
             # A 5xx is the server failing to answer, which for D-i's purposes is the
             # same situation as not reaching it: retrying is the right move and
             # spawning is not. A 4xx is an answer — a bad credential does not become
             # true by waiting — so it stays a ProtocolError below.
-            raise ServerUnreachable(f"{self.endpoint}: HTTP {response.status_code}")
+            raise ServerUnreachable(f"{self.endpoint}: HTTP {response.status_code}", tool=label)
         if response.status_code != 200:
             raise ProtocolError(
                 f"{self.endpoint}: HTTP {response.status_code}: {response.text[:200]}"
@@ -282,6 +350,82 @@ class Graphban:
 
     def propose_allocation(self, **arguments: Any) -> dict:
         return self.call("propose_allocation", **arguments)
+
+
+def _keepalive_options() -> list[tuple[int, int, int]]:
+    """SO_KEEPALIVE plus a short idle/interval/count where the platform names them."""
+    import socket
+
+    options = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
+    idle = getattr(socket, "TCP_KEEPIDLE", None) or getattr(socket, "TCP_KEEPALIVE", None)
+    for name, value in ((idle, 30), (getattr(socket, "TCP_KEEPINTVL", None), 10),
+                        (getattr(socket, "TCP_KEEPCNT", None), 3)):
+        if name is not None:
+            options.append((socket.IPPROTO_TCP, name, value))
+    return options
+
+
+class _Abandoned(httpx.ReadTimeout):
+    """The deadline passed with the exchange still running: `client` is being closed behind it."""
+
+
+def _post_within(client: httpx.Client, url: str, body: dict, deadline: float) -> httpx.Response:
+    """POST `body`, giving up after `deadline` seconds in TOTAL (GRPH-1179).
+
+    httpx's timeouts bound each connect/read/write, not the exchange: a response that trickles
+    a byte every few seconds never trips them. Streaming lets the clock be checked between
+    chunks. Raises `httpx.ReadTimeout`, so callers treat it as any other transport failure.
+    """
+    start = time.monotonic()
+    # GRPH-1235: waiting for the HEADERS happens inside `stream().__enter__`, where the chunk
+    # check below cannot reach. Cap every httpx phase at the deadline so that wait is bounded
+    # too (the client's own 30s per-read timeout is the looser bound it replaces).
+    limit = min(deadline, getattr(client.timeout, "read", None) or deadline)
+    # GRPH-1244: a peer that vanished without FIN/RST (half-open, e.g. over Tailscale) leaves the
+    # request blocked in recv(), and `client.close()` from another thread does not interrupt that
+    # on macOS. So the exchange runs in a worker thread and the caller stops WAITING at the
+    # deadline instead of trying to unblock the read: nothing about the socket has to cooperate.
+    # (Shutting the socket down would need the connection, which does not exist yet while the
+    # headers are awaited inside `stream().__enter__`.) The abandoned daemon thread ends when its
+    # own read does; `client.close()` is attempted so it ends sooner where close() does work.
+    timeout = httpx.Timeout(limit)
+    outcome: dict[str, Any] = {}
+    done = threading.Event()
+
+    def _exchange() -> None:
+        try:
+            with client.stream("POST", url, json=body, timeout=timeout) as streamed:
+                chunks: list[bytes] = []
+                for chunk in streamed.iter_bytes():
+                    chunks.append(chunk)
+                    if time.monotonic() - start > deadline:
+                        raise httpx.ReadTimeout(f"no complete reply within {deadline:g}s")
+                headers = [(k, v) for k, v in streamed.headers.multi_items()
+                           if k.lower() not in ("content-encoding", "content-length",
+                                                "transfer-encoding")]
+                outcome["response"] = httpx.Response(
+                    streamed.status_code, headers=headers, content=b"".join(chunks),
+                    request=streamed.request)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the caller's thread
+            outcome["error"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=_exchange, name="gbfleet-post", daemon=True).start()
+    if not done.wait(deadline):
+        # Closing can itself block on the stuck connection; never let it hold the caller.
+        threading.Thread(target=_close_quietly, args=(client,), daemon=True).start()
+        raise _Abandoned(f"no complete reply within {deadline:g}s")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["response"]
+
+
+def _close_quietly(client: httpx.Client) -> None:
+    try:
+        client.close()
+    except Exception:  # noqa: BLE001 - best effort on a connection already given up on
+        logging.getLogger(__name__).debug("closing an abandoned client failed", exc_info=True)
 
 
 def _text_of(result: dict) -> str:

@@ -14,8 +14,9 @@ import { useInputModality } from "@/lib/input-modality";
 import { ProjectBar } from "./ProjectBar";
 
 import { AgentSidebar } from "./AgentSidebar";
+import { useAgentRail } from "./agentRail";
 import { CommandPalette } from "./CommandPalette";
-import { LeftNav } from "./LeftNav";
+import { LeftNav, readSidebarCollapsed } from "./LeftNav";
 import { TopBar } from "./TopBar";
 
 function Pulse({ className }: { className?: string }) {
@@ -45,7 +46,11 @@ export function ShellBootSkeleton() {
         <Pulse className="ml-auto h-6 w-20" />
       </div>
       <div className="flex min-h-0 flex-1">
-        <div className="flex w-[216px] flex-none flex-col gap-1.5 border-r border-line px-3 py-4">
+        {/* The width the sidebar will open at, so a collapsed rail does not jump on boot. */}
+        <div
+          style={{ width: readSidebarCollapsed() ? 60 : 216 }}
+          className="flex flex-none flex-col gap-1.5 border-r border-line px-3 py-4"
+        >
           {Array.from({ length: 9 }, (_, i) => (
             <Pulse key={i} className="h-8 w-full rounded-[10px]" />
           ))}
@@ -90,7 +95,7 @@ export function AppFrame() {
 function FrameBody({ hosted }: { hosted: boolean }) {
   const { projects, loading, active, notFound } = useProjectCtx();
   const { pathname } = useLocation();
-  const [agentOpen, setAgentOpen] = React.useState(true);
+  const [agentOpen, setAgentOpen] = useAgentRail(pathname);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   // Sticky modality at the moment of the toggle — keyboard Agent must not inherit a
   // later pointer event mid-slide (PRD-46 §6).

@@ -45,7 +45,8 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 # An IP that identifies nothing. Redacting these trains readers to ignore the marker.
-_HARMLESS_IPS = {"127.0.0.1", "0.0.0.0", "255.255.255.255", "1.1.1.1", "8.8.8.8"}
+# bandit B104: a set of strings to compare against, nothing binds to it.
+_HARMLESS_IPS = {"127.0.0.1", "0.0.0.0", "255.255.255.255", "1.1.1.1", "8.8.8.8"}  # nosec B104
 
 
 def scrub(text: str) -> tuple[str, bool]:

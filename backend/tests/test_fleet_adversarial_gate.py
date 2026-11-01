@@ -193,8 +193,10 @@ def test_the_refusal_is_in_the_ledger(client, key, db):
     _rpc(client, key, "sign_off", {"id": item, "agent_id": reviewer["agent_id"]})
 
     ev = db.query(Event).filter(
-        Event.action == "sign_off_refused").order_by(Event.id.desc()).first()
+        Event.action == "refusal").order_by(Event.id.desc()).first()
     assert ev is not None, "the refusal left no trace"
+    assert ev.meta["rule_id"] == "review.adversarial_evidence"
+    assert (ev.target_type, ev.target_id) == ("item", item)
     assert "sabotage" in ev.meta["reason"]
     assert ev.meta["principal"]["id"], "and names the human behind the key"
 

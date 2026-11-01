@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, ChevronDown, Copy, Eye, FlaskConical, History, Link2, ListChecks, MessageCircleQuestion, Save, ShieldQuestion, Sparkles } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Copy, FlaskConical, ListChecks } from "lucide-react";
 import * as React from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { NoModelBanner } from "@/components/NoModelBanner";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,7 @@ import { cn } from "@/lib/cn";
 import { lineDiff } from "@/lib/diff";
 import { Markdown } from "@/lib/markdown";
 import { publicApi } from "@/lib/publicApi";
-import { keys, useGrillState, useIntentDiff, useItems, usePrd, usePrdVersions, useUpdateItem } from "@/lib/queries";
+import { keys, useGrillState, useIntentDiff, useItems, usePrd, usePrdRequests, usePrdVersions, useUpdateItem } from "@/lib/queries";
 import type { Item, PrdStatus, PrdVersion, PrototypeVerdictOut } from "@/lib/types";
 
 import { AssistantPanel } from "@/features/assistant/AssistantPanel";
@@ -25,8 +25,10 @@ import { GrillPanel } from "./GrillPanel";
 import { PRD_SETTABLE_STATUSES, PRD_STATUS_META, prdStatusMeta } from "./meta";
 import { ApprovalEval } from "./ApprovalEval";
 import { ApprovedIsEarned, GrillProgress } from "./GrillProgress";
+import { PrdRequestsPanel } from "./PrdRequests";
 import { AcceptancePanel } from "./AcceptancePanel";
 import { IntentDiff } from "./IntentDiff";
+import { TargetActivity } from "@/features/activity/TargetActivity";
 
 const AI_COMMANDS = [
   { key: "expand", label: "Expand" },
@@ -34,10 +36,10 @@ const AI_COMMANDS = [
   { key: "summarize", label: "Summarize" },
 ];
 
-/** PRD-47 S4 — six tabs over the existing editor. The ids are what the tab strip is
+/** PRD-47 S4 — seven tabs over the existing editor. The ids are what the tab strip is
  *  asserted on, so they travel into the DOM as `data-tab` rather than being reachable
  *  only through the labels. */
-type RightTab = "preview" | "assistant" | "grill" | "coverage" | "acceptance" | "history";
+type RightTab = "preview" | "requests" | "assistant" | "grill" | "coverage" | "acceptance" | "history";
 
 export function PrdEditorView() {
   const { id = "" } = useParams();
@@ -50,7 +52,10 @@ export function PrdEditorView() {
 
   const [title, setTitle] = React.useState("");
   const [body, setBody] = React.useState("");
-  const [rightTab, setRightTab] = React.useState<RightTab>("preview");
+  // The list's request dots open the editor on `?tab=requests`.
+  const [params] = useSearchParams();
+  const [rightTab, setRightTab] = React.useState<RightTab>(params.get("tab") === "requests" ? "requests" : "preview");
+  const { data: linkedReqs = [] } = usePrdRequests(id);
   const [diffVersion, setDiffVersion] = React.useState<PrdVersion | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [aiBusy, setAiBusy] = React.useState<string | null>(null);
@@ -126,11 +131,14 @@ export function PrdEditorView() {
         <StatusMenu status={prd.status} onChange={setStatus} complete={!!grill?.complete} />
         <span className="rounded-md bg-surface-4 px-2 py-1 font-mono text-[10px] text-muted-2">{prd.version}</span>
         <Button variant="outline" size="sm" onClick={snapshot}>
-          <History size={13} />
           Snapshot
         </Button>
-        <Button size="sm" onClick={save} disabled={!dirty || saving}>
-          <Save size={13} />
+        <Button
+          size="sm"
+          onClick={save}
+          disabled={!dirty || saving}
+          className={cn(!dirty && !saving && "disabled:bg-accent/55 disabled:text-bg disabled:opacity-100")}
+        >
           {saving ? "Saving…" : dirty ? "Save" : "Saved"}
         </Button>
       </div>
@@ -143,29 +151,29 @@ export function PrdEditorView() {
             key={c.key}
             onClick={() => runAi(c.key)}
             disabled={!!aiBusy}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-[#2a2440] bg-[rgba(167,139,250,0.08)] px-2.5 py-1 text-[11.5px] text-purple-2 transition-colors hover:border-[#3a3358] disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-purple/20 bg-purple/10 px-2.5 py-1 text-[11.5px] text-purple-2 transition-colors hover:border-purple/40 disabled:opacity-50"
           >
-            <Sparkles size={12} />
+            <span aria-hidden>✦</span>
             {aiBusy === c.key ? "…" : c.label}
           </button>
         ))}
         <button
           onClick={() => setRightTab("grill")}
           title="Interactively grill this PRD — the agent asks clarifying questions to sharpen it before building"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-[#1c2620] bg-[rgba(198,242,78,0.08)] px-2.5 py-1 text-[11.5px] text-accent transition-colors hover:border-[#2a3320]"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-accent/15 bg-accent/10 px-2.5 py-1 text-[11.5px] text-accent transition-colors hover:border-accent/30"
         >
-          <MessageCircleQuestion size={12} />
           Grill
         </button>
         <div className="ml-auto flex items-center gap-2">
-          <LinkItemsMenu prdId={id} linked={prd.linked} onChange={refresh} />
+          <LinkedButton itemCount={prd.linked.length} requestCount={linkedReqs.length} requestVotes={linkedReqs.reduce((n, r) => n + r.votes, 0)} onClick={() => setRightTab("requests")} />
           <div className="flex items-center gap-1 rounded-lg border border-line-2 bg-surface-2 p-0.5" data-testid="prd-editor-tabs">
-            <TabBtn id="preview" active={rightTab === "preview"} onClick={() => setRightTab("preview")} icon={<Eye size={12} />} label="Preview" />
-            <TabBtn id="assistant" active={rightTab === "assistant"} onClick={() => setRightTab("assistant")} icon={<Sparkles size={12} />} label="Assistant" />
-            <TabBtn id="grill" active={rightTab === "grill"} onClick={() => setRightTab("grill")} icon={<MessageCircleQuestion size={12} />} label="Grill" />
-            <TabBtn id="coverage" active={rightTab === "coverage"} onClick={() => setRightTab("coverage")} icon={<ListChecks size={12} />} label="Coverage" />
-            <TabBtn id="acceptance" active={rightTab === "acceptance"} onClick={() => setRightTab("acceptance")} icon={<ShieldQuestion size={12} />} label="Acceptance" />
-            <TabBtn id="history" active={rightTab === "history"} onClick={() => setRightTab("history")} icon={<History size={12} />} label="History" />
+            <TabBtn id="preview" active={rightTab === "preview"} onClick={() => setRightTab("preview")} label="Preview" />
+            <TabBtn id="requests" active={rightTab === "requests"} onClick={() => setRightTab("requests")} label={`Requests · ${linkedReqs.length}`} />
+            <TabBtn id="assistant" active={rightTab === "assistant"} onClick={() => setRightTab("assistant")} label="Assistant" />
+            <TabBtn id="grill" active={rightTab === "grill"} onClick={() => setRightTab("grill")} label="Grill" />
+            <TabBtn id="coverage" active={rightTab === "coverage"} onClick={() => setRightTab("coverage")} label="Coverage" />
+            <TabBtn id="acceptance" active={rightTab === "acceptance"} onClick={() => setRightTab("acceptance")} label="Acceptance" />
+            <TabBtn id="history" active={rightTab === "history"} onClick={() => setRightTab("history")} label="History" />
           </div>
         </div>
       </div>
@@ -183,6 +191,13 @@ export function PrdEditorView() {
         <div className="min-h-0 overflow-y-auto p-5">
           {rightTab === "preview" ? (
             <Markdown source={body} />
+          ) : rightTab === "requests" ? (
+            <div className="space-y-3">
+              <div className="flex justify-end">
+                <LinkItemsMenu prdId={id} linked={prd.linked} onChange={refresh} />
+              </div>
+              <PrdRequestsPanel prdId={id} projectId={prd.project_id} />
+            </div>
           ) : rightTab === "assistant" ? (
             <AssistantPanel entityType="prd" entityId={id} projectId={prd.project_id} />
           ) : rightTab === "grill" ? (
@@ -199,13 +214,16 @@ export function PrdEditorView() {
           ) : rightTab === "acceptance" ? (
             <AcceptancePanel prdId={id} />
           ) : (
-            <VersionHistory
-              versions={versions}
-              currentVersion={prd.version}
-              diffVersion={diffVersion}
-              onSelect={setDiffVersion}
-              draftBody={body}
-            />
+            <>
+              <VersionHistory
+                versions={versions}
+                currentVersion={prd.version}
+                diffVersion={diffVersion}
+                onSelect={setDiffVersion}
+                draftBody={body}
+              />
+              <TargetActivity projectId={prd.project_id} targetType="prd" targetId={id} />
+            </>
           )}
         </div>
       </div>
@@ -213,18 +231,17 @@ export function PrdEditorView() {
   );
 }
 
-function TabBtn({ id, active, onClick, icon, label }: { id: RightTab; active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
+function TabBtn({ id, active, onClick, label }: { id: RightTab; active: boolean; onClick: () => void; label: string }) {
   return (
     <button
       onClick={onClick}
       data-testid="prd-editor-tab"
       data-tab={id}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11.5px] transition-colors",
+        "rounded-md px-2 py-1 text-[11.5px] transition-colors",
         active ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
       )}
     >
-      {icon}
       {label}
     </button>
   );
@@ -268,6 +285,29 @@ function StatusMenu({
   );
 }
 
+function LinkedButton({
+  itemCount,
+  requestCount,
+  requestVotes,
+  onClick,
+}: {
+  itemCount: number;
+  requestCount: number;
+  requestVotes: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      data-testid="prd-linked-button"
+      title={`${requestCount} linked requests · ${requestVotes} votes`}
+      className="inline-flex items-center gap-1.5 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted hover:text-fg"
+    >
+      Linked · {itemCount} items · {requestCount} requests
+    </button>
+  );
+}
+
 function LinkItemsMenu({ prdId, linked, onChange }: { prdId: string; linked: string[]; onChange: () => void }) {
   const { data: items = [] } = useItems();
   async function toggle(itemId: string, add: boolean) {
@@ -278,8 +318,7 @@ function LinkItemsMenu({ prdId, linked, onChange }: { prdId: string; linked: str
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button className="inline-flex items-center gap-1.5 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted hover:text-fg">
-          <Link2 size={12} />
-          Linked · {linked.length}
+          Link items · {linked.length}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="max-h-[320px] w-[300px] overflow-y-auto">
@@ -416,12 +455,12 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
             </div>
           )}
           {cov.shaped && cov.empty_sections.length > 0 && (
-            <div className="mt-1.5 font-mono text-[10.5px] text-[#e0b34a]">
+            <div className="mt-1.5 font-mono text-[10.5px] text-st-review">
               {cov.empty_sections.length} empty — not a task gap
             </div>
           )}
           {cov.open_high_fidelity > 0 && (
-            <div className="mt-1.5 font-mono text-[10.5px] text-[#e0b34a]">
+            <div className="mt-1.5 font-mono text-[10.5px] text-st-review">
               {cov.open_high_fidelity} open · needs a prototype (grill → prototype → grill)
             </div>
           )}
@@ -457,8 +496,8 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
                     className={cn(
                       "rounded border px-1.5 py-px font-mono text-[9px] uppercase tracking-wide transition-colors",
                       open
-                        ? "border-[#e0b34a] text-[#f0c95f]"
-                        : "border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] text-[#e0b34a] hover:border-[#5a4a2a]",
+                        ? "border-st-review text-st-review"
+                        : "border-st-review/25 bg-st-review/10 text-st-review hover:border-st-review/40",
                     )}
                     title="High-fidelity work here needs a prototype — start the handoff"
                   >
@@ -466,12 +505,12 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
                   </button>
                 )}
                 {s.empty && (
-                  <span className="rounded border border-[rgba(224,179,74,0.3)] px-1.5 py-px font-mono text-meta uppercase tracking-wide text-[#e0b34a]">
+                  <span className="rounded border border-st-review/30 px-1.5 py-px font-mono text-meta uppercase tracking-wide text-st-review">
                     empty
                   </span>
                 )}
                 {s.gap ? (
-                  <span className="rounded border border-[rgba(224,179,74,0.3)] px-1.5 py-px font-mono text-meta uppercase tracking-wide text-[#e0b34a]">
+                  <span className="rounded border border-st-review/30 px-1.5 py-px font-mono text-meta uppercase tracking-wide text-st-review">
                     no tasks
                   </span>
                 ) : (
@@ -481,7 +520,7 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
                 )}
               </div>
               {open && (
-                <div className="ml-4 space-y-2 border-l border-[#3a2f1a] pl-3">
+                <div className="ml-4 space-y-2 border-l border-st-review/25 pl-3">
                   {high.map((it) => (
                     <PrototypeRow key={it.id} prdId={prdId} item={it} />
                   ))}
@@ -589,7 +628,7 @@ export function PrototypeRow({ prdId, item }: { prdId: string; item: Item }) {
   return (
     <div className="rounded-[10px] border border-line-2 bg-surface-2 p-2.5">
       <div className="flex items-center gap-2">
-        <FlaskConical size={13} className="flex-none text-[#e0b34a]" />
+        <FlaskConical size={13} className="flex-none text-st-review" />
         <span className="min-w-0 flex-1 truncate text-body text-fg-2">{item.title}</span>
         <span className="font-mono text-[10px] text-faint">{item.id}</span>
       </div>

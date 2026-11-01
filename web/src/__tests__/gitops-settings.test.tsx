@@ -202,6 +202,17 @@ describe("Gitops Settings page", () => {
     expect(screen.queryByText("Deployment")).not.toBeInTheDocument();
   });
 
+  it("points at Rules · Merge (frame 7b) and keeps the form until Rules can edit", async () => {
+    renderPage();
+    const card = await screen.findByTestId("gitops-moved");
+    expect(card).toHaveTextContent("Gitops moved into Rules.");
+    expect(screen.getByRole("link", { name: "Open Rules · Merge" })).toHaveAttribute(
+      "href",
+      "/rules?stage=merge",
+    );
+    expect(await screen.findByLabelText("Base branch")).toBeInTheDocument();
+  });
+
   it("state 1: editable unmeasured, names the project, placeholder is not main as a value", async () => {
     renderPage();
     expect(await screen.findByText("App · APP")).toBeInTheDocument();
@@ -582,7 +593,7 @@ describe("Gitops nav group source", () => {
     expect(src).not.toMatch(/group:\s*"Deployment"/);
   });
 
-  it("SelfHostPane returns GitopsPanel directly, and HostedSettingsTabs never names it", () => {
+  it("SelfHostPane returns GitopsPanel (under the Rules pointer), and HostedSettingsTabs never names it", () => {
     const sources = import.meta.glob("../features/settings/SettingsView.tsx", {
       query: "?raw",
       import: "default",
@@ -590,8 +601,9 @@ describe("Gitops nav group source", () => {
     }) as Record<string, string>;
     const src = Object.values(sources)[0] ?? "";
     const live = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    // Frame 7b: the pointer card sits above the form until Rules can edit (GRPH-1163).
     expect(live).toMatch(
-      /if \(pathname\.startsWith\(settingsPath\("deployment\/gitops"\)\)\) return <GitopsPanel \/>/,
+      /if \(pathname\.startsWith\(settingsPath\("deployment\/gitops"\)\)\) \{\s*return \(\s*<>\s*<GitopsMovedCard \/>\s*<GitopsPanel \/>/,
     );
     expect(live).toContain('label: "AI Providers"');
     const hosted = live.split("function HostedSettingsTabs")[1] ?? "";

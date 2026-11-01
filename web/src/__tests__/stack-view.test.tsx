@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -354,6 +354,67 @@ describe("StackView", () => {
     expect(await screen.findByTestId("stack-inspector")).toHaveTextContent("SQLite");
   });
 
+  // The ring frames are filled and cover the canvas, so a press always lands on one of them,
+  // never on the bare <svg>. A background-only pan therefore never started: zoom worked,
+  // drag did nothing.
+  describe("drag to pan", () => {
+    function press(el: Element, type: string, x: number, y: number) {
+      el.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }),
+      );
+    }
+
+    async function canvas() {
+      const root = await screen.findByTestId("stack-canvas");
+      const svg = root.querySelector("svg") as SVGSVGElement;
+      svg.getBoundingClientRect = () =>
+        ({
+          x: 0, y: 0, left: 0, top: 0, right: 1000, bottom: 700, width: 1000, height: 700,
+          toJSON() { return {}; },
+        }) as DOMRect;
+      const scene = svg.querySelector(":scope > g[transform]") as SVGGElement;
+      return { svg, scene };
+    }
+
+    function drag(el: Element, svg: Element, from: [number, number], to: [number, number]) {
+      act(() => {
+        press(el, "pointerdown", ...from);
+        press(svg, "pointermove", (from[0] + to[0]) / 2, (from[1] + to[1]) / 2);
+        press(svg, "pointermove", ...to);
+        press(svg, "pointerup", ...to);
+        press(el, "click", ...to);
+      });
+    }
+
+    it("a drag that starts on a ring or host frame moves the map", async () => {
+      wrap(<StackView />);
+      const { svg, scene } = await canvas();
+      const ring = svg.querySelector(":scope > g[transform] rect") as SVGRectElement;
+      expect(ring).not.toBeNull();
+      const before = scene.getAttribute("transform");
+      drag(ring, svg, [500, 350], [620, 410]);
+      expect(scene.getAttribute("transform")).not.toBe(before);
+    });
+
+    it("a drag that starts on a box moves the map and does not select the box", async () => {
+      wrap(<StackView />);
+      const { svg, scene } = await canvas();
+      const before = scene.getAttribute("transform");
+      drag(screen.getByTestId("stack-node-api"), svg, [300, 200], [380, 260]);
+      expect(scene.getAttribute("transform")).not.toBe(before);
+      expect(screen.queryByTestId("stack-inspector")).not.toBeInTheDocument();
+    });
+
+    it("a click with a small wobble still selects the box and leaves the map where it was", async () => {
+      wrap(<StackView />);
+      const { svg, scene } = await canvas();
+      const before = scene.getAttribute("transform");
+      drag(screen.getByTestId("stack-node-api"), svg, [300, 200], [302, 201]);
+      expect(scene.getAttribute("transform")).toBe(before);
+      expect(await screen.findByTestId("stack-inspector")).toHaveTextContent("graphban-api");
+    });
+  });
+
   it("selecting a host highlights its nodes and dims the rest", async () => {
     const user = userEvent.setup();
     wrap(<StackView />);
@@ -379,6 +440,21 @@ describe("StackView", () => {
 
     // Overlay never invents a green default for unscanned deployables.
     expect(webFooter).not.toHaveTextContent("CLEAN");
+  });
+
+  it("a box this project runs but does not write carries no code-health footer", async () => {
+    // Health is keyed by repo path, so on a project that only RUNS Graphban the `web`
+    // component is that project's own web/ — it must not paint on Graphban's web box.
+    const user = userEvent.setup();
+    vi.mocked(api.stack).mockResolvedValue({
+      ...topology,
+      nodes: topology.nodes.map((n) => (n.id === "web" ? { ...n, ring: 2 } : n)),
+    });
+    wrap(<StackView />);
+    await screen.findByTestId("stack-health-footer-api");
+    expect(screen.queryByTestId("stack-health-footer-web")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("stack-node-web"));
+    expect(await screen.findByTestId("stack-health-na")).toHaveTextContent(/didn't write/i);
   });
 
   it("toggling the overlay hides health footers", async () => {
@@ -717,15 +793,180 @@ describe("StackView dead-code category (GRPH-1060)", () => {
   });
 });
 
+// ── GRPH-1099 / PRD-P55 §4: app-first map ────────────────────────────────────
+
+const SHA_A = "a".repeat(40);
+const SHA_B = "b".repeat(40);
+
+/** A Republiq-shaped payload: its own record, Graphban run but not written. */
+function republiq(mapping: Partial<NonNullable<StackTopology["mapping"]>> = {}): StackTopology {
+  const prov = { file: "backend/Dockerfile", rule: "dockerfile", line: 1 };
+  const appFacts = [
+    { key: "producer", value: "gban", provenance: "app topology record" },
+    { key: "mapped_sha", value: SHA_A, provenance: "app topology record" },
+  ];
+  return {
+    ...topology,
+    project_id: "republiq",
+    graphban_source: "not_owned",
+    hosts: [
+      { id: "project_app", label: "republiq — its own app", nodes: ["app:backend"] },
+      { id: "app_infra", label: "republiq — infrastructure", nodes: ["infra:pg"] },
+      ...topology.hosts.filter((h) => h.id !== "external"),
+      { id: "external", label: "External services", nodes: ["email", "ext:stripe", "unresolved:FOO_URL"] },
+    ],
+    nodes: [
+      {
+        id: "app:backend", label: "backend", title: "backend/", kind: "deployable", ring: 1,
+        scope: "project", host: "project_app", liveness: "unknown", surfaces: [], extensions: [],
+        facts: appFacts, plane: "app", provenance: prov,
+      },
+      {
+        id: "infra:pg", label: "Postgres", title: "Postgres", kind: "infra", ring: 2,
+        scope: "project", host: "app_infra", liveness: "unknown", surfaces: [], extensions: [],
+        facts: appFacts, plane: "app", provenance: { file: "compose.yml", rule: "services.db" },
+      },
+      {
+        id: "ext:stripe", label: "Stripe", title: "Stripe", kind: "external", ring: 3,
+        scope: "project", host: "external", liveness: "unknown", surfaces: [], extensions: [],
+        facts: appFacts, plane: "app", provenance: { file: "backend/billing.py", rule: "client" },
+      },
+      {
+        id: "unresolved:FOO_URL", label: "FOO_URL", title: "FOO_URL", kind: "unresolved", ring: 3,
+        scope: "project", host: "external", liveness: "unknown", surfaces: [], extensions: [],
+        facts: appFacts, plane: "app", provenance: { file: "backend/settings.py", rule: "env" },
+      },
+      ...topology.nodes.map((n) => ({ ...n, plane: "graphban", ring: n.ring === 1 ? 2 : n.ring })),
+    ],
+    edges: [
+      ...topology.edges,
+      { from: "app:backend", to: "infra:pg", protocol: "psycopg", label: "SQL" },
+      { from: "app:backend", to: "ext:stripe", protocol: "HTTPS", label: "charges" },
+    ],
+    mapping: {
+      state: "mapped", mapped_sha: SHA_A, head_sha: SHA_A, previous_mapped_sha: "",
+      producer_id: "gban", producer_version: "0.4.0", mapped_at: null, posted_by: "key:x",
+      ...mapping,
+    },
+  };
+}
+
+const appHealth: StackHealth = {
+  ...health,
+  components: [{ ...health.components[0], id: "app:backend", path: "backend/" }, ...health.components],
+};
+
+describe("StackView app-first map (GRPH-1099)", () => {
+  beforeEach(() => {
+    vi.mocked(api.stack).mockClear();
+    vi.mocked(api.stackHealth).mockResolvedValue(appHealth);
+  });
+
+  it("collapses Graphban into one box with builds edges; expanding shows the instance", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.stack).mockResolvedValue(republiq());
+    const { container } = wrap(<StackView />);
+    const box = await screen.findByTestId("stack-node-graphban:instance");
+    expect(box).toHaveTextContent("Built with Graphban");
+    expect(screen.queryByTestId("stack-node-api")).not.toBeInTheDocument();
+    expect(screen.getByTestId("stack-node-app:backend")).toBeInTheDocument();
+    expect(
+      container.querySelector('[data-edge="graphban:instance->app:backend"]'),
+    ).not.toBeNull();
+
+    await user.click(box);
+    const inspector = await screen.findByTestId("stack-inspector");
+    // Its detail and liveness are already in the payload: the members list names them.
+    expect(inspector).toHaveTextContent("api");
+    const calls = vi.mocked(api.stack).mock.calls.length;
+    await user.click(within(inspector).getByTestId("stack-graphban-expand"));
+    expect(await screen.findByTestId("stack-node-api")).toBeInTheDocument();
+    expect(screen.queryByTestId("stack-node-graphban:instance")).not.toBeInTheDocument();
+    expect(screen.getByTestId("stack-graphban-lane")).toBeInTheDocument();
+    // No extra call to expand.
+    expect(vi.mocked(api.stack).mock.calls.length).toBe(calls);
+
+    await user.click(screen.getByTestId("stack-graphban-toggle"));
+    expect(await screen.findByTestId("stack-node-graphban:instance")).toBeInTheDocument();
+  });
+
+  it("Graphban's own project draws today's map with no self-box", async () => {
+    vi.mocked(api.stack).mockResolvedValue({ ...topology, graphban_source: "owned" });
+    wrap(<StackView />);
+    expect(await screen.findByTestId("stack-node-api")).toBeInTheDocument();
+    expect(screen.queryByTestId("stack-node-graphban:instance")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("stack-graphban-toggle")).not.toBeInTheDocument();
+  });
+
+  it("with no record the banner names `gban stack map` and ring 3 reads not mapped", async () => {
+    const t = republiq({ state: "unmapped", mapped_sha: null, producer_id: null });
+    t.nodes = t.nodes.filter((n) => !/^(ext|unresolved|infra):/.test(n.id));
+    vi.mocked(api.stack).mockResolvedValue(t);
+    wrap(<StackView />);
+    const banner = await screen.findByTestId("stack-mapping");
+    expect(banner).toHaveAttribute("data-state", "unmapped");
+    expect(banner).toHaveTextContent("gban stack map");
+    expect(screen.getByTestId("stack-node-ext:__not_mapped")).toHaveTextContent(
+      "services not mapped yet",
+    );
+    expect(screen.getAllByText("services not mapped yet").length).toBeGreaterThan(1);
+  });
+
+  it("a stale record names the mapped sha and the head it is behind", async () => {
+    vi.mocked(api.stack).mockResolvedValue(republiq({ state: "stale", head_sha: SHA_B }));
+    wrap(<StackView />);
+    const banner = await screen.findByTestId("stack-mapping");
+    expect(banner).toHaveAttribute("data-state", "stale");
+    expect(within(banner).getByTestId("stack-mapping-mapped")).toHaveTextContent(SHA_A.slice(0, 12));
+    expect(within(banner).getByTestId("stack-mapping-head")).toHaveTextContent(SHA_B.slice(0, 12));
+  });
+
+  it("freshness_unknown never reads as current", async () => {
+    vi.mocked(api.stack).mockResolvedValue(republiq({ state: "freshness_unknown", head_sha: null }));
+    wrap(<StackView />);
+    const banner = await screen.findByTestId("stack-mapping");
+    expect(banner).toHaveTextContent(/freshness unknown/i);
+    expect(banner).not.toHaveTextContent(/current/i);
+  });
+
+  it("an app box's provenance links to its file in the Code graph with producer and sha", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.stack).mockResolvedValue(republiq());
+    wrap(<StackView />);
+    await user.click(await screen.findByTestId("stack-node-app:backend"));
+    const link = await screen.findByTestId("stack-provenance-file");
+    expect(link).toHaveAttribute("href", "/code?sel=backend%2FDockerfile");
+    const prov = screen.getByTestId("stack-provenance");
+    expect(prov).toHaveTextContent("gban 0.4.0");
+    expect(prov).toHaveTextContent(SHA_A.slice(0, 12));
+  });
+
+  it("an unresolved reference renders distinctly, named, with its file", async () => {
+    vi.mocked(api.stack).mockResolvedValue(republiq());
+    wrap(<StackView />);
+    const box = await screen.findByTestId("stack-node-unresolved:FOO_URL");
+    expect(box).toHaveAttribute("data-kind", "unresolved");
+    expect(box).toHaveTextContent("FOO_URL");
+    expect(box).toHaveTextContent("backend/settings.py");
+  });
+
+  it("code health draws only on ring-1 app boxes", async () => {
+    vi.mocked(api.stack).mockResolvedValue(republiq());
+    wrap(<StackView />);
+    expect(await screen.findByTestId("stack-health-footer-app:backend")).toBeInTheDocument();
+    expect(screen.queryByTestId("stack-health-footer-graphban:instance")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("stack-health-footer-infra:pg")).not.toBeInTheDocument();
+  });
+});
+
 describe("LeftNav Build lists Stack", () => {
-  it("includes Stack after Code graph in both BUILD lists", () => {
+  it("includes Stack after Code graph in Build", () => {
     const src = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), "../components/shell/LeftNav.tsx"),
       "utf8",
     );
     expect(src).toMatch(/label: "Stack"/);
-    expect(src).toMatch(/to: "\/stack"/);
-    expect(src).toMatch(/to: "stack"/); // hosted relative view
+    expect(src).toMatch(/view: "stack"/); // one list for hosted and self-host
     // PRD: Stack sits between Code graph and MCP Tools / Links.
     const code = src.indexOf('label: "Code graph"');
     const stack = src.indexOf('label: "Stack"');

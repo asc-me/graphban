@@ -28,6 +28,7 @@ def _payload():
              "credential_roles": ["worker"], "last_refusal": None, "enrolled": True,
              "dismissed": False, "branch": "gb/w-1", "branch_orphaned": False,
              "last_seen_at": "2026-09-09T00:00:00+00:00",
+             "registered_at": "2026-09-09T00:00:00+00:00",
              "holdings": [{"id": "X-1", "status": "in_progress", "phase": "building",
                            "claimed_by": "A1", "touchpoints": ["a.py"],
                            "phase_basis": "evidence", "bounced": False}]},
@@ -46,7 +47,8 @@ def test_lean_keeps_everything_a_supervisor_reads():
     row it became."""
     row = fleet_svc.roster_view(_payload(), "lean")["agents"][0]
 
-    for field in ("id", "state", "enrolment_id", "worktree", "assigned", "holdings"):
+    for field in ("id", "state", "enrolment_id", "worktree", "assigned", "holdings",
+                  "registered_at"):
         assert field in row, f"lean dropped {field}, which the supervisor reads"
     held = row["holdings"][0]
     for field in ("id", "status", "phase", "claimed_by", "touchpoints"):

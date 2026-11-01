@@ -41,17 +41,20 @@ def record(
     target_id: str = "",
     project_id: str | None = None,
     meta: dict | None = None,
-) -> None:
+) -> Event | None:
     try:
-        db.add(Event(
+        event = Event(
             actor_type=actor_type, actor_id=actor_id, actor_label=actor_label,
             surface=surface, action=action, target_type=target_type,
             target_id=target_id, project_id=project_id, meta=meta,
-        ))
+        )
+        db.add(event)
         db.commit()
+        return event
     except Exception:  # noqa: BLE001 — auditing must never break the audited op
         logger.exception("failed to record event %r", action)
         db.rollback()
+        return None
 
 
 def record_key(db: Session, key: ApiKey, *, action: str, target_type: str = "",
@@ -79,6 +82,94 @@ def record_user(db: Session, user: User, *, action: str, target_type: str = "",
     )
 
 
+def record_refusal(db: Session, *, rule_id: str | None, surface: str, where: str,
+                   status: int, detail: str, actor: tuple[str, str, str] = ("system", "", ""),
+                   target_type: str = "", target_id: str = "",
+                   project_id: str | None = None, meta: dict | None = None) -> None:
+    """The one place a typed `Refused` is recorded (GRPH-1158 / PRD-P61 §6).
+
+    Mapped refusals record `refusal` with the rule; unmapped record `refusal_unmapped` with
+    `where` — the route TEMPLATE (`PATCH /api/items/{id}`) or the MCP tool name, never a
+    concrete path, so a gap counts once however many ids hit it. `meta` is the raise site's
+    own audit fields (`Refused.meta`); the fields named here win over it.
+    """
+    meta = {**(meta or {}), "where": where, "status": status, "reason": detail[:500]}
+    if rule_id:
+        meta["rule_id"] = rule_id
+    if project_id is None and target_type in ("item", "prd", "shard") and target_id:
+        # A route like `PATCH /api/prds/{prd_id}` names no project; without one the refusal
+        # is in the ledger but in no project's Activity, which reads as "nothing refused".
+        project_id = _target_project(db, target_type, target_id)
+    event = record(
+        db, actor_type=actor[0], actor_id=actor[1], actor_label=actor[2], surface=surface,
+        action="refusal" if rule_id else "refusal_unmapped", target_type=target_type,
+        target_id=target_id, project_id=project_id, meta=meta,
+    )
+    if event is not None:
+        from app.services import observations as observations_svc
+        observations_svc.on_refusal(db, event)
+
+
+def _target_project(db: Session, target_type: str, target_id: str) -> str | None:
+    from app.models import Item, MemoryShard, Prd
+    from app.services import keys
+
+    try:
+        if target_type == "shard":
+            row = db.get(MemoryShard, target_id)
+            return row.project_id if row is not None else None
+        model = Item if target_type == "item" else Prd
+        row = db.get(model, keys.resolve(db, target_id, target_type) or target_id)
+        return row.project_id if row is not None else None
+    except Exception:  # recording a refusal must never turn it into a 500
+        logger.exception("could not resolve the project of a refusal's target")
+        return None
+
+
+def unmapped_refusals(db: Session, project_id: str, *, days: int = 7,
+                      include_platform: bool = False, now: datetime | None = None) -> dict:
+    """`refusal_unmapped` events grouped by `where` + `status`, most-refused first (GRPH-1195).
+
+    Aggregated here, over EVERY event in the window — the browser used to group one page of
+    500 and under-counted past it. `daily` is `days` counts, oldest day first, ending today
+    (UTC). Attribution: an event belongs to the project it was recorded against (an MCP
+    refusal uses the calling key's project, or the call's `project_id`). One that names no
+    project at all is the PLATFORM bucket; it is returned only when `include_platform` is set
+    (the route sets it for a platform admin, or a self-hosted project owner) and each such
+    group says `platform: True`. `recording_since` is the earliest refusal event of any kind
+    in the SAME scope, so an empty answer can say since when it is empty without revealing
+    other projects' activity — None means nothing has ever been recorded here, not "zero since".
+    """
+    now = now or _now()
+    since = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    scope = Event.project_id == project_id
+    if include_platform:
+        scope = or_(scope, Event.project_id.is_(None))
+    rows = db.execute(
+        select(Event.ts, Event.meta, Event.project_id)
+        .where(Event.action == "refusal_unmapped", Event.ts >= since, scope)
+    ).all()
+    groups: dict[tuple, dict] = {}
+    for ts, meta, pid in rows:
+        meta = meta or {}
+        where = meta.get("where") if isinstance(meta.get("where"), str) and meta.get("where") else "(site not recorded)"
+        status = meta.get("status") if isinstance(meta.get("status"), int) else None
+        platform = pid is None
+        g = groups.setdefault((where, status, platform), {
+            "where": where, "status": status, "platform": platform, "count": 0,
+            "last_at": None, "daily": [0] * days})
+        ts = _aware(ts)
+        g["count"] += 1
+        if g["last_at"] is None or ts > g["last_at"]:
+            g["last_at"] = ts
+        age = (now.date() - ts.date()).days
+        if 0 <= age < days:
+            g["daily"][days - 1 - age] += 1
+    ranked = sorted(groups.values(), key=lambda g: (-g["count"], g["where"]))
+    first = db.scalar(select(func.min(Event.ts)).where(Event.action.in_(TYPED_REFUSAL_ACTIONS), scope))
+    return {"days": days, "recording_since": _aware(first), "groups": ranked}
+
+
 # ── Activity: lenses, facets, histogram (PRD-47 S10 / GRPH-961) ──────────────
 #
 # Every filter and aggregate below reads a COLUMN that already exists on `Event`
@@ -90,7 +181,16 @@ def record_user(db: Session, user: User, *, action: str, target_type: str = "",
 #: The refusals the ledger actually records. Everything else a caller might call
 #: "rejected" — a bounced review, a router 422, auto-triage's `auto_reject_shard` — is
 #: NOT here, and the lens publishes this tuple so the tile can state its own coverage.
-REFUSAL_ACTIONS = ("sign_off_refused", "role_refused", "agent_reject_shard")
+#:
+#: Since GRPH-1158 the sign-off and role gates record the typed `refusal` (with `rule_id`)
+#: through `record_refusal` instead; `sign_off_refused` and `role_refused` stay listed
+#: because rows written before then are keyed by them. `agent_reject_shard` is not a raised
+#: refusal (the judge's "no" is a successful call), so it keeps its action and carries its
+#: `rule_id` in meta. That is a decision (GRPH-1197), not an oversight: there is no refusal to
+#: raise, so it stays its own action and the Rejected lens lists it with its rule.
+TYPED_REFUSAL_ACTIONS = ("refusal", "refusal_unmapped")
+REFUSAL_ACTIONS = ("sign_off_refused", "role_refused", "agent_reject_shard",
+                   *TYPED_REFUSAL_ACTIONS)
 
 #: Keys, seats, invites, roles and memberships. Both spellings of the api-key target
 #: type are live in the data — `api_key` from routers/apikeys.py, `apikey` from
@@ -174,8 +274,9 @@ def lens_definitions() -> list[dict]:
                  "person, an agent, or auto-triage."},
         {"id": "rejected", "label": "Rejected",
          "hint": f"Only the {len(REFUSAL_ACTIONS)} refusal kinds the ledger records: "
-                 f"{', '.join(REFUSAL_ACTIONS)}. A bounced review, a rejected HTTP "
-                 "request or an auto-triage rejection is not counted here.",
+                 f"{', '.join(REFUSAL_ACTIONS)}. A policy refusal not yet typed as one, a "
+                 "bounced review, an HTTP error that is not a refusal (a 404, a malformed "
+                 "payload) or an auto-triage rejection is not counted here.",
          "covers": list(REFUSAL_ACTIONS)},
     ]
     return defs

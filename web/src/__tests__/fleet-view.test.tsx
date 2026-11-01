@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,15 +21,17 @@ const api = vi.hoisted(() => ({
   saveFleetProfile: vi.fn(),
   clearFleetProfile: vi.fn(),
   saveFleetPolicy: vi.fn(),
+  fleetCollapsed: vi.fn(),
 }));
 vi.mock("@/lib/api", () => ({ api }));
 
+const ctx = vi.hoisted(() => ({ activeId: "core" }));
 vi.mock("@/features/ProjectContext", () => ({
-  useProjectCtx: () => ({ active: { id: "core", name: "Core", tag: "core" },
-                          activeId: "core", projects: [] }),
+  useProjectCtx: () => ({ active: { id: ctx.activeId, name: "Core", tag: ctx.activeId },
+                          activeId: ctx.activeId, projects: [] }),
 }));
 
-const fleet = vi.hoisted(() => ({ data: null as unknown, refetch: vi.fn() }));
+const fleet = vi.hoisted(() => ({ data: null as unknown, isError: false, refetch: vi.fn() }));
 vi.mock("@/lib/queries", () => ({
   useFleet: () => fleet,
   useConfig: () => ({ data: { hosted_mode: false } }),
@@ -87,6 +89,7 @@ async function openLegacyWaveKey(user: ReturnType<typeof userEvent.setup>) {
 describe("Fleet view", () => {
   beforeEach(() => {
     fleet.data = { ...BASE };
+    fleet.isError = false;
     api.mintFleetKey.mockReset();
     api.endWavePreview.mockReset();
     api.endWave.mockReset();
@@ -127,8 +130,22 @@ describe("Fleet view", () => {
     // Settings → API keys. Linking to /mcp-tools or the MCP catalog would send the
     // person who asked "how do I connect" to a tool list with no key on it.
     renderView();
-    expect(screen.getByRole("link", { name: /looking for mcp\?/i }))
+    expect(screen.getByRole("link", { name: /Settings → API keys/ }))
       .toHaveAttribute("href", settingsPath("project/api-keys"));
+  });
+
+  it("tucks API keys and the legacy wave key into a collapsed Advanced disclosure", () => {
+    // Both are working features the design does not show. They stay, below the roster,
+    // closed until someone opens them.
+    renderView();
+    const advanced = screen.getByTestId("connections-advanced");
+    expect(advanced.tagName).toBe("DETAILS");
+    expect(advanced).not.toHaveAttribute("open");
+    expect(within(advanced).getByText("Advanced").tagName).toBe("SUMMARY");
+    expect(within(advanced).getByRole("heading", { name: "API keys that reach this project" })).toBeInTheDocument();
+    expect(within(advanced).getByRole("heading", { name: "Legacy: wave key" })).toBeInTheDocument();
+    const roster = screen.getByRole("heading", { name: "Roster" });
+    expect(roster.compareDocumentPosition(advanced) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("breaks the count down by role rather than totalling it", () => {
@@ -952,7 +969,8 @@ describe("Fleet view", () => {
     // declaring it once above them is not.
     fleet.data = { ...BASE };
     renderView();
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toMatch(/Fleet\.v1\s*core/);
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Fleet");
+    expect(screen.getByTestId("place-header-tag")).toHaveTextContent("core");
   });
 });
 
@@ -1138,8 +1156,19 @@ describe("Fleet.v1 stays the roster", () => {
     renderView();
     expect(screen.getByTestId("fleet-v1")).toBeInTheDocument();
     expect(screen.queryByTestId("fleet-matrix")).not.toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /Harness config/ })).toHaveAttribute("href", "/fleet.v2");
+    expect(screen.getByRole("tab", { name: /Harness config/ })).toHaveAttribute("aria-selected", "false");
     expect(screen.getByRole("link", { name: "Outposts" })).toHaveAttribute("href", "/outposts");
+  });
+
+  it("names itself Fleet with no project tag, links Harness performance before Outposts, and is left-aligned", () => {
+    renderView();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Fleet");
+    const perf = screen.getByRole("link", { name: "Harness performance" });
+    const outposts = screen.getByRole("link", { name: "Outposts" });
+    expect(Boolean(perf.compareDocumentPosition(outposts) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    const body = screen.getByTestId("fleet-content");
+    expect(body.className).toContain("max-w-[930px]");
+    expect(body.className).not.toContain("mx-auto");
   });
 });
 
@@ -1253,5 +1282,112 @@ describe("re-tasking an agent", () => {
     renderView();
     await screen.findByTestId("agent-role");
     expect(screen.queryByTestId("agent-refusal")).not.toBeInTheDocument();
+  });
+
+  it("shows a loading state, never the empty state, while the roster is in flight", () => {
+    fleet.data = undefined;
+    renderView();
+    expect(screen.queryByText(/No agents yet/)).toBeNull();
+    expect(screen.queryByText(/no agents/i)).toBeNull();
+    expect(screen.getByLabelText("Loading table")).toBeTruthy();
+  });
+
+  it("still shows the empty state for a resolved roster with zero agents", () => {
+    fleet.data = { ...BASE };
+    renderView();
+    expect(screen.getByText(/No agents yet/)).toBeTruthy();
+  });
+
+  it("shows an error state, not the empty state, when the request failed", () => {
+    fleet.data = undefined;
+    fleet.isError = true;
+    renderView();
+    expect(screen.queryByText(/No agents yet/)).toBeNull();
+    expect(screen.getByText(/retry/i)).toBeTruthy();
+  });
+});
+
+describe("FleetView collapsed offline agents (GRPH-1229)", () => {
+  const gone = (n: number) => ({ ...AGENT, id: `GB-A${n}`, key: `GB-A${n}`, label: `gone ${n}`,
+                                 state: "offline" });
+  beforeEach(() => {
+    ctx.activeId = "core";
+    fleet.data = { ...BASE, collapsed: { count: 2, by_state: { offline: 2 }, by_role: {},
+                                         recent_seconds: 86400 } };
+    api.fleetCollapsed.mockReset();
+    api.dismissAgent.mockReset().mockResolvedValue({});
+    api.fleetCollapsed.mockResolvedValue({ total: 2, offset: 0, limit: 100,
+                                           agents: [gone(7), gone(8)] });
+  });
+
+  it("drops a collapsed row once it is dismissed", async () => {
+    const user = userEvent.setup();
+    renderView();
+    await user.click(screen.getByRole("button", { name: /Show 2 gone/ }));
+    await screen.findByText("gone 7");
+    // The roster holds only the two collapsed rows, in page order.
+    await user.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
+    await waitFor(() => expect(screen.queryByText("gone 7")).toBeNull());
+    expect(api.dismissAgent).toHaveBeenCalledWith("GB-A7", false);
+    expect(screen.getByText("gone 8")).toBeInTheDocument();
+  });
+
+  it("keeps the next page's offset and the total in step after a dismissal", async () => {
+    // The server stops counting a dismissed agent as collapsed, so its list shrinks by one:
+    // the next page starts one earlier, and "Load more" must still be reachable.
+    fleet.data = { ...BASE, collapsed: { count: 3, by_state: { offline: 3 }, by_role: {},
+                                         recent_seconds: 86400 } };
+    api.fleetCollapsed.mockResolvedValueOnce({ total: 3, offset: 0, limit: 2,
+                                               agents: [gone(7), gone(8)] });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(screen.getByRole("button", { name: /Show 3 gone/ }));
+    await screen.findByRole("button", { name: /Load more \(2 of 3\)/ });
+    await user.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
+    await screen.findByRole("button", { name: /Load more \(1 of 2\)/ });
+    api.fleetCollapsed.mockResolvedValueOnce({ total: 2, offset: 1, limit: 2, agents: [gone(9)] });
+    await user.click(screen.getByRole("button", { name: /Load more/ }));
+    await screen.findByText("gone 9");
+    expect(api.fleetCollapsed).toHaveBeenLastCalledWith("core", 1, 100, "quiet");
+    expect(screen.queryByRole("button", { name: /Load more/ })).toBeNull();
+  });
+
+  it("forgets the previous project's collapsed rows on a project switch", async () => {
+    const user = userEvent.setup();
+    const view = renderView();
+    await user.click(screen.getByRole("button", { name: /Show 2 gone/ }));
+    await screen.findByText("gone 7");
+    ctx.activeId = "other";
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <FleetView />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.queryByText("gone 7")).toBeNull());
+  });
+});
+
+describe("FleetView orphaned-branch group (GRPH-1237)", () => {
+  const orphan = (n: number) => ({ ...AGENT, id: `GB-O${n}`, key: `GB-O${n}`, label: `orphan ${n}`,
+                                   state: "offline", branch_orphaned: true });
+  beforeEach(() => {
+    ctx.activeId = "core";
+    fleet.data = { ...BASE, collapsed: { count: 3, by_state: { offline: 3 }, by_role: {},
+                                         by_kind: { quiet: 0, orphaned: 3 }, recent_seconds: 3600 } };
+    api.fleetCollapsed.mockReset().mockResolvedValue({ total: 3, offset: 0, limit: 100,
+                                                       agents: [orphan(1), orphan(2), orphan(3)] });
+  });
+
+  it("renders the group collapsed with its exact count, and expands on demand", async () => {
+    const user = userEvent.setup();
+    renderView();
+    expect(screen.queryByText("orphan 1")).toBeNull();
+    expect(api.fleetCollapsed).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /Show 3 offline agents with only an orphaned branch/ }));
+    await screen.findByText("orphan 1");
+    expect(api.fleetCollapsed).toHaveBeenCalledWith("core", 0, 100, "orphaned");
+    expect(screen.getByRole("button", { name: /Hide 3 offline agents/ })).toBeInTheDocument();
   });
 });
