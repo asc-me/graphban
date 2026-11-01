@@ -129,6 +129,9 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         "list_entitlements", "set_entitlement",
         # PRD-62 S3 (GRPH-1249). QUALITY: appends an event to the key's own org ledger.
         "report_entitlement_event",
+        # PRD-P63 S2a (GRPH-1262). A read. Setting a toggle is deliberately NOT here: D10
+        # keeps that a person's REST request, so no agent can switch off a rule reviewing it.
+        "get_rule_toggles",
         # E7. An AUTHORITY gate, and bounded twice: planner-only, so the role holding it
         # cannot build and has nothing to launder; and clamped by the minting credential's
         # own ceiling, so it reshuffles authority rather than manufacturing it.

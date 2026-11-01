@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 294 of the 294. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 297 of the 297. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -103,6 +103,9 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | GET | `/api/rules/observations` | JWT (project reader) | The fleet observations ledger (PRD-63 S1, `services/observations.py`), newest first: `observations[]`, `total`, and `counts` by kind for the whole filtered set. Filters `stage`, `kind` (422 on an unknown value), `limit`, `offset`. Rows hold ids and counts, never text |
 | POST | `/api/rules/observations/backfill` | JWT (project writer) | Derive observations from the project's history (events, evidence, attestations). Idempotent; returns what it added by kind. Sabotage verdicts, reopenings and bounces are live-only — history cannot attribute or date them |
 | GET | `/api/orgs/{org_id}/rules/observations` | JWT (org member) | The same ledger across the org's projects the caller can read |
+| GET | `/api/rules/toggles` | JWT (project reader) | Library rule toggles (`services/rule_toggles.py`, PRD-P63 D4): `{library_loaded, toggles[]}`, each `{rule_id, stage, title, on, params, locked, locked_by}` where `on` and `params` are `{value, source}` and `source` is `project`, `org` or `platform default`. `library_loaded: false` means no rule pack is loaded — an empty list then is no library, not nothing adopted |
+| PUT | `/api/rules/toggles/{rule_id}` | JWT (project owner/admin) | `?project_id=`. A project's own `on` and/or `params` (null clears, so it inherits); `reason` is required (422 without) and every change is a `set_rule_toggle` event with who and why. Every plan. 409 refusal `rules.org_lock_holds` when the org locked the rule; 403 `rules.toggle_needs_admin` for a member. JWT only, never an API key: a person adopts (D10) |
+| PUT | `/api/orgs/{org_id}/rule-toggles/{rule_id}` | JWT (org owner/admin) | The org's `on`, `params` and `locked`, with a required `reason`. Applies to every project that inherits it — every project, when locked — and is recorded as ONE `set_rule_toggle` event naming the old and new values and `projects_changed`, which the reply also returns. `team`/`enterprise` only: 402 `quota_exceeded` otherwise, self-host included (D11) |
 | GET | `/api/rules/refusals/unmapped` | JWT (project reader) | `?project_id=&days=7` (1–90). `refusal_unmapped` events grouped by `where`+`status` over the whole window, no row cap, ranked by count: `groups[]` `{where, status, platform, count, last_at, daily[days]}` plus `recording_since` (earliest refusal event in the same scope as the groups; null = none ever recorded there). Attribution: an event belongs to the project it was recorded against (MCP: the calling key's project or the call's `project_id`); one naming no project is the platform bucket, returned with `platform: true` only to a platform admin, or on a self-hosted instance to the project's owner — never to a hosted owner who is not a platform admin |
 
 ## Items (tracker)

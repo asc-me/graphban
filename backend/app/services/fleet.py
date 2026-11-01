@@ -1337,6 +1337,8 @@ OPEN_TOOLS: dict[str, str] = {
         "scan_status", "scans_due",
         # PRD-62 S2: the entitlement registry read; the write is planner-gated above.
         "list_entitlements",
+        # PRD-P63 S2a: the toggles read; there is no MCP write (D10).
+        "get_rule_toggles",
         # GRPH-1275: document reads — governing specs, project-scoped, nothing written.
         "get_document", "search_docs",
     )},
