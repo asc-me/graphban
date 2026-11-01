@@ -92,7 +92,7 @@ def register_primitive(p: Primitive) -> None:
 register_primitive(Primitive(
     "sabotage_receipt", "enforced",
     Enforcer("graphban_source", "app/services/items.py"),
-    {"min_effort": Param("int")}))
+    {"min_effort": Param("int"), "min_tests_failed": Param("int")}))
 register_primitive(Primitive(
     "evidence_attached", "checked",
     Enforcer("graphban_source", "app/services/items.py"),

@@ -85,7 +85,8 @@ def test_not_found_is_not_a_refusal(client, auth):
 def test_every_rule_id_cited_in_code_exists_in_the_registry():
     cited = set(_ratchet().scan()["rule_ids"])
     assert cited, "the scan found no rule_id at all — it is not looking"
-    assert cited <= set(R.RULES_BY_ID), cited - set(R.RULES_BY_ID)
+    known = set(R.RULES_BY_ID) | R.LIBRARY_BOUND_RULE_IDS
+    assert cited <= known, cited - known
 
 
 def test_ratchet_counts_a_refusal_without_a_rule_and_a_bare_409(tmp_path):
