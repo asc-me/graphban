@@ -1635,6 +1635,11 @@ def platform_roll(db: Session) -> int:
             top_org_share=(top / finished) if finished else None, rolled_at=now))
         written += 1
     db.flush()
+    # PRD-P63 D8: library-rule effect rolls on the same machinery and the same opt-in, so an
+    # opt-out purges it in the same call.
+    from app.services import rule_measure
+
+    rule_measure.platform_roll(db)
     return written
 
 

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.models import User
+from app.models import Organization, User
 from app.errors import NotFound, Validation
 from app.schemas import (ObservationBackfillOut, ObservationsOut, OrgRuleToggleOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
@@ -20,6 +20,7 @@ from app.services import events as events_svc
 from app.services import observations as observations_svc
 from app.services import quotas
 from app.services import rules as rules_svc
+from app.services import rule_measure
 from app.services import rules_org
 from app.services import rule_toggles
 from app.services import rules_recommend
@@ -183,6 +184,48 @@ def set_org_rule_toggle(org_id: str, rule_id: str, body: RuleToggleWrite,
                          db=db)
 
 
+# ---- measurement (GRPH-1265 / PRD-P63 S5, D8, D9) ----------------------------------------
+# Read-only. Every measured value is {status, value, n, min_n, reason} (measured | insufficient
+# | unavailable); a null value never means "not enough data".
+def _measure(fn, *args):
+    try:
+        return fn(*args)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+
+
+@router.get("/rules/effect")
+def rules_effect(project_id: str = "core", rule_id: str | None = None,
+                 db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Caught, escape rate before/after adoption, cost and retirement per library rule."""
+    authz.require_readable(db, user.id, project_id)
+    return _measure(rule_measure.project_effect, db, project_id, rule_id)
+
+
+@router.get("/orgs/{org_id}/rules/effect")
+def org_rules_effect(org_id: str, rule_id: str | None = None, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """The same across the org's projects. Org admins on team/enterprise (402 otherwise)."""
+    authz.require_org_admin(db, user.id, org_id)
+    return _measure(rule_measure.org_effect, db, org_id, rule_id)
+
+
+@router.get("/orgs/{org_id}/rules/contribution")
+def org_rules_contribution(org_id: str, db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user)):
+    """Exactly the counts this org would contribute if it opts in (`telemetry_share`)."""
+    authz.require_org_admin(db, user.id, org_id)
+    quotas.require_org_rules(db, org_id)
+    return {"opted_in": bool(db.get(Organization, org_id).telemetry_share),
+            "rules": rule_measure.contribution(db, org_id)}
+
+
+@router.get("/orgs/{org_id}/rules/platform-effect")
+def org_rules_platform_effect(org_id: str, db: Session = Depends(get_db),
+                              user: User = Depends(get_current_user)):
+    """Platform effect rates: hosted, premium, and only for an org that opted in."""
+    authz.require_org_admin(db, user.id, org_id)
+    return rule_measure.platform_effect(db, org_id)
 # ---- promotion to the org (GRPH-1264 / PRD-P63 §10, S4) ----------------------------------
 class ProfileApply(BaseModel):
     reason: str = ""
