@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 213 of the 291 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 216 of the 294 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -90,6 +90,9 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | POST | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Dismiss a suggestion for the project, keyed on id + evidence fingerprint; it returns when the evidence changes. 204, or 404 for an unknown id |
 | GET | `/api/rules/recommended/dismissed` | JWT (project reader) | Suggestions currently dismissed against their present evidence, for the panel's "Show dismissed (N)" |
 | DELETE | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Restore a dismissed suggestion. 204, or 404 when it was not dismissed |
+| GET | `/api/rules/observations` | JWT (project reader) | The fleet observations ledger (PRD-63 S1, `services/observations.py`), newest first: `observations[]`, `total`, and `counts` by kind for the whole filtered set. Filters `stage`, `kind` (422 on an unknown value), `limit`, `offset`. Rows hold ids and counts, never text |
+| POST | `/api/rules/observations/backfill` | JWT (project writer) | Derive observations from the project's history (events, evidence, attestations). Idempotent; returns what it added by kind. Sabotage verdicts, reopenings and bounces are live-only — history cannot attribute or date them |
+| GET | `/api/orgs/{org_id}/rules/observations` | JWT (org member) | The same ledger across the org's projects the caller can read |
 | GET | `/api/rules/refusals/unmapped` | JWT (project reader) | `?project_id=&days=7` (1–90). `refusal_unmapped` events grouped by `where`+`status` over the whole window, no row cap, ranked by count: `groups[]` `{where, status, platform, count, last_at, daily[days]}` plus `recording_since` (earliest refusal event in the same scope as the groups; null = none ever recorded there). Attribution: an event belongs to the project it was recorded against (MCP: the calling key's project or the call's `project_id`); one naming no project is the platform bucket, returned with `platform: true` only to a platform admin, or on a self-hosted instance to the project's owner — never to a hosted owner who is not a platform admin |
 
 ## Items (tracker)
