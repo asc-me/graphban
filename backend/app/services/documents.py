@@ -51,28 +51,112 @@ def indexed(doc: Document, *, include_design: bool = False) -> bool:
     return include_design
 
 
+def _split_long(text: str, limit: int) -> list[str]:
+    """Pieces of `text` no longer than `limit`, cut on paragraphs (a lone paragraph over the
+    limit is cut hard — the embedder would clamp it to its head anyway)."""
+    if len(text) <= limit:
+        return [text]
+    out: list[str] = []
+    cur = ""
+    for para in re.split(r"\n\s*\n", text):
+        while len(para) > limit:
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(para[:limit])
+            para = para[limit:]
+        if cur and len(cur) + 2 + len(para) > limit:
+            out.append(cur)
+            cur = ""
+        cur = f"{cur}\n\n{para}" if cur else para
+    if cur.strip():
+        out.append(cur)
+    return [p for p in out if p.strip()]
+
+
 def extract(body: str) -> list[tuple[str, str]]:
-    """(heading, text) per `## ` section; text before the first heading has heading ''."""
-    out: list[tuple[str, str]] = []
+    """(heading, text) per `## ` section; text before the first heading has heading ''.
+
+    A section longer than the embed input yields several pieces that all cite its heading."""
+    from app.config import settings
+
+    sections: list[tuple[str, str]] = []
     head, buf = "", []
     for line in (body or "").splitlines():
         m = re.match(r"^##\s+(.*\S)\s*$", line)
         if m:
             if "".join(buf).strip():
-                out.append((head, "\n".join(buf).strip()))
+                sections.append((head, "\n".join(buf).strip()))
             head, buf = m.group(1), []
         else:
             buf.append(line)
     if "".join(buf).strip():
-        out.append((head, "\n".join(buf).strip()))
-    return out
+        sections.append((head, "\n".join(buf).strip()))
+    limit = max(1, int(settings.embed_max_chars))
+    return [(h, piece) for h, t in sections for piece in _split_long(t, limit)]
+
+
+def _vector(text: str) -> list[float] | None:
+    """A chunk's vector, or None. The stub embedder is not a meaning (`embed_ok` false), and a
+    down provider must not fail the write: the chunk is stored and matched lexically."""
+    from app.config import settings
+    from app.embeddings import safe_embed
+
+    if settings.embed_provider == "stub":
+        return None
+    return safe_embed(text)
 
 
 def _chunk(doc: Document, body: str) -> None:
     for i, (heading, text) in enumerate(extract(body) or [("", body or "")]):
         doc.chunks.append(DocumentChunk(
-            ordinal=i, heading=heading, text=text, content_hash=content_hash(text),
-            extractor_version=EXTRACTOR_VERSION, governing=True))
+            project_id=doc.project_id, kind=doc.kind, ordinal=i, heading=heading, text=text,
+            version=str(doc.version or ""), content_hash=content_hash(text),
+            extractor_version=EXTRACTOR_VERSION, governing=True, embedding=_vector(text)))
+
+
+def index_prd_baseline(db: Session, prd_id: str) -> int:
+    """(Re)index the PRD's governing baseline as chunks. Runs when a baseline is frozen — not
+    on a draft save. Idempotent for an unchanged baseline; an older baseline's chunks stay as
+    `superseded`. Returns the number of chunks written."""
+    prd = prd_svc.get_prd(db, prd_id)
+    base = prd_svc.baseline_of(db, prd_id) if prd is not None else None
+    if base is None:
+        return 0
+    digest = content_hash(base.body)
+    live = list(db.scalars(select(DocumentChunk).where(
+        DocumentChunk.kind == "prd", DocumentChunk.prd_id == prd_id,
+        DocumentChunk.governing.is_(True))))
+    if live and live[0].content_hash == digest:
+        return 0
+    for c in live:
+        c.governing = False
+    pieces = extract(base.body) or [("", base.body or "")]
+    for i, (heading, text) in enumerate(pieces):
+        db.add(DocumentChunk(
+            project_id=prd.project_id, kind="prd", prd_id=prd_id, ordinal=i, heading=heading,
+            text=text, version=base.version, content_hash=digest,
+            extractor_version=EXTRACTOR_VERSION, governing=True, embedding=_vector(text)))
+    db.commit()
+    return len(pieces)
+
+
+def drop_prd_chunks(db: Session, prd_id: str) -> None:
+    """The baseline was removed (approval invalidated): its chunks no longer govern anything."""
+    for c in db.scalars(select(DocumentChunk).where(
+            DocumentChunk.kind == "prd", DocumentChunk.prd_id == prd_id)):
+        db.delete(c)
+    db.commit()
+
+
+def backfill_embeddings(db: Session) -> int:
+    """Re-embed every chunk from its stored text (after an EMBED_DIM or provider change)."""
+    n = 0
+    for c in db.scalars(select(DocumentChunk)):
+        c.embedding = _vector(c.text)
+        n += 1
+    db.commit()
+    return n
 
 
 def put_document(
@@ -221,57 +305,94 @@ def get_document(db: Session, project_id: str, doc_id: str) -> dict:
     return to_dict(doc)
 
 
-def search_docs(
-    db: Session, project_id: str, query: str, *, include_drafts: bool = False,
-    include_design: bool = False, limit: int = 10,
-) -> dict:
-    """Lexical search over baselined PRD bodies (+ indexed document chunks).
+def _doc_status(doc: Document, chunk: DocumentChunk) -> str:
+    if not chunk.governing:
+        return "superseded"
+    if doc.status == "stale":
+        return "stale"
+    return "accepted" if (doc.accepted or doc.kind not in ACCEPT_GATED) else "draft"
 
-    A PRD with a baseline is read from `baseline_of` — a pending rebaseline leaves the
-    previous baseline indexed. A PRD with none is absent unless `include_drafts`.
+
+def search_docs(
+    db: Session, project_id: str, query: str, *, top_k: int = 10, include_drafts: bool = False,
+    include_design: bool = False,
+) -> dict:
+    """Search the governing text: baselined PRD chunks, plus design chunks on request.
+
+    Ranked by vector when the query and a chunk both have one; a chunk stored without a vector
+    is matched by substring and the response says so. A hit is not the spec: open the section
+    with `get_prd` / `get_document`.
     """
+    from app.embeddings import cosine_similarity
+
     terms = [t for t in re.findall(r"\w+", (query or "").lower()) if t]
     if not terms:
         raise errors.Validation("query is empty")
 
-    def score(text: str) -> int:
+    def lexical(text: str) -> int:
         low = text.lower()
         return sum(low.count(t) for t in terms)
 
-    hits: list[dict] = []
     unbaselined = 0
+    cands: list[tuple[dict, list[float] | None]] = []
     for prd in db.scalars(select(Prd).where(Prd.project_id == project_id)):
-        base = prd_svc.baseline_of(db, prd.id)
-        if base is None:
+        if prd_svc.baseline_of(db, prd.id) is None:
             unbaselined += 1
-            if not include_drafts:
+            if include_drafts:
+                for heading, text in extract(prd.body):
+                    cands.append(({"source_id": prd.id, "prd_id": prd.id, "kind": "prd",
+                                   "version": prd.version, "status": "draft", "heading": heading,
+                                   "text": text, "content_hash": content_hash(prd.body)}, None))
+            continue
+        index_prd_baseline(db, prd.id)  # a baseline frozen before the index existed
+    rows = db.execute(
+        select(DocumentChunk, Document)
+        .outerjoin(Document, DocumentChunk.document_id == Document.id)
+        .where(DocumentChunk.project_id == project_id)).all()
+    for c, doc in rows:
+        if doc is None:  # PRD baseline chunk
+            status = "baseline" if c.governing else "superseded"
+            if status == "superseded" and not include_drafts:
                 continue
-            body, ver, status = prd.body, prd.version, "draft"
+            hit = {"source_id": c.prd_id, "prd_id": c.prd_id, "kind": "prd", "status": status}
         else:
-            body, ver, status = base.body, base.version, "baseline"
-        for heading, text in extract(body):
-            s = score(f"{heading}\n{text}")
-            if s:
-                hits.append({"source": "prd", "prd_id": prd.id, "version": ver,
-                             "status": status, "heading": heading, "text": text,
-                             "content_hash": content_hash(body), "score": s})
-    for doc in db.scalars(select(Document).where(Document.project_id == project_id)):
-        if doc.status == "stale" and not include_design:
-            continue
-        if not indexed(doc, include_design=include_design):
-            continue
-        for c in doc.chunks:
-            s = score(f"{c.heading}\n{c.text}") if c.governing else 0
-            if s:
-                hit = {"source": "document", "document_id": doc.id, "kind": doc.kind,
-                       "status": doc.status, "heading": c.heading, "text": c.text,
-                       "content_hash": c.content_hash, "score": s}
-                if doc.stale_reason:
-                    hit["stale_reason"] = doc.stale_reason
-                hits.append(hit)
-    hits.sort(key=lambda h: -h["score"])
-    out = {"results": hits[:limit], "ranking": "lexical",
+            if doc.kind in NEVER_INDEXED or (not doc.governing and not include_drafts):
+                continue
+            status = _doc_status(doc, c)
+            if status in ("draft", "superseded"):
+                if not include_drafts:
+                    continue
+            elif not include_design:
+                continue
+            hit = {"source_id": doc.id, "document_id": doc.id, "kind": doc.kind, "status": status}
+            if status == "stale" and doc.stale_reason in ("preamble", "prd_baseline"):
+                hit["stale_reason"] = doc.stale_reason
+        hit.update(version=c.version, heading=c.heading, text=c.text, content_hash=c.content_hash)
+        cands.append((hit, c.embedding))
+
+    from app.config import settings
+    qvec = None
+    if settings.embed_provider != "stub" and any(v is not None for _, v in cands):
+        from app.embeddings import safe_embed
+        qvec = safe_embed(query)
+    semantic: list[dict] = []
+    lexical_hits: list[dict] = []
+    for hit, vec in cands:
+        if qvec is not None and vec is not None:
+            semantic.append({**hit, "score": round(cosine_similarity(qvec, vec), 6)})
+        elif (s := lexical(f"{hit['heading']}\n{hit['text']}")):
+            lexical_hits.append({**hit, "score": s})
+    semantic.sort(key=lambda h: -h["score"])
+    lexical_hits.sort(key=lambda h: -h["score"])
+    hits = (semantic + lexical_hits)[:max(1, int(top_k))]
+    ranking = ("lexical" if not semantic else "semantic" if not lexical_hits else "mixed")
+    out = {"results": hits, "ranking": ranking,
            "include_drafts": include_drafts, "include_design": include_design}
+    if ranking != "semantic":
+        out["ranking_note"] = ("ranking is lexical (substring match over stored text)"
+                               if ranking == "lexical" else
+                               "some chunks have no vector; those were matched by substring "
+                               "and listed after the vector-ranked ones")
     if not hits:
         # Empty is not "no draft exists".
         out["note"] = ("no match; draft PRDs were excluded" if not include_drafts

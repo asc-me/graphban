@@ -2741,6 +2741,11 @@ def freeze_baseline(db: Session, prd: Prd) -> PrdVersion:
     # Marking is unconditional; recomputing is not, so a rebaseline on a large PRD never
     # blocks on a hundred model calls.
     mark_classifications_stale(db, prd)
+    # The new baseline governs: index it. Embedding failure stores a null vector; it never
+    # fails the approval that is already committed.
+    from app.services import documents as documents_svc
+
+    documents_svc.index_prd_baseline(db, prd.id)
     return row
 
 
@@ -2773,6 +2778,9 @@ def invalidate_approval(db: Session, prd: Prd, *, reason: str) -> Prd:
     prd.status = "review" if grill_state(db, prd.id)["answers"] else "draft"
     prd.version = "v0.1"
     db.commit()
+    from app.services import documents as documents_svc
+
+    documents_svc.drop_prd_chunks(db, prd.id)
     db.refresh(prd)
     events_svc.record(
         db, actor_type="system", actor_label="grill", surface="system",

@@ -5,6 +5,8 @@ import pytest
 
 from app import errors
 from app.mcp_server import LIVE_TOOL_COUNT, TOOLS
+from sqlalchemy import select
+
 from app.models import Document
 from app.services import documents as docs
 from app.services import prds as prd_svc
@@ -283,3 +285,47 @@ def test_bytes_route_is_409_blob_pending(client, auth, db, pid):
     r = client.get("/api/documents/DOC-pend/bytes", headers=auth)
     assert r.status_code == 409 and r.json()["code"] == "blob_pending"
     assert client.get("/api/documents/DOC-nope/bytes", headers=auth).status_code == 404
+
+
+def test_baseline_freeze_writes_prd_chunks_with_null_vector_under_stub(db, pid):
+    from app.models import DocumentChunk
+    from app.hashing import content_hash
+    prd = _baselined(db, pid)
+    rows = list(db.scalars(select(DocumentChunk).where(DocumentChunk.prd_id == prd.id)))
+    assert rows and all(r.kind == "prd" and r.document_id is None and r.embedding is None
+                        for r in rows)
+    assert {r.content_hash for r in rows} == {content_hash(prd_svc.baseline_of(db, prd.id).body)}
+    r = docs.search_docs(db, pid, "teal")
+    assert r["ranking"] == "lexical" and "lexical" in r["ranking_note"]
+    assert r["results"][0]["source_id"] == prd.id and r["results"][0]["kind"] == "prd"
+
+
+def test_long_section_splits_on_paragraphs_and_cites_one_heading(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "embed_max_chars", 30)
+    parts = docs.extract("## Big\n" + "\n\n".join(["a" * 20, "b" * 20, "c" * 20]))
+    assert [h for h, _ in parts] == ["Big"] * 3 and all(len(t) <= 30 for _, t in parts)
+
+
+def test_semantic_ranking_when_vectors_exist(db, pid, monkeypatch):
+    from app.config import settings
+    from app.models import DocumentChunk
+    import app.embeddings as emb
+    prd = _baselined(db, pid)
+    for c in db.scalars(select(DocumentChunk).where(DocumentChunk.prd_id == prd.id)):
+        c.embedding = [1.0, 0.0]
+    db.commit()
+    monkeypatch.setattr(settings, "embed_provider", "openai")
+    monkeypatch.setattr(emb, "safe_embed", lambda t: [1.0, 0.0])
+    r = docs.search_docs(db, pid, "anything at all", top_k=1)
+    assert r["ranking"] == "semantic" and len(r["results"]) == 1 and "ranking_note" not in r
+
+
+def test_superseded_chunks_only_with_include_drafts(db, pid):
+    from app.models import DocumentChunk
+    prd = _baselined(db, pid)
+    for c in db.scalars(select(DocumentChunk).where(DocumentChunk.prd_id == prd.id)):
+        c.governing = False
+    db.commit()
+    r = docs.search_docs(db, pid, "teal", include_drafts=True)
+    assert any(h["status"] == "superseded" for h in r["results"])
