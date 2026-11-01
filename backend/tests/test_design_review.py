@@ -288,3 +288,45 @@ def test_mcp_accept_prompt_from_a_bare_credential_is_a_relay(client, auth, db, p
         assert "error" in body or body["result"].get("isError"), body
     ok = call({"accepted_by": "dana"}, 3)["result"]["structuredContent"]
     assert (ok["accepted_by"], ok["relayed_by"]) == ("dana", "key:fleetkey")
+
+
+def test_mcp_review_loop_round_trip(client, auth, db, pid, world, tmp_path, monkeypatch):
+    """The whole loop over MCP, so the outputSchema probe sees every review tool emit."""
+    import base64
+
+    from app.config import settings
+    from tests.test_documents import _mcp
+
+    monkeypatch.setattr(settings, "sync_dir", str(tmp_path))
+    _, sid = world
+
+    def key(name):
+        k = client.post("/api/api-keys", json={"name": name}, headers=auth).json()["plaintext"]
+        return {"X-API-Key": k}
+
+    compiler, relay = key("compilerkey"), key("relaykey")
+    n = iter(range(1, 100))
+
+    def call(h, name, args):
+        body = _mcp(client, h, name, {"project_id": pid, **args}, next(n)).json()
+        assert "error" not in body and not body["result"].get("isError"), body
+        return body["result"]["structuredContent"]
+
+    ph = call(compiler, "compile_prompts", {"design_set_id": sid})["prompts"][0]["prompt_hash"]
+    call(relay, "accept_prompt", {"design_set_id": sid, "screen": "home", "accepted_by": "dana"})
+    canvas = call(relay, "put_canvas", {
+        "design_set_id": sid, "screen": "home", "mime": "text/html", "prompt_hash": ph,
+        "bytes_b64": base64.b64encode(b"<html>mcp</html>").decode()})["content_hash"]
+    f = call(relay, "file_finding", {"design_set_id": sid, "screen": "home",
+                                     "kind": "prompt_defect", "text": "Header is purple",
+                                     "canvas_hash": canvas})
+    assert f["recompiled"]["prompt_hash"] != ph
+    assert call(relay, "resolve_finding",
+                {"finding_id": f["id"], "status": "applied"})["status"] == "applied"
+    ph2 = f["recompiled"]["prompt_hash"]
+    call(relay, "accept_prompt", {"design_set_id": sid, "screen": "home", "accepted_by": "dana"})
+    call(relay, "put_canvas", {
+        "design_set_id": sid, "screen": "home", "mime": "text/html", "prompt_hash": ph2,
+        "bytes_b64": base64.b64encode(b"<html>mcp2</html>").decode()})
+    out = call(relay, "accept_design", {"design_set_id": sid, "accepted_by": "dana"})
+    assert (out["status"], out["accepted_by"]) == ("accepted", "dana")
