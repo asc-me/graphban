@@ -24,7 +24,7 @@ from app.services import tool_tiers
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 15640
+CEILING = 16040
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -182,7 +182,15 @@ CEILING = 15640
 # because D10 keeps setting a toggle a person's request — so one tool, not two. Description cut
 # to one sentence and the output schema to its one array. Opt-in `misc` tier, so
 # TIER_TOKENS["misc"] 1238 -> 1346 is the whole bill and CORE_TOKENS does not move. Headroom 17.
-MEASURED_TOKENS = 15623
+# 15515 -> 15914, and CEILING 15530 -> 15930 with it (GRPH-1275). put_document, get_document and
+# search_docs: three new tools, each carrying the shared project_id property and an output
+# schema. Descriptions are one line each; the rest is the fixed per-tool wrapper. Tiered `prd`,
+# so TIER_TOKENS["prd"] 1998 -> 2397 is the whole bill and a default key does not pay it.
+# Headroom 16.
+# 15914 -> 16021, and CEILING 15930 -> 16040 with it: GRPH-1262's `get_rule_toggles` (+108, misc
+# tier, above) merged onto GRPH-1275's three document tools. The two raises add; neither tool
+# set moves CORE_TOKENS. Headroom 19.
+MEASURED_TOKENS = 16021
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

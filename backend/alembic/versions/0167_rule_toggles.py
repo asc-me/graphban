@@ -1,7 +1,7 @@
 """`rule_toggles`: per-scope state and params for library rules (GRPH-1262, PRD-P63 D4).
 
-Revision ID: 0166
-Revises: 0165
+Revision ID: 0167
+Revises: 0166
 """
 
 from typing import Sequence, Union
@@ -9,8 +9,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0166"
-down_revision: Union[str, None] = "0165"
+revision: str = "0167"
+down_revision: Union[str, None] = "0166"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
