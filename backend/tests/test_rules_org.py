@@ -82,16 +82,18 @@ def test_apply_needs_reason_unknown_profile_and_plan(client, org):
     assert client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).status_code == 402
 
 
-def test_drift_clean_then_weakening_when_the_org_unpins(client, org):
+def test_drift_clean_then_weakening_when_a_locked_pin_is_turned_off(client, org):
     _apply(client, org)
     d = client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).json()
     assert d["state"] == "clean" and d["drift"] == []
+    # The lock stays on, so only the on -> off check can report this.
     client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
-               json={"on": False, "locked": False, "reason": "loosen"}, headers=org["owner"])
+               json={"on": False, "reason": "loosen"}, headers=org["owner"])
+    assert _toggles(client, {"owner": org["owner"]}, org["ps"][0])[RULE]["locked"] is True
     d = client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).json()
-    assert d["state"] == "drifted"
+    assert d["state"] == "drifted" and len(d["drift"]) == 3
     assert {(x["rule_id"], x["kind"]) for x in d["drift"]} == {(RULE, "weakening")}
-    assert len(d["drift"]) == 3
+    assert not any("unlocked" in x["detail"] for x in d["drift"])
 
 
 def test_list_profiles(client, org):
