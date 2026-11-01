@@ -57,7 +57,8 @@ def _person():
 def test_current_major_fixture_loads_every_template():
     pack = P.load(*build(FIX / "api1"), trusted_keys=TRUST)
     assert pack.refused == {}
-    assert set(pack.templates) == {"review.sabotage_required", "review.evidence_attached"}
+    assert set(pack.templates) == {"review.sabotage_required", "review.evidence_attached",
+                                   "review.distinct_vendor"}
     assert "standard" in pack.profiles and pack.mappings[0]["weight"] == 2
 
 

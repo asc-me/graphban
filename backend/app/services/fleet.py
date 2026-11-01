@@ -1277,6 +1277,13 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     "open_design": ("planner", "worker"),
     "put_set_constraints": ("planner", "worker"),
     "confirm_tier": ("planner", "worker"),
+    # GRPH-1280: compile and file as a builder; accepting is a person's, relayed by the planner.
+    "compile_prompts": ("planner", "worker"),
+    "put_canvas": ("planner", "worker"),
+    "file_finding": ("planner", "worker"),
+    "resolve_finding": ("planner", "worker"),
+    "accept_prompt": ("planner",),
+    "accept_design": ("planner",),
     "update_prd": ("planner",),
     "decompose_prd": ("planner",),
     "grill_prd": ("planner",),
@@ -2241,6 +2248,11 @@ class GapUnlinked(Exception):
     item linked (GRPH-1270)."""
 
 
+class ReviewerPropertyRequired(Exception):
+    """The `review.distinct_vendor` library rule is on and this reviewer does not show the
+    property it asks for (GRPH-1269)."""
+
+
 class UncomparedPredicate(Exception):
     """A sign-off whose receipt carries a check that could not run, and no waiver (GRPH-1007).
 
@@ -2985,6 +2997,64 @@ def require_gap_followups(db: Session, item: Item, merged: list) -> None:
             + "; ".join(repr(d[:80]) for d in unlinked))
 
 
+
+DISTINCT_VENDOR_RULE = "review.distinct_vendor"
+
+
+def _distinct_vendor(reviewer: dict, builder: dict, built_by: str | None) -> str:
+    """Why the reviewer is NOT of a different vendor than the builder, or "" when it is.
+
+    The same attribution `reviewer_diversity` reports — `declared_capabilities` compared
+    through `canonical_vendor` — so the gate and the receipt can never disagree about who is
+    which vendor. An unknown on either side is a failure, never a pass: two unknowns are not
+    a known difference.
+    """
+    if not built_by:
+        return "the item has no recorded builder, so its vendor is unknown"
+    missing = [side for side, caps in (("reviewer", reviewer), ("builder", builder))
+               if caps["vendor"] == UNDECLARED]
+    if missing:
+        return (f"the {' and '.join(missing)} declared no vendor, and an unknown vendor is "
+                "never a different one")
+    if canonical_vendor(reviewer["vendor"]) == canonical_vendor(builder["vendor"]):
+        return (f"reviewer vendor {reviewer['vendor']!r} is the builder's "
+                f"({builder['vendor']!r})")
+    return ""
+
+
+#: The properties the `reviewer_property` primitive can require, by name. A rule naming one
+#: not here cannot be checked, so it refuses rather than passing.
+REVIEWER_PROPERTIES = {"distinct_vendor": _distinct_vendor}
+
+
+def require_reviewer_property(db: Session, item: Item, agent_id: str) -> None:
+    """The `reviewer_property` primitive, bound to `review.distinct_vendor` (GRPH-1269).
+
+    Reads its on/off and params through the layered resolution (`rule_toggles.resolve`), never
+    a constant. `property` (default `distinct_vendor`) names what the reviewer must show. A rule
+    absent from the loaded library, or off, is no gate; when it is on, absence never reads as
+    clean — an undeclared vendor, an unrecorded builder or an unknown property all refuse.
+    """
+    from app.services import rule_toggles
+
+    if DISTINCT_VENDOR_RULE not in rule_toggles.LIBRARY:
+        return
+    state = rule_toggles.resolve(db, DISTINCT_VENDOR_RULE, item.project_id)
+    if not state["on"]["value"]:
+        return
+    params = state["params"]["value"] or {}
+    prop = params.get("property") or "distinct_vendor"
+    check = REVIEWER_PROPERTIES.get(prop)
+    why = (check(declared_capabilities(db, agent_id),
+                 declared_capabilities(db, item.built_by), item.built_by)
+           if check else f"the rule asks for reviewer property {prop!r}, which this server "
+                         "cannot check")
+    if why:
+        raise ReviewerPropertyRequired(
+            f"{item.key} cannot be signed off by {agent_id} while {DISTINCT_VENDOR_RULE} is "
+            f"on: {why}")
+
+
 def _predicate(name: str, *, compared: bool, detail: str, waived: dict) -> dict:
     """One sign-off predicate, honest about whether its check actually ran (GRPH-1007).
 
@@ -3106,6 +3176,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
         )
     require_reviewer_sabotage(db, item, fresh)
     require_gap_followups(db, item, merged)
+    require_reviewer_property(db, item, agent_id)
     # THE ACCEPTANCE COVERAGE GATE (GRPH-884). Each acceptance clause in the item's `## Tests`
     # section must have a named test in the evidence. A sabotage receipt does NOT substitute —
     # that is the defect this closes: sabotage can only mutate code some test already reaches,

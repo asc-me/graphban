@@ -2884,6 +2884,9 @@ def request_rebaseline(
     ) or 0
     prd.status = "review"
     db.commit()
+    from app.services import design_sets as design_svc
+
+    design_svc.withdraw_spec_gaps(db, prd.id)
     db.refresh(prd)
     events_svc.record(
         db, actor_type="agent" if requested_by.startswith("agent:") else "user",
