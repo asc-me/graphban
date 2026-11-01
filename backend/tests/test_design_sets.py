@@ -121,6 +121,36 @@ def test_rebaselining_the_preamble_cited_prd_stales_sets_on_other_prds(db, pid):
     assert ds_svc.put_set_constraints(db, pid, out["id"], "Teal only.")["status"] == "open"
 
 
+def test_open_against_a_preamble_citing_a_superseded_baseline_is_stale_at_once(db, pid):
+    base = _prd(db, pid, title="Visual system")
+    pre = ds_svc.put_preamble(db, pid, "Be calm.", base.id, created_by=KEY)
+    _rebaseline(db, base, BODY.replace("teal", "amber"))
+    out = ds_svc.open_design(db, pid, _prd(db, pid).id)
+    assert out["status"] == "stale" and out["stale_reason"] == "prd_baseline"
+    assert out["stale_detail"]["prd_baseline"]["prd_id"] == base.id
+    assert out["stale_detail"]["prd_baseline"]["was"] == pre["prd_hash"]
+    assert out["acceptance_blockers"]
+    # An unrelated rebaseline does not change what the set already says.
+    _rebaseline(db, _prd(db, pid, title="Unrelated"), BODY.replace("grid", "lattice"))
+    got = ds_svc.get_design_set(db, pid, out["id"])
+    assert got["status"] == "stale" and got["stale_reason"] == "prd_baseline"
+
+
+def test_revising_does_not_clear_a_superseded_preamble_cite(db, pid):
+    base = _prd(db, pid, title="Visual system")
+    ds_svc.put_preamble(db, pid, "Be calm.", base.id, created_by=KEY)
+    out = ds_svc.open_design(db, pid, _prd(db, pid).id)
+    _rebaseline(db, base, BODY.replace("teal", "amber"))
+    again = ds_svc.put_set_constraints(db, pid, out["id"], "Teal only.")
+    assert again["status"] == "stale" and again["stale_reason"] == "prd_baseline"
+    assert again["acceptance_blockers"]
+    _rebaseline(db, _prd(db, pid, title="Unrelated"), BODY.replace("grid", "lattice"))
+    assert ds_svc.get_design_set(db, pid, out["id"])["stale_reason"] == "prd_baseline"
+    # Re-putting the preamble against the new baseline is what clears it.
+    ds_svc.put_preamble(db, pid, "Be calm.", base.id, created_by=KEY)
+    assert ds_svc.put_set_constraints(db, pid, out["id"], "Teal only.")["status"] == "open"
+
+
 def test_first_preamble_stales_a_set_opened_without_one(db, pid):
     out = ds_svc.open_design(db, pid, _prd(db, pid).id)
     assert out["preamble_version"] == 0

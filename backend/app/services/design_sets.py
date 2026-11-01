@@ -63,6 +63,19 @@ def _pin_preamble(db: Session, ds: DesignSet) -> None:
     ds.preamble_hash = pre.prd_hash if pre else ""
 
 
+def _stale_cite(db: Session, ds: DesignSet) -> bool:
+    """Mark `ds` stale when the preamble it pins cites a superseded baseline. Run at every pin as
+    well as in `refresh`, so a set's state never waits on some unrelated event to catch up."""
+    pre = _preamble(db, ds.project_id)
+    if pre is None:
+        return False
+    cited = _cited_hash(db, pre)
+    if cited == ds.preamble_hash:
+        return False
+    _mark_stale(db, ds, "prd_baseline", ds.preamble_hash, cited, prd_id=pre.prd_id)
+    return True
+
+
 def open_design(db: Session, project_id: str, prd_id: str, created_by: str = "") -> dict:
     prd = prd_svc.get_prd(db, prd_id)
     if prd is None or prd.project_id != project_id:
@@ -81,6 +94,7 @@ def open_design(db: Session, project_id: str, prd_id: str, created_by: str = "")
                    prd_hash=digest, prd_baselined=baselined, sections=[], created_by=created_by)
     _pin_preamble(db, ds)
     db.add(ds)
+    _stale_cite(db, ds)
     db.commit()
     return to_dict(db, ds)
 
@@ -118,6 +132,8 @@ def put_set_constraints(db: Session, project_id: str, set_id: str, body: str,
     for s in screens or []:
         _screen(db, ds, str(s["screen"]), s.get("routes"))
     ds.status, ds.stale_reason, ds.stale_detail = "open", "", None
+    # Re-pinning to a preamble that cites a superseded baseline does not clear staleness.
+    _stale_cite(db, ds)
     db.commit()
     return to_dict(db, ds)
 
@@ -226,7 +242,6 @@ def refresh(db: Session, project_id: str, prd_id: str | None = None) -> int:
     the ones that moved `stale`. Called after a preamble write or a baseline change. Returns the
     number marked."""
     pre = _preamble(db, project_id)
-    cited = _cited_hash(db, pre)
     n = 0
     for ds in db.scalars(select(DesignSet).where(
             DesignSet.project_id == project_id, DesignSet.status.in_(("open", "accepted")))):
@@ -238,8 +253,7 @@ def refresh(db: Session, project_id: str, prd_id: str | None = None) -> int:
             n += 1
             continue
         # The preamble's cited PRD was rebaselined: the hash the preamble pinned no longer matches.
-        if pre is not None and cited != ds.preamble_hash:
-            _mark_stale(db, ds, "prd_baseline", ds.preamble_hash, cited, prd_id=pre.prd_id)
+        if _stale_cite(db, ds):
             n += 1
             continue
         prd = prd_svc.get_prd(db, ds.prd_id)
