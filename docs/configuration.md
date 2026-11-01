@@ -20,6 +20,7 @@ Configuration is via environment variables. In Docker, set them in `.env` (copy 
 | `JWT_ALGORITHM` | `HS256` | Signing algorithm. Changing it invalidates every issued token |
 | `REQUIRE_STRONG_SECRET` | `false` | **Refuses to boot** on a weak or default `JWT_SECRET` rather than warning. Set it on anything exposed |
 | `MIN_PASSWORD_LENGTH` | `8` | Minimum on signup and password change |
+| `BCRYPT_ROUNDS` | `12` | bcrypt work factor for new password hashes, 4–31. Leave it at 12; a stored hash keeps its own cost, so this only affects hashes written after a change. The test suite runs at 4 |
 | `SIGNUP_MODE` | `open` | `open` or `invite_only`. **`open` means anyone who can reach the instance can create an account** — the hosted deployment runs `invite_only` |
 | `PLATFORM_ADMIN_EMAILS` | *(empty)* | Comma-separated. Who reaches the operator plane. Empty means nobody, which is the safe default and not an oversight |
 | `SECRET_ENCRYPTION_KEY` | *(empty)* | At-rest encryption for stored provider keys. **Empty means BYOK credentials are stored unencrypted**; set it before anyone saves one |

@@ -400,8 +400,8 @@ def test_migrations_run_from_the_app_do_not_reconfigure_logging():
 
     from app import migrate
 
-    assert 'attributes["configure_logger"] = False' in inspect.getsource(migrate.run_migrations), \
-        "run_migrations no longer tells env.py to leave logging alone"
+    assert 'attributes["configure_logger"] = False' in inspect.getsource(migrate._config), \
+        "the migration config no longer tells env.py to leave logging alone"
 
     env = (pathlib.Path(__file__).resolve().parents[1] / "alembic" / "env.py").read_text()
     guard = 'config.attributes.get("configure_logger", True)'
