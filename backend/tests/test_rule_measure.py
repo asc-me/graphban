@@ -256,6 +256,29 @@ def test_retirement_when_overrides_exceed_catches(db, library):
     assert r["evidence"]["overrides"] == 2 and r["evidence"]["caught"] == 1
 
 
+def test_retirement_counts_catches_and_overrides_over_the_same_window(db, library):
+    # Catches from before the rule last went on are not this window's catches.
+    _adopt(db, 30)
+    _adopt(db, 20, on=False)
+    _adopt(db, 5)
+    for i in range(3):
+        _obs(db, "refusal", 25, f"old{i}", rule_id=RULE)
+    it = _item(db, "o-win")
+    M.record_override(db, it, RULE, "u1", occurred_at=_ago(2))
+    M.record_override(db, it, RULE, "u2", occurred_at=_ago(2))
+    db.commit()
+    r = M.project_effect(db, PID)["rules"][0]["retirement"]
+    assert r["suggested"] is True
+    assert r["evidence"] == {"days_on": 5, "caught": 0, "overrides": 2}
+
+
+def test_retirement_long_window_ignores_catches_before_adoption(db, library):
+    _obs(db, "refusal", 120, "pre", rule_id=RULE)
+    _adopt(db, 90)
+    r = M.project_effect(db, PID)["rules"][0]["retirement"]
+    assert r["suggested"] is True and r["evidence"]["caught"] == 0
+
+
 def test_retirement_overrides_not_recorded_says_so():
     adopted = [{"adopted_at": _ago(10)}]
     r = M._retirement(adopted, [], 0, None)

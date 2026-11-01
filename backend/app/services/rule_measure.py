@@ -330,11 +330,15 @@ def _retirement(adopted: list[dict], caught: list, untimed: int = 0,
         return {"suggested": False, "reason": "not adopted here"}
     oldest = min(c["adopted_at"] for c in adopted)
     days = (_now() - oldest).days
+    # Both criteria read the adoption window: a catch from before the rule last went on says
+    # nothing about the rule as it runs now, and pairing it with in-window overrides would
+    # compare counts from two different windows.
+    floor = _aware(oldest)
+    caught = [o for o in caught if _aware(o.occurred_at) >= floor]
     evidence = {"days_on": days, "caught": len(caught)}
     if overrides is None:
         evidence["overrides"] = "unavailable: not recorded"
     else:
-        floor = _aware(oldest)
         in_window = [o for o in overrides if _aware(o.occurred_at) >= floor]
         evidence["overrides"] = len(in_window)
         if len(in_window) > len(caught):
