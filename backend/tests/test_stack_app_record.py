@@ -436,7 +436,9 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     cfg.set_main_option("script_location", str(_BACKEND / "alembic"))
     cfg.set_main_option("path_separator", "os")
     script = ScriptDirectory.from_config(cfg)
-    # 0166 (GRPH-1255, fleet profile ladder) on
+    # 0168 (GRPH-1255, fleet profile ladder) on
+    # 0167 (GRPH-1262, rule toggles) on
+    # 0166 (GRPH-1275, documents + document_chunks) on
     # 0165 (GRPH-1261, observations ledger) on
     # 0164 (GRPH-1250, routing decisions) on
     # 0163 (GRPH-1249, entitlement headroom ledger) on
@@ -453,7 +455,9 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     # on 0146 (GRPH-1137, decision waits) on 0145 (GRPH-1134, item done_at)
     # on 0144 (GRPH-1133, per-user UI preferences) on 0143
     # (GRPH-1127, scan finding grain); linear through 0140.
-    assert script.get_heads() == ["0166"]
+    assert script.get_heads() == ["0168"]
+    assert script.get_revision("0168").down_revision == "0167"
+    assert script.get_revision("0167").down_revision == "0166"
     assert script.get_revision("0166").down_revision == "0165"
     assert script.get_revision("0165").down_revision == "0164"
     assert script.get_revision("0164").down_revision == "0163"

@@ -98,7 +98,7 @@ agent carries ~5,100 fewer tokens on every turn.
 | `prd` | **Authoring** a spec — `create_prd`, `update_prd`, `grill_prd`, `answer_grill`, `decompose_prd`, `close_prd`, `request_rebaseline`, `submit_verdict` |
 | `codegraph` | **Writing** the code graph — `describe_code`, `link_code`, `unlink_code`, `record_scan`, `scan_status`, `scans_due` |
 | `fleet` | **Running** a fleet — `propose_allocation`, `assign_role`, `mint_enrolment`, `retire_wave`, `delegate`, `list_entitlements`, `set_entitlement`, `report_entitlement_event`. Being *in* a fleet needs none of it |
-| `misc` | `extract_lessons`, `generate_digest`, `report_graphban_issue`, `learning_loop`, `create_project`, `publish_memory`, `reject_memory` |
+| `misc` | `extract_lessons`, `generate_digest`, `report_graphban_issue`, `learning_loop`, `create_project`, `publish_memory`, `reject_memory`, `get_rule_toggles` |
 
 Two things to know, because getting either wrong is expensive:
 
@@ -115,7 +115,7 @@ Settings → API keys. `fleet.mint` gives a planner credential the `fleet` tier 
 operator can restore the pre-tiering manifest for a whole deployment with
 `MCP_DEFAULT_TOOL_TIERS=prd,codegraph,fleet,misc` — see [configuration.md](configuration.md).
 
-## The 63 tools
+## The 67 tools
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
 shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
@@ -146,8 +146,8 @@ that stops once the four dimensions are answered or deferred. The tool still wri
 The one-shot editor command (`POST /api/prds/{id}/ai` with `command=grill`) stays on the
 body-only prompt, which has no transcript and cannot know when to stop.
 
-**Every tool argues its role gate** (GRPH-516). 18 of the 63 tools are role-gated; the other
-45 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
+**Every tool argues its role gate** (GRPH-516). 18 of the 67 tools are role-gated; the other
+49 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
 completeness guard forcing each new tool to be classified as a quality gate or an authority
 one, and `TOOL_ROLES` had no equivalent, so forty tools arrived at "open to everyone" without
 anyone arguing for one of them. Some are certainly right; nobody could tell which from the
@@ -314,6 +314,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `claim_next` | `agent_id`, `lease_seconds`, `wait_seconds`, `project_id` | **Atomically** claim the best ready item, assign it to you, move it to in_progress. Returns `{claimed, item}`. A `bound_only` seat whose item has left `in_progress` is refused with a conflict that names the binding (GRPH-1089); omit the flag and this is unchanged. |
 | `propose_allocation` | `project_id` | What the fleet should look like given who is online and what is ready. A proposal — nothing is assigned until `assign_role` |
 | `assign_role` | `agent_id`, `role`, `reason` | Commit a role change; it reaches the agent on its next poll as a `directive`, with no reconnect |
+| `get_rule_toggles` | `project_id` | Library rules' effective toggles for the project (PRD-P63 S2a): `on` and `params` each as `{value, source}` (`project` \| `org` \| `platform default`), plus `locked`/`locked_by`, and `library_loaded` (false = no rule pack loaded, not "nothing adopted"). **Read only, and there is no MCP write**: D10 keeps setting a toggle a person's REST request, so no agent can switch off a rule that reviews it. `misc` tier |
 | `list_entitlements` | `project_id` | The org's capacity-routing registry (PRD-62 S2): each entitlement and `declared_by`, the runners that declared it at `register_agent`. **Self-declared, not verified** — every row carries `declaration` saying so. No headroom state; an entry has not proven capacity. `quota_exceeded` off `team`/`enterprise` |
 | `set_entitlement` | `id`, `vendor`, `kind`, `owner_user_id`, `runner`, `plan_label`, `reset_cadence`, `secret_ref`, `token_budget` | Planner-only. Register an entitlement, or patch one by `id`. **Never a credential**: a `subscription` or `local` entitlement has no secret field (refused here, and a CHECK constraint makes it impossible in the schema); `api_key`/`cloud` take `secret_ref`, the NAME of the secret on the runner. Unknown fields are refused, never dropped. A runner declares what it can run with `register_agent`'s `entitlements` (fleet-tier advertised) |
 | `report_entitlement_event` | `id`, `event`, `vendor_text`, `tokens`, `project_id` | Worker/planner, and only as a registered agent that declared the entitlement at `register_agent` (otherwise any worker could exhaust it). The runner's headroom-ledger report (PRD-62 S3): `spawn_start` (answers `admitted`; an `unknown` or `broken` entitlement admits one in-flight child until its first report, an `exhausted` one admits none), `registered` (-> `available`), `limit_hit` (-> `exhausted`) and `spawn_failed` (-> `broken`), both needing the vendor's text verbatim, and `spend` (`tokens`, omitted when unreported — a count, never a zero) |
@@ -361,6 +362,9 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `record_scan` | `scanner_id`, `path`, `scanned_sha`, `findings`, `scanner_version`, `category`, `note`, `tests` and `result` (fleet tier), `agent_id`, `project_id` | **Report a code-health scanner result** (GRPH-1035) — you have the repo; the server stores. `result` is `complete`, `tool_missing`, `not_applicable` or `incomplete` (GRPH-1125). Empty `findings` is clean at `scanned_sha` only with `result: complete`; without it the write is refused (validation, nothing stored) and a missing `result` never defaults to complete. `tool_missing` and `incomplete` stay due; `not_applicable` stops it. Prior results for the same scanner+path are kept; the newest is the cell (GRPH-1128). Each finding needs `summary`; optional `advisory_id`, `dependency` (`direct`/`transitive`), `fixed_version`, `kind`, `count` round-trip on `scan_status` (GRPH-1127). Informational rollups (`kind`+`count`) are not offered as tracker items. `reported_by` is the caller (`agent_id`, else `key:<name>`), never blank (GRPH-1044). A write key alone suffices even when the credential runs a fleet; registered planners are refused (GRPH-1129). `category` is inferred only for known scanners; an unknown `scanner_id` with no `category` is refused (validation, nothing stored), never defaulted (GRPH-1108). `tests` (GRPH-1061; `pytest`/`vitest`/`jest`/`junit` infer it) requires `tests={passed, failed, skipped}` and at least one finding per failure (summary = test id, path = file); zero executed is recorded as a finding, not a clean run |
 | `scan_status` | `path`, `scanner_id`, `head_sha`, `project_id` | Code-health state for a path or every Stack deployable — `clean_at_sha` / `has_findings` / `never_scanned` / `stale`. Never a green default. With `path`, every row for it newest first: older rows are `current: false`, and a row with an earlier one of the same scanner carries `history` `{compared_to, compared_sha, cleared, new}` (advisory id when both carry one, else exact summary + path) (read-only) |
 | `scans_due` | `head_sha`, `project_id` | Due cells: `never_scanned`, `stale`, `tool_missing`, or `incomplete` for security/coverage/stub/deadcode/refactor/tests; `empty_reason` when none: `unmapped`, `has_findings`, `coverage_not_computable`, or `all_clean_or_not_applicable` (read-only, GRPH-1126) |
+| `put_document` | `kind`, `prd_id`, `body`, `title?` | Write the standing preamble (person only; cites the PRD baseline hash) |
+| `get_document` | `id` | One document row; `blob_key` omitted until stored |
+| `search_docs` | `query`, `include_drafts?`, `include_design?`, `limit?` | Lexical search of baselined PRD bodies; drafts and design rows opt-in |
 | `prd_acceptance` | `prd_id`, `view` | **Delivery acceptance, read-only** — one surface per `view`: `completeness` (baselined sections with nothing delivered — the only pass that surfaces ABSENT work), `drift` (mechanical, total preserved across a rebaseline), `evidence` (receipts split by whether anyone but their author could check them, + code-graph corroboration), `close_report` (delivered vs **original** intent), `readiness`, `lineage`, `verdicts`, `baseline`, `classifications` (the platform judge's serves/enables/unrelated per completed item), `audit_brief` (everything a repo-holding agent needs to audit this PRD in one read — intent text, linked work with its classifications, receipts, and what is outstanding), `audit_coverage` (which sections actually carry a verdict). None of them say "complete" |
 | `request_rebaseline` | `prd_id`, `reason_type`, `reason` | **Ask for new frozen intent** in your own words. Does NOT approve — it re-opens the grill, and the existing baseline keeps governing until a new one is earned. Cannot add sections (that is a sub-PRD); refused on a closed PRD |
 | `submit_verdict` | `prd_id`, `section`, `outcome`, `citations`, `reasoning` | **Record a sign-off claim with provenance.** Citing nothing, or citing something that does not resolve, is rejected as malformed. Citations are `{kind, ref}` — `code`, `intent` (what an ABSENCE finding cites), or `evidence`. Signing your own claimed work is flagged, not refused |

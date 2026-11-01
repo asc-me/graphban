@@ -3467,3 +3467,105 @@ class RoutingDecision(Base):
     #: Did the claimant hold the entitlement the decision named? NULL until someone claims.
     matched: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RuleToggle(Base):
+    """One scope's value for one library rule's toggle (GRPH-1262 / PRD-P63 D4).
+
+    A row is either an org's (`org_id`) or a project's (`project_id`), never both — the
+    platform default is the library's own declaration and has no row. `on` and `params` are
+    each NULL when this scope does not set them, so the value resolves through to the next
+    layer (project → org → platform default). `locked` is an org row's only: it fixes the
+    org's value for every project in the org.
+    """
+
+    __tablename__ = "rule_toggles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[str] = mapped_column(String, index=True)
+    org_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    on: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    locked: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                 onupdate=utcnow)
+
+    __table_args__ = (
+        CheckConstraint("(org_id IS NULL) <> (project_id IS NULL)",
+                        name="ck_rule_toggles_one_scope"),
+        CheckConstraint("project_id IS NULL OR NOT locked",
+                        name="ck_rule_toggles_lock_is_org_only"),
+        UniqueConstraint("rule_id", "org_id", name="uq_rule_toggles_org"),
+        UniqueConstraint("rule_id", "project_id", name="uq_rule_toggles_project"),
+    )
+
+
+class Document(Base):
+    """A ledger row for a non-PRD governing document (GRPH-P64 "Document record").
+
+    A PRD stays a PRD: there is no document row for the spec, and the index reads the PRD's
+    baseline directly. These rows are the preamble, set constraints, compiled prompts, review
+    records and canvases. The bytes of a canvas live in the blob backend, never here — the row
+    holds only `blob_status` and, once stored, `blob_key`.
+    """
+
+    __tablename__ = "documents"
+    __table_args__ = (
+        UniqueConstraint("project_id", "kind", "set_id", "screen", "version",
+                         name="uq_documents_identity"),
+        Index("ix_documents_project_kind", "project_id", "kind"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
+    # preamble | set_constraints | design_prompt | design_review | canvas (services/documents.py)
+    kind: Mapped[str] = mapped_column(String)
+    title: Mapped[str] = mapped_column(String, default="", server_default="")
+    # The PRD that owns the design set (or, for a preamble, the visual system).
+    prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The PRD's baseline body hash this row cites. A citation, never a copy of its tokens.
+    prd_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    set_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    screen: Mapped[str] = mapped_column(String, default="", server_default="")
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # draft | active | stale. `stale` keeps the row retrievable with a reason, never hidden.
+    status: Mapped[str] = mapped_column(String, default="active", server_default="active")
+    stale_reason: Mapped[str] = mapped_column(String, default="", server_default="")
+    content_hash: Mapped[str] = mapped_column(String)
+    # Which revision of this identity governs. Exactly one per (project, kind, set, screen).
+    governing: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False)
+    # design_prompt / design_review enter the default index only once accepted.
+    accepted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False)
+    # none | pending | stored. Absent is not the same as pending, so the default is explicit.
+    blob_status: Mapped[str] = mapped_column(String, default="none", server_default="none")
+    blob_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    chunks: Mapped[list["DocumentChunk"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan")
+
+
+class DocumentChunk(Base):
+    """Extracted text of one document revision. The text is the source; a vector is a cache."""
+
+    __tablename__ = "document_chunks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), index=True)
+    ordinal: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    heading: Mapped[str] = mapped_column(String, default="", server_default="")
+    text: Mapped[str] = mapped_column(Text, default="", server_default="")
+    content_hash: Mapped[str] = mapped_column(String)
+    # A newer extractor never silently changes what search returns: re-extraction is explicit
+    # and the previous chunks stay until the new set is the one marked governing.
+    extractor_version: Mapped[str] = mapped_column(String)
+    governing: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    document: Mapped[Document] = relationship(back_populates="chunks")

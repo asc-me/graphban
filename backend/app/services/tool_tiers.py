@@ -69,6 +69,7 @@ TOOL_TIERS: dict[str, str] = {
     **{name: "prd" for name in (
         "create_prd", "update_prd", "grill_prd", "answer_grill", "decompose_prd",
         "close_prd", "request_rebaseline", "submit_verdict",
+        "put_document", "get_document", "search_docs",
     )},
 
     # ---- codegraph: WRITING the graph (+ scan produce/read) --------------------------------
@@ -109,6 +110,9 @@ TOOL_TIERS: dict[str, str] = {
     **{name: "misc" for name in (
         "extract_lessons", "generate_digest", "report_graphban_issue",
         "learning_loop", "create_project", "publish_memory", "reject_memory",
+        # PRD-P63 S2a: rule toggles are a person's setting, read by the primitives in-process;
+        # an agent asking which library rules are on is not on the path of a task.
+        "get_rule_toggles",
     )},
 }
 

@@ -47,6 +47,7 @@ from app.security import authz
 from app.security.deps import get_agent_key
 from app.services import clustering as cluster_svc
 from app.services import code_graph as code_svc
+from app.services import documents as documents_svc
 from app.services import scans as scans_svc
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
@@ -63,6 +64,7 @@ from app.services import setup as setup_svc
 from app.services import tool_tiers
 from app.services import delegation as delegation_svc
 from app.services import entitlements as entitlements_svc
+from app.services import rule_toggles as rule_toggles_svc
 from app.services import headroom as headroom_svc
 from app.services import quotas
 from app.services import artifacts as art_svc
@@ -589,6 +591,16 @@ TOOLS: list[dict[str, Any]] = [
     # PRD-62 S2 (GRPH-1248). The org's entitlement registry, team/enterprise only (D8). Two
     # names rather than one with a mode, because the read is open to every role and the write
     # is the planner's (`fleet.TOOL_ROLES`); one tool cannot carry both gates.
+    # PRD-P63 S2a (GRPH-1262). Read only, on purpose: D10 says only a person sets a toggle,
+    # and an MCP call is an agent's — the write is REST behind a logged-in user.
+    {
+        "name": "get_rule_toggles",
+        "description": (
+            "Library rules' effective on/off and params, each with its source and the org "
+            "lock. A person sets them."
+        ),
+        "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
+    },
     {
         "name": "list_entitlements",
         "description": (
@@ -1297,6 +1309,49 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["title"],
         },
     },
+    {
+        "name": "put_document",
+        "description": (
+            "Write the project's PREAMBLE (GRPH-1275); other kinds come from design-set ops. "
+            "Person only; cites prd_id's baseline hash (PRD needs a baseline)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["preamble"]},
+                "prd_id": {"type": "string"},
+                "body": {"type": "string"},
+                "title": {"type": "string"},
+            },
+            "required": ["kind", "prd_id", "body"],
+        },
+    },
+    {
+        "name": "get_document",
+        "description": "One document row by id (GRPH-1275); blob_key omitted until stored.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "search_docs",
+        "description": (
+            "Search baselined PRD bodies (GRPH-1275). include_drafts adds unbaselined PRDs; "
+            "include_design adds accepted prompts/reviews, preamble. Empty says drafts excluded."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "include_drafts": {"type": "boolean"},
+                "include_design": {"type": "boolean"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 # Project-scoped tools accept an optional `project_id` that overrides the key's project.
@@ -1305,6 +1360,7 @@ _PROJECT_SCOPED = {
     "get_backlog", "suggest_next", "generate_digest", "link_items", "unlink_items", "claim_next", "next_cluster",
     "describe_code", "get_code_map", "code_neighbors", "search_code", "graph_query",
     "link_code", "unlink_code", "record_scan", "scan_status", "scans_due", "create_prd",
+    "put_document", "get_document", "search_docs",
 }
 # Tools that ACCEPT `project_id`, which is a different question from the one above.
 #
@@ -1347,6 +1403,8 @@ _READ_ONLY = {
     "prd_acceptance", "learning_loop", "fleet_status",
     # PRD-62 S2: a read of the org's registry; `set_entitlement` is the write.
     "list_entitlements",
+    # PRD-P63 S2a: there is no MCP write for it at all (D10).
+    "get_rule_toggles",
     # Added with the tool itself missing from this set (GRPH-519 -> GRPH-48). It looks a PRD
     # up and returns fields; it writes nothing, and its own literal declared
     # `readOnlyHint: True` — which the build loop then overwrote to False, because THIS is
@@ -1563,6 +1621,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         },
     },
     "list_entitlements": {"type": "object", "properties": {"entitlements": {"type": "array"}}},
+    "get_rule_toggles": {"type": "object", "properties": {"toggles": {"type": "array"}}},
     "set_entitlement": {"type": "object", "properties": {"id": {"type": "string"}}},
     "report_entitlement_event": {"type": "object", "properties": {"admitted": {"type": "boolean"}}},
     "delegate": {
@@ -1758,6 +1817,9 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {"removed": {"type": "integer"}},
     },
+    "put_document": {"type": "object"},
+    "get_document": {"type": "object"},
+    "search_docs": {"type": "object"},
     "record_scan": {
         "type": "object",
         "properties": {
@@ -3010,6 +3072,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return out
     if name == "propose_allocation":
         return fleet_svc.propose_allocation(db, pid)
+    if name == "get_rule_toggles":
+        return {"library_loaded": rule_toggles_svc.library_loaded(),
+                "toggles": rule_toggles_svc.effective(db, pid)}
     if name == "list_entitlements":
         return {"entitlements": entitlements_svc.list_entitlements(
             db, entitlements_svc.org_for_project(db, pid))}
@@ -3791,6 +3856,29 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             db, project_id=pid, ref_id=args["ref_id"], path=args["path"], relation=args.get("relation"),
         )
         return {"removed": removed}
+    if name == "put_document":
+        # A preamble is a person's. Resolve the caller the way the feed does — a named agent,
+        # else the session's single live agent — so a seat that leaves out `agent_id` is still
+        # a seat, and any `agent_id` at all is a seat's claim, never a person's.
+        seat = _agent_for_call(db, key, args, session_id) or str(args.get("agent_id") or "").strip()
+        if seat:
+            raise errors.Validation(
+                "preamble rows are written by a person, not an agent seat",
+                hint="call put_document with a human credential, outside a registered session")
+        return documents_svc.put_document(
+            db, project_id=pid, kind=str(args["kind"]), body=str(args["body"]),
+            prd_id=str(args["prd_id"]), title=str(args.get("title") or ""),
+            created_by=fleet_svc.caller_identity("", key),
+        )
+    if name == "get_document":
+        return documents_svc.get_document(db, pid, str(args["id"]))
+    if name == "search_docs":
+        return documents_svc.search_docs(
+            db, pid, str(args["query"]),
+            include_drafts=bool(args.get("include_drafts", False)),
+            include_design=bool(args.get("include_design", False)),
+            limit=int(args.get("limit") or 10),
+        )
     if name == "record_scan":
         # Provenance comes from the caller, not a free-text field: a key-only call stamps
         # `key:<name>` rather than an empty reported_by that reads as nobody (GRPH-1044).

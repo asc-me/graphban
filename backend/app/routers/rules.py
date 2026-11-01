@@ -1,17 +1,25 @@
-"""Rule registry REST (GRPH-1155). Read-only; the view renders this."""
+"""Rule registry REST (GRPH-1155), and the library rule toggles (GRPH-1262).
+
+The registry is read-only. Toggles are the one write here, and a write here is a person's:
+these routes take a logged-in user, never an API key (PRD-P63 D10)."""
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
 from app.models import User
-from app.schemas import ObservationBackfillOut, ObservationsOut, RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut, RulesFlowOut, RulesOut, UnmappedRefusalsOut
+from app.errors import NotFound, Validation
+from app.schemas import (ObservationBackfillOut, ObservationsOut, OrgRuleToggleOut,
+                         RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
+                         RulesFlowOut, RulesOut, RuleToggleOut, RuleTogglesOut,
+                         RuleToggleWrite, UnmappedRefusalsOut)
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import events as events_svc
 from app.services import observations as observations_svc
 from app.services import quotas
 from app.services import rules as rules_svc
+from app.services import rule_toggles
 from app.services import rules_recommend
 from app.version import __version__
 
@@ -127,3 +135,47 @@ def org_observations(org_id: str, stage: str | None = None, kind: str | None = N
             db, project_ids=pids, stage=stage, kind=kind, limit=limit, offset=offset)
     except observations_svc.BadFilter as e:
         raise HTTPException(422, str(e))
+
+
+# ---- library rule toggles (GRPH-1262 / PRD-P63 §8, D4) -----------------------------------
+def _toggle_write(fn, *args, body: RuleToggleWrite, user: User, db: Session):
+    changes = body.model_dump(exclude_unset=True)
+    reason = changes.pop("reason", "")
+    try:
+        return fn(db, *args, changes, actor=user, reason=reason)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Validation as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+
+
+@router.get("/rules/toggles", response_model=RuleTogglesOut)
+def rule_toggles_for_project(project_id: str = "core", db: Session = Depends(get_db),
+                             user: User = Depends(get_current_user)):
+    """Every library rule's effective toggle and params for the project, each with its
+    `source` (`project` | `org` | `platform default`) and the org's lock."""
+    authz.require_readable(db, user.id, project_id)
+    return {"library_loaded": rule_toggles.library_loaded(),
+            "toggles": rule_toggles.effective(db, project_id)}
+
+
+@router.put("/rules/toggles/{rule_id}", response_model=RuleToggleOut)
+def set_project_rule_toggle(rule_id: str, body: RuleToggleWrite, project_id: str = "core",
+                            db: Session = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+    """A project's own value. Every plan (D11). Refused naming `rules.org_lock_holds` when the
+    org has locked the rule."""
+    if "locked" in body.model_fields_set:
+        raise HTTPException(422, "`locked` is an org setting; a project cannot lock a rule")
+    _toggle_write(rule_toggles.set_project_toggle, project_id, rule_id, body=body, user=user,
+                  db=db)
+    return next(t for t in rule_toggles.effective(db, project_id) if t["rule_id"] == rule_id)
+
+
+@router.put("/orgs/{org_id}/rule-toggles/{rule_id}", response_model=OrgRuleToggleOut)
+def set_org_rule_toggle(org_id: str, rule_id: str, body: RuleToggleWrite,
+                        db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The org's value and lock, for every project in the org at once — one audit event
+    naming the projects it changed. Org admins on `team` / `enterprise` (402 otherwise)."""
+    return _toggle_write(rule_toggles.set_org_toggle, org_id, rule_id, body=body, user=user,
+                         db=db)

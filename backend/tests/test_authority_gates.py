@@ -129,6 +129,9 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         "list_entitlements", "set_entitlement",
         # PRD-62 S3 (GRPH-1249). QUALITY: appends an event to the key's own org ledger.
         "report_entitlement_event",
+        # PRD-P63 S2a (GRPH-1262). A read. Setting a toggle is deliberately NOT here: D10
+        # keeps that a person's REST request, so no agent can switch off a rule reviewing it.
+        "get_rule_toggles",
         # E7. An AUTHORITY gate, and bounded twice: planner-only, so the role holding it
         # cannot build and has nothing to launder; and clamped by the minting credential's
         # own ceiling, so it reshuffles authority rather than manufacturing it.
@@ -166,6 +169,9 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # open. `scan_status` / `scans_due` are reads of that store. None of the three
         # crosses a tenant boundary or grants a permission the key did not already have.
         "record_scan", "scan_status", "scans_due",
+        # GRPH-1275. QUALITY, not authority: put_document is planner-gated and refuses agent
+        # identities; the other two are project-scoped reads of governing specs.
+        "put_document", "get_document", "search_docs",
         # PRD-20 D8. QUALITY, not authority: it computes hubs/components/path over edges that
         # already exist and writes nothing. It can tell an agent what depends on the thing it
         # is about to change; it cannot grant that agent permission to change anything.
