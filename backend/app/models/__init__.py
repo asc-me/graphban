@@ -3668,3 +3668,83 @@ class DesignScreen(Base):
     findings: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     design_set: Mapped[DesignSet] = relationship(back_populates="screens")
+
+
+class DesignCorrection(Base):
+    """A stored correction for one screen. Nobody edits a compiled prompt; the next compile
+    reads the open corrections (GRPH-1280)."""
+
+    __tablename__ = "design_corrections"
+    __table_args__ = (
+        UniqueConstraint("design_set_id", "screen", "text_hash", name="uq_design_correction"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    design_set_id: Mapped[str] = mapped_column(ForeignKey("design_sets.id"), index=True)
+    screen: Mapped[str] = mapped_column(String)
+    text: Mapped[str] = mapped_column(Text)
+    text_hash: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="open", server_default="open")  # | withdrawn
+    created_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DesignFinding(Base):
+    """A review finding of one canvas (GRPH-1280). One per (set, screen, text hash), for good."""
+
+    __tablename__ = "design_findings"
+    __table_args__ = (
+        UniqueConstraint("design_set_id", "screen", "text_hash", name="uq_design_finding"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # FND-…
+    design_set_id: Mapped[str] = mapped_column(ForeignKey("design_sets.id"), index=True)
+    screen: Mapped[str] = mapped_column(String)
+    # prompt_defect | design_edit | authority_conflict | spec_gap
+    kind: Mapped[str] = mapped_column(String)
+    text: Mapped[str] = mapped_column(Text)
+    text_hash: Mapped[str] = mapped_column(String)
+    canvas_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    winner: Mapped[str] = mapped_column(String, default="", server_default="")
+    # open | applied | rejected | withdrawn
+    status: Mapped[str] = mapped_column(String, default="open", server_default="open")
+    reason: Mapped[str] = mapped_column(Text, default="", server_default="")
+    correction_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    resolved_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DesignCanvas(Base):
+    """One canvas upload bound (or not) to a prompt hash. The bytes live in the blob backend
+    under `content_hash`; a binding to anything but the screen's accepted prompt is an orphan."""
+
+    __tablename__ = "design_canvases"
+    __table_args__ = (UniqueConstraint(
+        "design_set_id", "screen", "content_hash", "prompt_hash", name="uq_design_canvas"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    design_set_id: Mapped[str] = mapped_column(ForeignKey("design_sets.id"), index=True)
+    screen: Mapped[str] = mapped_column(String)
+    content_hash: Mapped[str] = mapped_column(String)
+    prompt_hash: Mapped[str] = mapped_column(String)
+    document_id: Mapped[str] = mapped_column(String)
+    created_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DesignAcceptance(Base):
+    """A human decision on a prompt (`kind` prompt) or the design (`kind` design). Names the
+    person and, when an agent relayed their words, the relaying agent."""
+
+    __tablename__ = "design_acceptances"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    design_set_id: Mapped[str] = mapped_column(ForeignKey("design_sets.id"), index=True)
+    kind: Mapped[str] = mapped_column(String)
+    screen: Mapped[str] = mapped_column(String, default="", server_default="")
+    prompt_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    # Pinned on a `design` acceptance.
+    prd_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    preamble_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    person: Mapped[str] = mapped_column(String)
+    relayed_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

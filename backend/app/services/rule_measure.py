@@ -79,12 +79,14 @@ def _now() -> datetime:
 
 # ---- adoption ---------------------------------------------------------------------------------
 
-def adopted_at(db: Session, rule_id: str, project_id: str) -> datetime | None:
-    """When the rule last went on for the project and stayed on: the latest off→on transition
-    in the `set_rule_toggle` audit events (S2 records them), project's own or its org's."""
+def adoption(db: Session, rule_id: str, project_id: str) -> tuple[bool, datetime | None]:
+    """(on, since) for the rule in the project. `since` is the latest off→on transition in the
+    `set_rule_toggle` audit events (S2 records them), project's own or its org's. A rule that is
+    on by default and never went off→on is on with `since` None: the pack load that made it so
+    is not recorded, so its adoption time is unknown — it is still on, and must not drop out."""
     org_id = db.scalar(select(Project.org_id).where(Project.id == project_id))
-    state, since = rule_toggles.LIBRARY[rule_id].default_on if rule_id in rule_toggles.LIBRARY \
-        else False, None
+    rule = rule_toggles.LIBRARY.get(rule_id)
+    state, since = bool(rule and rule.default_on), None
     q = select(Event).where(Event.action == "set_rule_toggle", Event.target_id == rule_id) \
         .order_by(Event.ts, Event.id)
     for e in db.scalars(q):
@@ -99,7 +101,13 @@ def adopted_at(db: Session, rule_id: str, project_id: str) -> datetime | None:
         if new is None or new == state:
             continue
         state, since = new, (_aware(e.ts) if new else None)
-    return since if state else None
+    return state, (since if state else None)
+
+
+def adopted_at(db: Session, rule_id: str, project_id: str) -> datetime | None:
+    """When the rule last went on for the project and stayed on; None when off, or on by
+    default with no recorded adoption time (`adoption` tells the two apart)."""
+    return adoption(db, rule_id, project_id)[1]
 
 
 # ---- per-project counts -----------------------------------------------------------------------
@@ -141,8 +149,8 @@ def _window_counts(db: Session, project_id: str, start: datetime, end: datetime,
 
 def project_counts(db: Session, rule_id: str, project_id: str) -> dict:
     """Raw counts for one rule in one project; the unit every scope sums."""
-    since = adopted_at(db, rule_id, project_id)
-    out = {"adopted_at": since, "caught": _caught(db, rule_id, project_id),
+    on, since = adoption(db, rule_id, project_id)
+    out = {"on": on, "adopted_at": since, "caught": _caught(db, rule_id, project_id),
            "before": (0, 0), "after": (0, 0)}
     if since is not None:
         span = _now() - since
@@ -152,21 +160,33 @@ def project_counts(db: Session, rule_id: str, project_id: str) -> dict:
     return out
 
 
-def _escape(counts: list[dict], which: str, label: str) -> dict:
+#: Why a rule that is on has no adoption time to measure from.
+NO_ADOPTION_TIME = ("on by default, and no record says when the rule pack made it so, so there "
+                    "is no adoption time to measure from")
+
+
+def _escape(counts: list[dict], which: str, label: str, untimed: int = 0) -> dict:
     n = sum(c[which][0] for c in counts)
     esc = sum(c[which][1] for c in counts)
-    return value(round(esc / n, 4) if n else None, n=n, min_n=MIN_SIGNOFFS,
-                 reason=None if n >= MIN_SIGNOFFS else
-                 f"not enough data ({n} of {MIN_SIGNOFFS} sign-offs {label} adoption)")
+    reason = None if n >= MIN_SIGNOFFS else \
+        f"not enough data ({n} of {MIN_SIGNOFFS} sign-offs {label} adoption)"
+    if untimed:
+        left_out = (f"leaves out {untimed} project(s) where the rule is on by default with no "
+                    "recorded adoption time")
+        reason = f"{reason}; {left_out}" if reason else left_out
+    return value(round(esc / n, 4) if n else None, n=n, min_n=MIN_SIGNOFFS, reason=reason)
 
 
 def _summary(rule_id: str, counts: list[dict], project_ids: list[str]) -> dict:
     caught = [o for c in counts for o in c["caught"]]
-    adopted = [c for c in counts if c["adopted_at"] is not None]
+    on = [c for c in counts if c["on"]]
+    adopted = [c for c in on if c["adopted_at"] is not None]
+    untimed = len(on) - len(adopted)
     rule = rule_toggles.LIBRARY[rule_id]
     out = {
         "rule_id": rule_id, "stage": rule.stage, "title": rule.title,
-        "projects": len(project_ids), "projects_on": len(adopted),
+        "projects": len(project_ids), "projects_on": len(on),
+        "projects_on_without_adoption_time": untimed,
         "adopted_at": (min(c["adopted_at"] for c in adopted).isoformat() if adopted else None),
         "caught": {**value(len(caught), n=len(caught), min_n=0),
                    "items": sorted({o.item_id for o in caught if o.item_id})[:CAUGHT_LINKS]},
@@ -181,20 +201,24 @@ def _summary(rule_id: str, counts: list[dict], project_ids: list[str]) -> dict:
         "escapes_unmeasured": list(UNMEASURED_ESCAPES),
     }
     if adopted:
-        out["escape_rate"] = {"before": _escape(adopted, "before", "before"),
-                              "after": _escape(adopted, "after", "after")}
+        out["escape_rate"] = {"before": _escape(adopted, "before", "before", untimed),
+                              "after": _escape(adopted, "after", "after", untimed)}
     else:
-        why = "the rule has not been adopted in this scope, so there is no adoption time"
+        why = NO_ADOPTION_TIME if untimed else \
+            "the rule has not been adopted in this scope, so there is no adoption time"
         out["escape_rate"] = {k: value(None, n=0, min_n=MIN_SIGNOFFS, available=False, reason=why)
                               for k in ("before", "after")}
-    out["retirement"] = _retirement(adopted, caught)
+    out["retirement"] = _retirement(adopted, caught, untimed)
     return out
 
 
-def _retirement(adopted: list[dict], caught: list) -> dict:
+def _retirement(adopted: list[dict], caught: list, untimed: int = 0) -> dict:
     """Suggest retiring a rule that has been on a long while and caught nothing. The other D9
     criterion (overrides exceeding catches) cannot be evaluated; the evidence names that."""
     if not adopted:
+        if untimed:
+            return {"suggested": False, "status": "unavailable",
+                    "reason": f"{NO_ADOPTION_TIME}, so how long it has been on is unknown"}
         return {"suggested": False, "reason": "not adopted here"}
     oldest = min(c["adopted_at"] for c in adopted)
     days = (_now() - oldest).days
@@ -242,7 +266,8 @@ def contribution(db: Session, org_id: str) -> dict:
         counts = [project_counts(db, r, p) for p in pids]
         adopted = [c for c in counts if c["adopted_at"] is not None]
         rows[r] = {
-            "projects_on": len(adopted), "caught": sum(len(c["caught"]) for c in counts),
+            "projects_on": sum(1 for c in counts if c["on"]),
+            "caught": sum(len(c["caught"]) for c in counts),
             "signed_before": sum(c["before"][0] for c in adopted),
             "escapes_before": sum(c["before"][1] for c in adopted),
             "signed_after": sum(c["after"][0] for c in adopted),
@@ -315,16 +340,14 @@ def _platform_cell(row: PlatformRuleRollup) -> dict:
     if row.top_org_share is not None and row.top_org_share > harness_svc.PLATFORM_MAX_ORG_SHARE:
         return cell("no platform rate: one org holds too large a share of this sample")
 
-    if row.signed_before < n_min or row.signed_after < n_min:
-        # A before/after comparison needs both sides; each shows its band, never its count.
-        def short(signed: int) -> dict:
+    def side(esc: int, signed: int, label: str) -> dict:
+        # Each side stands on its own floor and shows its band, never its count.
+        if signed < n_min:
             return {"status": "insufficient", "value": None, "n": None,
                     "n_band": _band(signed), "min_n": n_min,
-                    "reason": f"not enough data on one side (each needs at least {n_min})"}
-        return {"before": short(row.signed_before), "after": short(row.signed_after)}
-
-    def side(esc: int, signed: int) -> dict:
+                    "reason": f"not enough data {label} adoption (needs at least {n_min} "
+                              "sign-offs)"}
         return banded(round(esc / signed, 2), n=signed, min_n=n_min)
     return {"orgs": row.orgs_contributing, "note": NOTE, "escape_scope": ESCAPE_SCOPE,
-            "before": side(row.escapes_before, row.signed_before),
-            "after": side(row.escapes_after, row.signed_after)}
+            "before": side(row.escapes_before, row.signed_before, "before"),
+            "after": side(row.escapes_after, row.signed_after, "after")}

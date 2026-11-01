@@ -1,0 +1,9 @@
+id = "review.distinct_vendor"
+stage = "Review"
+title = "Reviewer of a different vendor"
+summary = "Work is signed off only by a reviewer whose vendor differs from the builder's."
+primitive = "reviewer_property"
+claims = "enforced"
+default = "off"
+[params]
+property = "distinct_vendor"

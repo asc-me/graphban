@@ -4,6 +4,7 @@ Pins the status contract (`measured` | `insufficient` | `unavailable`, a real ze
 null never means "not enough data"), escape rates before/after adoption with n, retirement,
 and the D13 floors on platform rates: opt-in, three orgs, n, top-org share, no ids.
 """
+import dataclasses
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -132,6 +133,33 @@ def test_adopted_then_dropped_is_not_adopted(db, library):
     assert M.adopted_at(db, RULE, PID) is None
 
 
+@pytest.fixture()
+def default_on(library):
+    T.LIBRARY[RULE] = dataclasses.replace(T.LIBRARY[RULE], default_on=True)
+
+
+def test_default_on_rule_never_toggled_counts_as_on_with_no_adoption_time(db, default_on):
+    # On by default, no toggle row: it is on, so it counts, and every measure that needs an
+    # adoption time says it is unavailable and why. It never vanishes from the scope.
+    assert M.adoption(db, RULE, PID) == (True, None)
+    r = M.project_effect(db, PID)["rules"][0]
+    assert r["projects_on"] == 1 and r["projects_on_without_adoption_time"] == 1
+    for side in ("before", "after"):
+        assert r["escape_rate"][side]["status"] == "unavailable"
+        assert r["escape_rate"][side]["reason"] == M.NO_ADOPTION_TIME
+    assert r["retirement"]["status"] == "unavailable" and r["retirement"]["suggested"] is False
+    o, pid = _org(db, "dflt", False)
+    assert M.contribution(db, o.id)[RULE]["projects_on"] == 1
+
+
+def test_default_on_turned_off_then_on_is_measured_from_the_turn(db, default_on):
+    _adopt(db, 20, on=False)
+    _adopt(db, 10)
+    on, since = M.adoption(db, RULE, PID)
+    assert on and since is not None
+    assert M.project_effect(db, PID)["rules"][0]["projects_on_without_adoption_time"] == 0
+
+
 # ---- platform ---------------------------------------------------------------------------------
 
 def _org(db, name, share, plan="team"):
@@ -179,11 +207,25 @@ def test_platform_below_n_floor_shows_a_band_never_the_count(db, library, hosted
         _seed(db, pid, 6, 10)
     M.platform_roll(db)
     cell = M.platform_effect(db, orgs[0][0].id)["rules"][0]
+    assert cell["before"]["status"] == "insufficient" and cell["before"]["value"] is None
     for side in ("before", "after"):
-        assert cell[side]["status"] == "insufficient" and cell[side]["value"] is None
         assert cell[side]["n"] is None
     assert cell["before"]["n_band"] == "<20" and cell["after"]["n_band"] == "20–49"
     assert "18" not in repr(cell) and "30" not in repr(cell)
+
+
+def test_platform_short_side_is_named_and_the_other_stays_measured(db, library, hosted):
+    # Before is short (18), after meets the floor (30): only before says "not enough data",
+    # and it names itself; after is a real rate.
+    orgs = [_org(db, f"o{i}", True) for i in range(3)]
+    for _, pid in orgs:
+        _seed(db, pid, 6, 10)
+    M.platform_roll(db)
+    cell = M.platform_effect(db, orgs[0][0].id)["rules"][0]
+    assert "before adoption" in cell["before"]["reason"]
+    assert "one side" not in cell["before"]["reason"]
+    assert cell["after"]["status"] == "measured" and cell["after"]["value"] == 0
+    assert cell["after"]["reason"] is None
 
 
 def test_platform_n_is_never_an_int_on_any_branch(db, library, hosted):

@@ -3,6 +3,7 @@
 The registry is read-only. Toggles are the one write here, and a write here is a person's:
 these routes take a logged-in user, never an API key (PRD-P63 D10)."""
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -20,6 +21,7 @@ from app.services import observations as observations_svc
 from app.services import quotas
 from app.services import rules as rules_svc
 from app.services import rule_measure
+from app.services import rules_org
 from app.services import rule_toggles
 from app.services import rules_recommend
 from app.version import __version__
@@ -224,3 +226,44 @@ def org_rules_platform_effect(org_id: str, db: Session = Depends(get_db),
     """Platform effect rates: hosted, premium, and only for an org that opted in."""
     authz.require_org_admin(db, user.id, org_id)
     return rule_measure.platform_effect(db, org_id)
+# ---- promotion to the org (GRPH-1264 / PRD-P63 §10, S4) ----------------------------------
+class ProfileApply(BaseModel):
+    reason: str = ""
+
+
+def _org_call(fn, *args, **kw):
+    try:
+        return fn(*args, **kw)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Validation as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+
+
+@router.get("/orgs/{org_id}/rules/profiles")
+def org_profiles(org_id: str, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """Oversight profiles from the loaded rule pack. Org admins on `team` / `enterprise`."""
+    return rules_org.list_profiles(db, user, org_id)
+
+
+@router.post("/orgs/{org_id}/rules/profiles/{profile_id}/apply")
+def apply_org_profile(org_id: str, profile_id: str, body: ProfileApply,
+                      db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Pin the profile's rules across the org, locked: one event per rule and one for the act."""
+    return _org_call(rules_org.apply_profile, db, user, org_id, profile_id, reason=body.reason)
+
+
+@router.get("/orgs/{org_id}/rules/profiles/{profile_id}/drift")
+def org_profile_drift(org_id: str, profile_id: str, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """Where projects differ from the profile; turning a pinned rule off is `weakening`."""
+    return _org_call(rules_org.drift, db, user, org_id, profile_id)
+
+
+@router.get("/orgs/{org_id}/rules/recommended")
+def org_recommended_rules(org_id: str, refresh: bool = False, db: Session = Depends(get_db),
+                          user: User = Depends(get_current_user)):
+    """Library rules implied by at least ORG_MIN_PROJECTS projects. Computed weekly; the reply
+    carries its age. Suggestions only."""
+    return rules_org.recommended(db, user, org_id, refresh=refresh)
