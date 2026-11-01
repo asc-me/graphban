@@ -3319,6 +3319,12 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                     "{kind: sabotage, claim, mutation, tests_failed} with tests_failed at or "
                     "above the rule's min_tests_failed"),
             ) from e
+        except fleet_svc.GapUnlinked as e:
+            raise errors.Refused(
+                409, str(e), rule_id="review.gap_blocks_sign_off", meta=_who, hint=(
+                    "create a follow-up item for each gap and put its key in the note's `url` "
+                    "(a note with done:false); the builder or you may re-send the note"),
+            ) from e
         except fleet_svc.AttestedTheBase as e:
             # The caller may sign this off, but the revision it named is not the work.
             raise errors.Refused(

@@ -2236,6 +2236,11 @@ class SabotageRequired(Exception):
     sabotage whose tests failed (GRPH-1260)."""
 
 
+class GapUnlinked(Exception):
+    """The `review.gap_blocks_sign_off` library rule is on and a not-done note has no follow-up
+    item linked (GRPH-1270)."""
+
+
 class UncomparedPredicate(Exception):
     """A sign-off whose receipt carries a check that could not run, and no waiver (GRPH-1007).
 
@@ -2948,6 +2953,38 @@ def require_reviewer_sabotage(db: Session, item: Item, fresh: list) -> None:
             + (f"the best one failed {best}" if best else "none was recorded"))
 
 
+GAP_BLOCKS_RULE = "review.gap_blocks_sign_off"
+
+
+def require_gap_followups(db: Session, item: Item, merged: list) -> None:
+    """The `gap_followup_link` primitive, bound to `review.gap_blocks_sign_off` (GRPH-1270).
+
+    Every note the builder marked `done: false` (the structured flag, never its prose) must
+    name a follow-up item in its `url` — a key that resolves to a different item. Reads on/off
+    through the layered resolution; a rule absent from the loaded library, or off, is no gate.
+    `merged` is the item's evidence with this call's appended, so a reviewer may link a gap
+    in the sign-off itself by re-sending the note with the follow-up's key.
+    """
+    from app.services import keys, rule_toggles
+
+    if GAP_BLOCKS_RULE not in rule_toggles.LIBRARY:
+        return
+    if not rule_toggles.resolve(db, GAP_BLOCKS_RULE, item.project_id)["on"]["value"]:
+        return
+    unlinked = []
+    for e in merged:
+        if e.get("kind") != "note" or e.get("done") is not False:
+            continue
+        followup = keys.resolve_item(db, e.get("url") or "")
+        if followup is None or followup == item.id:
+            unlinked.append(e.get("detail") or "(no detail)")
+    if unlinked:
+        raise GapUnlinked(
+            f"{item.key} cannot be signed off while {GAP_BLOCKS_RULE} is on and "
+            f"{len(unlinked)} not-done note(s) have no follow-up item linked: "
+            + "; ".join(repr(d[:80]) for d in unlinked))
+
+
 def _predicate(name: str, *, compared: bool, detail: str, waived: dict) -> dict:
     """One sign-off predicate, honest about whether its check actually ran (GRPH-1007).
 
@@ -3068,6 +3105,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                "cannot fail rather than that the claim is guarded" if vacuous else "")
         )
     require_reviewer_sabotage(db, item, fresh)
+    require_gap_followups(db, item, merged)
     # THE ACCEPTANCE COVERAGE GATE (GRPH-884). Each acceptance clause in the item's `## Tests`
     # section must have a named test in the evidence. A sabotage receipt does NOT substitute —
     # that is the defect this closes: sabotage can only mutate code some test already reaches,

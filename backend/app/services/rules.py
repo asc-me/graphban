@@ -188,7 +188,7 @@ RULES_BY_ID = {r.id: r for r in RULES}
 #: Library rules (the signed pack's, `rule_toggles.LIBRARY`) whose primitive's refusal cites the
 #: rule id from code. They are drawn from the pack, not from `RULES` — a static entry here would
 #: draw each twice — so a refusal citing one is valid without being in `RULES_BY_ID`.
-LIBRARY_BOUND_RULE_IDS = frozenset({"review.sabotage_required"})
+LIBRARY_BOUND_RULE_IDS = frozenset({"review.sabotage_required", "review.gap_blocks_sign_off"})
 
 #: Package data written by the build of what ships — `graphban_pack.py` runs
 #: `scripts/refusal_ratchet.py publish`, which writes nothing for a failing tree (GRPH-1185).
