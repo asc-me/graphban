@@ -18,7 +18,12 @@ from app.models import FleetProfile, Project, utcnow
 
 AXES: tuple[str, ...] = ("cost", "quality", "latency", "locality")
 POLICY_KEYS: tuple[str, ...] = ("local_only", "reviewer_cross_vendor", "allowed_harnesses", "caps",
-                                 "cluster_ceiling")
+                                 "cluster_ceiling", "ladder")
+#: Capacity-routing rungs (PRD-62 D6), in the default order: a subscription with headroom, then
+#: an org API key within its stated budget, then a local model. `cloud` entitlements ride the
+#: `api_key` rung (both are metered by a handle the runner resolves).
+LADDER_RUNGS: tuple[str, ...] = ("subscription", "api_key", "local")
+DEFAULT_LADDER: tuple[str, ...] = LADDER_RUNGS
 #: Lanes a `cluster_ceiling` may name — `delegation.lane_for`'s values.
 CEILING_LANES: tuple[str, ...] = ("frontend", "backend", "mixed")
 #: The ceiling a project that set none still gets (GRPH-948). One web item per claim: the
@@ -169,14 +174,50 @@ def normalise_policy(raw: Any) -> dict | None:
     allowed = _names(raw.get("allowed_harnesses"), "allowed_harnesses")
     caps = _caps(raw.get("caps"))
     ceiling = _ceiling(raw.get("cluster_ceiling"))
-    if not local_only and not cross and not allowed and not caps and not ceiling:
+    ladder = _ladder(raw.get("ladder"))
+    if not local_only and not cross and not allowed and not caps and not ceiling and not ladder:
         return None
     out = {"local_only": local_only, "reviewer_cross_vendor": cross, "allowed_harnesses": allowed}
     if caps:
         out["caps"] = caps
     if ceiling:
         out["cluster_ceiling"] = ceiling
+    if ladder:
+        out["ladder"] = ladder
     return out
+
+
+def _ladder(value: Any) -> list[str] | None:
+    """D6: the rungs capacity routing may use, in order. Null keeps `DEFAULT_LADDER`; a rung
+    left out is never routed to. An empty list is refused, not read as "no rungs": it would
+    switch routing off by accident."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not value:
+        raise ProfileInvalid(f"ladder must be a non-empty list of rungs from {list(LADDER_RUNGS)}")
+    out: list[str] = []
+    for v in value:
+        if v not in LADDER_RUNGS:
+            raise ProfileInvalid(f"unknown ladder rung {v!r}; rungs are {list(LADDER_RUNGS)}")
+        if v in out:
+            raise ProfileInvalid(f"ladder lists {v!r} twice")
+        out.append(v)
+    return out
+
+
+def ladder_of(db: Session, project_id: str | None, user_id: str | None = None) -> list[str]:
+    """The rungs in force: the user's profile `ladder` (D14 resolution: project override, else
+    default), then the project policy's, then the PRD order. The profile only reorders or drops
+    rungs the policy allows — a rung the policy removed stays removed. A profile that keeps none
+    of the policy's rungs cannot be honoured, and the policy's ladder applies: a preference
+    never switches routing off."""
+    policy = policy_of(db, project_id) or {}
+    set_ = policy.get("ladder") if isinstance(policy, dict) else None
+    allowed = (list(set_) if isinstance(set_, list) and set_ and all(r in LADDER_RUNGS for r in set_)
+               else list(DEFAULT_LADDER))
+    profile = effective(db, user_id, project_id)
+    mine = [r for r in (profile or {}).get("ladder") or [] if r in allowed]
+    return mine or allowed
 
 
 def _ceiling(value: Any) -> dict | None:
@@ -226,6 +267,7 @@ def summary(row: FleetProfile) -> dict:
         "excludes": list(row.excludes or []),
         "budget_tokens": row.budget_tokens,
         "mix": dict(row.mix) if row.mix else None,
+        "ladder": list(row.ladder) if row.ladder else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
 
@@ -254,12 +296,13 @@ def both(db: Session, user_id: str, project_id: str | None) -> dict:
 
 def set_profile(db: Session, *, user_id: str, project_id: str | None, defaults: Any,
                 weights: Any, excludes: Any, budget_tokens: Any = None,
-                mix: Any = None) -> FleetProfile:
+                mix: Any = None, ladder: Any = None) -> FleetProfile:
     names = _names(defaults, "defaults")
     w = _weights(weights)
     ex = _names(excludes, "excludes")
     budget = _budget_tokens(budget_tokens)
     shares = _mix(mix, defaults=names, excludes=ex)
+    rungs = _ladder(ladder)
     overlap = sorted(set(names) & set(ex))
     if overlap:
         raise ProfileInvalid(f"{overlap} are both in defaults and excludes")
@@ -268,7 +311,7 @@ def set_profile(db: Session, *, user_id: str, project_id: str | None, defaults: 
         row = FleetProfile(id=str(uuid4()), user_id=user_id, project_id=project_id)
         db.add(row)
     row.defaults, row.weights, row.excludes = names, w, ex
-    row.budget_tokens, row.mix, row.updated_at = budget, shares, utcnow()
+    row.budget_tokens, row.mix, row.ladder, row.updated_at = budget, shares, rungs, utcnow()
     db.commit()
     db.refresh(row)
     return row

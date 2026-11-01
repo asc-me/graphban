@@ -1,15 +1,15 @@
 """Document blob mime type and byte length (GRPH-1276 / GRPH-P64).
 
-Revision ID: 0168
-Revises: 0167
+Revision ID: 0169
+Revises: 0168
 """
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0168"
-down_revision: Union[str, None] = "0167"
+revision: str = "0169"
+down_revision: Union[str, None] = "0168"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
