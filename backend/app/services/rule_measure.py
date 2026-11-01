@@ -299,7 +299,8 @@ def _summary(rule_id: str, counts: list[dict], project_ids: list[str]) -> dict:
             "the rule has not been adopted in this scope, so there is no adoption time"
         out["escape_rate"] = {k: value(None, n=0, min_n=MIN_SIGNOFFS, available=False, reason=why)
                               for k in ("before", "after")}
-    out["retirement"] = _retirement(adopted, caught, untimed)
+    overrides = [o for c in counts for o in c["overrides"]]
+    out["retirement"] = _retirement(adopted, caught, untimed, overrides)
     return out
 
 
@@ -317,9 +318,11 @@ def _cost(counts: list[dict], caught: list) -> dict:
     }
 
 
-def _retirement(adopted: list[dict], caught: list, untimed: int = 0) -> dict:
-    """Suggest retiring a rule that has been on a long while and caught nothing. The other D9
-    criterion (overrides exceeding catches) cannot be evaluated; the evidence names that."""
+def _retirement(adopted: list[dict], caught: list, untimed: int = 0,
+                overrides: list | None = None) -> dict:
+    """Suggest retiring a rule on either D9 criterion: on a long while and caught nothing, or
+    overridden more often than it caught over the adoption window. `overrides` is None when they
+    are not recorded; the evidence then says so rather than reporting 0."""
     if not adopted:
         if untimed:
             return {"suggested": False, "status": "unavailable",
@@ -327,12 +330,26 @@ def _retirement(adopted: list[dict], caught: list, untimed: int = 0) -> dict:
         return {"suggested": False, "reason": "not adopted here"}
     oldest = min(c["adopted_at"] for c in adopted)
     days = (_now() - oldest).days
+    # Both criteria read the adoption window: a catch from before the rule last went on says
+    # nothing about the rule as it runs now, and pairing it with in-window overrides would
+    # compare counts from two different windows.
+    floor = _aware(oldest)
+    caught = [o for o in caught if _aware(o.occurred_at) >= floor]
+    evidence = {"days_on": days, "caught": len(caught)}
+    if overrides is None:
+        evidence["overrides"] = "unavailable: not recorded"
+    else:
+        in_window = [o for o in overrides if _aware(o.occurred_at) >= floor]
+        evidence["overrides"] = len(in_window)
+        if len(in_window) > len(caught):
+            return {"suggested": True, "evidence": evidence,
+                    "reason": f"overridden {len(in_window)} times against {len(caught)} caught "
+                              f"in {days} days"}
     if days >= RETIRE_AFTER_DAYS and not caught:
         return {"suggested": True, "reason": f"on for {days} days and caught nothing",
-                "evidence": {"days_on": days, "caught": 0,
-                             "overrides": "unavailable: not recorded"}}
+                "evidence": evidence}
     return {"suggested": False, "reason": f"on for {days} days; caught {len(caught)}",
-            "evidence": {"days_on": days, "caught": len(caught)}}
+            "evidence": evidence}
 
 
 # ---- scopes -----------------------------------------------------------------------------------
