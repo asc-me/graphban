@@ -1,0 +1,7 @@
+id = "accept.human_clause_blocks"
+stage = "Review"
+title = "Human-only clauses block agent sign-off"
+summary = "An acceptance clause flagged human-only refuses an agent's sign-off and blocks the item."
+primitive = "human_only_clause"
+claims = "enforced"
+default = "off"
