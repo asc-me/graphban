@@ -47,6 +47,7 @@ from app.security import authz
 from app.security.deps import get_agent_key
 from app.services import clustering as cluster_svc
 from app.services import code_graph as code_svc
+from app.services import design_sets as design_sets_svc
 from app.services import documents as documents_svc
 from app.services import scans as scans_svc
 from app.services import events as events_svc
@@ -1352,6 +1353,74 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["query"],
         },
     },
+    {
+        "name": "open_design",
+        "description": (
+            "Open the PRD's design set (GRPH-1279). One open/accepted/stale set per PRD; refused "
+            "on a closed PRD. A set on an unbaselined PRD can be drafted, never accepted."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"prd_id": {"type": "string"}},
+            "required": ["prd_id"],
+        },
+    },
+    {
+        "name": "put_preamble",
+        "description": (
+            "Write the project's standing preamble citing cites_prd_id's baseline hash. Person "
+            "only. A new version marks sets built on the old one stale."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"body": {"type": "string"}, "cites_prd_id": {"type": "string"}},
+            "required": ["body", "cites_prd_id"],
+        },
+    },
+    {
+        "name": "put_set_constraints",
+        "description": (
+            "Store a design set's candidate constraints, the PRD sections it gates and its "
+            "screens [{screen, routes}]. Does not accept them; re-pins a stale set."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "design_set_id": {"type": "string"},
+                "body": {"type": "string"},
+                "sections": {"type": "array", "items": {"type": "string"}},
+                "screens": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["design_set_id", "body"],
+        },
+    },
+    {
+        "name": "confirm_tier",
+        "description": (
+            "Confirm a screen's tier BACKED|HALF|UNBACKED with a note saying what backs it or "
+            "is missing. A code-graph proposal is not a confirmation; unconfirmed is not BACKED."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "design_set_id": {"type": "string"},
+                "screen": {"type": "string"},
+                "tier": {"type": "string", "enum": ["BACKED", "HALF", "UNBACKED"]},
+                "note": {"type": "string"},
+                "routes": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["design_set_id", "screen", "tier", "note"],
+        },
+    },
+    {
+        "name": "get_design_set",
+        "description": "One design set: status (stale names the hash that moved), screens, tiers.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"design_set_id": {"type": "string"}},
+            "required": ["design_set_id"],
+        },
+    },
 ]
 
 # Project-scoped tools accept an optional `project_id` that overrides the key's project.
@@ -1361,6 +1430,7 @@ _PROJECT_SCOPED = {
     "describe_code", "get_code_map", "code_neighbors", "search_code", "graph_query",
     "link_code", "unlink_code", "record_scan", "scan_status", "scans_due", "create_prd",
     "put_document", "get_document", "search_docs",
+    "open_design", "put_preamble", "put_set_constraints", "confirm_tier", "get_design_set",
 }
 # Tools that ACCEPT `project_id`, which is a different question from the one above.
 #
@@ -1820,6 +1890,11 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     "put_document": {"type": "object"},
     "get_document": {"type": "object"},
     "search_docs": {"type": "object"},
+    "open_design": {"type": "object"},
+    "put_preamble": {"type": "object"},
+    "put_set_constraints": {"type": "object"},
+    "confirm_tier": {"type": "object"},
+    "get_design_set": {"type": "object"},
     "record_scan": {
         "type": "object",
         "properties": {
@@ -3877,6 +3952,30 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             prd_id=str(args["prd_id"]), title=str(args.get("title") or ""),
             created_by=fleet_svc.caller_identity("", key),
         )
+    if name == "put_preamble":
+        seat = _agent_for_call(db, key, args, session_id) or str(args.get("agent_id") or "").strip()
+        if seat:
+            raise errors.Validation(
+                "the preamble is written by a person, not an agent seat",
+                hint="call put_preamble with a human credential, outside a registered session")
+        return design_sets_svc.put_preamble(
+            db, pid, str(args["body"]), str(args["cites_prd_id"]),
+            created_by=fleet_svc.caller_identity("", key))
+    if name == "open_design":
+        return design_sets_svc.open_design(
+            db, pid, str(args["prd_id"]),
+            created_by=fleet_svc.caller_identity(str(args.get("agent_id") or "").strip(), key))
+    if name == "put_set_constraints":
+        return design_sets_svc.put_set_constraints(
+            db, pid, str(args["design_set_id"]), str(args["body"]),
+            sections=args.get("sections"), screens=args.get("screens"))
+    if name == "confirm_tier":
+        return design_sets_svc.confirm_tier(
+            db, pid, str(args["design_set_id"]), str(args["screen"]), str(args["tier"]),
+            str(args["note"]), routes=args.get("routes"),
+            confirmed_by=fleet_svc.caller_identity(str(args.get("agent_id") or "").strip(), key))
+    if name == "get_design_set":
+        return design_sets_svc.get_design_set(db, pid, str(args["design_set_id"]))
     if name == "get_document":
         return documents_svc.get_document(db, pid, str(args["id"]))
     if name == "search_docs":
