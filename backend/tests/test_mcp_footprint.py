@@ -196,7 +196,9 @@ CEILING = 17629
 # 16724 -> 17610 (GRPH-1280): compile_prompts, accept_prompt, put_canvas, file_finding,
 # resolve_finding and accept_design, all in the `prd` tier (+886 there); CORE_TOKENS does not
 # move. CEILING 16743 -> 17629.
-MEASURED_TOKENS = 17610
+# 17610 -> 17618 (GRPH-1280 bounce): `accepted_by` is required on accept_prompt and accept_design,
+# since a bare credential is a relay and never the person. CEILING does not move.
+MEASURED_TOKENS = 17618
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

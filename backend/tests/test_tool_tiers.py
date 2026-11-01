@@ -400,9 +400,9 @@ CORE_TOKENS = 8920
 # bill is in this tier; CORE_TOKENS does not move.
 # GRPH-1262: misc 1238 -> 1346, `get_rule_toggles` (PRD-P63 S2a). CORE_TOKENS does not move.
 # prd 1998 -> 2397 (GRPH-1275): put_document + get_document + search_docs, tiered with the spec tools.
-# prd 3100 -> 3986 (GRPH-1280): the six review-loop tools.
+# prd 3100 -> 3986 (GRPH-1280): the six review-loop tools. 3986 -> 3993: `accepted_by` required.
 # prd 2396 -> 3100 (GRPH-1279): the five design-set tools, tiered with the spec tools.
-TIER_TOKENS = {"prd": 3986, "codegraph": 1795, "fleet": 1559, "misc": 1346}
+TIER_TOKENS = {"prd": 3993, "codegraph": 1795, "fleet": 1559, "misc": 1346}
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.

@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app import errors
 from app.hashing import content_hash
 from app.models import (
-    CodeNode, DesignAcceptance, DesignCanvas, DesignCorrection, DesignFinding, DesignScreen,
+    Agent, CodeNode, DesignAcceptance, DesignCanvas, DesignCorrection, DesignFinding, DesignScreen,
     DesignSet, Document, PlatformConfig,
 )
 from app.services import prds as prd_svc
@@ -300,16 +300,20 @@ def _norm(who: str) -> str:
     return (who or "").removeprefix("key:").strip().lower()
 
 
-def _person(actor: str, on_behalf_of: str) -> tuple[str, str]:
-    """(person, relayed_by). A human credential is its own person; an agent seat may only relay
-    the words of a named person, the way `answer_grill` does."""
-    if actor.startswith("key:"):
-        return actor, ""
+def _person(db: Session, actor: str, on_behalf_of: str) -> tuple[str, str]:
+    """(person, relayed_by). Every caller here is a relay, the way `answer_grill` records an MCP
+    call as via=agent: a bare credential (`key:<name>`) is what any agent becomes by omitting
+    agent_id, so it is never a person by itself. The named person cannot be a credential or a
+    registered agent either."""
     person = (on_behalf_of or "").strip()
     if not person:
         raise errors.Validation(
             "this decision is a person's, and no person is named",
             hint="ask the person, then pass accepted_by with their name; an agent cannot decide")
+    if person.lower().startswith("key:") or db.get(Agent, person.removeprefix("agent:")):
+        raise errors.Validation(
+            f"accepted_by {person!r} is an agent or a credential, not a person",
+            hint="name the person whose decision this is")
     return person, actor
 
 
@@ -428,7 +432,7 @@ def accept_prompt(db: Session, project_id: str, set_id: str, screen: str, actor:
     cand = _latest_prompt(db, ds.id, screen)
     if cand is None:
         raise errors.Validation(f"{screen!r} has no compiled prompt", hint="compile_prompts first")
-    person, relayed = _person(actor, on_behalf_of)
+    person, relayed = _person(db, actor, on_behalf_of)
     if _norm(cand.created_by) in (_norm(person), _norm(relayed)) and cand.created_by:
         raise errors.Validation(
             "the compiler cannot accept its own prompt",
@@ -568,7 +572,15 @@ def file_finding(db: Session, project_id: str, set_id: str, screen: str, kind: s
             row.canvas_hash = ""  # the reviewed canvas is superseded, not deleted
     db.add(f)
     db.commit()
-    return finding_dict(f) | {"duplicate": False}
+    recompiled = None
+    if (f.correction_id and cand is not None and ds.status != "stale"
+            and ds.constraints_accepted and row.tier_confirmed):
+        # Only this screen recompiles, and only now that the correction is stored. The new
+        # candidate keeps its compiler's name: the filer did not author the compile, and
+        # stamping them would bar them from filing the next finding.
+        recompiled = compile_prompts(db, project_id, ds.id, screen,
+                                     actor=cand.created_by)["prompts"][0]
+    return finding_dict(f) | {"duplicate": False, "recompiled": recompiled}
 
 
 def resolve_finding(db: Session, project_id: str, finding_id: str, status: str, reason: str = "",
@@ -628,7 +640,7 @@ def accept_design(db: Session, project_id: str, set_id: str, actor: str,
 
     ds = _get(db, project_id, set_id)
     _writable(ds)
-    person, relayed = _person(actor, on_behalf_of)
+    person, relayed = _person(db, actor, on_behalf_of)
     why = list(acceptance_blockers(ds))
     base = prd_svc.baseline_of(db, ds.prd_id)
     if base is not None and content_hash(base.body) != ds.prd_hash:
@@ -649,6 +661,12 @@ def accept_design(db: Session, project_id: str, set_id: str, actor: str,
             why.append(f"{s.screen}: no accepted prompt")
             continue
         accepted_docs.append(doc)
+        latest = _latest_prompt(db, ds.id, s.screen)
+        if latest is not None and latest.content_hash != s.prompt_hash:
+            # A correction (or any input) moved the prompt after it was accepted: the canvas
+            # drawn from the accepted one does not carry it.
+            why.append(f"{s.screen}: a newer prompt was compiled after the accepted one; "
+                       "accept_prompt it and export against its hash")
         bound = s.canvas_hash and db.scalars(select(DesignCanvas.id).where(
             DesignCanvas.design_set_id == ds.id, DesignCanvas.screen == s.screen,
             DesignCanvas.content_hash == s.canvas_hash,

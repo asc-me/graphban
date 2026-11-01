@@ -107,11 +107,54 @@ def test_accept_prompt_needs_a_person_who_is_not_the_compiler(db, pid, world):
     assert all(c.embedding is None for c in db.scalars(select(DocumentChunk)))
 
 
-def test_compiler_person_credential_cannot_accept(db, pid, world):
+def test_a_credential_is_a_relay_never_a_person(db, pid, world, be):
+    """Bounce of 2ba16655: omitting agent_id makes any agent `key:<name>`, which used to count
+    as a person accepting with no accepted_by."""
     _, sid = world
-    _compile(db, pid, sid, actor=KEY)
-    with pytest.raises(errors.Validation, match="compiler"):
+    _compile(db, pid, sid, actor="GRPH-A9")
+    with pytest.raises(errors.Validation, match="no person"):
         ds_svc.accept_prompt(db, pid, sid, "home", KEY)
+    with pytest.raises(errors.Validation, match="not a person"):
+        ds_svc.accept_prompt(db, pid, sid, "home", "agent:GRPH-A2", KEY)
+    with pytest.raises(errors.Validation, match="compiler"):
+        ds_svc.accept_prompt(db, pid, sid, "home", KEY, "GRPH-A9")
+    out = ds_svc.accept_prompt(db, pid, sid, "home", KEY, "dana")
+    assert (out["accepted_by"], out["relayed_by"]) == ("dana", KEY)
+    with pytest.raises(errors.Validation, match="no person"):
+        ds_svc.accept_design(db, pid, sid, KEY)
+
+
+def test_a_registered_agent_id_is_not_a_person(db, pid, world):
+    from app.models import Agent
+
+    _, sid = world
+    _compile(db, pid, sid)
+    db.add(Agent(id="GRPH-A77", project_id=pid, number=77))
+    db.commit()
+    with pytest.raises(errors.Validation, match="not a person"):
+        ds_svc.accept_prompt(db, pid, sid, "home", "agent:GRPH-A2", "GRPH-A77")
+
+
+def test_accept_design_refuses_an_outdated_accepted_prompt(db, pid, world, be):
+    """Bounce of 2ba16655: a correction recompiled the screen, then the OLD bytes were bound
+    again against the OLD accepted prompt hash, and accept_design embedded the old prompt."""
+    _, sid = world
+    h, canvas = _ready(db, pid, sid, be)
+    f = ds_svc.file_finding(db, pid, sid, "home", "prompt_defect", "Header is purple", canvas,
+                            actor="agent:GRPH-A3")
+    assert f["recompiled"]["prompt_hash"] != h  # only this screen, right after the correction
+    ds_svc.resolve_finding(db, pid, f["id"], "applied")
+    ds_svc.put_canvas(db, pid, sid, "home", b"<html>1</html>", "text/html", h, backend=be)
+    with pytest.raises(errors.Validation, match="newer prompt"):
+        ds_svc.accept_design(db, pid, sid, "agent:GRPH-A2", "dana")
+    h2 = f["recompiled"]["prompt_hash"]
+    ds_svc.accept_prompt(db, pid, sid, "home", "agent:GRPH-A2", "dana")
+    ds_svc.put_canvas(db, pid, sid, "home", b"<html>2</html>", "text/html", h2, backend=be)
+    out = ds_svc.accept_design(db, pid, sid, "agent:GRPH-A2", "dana")
+    assert out["status"] == "accepted"
+    gov = [d for d in ds_svc._prompts(db, sid, "home") if d.governing]
+    assert [d.content_hash for d in gov] == [h2]
+    assert "Header is purple" in ds_svc._chunk_text(gov[0])
 
 
 def test_canvas_orphan_and_binding(db, pid, world, be):
@@ -138,10 +181,9 @@ def test_findings_corrections_and_recompile(db, pid, world, be):
     dup = ds_svc.file_finding(db, pid, sid, "home", "prompt_defect", "Header is purple",
                               canvas, actor="agent:GRPH-A4")
     assert dup["duplicate"] and dup["id"] == f["id"]
-    with pytest.raises(errors.Validation, match="latest compiled"):
-        ds_svc.resolve_finding(db, pid, f["id"], "applied")
-    h2 = _compile(db, pid, sid, "home")[0]["prompt_hash"]
+    h2 = f["recompiled"]["prompt_hash"]  # the screen recompiled once the correction stored
     assert h2 != h and _compile(db, pid, sid)[0]["prompt_hash"] == h2
+    assert db.get(Document, f["recompiled"]["document_id"]).created_by == COMPILER
     assert len(list(db.scalars(select(DesignCorrection)))) == 1
     assert ds_svc.resolve_finding(db, pid, f["id"], "applied")["status"] == "applied"
 
@@ -226,3 +268,23 @@ def test_frozen_set_refuses_compile_and_canvas(db, pid, world, be):
         _compile(db, pid, sid)
     with pytest.raises(errors.Validation, match="frozen"):
         ds_svc.put_canvas(db, pid, sid, "home", b"x", "text/html", "h", backend=be)
+
+
+def test_mcp_accept_prompt_from_a_bare_credential_is_a_relay(client, auth, db, pid, world):
+    """Over MCP a call with no agent_id is `key:<name>`; it relays a named person or nothing."""
+    from tests.test_documents import _mcp
+
+    _, sid = world
+    _compile(db, pid, sid)
+    key = client.post("/api/api-keys", json={"name": "fleetkey"}, headers=auth).json()["plaintext"]
+    h = {"X-API-Key": key}
+
+    def call(args, n):
+        return _mcp(client, h, "accept_prompt",
+                    {"design_set_id": sid, "screen": "home", "project_id": pid, **args}, n).json()
+
+    for n, args in enumerate([{}, {"accepted_by": "key:fleetkey"}], 1):
+        body = call(args, n)
+        assert "error" in body or body["result"].get("isError"), body
+    ok = call({"accepted_by": "dana"}, 3)["result"]["structuredContent"]
+    assert (ok["accepted_by"], ok["relayed_by"]) == ("dana", "key:fleetkey")

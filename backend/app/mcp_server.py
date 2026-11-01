@@ -1437,7 +1437,7 @@ TOOLS: list[dict[str, Any]] = [
                 "screen": {"type": "string"},
                 "accepted_by": {"type": "string", "description": "The person (agent relay)."},
             },
-            "required": ["design_set_id", "screen"],
+            "required": ["design_set_id", "screen", "accepted_by"],
         },
     },
     {
@@ -1504,7 +1504,7 @@ TOOLS: list[dict[str, Any]] = [
                 "design_set_id": {"type": "string"},
                 "accepted_by": {"type": "string", "description": "The person (agent relay)."},
             },
-            "required": ["design_set_id"],
+            "required": ["design_set_id", "accepted_by"],
         },
     },
     {
