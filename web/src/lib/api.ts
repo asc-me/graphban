@@ -69,6 +69,10 @@ import type {
   RuleSuggestion,
   RefusalCoverage,
   RulesFlow,
+  RuleToggle,
+  RuleToggles,
+  RuleToggleWrite,
+  OrgRuleToggle,
   UnmappedRefusals,
   StackTopology,
   Prd,
@@ -1071,6 +1075,20 @@ export const api = {
     request<StackTopology>(`/platform/stack${projectQuery(projectId)}`),
   /** The rule registry placed on the Rules map's fixed stages (GRPH-1156). */
   rulesFlow: (projectId: string) => request<RulesFlow>(`/rules/flow${projectQuery(projectId)}`),
+  /** Every library rule's effective toggle, each value with its source and the org lock (GRPH-1262). */
+  ruleToggles: (projectId: string) => request<RuleToggles>(`/rules/toggles${projectQuery(projectId)}`),
+  /** A project's own value. A person's write: refused naming `rules.org_lock_holds` when locked. */
+  setRuleToggle: (projectId: string, ruleId: string, body: RuleToggleWrite) =>
+    request<RuleToggle>(`/rules/toggles/${encodeURIComponent(ruleId)}${projectQuery(projectId)}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  /** The org's value and lock for every project in it. `team`/`enterprise` only (402 otherwise). */
+  setOrgRuleToggle: (orgId: string, ruleId: string, body: RuleToggleWrite) =>
+    request<OrgRuleToggle>(`/orgs/${orgId}/rule-toggles/${encodeURIComponent(ruleId)}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
   /** Unmapped refusals grouped and ranked over the last `days` by the server (GRPH-1195). */
   unmappedRefusals: (projectId: string, days = 7) =>
     request<UnmappedRefusals>(`/rules/refusals/unmapped${projectQuery(projectId)}&days=${days}`),

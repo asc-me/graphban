@@ -191,3 +191,20 @@ def test_contract_publishes_ids_levels_and_params():
     assert by["sabotage_receipt"]["level"] == "enforced"
     assert by["sabotage_receipt"]["params"] == [
         {"name": "min_effort", "type": "int", "required": False}]
+
+
+def test_refused_template_reason_reaches_the_rules_flow(client):
+    """GRPH-1268: the Rules page draws a refused template UNMEASURED with the loader's reason,
+    so the reason must survive the REST response model, not only the in-process registry."""
+    from tests.test_rule_toggles import _login
+    db, user = _person()
+    try:
+        P.install(db, user, *build(FIX / "api0"), trusted_keys=TRUST)
+    finally:
+        db.close()
+    auth = _login(client, "alex@ascme-labs.com")
+    r = client.get("/api/rules/flow", params={"project_id": "core"}, headers=auth)
+    assert r.status_code == 200, r.text
+    rule = next(x for s in r.json()["stages"] for x in s["rules"]
+                if x["id"] == "review.sabotage_required")
+    assert rule["enforcement"] == "unmeasured" and "major mismatch" in rule["unmeasured_reason"]

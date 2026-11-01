@@ -79,6 +79,9 @@ export function isPack(rule: RuleFlowRule): boolean {
 }
 
 export function ruleLevel(rule: RuleFlowRule): Level {
+  // A library template the pack loader refused is UNMEASURED, not "off": it was never
+  // adoptable, and NOT USED would read as a choice someone made (PRD-P63 D12).
+  if (rule.unmeasured_reason) return "unmeasured";
   return rule.used ? rule.enforcement : "not_used";
 }
 
@@ -102,8 +105,9 @@ export function stageLevel(stage: RuleStage): Level | null {
   if (stage.rules.length === 0) return null;
   let level: Level = stage.state;
   for (const r of stage.rules) {
-    if (!r.used) continue;
-    if (level === "not_used" || LEVELS[r.enforcement].rank < LEVELS[level].rank) level = r.enforcement;
+    const drawn = ruleLevel(r);
+    if (drawn === "not_used") continue;
+    if (level === "not_used" || LEVELS[drawn].rank < LEVELS[level].rank) level = drawn;
   }
   return level;
 }
@@ -195,6 +199,13 @@ export function sourceLabel(source: string | null): string {
   if (source === "project") return "PROJECT";
   if (source === "org") return "ORG";
   return "UNMEASURED";
+}
+
+/** A library rule's toggle source (PRD-P63 D4). Never UNMEASURED: the platform default is a value. */
+export function toggleSourceLabel(source: string | null | undefined): string {
+  if (source === "project") return "PROJECT";
+  if (source === "org") return "ORG";
+  return "PLATFORM DEFAULT";
 }
 
 export function valueText(value: string | boolean | null): string | null {

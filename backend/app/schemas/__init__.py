@@ -1772,6 +1772,9 @@ class RuleOut(BaseModel):
     #: Library rules only: the resolved params with their source, and the org lock.
     params: "RuleToggleValueOut | None" = None
     locked: bool | None = None
+    #: A library rule whose template the pack loader refused (PRD-P63 D12): why it is drawn
+    #: UNMEASURED. None on every other rule.
+    unmeasured_reason: str | None = None
 
 
 class RuleToggleValueOut(BaseModel):
