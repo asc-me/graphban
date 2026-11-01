@@ -1,4 +1,8 @@
 """The CI shard split must run every test file exactly once across the shards."""
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,6 +29,24 @@ def test_the_split_is_balanced_by_measured_weight():
     w = sharding.load_weights()
     loads = [sum(w.get(f, 0) for f in s) for s in sharding.partition(_FILES, 3, w)]
     assert max(loads) <= 1.15 * (sum(loads) / 3), loads
+
+
+def test_every_process_computes_the_same_split():
+    """Each CI shard is a separate process and they never talk, so "exactly one shard" holds
+    only if the partition is a pure function of the file list. Anything seeded per process
+    (`hash()` under PYTHONHASHSEED, set iteration order) would let a file land in two shards
+    or none, and every shard would still pass this file's in-process checks."""
+    code = ("import json; from tests import sharding as s; "
+            "print(json.dumps(s.partition(json.loads(input()), 3, s.load_weights())))")
+    backend = Path(__file__).parent.parent
+    files = [*_FILES, "tests/test_brand_new_file.py"]
+    runs = {
+        subprocess.run([sys.executable, "-c", code], input=json.dumps(files), cwd=backend,
+                       env={**os.environ, "PYTHONHASHSEED": seed},
+                       capture_output=True, text=True, check=True).stdout
+        for seed in ("1", "2", "3")
+    }
+    assert len(runs) == 1, "the shard split depends on the process — shards would disagree"
 
 
 @pytest.mark.parametrize("bad", ["0/3", "4/3", "x/3", "3", "1/0"])
