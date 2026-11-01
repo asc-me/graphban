@@ -30,7 +30,7 @@ opt-in. The hosted multi-tenant service is a separate deployment
 | **Links** | Interactive force-directed graph of typed relationships (dependency / code / semantic / tag) |
 | **Dashboard** | KPI tiles, status distribution, request breakdown, recent activity |
 | **Roadmap** | MVP → Post-MVP → Later with progress; shareable read-only public link |
-| **MCP Tools** | **63 MCP tools** with per-tool call metering, params, and descriptions. The catalog is [docs/mcp.md](docs/mcp.md) |
+| **MCP Tools** | **64 MCP tools** with per-tool call metering, params, and descriptions. The catalog is [docs/mcp.md](docs/mcp.md) |
 | **Feedback Kit** | Themeable embeddable widget generator (accent / radius / types) with live preview + copy-paste snippet |
 | **Settings / Profile** | AI provider switch, GitHub/Drive connection config, project config, members, API keys; profile + project access |
 | **MCP** | JSON-RPC at `POST /api/mcp`, the same service layer as the UI. Tool names and the live count live in [docs/mcp.md](docs/mcp.md) |
