@@ -72,6 +72,7 @@ def _clients(
     gitops: dict | None = None,
     drop_delegated: bool = False,
     prds: dict | None = None,
+    staff_every_row: bool | None = None,
 ):
     """Planner + supervisor clients sharing one mock Graphban.
 
@@ -123,6 +124,12 @@ def _clients(
             # process — so every other test here exercises the unmeasured path whether it
             # knows it or not.
             return _mcp({"project_id": "core", "gitops": dict(gitops or {})}, rid)
+        if tool == "get_rule_toggles":
+            # GRPH-1273. None: a server that has never heard of the rule's library.
+            toggles = [] if staff_every_row is None else [{
+                "rule_id": "review.staff_every_row",
+                "on": {"value": staff_every_row, "source": "project"}}]
+            return _mcp({"library_loaded": True, "toggles": toggles}, rid)
         if tool == "get_prd":
             asked = str(args.get("prd_id"))
             if prds is None:
@@ -2012,3 +2019,71 @@ def test_the_loop_spawns_beside_a_live_child_for_a_free_cluster(
     )
     assert result.spawned == 2, result.detail
     assert launched[1] - launched[0] < wall / 2, "the second child waited out the first"
+
+
+def _staffing_run(git_repo, tmp_path, scripts, state, *, staff_every_row):
+    workspace = tmp_path / "ws"
+    mints: list[dict] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "", "prd_id": "SA-P99"}],
+        minted_args=mints, staff_every_row=staff_every_row,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        prd="SA-P11",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    return result, mints
+
+
+def test_staff_every_row_on_staffs_an_unheld_row_outside_prd(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1273. With `review.staff_every_row` on, an unheld row of another PRD is staffed
+    by a review-only seat that is not scoped to `--prd`.
+
+    Sabotage: ignore the toggle in `_staff_every_row` and no seat is minted."""
+    result, mints = _staffing_run(git_repo, tmp_path, scripts, state, staff_every_row=True)
+    assert mints and mints[0].get("review_only") is True, result.as_json()
+    assert not mints[0].get("scope"), mints
+    assert result.spawned >= 1
+    assert "GRPH-9" in result.review
+    assert result.as_json()["review_outside_prd"] == []
+
+
+def test_staff_every_row_off_leaves_an_outside_row_unstaffed(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1273, the other state: toggle off (or unknown to the server) is GRPH-1188."""
+    for state_ in (False, None):
+        result, mints = _staffing_run(git_repo, tmp_path / str(state_), scripts,
+                                      state.parent / f"s{state_}", staff_every_row=state_)
+        assert mints == [] and result.spawned == 0, result.as_json()
+        assert result.reason == "idle"
+        assert result.as_json()["review_outside_prd"] == ["GRPH-9"]
+
+
+def test_staff_every_row_still_leaves_a_held_row_alone(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1273: only rows no live agent holds (GRPH-1254 lapse semantics) are staffed."""
+    workspace = tmp_path / "ws"
+    mints: list[dict] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "GRPH-R1", "prd_id": "SA-P99"}],
+        minted_args=mints, staff_every_row=True,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        prd="SA-P11",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert mints == [] and result.spawned == 0, result.as_json()

@@ -88,7 +88,13 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
     "release_item",
     # GRPH-1190: `--prd` is resolved ONCE to the PRD's canonical key. A read, like the rest.
     "get_prd",
+    # GRPH-1273: `review.staff_every_row`, read at the start of each cycle. A read.
+    "get_rule_toggles",
 })
+
+#: The library rule that widens review staffing past `--prd` (GRPH-1273). Level `checked`:
+#: the server refuses nothing here, this loop is the only thing that honours it.
+STAFF_EVERY_ROW = "review.staff_every_row"
 
 EMPTY_TICKS = 3
 MINT_TRIES = 3
@@ -688,7 +694,9 @@ def _loop(
             # S6 (PRD-39 D-i): re-keyed off the fact it measures — a child exited
             # and there are still unheld review rows. Not off a role.
             try:
-                rows_for_reap, _ = _split_by_prd(_review_rows(planner), prd)
+                rows_for_reap, beyond = _split_by_prd(_review_rows(planner), prd)
+                if _staff_every_row(planner):
+                    rows_for_reap = rows_for_reap + beyond
             except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
                 watchdog_mod.current.retry("review_rows(reap)", exc)
                 rows_for_reap = []
@@ -724,7 +732,11 @@ def _loop(
             # the run. The reviewer seat minted below is PRD-scoped and cannot claim any other
             # row, so a project-wide trigger spawned children that could only exit, and ended
             # the run `review-unsigned` over an item it was never able to review.
+            staff_all = _staff_every_row(planner)
             rows, rows_outside = _split_by_prd(_review_rows(planner), prd)
+            if staff_all:
+                # GRPH-1273: every row visible to the key is this run's to staff.
+                rows, rows_outside = rows + rows_outside, []
             reviews = [str(r["id"]) for r in rows]
             outside = [str(r["id"]) for r in rows_outside]
             waits = _wait_ids(planner)
@@ -950,7 +962,7 @@ def _loop(
             seat, minted_one = _take_seat(
                 pool, planner, agent_id, wave_name, server, api_key,
                 mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
-                role="worker", prd=prd, review_only=True,
+                role="worker", prd=None if staff_all else prd, review_only=True,
             )
             if minted_one:
                 minted += 1
@@ -2083,6 +2095,21 @@ def resolve_prd(planner: Graphban, prd: str) -> str:
     if not key:
         raise ConfigError(f"--prd {prd} could not be resolved: get_prd answered with no id")
     return key
+
+
+def _staff_every_row(planner: Graphban) -> bool:
+    """Whether `review.staff_every_row` is effectively on (GRPH-1273). Read each cycle from the
+    server's S2a resolution. A server that does not answer, or does not know the rule, is off:
+    the narrower scope is the one this loop always had."""
+    try:
+        got = planner.call("get_rule_toggles")
+    except (NotPermitted, ToolFailed, ServerUnreachable):
+        return False
+    for t in (got or {}).get("toggles") or []:
+        if t.get("rule_id") == STAFF_EVERY_ROW:
+            on = t.get("on")
+            return bool(on.get("value") if isinstance(on, dict) else on)
+    return False
 
 
 def _split_by_prd(rows: list[dict], prd: str | None) -> tuple[list[dict], list[dict]]:

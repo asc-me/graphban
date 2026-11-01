@@ -41,7 +41,7 @@ from app.version import __version__
 
 #: The primitive API this server provides. Bump the minor for additive changes, the major for
 #: a removed primitive or a new required param; the pinned fixtures then fail the PR (below).
-PRIMITIVE_API = "1.2.0"
+PRIMITIVE_API = "1.3.0"
 
 #: Raw Ed25519 public keys (hex) whose signatures are trusted. The graphban-rules signing job
 #: holds the matching private key. Empty until that key is provided: no pack loads without one.
@@ -104,6 +104,11 @@ register_primitive(Primitive(
     "evidence_required", "enforced",
     Enforcer("graphban_source", "app/services/items.py"),
     {"path": Param("str"), "engine": Param("str")}))
+# GRPH-1273. `checked`: the server refuses nothing; `gbfleet until` reads the toggle each cycle
+# and staffs every unheld review row visible to its key, so the enforcer is the supervisor.
+register_primitive(Primitive(
+    "staffing_scope", "checked",
+    Enforcer("supervisor", "gbfleet until")))
 register_primitive(Primitive(
     "evidence_attached", "checked",
     Enforcer("graphban_source", "app/services/items.py"),
