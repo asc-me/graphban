@@ -4,8 +4,8 @@ Ledger rows for the non-PRD governing documents. A PRD stays a PRD: the index re
 `baseline_of` for it and this module never writes a parallel row for the spec.
 
 | kind            | indexed by default                | written by                |
-| preamble        | no                                | a person (`put_document`) |
-| set_constraints | no                                | design-set operations     |
+| preamble        | never (stored, not embedded)      | a person (`put_document`) |
+| set_constraints | never (stored, not embedded)      | design-set operations     |
 | design_prompt   | only once accepted                | design-set operations     |
 | design_review   | only once accepted                | design-set operations     |
 | canvas          | never (blob only)                 | design-set operations     |
@@ -31,7 +31,8 @@ KINDS = ("preamble", "set_constraints", "design_prompt", "design_review", "canva
 # operations, so a general ingest can never mint a governing prompt or review.
 PUT_KINDS = ("preamble",)
 ACCEPT_GATED = ("design_prompt", "design_review")
-NEVER_INDEXED = ("canvas",)
+# Stored with chunks for `get_document`, but outside the searchable corpus and never embedded.
+NEVER_INDEXED = ("canvas", "preamble", "set_constraints")
 BLOB_STATUSES = ("none", "pending", "stored")
 # Bumped when chunking changes. Stored on every chunk; re-extraction is explicit.
 EXTRACTOR_VERSION = "1"
@@ -45,10 +46,7 @@ def indexed(doc: Document, *, include_design: bool = False) -> bool:
     """Whether search may return this row's chunks."""
     if doc.kind in NEVER_INDEXED or not doc.governing:
         return False
-    if doc.kind in ACCEPT_GATED:
-        return doc.accepted and include_design
-    # preamble / set_constraints are not indexed by default; include_design opts them in.
-    return include_design
+    return doc.kind in ACCEPT_GATED and doc.accepted and include_design
 
 
 def _split_long(text: str, limit: int) -> list[str]:
@@ -107,12 +105,32 @@ def _vector(text: str) -> list[float] | None:
     return safe_embed(text)
 
 
+def _embeddable(chunk: DocumentChunk, doc: Document | None) -> bool:
+    """Only governing text carries a vector: a PRD baseline, or an accepted prompt / review."""
+    if doc is None:
+        return chunk.kind == "prd"
+    return doc.kind in ACCEPT_GATED and bool(doc.accepted)
+
+
 def _chunk(doc: Document, body: str) -> None:
+    """Store the row's extracted text. No vector here: a write is not an acceptance, and
+    `embed_document` runs when a prompt or review becomes governing."""
     for i, (heading, text) in enumerate(extract(body) or [("", body or "")]):
         doc.chunks.append(DocumentChunk(
             project_id=doc.project_id, kind=doc.kind, ordinal=i, heading=heading, text=text,
             version=str(doc.version or ""), content_hash=content_hash(text),
-            extractor_version=EXTRACTOR_VERSION, governing=True, embedding=_vector(text)))
+            extractor_version=EXTRACTOR_VERSION, governing=True, embedding=None))
+
+
+def embed_document(doc: Document) -> int:
+    """Embed an accepted design_prompt / design_review's chunks — the acceptance writer calls
+    this. Anything else is left without a vector. Returns the number of chunks embedded; the
+    caller commits."""
+    if doc.kind not in ACCEPT_GATED or not doc.accepted:
+        return 0
+    for c in doc.chunks:
+        c.embedding = _vector(c.text)
+    return len(doc.chunks)
 
 
 def index_prd_baseline(db: Session, prd_id: str) -> int:
@@ -149,12 +167,28 @@ def drop_prd_chunks(db: Session, prd_id: str) -> None:
     db.commit()
 
 
-def backfill_embeddings(db: Session) -> int:
-    """Re-embed every chunk from its stored text (after an EMBED_DIM or provider change)."""
+def index_missing_baselines(db: Session) -> int:
+    """Index every PRD whose baseline was frozen before the chunk index existed."""
     n = 0
-    for c in db.scalars(select(DocumentChunk)):
-        c.embedding = _vector(c.text)
-        n += 1
+    for prd in db.scalars(select(Prd)):
+        if prd_svc.baseline_of(db, prd.id) is not None:
+            n += index_prd_baseline(db, prd.id)
+    return n
+
+
+def backfill_embeddings(db: Session) -> int:
+    """Re-embed governing chunks from their stored text (after an EMBED_DIM or provider
+    change), after indexing any baseline the index has not seen. A chunk outside the embedded
+    corpus (preamble, set constraints, unaccepted prompt) is cleared, not embedded."""
+    index_missing_baselines(db)
+    n = 0
+    for c, doc in db.execute(select(DocumentChunk, Document).outerjoin(
+            Document, DocumentChunk.document_id == Document.id)).all():
+        if _embeddable(c, doc):
+            c.embedding = _vector(c.text)
+            n += 1
+        else:
+            c.embedding = None
     db.commit()
     return n
 
@@ -335,8 +369,12 @@ def search_docs(
 
     unbaselined = 0
     cands: list[tuple[dict, list[float] | None]] = []
+    indexed_prds = set(db.scalars(select(DocumentChunk.prd_id).where(
+        DocumentChunk.project_id == project_id, DocumentChunk.kind == "prd",
+        DocumentChunk.governing.is_(True))))
     for prd in db.scalars(select(Prd).where(Prd.project_id == project_id)):
-        if prd_svc.baseline_of(db, prd.id) is None:
+        base = prd_svc.baseline_of(db, prd.id)
+        if base is None:
             unbaselined += 1
             if include_drafts:
                 for heading, text in extract(prd.body):
@@ -344,7 +382,14 @@ def search_docs(
                                    "version": prd.version, "status": "draft", "heading": heading,
                                    "text": text, "content_hash": content_hash(prd.body)}, None))
             continue
-        index_prd_baseline(db, prd.id)  # a baseline frozen before the index existed
+        if prd.id not in indexed_prds:
+            # A baseline frozen before the index existed. Search is a read: match its body
+            # lexically here and leave the write (and the embedding) to `/memory/backfill`.
+            digest = content_hash(base.body)
+            for heading, text in extract(base.body) or [("", base.body or "")]:
+                cands.append(({"source_id": prd.id, "prd_id": prd.id, "kind": "prd",
+                               "version": base.version, "status": "baseline",
+                               "heading": heading, "text": text, "content_hash": digest}, None))
     rows = db.execute(
         select(DocumentChunk, Document)
         .outerjoin(Document, DocumentChunk.document_id == Document.id)

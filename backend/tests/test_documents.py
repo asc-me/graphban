@@ -115,12 +115,58 @@ def test_baseline_text_stays_indexed_after_live_edit(db, pid):
     assert docs.search_docs(db, pid, "teal")["results"]
 
 
-def test_preamble_not_indexed_by_default(db, pid):
+def test_preamble_is_never_searched_or_embedded(db, pid, monkeypatch):
+    from app.config import settings
+    import app.embeddings as emb
     prd = _baselined(db, pid)
-    docs.put_document(db, project_id=pid, kind="preamble", body="quokka rules", prd_id=prd.id,
-                      created_by=KEY)
-    assert docs.search_docs(db, pid, "quokka")["results"] == []
-    assert docs.search_docs(db, pid, "quokka", include_design=True)["results"]
+    monkeypatch.setattr(settings, "embed_provider", "openai")
+    monkeypatch.setattr(emb, "safe_embed", lambda t: _vec())
+    d = docs.put_document(db, project_id=pid, kind="preamble", body="quokka rules",
+                          prd_id=prd.id, created_by=KEY)
+    row = db.get(Document, d["id"])
+    assert row.chunks and all(c.embedding is None for c in row.chunks)
+    for flags in ({}, {"include_design": True}, {"include_design": True, "include_drafts": True}):
+        assert not [h for h in docs.search_docs(db, pid, "quokka", **flags)["results"]
+                    if h["kind"] == "preamble"]
+    docs.backfill_embeddings(db)
+    assert all(c.embedding is None for c in db.get(Document, d["id"]).chunks)
+
+
+def test_set_constraints_never_searched(db, pid):
+    prd = _baselined(db, pid)
+    d = Document(id=docs.new_id(), project_id=pid, kind="set_constraints", prd_id=prd.id,
+                 content_hash="sha256:x", accepted=True)
+    docs._chunk(d, "## H\nokapi")
+    db.add(d)
+    db.commit()
+    assert docs.search_docs(db, pid, "okapi", include_design=True,
+                            include_drafts=True)["results"] == []
+
+
+def test_prompt_is_embedded_only_at_acceptance(db, pid, monkeypatch):
+    from app.config import settings
+    import app.embeddings as emb
+    prd = _baselined(db, pid)
+    monkeypatch.setattr(settings, "embed_provider", "openai")
+    monkeypatch.setattr(emb, "safe_embed", lambda t: _vec())
+    d = Document(id=docs.new_id(), project_id=pid, kind="design_prompt", prd_id=prd.id,
+                 content_hash="sha256:x", accepted=False)
+    docs._chunk(d, "## H\nokapi")
+    assert docs.embed_document(d) == 0 and all(c.embedding is None for c in d.chunks)
+    d.accepted = True
+    assert docs.embed_document(d) == 1 and d.chunks[0].embedding == _vec()
+
+
+def test_search_does_not_write_an_unindexed_baseline(db, pid):
+    from app.models import DocumentChunk
+    prd = _baselined(db, pid)
+    docs.drop_prd_chunks(db, prd.id)  # as if frozen before the index existed
+    r = docs.search_docs(db, pid, "teal")
+    assert r["results"][0]["source_id"] == prd.id and r["results"][0]["status"] == "baseline"
+    assert r["ranking"] == "lexical"
+    assert not list(db.scalars(select(DocumentChunk).where(DocumentChunk.prd_id == prd.id)))
+    docs.backfill_embeddings(db)
+    assert list(db.scalars(select(DocumentChunk).where(DocumentChunk.prd_id == prd.id)))
 
 
 def test_unaccepted_prompt_and_canvas_never_indexed(db, pid):
@@ -156,6 +202,11 @@ def test_old_extractor_chunks_stay_until_superseded(db, pid):
     row.chunks[0].extractor_version = "0"
     db.commit()
     assert docs.get_document(db, pid, d["id"])["chunks"][0]["extractor_version"] == "0"
+
+
+def _vec():
+    from app.config import settings
+    return [1.0] + [0.0] * (int(settings.embed_dim) - 1)
 
 
 def _mcp(client, headers, name, arguments, call_id=1):
@@ -313,10 +364,10 @@ def test_semantic_ranking_when_vectors_exist(db, pid, monkeypatch):
     import app.embeddings as emb
     prd = _baselined(db, pid)
     for c in db.scalars(select(DocumentChunk).where(DocumentChunk.prd_id == prd.id)):
-        c.embedding = [1.0, 0.0]
+        c.embedding = _vec()
     db.commit()
     monkeypatch.setattr(settings, "embed_provider", "openai")
-    monkeypatch.setattr(emb, "safe_embed", lambda t: [1.0, 0.0])
+    monkeypatch.setattr(emb, "safe_embed", lambda t: _vec())
     r = docs.search_docs(db, pid, "anything at all", top_k=1)
     assert r["ranking"] == "semantic" and len(r["results"]) == 1 and "ranking_note" not in r
 
