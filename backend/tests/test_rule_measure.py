@@ -115,9 +115,76 @@ def test_caught_counts_refusals_naming_the_rule(db, library):
     assert c["value"] == 1 and c["status"] == "measured"
 
 
-def test_cost_is_unavailable_with_reason(db, library):
+def _item(db, title):
+    from app.services import items as items_svc
+    it = items_svc.create_item(db, title=title, effort=1, project_id=PID)
+    db.commit()
+    return it
+
+
+def test_cost_with_no_data_is_insufficient_not_zero(db, library):
     cost = M.project_effect(db, PID)["rules"][0]["cost"]
-    assert cost["overridden"]["status"] == "unavailable" and cost["overridden"]["reason"]
+    for k in ("overridden", "held_seconds"):
+        assert cost[k]["status"] == "insufficient" and cost[k]["value"] is None
+        assert cost[k]["n"] == 0 and cost[k]["min_n"] == M.MIN_COST_N
+
+
+def test_override_is_recorded_naming_rule_item_actor(db, library):
+    it = _item(db, "ov")
+    assert M.record_override(db, it, RULE, "user-1")
+    assert M.record_override(db, it, RULE, "user-2")  # a second override is a second fact
+    db.commit()
+    rows = db.query(Observation).filter_by(kind=M.OVERRIDE_KIND).all()
+    assert len(rows) == 2
+    assert {(r.rule_id, r.item_id, r.ref["actor"]) for r in rows} == {
+        (RULE, it.id, "user-1"), (RULE, it.id, "user-2")}
+
+
+def test_overridden_measured_against_refusals(db, library):
+    it = _item(db, "ov2")
+    for i in range(M.MIN_COST_N):
+        _obs(db, "refusal", 1, f"r{i}", rule_id=RULE)
+    cost = M.project_effect(db, PID)["rules"][0]["cost"]
+    assert cost["overridden"]["status"] == "measured" and cost["overridden"]["value"] == 0
+    M.record_override(db, it, RULE, "user-1")
+    db.commit()
+    o = M.project_effect(db, PID)["rules"][0]["cost"]["overridden"]
+    assert o["value"] == 1 and o["n"] == M.MIN_COST_N
+    # Thin: one refusal behind it is insufficient, with n.
+    other = M.project_effect(db, PID, RULE)["rules"][0]
+    assert other["cost"]["overridden"]["status"] == "measured"
+
+
+def test_overridden_thin_refusals_insufficient(db, library):
+    it = _item(db, "ov3")
+    _obs(db, "refusal", 1, "r1", rule_id=RULE)
+    M.record_override(db, it, RULE, "u")
+    db.commit()
+    o = M.project_effect(db, PID)["rules"][0]["cost"]["overridden"]
+    assert o["status"] == "insufficient" and o["n"] == 1 and o["value"] is None
+
+
+def test_held_time_recorded_per_rule_and_measured(db, library):
+    t0 = _ago(1)
+    for i in range(M.MIN_COST_N):
+        it = _item(db, f"h{i}")
+        assert M.record_held(db, it, RULE, t0, t0 + timedelta(seconds=60))
+        assert not M.record_held(db, it, RULE, t0, t0 + timedelta(seconds=60))  # same hold
+    db.commit()
+    h = M.project_effect(db, PID)["rules"][0]["cost"]["held_seconds"]
+    assert h["status"] == "measured" and h["value"] == 60 * M.MIN_COST_N
+    assert h["n"] == M.MIN_COST_N
+
+
+def test_held_thin_and_bad_interval(db, library):
+    it = _item(db, "h-thin")
+    t0 = _ago(1)
+    M.record_held(db, it, RULE, t0, t0 + timedelta(seconds=30))
+    db.commit()
+    h = M.project_effect(db, PID)["rules"][0]["cost"]["held_seconds"]
+    assert h["status"] == "insufficient" and h["n"] == 1 and h["value"] is None
+    with pytest.raises(ValueError):
+        M.record_held(db, it, RULE, t0, t0 - timedelta(seconds=1))
 
 
 def test_retirement_after_long_window_with_no_catches(db, library):
