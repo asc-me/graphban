@@ -203,9 +203,18 @@ def get_design_set(db: Session, project_id: str, set_id: str) -> dict:
     return to_dict(db, _get(db, project_id, set_id))
 
 
-def _mark_stale(db: Session, ds: DesignSet, reason: str, was: str, now: str) -> None:
+def _cited_hash(db: Session, pre: Document | None) -> str:
+    """The current baseline hash of the PRD the preamble cites ("" when it has none now)."""
+    if pre is None or not pre.prd_id:
+        return ""
+    base = prd_svc.baseline_of(db, pre.prd_id)
+    return content_hash(base.body) if base is not None else ""
+
+
+def _mark_stale(db: Session, ds: DesignSet, reason: str, was: str, now: str,
+                prd_id: str | None = None) -> None:
     ds.status, ds.stale_reason = "stale", reason
-    ds.stale_detail = {reason: {"was": was, "now": now}}
+    ds.stale_detail = {reason: {"was": was, "now": now, "prd_id": prd_id or ds.prd_id}}
     # The set's prompt and review rows stay retrievable, labelled: stale is not governing.
     for d in db.scalars(select(Document).where(
             Document.set_id == ds.id, Document.kind.in_(_DESIGN_DOCS))):
@@ -217,12 +226,20 @@ def refresh(db: Session, project_id: str, prd_id: str | None = None) -> int:
     the ones that moved `stale`. Called after a preamble write or a baseline change. Returns the
     number marked."""
     pre = _preamble(db, project_id)
+    cited = _cited_hash(db, pre)
     n = 0
     for ds in db.scalars(select(DesignSet).where(
             DesignSet.project_id == project_id, DesignSet.status.in_(("open", "accepted")))):
-        if pre is not None and ds.preamble_version and (
+        # A set pinned to no preamble (version 0) was compiled without one, so the first preamble
+        # write moves its inputs exactly as an edit does.
+        if pre is not None and (
                 pre.version != ds.preamble_version or pre.prd_hash != ds.preamble_hash):
             _mark_stale(db, ds, "preamble", ds.preamble_hash, pre.prd_hash)
+            n += 1
+            continue
+        # The preamble's cited PRD was rebaselined: the hash the preamble pinned no longer matches.
+        if pre is not None and cited != ds.preamble_hash:
+            _mark_stale(db, ds, "prd_baseline", ds.preamble_hash, cited, prd_id=pre.prd_id)
             n += 1
             continue
         prd = prd_svc.get_prd(db, ds.prd_id)

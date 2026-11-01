@@ -106,6 +106,30 @@ def test_prd_baseline_change_stales_the_set_and_names_the_hash(db, pid):
     assert moved["was"] == out["prd_hash"] and moved["now"] != moved["was"]
 
 
+def test_rebaselining_the_preamble_cited_prd_stales_sets_on_other_prds(db, pid):
+    base = _prd(db, pid, title="Visual system")
+    pre = ds_svc.put_preamble(db, pid, "Be calm.", base.id, created_by=KEY)
+    out = ds_svc.open_design(db, pid, _prd(db, pid).id)
+    _rebaseline(db, base, BODY.replace("teal", "amber"))
+    got = ds_svc.get_design_set(db, pid, out["id"])
+    assert got["status"] == "stale" and got["stale_reason"] == "prd_baseline"
+    moved = got["stale_detail"]["prd_baseline"]
+    assert moved["prd_id"] == base.id and moved["was"] == pre["prd_hash"]
+    assert moved["now"] == content_hash(prd_svc.baseline_of(db, base.id).body) != moved["was"]
+    # Re-pinning a fresh preamble against the new baseline and revising clears it.
+    ds_svc.put_preamble(db, pid, "Be calm.", base.id, created_by=KEY)
+    assert ds_svc.put_set_constraints(db, pid, out["id"], "Teal only.")["status"] == "open"
+
+
+def test_first_preamble_stales_a_set_opened_without_one(db, pid):
+    out = ds_svc.open_design(db, pid, _prd(db, pid).id)
+    assert out["preamble_version"] == 0
+    ds_svc.put_preamble(db, pid, "Be calm.", _prd(db, pid, title="Visual system").id, created_by=KEY)
+    got = ds_svc.get_design_set(db, pid, out["id"])
+    assert got["status"] == "stale" and got["stale_reason"] == "preamble"
+    assert got["stale_detail"]["preamble"]["was"] == ""
+
+
 def test_revising_a_stale_set_repins_it(db, pid):
     prd = _prd(db, pid)
     out = ds_svc.open_design(db, pid, prd.id)
