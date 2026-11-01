@@ -49,6 +49,27 @@ def _config(args: list[str]):
     return config
 
 
+@pytest.fixture(autouse=True)
+def _not_sharded(monkeypatch):
+    """These tests classify ARGUMENTS. This very run may be a CI shard (GRAPHBAN_TEST_SHARD set
+    in the environment), which `_is_full_run` rightly treats as a selection — clear it so the
+    argument cases are judged on their own; the shard case has its own test below."""
+    monkeypatch.delenv("GRAPHBAN_TEST_SHARD", raising=False)
+
+
+@pytest.mark.parametrize("shard", ["1/3", "2/3", "3/3"])
+def test_a_ci_shard_is_never_a_full_run(monkeypatch, shard):
+    """A shard ran a slice of the files, so it must not be asked for every tool; the
+    unsharded job carries that demand."""
+    monkeypatch.setenv("GRAPHBAN_TEST_SHARD", shard)
+    assert conftest._is_full_run(_config([])) is False
+
+
+def test_the_single_shard_is_still_a_full_run(monkeypatch):
+    monkeypatch.setenv("GRAPHBAN_TEST_SHARD", "1/1")
+    assert conftest._is_full_run(_config([])) is True
+
+
 # ── the load-bearing direction: it must be able to say True ───────────────────
 
 @pytest.mark.parametrize("args", [
