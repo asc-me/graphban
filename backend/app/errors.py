@@ -41,9 +41,14 @@ class Conflict(AppError):
     code = "conflict"
 
 
-class BlobPending(Conflict):
-    """The row exists but its bytes are not stored yet (GRPH-1276). A 409 `conflict` on REST;
-    `code` lets a caller tell it from a lost lease and retry the put at the same hash."""
+class BlobPending(AppError):
+    """The row exists but its bytes are not stored yet (GRPH-1276).
+
+    Not a ``Conflict``: the refusal ratchet counts every ``Conflict`` raise as a bare policy
+    409, and a pending blob is a retryable store. REST maps it to HTTP 409; ``code`` is
+    ``blob_pending`` so a caller retries the put at the same hash instead of treating it as a
+    lost lease.
+    """
 
     code = "blob_pending"
 
