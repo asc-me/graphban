@@ -145,6 +145,59 @@ def record_held(db: Session, item: Item, rule_id: str, started_at: datetime,
         ref={"seconds": int((ended - started).total_seconds())}, occurred_at=ended)
 
 
+def open_hold(db: Session, item_id: str, rule_id: str) -> datetime | None:
+    """When the rule's current hold on the item began, or None when it holds nothing: the
+    earliest refusal by the rule on the item since its last hold was closed (every close —
+    the rule passing, or a person overriding it — records a `rule_held`)."""
+    last = db.scalar(select(func.max(Observation.occurred_at)).where(
+        Observation.item_id == item_id, Observation.kind == HELD_KIND,
+        Observation.rule_id == rule_id))
+    q = select(func.min(Observation.occurred_at)).where(
+        Observation.item_id == item_id, Observation.kind == "refusal",
+        Observation.rule_id == rule_id)
+    if last is not None:
+        q = q.where(Observation.occurred_at > last)
+    start = db.scalar(q)
+    return _aware(start) if start is not None else None
+
+
+def close_holds(db: Session, item: Item, rule_ids, ended_at: datetime | None = None) -> int:
+    """The item got past these rules: each open hold is recorded as held time. A rule not in
+    the loaded library holds nothing. Returns how many holds were closed."""
+    ended, n = _aware(ended_at or _now()), 0
+    for rule_id in rule_ids:
+        if rule_id not in rule_toggles.LIBRARY:
+            continue
+        start = open_hold(db, item.id, rule_id)
+        if start is not None:
+            n += record_held(db, item, rule_id, start, max(start, ended))
+    return n
+
+
+def override_holds(db: Session, rule_id: str, project_ids: list[str], actor: str,
+                   at: datetime | None = None) -> int:
+    """A person switched the rule off for these projects: every open item it was holding
+    there proceeds past its refusal. Each is one override naming the rule, the item and the
+    person, and the hold closes at that moment. Returns how many items were overridden."""
+    if rule_id not in rule_toggles.LIBRARY or not project_ids:
+        return 0
+    at, n = _aware(at or _now()), 0
+    item_ids = db.scalars(select(Observation.item_id).where(
+        Observation.project_id.in_(project_ids), Observation.kind == "refusal",
+        Observation.rule_id == rule_id, Observation.item_id.is_not(None)).distinct())
+    for item_id in list(item_ids):
+        item = db.get(Item, item_id)
+        if item is None or item.status == "done":
+            continue
+        start = open_hold(db, item.id, rule_id)
+        if start is None:
+            continue
+        record_override(db, item, rule_id, actor, occurred_at=at)
+        record_held(db, item, rule_id, start, max(start, at))
+        n += 1
+    return n
+
+
 def _cost_rows(db: Session, rule_id: str, project_id: str, kind: str) -> list[Observation]:
     return list(db.scalars(select(Observation).where(
         Observation.project_id == project_id, Observation.kind == kind,

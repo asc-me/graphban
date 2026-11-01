@@ -150,7 +150,7 @@ def test_overridden_measured_against_refusals(db, library):
     db.commit()
     o = M.project_effect(db, PID)["rules"][0]["cost"]["overridden"]
     assert o["value"] == 1 and o["n"] == M.MIN_COST_N
-    # Thin: one refusal behind it is insufficient, with n.
+    # Filtered to the one rule, the same refusals stand behind it: still measured.
     other = M.project_effect(db, PID, RULE)["rules"][0]
     assert other["cost"]["overridden"]["status"] == "measured"
 
@@ -371,3 +371,105 @@ def test_org_and_platform_are_plan_gated(db, library, hosted):
         M.org_effect(db, o.id)
     with pytest.raises(QuotaExceeded):
         M.platform_effect(db, o.id)
+
+
+# ---- the real paths: a refusal, then the rule passing or a person overriding it (GRPH-1283) ----
+
+from tests.test_fleet_adversarial_gate import (  # noqa: E402,F401  (fixtures + helpers)
+    SABOTAGE, _ok, _ready_for_review, _rpc, key, proj)
+
+
+def _refused_signoff(client, key, item, reviewer):
+    err = _rpc(client, key, "sign_off", {"id": item, "agent_id": reviewer["agent_id"]})
+    assert RULE in err["structuredContent"]["error"]["message"]
+
+
+def _effect_cost(client, auth, proj):
+    r = client.get(f"/api/rules/effect?project_id={proj}&rule_id={RULE}", headers=auth)
+    assert r.status_code == 200, r.text
+    return r.json()["rules"][0]["cost"]
+
+
+def _switch_off(client, auth, proj):
+    r = client.put(f"/api/rules/toggles/{RULE}?project_id={proj}", headers=auth,
+                   json={"on": False, "reason": "holding too much work"})
+    assert r.status_code == 200, r.text
+
+
+@pytest.fixture()
+def rule_on(monkeypatch):
+    monkeypatch.setattr(T, "LIBRARY", {})
+    T.register(T.LibraryRule(
+        id=RULE, stage="review", title="Sabotage required", summary="s", enforcement="enforced",
+        enforcer=R.Enforcer("graphban_source", "app/services/fleet.py"),
+        default_on=True, default_params={"min_tests_failed": 1}))
+
+
+def test_a_refused_signoff_that_later_passes_is_held_time(client, auth, key, proj, db, rule_on):
+    """The rule refuses a sign-off, the reviewer comes back with a sabotage and it lands: the
+    time between is recorded as held by that rule, and served as measured once there are
+    enough holds."""
+    for i in range(M.MIN_COST_N):
+        item, reviewer = _ready_for_review(client, key, effort=0)
+        _refused_signoff(client, key, item, reviewer)
+        _refused_signoff(client, key, item, reviewer)  # still the one hold
+        assert _ok(client, key, "sign_off", {"id": item, "agent_id": reviewer["agent_id"],
+                                             "evidence": [SABOTAGE]})["status"] == "done"
+        held = db.query(Observation).filter_by(kind=M.HELD_KIND, item_id=item).all()
+        assert len(held) == 1 and held[0].rule_id == RULE and held[0].ref["seconds"] >= 0
+        if i == 0:
+            h = _effect_cost(client, auth, proj)["held_seconds"]
+            assert h["status"] == "insufficient" and h["n"] == 1 and h["value"] is None
+    h = _effect_cost(client, auth, proj)["held_seconds"]
+    assert h["status"] == "measured" and h["n"] == M.MIN_COST_N and h["value"] >= 0
+    assert M.open_hold(db, item, RULE) is None
+
+
+def test_a_signoff_with_no_refusal_records_no_hold(client, key, db, rule_on):
+    item, reviewer = _ready_for_review(client, key, effort=0)
+    _ok(client, key, "sign_off",
+        {"id": item, "agent_id": reviewer["agent_id"], "evidence": [SABOTAGE]})
+    assert db.query(Observation).filter_by(kind=M.HELD_KIND).count() == 0
+
+
+def test_a_person_switching_the_rule_off_overrides_what_it_holds(client, auth, key, proj, db,
+                                                                 rule_on):
+    """Refused sign-offs, then a person turns the rule off: one override per held item, naming
+    the rule, the item and that person, and the hold ends then. Measured against the refusals."""
+    item, reviewer = _ready_for_review(client, key, effort=0)
+    for _ in range(M.MIN_COST_N):
+        _refused_signoff(client, key, item, reviewer)
+    o = _effect_cost(client, auth, proj)["overridden"]
+    assert o["status"] == "measured" and o["value"] == 0 and o["n"] == M.MIN_COST_N
+
+    _switch_off(client, auth, proj)
+
+    me = client.get("/api/auth/me", headers=auth).json()["id"]
+    rows = db.query(Observation).filter_by(kind=M.OVERRIDE_KIND).all()
+    assert [(r.rule_id, r.item_id, r.ref["actor"]) for r in rows] == [(RULE, item, me)]
+    assert db.query(Observation).filter_by(kind=M.HELD_KIND, item_id=item).count() == 1
+    o = _effect_cost(client, auth, proj)["overridden"]
+    assert o["status"] == "measured" and o["value"] == 1 and o["n"] == M.MIN_COST_N
+    # The sign-off now lands with the rule off; the hold already closed, so nothing doubles.
+    _ok(client, key, "sign_off", {"id": item, "agent_id": reviewer["agent_id"]})
+    assert db.query(Observation).filter_by(kind=M.HELD_KIND, item_id=item).count() == 1
+
+
+def test_switching_off_with_one_refusal_is_insufficient_with_n(client, auth, key, proj, db,
+                                                               rule_on):
+    item, reviewer = _ready_for_review(client, key, effort=0)
+    _refused_signoff(client, key, item, reviewer)
+    _switch_off(client, auth, proj)
+    o = _effect_cost(client, auth, proj)["overridden"]
+    assert o["status"] == "insufficient" and o["n"] == 1 and o["value"] is None
+    assert db.query(Observation).filter_by(kind=M.OVERRIDE_KIND, item_id=item).count() == 1
+
+
+def test_switching_off_with_nothing_held_records_no_override(client, auth, key, proj, db,
+                                                             rule_on):
+    item, reviewer = _ready_for_review(client, key, effort=0)
+    _refused_signoff(client, key, item, reviewer)
+    _ok(client, key, "sign_off",
+        {"id": item, "agent_id": reviewer["agent_id"], "evidence": [SABOTAGE]})
+    _switch_off(client, auth, proj)
+    assert db.query(Observation).filter_by(kind=M.OVERRIDE_KIND).count() == 0
