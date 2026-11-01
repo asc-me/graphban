@@ -14,9 +14,18 @@ total would let a contributor subtract its own counts and recover the rest (PRD-
 
 Escape-rate changes are OBSERVATIONAL (D9, §13): the window after adoption is compared with an
 equal-length window before it, with n on both sides, and nothing here claims a cause. The rate is
-PROJECT-WIDE (`escape_scope: "project"`): every escape kind surfaces at merge, after every stage's
-check has run, so no ledger record says which stage should have caught it. Every rule in a project
-therefore shows the same before/after counts for the same adoption time.
+PROJECT-WIDE (`escape_scope: "project"`) unless escapes carry a stage attribution: every escape
+kind surfaces at merge, after every stage's check has run, so by default no record says which
+stage should have caught it, and every rule in a project shows the same counts for the same
+adoption time. An escape with `ref.missed_stage` (`record_bug_escape(missed_stage=...)` or
+`attribute_escape`) names the stage whose check it got past. Once a project has any, a rule's rate
+there counts only escapes attributed to the rule's stage (`escape_scope: "stage"`; unattributed
+ones are left out), and `escape_scope` is "mixed" when a scope spans both. The platform rates
+stay project-wide.
+
+Effect can be filtered or grouped by oversight profile (D13). A project's profile is the one most
+recently applied to its org (`apply_rule_profile` audit events); a project in an org that never
+applied one has profile None.
 
 Scopes: a project, an org (team/enterprise — D11), and the platform (opt-in, hosted only, on the
 PRD-38 D13 terms: `Organization.telemetry_share`, three orgs, `PLATFORM_MIN_N`, a 60% top-org cap,
@@ -30,11 +39,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.errors import Validation
 from app.models import Event, Item, Observation, Organization, PlatformRuleRollup, Project
 from app.services import harness as harness_svc
 from app.services import observations as observations_svc
 from app.services import quotas
 from app.services import rule_toggles
+from app.services.rules import STAGE_IDS
 
 #: Sign-offs needed on EACH side of an adoption before an escape rate is shown.
 MIN_SIGNOFFS = 10
@@ -46,6 +57,12 @@ UNMEASURED_ESCAPES: tuple[str, ...] = ()
 ESCAPE_SCOPE = "project"
 ESCAPE_SCOPE_NOTE = ("escapes are counted across the whole project, not per stage: no record "
                      "says which stage's check an escape got past")
+STAGE_SCOPE_NOTE = ("escapes are counted for the rule's stage: only escapes attributed to that "
+                    "stage's check are included, and unattributed escapes are left out")
+MIXED_SCOPE_NOTE = ("some projects count escapes for the rule's stage and others across the whole "
+                    "project; the rate mixes the two")
+_SCOPE_NOTES = {"project": ESCAPE_SCOPE_NOTE, "stage": STAGE_SCOPE_NOTE,
+                "mixed": MIXED_SCOPE_NOTE}
 #: A rule on this long with no catches is suggested for retirement.
 RETIRE_AFTER_DAYS = 60
 CAUGHT_LINKS = 50
@@ -223,8 +240,9 @@ def _signoffs(db: Session, project_id: str) -> dict[str, datetime]:
 
 
 def _window_counts(db: Session, project_id: str, start: datetime, end: datetime,
-                   signed: dict[str, datetime]) -> tuple[int, int]:
-    """(sign-offs, escapes) with the time in [start, end)."""
+                   signed: dict[str, datetime], stage: str | None = None) -> tuple[int, int]:
+    """(sign-offs, escapes) with the time in [start, end). With `stage`, only escapes attributed
+    to that stage count."""
     n_signed = sum(1 for t in signed.values() if start <= t < end)
     escapes = 0
     for o in db.scalars(select(Observation).where(
@@ -237,8 +255,26 @@ def _window_counts(db: Session, project_id: str, start: datetime, end: datetime,
             first = signed.get(o.item_id or "")
             if first is None or first >= t:
                 continue
+        if stage is not None and (o.ref or {}).get("missed_stage") != stage:
+            continue
         escapes += 1
     return n_signed, escapes
+
+
+def attribute_escape(db: Session, observation: Observation, stage: str) -> None:
+    """Record which stage's check this escape got past. Escape kinds only; `stage` must be a
+    stage of the rules vocabulary."""
+    if observation.kind not in ESCAPE_KINDS:
+        raise ValueError(f"{observation.kind} is not an escape, so it has no stage to attribute")
+    if stage not in STAGE_IDS:
+        raise ValueError(f"{stage!r} is not a stage; known: {', '.join(sorted(STAGE_IDS))}")
+    observation.ref = {**(observation.ref or {}), "missed_stage": stage}
+    db.flush()
+
+
+def _attributed(db: Session, project_id: str) -> bool:
+    return any((r or {}).get("missed_stage") for r in db.scalars(select(Observation.ref).where(
+        Observation.project_id == project_id, Observation.kind.in_(ESCAPE_KINDS))))
 
 
 def project_counts(db: Session, rule_id: str, project_id: str) -> dict:
@@ -247,12 +283,19 @@ def project_counts(db: Session, rule_id: str, project_id: str) -> dict:
     out = {"on": on, "adopted_at": since, "caught": _caught(db, rule_id, project_id),
            "overrides": _cost_rows(db, rule_id, project_id, OVERRIDE_KIND),
            "holds": _cost_rows(db, rule_id, project_id, HELD_KIND),
-           "before": (0, 0), "after": (0, 0)}
+           "before": (0, 0), "after": (0, 0), "escape_scope": "project"}
     if since is not None:
         span = _now() - since
         signed = _signoffs(db, project_id)
         out["before"] = _window_counts(db, project_id, since - span, since, signed)
         out["after"] = _window_counts(db, project_id, since, _now() + timedelta(seconds=1), signed)
+        out["project_before"], out["project_after"] = out["before"], out["after"]
+        if _attributed(db, project_id):
+            stage = rule_toggles.LIBRARY[rule_id].stage
+            out["escape_scope"] = "stage"
+            out["before"] = _window_counts(db, project_id, since - span, since, signed, stage)
+            out["after"] = _window_counts(
+                db, project_id, since, _now() + timedelta(seconds=1), signed, stage)
     return out
 
 
@@ -279,6 +322,8 @@ def _summary(rule_id: str, counts: list[dict], project_ids: list[str]) -> dict:
     adopted = [c for c in on if c["adopted_at"] is not None]
     untimed = len(on) - len(adopted)
     rule = rule_toggles.LIBRARY[rule_id]
+    scopes = {c["escape_scope"] for c in adopted}
+    scope = scopes.pop() if len(scopes) == 1 else "mixed" if scopes else ESCAPE_SCOPE
     out = {
         "rule_id": rule_id, "stage": rule.stage, "title": rule.title,
         "projects": len(project_ids), "projects_on": len(on),
@@ -288,7 +333,7 @@ def _summary(rule_id: str, counts: list[dict], project_ids: list[str]) -> dict:
                    "items": sorted({o.item_id for o in caught if o.item_id})[:CAUGHT_LINKS]},
         "cost": _cost(counts, caught),
         "escape_note": NOTE,
-        "escape_scope": ESCAPE_SCOPE, "escape_scope_note": ESCAPE_SCOPE_NOTE,
+        "escape_scope": scope, "escape_scope_note": _SCOPE_NOTES[scope],
         "escapes_unmeasured": list(UNMEASURED_ESCAPES),
     }
     if adopted:
@@ -361,20 +406,64 @@ def _rules(rule_id: str | None) -> list[str]:
     return list(rule_toggles.LIBRARY)
 
 
-def project_effect(db: Session, project_id: str, rule_id: str | None = None) -> dict:
-    return {"scope": "project", "project_id": project_id,
-            "library_loaded": rule_toggles.library_loaded(),
-            "rules": [_summary(r, [project_counts(db, r, project_id)], [project_id])
-                      for r in _rules(rule_id)]}
+def project_profile(db: Session, project_id: str) -> str | None:
+    """The oversight profile most recently applied to the project's org, or None."""
+    org_id = db.scalar(select(Project.org_id).where(Project.id == project_id))
+    if org_id is None:
+        return None
+    e = db.scalars(select(Event).where(
+        Event.action == "apply_rule_profile", Event.target_type == "org",
+        Event.target_id == org_id).order_by(Event.ts.desc(), Event.id.desc()).limit(1)).first()
+    return (e.meta or {}).get("profile") if e else None
 
 
-def org_effect(db: Session, org_id: str, rule_id: str | None = None) -> dict:
-    """Across the org's projects. Premium (D11): 402 on free/pro."""
+def _group_by(group_by: str | None) -> None:
+    if group_by not in (None, "profile"):
+        raise Validation(f"cannot group by {group_by!r}; use 'profile'")
+
+
+def project_effect(db: Session, project_id: str, rule_id: str | None = None,
+                   profile: str | None = None, group_by: str | None = None) -> dict:
+    """One project. `profile` keeps it only if it runs that oversight profile (`rules: []`
+    otherwise); `group_by="profile"` nests the rules under the project's profile."""
+    _group_by(group_by)
+    prof = project_profile(db, project_id)
+    rules = [_summary(r, [project_counts(db, r, project_id)], [project_id])
+             for r in _rules(rule_id)]
+    if profile is not None and profile != prof:
+        rules = []
+    out = {"scope": "project", "project_id": project_id, "oversight_profile": prof,
+           "library_loaded": rule_toggles.library_loaded(), "rules": rules}
+    if group_by == "profile":
+        out["groups"] = [{"profile": prof, "projects": [project_id], "rules": rules}] if rules \
+            else []
+    return out
+
+
+def org_effect(db: Session, org_id: str, rule_id: str | None = None,
+               profile: str | None = None, group_by: str | None = None) -> dict:
+    """Across the org's projects. Premium (D11): 402 on free/pro. `profile` keeps only the
+    projects running that oversight profile; `group_by="profile"` adds one group per profile."""
     quotas.require_org_rules(db, org_id)
+    _group_by(group_by)
     pids = observations_svc.org_project_ids(db, org_id)
-    return {"scope": "org", "org_id": org_id, "library_loaded": rule_toggles.library_loaded(),
-            "rules": [_summary(r, [project_counts(db, r, p) for p in pids], pids)
-                      for r in _rules(rule_id)]}
+    by_profile: dict[str | None, list[str]] = {}
+    for p in pids:
+        by_profile.setdefault(project_profile(db, p), []).append(p)
+    if profile is not None:
+        pids = by_profile.get(profile, [])
+    out = {"scope": "org", "org_id": org_id, "library_loaded": rule_toggles.library_loaded(),
+           "profile": profile,
+           "rules": [_summary(r, [project_counts(db, r, p) for p in pids], pids)
+                     for r in _rules(rule_id)]}
+    if group_by == "profile":
+        out["groups"] = [
+            {"profile": prof, "projects": ps,
+             "rules": [_summary(r, [project_counts(db, r, p) for p in ps], ps)
+                       for r in _rules(rule_id)]}
+            for prof, ps in sorted(by_profile.items(), key=lambda kv: (kv[0] is None, kv[0] or ""))
+            if profile is None or prof == profile]
+    return out
 
 
 # ---- opt-in contribution and the platform prior (D8, on PRD-38 D13) ---------------------------
@@ -390,10 +479,10 @@ def contribution(db: Session, org_id: str) -> dict:
         rows[r] = {
             "projects_on": sum(1 for c in counts if c["on"]),
             "caught": sum(len(c["caught"]) for c in counts),
-            "signed_before": sum(c["before"][0] for c in adopted),
-            "escapes_before": sum(c["before"][1] for c in adopted),
-            "signed_after": sum(c["after"][0] for c in adopted),
-            "escapes_after": sum(c["after"][1] for c in adopted)}
+            "signed_before": sum(c["project_before"][0] for c in adopted),
+            "escapes_before": sum(c["project_before"][1] for c in adopted),
+            "signed_after": sum(c["project_after"][0] for c in adopted),
+            "escapes_after": sum(c["project_after"][1] for c in adopted)}
     return rows
 
 

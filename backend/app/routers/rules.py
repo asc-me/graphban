@@ -192,22 +192,27 @@ def _measure(fn, *args):
         return fn(*args)
     except NotFound as e:
         raise HTTPException(404, str(e)) from e
+    except Validation as e:
+        raise HTTPException(422, str(e)) from e
 
 
 @router.get("/rules/effect")
 def rules_effect(project_id: str = "core", rule_id: str | None = None,
+                 profile: str | None = None, group_by: str | None = None,
                  db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Caught, escape rate before/after adoption, cost and retirement per library rule."""
+    """Caught, escape rate before/after adoption, cost and retirement per library rule.
+    `profile` filters by oversight profile; `group_by=profile` groups by it."""
     authz.require_readable(db, user.id, project_id)
-    return _measure(rule_measure.project_effect, db, project_id, rule_id)
+    return _measure(rule_measure.project_effect, db, project_id, rule_id, profile, group_by)
 
 
 @router.get("/orgs/{org_id}/rules/effect")
-def org_rules_effect(org_id: str, rule_id: str | None = None, db: Session = Depends(get_db),
+def org_rules_effect(org_id: str, rule_id: str | None = None, profile: str | None = None,
+                     group_by: str | None = None, db: Session = Depends(get_db),
                      user: User = Depends(get_current_user)):
     """The same across the org's projects. Org admins on team/enterprise (402 otherwise)."""
     authz.require_org_admin(db, user.id, org_id)
-    return _measure(rule_measure.org_effect, db, org_id, rule_id)
+    return _measure(rule_measure.org_effect, db, org_id, rule_id, profile, group_by)
 
 
 @router.get("/orgs/{org_id}/rules/contribution")
