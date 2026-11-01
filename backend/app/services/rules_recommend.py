@@ -16,12 +16,14 @@ from collections import Counter
 from datetime import datetime, timezone
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import CodeNode, RuleSuggestionDismissal
+from app.models import CodeNode, Item, Observation, RuleSuggestionDismissal
 from app.services import observations as observations_svc
 from app.services import platform as platform_svc
+from app.services import rule_pack
+from app.services import rule_toggles
 from app.services import rules as rules_svc
 from app.services import stack as stack_svc
 
@@ -29,10 +31,17 @@ logger = logging.getLogger("graphban.rules_recommend")
 
 CACHE_TTL_SECONDS = 60.0
 SOURCES = ("stack", "code_graph", "github", "fleet")
-KINDS = ("value", "code")
+KINDS = ("value", "code", "rule", "proposal")
 _PR_FETCH_TIMEOUT = 3.0
 _MIN_PRS = 3
 _TICKET_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d+[:\s]")
+#: Fewer matching observations than this is an anecdote, not a pattern (PRD-P63 D5).
+_MIN_OBSERVATIONS = 2
+#: An unmatched kind needs a few more before it is worth a proposal to the library (D7).
+_MIN_PROPOSAL = 3
+_EVIDENCE_LINKS = 5
+#: A matching observation's weight halves every this many days.
+_HALF_LIFE_DAYS = 30.0
 _RELEASE_DOC_RE = re.compile(r"(^|/)(release|releasing|release-process|release_process)[^/]*\.md$", re.I)
 
 #: Who the engine is, in the `(actor_type, id, label)` shape a refusal is attributed with. It
@@ -62,11 +71,13 @@ def fingerprint(evidence: list[dict]) -> str:
 
 
 def _suggestion(id_: str, stage: str, level: str, title: str, why: str, kind: str,
-                evidence: list[dict], value: str | None = None, rule_id: str | None = None) -> dict:
+                evidence: list[dict], value: str | None = None, rule_id: str | None = None,
+                **extra) -> dict:
     return {
         "id": id_, "stage": stage, "level": level, "title": title, "why": why, "kind": kind,
         "rule_id": rule_id, "value": value, "evidence": evidence,
         "fingerprint": fingerprint(evidence),
+        "score": None, "replay": None, "effect": None, "report": None, **extra,
     }
 
 
@@ -141,19 +152,115 @@ def _from_github(db: Session, project_id: str) -> tuple[list[dict], dict]:
     return out, _source("github", "read")
 
 
+def _aware(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _matches(o: Observation, m: dict) -> bool:
+    """A mapping row names an observation kind and, optionally, `where`: ref keys that must
+    equal. Only structured fields are compared; nothing is read from prose (D2)."""
+    if o.kind != m.get("observation"):
+        return False
+    where = m.get("where")
+    return not isinstance(where, dict) or all((o.ref or {}).get(k) == v for k, v in where.items())
+
+
+def _score(rows: list[Observation], weight: float, now: datetime) -> float:
+    """Weight times recency-decayed count (D5)."""
+    return round(sum(weight * 0.5 ** (max(0.0, (now - _aware(o.occurred_at)).total_seconds())
+                                      / 86400 / _HALF_LIFE_DAYS) for o in rows), 2)
+
+
+def _replay(db: Session, project_id: str, rows: list[Observation]) -> dict | None:
+    """How many of the project's signed-off items carry a matching observation. Shaped like
+    `harness_rules.replay`: it reports what differs, and does NOT claim the outcome would have
+    been better. None when no item has been signed off (nothing to replay against)."""
+    signed = db.scalar(select(func.count(Item.id)).where(
+        Item.project_id == project_id, Item.reviewed_by.is_not(None))) or 0
+    if signed == 0:
+        return None
+    hit = len({o.item_id for o in rows if o.item_id})
+    return {"signed_off": signed, "would_differ": min(hit, signed),
+            "text": f"{min(hit, signed)} of the last {signed} signed-off items carry this observation"}
+
+
+def _evidence(rows: list[Observation]) -> list[dict]:
+    """A count line (so one more observation always changes the fingerprint and re-opens a
+    dismissal) and the newest few as links. Kind, item id and commit only — never copied text."""
+    newest = sorted(rows, key=lambda o: (_aware(o.occurred_at), o.id), reverse=True)
+    out = [{"text": f"{len(rows)} observation(s) of {', '.join(sorted({o.kind for o in rows}))}",
+            "source": "fleet", "link": ""}]
+    for o in newest[:_EVIDENCE_LINKS]:
+        sha = f" @ {o.commit[:8]}" if o.commit else ""
+        out.append({"text": f"{o.kind} on {o.item_id or 'a project record'}{sha}",
+                    "source": "fleet", "link": o.item_id or ""})
+    return out
+
+
+def _fleet_suggestions(db: Session, project_id: str, rows: list[Observation]) -> list[dict]:
+    pack = rule_pack.CURRENT
+    mappings = pack.mappings if pack else []
+    now = datetime.now(timezone.utc)
+    out: list[dict] = []
+    mapped_ids: set[int] = set()
+    by_rule: dict[str, list[dict]] = {}
+    for m in mappings:
+        if isinstance(m, dict) and isinstance(m.get("rule"), str) and m.get("observation"):
+            by_rule.setdefault(m["rule"], []).append(m)
+    for rule_id, maps in sorted(by_rule.items()):
+        lib = rule_toggles.LIBRARY.get(rule_id)
+        hit = {o.id: (o, m) for m in maps for o in rows if _matches(o, m)}
+        if lib is None or lib.unmeasured_reason:
+            continue  # no library rule that loads whole: handled as unmatched below
+        mapped_ids |= set(hit)
+        matched = [o for o, _ in hit.values()]
+        if len(matched) < _MIN_OBSERVATIONS:
+            continue
+        weight = max(float(m.get("weight", 1)) for _, m in hit.values())
+        replay = _replay(db, project_id, matched) if any(m.get("replay") for _, m in hit.values()) \
+            else None
+        out.append(_suggestion(
+            f"suggest.rule.{rule_id}", lib.stage, lib.enforcement, f"Turn on {lib.title}",
+            f"{len(matched)} fleet observation(s) imply this rule. Nothing turns it on but a "
+            "person: the toggle is yours.", "rule", _evidence(matched), rule_id=rule_id,
+            score=_score(matched, weight, now), replay=replay,
+            effect=f"{lib.summary} Turning it on changes what the server "
+                   f"{'refuses' if lib.enforcement == 'enforced' else 'reports'} from now on; "
+                   "past work is not re-judged."))
+    # D7: observations no loadable library rule maps. A proposal, never a rule; the engine files
+    # nothing (this box has no route to Graphban's backlogs), so it is an exportable report.
+    leftover: dict[str, list[Observation]] = {}
+    for o in rows:
+        if o.id not in mapped_ids and o.kind != "refusal":
+            leftover.setdefault(o.kind, []).append(o)
+    for kind, group in sorted(leftover.items()):
+        if len(group) < _MIN_PROPOSAL:
+            continue
+        stage = observations_svc.KINDS.get(kind, "unknown")
+        out.append(_suggestion(
+            f"propose.{kind}", stage, "advisory", f"Propose a library rule for {kind}",
+            f"{len(group)} observation(s) of {kind} match no library rule. This is a proposal "
+            "to the library, not a rule: it is exported for Graphban's backlogs, not filed.",
+            "proposal", _evidence(group),
+            report={"kind": kind, "stage": stage, "count": len(group),
+                    "items": len({o.item_id for o in group if o.item_id}),
+                    "tag": "rule-library"}))
+    return out
+
+
 def _from_fleet(db: Session, project_id: str) -> tuple[list[dict], dict]:
-    """The observations ledger (PRD-63 S1). It feeds suggestions in S3; until then it is read
-    and reported, so the panel never claims it looked at fleet evidence it did not have. An
+    """The observations ledger (PRD-63 S1) mapped to library rules by the pack (S3 / D5). An
     empty ledger is `not_available`, not a clean `read` — nothing recorded is not nothing
     happened."""
     try:
         n = observations_svc.count_for_project(db, project_id)
+        if n == 0:
+            return [], _source("fleet", "not_available", "no_observations")
+        rows = list(db.scalars(select(Observation).where(Observation.project_id == project_id)))
+        return _fleet_suggestions(db, project_id, rows), _source("fleet", "read", f"{n} observation(s)")
     except Exception:  # noqa: BLE001
         logger.debug("observations unreadable", exc_info=True)
         return [], _source("fleet", "not_available", "read_failed")
-    if n == 0:
-        return [], _source("fleet", "not_available", "no_observations")
-    return [], _source("fleet", "read", f"{n} observation(s)")
 
 
 def _compute(db: Session, project_id: str) -> tuple[list[dict], list[dict]]:
@@ -187,9 +294,12 @@ def recommended(db: Session, project_id: str) -> dict:
     held = _held(db, project_id)
     dismissed = {d.suggestion_id: d.fingerprint for d in db.scalars(
         select(RuleSuggestionDismissal).where(RuleSuggestionDismissal.project_id == project_id))}
+    on = {t["rule_id"] for t in rule_toggles.effective(db, project_id) if t["on"]["value"]}
     shown = [s for s in suggestions
              if not (s["kind"] == "value" and s["rule_id"] in held)
+             and not (s["kind"] == "rule" and s["rule_id"] in on)
              and dismissed.get(s["id"]) != s["fingerprint"]]
+    shown.sort(key=lambda s: -(s["score"] or 0))
     return {"suggestions": shown, "sources": sources}
 
 

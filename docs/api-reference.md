@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 301 of the 301. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 302 of the 302. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -96,7 +96,7 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | GET | `/api/rules` | JWT (project reader) | The rule registry (`services/rules.py`): every delivery rule with its enforcement, typed enforcer and truth. Gitops rows carry the effective value and `source` from `gitops.resolve`; a gitops rule is `advisory` (or `unmeasured`), never `enforced` |
 | GET | `/api/rules/flow` | JWT (project reader) | The registry placed on the Rules map's seven fixed stages (`rules.flow`): each stage's `state` is the weakest of its used rules, `not_used` only when every rule on it is unused under the project's gitops `model`, and `unmeasured` when no rule is registered. Unused rules stay listed with `used: false` |
 | GET | `/api/rules/refusal-coverage` | JWT (project reader) | The "N of M refusal sites name their rule" number the build of this package published (`rules.refusal_coverage`, GRPH-1192): `{published, n, m, commit, published_at}`. Read from package data, never computed at request time; a build that did not publish returns `published: false` with null `n`, `m`, `commit` and `published_at` — not zero |
-| GET | `/api/rules/recommended` | JWT (project reader) | Recommended-rules suggestions (`services/rules_recommend.py`): `suggestions[]` (`kind` value\|code, `evidence[]`, `fingerprint`) and an always-present `sources[]` (`read` or `not_available` + reason such as `not_connected`). Computed on open, cached ~60s per project; never writes a rule, and a saved value suggestion is advisory |
+| GET | `/api/rules/recommended` | JWT (project reader) | Recommended-rules suggestions (`services/rules_recommend.py`): `suggestions[]` (`kind` value\|code\|rule\|proposal, `evidence[]`, `fingerprint`; `rule` adds `score`, `replay`, `effect` from the pack's observation mapping, `proposal` a redacted `report` for the library) and an always-present `sources[]` (`read` or `not_available` + reason such as `not_connected`). Computed on open, cached ~60s per project; never writes a rule, and a saved value suggestion is advisory |
 | POST | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Dismiss a suggestion for the project, keyed on id + evidence fingerprint; it returns when the evidence changes. 204, or 404 for an unknown id |
 | GET | `/api/rules/recommended/dismissed` | JWT (project reader) | Suggestions currently dismissed against their present evidence, for the panel's "Show dismissed (N)" |
 | DELETE | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Restore a dismissed suggestion. 204, or 404 when it was not dismissed |
@@ -749,3 +749,4 @@ Pushing and the portable bundle are a JWT on this box.
 | DELETE | `/api/sync/code-graph` | MCP (sync scope) | Delete every node and edge in the key's project |
 | GET | `/api/sync/export` | JWT | A portable bundle of summaries and structure, without vectors |
 | POST | `/api/sync/import` | JWT (write) | Import a bundle. This instance re-embeds on arrival |
+| GET | `/api/documents/{doc_id}/bytes` | JWT (read) | The stored bytes of a document blob by id; 409 `blob_pending` while the backend write is pending, 404 with no row |

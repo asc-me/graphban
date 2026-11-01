@@ -1,7 +1,7 @@
 """`platform_rule_rollups`: opt-in platform effect of library rules (GRPH-1265, PRD-P63 D8).
 
-Revision ID: 0169
-Revises: 0168
+Revision ID: 0171
+Revises: 0170
 """
 
 from typing import Sequence, Union
@@ -9,8 +9,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0169"
-down_revision: Union[str, None] = "0168"
+revision: str = "0171"
+down_revision: Union[str, None] = "0170"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

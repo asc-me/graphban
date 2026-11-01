@@ -1,0 +1,7 @@
+id = "review.evidence_attached"
+stage = "Review"
+title = "Evidence on review"
+summary = "An item moves to review with evidence attached."
+primitive = "evidence_attached"
+claims = "checked"
+default = "off"

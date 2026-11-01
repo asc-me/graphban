@@ -190,7 +190,8 @@ CEILING = 16040
 # 15914 -> 16021, and CEILING 15930 -> 16040 with it: GRPH-1262's `get_rule_toggles` (+108, misc
 # tier, above) merged onto GRPH-1275's three document tools. The two raises add; neither tool
 # set moves CORE_TOKENS. Headroom 19.
-MEASURED_TOKENS = 16021
+# 16021 -> 16020 (GRPH-1277): search_docs `limit` -> `top_k` and a shorter description.
+MEASURED_TOKENS = 16020
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

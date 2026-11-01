@@ -37,6 +37,7 @@ from app.config import settings
 VECTOR_COLS = [
     ("memory_shards", "ix_memory_shards_embedding"),
     ("code_nodes", "ix_code_nodes_embedding"),
+    ("document_chunks", "ix_document_chunks_embedding"),
 ]
 
 _DECLARED = sa.text(

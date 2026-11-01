@@ -53,6 +53,7 @@ import {
   type Level,
   type MapLayout,
 } from "./levels";
+import { LibraryRuleControls } from "./LibraryRuleControls";
 import { RecommendedSheet, UnmappedSheet, useDialogBehavior } from "./RefusalPanels";
 import { AdminGitopsLink, BudgetCapEditor, GITOPS_RULE_FIELDS, GitopsRuleEditor, useOrgName } from "./RuleEditors";
 import { RuleLevelIcon } from "./RuleLevelIcon";
@@ -1048,6 +1049,9 @@ function RuleRow({
   const quiet = quietLine(rule);
   const enforcer = enforcerText(rule, version);
   const value = valueText(rule.value);
+  const library = rule.control === "toggle";
+  // A refused template is UNMEASURED, not a dimmed choice; an off rule is dimmed and still listed.
+  const dim = !rule.used && !rule.unmeasured_reason;
   return (
     <div
       ref={ref}
@@ -1059,11 +1063,11 @@ function RuleRow({
       className="grid grid-cols-[100px_minmax(0,1fr)] gap-2.5 rounded-[12px] border border-[#2a333a] p-3"
       style={focused ? { borderLeft: "4px solid #c6f24e" } : undefined}
     >
-      <span className="pt-0.5" style={{ opacity: rule.used ? 1 : 0.55 }}>
+      <span className="pt-0.5" style={{ opacity: dim ? 0.55 : 1 }}>
         <LevelWord level={level} size={13} className="text-[10px]" />
       </span>
       <div className="flex min-w-0 flex-col gap-1.5">
-        <div className="flex flex-col gap-1.5" style={{ opacity: rule.used ? 1 : 0.55 }}>
+        <div className="flex flex-col gap-1.5" style={{ opacity: dim ? 0.55 : 1 }}>
           <span className="text-[13px] font-semibold leading-snug text-fg">{rule.title}</span>
           <span className="text-[12px] leading-snug text-muted">{rule.summary}</span>
           <div className="flex flex-wrap items-center gap-1.5">
@@ -1080,9 +1084,11 @@ function RuleRow({
           </div>
           <EnforcerLink kind={rule.enforcer.kind} text={enforcer} url={rule.enforcer.url} />
         </div>
-        {!rule.used && (
+        {dim && (
           <span className="text-[11.5px] leading-snug text-muted" data-testid="rules-row-not-used">
-            Not used by this project's model{model ? `: ${model}` : ""}.
+            {library
+              ? `NOT USED — ${rule.label ?? "turned off for this project"}. On, it is ${LEVELS[rule.enforcement].word}.`
+              : `Not used by this project's model${model ? `: ${model}` : ""}.`}
           </span>
         )}
         {quiet && <span className="text-[11.5px] leading-snug text-muted-2">{quiet}</span>}
@@ -1125,7 +1131,9 @@ function RuleRow({
             <span className="text-[11.5px] text-muted">Nothing has reported yet. That is not a pass.</span>
           </div>
         ))}
-        {rule.truth === "db" && rule.id !== "plan.budget_cap" && (
+        {library ? (
+          <LibraryRuleControls rule={rule} />
+        ) : rule.truth === "db" && rule.id !== "plan.budget_cap" && (
           <ValueBox rule={rule} value={value} prefill={prefill} />
         )}
         {rule.id === "plan.budget_cap" && rule.used && <BudgetCapEditor />}

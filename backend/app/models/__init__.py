@@ -3543,6 +3543,9 @@ class Document(Base):
     # none | pending | stored. Absent is not the same as pending, so the default is explicit.
     blob_status: Mapped[str] = mapped_column(String, default="none", server_default="none")
     blob_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The bytes' mime type and length, written with the row before the backend call.
+    blob_mime: Mapped[str] = mapped_column(String, default="", server_default="")
+    blob_size: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_by: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -3556,7 +3559,16 @@ class DocumentChunk(Base):
     __tablename__ = "document_chunks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), index=True)
+    # NULL for a PRD baseline chunk: the spec keeps its own row, so the chunk cites
+    # (`prd_id`, `version`) instead of a document.
+    document_id: Mapped[str | None] = mapped_column(
+        ForeignKey("documents.id"), nullable=True, index=True)
+    project_id: Mapped[str] = mapped_column(String, default="", server_default="", index=True)
+    # prd | preamble | set_constraints | design_prompt | design_review. A column, not a hint
+    # in the query: search_code and search_memory never read this table.
+    kind: Mapped[str] = mapped_column(String, default="", server_default="")
+    prd_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    version: Mapped[str] = mapped_column(String, default="", server_default="")
     ordinal: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     heading: Mapped[str] = mapped_column(String, default="", server_default="")
     text: Mapped[str] = mapped_column(Text, default="", server_default="")
@@ -3566,9 +3578,11 @@ class DocumentChunk(Base):
     extractor_version: Mapped[str] = mapped_column(String)
     governing: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default=true(), nullable=False)
+    # A cache of `text`; NULL when the provider was down or is the offline stub.
+    embedding = mapped_column(EmbeddingType(settings.embed_dim), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    document: Mapped[Document] = relationship(back_populates="chunks")
+    document: Mapped[Document | None] = relationship(back_populates="chunks")
 
 
 class PlatformRuleRollup(Base):

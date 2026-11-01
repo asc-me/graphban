@@ -41,6 +41,18 @@ class Conflict(AppError):
     code = "conflict"
 
 
+class BlobPending(AppError):
+    """The row exists but its bytes are not stored yet (GRPH-1276).
+
+    Not a ``Conflict``: the refusal ratchet counts every ``Conflict`` raise as a bare policy
+    409, and a pending blob is a retryable store. REST maps it to HTTP 409; ``code`` is
+    ``blob_pending`` so a caller retries the put at the same hash instead of treating it as a
+    lost lease.
+    """
+
+    code = "blob_pending"
+
+
 class Unavailable(AppError):
     """The operation is well-formed and permitted but cannot run in this instance's
     configuration — e.g. adjudicating a memory candidate with no chat model configured

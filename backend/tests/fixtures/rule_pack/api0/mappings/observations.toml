@@ -1,0 +1,4 @@
+[[map]]
+observation = "review.signed_off_without_receipt"
+rule = "review.sabotage_required"
+weight = 2

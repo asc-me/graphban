@@ -34,6 +34,17 @@ class SyncBackend:
     def delete(self, subdir: str, name: str) -> None:
         raise NotImplementedError
 
+    # Content-addressed blobs (GRPH-1276): the key is the sha256 of the bytes, so a second
+    # put of the same bytes is the same object. A MinIO/S3 backend implements the same two
+    # methods; which backend is install configuration, not a second behavior.
+    name = "backend"
+
+    def put_bytes(self, key: str, data: bytes) -> None:
+        raise NotImplementedError
+
+    def get_bytes(self, key: str) -> bytes | None:
+        raise NotImplementedError
+
 
 class LocalFolderBackend(SyncBackend):
     def __init__(self, root: str | os.PathLike):
@@ -58,6 +69,26 @@ class LocalFolderBackend(SyncBackend):
         p = self._dir(subdir) / name
         if p.exists():
             p.unlink()
+
+    name = "local-folder"
+
+    def _blob_path(self, key: str) -> Path:
+        if not re.fullmatch(r"[0-9a-f]{64}", key):
+            raise ValueError(f"not a sha256 key: {key!r}")
+        return self.root / "blobs" / key[:2] / key
+
+    def put_bytes(self, key: str, data: bytes) -> None:
+        p = self._blob_path(key)
+        if p.exists():
+            return  # immutable: the same hash is the same bytes
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, p)
+
+    def get_bytes(self, key: str) -> bytes | None:
+        p = self._blob_path(key)
+        return p.read_bytes() if p.exists() else None
 
 
 # ---- Front-matter helpers ----

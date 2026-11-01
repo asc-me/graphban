@@ -57,6 +57,9 @@ class LibraryRule:
     enforcer: object
     default_on: bool = False
     default_params: dict = field(default_factory=dict)
+    #: Set by the pack loader when the template was refused (D12): the rule is drawn
+    #: UNMEASURED with this reason and is never half-enforced.
+    unmeasured_reason: str = ""
 
 
 #: rule id -> its declaration. The platform default layer.

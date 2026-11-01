@@ -1338,8 +1338,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_docs",
         "description": (
-            "Search baselined PRD bodies (GRPH-1275). include_drafts adds unbaselined PRDs; "
-            "include_design adds accepted prompts/reviews, preamble. Empty says drafts excluded."
+            "Search baselined PRD chunks (GRPH-1277). include_drafts adds unbaselined PRDs; "
+            "include_design adds accepted prompts/reviews. A hit is not the spec: open it."
         ),
         "inputSchema": {
             "type": "object",
@@ -1347,7 +1347,7 @@ TOOLS: list[dict[str, Any]] = [
                 "query": {"type": "string"},
                 "include_drafts": {"type": "boolean"},
                 "include_design": {"type": "boolean"},
-                "limit": {"type": "integer"},
+                "top_k": {"type": "integer"},
             },
             "required": ["query"],
         },
@@ -3237,6 +3237,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                     "dispatch two opposing-lens critics, or run the passes yourself, and "
                     "record each as evidence {kind: sabotage, claim, mutation, tests_failed}"),
             ) from e
+        except fleet_svc.SabotageRequired as e:
+            raise errors.Refused(
+                409, str(e), rule_id="review.sabotage_required", meta=_who, hint=(
+                    "run a sabotage yourself and pass it in this sign_off's evidence as "
+                    "{kind: sabotage, claim, mutation, tests_failed} with tests_failed at or "
+                    "above the rule's min_tests_failed"),
+            ) from e
         except fleet_svc.AttestedTheBase as e:
             # The caller may sign this off, but the revision it named is not the work.
             raise errors.Refused(
@@ -3877,7 +3884,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             db, pid, str(args["query"]),
             include_drafts=bool(args.get("include_drafts", False)),
             include_design=bool(args.get("include_design", False)),
-            limit=int(args.get("limit") or 10),
+            top_k=int(args.get("top_k") or 10),
         )
     if name == "record_scan":
         # Provenance comes from the caller, not a free-text field: a key-only call stamps

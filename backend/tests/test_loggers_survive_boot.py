@@ -93,7 +93,7 @@ def test_the_app_migrate_path_skips_fileconfig():
 
     from app import migrate
 
-    tree = ast.parse(inspect.getsource(migrate.run_migrations))
+    tree = ast.parse(inspect.getsource(migrate._config))
     found = False
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Constant):
@@ -108,7 +108,7 @@ def test_the_app_migrate_path_skips_fileconfig():
             if key == "configure_logger":
                 found = True
     assert found, (
-        "run_migrations no longer assigns configure_logger=False — app loggers would "
+        "the migration config (_config) no longer assigns configure_logger=False — app loggers would "
         "be silenced on every Postgres boot. A comment containing the string is not "
         "the skip."
     )
