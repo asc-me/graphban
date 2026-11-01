@@ -41,7 +41,7 @@ from app.version import __version__
 
 #: The primitive API this server provides. Bump the minor for additive changes, the major for
 #: a removed primitive or a new required param; the pinned fixtures then fail the PR (below).
-PRIMITIVE_API = "1.0.0"
+PRIMITIVE_API = "1.1.0"
 
 #: Raw Ed25519 public keys (hex) whose signatures are trusted. The graphban-rules signing job
 #: holds the matching private key. Empty until that key is provided: no pack loads without one.
@@ -93,6 +93,10 @@ register_primitive(Primitive(
     "sabotage_receipt", "enforced",
     Enforcer("graphban_source", "app/services/items.py"),
     {"min_effort": Param("int"), "min_tests_failed": Param("int")}))
+register_primitive(Primitive(
+    "reviewer_property", "enforced",
+    Enforcer("graphban_source", "app/services/fleet.py"),
+    {"property": Param("str")}))
 register_primitive(Primitive(
     "evidence_attached", "checked",
     Enforcer("graphban_source", "app/services/items.py"),

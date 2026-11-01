@@ -24,7 +24,7 @@ from app.services import tool_tiers
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 16743
+CEILING = 17629
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -193,7 +193,12 @@ CEILING = 16743
 # 16021 -> 16020 (GRPH-1277): search_docs `limit` -> `top_k` and a shorter description.
 # 16020 -> 16724 (GRPH-1279): open_design, put_preamble, put_set_constraints, confirm_tier and
 # get_design_set, all in the `prd` tier (+704 there); CORE_TOKENS does not move. CEILING 16040 -> 16743.
-MEASURED_TOKENS = 16724
+# 16724 -> 17610 (GRPH-1280): compile_prompts, accept_prompt, put_canvas, file_finding,
+# resolve_finding and accept_design, all in the `prd` tier (+886 there); CORE_TOKENS does not
+# move. CEILING 16743 -> 17629.
+# 17610 -> 17618 (GRPH-1280 bounce): `accepted_by` is required on accept_prompt and accept_design,
+# since a bare credential is a relay and never the person. CEILING does not move.
+MEASURED_TOKENS = 17618
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.
