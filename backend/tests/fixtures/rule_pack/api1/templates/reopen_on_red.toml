@@ -1,0 +1,7 @@
+id = "merge.reopen_on_red"
+stage = "Merge"
+title = "Reopen on a red suite"
+summary = "A CI failure at the head an item was signed off on returns it to its builder."
+primitive = "reopen_on_red"
+claims = "enforced"
+default = "on"

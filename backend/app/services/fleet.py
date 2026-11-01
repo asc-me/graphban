@@ -3095,6 +3095,83 @@ def require_reviewer_property(db: Session, item: Item, agent_id: str) -> None:
             f"on: {why}")
 
 
+REOPEN_ON_RED_RULE = "merge.reopen_on_red"
+
+
+def _red_at_signed_head(item: Item, arrived: list) -> tuple[dict, dict] | None:
+    """The first arrived attestation that FAILS `suite_green` at a commit a reviewer signed
+    off, with its failing predicate, or None.
+
+    Only receipts that arrived on this write: a red run already on the record was handled (or
+    not) when it landed, and re-reading it would reopen the item again on every later note.
+    Bound to the signed-off commit — a failure at any other head says nothing about the work
+    a reviewer passed.
+    """
+    signed = [a.get("commit") for a in items_svc.attestation_receipts(item.evidence)
+              if a.get("adapter") == "fleet.sign_off" and a.get("commit")]
+    if not signed:
+        return None
+    for a in items_svc.attestation_receipts(arrived):
+        if a.get("adapter") == "fleet.sign_off":
+            continue
+        if not any(items_svc.same_commit(a.get("commit"), s) for s in signed):
+            continue
+        for q in a.get("predicates") or []:
+            if q.get("name") == items_svc.CI_PREDICATE and q.get("passed") is False:
+                return a, q
+    return None
+
+
+def reopen_on_red(db: Session, item: Item, arrived: list,
+                  lease_seconds: int = DEFAULT_LEASE_SECONDS) -> bool:
+    """The `reopen_on_red` primitive, bound to `merge.reopen_on_red` (GRPH-1272).
+
+    A server-side transition on attestation intake, not a fleet loop: when a `suite_green`
+    attestation FAILS at the head an item was signed off on, the item goes back to its builder
+    — `next`, claim cleared, pinned to the author for one lease the way `bounce` pins it — with
+    the failure quoted in a note (run url, failing check, commit). Before this the drain logged
+    MERGE HELD every cycle and nothing sent the item back (GRPH-P62).
+
+    On/off through the layered resolution. Absent from the library or off: the item stays
+    signed off. Mutates `item` without committing; the caller's write commits it. Returns
+    whether it reopened.
+    """
+    from app.services import rule_toggles
+
+    if item.status != "done" or REOPEN_ON_RED_RULE not in rule_toggles.LIBRARY:
+        return False
+    red = _red_at_signed_head(item, arrived)
+    if red is None:
+        return False
+    if not rule_toggles.resolve(db, REOPEN_ON_RED_RULE, item.project_id)["on"]["value"]:
+        return False
+    att, pred = red
+    commit = str(att.get("commit") or "")
+    run = att.get("run_ref") or "no run url recorded"
+    check = pred.get("detail") or pred.get("name")
+    reason = (f"{REOPEN_ON_RED_RULE}: CI failed {items_svc.CI_PREDICATE} at the signed-off head "
+              f"{commit[:12]} — failing check: {check}; run: {run}")
+    release_reservations(db, item_id=item.id)
+    author = item.built_by
+    item.status = "next"
+    item.claimed_by = None
+    item.claimed_at = None
+    item.assignee = ""
+    item.reviewed_by = None
+    item.reviewed_by_capabilities = None
+    item.review_claimed_by = None
+    item.review_claimed_at = None
+    item.review_takes = 0
+    item.bounce_pinned_to = author
+    item.bounce_pinned_until = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+                                if author else None)
+    item.bounce_reason = reason
+    item.evidence = items_svc.append_evidence(item.evidence, [{
+        "kind": "note", "detail": reason,
+        "url": run if str(run).startswith("http") else ""}])
+    return True
+
+
 #: The library rules that guard a sign-off. A sign-off that lands got past every one of them,
 #: so any hold they had on the item ends there (GRPH-1283).
 SIGN_OFF_RULES = (SABOTAGE_REQUIRED_RULE, GAP_BLOCKS_RULE, DISTINCT_VENDOR_RULE,
