@@ -38,7 +38,7 @@ An agent's `create_item` over MCP and a user's "New item" in the web app run the
 code, which is why an MCP write appears instantly in the UI.
 
 - **REST** (`routers/*.py`) — thin: parse/validate → call a service → serialize. JWT auth.
-- **MCP** (`mcp_server.py`) — a JSON-RPC 2.0 HTTP endpoint (`POST /api/mcp`) exposing 67 MCP tools,
+- **MCP** (`mcp_server.py`) — a JSON-RPC 2.0 HTTP endpoint (`POST /api/mcp`) exposing 72 MCP tools,
   authed by a scoped API key, dispatching to the same services. Each `tools/call`
   is metered (`mcp_tool_stats`) for the MCP Tools page.
 - **Public** (`routers/public.py`) — unauthenticated, rate-limited intake for the embed
@@ -127,7 +127,7 @@ backend/app/
   routers/           auth · projects · items · requests · memory · agent · apikeys ·
                      prds · analytics · platform · reports · public · admin ·
                      artifacts · assistant · fleet · learning · orgs · sync
-  mcp_server.py      JSON-RPC MCP endpoint (67 tools) + metering
+  mcp_server.py      JSON-RPC MCP endpoint (72 tools) + metering
   seed.py            the design dataset
 alembic/             migration chain (0001 → head)
 

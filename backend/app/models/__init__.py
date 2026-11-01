@@ -3583,3 +3583,66 @@ class DocumentChunk(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     document: Mapped[Document | None] = relationship(back_populates="chunks")
+
+
+class DesignSet(Base):
+    """An optional design set on a PRD (GRPH-1279 / GRPH-P64).
+
+    Holds the hashes a set was compiled from, so a moved preamble or PRD baseline can mark it
+    `stale` (never hidden). The compiled prompts and canvases are `documents` rows keyed by
+    `set_id`; this row is the set's own state.
+    """
+
+    __tablename__ = "design_sets"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # DS-…
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    prd_id: Mapped[str] = mapped_column(String, index=True)
+    # open | accepted | stale | frozen
+    status: Mapped[str] = mapped_column(String, default="open", server_default="open")
+    stale_reason: Mapped[str] = mapped_column(String, default="", server_default="")
+    # {"preamble"|"prd_baseline": {"was": hash, "now": hash}} — which hash moved.
+    stale_detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The preamble the set was compiled from: 0 / "" when none existed yet.
+    preamble_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    preamble_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    # The hash of the PRD baseline the set was compiled from, or the live body hash when the PRD
+    # has no baseline yet (`prd_baselined` false) — such a set can be drafted, never accepted.
+    prd_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    prd_baselined: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False)
+    constraints_body: Mapped[str] = mapped_column(Text, default="", server_default="")
+    constraints_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    constraints_accepted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False)
+    # The PRD section headings the set gates.
+    sections: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    screens: Mapped[list["DesignScreen"]] = relationship(
+        back_populates="design_set", cascade="all, delete-orphan", order_by="DesignScreen.id")
+
+
+class DesignScreen(Base):
+    __tablename__ = "design_screens"
+    __table_args__ = (UniqueConstraint("design_set_id", "screen", name="uq_design_screen"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    design_set_id: Mapped[str] = mapped_column(ForeignKey("design_sets.id"), index=True)
+    screen: Mapped[str] = mapped_column(String)
+    routes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # BACKED | HALF | UNBACKED. Until `tier_confirmed`, the tier is UNBACKED whatever was proposed.
+    tier: Mapped[str] = mapped_column(String, default="UNBACKED", server_default="UNBACKED")
+    tier_confirmed: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False)
+    tier_note: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # A suggestion from the code graph; the compiler ignores it until `confirm_tier`.
+    tier_proposal: Mapped[str] = mapped_column(String, default="", server_default="")
+    tier_proposal_basis: Mapped[str] = mapped_column(String, default="", server_default="")
+    confirmed_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    prompt_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    canvas_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    findings: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    design_set: Mapped[DesignSet] = relationship(back_populates="screens")
