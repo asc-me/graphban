@@ -1,0 +1,4 @@
+name = "graphban-rules-fixture"
+version = "1.0.0"
+primitive_api = "1.0.0"
+min_server = "2026.10.1"

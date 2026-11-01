@@ -1,0 +1,9 @@
+id = "review.sabotage_required"
+stage = "Review"
+title = "Sabotage receipt on large work"
+summary = "Work above the effort threshold is signed off only with a sabotage receipt."
+primitive = "sabotage_receipt"
+claims = "enforced"
+default = "on"
+[params]
+min_effort = 3
