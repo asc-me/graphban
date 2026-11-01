@@ -253,7 +253,10 @@ def _chosen(client, world, ents, item):
 
 
 def test_the_default_ladder_prefers_a_subscription_over_an_api_key_and_names_the_rung(client, world):
-    key = _ent(client, world, "openai", kind="api_key")  # created first, resets sooner
+    # The api_key is created first AND resets sooner, so only the rung can put the
+    # subscription ahead of it.
+    key = _ent(client, world, "openai", kind="api_key",
+               reset=datetime.now(timezone.utc) + timedelta(days=1))
     sub = _ent(client, world, "anthropic", kind="subscription",
                reset=datetime.now(timezone.utc) + timedelta(days=3))
     rec = _chosen(client, world, [key, sub], _item())
@@ -275,8 +278,12 @@ def test_an_org_policy_without_the_api_key_rung_never_routes_to_an_api_key(clien
 
 def test_a_policy_can_put_the_api_key_rung_first(client, world):
     _set_ladder(["api_key", "subscription"])
-    key = _ent(client, world, "openai", kind="api_key")
-    sub = _ent(client, world, "anthropic", kind="subscription")
+    # The subscription is created first AND resets sooner, so only the rung can put the
+    # api_key ahead of it.
+    sub = _ent(client, world, "anthropic", kind="subscription",
+               reset=datetime.now(timezone.utc) + timedelta(days=1))
+    key = _ent(client, world, "openai", kind="api_key",
+               reset=datetime.now(timezone.utc) + timedelta(days=3))
     rec = _chosen(client, world, [sub, key], _item())
     assert rec["entitlement_id"] == key and "api_key rung" in rec["reason"]
 
@@ -304,8 +311,12 @@ def _set_profile_ladder(client, world, ladder):
 
 def test_the_key_owners_profile_ladder_overrides_the_default_order(client, world):
     _set_profile_ladder(client, world, ["api_key", "subscription"])
-    key = _ent(client, world, "openai", kind="api_key")
-    sub = _ent(client, world, "anthropic", kind="subscription")
+    # The subscription is created first AND resets sooner, so only the rung can put the
+    # api_key ahead of it.
+    sub = _ent(client, world, "anthropic", kind="subscription",
+               reset=datetime.now(timezone.utc) + timedelta(days=1))
+    key = _ent(client, world, "openai", kind="api_key",
+               reset=datetime.now(timezone.utc) + timedelta(days=3))
     rec = _chosen(client, world, [sub, key], _item())
     assert rec["entitlement_id"] == key and "api_key rung" in rec["reason"]
 
