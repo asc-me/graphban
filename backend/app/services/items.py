@@ -1526,6 +1526,10 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         pending_lesson_applies = _prepare_lesson_evidence(db, item, old_len)
         gitops_svc.apply_observe_answer(db, item)
         gitops_svc.apply_already_evidence(item)
+        # `merge.reopen_on_red` (GRPH-1272): a red suite at the signed-off head sends the
+        # item back to its builder on this same write. `reopened` below sees it leave `done`.
+        from app.services import fleet as fleet_svc
+        fleet_svc.reopen_on_red(db, item, (item.evidence or [])[old_len:])
     if fields.get("ack_section_drift"):
         # "I have read what changed in the PRD and this item is right as it stands"
         # (GRPH-360). A FLAG, not a value: the caller cannot supply the hash, so it can only
