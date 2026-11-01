@@ -94,6 +94,9 @@ register_primitive(Primitive(
     Enforcer("graphban_source", "app/services/items.py"),
     {"min_effort": Param("int"), "min_tests_failed": Param("int")}))
 register_primitive(Primitive(
+    "gap_followup_link", "enforced",
+    Enforcer("graphban_source", "app/services/fleet.py")))
+register_primitive(Primitive(
     "reviewer_property", "enforced",
     Enforcer("graphban_source", "app/services/fleet.py"),
     {"property": Param("str")}))
