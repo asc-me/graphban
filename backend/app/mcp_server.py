@@ -1338,8 +1338,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_docs",
         "description": (
-            "Search baselined PRD bodies (GRPH-1275). include_drafts adds unbaselined PRDs; "
-            "include_design adds accepted prompts/reviews, preamble. Empty says drafts excluded."
+            "Search baselined PRD chunks (GRPH-1277). include_drafts adds unbaselined PRDs; "
+            "include_design adds accepted prompts/reviews. A hit is not the spec: open it."
         ),
         "inputSchema": {
             "type": "object",
@@ -1347,7 +1347,7 @@ TOOLS: list[dict[str, Any]] = [
                 "query": {"type": "string"},
                 "include_drafts": {"type": "boolean"},
                 "include_design": {"type": "boolean"},
-                "limit": {"type": "integer"},
+                "top_k": {"type": "integer"},
             },
             "required": ["query"],
         },
@@ -3884,7 +3884,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             db, pid, str(args["query"]),
             include_drafts=bool(args.get("include_drafts", False)),
             include_design=bool(args.get("include_design", False)),
-            limit=int(args.get("limit") or 10),
+            top_k=int(args.get("top_k") or 10),
         )
     if name == "record_scan":
         # Provenance comes from the caller, not a free-text field: a key-only call stamps

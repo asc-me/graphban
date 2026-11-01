@@ -578,10 +578,12 @@ def backfill(db: Session = Depends(get_db), user: User = Depends(get_current_use
     if settings.hosted_mode and not quotas.is_platform_admin(user):
         raise HTTPException(403, "backfill is an operator-only maintenance action")
     from app.services import code_graph as code_svc
+    from app.services import documents as documents_svc
 
     return {
         "reembedded": mem_svc.backfill_embeddings(db),
         "code_reembedded": code_svc.backfill_embeddings(db),
+        "document_chunks_reembedded": documents_svc.backfill_embeddings(db),
     }
 
 
