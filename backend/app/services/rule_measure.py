@@ -1,14 +1,22 @@
 """Measuring library rules (GRPH-1265 / PRD-P63 S5, D8, D9): caught, escapes, cost, retirement.
 
-Every measured value leaves here as `{status, value, n, min_n, reason}` (the GBC-P6 contract):
+Every measured value leaves here as `{status, value, n, n_band, min_n, reason}` (the GBC-P6
+contract):
 
 - `measured`     — a real value, zero included. `value: 0` is a real zero.
 - `insufficient` — fewer than `min_n` observations. `value` is None and the UI renders
                    "not enough data (n of min_n)". A null value never means anything else.
 - `unavailable`  — nothing in the ledger can answer it; `reason` says what is missing.
 
+`n` is an exact int at project and org scope, with `n_band` None. At platform scope `n` is ALWAYS
+None and `n_band` carries the band ("20–49", or "<20" below the floor), because an exact platform
+total would let a contributor subtract its own counts and recover the rest (PRD-38 D13).
+
 Escape-rate changes are OBSERVATIONAL (D9, §13): the window after adoption is compared with an
-equal-length window before it, with n on both sides, and nothing here claims a cause.
+equal-length window before it, with n on both sides, and nothing here claims a cause. The rate is
+PROJECT-WIDE (`escape_scope: "project"`): every escape kind surfaces at merge, after every stage's
+check has run, so no ledger record says which stage should have caught it. Every rule in a project
+therefore shows the same before/after counts for the same adoption time.
 
 Scopes: a project, an org (team/enterprise — D11), and the platform (opt-in, hosted only, on the
 PRD-38 D13 terms: `Organization.telemetry_share`, three orgs, `PLATFORM_MIN_N`, a 60% top-org cap,
@@ -34,6 +42,10 @@ MIN_SIGNOFFS = 10
 ESCAPE_KINDS = ("ci_red_after_sign_off", "reopened_after_done")
 #: Not measured: no record links a bug item to the work it escaped from.
 UNMEASURED_ESCAPES = ("bug item linked to merged work",)
+#: What the escape counts are scoped to; see the module docstring.
+ESCAPE_SCOPE = "project"
+ESCAPE_SCOPE_NOTE = ("escapes are counted across the whole project, not per stage: no record "
+                     "says which stage's check an escape got past")
 #: A rule on this long with no catches is suggested for retirement.
 RETIRE_AFTER_DAYS = 60
 CAUGHT_LINKS = 50
@@ -42,11 +54,19 @@ NOTE = "observed change, not a proven cause"
 
 def value(v, *, n: int, min_n: int, reason: str | None = None, available: bool = True) -> dict:
     if not available:
-        return {"status": "unavailable", "value": None, "n": n, "min_n": min_n, "reason": reason}
+        return {"status": "unavailable", "value": None, "n": n, "n_band": None, "min_n": min_n,
+                "reason": reason}
     if n < min_n:
-        return {"status": "insufficient", "value": None, "n": n, "min_n": min_n,
+        return {"status": "insufficient", "value": None, "n": n, "n_band": None, "min_n": min_n,
                 "reason": reason or f"not enough data ({n} of {min_n})"}
-    return {"status": "measured", "value": v, "n": n, "min_n": min_n, "reason": reason}
+    return {"status": "measured", "value": v, "n": n, "n_band": None, "min_n": min_n,
+            "reason": reason}
+
+
+def banded(v, *, n: int, min_n: int, reason: str | None = None, available: bool = True) -> dict:
+    """`value` for the platform scope: the exact count never leaves, only its band."""
+    out = value(v, n=n, min_n=min_n, reason=reason, available=available)
+    return {**out, "n": None, "n_band": _band(n) if available else None}
 
 
 def _aware(ts: datetime) -> datetime:
@@ -157,6 +177,7 @@ def _summary(rule_id: str, counts: list[dict], project_ids: list[str]) -> dict:
                                   reason="time items spend held is not recorded per rule"),
         },
         "escape_note": NOTE,
+        "escape_scope": ESCAPE_SCOPE, "escape_scope_note": ESCAPE_SCOPE_NOTE,
         "escapes_unmeasured": list(UNMEASURED_ESCAPES),
     }
     if adopted:
@@ -281,25 +302,29 @@ def platform_effect(db: Session, org_id: str) -> dict:
 
 
 def _platform_cell(row: PlatformRuleRollup) -> dict:
+    """One rule's platform rates. `n` is never exact here, on any branch: see the module doc."""
     n_min = harness_svc.PLATFORM_MIN_N
-    n = row.signed_before + row.signed_after
 
     def cell(reason: str) -> dict:
-        return {"before": value(None, n=0, min_n=n_min, available=False, reason=reason),
-                "after": value(None, n=0, min_n=n_min, available=False, reason=reason)}
+        return {"before": banded(None, n=0, min_n=n_min, available=False, reason=reason),
+                "after": banded(None, n=0, min_n=n_min, available=False, reason=reason)}
 
     if row.orgs_contributing < harness_svc.PLATFORM_MIN_ORGS:
         return cell(f"no platform rate: fewer than {harness_svc.PLATFORM_MIN_ORGS} orgs "
                     "contribute here")
     if row.top_org_share is not None and row.top_org_share > harness_svc.PLATFORM_MAX_ORG_SHARE:
         return cell("no platform rate: one org holds too large a share of this sample")
+
     if row.signed_before < n_min or row.signed_after < n_min:
-        return {"before": value(None, n=row.signed_before, min_n=n_min),
-                "after": value(None, n=row.signed_after, min_n=n_min)}
+        # A before/after comparison needs both sides; each shows its band, never its count.
+        def short(signed: int) -> dict:
+            return {"status": "insufficient", "value": None, "n": None,
+                    "n_band": _band(signed), "min_n": n_min,
+                    "reason": f"not enough data on one side (each needs at least {n_min})"}
+        return {"before": short(row.signed_before), "after": short(row.signed_after)}
 
     def side(esc: int, signed: int) -> dict:
-        return {"status": "measured", "value": round(esc / signed, 2), "n": _band(signed),
-                "min_n": n_min, "reason": None}
-    return {"orgs": row.orgs_contributing, "note": NOTE,
+        return banded(round(esc / signed, 2), n=signed, min_n=n_min)
+    return {"orgs": row.orgs_contributing, "note": NOTE, "escape_scope": ESCAPE_SCOPE,
             "before": side(row.escapes_before, row.signed_before),
             "after": side(row.escapes_after, row.signed_after)}

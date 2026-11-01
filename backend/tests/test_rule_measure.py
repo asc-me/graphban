@@ -84,7 +84,8 @@ def test_escape_rate_before_after_with_n(db, library):
         _obs(db, "ci_red_after_sign_off", 14, f"b{i}")
     _obs(db, "reopened_after_done", 4, "a0")
     r = M.project_effect(db, PID)["rules"][0]["escape_rate"]
-    assert r["before"] == {"status": "measured", "value": 0.5, "n": 10, "min_n": 10, "reason": None}
+    assert r["before"] == {"status": "measured", "value": 0.5, "n": 10, "n_band": None,
+                           "min_n": 10, "reason": None}
     assert r["after"]["status"] == "measured" and r["after"]["n"] == 12
     assert r["after"]["value"] == round(1 / 12, 4)
 
@@ -163,10 +164,44 @@ def test_platform_served_only_above_floors_and_without_ids(db, library, hosted):
     out = M.platform_effect(db, orgs[0][0].id)
     assert out["available"] is True
     cell = out["rules"][0]
-    assert cell["before"]["status"] == "measured" and cell["after"]["n"] == "20–49"
+    assert cell["before"]["status"] == "measured"
+    assert cell["after"]["n"] is None and cell["after"]["n_band"] == "20–49"
     blob = repr(out)
     for o, pid in orgs:
         assert o.id not in blob and pid not in blob
+
+
+def test_platform_below_n_floor_shows_a_band_never_the_count(db, library, hosted):
+    # Three orgs and no dominant one, but only 3 × 6 = 18 sign-offs before adoption: below 20.
+    # The exact 18 would let a contributor subtract its own and recover the others' (D13).
+    orgs = [_org(db, f"o{i}", True) for i in range(3)]
+    for _, pid in orgs:
+        _seed(db, pid, 6, 10)
+    M.platform_roll(db)
+    cell = M.platform_effect(db, orgs[0][0].id)["rules"][0]
+    for side in ("before", "after"):
+        assert cell[side]["status"] == "insufficient" and cell[side]["value"] is None
+        assert cell[side]["n"] is None
+    assert cell["before"]["n_band"] == "<20" and cell["after"]["n_band"] == "20–49"
+    assert "18" not in repr(cell) and "30" not in repr(cell)
+
+
+def test_platform_n_is_never_an_int_on_any_branch(db, library, hosted):
+    orgs = [_org(db, f"o{i}", True) for i in range(2)]
+    for _, pid in orgs:
+        _seed(db, pid, 10, 10)
+    M.platform_roll(db)
+    cell = M.platform_effect(db, orgs[0][0].id)["rules"][0]
+    assert cell["before"]["n"] is None and cell["before"]["n_band"] is None
+    assert set(cell["before"]) == set(M.value(0, n=1, min_n=1))
+
+
+def test_project_scope_n_is_exact_and_escape_scope_is_project_wide(db, library):
+    _adopt(db, 10)
+    _signoffs(db, 12, 15, "b")
+    cell = M.project_effect(db, PID)["rules"][0]
+    assert cell["escape_rate"]["before"]["n"] == 12 and cell["escape_rate"]["before"]["n_band"] is None
+    assert cell["escape_scope"] == "project" and "stage" in cell["escape_scope_note"]
 
 
 def test_platform_needs_three_orgs(db, library, hosted):
