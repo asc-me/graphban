@@ -34,6 +34,11 @@ _MIN_PRS = 3
 _TICKET_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d+[:\s]")
 _RELEASE_DOC_RE = re.compile(r"(^|/)(release|releasing|release-process|release_process)[^/]*\.md$", re.I)
 
+#: Who the engine is, in the `(actor_type, id, label)` shape a refusal is attributed with. It
+#: has no user, so `rule_toggles` refuses it as a writer (PRD-P63 D10): it suggests, a person
+#: adopts. `tests/test_rule_toggles.py` hands this identity to every toggle write.
+ENGINE_IDENTITY = ("system", "rules_recommend", "Recommended rules")
+
 # project_id -> (computed_at, suggestions, sources). Dismissals and current rule values are
 # applied AFTER the cache, so a dismissal or a saved value takes effect immediately.
 _cache: dict[str, tuple[float, list[dict], list[dict]]] = {}

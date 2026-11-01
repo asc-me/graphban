@@ -109,6 +109,9 @@ TOOL_TIERS: dict[str, str] = {
     **{name: "misc" for name in (
         "extract_lessons", "generate_digest", "report_graphban_issue",
         "learning_loop", "create_project", "publish_memory", "reject_memory",
+        # PRD-P63 S2a: rule toggles are a person's setting, read by the primitives in-process;
+        # an agent asking which library rules are on is not on the path of a task.
+        "get_rule_toggles",
     )},
 }
 

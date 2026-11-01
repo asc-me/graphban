@@ -1767,6 +1767,53 @@ class RuleOut(BaseModel):
     models: list[str]
     value: str | bool | None = None
     source: str | None = None
+    #: `toggle` on a library rule (PRD-P63 D3); None on every other rule.
+    control: str | None = None
+    #: Library rules only: the resolved params with their source, and the org lock.
+    params: "RuleToggleValueOut | None" = None
+    locked: bool | None = None
+
+
+class RuleToggleValueOut(BaseModel):
+    value: bool | dict | None = None
+    #: `project` | `org` | `platform default` (PRD-P63 D4).
+    source: str
+
+
+class RuleToggleOut(BaseModel):
+    rule_id: str
+    stage: str
+    title: str
+    on: RuleToggleValueOut
+    params: RuleToggleValueOut
+    locked: bool
+    locked_by: str | None = None
+
+
+class RuleTogglesOut(BaseModel):
+    #: False until a rule pack is loaded: an empty `toggles` then means "no library", not
+    #: "nothing adopted".
+    library_loaded: bool
+    toggles: list[RuleToggleOut]
+
+
+class RuleToggleWrite(BaseModel):
+    """`on` / `params` null clears this scope's value so it inherits. `locked` is org-only.
+    `reason` is required: it is the audit record."""
+    model_config = {"extra": "forbid"}
+    on: bool | None = None
+    params: dict | None = None
+    locked: bool | None = None
+    reason: str = ""
+
+
+class OrgRuleToggleOut(BaseModel):
+    rule_id: str
+    org_id: str
+    on: bool | None = None
+    params: dict | None = None
+    locked: bool
+    projects_changed: list[str]
 
 
 class SuggestionEvidenceOut(BaseModel):

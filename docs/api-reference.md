@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 213 of the 291 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 216 of the 294 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -90,6 +90,9 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | POST | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Dismiss a suggestion for the project, keyed on id + evidence fingerprint; it returns when the evidence changes. 204, or 404 for an unknown id |
 | GET | `/api/rules/recommended/dismissed` | JWT (project reader) | Suggestions currently dismissed against their present evidence, for the panel's "Show dismissed (N)" |
 | DELETE | `/api/rules/recommended/{id}/dismiss` | JWT (project writer) | Restore a dismissed suggestion. 204, or 404 when it was not dismissed |
+| GET | `/api/rules/toggles` | JWT (project reader) | Library rule toggles (`services/rule_toggles.py`, PRD-P63 D4): `{library_loaded, toggles[]}`, each `{rule_id, stage, title, on, params, locked, locked_by}` where `on` and `params` are `{value, source}` and `source` is `project`, `org` or `platform default`. `library_loaded: false` means no rule pack is loaded — an empty list then is no library, not nothing adopted |
+| PUT | `/api/rules/toggles/{rule_id}` | JWT (project owner/admin) | `?project_id=`. A project's own `on` and/or `params` (null clears, so it inherits); `reason` is required (422 without) and every change is a `set_rule_toggle` event with who and why. Every plan. 409 refusal `rules.org_lock_holds` when the org locked the rule; 403 `rules.toggle_needs_admin` for a member. JWT only, never an API key: a person adopts (D10) |
+| PUT | `/api/orgs/{org_id}/rule-toggles/{rule_id}` | JWT (org owner/admin) | The org's `on`, `params` and `locked`, with a required `reason`. Applies to every project that inherits it — every project, when locked — and is recorded as ONE `set_rule_toggle` event naming the old and new values and `projects_changed`, which the reply also returns. `team`/`enterprise` only: 402 `quota_exceeded` otherwise, self-host included (D11) |
 | GET | `/api/rules/refusals/unmapped` | JWT (project reader) | `?project_id=&days=7` (1–90). `refusal_unmapped` events grouped by `where`+`status` over the whole window, no row cap, ranked by count: `groups[]` `{where, status, platform, count, last_at, daily[days]}` plus `recording_since` (earliest refusal event in the same scope as the groups; null = none ever recorded there). Attribution: an event belongs to the project it was recorded against (MCP: the calling key's project or the call's `project_id`); one naming no project is the platform bucket, returned with `platform: true` only to a platform admin, or on a self-hosted instance to the project's owner — never to a hosted owner who is not a platform admin |
 
 ## Items (tracker)

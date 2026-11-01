@@ -63,6 +63,7 @@ from app.services import setup as setup_svc
 from app.services import tool_tiers
 from app.services import delegation as delegation_svc
 from app.services import entitlements as entitlements_svc
+from app.services import rule_toggles as rule_toggles_svc
 from app.services import headroom as headroom_svc
 from app.services import quotas
 from app.services import artifacts as art_svc
@@ -589,6 +590,16 @@ TOOLS: list[dict[str, Any]] = [
     # PRD-62 S2 (GRPH-1248). The org's entitlement registry, team/enterprise only (D8). Two
     # names rather than one with a mode, because the read is open to every role and the write
     # is the planner's (`fleet.TOOL_ROLES`); one tool cannot carry both gates.
+    # PRD-P63 S2a (GRPH-1262). Read only, on purpose: D10 says only a person sets a toggle,
+    # and an MCP call is an agent's — the write is REST behind a logged-in user.
+    {
+        "name": "get_rule_toggles",
+        "description": (
+            "Library rules' effective on/off and params, each with its source and the org "
+            "lock. A person sets them."
+        ),
+        "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
+    },
     {
         "name": "list_entitlements",
         "description": (
@@ -1347,6 +1358,8 @@ _READ_ONLY = {
     "prd_acceptance", "learning_loop", "fleet_status",
     # PRD-62 S2: a read of the org's registry; `set_entitlement` is the write.
     "list_entitlements",
+    # PRD-P63 S2a: there is no MCP write for it at all (D10).
+    "get_rule_toggles",
     # Added with the tool itself missing from this set (GRPH-519 -> GRPH-48). It looks a PRD
     # up and returns fields; it writes nothing, and its own literal declared
     # `readOnlyHint: True` — which the build loop then overwrote to False, because THIS is
@@ -1563,6 +1576,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         },
     },
     "list_entitlements": {"type": "object", "properties": {"entitlements": {"type": "array"}}},
+    "get_rule_toggles": {"type": "object", "properties": {"toggles": {"type": "array"}}},
     "set_entitlement": {"type": "object", "properties": {"id": {"type": "string"}}},
     "report_entitlement_event": {"type": "object", "properties": {"admitted": {"type": "boolean"}}},
     "delegate": {
@@ -3010,6 +3024,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return out
     if name == "propose_allocation":
         return fleet_svc.propose_allocation(db, pid)
+    if name == "get_rule_toggles":
+        return {"library_loaded": rule_toggles_svc.library_loaded(),
+                "toggles": rule_toggles_svc.effective(db, pid)}
     if name == "list_entitlements":
         return {"entitlements": entitlements_svc.list_entitlements(
             db, entitlements_svc.org_for_project(db, pid))}

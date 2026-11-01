@@ -98,7 +98,7 @@ agent carries ~5,100 fewer tokens on every turn.
 | `prd` | **Authoring** a spec — `create_prd`, `update_prd`, `grill_prd`, `answer_grill`, `decompose_prd`, `close_prd`, `request_rebaseline`, `submit_verdict` |
 | `codegraph` | **Writing** the code graph — `describe_code`, `link_code`, `unlink_code`, `record_scan`, `scan_status`, `scans_due` |
 | `fleet` | **Running** a fleet — `propose_allocation`, `assign_role`, `mint_enrolment`, `retire_wave`, `delegate`, `list_entitlements`, `set_entitlement`, `report_entitlement_event`. Being *in* a fleet needs none of it |
-| `misc` | `extract_lessons`, `generate_digest`, `report_graphban_issue`, `learning_loop`, `create_project`, `publish_memory`, `reject_memory` |
+| `misc` | `extract_lessons`, `generate_digest`, `report_graphban_issue`, `learning_loop`, `create_project`, `publish_memory`, `reject_memory`, `get_rule_toggles` |
 
 Two things to know, because getting either wrong is expensive:
 
@@ -115,7 +115,7 @@ Settings → API keys. `fleet.mint` gives a planner credential the `fleet` tier 
 operator can restore the pre-tiering manifest for a whole deployment with
 `MCP_DEFAULT_TOOL_TIERS=prd,codegraph,fleet,misc` — see [configuration.md](configuration.md).
 
-## The 63 tools
+## The 64 tools
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
 shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
@@ -146,7 +146,7 @@ that stops once the four dimensions are answered or deferred. The tool still wri
 The one-shot editor command (`POST /api/prds/{id}/ai` with `command=grill`) stays on the
 body-only prompt, which has no transcript and cannot know when to stop.
 
-**Every tool argues its role gate** (GRPH-516). 18 of the 63 tools are role-gated; the other
+**Every tool argues its role gate** (GRPH-516). 18 of the 64 tools are role-gated; the other
 45 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
 completeness guard forcing each new tool to be classified as a quality gate or an authority
 one, and `TOOL_ROLES` had no equivalent, so forty tools arrived at "open to everyone" without
@@ -314,6 +314,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `claim_next` | `agent_id`, `lease_seconds`, `wait_seconds`, `project_id` | **Atomically** claim the best ready item, assign it to you, move it to in_progress. Returns `{claimed, item}`. A `bound_only` seat whose item has left `in_progress` is refused with a conflict that names the binding (GRPH-1089); omit the flag and this is unchanged. |
 | `propose_allocation` | `project_id` | What the fleet should look like given who is online and what is ready. A proposal — nothing is assigned until `assign_role` |
 | `assign_role` | `agent_id`, `role`, `reason` | Commit a role change; it reaches the agent on its next poll as a `directive`, with no reconnect |
+| `get_rule_toggles` | `project_id` | Library rules' effective toggles for the project (PRD-P63 S2a): `on` and `params` each as `{value, source}` (`project` \| `org` \| `platform default`), plus `locked`/`locked_by`, and `library_loaded` (false = no rule pack loaded, not "nothing adopted"). **Read only, and there is no MCP write**: D10 keeps setting a toggle a person's REST request, so no agent can switch off a rule that reviews it. `misc` tier |
 | `list_entitlements` | `project_id` | The org's capacity-routing registry (PRD-62 S2): each entitlement and `declared_by`, the runners that declared it at `register_agent`. **Self-declared, not verified** — every row carries `declaration` saying so. No headroom state; an entry has not proven capacity. `quota_exceeded` off `team`/`enterprise` |
 | `set_entitlement` | `id`, `vendor`, `kind`, `owner_user_id`, `runner`, `plan_label`, `reset_cadence`, `secret_ref`, `token_budget` | Planner-only. Register an entitlement, or patch one by `id`. **Never a credential**: a `subscription` or `local` entitlement has no secret field (refused here, and a CHECK constraint makes it impossible in the schema); `api_key`/`cloud` take `secret_ref`, the NAME of the secret on the runner. Unknown fields are refused, never dropped. A runner declares what it can run with `register_agent`'s `entitlements` (fleet-tier advertised) |
 | `report_entitlement_event` | `id`, `event`, `vendor_text`, `tokens`, `project_id` | Worker/planner, and only as a registered agent that declared the entitlement at `register_agent` (otherwise any worker could exhaust it). The runner's headroom-ledger report (PRD-62 S3): `spawn_start` (answers `admitted`; an `unknown` or `broken` entitlement admits one in-flight child until its first report, an `exhausted` one admits none), `registered` (-> `available`), `limit_hit` (-> `exhausted`) and `spawn_failed` (-> `broken`), both needing the vendor's text verbatim, and `spend` (`tokens`, omitted when unreported — a count, never a zero) |

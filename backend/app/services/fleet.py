@@ -1334,6 +1334,8 @@ OPEN_TOOLS: dict[str, str] = {
         "scan_status", "scans_due",
         # PRD-62 S2: the entitlement registry read; the write is planner-gated above.
         "list_entitlements",
+        # PRD-P63 S2a: the toggles read; there is no MCP write (D10).
+        "get_rule_toggles",
     )},
     "setup_project": "a read despite the name — returns a checklist, changes nothing",
     "collision_clusters": "the divvy a planner allocates FROM; seeing the partition is not "
