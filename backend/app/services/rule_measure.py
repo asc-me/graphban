@@ -40,7 +40,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.errors import Validation
-from app.models import Event, Item, Observation, Organization, PlatformRuleRollup, Project
+from app.models import Event, Item, Observation, Organization, PlatformObservationRollup, PlatformRuleRollup, Project
 from app.services import harness as harness_svc
 from app.services import observations as observations_svc
 from app.services import quotas
@@ -486,6 +486,19 @@ def contribution(db: Session, org_id: str) -> dict:
     return rows
 
 
+def observation_contribution(db: Session, org_id: str) -> dict[str, int]:
+    """Observation counts by kind for the org (D8): every known kind, 0 a real zero. Per org,
+    not per rule. Kinds and counts only."""
+    pids = observations_svc.org_project_ids(db, org_id)
+    out = {k: 0 for k in observations_svc.KINDS}
+    if pids:
+        for kind, n in db.execute(select(Observation.kind, func.count()).where(
+                Observation.project_id.in_(pids)).group_by(Observation.kind)):
+            if kind in out:
+                out[kind] = n
+    return out
+
+
 def platform_roll(db: Session) -> int:
     """Recompute `platform_rule_rollups` from orgs that opted in. Opting out removes an org on
     the next call, which is the whole purge: no raw row ever leaves, and none is stored here."""
@@ -498,6 +511,12 @@ def platform_roll(db: Session) -> int:
             per_rule.setdefault(rule_id, {})[org_id] = c
     for old in db.scalars(select(PlatformRuleRollup)):
         db.delete(old)
+    for old in db.scalars(select(PlatformObservationRollup)):
+        db.delete(old)
+    per_kind: dict[str, dict[str, int]] = {}
+    for org_id in orgs:
+        for kind, n in observation_contribution(db, org_id).items():
+            per_kind.setdefault(kind, {})[org_id] = n
     db.flush()
     for rule_id, by_org in per_rule.items():
         tot = {k: sum(c[k] for c in by_org.values())
@@ -510,6 +529,15 @@ def platform_roll(db: Session) -> int:
             orgs_contributing=sum(1 for v in n_each.values()
                                   if v >= harness_svc.PLATFORM_MIN_ORG_N),
             top_org_share=(max(n_each.values()) / n) if n else None, rolled_at=_now(), **tot))
+    for kind, by_org in per_kind.items():
+        total = sum(by_org.values())
+        db.add(PlatformObservationRollup(
+            week=week, kind=kind, observations=total,
+            # D13: an org counts only with its own floor, so a dominant pair is not
+            # laundered past the three-org rule by a third org with a single row.
+            orgs_contributing=sum(1 for v in by_org.values()
+                                  if v >= harness_svc.PLATFORM_MIN_ORG_N),
+            top_org_share=(max(by_org.values()) / total) if total else None, rolled_at=_now()))
     db.flush()
     return len(per_rule)
 
@@ -533,8 +561,26 @@ def platform_effect(db: Session, org_id: str) -> dict:
     for row in db.scalars(select(PlatformRuleRollup).order_by(PlatformRuleRollup.rule_id)):
         out["rules"].append({"rule_id": row.rule_id, **_platform_cell(row)})
     return {**out, "available": True,
+            "observations": [_platform_observation_cell(row) for row in db.scalars(
+                select(PlatformObservationRollup).order_by(PlatformObservationRollup.kind))],
             "contributed_fields": ["projects_on", "caught", "signed_before", "escapes_before",
-                                   "signed_after", "escapes_after"]}
+                                   "signed_after", "escapes_after", "observations_by_kind"]}
+
+
+def _platform_observation_cell(row: PlatformObservationRollup) -> dict:
+    """One kind's platform count, on the D13 terms: three orgs, the top-org cap, n as a band."""
+    cell = {"kind": row.kind, "n": None}
+    if row.orgs_contributing < harness_svc.PLATFORM_MIN_ORGS:
+        return {**cell, "available": False, "reason": "fewer than "
+                f"{harness_svc.PLATFORM_MIN_ORGS} orgs contribute here"}
+    if row.top_org_share is not None and row.top_org_share > harness_svc.PLATFORM_MAX_ORG_SHARE:
+        return {**cell, "available": False,
+                "reason": "one org holds too large a share of this sample"}
+    if row.observations < harness_svc.PLATFORM_MIN_N:
+        return {**cell, "available": False, "n_band": _band(row.observations),
+                "reason": f"fewer than {harness_svc.PLATFORM_MIN_N} observations"}
+    return {**cell, "available": True, "n_band": _band(row.observations),
+            "orgs": row.orgs_contributing}
 
 
 def _platform_cell(row: PlatformRuleRollup) -> dict:

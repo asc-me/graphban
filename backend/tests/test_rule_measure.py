@@ -8,10 +8,13 @@ import dataclasses
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Event, Observation, Organization, PlatformRuleRollup, Project
+from app.models import (Event, Observation, Organization, PlatformObservationRollup,
+                        PlatformRuleRollup, Project)
+from app.services import observations as observations_svc
 from app.services import rule_measure as M
 from app.services import rule_toggles as T
 from app.services import rules as R
@@ -435,6 +438,74 @@ def test_non_contributing_org_contributes_nothing_and_sees_nothing(db, library, 
     assert row.projects_on == 3
     seen = M.platform_effect(db, out_org.id)
     assert seen["available"] is False and "opted in" in seen["reason"]
+
+
+def _kind_obs(db, pid, kind, n):
+    for i in range(n):
+        _obs(db, kind, 3, f"{pid}-{kind}-{i}", pid=pid)
+
+
+def test_observation_contribution_lists_every_kind_with_real_zeros(db, library):
+    o, pid = _org(db, "k", True)
+    _kind_obs(db, pid, "bounce", 2)
+    db.commit()
+    out = M.observation_contribution(db, o.id)
+    assert set(out) == set(observations_svc.KINDS)
+    assert out["bounce"] == 2 and out["bug_escaped"] == 0
+
+
+def test_platform_observations_on_d13_terms_and_no_ids(db, library, hosted):
+    orgs = [_org(db, f"o{i}", True) for i in range(3)]
+    for _, pid in orgs:
+        _kind_obs(db, pid, "bounce", 10)
+    M.platform_roll(db)
+    db.commit()
+    out = M.platform_effect(db, orgs[0][0].id)
+    cells = {c["kind"]: c for c in out["observations"]}
+    assert cells["bounce"]["available"] is True and cells["bounce"]["n"] is None
+    assert cells["bounce"]["n_band"] == "20–49"
+    assert cells["bug_escaped"]["available"] is False
+    blob = repr(out) + repr(M.observation_contribution(db, orgs[0][0].id))
+    for o, pid in orgs:
+        assert o.id not in blob and pid not in blob
+
+
+def test_platform_observations_need_three_orgs_and_respect_share_cap(db, library, hosted):
+    orgs = [_org(db, f"o{i}", True) for i in range(3)]
+    _kind_obs(db, orgs[0][1], "bounce", 30)
+    _kind_obs(db, orgs[1][1], "bounce", 5)
+    M.platform_roll(db)
+    cells = {c["kind"]: c for c in M.platform_effect(db, orgs[0][0].id)["observations"]}
+    assert cells["bounce"]["available"] is False  # only two orgs contribute
+    _kind_obs(db, orgs[2][1], "bounce", 5)
+    M.platform_roll(db)
+    cells = {c["kind"]: c for c in M.platform_effect(db, orgs[0][0].id)["observations"]}
+    assert "share" in cells["bounce"]["reason"]
+
+
+def test_platform_observations_count_an_org_only_at_its_own_floor(db, library, hosted):
+    # D13: a third org with a single row must not launder a dominant pair past three orgs.
+    orgs = [_org(db, f"o{i}", True) for i in range(3)]
+    _kind_obs(db, orgs[0][1], "bounce", 20)
+    _kind_obs(db, orgs[1][1], "bounce", 20)
+    _kind_obs(db, orgs[2][1], "bounce", 1)
+    M.platform_roll(db)
+    cells = {c["kind"]: c for c in M.platform_effect(db, orgs[0][0].id)["observations"]}
+    assert cells["bounce"]["available"] is False
+    assert "fewer than" in cells["bounce"]["reason"] and "orgs" in cells["bounce"]["reason"]
+
+
+def test_opting_out_purges_observations_on_next_roll(db, library, hosted):
+    orgs = [_org(db, f"o{i}", True) for i in range(3)]
+    for _, pid in orgs:
+        _kind_obs(db, pid, "bounce", 10)
+    M.platform_roll(db)
+    orgs[0][0].telemetry_share = False
+    db.commit()
+    M.platform_roll(db)
+    row = db.scalars(select(PlatformObservationRollup).where(
+        PlatformObservationRollup.kind == "bounce")).one()
+    assert row.observations == 20 and row.orgs_contributing == 2
 
 
 def test_opting_out_purges_on_next_roll(db, library, hosted):
