@@ -103,6 +103,16 @@ describe("AutoUpdateSettings", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(/2026\.11\.1 failed: !! build broke/);
   });
+
+  it("a skipped auto-update shows neutrally, without the failure banner", async () => {
+    getSpy.mockResolvedValue(status({
+      enabled: true, last_auto_install_tag: "2026.11.1", last_auto_install_outcome: "skipped",
+      last_auto_install_error: "already on 2026.11.1",
+    }));
+    renderIt("");
+    expect(await screen.findByText(/already on 2026\.11\.1/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 });
 
 function within_group(groupName: string, day: string) {

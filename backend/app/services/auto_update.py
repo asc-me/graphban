@@ -219,6 +219,16 @@ def _claim_install(db: Session, tag: str, now: datetime) -> bool:
     return res.rowcount == 1
 
 
+# apply() refusals that mean "nothing to install", not a broken install.
+_NOT_ADVERTISED = ("no advertised cut", "tag is not the advertised cut")
+
+
+def _record(db: Session, outcome: str, error: str) -> None:
+    db.execute(update(AutoUpdateConfig).where(AutoUpdateConfig.id == SINGLETON_ID)
+               .values(last_auto_install_outcome=outcome, last_auto_install_error=error[:400]))
+    db.commit()
+
+
 def _settle(db: Session, c: AutoUpdateConfig, progress_fn) -> None:
     """Resolve a `started` attempt from what the box now says. The process that called
     apply is usually gone, so the outcome is read back on a later tick."""
@@ -285,16 +295,22 @@ def tick(db: Session, *, now: datetime | None = None, check_fn=None, apply_fn=No
     if not _claim_install(db, tag, now):
         out["skipped"] = f"{tag} was already auto-installed or attempted"
         return out
+    if instance_update.running()["version"] == tag:
+        _record(db, "skipped", f"already on {tag}")
+        out["skipped"] = f"already on {tag}"
+        return out
     try:
         got = apply_fn(tag)
     except Exception as e:  # noqa: BLE001 — the attempt is already recorded
         got = {"ok": False, "error": f"{type(e).__name__}: {e}"}
     if not got.get("ok"):
-        db.execute(update(AutoUpdateConfig).where(AutoUpdateConfig.id == SINGLETON_ID)
-                   .values(last_auto_install_outcome="failed",
-                           last_auto_install_error=str(got.get("error") or "apply refused")[:400]))
-        db.commit()
-        out["skipped"] = "apply failed"
+        err = str(got.get("error") or "apply refused")
+        if any(m in err for m in _NOT_ADVERTISED):
+            _record(db, "skipped", f"{tag}: {err}")
+            out["skipped"] = "tag is no longer the advertised cut"
+        else:
+            _record(db, "failed", err)
+            out["skipped"] = "apply failed"
         return out
     out["installed"] = tag
     return out

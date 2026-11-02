@@ -150,6 +150,9 @@ export function AutoUpdateSettings({ progressError = "" }: { progressError?: str
           {data.last_auto_install_outcome || "started"} at {when(data.last_auto_install_at, data.timezone)}
         </p>
       ) : null}
+      {data.last_auto_install_outcome === "skipped" && data.last_auto_install_error ? (
+        <p className="mt-1 text-[12px] text-fg-2">Skipped: {data.last_auto_install_error}</p>
+      ) : null}
       {failed ? (
         <p role="alert" className="mt-2 rounded-md border border-danger p-2 text-[13px] font-semibold text-danger">
           The last automatic update to {data.last_auto_install_tag} failed

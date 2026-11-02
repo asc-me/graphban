@@ -275,6 +275,52 @@ def test_started_attempt_settles_from_progress(box):
     assert c.last_auto_install_outcome == "failed" and "build broke" in c.last_auto_install_error
 
 
+def test_manual_install_between_windows_is_skipped_not_failed(box, monkeypatch):
+    from app.services import instance_update
+    spy = Spy()
+    run(box, spy, IN_WINDOW - timedelta(days=1))  # check records available (apply may run)
+    box.query(AutoUpdateConfig).update({"last_auto_install_tag": "", "last_auto_install_outcome": "",
+                                        "last_check_state": "available",
+                                        "last_check_tag": "2026.11.1"})
+    box.commit()
+    spy.applies.clear()
+    monkeypatch.setattr(instance_update, "running",
+                        lambda: {"version": "2026.11.1", "git_sha": "abc"})
+    run(box, spy, IN_WINDOW)
+    assert spy.applies == []
+    c = au.get_config(box)
+    assert c.last_auto_install_outcome == "skipped" and "2026.11.1" in c.last_auto_install_error
+
+
+@pytest.mark.parametrize("msg", ["no advertised cut to install", "tag is not the advertised cut"])
+def test_apply_refusal_not_advertised_is_skipped_and_newer_tag_installs(box, msg):
+    class Refuse(Spy):
+        def apply(self, tag):
+            self.applies.append(tag)
+            return {"ok": False, "status": 409, "error": msg}
+
+    spy = Refuse()
+    run(box, spy, IN_WINDOW)
+    c = au.get_config(box)
+    assert c.last_auto_install_outcome == "skipped" and msg in c.last_auto_install_error
+    spy.tag = "2026.11.2"
+    run(box, spy, IN_WINDOW + timedelta(days=1))
+    assert spy.applies == ["2026.11.1", "2026.11.2"]
+
+
+def test_genuine_apply_failure_is_failed_and_not_retried(box):
+    class Bad(Spy):
+        def apply(self, tag):
+            self.applies.append(tag)
+            return {"ok": False, "status": 502, "error": "helper unreachable"}
+
+    spy = Bad()
+    run(box, spy, IN_WINDOW)
+    run(box, spy, IN_WINDOW + timedelta(minutes=5))
+    assert spy.applies == ["2026.11.1"]
+    assert au.get_config(box).last_auto_install_outcome == "failed"
+
+
 # ── REST ──
 
 def test_patch_validates(client, auth):
