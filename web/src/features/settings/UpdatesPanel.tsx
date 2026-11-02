@@ -5,12 +5,13 @@
  * After Install, the page polls `/health` until this box serves the tag, says so, and
  * reloads, because the old bundle is still running in this tab.
  */
+import { useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { Markdown } from "@/lib/markdown";
-import { useConfig, useUpdateCheck } from "@/lib/queries";
+import { keys, useConfig, useUpdateCheck } from "@/lib/queries";
 import type { ReleaseNotes, UpdateCheck } from "@/lib/types";
 
 function Label({ children }: { children: React.ReactNode }) {
@@ -61,6 +62,9 @@ function StateCopy({ data }: { data: UpdateCheck }) {
       <p className="text-[13px] text-fg-2">
         Could not tell whether a newer cut exists. This box reports <Cut version={v} sha={sha} />.
       </p>
+      {data.feed_error ? (
+        <p className="text-[12px] text-muted">Update feed: {data.feed_error}.</p>
+      ) : null}
       {data.note ? <p className="text-[12px] text-muted">{data.note}</p> : null}
     </div>
   );
@@ -189,7 +193,12 @@ function PhaseCopy({ phase, tag, from }: { phase: Phase; tag: string; from: stri
 
 export function UpdatesPanel() {
   const { data: config } = useConfig();
-  const { data, isError, isPending, isFetching, refetch } = useUpdateCheck();
+  const { data, isError, isPending, isFetching } = useUpdateCheck();
+  const qc = useQueryClient();
+  // The button bypasses the server cache; the initial load and reloads use it.
+  const refresh = () => qc.fetchQuery({
+    queryKey: keys.updateCheck, queryFn: () => api.updateCheck(true), staleTime: 0,
+  }).catch(() => undefined);
   const hosted = config?.hosted_mode ?? data?.hosted ?? false;
   const canInstall = Boolean(
     data?.apply
@@ -240,7 +249,7 @@ export function UpdatesPanel() {
           setApplying(false);
           setConfirming(false);
           setInstalled(tag);
-          void refetch();
+          void refresh();
           // The web container was rebuilt too; this tab is still running the old bundle.
           setTimeout(() => { if (alive.current) pageReload.run(); }, installTiming.reloadMs);
           return;
@@ -270,7 +279,7 @@ export function UpdatesPanel() {
       </p>
       <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
         <Label>Status</Label>
-        {isPending && !data && <p className="text-[13px] text-muted">Checking…</p>}
+        {isPending && !data && <p className="text-[13px] text-muted">Checking GitHub for a newer release — this can take a few seconds. No result yet is not "no release".</p>}
         {isError && !data && (
           <p className="text-[13px] text-fg-2">
             Could not tell whether a newer cut exists. The check did not complete — not current.
@@ -288,7 +297,7 @@ export function UpdatesPanel() {
           <Button
             type="button"
             variant="outline"
-            onClick={() => { void refetch(); }}
+            onClick={() => { void refresh(); }}
             disabled={isFetching || applying}
           >
             {isFetching && !applying ? "Checking…" : "Check for updates"}

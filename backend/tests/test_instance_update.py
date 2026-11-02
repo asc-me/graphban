@@ -3,11 +3,14 @@ import pytest
 
 from app.services import instance_update as svc
 
+_real_fetch_tag = svc.fetch_tag  # before the autouse fixture swaps it out
+
 
 @pytest.fixture(autouse=True)
 def _offline_tag_feed(monkeypatch):
     """REST tests look up fetch_tag at call time. Do not hit GitHub."""
     monkeypatch.setattr(svc, "fetch_tag", lambda tag: None)
+    svc._cache.update(at=0.0, payload=None)
 
 
 def test_placeholder_version_is_unknown_even_when_the_feed_matches():
@@ -500,3 +503,211 @@ def test_fetch_latest_keeps_the_github_body(monkeypatch):
     monkeypatch.setattr(svc.httpx, "get", lambda *a, **k: _Resp())
     got = svc.fetch_latest()
     assert got["notes_body"] == "Fourth CalVer cut.\n"
+
+
+# --- GRPH-1293: total deadline, concurrent notes, per-call feed reason, cache ---------
+
+import socket as _socket  # noqa: E402
+import threading as _threading  # noqa: E402
+import time as _time  # noqa: E402
+
+
+class _Status:
+    def __init__(self, code):
+        self.status_code = code
+
+    def json(self):
+        return {}
+
+
+def test_stalled_feed_returns_unknown_within_the_deadline(monkeypatch):
+    """A feed that never answers must not hang the check: unknown, with a reason."""
+    monkeypatch.setattr(svc, "CHECK_DEADLINE", 0.3)
+    release = _threading.Event()
+
+    def stalled():
+        release.wait(5)
+        return {"tag": "2026.11.1", "url": "https://example"}
+
+    t0 = _time.monotonic()
+    got = svc.check(fetch=stalled, run={"version": "2026.10.27", "git_sha": "x"}, hosted=False)
+    took = _time.monotonic() - t0
+    release.set()
+    assert took < 1.0, took
+    assert got["state"] == "unknown"
+    assert got["latest"] is None
+    assert "did not answer within" in got["feed_error"]
+
+
+def test_stalled_name_lookup_is_bounded_by_the_deadline(monkeypatch):
+    """httpx's timeout does not cover getaddrinfo. Stall it and the real fetch_latest
+    path must still come back as unknown inside CHECK_DEADLINE."""
+    monkeypatch.setattr(svc, "CHECK_DEADLINE", 0.3)
+    release = _threading.Event()
+    real = _socket.getaddrinfo
+
+    def slow_dns(*a, **k):
+        release.wait(5)
+        return real(*a, **k)
+
+    monkeypatch.setattr(_socket, "getaddrinfo", slow_dns)
+    monkeypatch.setattr(svc, "fetch_tag", lambda tag: None)
+    t0 = _time.monotonic()
+    got = svc.check(run={"version": "2026.10.27", "git_sha": "x"}, hosted=False)
+    took = _time.monotonic() - t0
+    release.set()
+    assert took < 1.0, took
+    assert got["state"] == "unknown"
+    assert "did not answer within" in got["feed_error"]
+
+
+def test_slow_running_notes_do_not_hold_up_state(monkeypatch):
+    """Latest answers at once; the running-tag notes fetch stalls. State is decided,
+    the notes degrade to unknown, and the call does not wait for the notes forever."""
+    monkeypatch.setattr(svc, "CHECK_DEADLINE", 0.3)
+    release = _threading.Event()
+
+    def slow_notes(tag):
+        release.wait(5)
+        return {"tag": tag, "url": "", "asset": "", "notes_body": "late"}
+
+    t0 = _time.monotonic()
+    got = svc.check(
+        fetch=lambda: {"tag": "2026.11.1", "url": "https://example", "notes_body": "new"},
+        fetch_running=slow_notes,
+        run={"version": "2026.10.27", "git_sha": "x"},
+        hosted=False,
+    )
+    took = _time.monotonic() - t0
+    release.set()
+    assert took < 1.0, took
+    assert got["state"] == "available"
+    assert got["notes"]["running"]["state"] == "unknown"
+    assert got["notes"]["latest"]["state"] == "present"
+    assert got["feed_error"] == ""
+
+
+def test_latest_and_running_fetches_run_concurrently(monkeypatch):
+    """Two 0.2 s fetches finish in about 0.2 s, not 0.4 s."""
+    def latest():
+        _time.sleep(0.2)
+        return {"tag": "2026.11.1", "url": "u"}
+
+    def notes(tag):
+        _time.sleep(0.2)
+        return {"tag": tag, "url": "", "asset": "", "notes_body": "old"}
+
+    t0 = _time.monotonic()
+    got = svc.check(fetch=latest, fetch_running=notes,
+                    run={"version": "2026.10.27", "git_sha": "x"}, hosted=False)
+    took = _time.monotonic() - t0
+    assert got["notes"]["running"]["state"] == "present"
+    assert took < 0.35, took
+
+
+@pytest.mark.parametrize("code", [403, 429])
+def test_rate_limited_feed_names_the_status(monkeypatch, code):
+    monkeypatch.setattr(svc.httpx, "get", lambda *a, **k: _Status(code))
+    got = svc.check(run={"version": "2026.10.27", "git_sha": "x"}, hosted=False)
+    assert got["state"] == "unknown"
+    assert str(code) in got["feed_error"]
+    assert "rate limited" in got["feed_error"]
+
+
+def test_running_tag_404_does_not_become_the_latest_reason(monkeypatch):
+    """The notes fetch 404s; latest fails with a timeout. The reason shown is the
+    latest's, not the notes'."""
+    def fake_get(url, *a, **k):
+        if "/tags/" in url:
+            _time.sleep(0.1)  # notes fail last, so a shared slot would end on 404
+            return _Status(404)
+        raise svc.httpx.ConnectTimeout("slow")
+
+    monkeypatch.setattr(svc.httpx, "get", fake_get)
+    monkeypatch.setattr(svc, "fetch_tag", _real_fetch_tag)  # undo the offline fixture
+    got = svc.check(run={"version": "2026.10.27", "git_sha": "x"}, hosted=False)
+    assert got["state"] == "unknown"
+    assert "ConnectTimeout" in got["feed_error"]
+    assert "404" not in got["feed_error"]
+
+
+def test_feed_reason_is_per_call_not_shared(monkeypatch):
+    """An abandoned fetch thread from an earlier call that finishes late must not
+    rewrite a later call's reason."""
+    monkeypatch.setattr(svc, "CHECK_DEADLINE", 0.2)
+    release = _threading.Event()
+    calls = {"n": 0}
+
+    def fake_get(url, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            release.wait(5)  # first call: stalls, abandoned, then answers 500
+            return _Status(500)
+        return _Status(403)
+
+    monkeypatch.setattr(svc.httpx, "get", fake_get)
+    run = {"version": "0.1.0", "git_sha": "x"}  # placeholder: no running-tag fetch
+    first = svc.check(run=run, hosted=False)
+    assert "did not answer" in first["feed_error"]
+    release.set()
+    _time.sleep(0.05)  # let the abandoned thread record its 500
+    second = svc.check(run=run, hosted=False)
+    assert "403" in second["feed_error"]
+    assert "500" not in second["feed_error"]
+
+
+def test_check_cached_hits_and_refresh_bypasses(monkeypatch):
+    n = {"calls": 0}
+
+    def fake_check(**_):
+        n["calls"] += 1
+        return {"state": "current", "n": n["calls"]}
+
+    monkeypatch.setattr(svc, "check", fake_check)
+    assert svc.check_cached()["n"] == 1
+    assert svc.check_cached()["n"] == 1  # cached
+    assert svc.check_cached(refresh=True)["n"] == 2  # button bypasses
+    assert svc.check_cached()["n"] == 2  # refresh result is the new cache
+
+
+def test_check_cached_expires(monkeypatch):
+    monkeypatch.setattr(svc, "CACHE_TTL", 0.05)
+    n = {"calls": 0}
+
+    def fake_check(**_):
+        n["calls"] += 1
+        return {"state": "available", "n": n["calls"]}
+
+    monkeypatch.setattr(svc, "check", fake_check)
+    svc.check_cached()
+    _time.sleep(0.08)
+    assert svc.check_cached()["n"] == 2
+
+
+def test_unknown_is_not_cached(monkeypatch):
+    n = {"calls": 0}
+
+    def fake_check(**_):
+        n["calls"] += 1
+        return {"state": "unknown", "n": n["calls"]}
+
+    monkeypatch.setattr(svc, "check", fake_check)
+    assert svc.check_cached()["n"] == 1
+    assert svc.check_cached()["n"] == 2
+
+
+def test_rest_update_check_caches_and_refresh_param_bypasses(client, auth, monkeypatch):
+    n = {"calls": 0}
+
+    def latest():
+        n["calls"] += 1
+        return {"tag": "2026.11.1", "url": "https://example"}
+
+    monkeypatch.setattr(svc, "fetch_latest", latest)
+    monkeypatch.setattr(svc, "running", lambda: {"version": "2026.11.1", "git_sha": "x"})
+    assert client.get("/api/platform/update-check", headers=auth).json()["state"] == "current"
+    client.get("/api/platform/update-check", headers=auth)
+    assert n["calls"] == 1
+    client.get("/api/platform/update-check?refresh=true", headers=auth)
+    assert n["calls"] == 2
+

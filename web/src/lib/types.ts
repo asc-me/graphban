@@ -95,6 +95,8 @@ export interface UpdateCheck {
   via: "" | "compose" | "native";
   hosted: boolean;
   note: string;
+  /** Why the feed gave no answer (status code, timeout). Empty when it answered. */
+  feed_error?: string;
 }
 
 /** `/health` — the cut this box is serving. Install polls it, not update-check. */
