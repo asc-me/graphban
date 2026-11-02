@@ -94,8 +94,10 @@ def _pin_changes(rule_id: str, pin: dict) -> dict:
 def apply_profile(db: Session, user, org_id: str, profile_id: str, *, reason: str | None) -> dict:
     """Pin a profile's rules across the org, locked. Refused whole when any rule it names
     cannot be enforced by the loaded library."""
-    _admin(db, user, org_id)
+    # D10 before anything else: the engine has no user id for the org-admin check to read, so a
+    # caller that is not a person is refused as such rather than failing on the lookup.
     rule_toggles._require_person(db, user)
+    _admin(db, user, org_id)
     why = rule_toggles._reason(reason)
     prof = _profile(profile_id)
     pins = _pins(prof)
