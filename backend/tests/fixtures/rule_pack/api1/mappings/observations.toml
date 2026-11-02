@@ -2,3 +2,24 @@
 observation = "review.signed_off_without_receipt"
 rule = "review.sabotage_required"
 weight = 2
+
+[[map]]
+observation = "predicate_exempted"
+rule = "review.sabotage_required"
+weight = 2
+replay = true
+
+[[map]]
+observation = "ci_red_after_sign_off"
+rule = "merge.reopen_on_red"
+weight = 3
+
+[[map]]
+observation = "gap_noted_at_sign_off"
+rule = "review.gap_blocks_sign_off"
+weight = 2
+
+[[map]]
+observation = "evidence_missing"
+rule = "build.engine_evidence"
+weight = 2
