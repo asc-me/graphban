@@ -13,6 +13,8 @@ fakes.
 from __future__ import annotations
 
 import io
+import os
+import stat
 import subprocess
 import sys
 import time
@@ -229,16 +231,81 @@ def test_an_unreadable_ledger_refuses(drain):
 
 
 def test_a_process_with_the_clone_open_refuses(drain):
-    holder = subprocess.Popen(["sleep", "60"], cwd=str(drain.clone))
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                              cwd=str(drain.clone))
     try:
-        time.sleep(0.2)
+        time.sleep(0.5)
         code, text = _run(drain, process_finder=teardown.processes_under)
     finally:
         holder.kill()
         holder.wait()
     assert code == 2
-    assert f"pid {holder.pid}" in text and "is in use by" in text
+    assert "is in use by" in text
+    if os.name == "nt":
+        # Windows reports the clone as held, not by whom: there is no /proc and no lsof.
+        assert "a process Windows does not name" in text
+    else:
+        assert f"pid {holder.pid}" in text
     _assert_untouched(drain)
+
+
+def test_the_windows_probe_leaves_an_idle_directory_where_it_was(tmp_path):
+    idle = tmp_path / "clone"
+    (idle / "sub").mkdir(parents=True)
+    (idle / "sub" / "f.txt").write_text("x", encoding="utf-8")
+    assert teardown._windows_in_use(idle) == []
+    assert (idle / "sub" / "f.txt").read_text(encoding="utf-8") == "x"
+    assert not (tmp_path / "clone.gbfleet-teardown-probe").exists()
+
+
+def test_the_windows_probe_cannot_check_when_its_probe_name_is_taken(tmp_path):
+    idle = tmp_path / "clone"
+    idle.mkdir()
+    (tmp_path / "clone.gbfleet-teardown-probe").mkdir()
+    assert teardown._windows_in_use(idle) is None
+    assert idle.is_dir()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a held cwd blocks a rename only on Windows")
+def test_the_windows_probe_names_a_held_directory_in_use(tmp_path):
+    held = tmp_path / "clone"
+    held.mkdir()
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                              cwd=str(held))
+    try:
+        time.sleep(0.5)
+        found = teardown._windows_in_use(held)
+    finally:
+        holder.kill()
+        holder.wait()
+    assert found and "a process Windows does not name" in found[0]
+    assert held.is_dir()
+
+
+def test_read_only_files_are_deleted(tmp_path):
+    """git writes its object files read-only; on Windows a plain rmtree cannot delete them."""
+    tree = tmp_path / "clone"
+    objects = tree / ".git" / "objects" / "08"
+    objects.mkdir(parents=True)
+    obj = objects / "ec7e"
+    obj.write_bytes(b"blob")
+    os.chmod(obj, stat.S_IREAD)
+    teardown.remove_tree(tree)
+    assert not tree.exists()
+
+
+def test_the_read_only_handler_clears_the_bit_and_retries(tmp_path):
+    target = tmp_path / "ro"
+    target.write_bytes(b"x")
+    os.chmod(target, stat.S_IREAD)
+    calls = []
+
+    def unlink(path):
+        calls.append(os.stat(path).st_mode & stat.S_IWRITE)
+        os.unlink(path)
+
+    teardown._clear_readonly_and_retry(unlink, str(target), PermissionError())
+    assert calls and calls[0] and not target.exists()
 
 
 def test_a_process_table_nobody_can_read_refuses(drain):

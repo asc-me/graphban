@@ -626,6 +626,9 @@ It refuses, names each cause, and deletes nothing while any of these is true:
   modified or untracked files. `.gbfleet/servers` and `uv.lock` drift are allowed; nothing
   else is;
 - a process has its cwd or an open file under the clone, or the repository lock is held.
+  On Windows (no `/proc`, no `lsof`) the check renames the clone to a sibling and back: a
+  directory a process holds cannot be renamed, so the refusal says the clone is in use but
+  cannot name the process.
 
 If teardown cannot answer one of these (no `gh`, the server is down, no process table), that
 is a refusal too. There is no `--force`: push or discard, then run it again. `--dry-run`

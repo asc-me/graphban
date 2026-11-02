@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -361,6 +362,8 @@ def processes_under(path: Path) -> list[str] | None:
     None means the question could not be asked, which the caller treats as a refusal.
     Linux reads `/proc`; macOS and the BSDs ask `lsof` for everything once and filter here,
     because `lsof +D` walks the whole tree and a clone with a `node_modules` takes minutes.
+    Windows has neither, and is asked by renaming the directory (see `_windows_in_use`); it
+    reports that the clone is held but not which process holds it.
     """
     target = str(path.resolve())
     me = os.getpid()
@@ -369,7 +372,7 @@ def processes_under(path: Path) -> list[str] | None:
         return name == target or name.startswith(target + os.sep)
 
     if os.name == "nt":
-        return None
+        return _windows_in_use(Path(target))
     proc = Path("/proc")
     if (proc / "self" / "fd").is_dir():
         found: list[str] = []
@@ -411,6 +414,41 @@ def processes_under(path: Path) -> list[str] | None:
         elif tag == "n" and pid and pid != me and under(value):
             hits.setdefault(pid, cmd)
     return [f"pid {p} ({c})" for p, c in sorted(hits.items())]
+
+
+def _windows_in_use(path: Path) -> list[str] | None:
+    """Windows has no `/proc` and no `lsof`, so ask the filesystem instead: a directory that
+    any process has as its cwd, or holds a file open under, cannot be renamed. Rename it to a
+    sibling and straight back. A refusal to rename IS the answer "in use", though Windows does
+    not say by whom; any other failure, or a rename that cannot be undone, is "could not
+    check" (None) — never clean.
+    """
+    probe = path.with_name(path.name + ".gbfleet-teardown-probe")
+    if probe.exists():
+        return None
+    try:
+        os.rename(path, probe)
+    except PermissionError as exc:
+        return [f"a process Windows does not name (the directory cannot be renamed: {exc})"]
+    except OSError:
+        return None
+    try:
+        os.rename(probe, path)
+    except OSError as exc:
+        raise RuntimeError(f"in-use probe moved {path} to {probe} and could not move it back: "
+                           f"{exc}; rename it back by hand") from exc
+    return []
+
+
+def _clear_readonly_and_retry(func, path, _exc) -> None:
+    """git writes object files read-only; on Windows that makes them undeletable until the
+    read-only bit is cleared. Clear it and try the same operation once more."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def remove_tree(target: Path) -> None:
+    shutil.rmtree(target, onexc=_clear_readonly_and_retry)
 
 
 def lock_refusal(clone: Path) -> str:
@@ -585,7 +623,7 @@ def execute(p: Plan, *, keep_clone: bool = False) -> Done:
 
     for target in ([d.workspace] + ([] if keep_clone else [d.clone])):
         if target.exists():
-            shutil.rmtree(target)
+            remove_tree(target)
             done.removed.append(f"removed {target}")
     return done
 
