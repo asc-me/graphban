@@ -291,3 +291,64 @@ def test_profiles_and_drift_are_plan_gated(client, org, plan, code):
     _set_plan(org["id"], plan)
     assert client.get(_url(org, "profiles"), headers=org["owner"]).status_code == code
     assert client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).status_code == code
+
+
+# ---- apply to one project (GRPH-1291, D11, D13) -------------------------------------------
+
+def _apply_project(client, org, pid, profile="standard", reason="adopt", headers=None):
+    return client.post(f"/api/rules/profiles/{profile}/apply", params={"project_id": pid},
+                       json={"reason": reason}, headers=headers or org["owner"])
+
+
+def test_apply_to_one_project_sets_toggles_and_audits_once(client, org):
+    p, other = org["ps"][0], org["ps"][1]
+    r = _apply_project(client, org, p)
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"] == sorted([RULE, OTHER])
+    t = _toggles(client, {"owner": org["owner"]}, p)[RULE]
+    assert t["on"] == {"value": True, "source": "project"}
+    assert t["params"]["value"] == {"n": 3} and t["locked"] is False
+    assert _toggles(client, {"owner": org["owner"]}, other)[RULE]["on"]["value"] is False
+    from app.models import Event
+
+    db = _db()
+    evs = db.query(Event).filter(Event.action == "apply_rule_profile").all()
+    assert len(evs) == 1 and evs[0].project_id == p
+    assert evs[0].meta["profile"] == "standard" and evs[0].meta["profile_version"] == "1"
+
+
+def test_apply_to_a_project_is_refused_whole_when_the_org_locks_a_rule(client, org):
+    client.put(f"/api/orgs/{org['id']}/rule-toggles/{OTHER}",
+               json={"on": False, "locked": True, "reason": "freeze"}, headers=org["owner"])
+    p = org["ps"][0]
+    r = _apply_project(client, org, p)
+    assert r.status_code == 409, r.text
+    assert OTHER in r.text and RULE not in r.json()['detail'].split('locked')[1]
+    assert _toggles(client, {"owner": org["owner"]}, p)[RULE]["on"]["value"] is False
+
+
+def test_apply_to_a_project_is_refused_for_an_api_key_or_the_engine(client, org):
+    from fastapi import HTTPException
+
+    from app.models import ApiKey
+
+    db = _db()
+    for actor in (ApiKey(id="k1", project_id=org["ps"][0]), ("engine", "recommend")):
+        with pytest.raises(HTTPException) as e:
+            RO.apply_project_profile(db, actor, org["ps"][0], "standard", reason="x")
+        assert e.value.status_code == 403 and e.value.rule_id == T.PERSON_RULE
+
+
+def test_project_drift_counts_a_changed_rule_once_and_flags_weakening(client, org):
+    p = org["ps"][0]
+    _apply_project(client, org, p)
+    d = client.get("/api/rules/profiles/standard/drift", params={"project_id": p},
+                   headers=org["owner"]).json()
+    assert d["state"] == "clean" and d["differs_in"] == 0
+    client.put(f"/api/rules/toggles/{RULE}", params={"project_id": p},
+               json={"on": False, "params": {"n": 9}, "reason": "loosen"}, headers=org["owner"])
+    d = client.get("/api/rules/profiles/standard/drift", params={"project_id": p},
+                   headers=org["owner"]).json()
+    assert d["differs_in"] == 1 and d["weakening"] == 1
+    assert d["summary"] == "differs from Standard in 1 rule"
+    assert d["drift"][0]["kind"] == "weakening"

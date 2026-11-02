@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 306 of the 306. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 308 of the 308. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -110,6 +110,8 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | GET | `/api/orgs/{org_id}/rules/effect` | JWT (org owner/admin) | The same summed across the org's projects. `team`/`enterprise` only: 402 `quota_exceeded` otherwise |
 | GET | `/api/orgs/{org_id}/rules/contribution` | JWT (org owner/admin) | Exactly the counts the org contributes if it opts in (`telemetry_share`): per rule, projects on, caught, and sign-offs and escapes before/after. Counts only. `team`/`enterprise` |
 | GET | `/api/orgs/{org_id}/rules/platform-effect` | JWT (org owner/admin) | Platform escape rates per rule (PRD-P63 D8 on PRD-38 D13): hosted only, and only for an org that opted in. Served only with ≥3 contributing orgs, n≥20 per side and no org past 60%; rates to two decimals, no ids. Each side stands on its own floor: a short side is `insufficient` with a reason naming it (before or after), and the other side stays measured. Same value shape as `/api/rules/effect`, but `n` is **always null** at this scope and `n_band` carries the band (`"20–49"`, …, or `"<20"` when a side is `insufficient`; null when `unavailable`), on every branch, because an exact platform total would let a contributor subtract its own counts. `team`/`enterprise` |
+| POST | `/api/rules/profiles/{profile_id}/apply` | JWT (project owner/admin, a person) | Apply the profile's rules to one project, every plan (D11, D13): project toggle and params only, with a required `reason`. 409 `rules.org_lock_holds` and nothing written when the org has locked a rule it names; 403 `rules.person_adopts` for an API key. One `set_rule_toggle` event per rule and one `apply_rule_profile` event |
+| GET | `/api/rules/profiles/{profile_id}/drift` | JWT (project reader) | How the project differs from the profile, a rule counted once (`differs from Regulated in 1 rule`); `weakening` when a pinned-on rule is off |
 | GET | `/api/orgs/{org_id}/rules/profiles` | JWT (org owner/admin) | Oversight profiles of the loaded rule pack (PRD-63 S4, `services/rules_org.py`). `team`/`enterprise` only: 402 otherwise (D11) |
 | POST | `/api/orgs/{org_id}/rules/profiles/{profile_id}/apply` | JWT (org owner/admin) | Pin the profile's rules across the org, locked, with a required `reason`. All-or-nothing: 422 and nothing written when it names a rule the library cannot enforce. One `set_rule_toggle` event per rule and one `apply_rule_profile` event |
 | GET | `/api/orgs/{org_id}/rules/profiles/{profile_id}/drift` | JWT (org owner/admin) | Per project and rule, where the live value differs from the profile's pin: `weakening` (loosens the pin: pinned on and now off, or no longer locked), `changed` (any other difference, such as an off pin turned on or different params), or `unmeasured`; `state` is `clean` or `drifted` |
