@@ -1030,6 +1030,52 @@ def _running_schtasks(name: str) -> tuple[bool | None, str, int | None]:
     return None, status_word, last
 
 
+def until_args_of(name: str, kind: str) -> list[str] | None:
+    """The `until` arguments an installed unit runs, read back from disk (GRPH-1296).
+
+    `teardown` takes nothing but a service name, so everything it acts on — the clone, the
+    server, the PRD, the wave — has to come out of the unit this module wrote. None when the
+    unit is missing or carries no `until` invocation this parser recognises: a guess here is
+    a guess about which directory to delete.
+    """
+    unit = unit_path_for(name, kind)
+    try:
+        if kind == "launchd":
+            if not unit.exists():
+                return None
+            job = plistlib.loads(unit.read_bytes())
+            program = job.get("ProgramArguments") or []
+            line = str(program[-1]) if program else ""
+            if "exec " not in line:
+                return None
+            argv = shlex.split(line.split("exec ", 1)[1])
+        elif kind == "schtasks":
+            runner = runner_path_for(name)
+            if not runner.exists():
+                return None
+            argv = []
+            for line in runner.read_text(encoding="utf-8").splitlines():
+                if " until " in line and not line.lstrip().lower().startswith("rem"):
+                    argv = [part.strip('"') for part in shlex.split(line, posix=False)]
+        else:
+            if not unit.exists():
+                return None
+            argv = []
+            for line in unit.read_text(encoding="utf-8").splitlines():
+                if line.startswith("ExecStart="):
+                    argv = shlex.split(line[len("ExecStart="):])
+    except (OSError, ValueError, IndexError):
+        return None
+    if len(argv) < 2 or argv[1] != "until":
+        return None
+    return argv[2:]
+
+
+def value_of(args: list[str], flag: str) -> str | None:
+    """`--flag value` or `--flag=value` from an argv, the way `make_plan` reads `--repo`."""
+    return _value_of(args, flag)
+
+
 def uninstall(name: str = DEFAULT_NAME, *, kind: str = "") -> list[str]:
     """Stop it and remove what was written. Returns what was actually removed.
 

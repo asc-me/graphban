@@ -20,6 +20,7 @@ from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreachable, To
 from . import doctor
 from . import service as service_mod
 from . import surface as surface_mod
+from . import teardown as teardown_mod
 from .lock import RepoLocked, describe_holder
 from .seat import Seat, codes_from_text, parse_seat_line
 from dataclasses import replace
@@ -398,6 +399,31 @@ def build_parser() -> argparse.ArgumentParser:
     until.add_argument(
         "argv", nargs=argparse.REMAINDER, help="-- followed by the command to run per child"
     )
+
+    td = sub.add_parser(
+        "teardown",
+        help="remove a FINISHED drain: service, key file, seats, worktrees, workspace, clone",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Reads the clone, server, PRD and wave out of the installed unit, then refuses —\n"
+            "naming each cause and deleting nothing — while the PRD has next, backlog,\n"
+            "in_progress or review items, a PR from one of the clone's branches is still open,\n"
+            "the service is mid-run, a local branch has a commit on no remote, the clone or\n"
+            "any registered worktree (inside or outside <clone>-gbfleet/) has uncommitted\n"
+            "work, a process has the clone open, or the repository lock is held. Unknown is a\n"
+            "refusal too. `.gbfleet/servers` and uv.lock drift do not block.\n\n"
+            "There is no --force: push or discard, then run it again.\n\n"
+            "Then, in order: uninstall the service (unit + key file), retire the wave's seats,\n"
+            "reap every registered worktree, delete <clone>-gbfleet/ and the clone."
+        ),
+    )
+    td.add_argument("--name", required=True, help="the service name the drain was installed as")
+    td.add_argument("--prd", default="",
+                    help="the PRD that must be finished (default: the drain's own --prd)")
+    td.add_argument("--dry-run", action="store_true",
+                    help="print the plan and every refusal; change nothing")
+    td.add_argument("--keep-clone", action="store_true",
+                    help="do everything except delete the clone itself")
 
     sub.add_parser(
         "gc",
@@ -1114,6 +1140,11 @@ def _surface(args) -> int:
     return 0
 
 
+def _teardown(args) -> int:
+    return teardown_mod.run(args.name, prd=args.prd, dry_run=args.dry_run,
+                            keep_clone=args.keep_clone)
+
+
 def _gc() -> int:
     """Print what a sweep of the state directory did — including what it could not do.
 
@@ -1174,6 +1205,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "gc":
         return _gc()
+
+    if args.command == "teardown":
+        return _teardown(args)
 
     if args.command == "service":
         return _service(args)
