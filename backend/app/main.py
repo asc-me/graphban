@@ -197,10 +197,17 @@ async def lifespan(app: FastAPI):
     if is_leader and settings.memory_judge_refresh_seconds > 0:
         judge_task = asyncio.create_task(_memory_judge_loop())
 
+    # Auto-update (GRPH-1299): its own task, leader-only, `0` disables. Each tick opens and
+    # closes its own session; the claims inside `auto_update.tick` are conditional UPDATEs,
+    # so a second process that also believed it led could not start a second install.
+    update_task = None
+    if is_leader and settings.auto_update_tick_seconds > 0:
+        update_task = asyncio.create_task(_auto_update_loop())
+
     try:
         yield
     finally:
-        for task in (retry_task, export_task, judge_task):
+        for task in (retry_task, export_task, judge_task, update_task):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -343,6 +350,30 @@ def _one_memory_judge_pass() -> int:
     db = SessionLocal()
     try:
         return mem_svc.run_judge_refresh(db)
+    finally:
+        db.close()
+
+
+async def _auto_update_loop() -> None:
+    """Run the auto-update tick forever without ever raising (GRPH-1299)."""
+    interval = settings.auto_update_tick_seconds
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await asyncio.to_thread(_one_auto_update_pass)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — silence here is the failure
+            logger.warning("auto-update pass failed; continuing", exc_info=True)
+
+
+def _one_auto_update_pass() -> dict:
+    """One tick, session included. Runs inside a worker thread (GRPH-535)."""
+    from app.services import auto_update
+
+    db = SessionLocal()
+    try:
+        return auto_update.tick(db)
     finally:
         db.close()
 

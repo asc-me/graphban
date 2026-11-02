@@ -11,6 +11,7 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
+import { AutoUpdateSettings } from "@/features/settings/AutoUpdateSettings";
 import { Markdown } from "@/lib/markdown";
 import { keys, useConfig, useUpdateCheck } from "@/lib/queries";
 import type { ReleaseNotes, UpdateCheck, UpdateProgress } from "@/lib/types";
@@ -415,6 +416,7 @@ export function UpdatesPanel() {
         </div>
         {applyError ? <p className="mt-2 text-[12px] text-danger">{applyError}</p> : null}
       </div>
+      <AutoUpdateSettings progressError={progress?.state === "failed" ? progress.error : ""} />
     </div>
   );
 }

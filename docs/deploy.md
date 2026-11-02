@@ -105,6 +105,28 @@ scripts/deploy.sh --local              # ships to THIS machine, no ssh hop
 scripts/deploy.sh --dir /srv/graphban  # a target directory other than ~/agentledger
 ```
 
+### Auto-update
+
+Settings → This box → Updates can update the box unattended. It is **off by default**,
+and unavailable on hosted instances and on a box with no apply path (no compose helper,
+not a native install); the panel says which.
+
+When on, two windows decide when. Each has days of the week, a start and an end time in
+the chosen timezone (default `UTC`), and the default is **02:00–05:00 every night**. A
+window may cross midnight (22:00–02:00) and belongs to the day it starts on.
+
+- **Check window.** Once per window per day the API checks GitHub for a newer release.
+  No GitHub calls happen outside the window beyond the manual Check button.
+- **Install window.** Inside it, when the last check says a release is available, the
+  same apply path as the Install button starts for that release. It does not start when
+  an install is already running, when that release was already auto-installed (a failed
+  release waits for a newer one or a manual Install), or when the window has closed.
+
+The attempt is recorded before apply runs, because apply restarts the API. The panel
+shows the next check, the last check and the last auto-update with its outcome; a failed
+auto-install shows the install error. The loop wakes every `AUTO_UPDATE_TICK_SECONDS`
+(default 300, `0` disables) and runs in one API worker.
+
 ### Install from Settings (compose helper)
 
 The Updates page Install button cannot run Docker from the API container. A

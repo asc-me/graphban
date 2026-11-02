@@ -76,6 +76,13 @@ vi.mock("@/lib/api", () => ({
     updateApply: updateApplySpy,
     health: healthSpy,
     updateProgress: progressSpy,
+    autoUpdate: vi.fn(async () => ({
+      available: false, unavailable_reason: "no apply path", enabled: false, timezone: "UTC",
+      check: { days: [0, 1, 2, 3, 4, 5, 6], start: "02:00", end: "05:00" },
+      install: { days: [0, 1, 2, 3, 4, 5, 6], start: "02:00", end: "05:00" },
+      next_check_at: null, last_check_at: null, last_check_state: "", last_auto_install_tag: "",
+      last_auto_install_at: null, last_auto_install_outcome: "", last_auto_install_error: "",
+    })),
     credentials: vi.fn(async () => []),
     platform: vi.fn(async () => null),
     syncStatus: vi.fn(async () => ({ linked: false, url: "", projects: [] })),

@@ -23,6 +23,7 @@ from app.services import events as events_svc
 from app.services import items as items_svc
 from app.services import credential_retry
 from app.services import reindex
+from app.services import auto_update as auto_update_svc
 from app.services import instance_update
 from app.services import platform as platform_svc
 from app.services import harness as harness_svc
@@ -118,6 +119,41 @@ def update_apply(body: UpdateApplyIn, _: User = Depends(get_current_user)):
     if not got.get("ok"):
         raise HTTPException(got.get("status") or 500, got.get("error") or "apply failed")
     return JSONResponse(got, status_code=202)
+
+
+class AutoUpdatePatch(BaseModel):
+    """Config only. Runtime state (`last_*`) is not a field, and extras are refused."""
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool | None = None
+    timezone: str | None = None
+    check_days: list[int] | None = None
+    check_start: str | None = None
+    check_end: str | None = None
+    install_days: list[int] | None = None
+    install_start: str | None = None
+    install_end: str | None = None
+
+
+@router.get("/auto-update")
+def get_auto_update(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """Auto-update config, windows, and what the last check / auto-install did (GRPH-1299)."""
+    return auto_update_svc.status(db)
+
+
+@router.patch("/auto-update")
+def patch_auto_update(body: AutoUpdatePatch, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """Opt in or change the windows. Hosted and no-apply boxes cannot enable it (400)."""
+    values = body.model_dump(exclude_unset=True)
+    if values.get("enabled"):
+        why = auto_update_svc.unavailable_reason()
+        if why:
+            raise HTTPException(400, why)
+    try:
+        auto_update_svc.update_config(db, values)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return auto_update_svc.status(db)
 
 
 @router.get("/providers")
