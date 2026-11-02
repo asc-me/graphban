@@ -49,6 +49,10 @@ NOTES_STATES = ("present", "empty", "unknown")
 # field — absence of the socket is apply=false, not a knob.
 SOCKET_PATH = "/run/graphban-apply/apply.sock"
 NATIVE_ROOT = "/opt/graphban"
+# Install logs. Compose: deploy.log beside the socket (written by the host helper).
+# Native: under the install root (written by start_native).
+COMPOSE_LOG = "/run/graphban-apply/deploy.log"
+NATIVE_LOG = "upgrade.log"
 _HELPER_TIMEOUT = 3.0
 _DOWNLOAD_TIMEOUT = 60.0
 
@@ -263,13 +267,26 @@ def start_native(tag: str, asset: str, *, root: str | None = None,
         release / "GIT_SHA").is_file() else ""
     if not sha or sha == "unknown":
         return {"ok": False, "error": "tarball has no GIT_SHA"}
-    popen(
-        [sys.executable, str(host), "upgrade",
-         "--root", str(root_p), "--release", str(release), "--sha", sha],
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    # The upgrade's output is the install's progress. Same start marker as the compose
+    # helper writes, so update-progress reads only this attempt.
+    log_p = root_p / NATIVE_LOG
+    try:
+        log_p.parent.mkdir(parents=True, exist_ok=True)
+        log = log_p.open("ab", buffering=0)
+    except OSError as e:
+        return {"ok": False, "error": f"cannot write {log_p}: {type(e).__name__}"}
+    try:
+        log.write(f"\n=== apply {tag} {time.strftime('%Y-%m-%dT%H:%M:%S%z')} "
+                  f"{int(time.time())}\n".encode("utf-8"))
+        popen(
+            [sys.executable, str(host), "upgrade",
+             "--root", str(root_p), "--release", str(release), "--sha", sha],
+            start_new_session=True,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+    finally:
+        log.close()  # the child holds its own descriptor
     return {"ok": True, "started": True, "tag": tag, "sha": sha}
 
 
@@ -411,3 +428,155 @@ def check(*, fetch=None, fetch_running=None, run=None, hosted: bool | None = Non
     base["state"] = "available"
     base["note"] = NOTE_AVAILABLE
     return base
+
+
+# --- install progress -------------------------------------------------------------------
+
+PROGRESS_STATES = ("idle", "running", "succeeded", "failed")
+_MARKER = re.compile(r"^=== apply (\S+) (\S+)(?: (\d+))?\s*$")
+_LINE_CAP = 300
+_TAIL_BYTES = 2 * 1024 * 1024
+# The `==>` lines deploy.sh prints. Matched by prefix, in script order; on the compose
+# log a step not yet printed is listed as pending. graphban_upgrade (the native log)
+# prints none of these but "<sha> is live", so that log lists only the steps it has
+# printed — no step is invented for a script that never prints it.
+KNOWN_STEPS = (
+    ("worktree", "Creating the deploy worktree", "creating the deploy worktree"),
+    ("pin", "Pinning the deploy worktree", "pinning the deploy worktree"),
+    ("ship", "Shipping the release to the box", "shipping "),
+    ("build", "Building the images", "building on "),
+    ("verify", "Verifying release identity", "verifying release identity"),
+    ("live", "Release is live", None),  # "<sha> is live" — matched by suffix
+)
+_SECRET_KV = re.compile(
+    r"(?i)\b([A-Za-z0-9_.-]*(?:token|secret|passw(?:or)?d|api[_-]?key|credential|private[_-]?key)"
+    r"[A-Za-z0-9_.-]*)(\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|\S+)")
+_BEARER = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}")
+_URL_CRED = re.compile(r"(://[^/\s:@]+:)[^@\s]+@")
+
+
+def mask(line: str) -> str:
+    """Hide secret-looking values in a log line before it leaves the API."""
+    line = _SECRET_KV.sub(lambda m: f"{m.group(1)}{m.group(2)}***", line)
+    line = _BEARER.sub(lambda m: f"{m.group(1)} ***", line)
+    return _URL_CRED.sub(r"\1***@", line)
+
+
+def _clean(line: str) -> str:
+    line = mask(line.strip())
+    return line if len(line) <= _LINE_CAP else line[:_LINE_CAP - 1] + "…"
+
+
+def _idle(reason: str) -> dict:
+    return {"state": "idle", "reason": reason, "tag": "", "steps": [],
+            "current_line": "", "error": ""}
+
+
+def _step_key(text: str) -> str | None:
+    for key, _label, prefix in KNOWN_STEPS:
+        if prefix and text.startswith(prefix):
+            return key
+    if text.endswith(" is live"):
+        return "live"
+    return None
+
+
+PROGRESS_SOURCES = ("compose", "native")
+
+
+def parse_progress(text: str, source: str = "compose") -> dict:
+    """Progress of the CURRENT attempt: the lines after the last start marker.
+
+    `source` names the script that wrote the log. Only deploy.sh's (compose) step list
+    is known in advance; for any other log only the steps it has printed are listed.
+    """
+    lines = text.splitlines()
+    start = None
+    for i, ln in enumerate(lines):
+        if _MARKER.match(ln):
+            start = i
+    if start is None:
+        return _idle("the install log has no start marker")
+    m = _MARKER.match(lines[start])
+    tag = m.group(1)
+    seen: dict[str, dict] = {}
+    last_key = None
+    error = ""
+    current = ""
+    for ln in lines[start + 1:]:
+        raw = ln.strip()
+        if not raw:
+            continue
+        if raw.startswith("@@ "):
+            if last_key and raw[3:].strip().isdigit() and seen[last_key]["started_at"] is None:
+                seen[last_key]["started_at"] = int(raw[3:].strip())
+            continue
+        current = raw
+        if raw.startswith("==> "):
+            key = _step_key(raw[4:])
+            if key and key not in seen:
+                seen[key] = {"key": key, "text": raw[4:], "started_at": None}
+                last_key = key
+        elif raw.startswith("!!") or raw.startswith("upgrade failed"):
+            error = raw
+    failed = bool(error)
+    live = "live" in seen
+    steps = []
+    order = [k for k, _l, _p in KNOWN_STEPS]
+    active = None
+    if not failed and not live:
+        present = [k for k in order if k in seen]
+        active = present[-1] if present else None
+    failed_key = None
+    if failed:
+        present = [k for k in order if k in seen]
+        failed_key = present[-1] if present else None
+    for key, label, _p in KNOWN_STEPS:
+        if key not in seen and (key == "worktree" or source != "compose"):
+            continue  # one-time step, or a step this log's script never prints
+        info = seen.get(key)
+        if info is None:
+            status = "pending"
+        elif key == failed_key:
+            status = "failed"
+        elif key == active:
+            status = "active"
+        else:
+            status = "done"
+        steps.append({"key": key, "label": label, "status": status,
+                      "started_at": info["started_at"] if info else None})
+    state = "failed" if failed else "succeeded" if live else "running"
+    return {"state": state, "reason": "", "tag": tag, "steps": steps,
+            "current_line": _clean(current), "error": _clean(error) if error else ""}
+
+
+def _read_tail(path: pathlib.Path) -> str:
+    size = path.stat().st_size
+    with path.open("rb") as f:
+        f.seek(max(0, size - _TAIL_BYTES))
+        return f.read().decode("utf-8", errors="replace")
+
+
+def progress(*, paths: list[str] | None = None) -> dict:
+    """Current install progress from the newest install log. Never raises."""
+    cands = paths if paths is not None else [
+        COMPOSE_LOG, str(pathlib.Path(NATIVE_ROOT) / NATIVE_LOG)]
+    found = []
+    for c in cands:
+        p = pathlib.Path(c)
+        try:
+            if p.is_file():
+                found.append((p.stat().st_mtime, p))
+        except OSError:
+            continue
+    if not found:
+        return _idle("no install log on this box")
+    found.sort(key=lambda t: t[0], reverse=True)
+    path = found[0][1]
+    try:
+        text = _read_tail(path)
+    except OSError as e:
+        return _idle(f"the install log is unreadable: {type(e).__name__}")
+    out = parse_progress(text, "native" if path.name == NATIVE_LOG else "compose")
+    out["log_path"] = str(path)
+    return out

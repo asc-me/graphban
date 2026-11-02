@@ -121,6 +121,25 @@ systemctl --user daemon-reload
 systemctl --user enable --now graphban-compose-host.service
 ```
 
+**Install progress.** After Install the panel polls `GET /api/platform/update-progress`
+and lists the steps `deploy.sh` prints (`==>` lines), with a timer on the active one and
+the latest log line. The native upgrade prints no step lines until `==> <sha> is live`,
+so on that path the panel shows only the latest log line until it finishes; no compose
+step is listed for it. A log section for a different tag than the one being installed is
+an older attempt and is ignored. Each install starts a new section in the log with a
+`=== apply <tag> <time> <epoch>` marker; only the newest section is read. The build's
+container output is kept in the log too. Secret-looking values (`…TOKEN=`, `password=`,
+bearer tokens) are masked. On a `!!` failure the panel stops and shows that line; it does
+not wait out the 15-minute budget. While the API container is recreated at the end, the
+panel says "restarting the API" and keeps polling `/health`.
+
+Where the log lives:
+
+| Path | Log |
+|---|---|
+| Compose | `deploy.log` beside the helper socket — `~/.graphban-apply/deploy.log` on the host (`/run/graphban-apply/deploy.log` in the API container) |
+| Native | `upgrade.log` under the install root — `/opt/graphban/upgrade.log` |
+
 Linger is what keeps the helper up after logout — without it, Install 202s and
 nothing rebuilds. To run in the foreground instead of systemd, same binary:
 `python3 ~/graphban-src/scripts/graphban_compose_host.py listen --repo

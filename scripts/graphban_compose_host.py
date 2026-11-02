@@ -63,7 +63,8 @@ def start_apply(repo: pathlib.Path, dest: pathlib.Path, tag: str, *,
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = log_path.open("ab", buffering=0)
         log.write(
-            f"\n=== apply {tag} {time.strftime('%Y-%m-%dT%H:%M:%S%z')}\n".encode("utf-8"))
+            f"\n=== apply {tag} {time.strftime('%Y-%m-%dT%H:%M:%S%z')} {int(time.time())}\n"
+            .encode("utf-8"))
         out = log
     try:
         popen(

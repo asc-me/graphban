@@ -2,8 +2,9 @@
  * This box → Updates. Three states; unknown is not current.
  * Check refetches. Install is enabled when `apply` is true and a cut is
  * available — compose apply is the host helper, not a Docker socket in the API.
- * After Install, the page polls `/health` until this box serves the tag, says so, and
- * reloads, because the old bundle is still running in this tab.
+ * After Install, the page polls `/api/platform/update-progress` for the steps (GRPH-1298) and
+ * `/health` until this box serves the tag, says so, and reloads, because the old bundle is
+ * still running in this tab. A failed install stops the poll and shows the log's error line.
  */
 import { useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
@@ -12,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { Markdown } from "@/lib/markdown";
 import { keys, useConfig, useUpdateCheck } from "@/lib/queries";
-import type { ReleaseNotes, UpdateCheck } from "@/lib/types";
+import type { ReleaseNotes, UpdateCheck, UpdateProgress } from "@/lib/types";
 
 function Label({ children }: { children: React.ReactNode }) {
   return <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">{children}</div>;
@@ -181,13 +182,52 @@ function refusal(err: unknown): string | null {
   return raw || `HTTP ${status}`;
 }
 
+function elapsed(startedAt: number | null, nowMs: number): string {
+  if (startedAt === null) return "";
+  const sec = Math.max(0, Math.floor(nowMs / 1000 - startedAt));
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+}
+
+const MARK: Record<string, string> = { pending: "○", active: "●", done: "✓", failed: "✗" };
+
+function ProgressSteps({ progress, nowMs }: { progress: UpdateProgress; nowMs: number }) {
+  if (!progress.steps.length) return null;
+  return (
+    <div className="mt-2 space-y-1">
+      <ol className="space-y-0.5 text-[12px]" aria-label="Install steps">
+        {progress.steps.map((st) => (
+          <li
+            key={st.key}
+            data-status={st.status}
+            className={st.status === "failed" ? "text-danger" : st.status === "pending" ? "text-faint" : "text-fg-2"}
+          >
+            <span aria-hidden className="mr-1.5 font-mono">{MARK[st.status]}</span>
+            {st.label}
+            <span className="sr-only"> ({st.status})</span>
+            {st.status === "active" && st.started_at !== null ? (
+              <span className="ml-1.5 font-mono text-faint" data-testid="step-timer">
+                {elapsed(st.started_at, nowMs)}
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ol>
+      {progress.current_line ? (
+        <p className="truncate font-mono text-small text-faint" title={progress.current_line}>
+          {progress.current_line}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function PhaseCopy({ phase, tag, from }: { phase: Phase; tag: string; from: string }) {
   if (!phase) return null;
   const text = phase === "starting"
     ? "Starting the install…"
     : phase === "building"
       ? `Building ${tag}. This box keeps serving ${from} until the new cut is ready — this can take several minutes.`
-      : `Restarting on ${tag}…`;
+      : `Restarting the API on ${tag}…`;
   return <p className="mt-2 text-[12px] text-fg-2">{text}</p>;
 }
 
@@ -212,6 +252,13 @@ export function UpdatesPanel() {
   const [applyError, setApplyError] = React.useState("");
   const [phase, setPhase] = React.useState<Phase>("");
   const [installed, setInstalled] = React.useState("");
+  const [progress, setProgress] = React.useState<UpdateProgress | null>(null);
+  const [nowMs, setNowMs] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    if (!applying) return;
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [applying]);
   const alive = React.useRef(true);
   React.useEffect(() => {
     alive.current = true;
@@ -224,6 +271,7 @@ export function UpdatesPanel() {
     setApplying(true);
     setApplyError("");
     setPhase("starting");
+    setProgress(null);
     try {
       await api.updateApply(tag);
     } catch (err) {
@@ -242,6 +290,32 @@ export function UpdatesPanel() {
     while (alive.current && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, installTiming.pollMs));
       if (!alive.current) return;
+      let failed: UpdateProgress | null = null;
+      let progressDown = false;
+      try {
+        const got = await api.updateProgress(installTiming.requestMs);
+        if (!alive.current) return;
+        // A section for another tag is an older attempt, not this install: treat it as
+        // not started yet rather than showing (or failing on) its steps.
+        if (got.tag === tag) {
+          setProgress(got);
+          setNowMs(Date.now());
+          if (got.state === "failed") failed = got;
+        } else {
+          setProgress(null);
+        }
+      } catch {
+        progressDown = true; // the API is being recreated; /health below says whether it is back
+      }
+      if (failed) {
+        setApplying(false);
+        setPhase("");
+        const where = via === "compose"
+          ? "The full log is deploy.log beside the helper's socket on the host (~/.graphban-apply/deploy.log by default)."
+          : "The full log is upgrade.log under the install root on the host (/opt/graphban/upgrade.log).";
+        setApplyError(`Install failed: ${failed.error || "see the log"}. ${where}`);
+        return;
+      }
       try {
         const health = await api.health(installTiming.requestMs);
         if (health.version === tag) {
@@ -254,7 +328,7 @@ export function UpdatesPanel() {
           setTimeout(() => { if (alive.current) pageReload.run(); }, installTiming.reloadMs);
           return;
         }
-        setPhase("building");
+        setPhase(progressDown ? "restarting" : "building");
       } catch {
         setPhase("restarting");
       }
@@ -332,6 +406,7 @@ export function UpdatesPanel() {
         )}
         <div role="status" aria-live="polite">
           <PhaseCopy phase={phase} tag={tag} from={data?.running.version ?? ""} />
+          {applying && progress ? <ProgressSteps progress={progress} nowMs={nowMs} /> : null}
           {installed ? (
             <p className="mt-2 text-[13px] font-semibold text-fg">
               Installed {installed}. Reloading this page to load the new release…
