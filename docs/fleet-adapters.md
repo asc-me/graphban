@@ -607,6 +607,42 @@ Only `FAIL` sets a non-zero exit. Refusing to start because a check could not be
 would ground the fleet on a slow network, so unknowns are printed loudly and the
 operator decides.
 
+## After the drain: `gbfleet teardown` (GRPH-1296)
+
+When a PRD drain is finished, `gbfleet teardown --name <service> [--prd <id>] [--dry-run]
+[--keep-clone]` removes it: the service unit and its key file, the wave's seats on the
+server, every worktree the clone has registered, `<clone>-gbfleet/`, and the clone. The clone,
+server, PRD and wave are read back out of the installed unit, so the service must still be
+installed when you run it.
+
+It refuses, names each cause, and deletes nothing while any of these is true:
+
+- the PRD still has a `next`, `backlog`, `in_progress` or `review` item (`blocked` items are
+  printed but do not block);
+- a PR from one of the clone's branches is still open (`gh pr list`);
+- the service is mid-run, or its state cannot be read;
+- a local branch has a commit that no remote-tracking ref reaches;
+- the clone, or any registered worktree **inside or outside** `<clone>-gbfleet/`, has
+  modified or untracked files. `.gbfleet/servers` and `uv.lock` drift are allowed; nothing
+  else is;
+- a process has its cwd or an open file under the clone, or the repository lock is held.
+  On Windows (no `/proc`, no `lsof`) the check renames the clone to a sibling and back: a
+  directory a process holds cannot be renamed, so the refusal says the clone is in use but
+  cannot name the process.
+
+If teardown cannot answer one of these (no `gh`, the server is down, no process table), that
+is a refusal too. There is no `--force`: push or discard, then run it again. `--dry-run`
+prints the same plan and refusals and changes nothing.
+
+Remotes are fetched without `--prune` before the check, so a squash-merged branch whose remote
+branch was deleted still counts as pushed. Seats are retired through every planner agent the
+drain registered from this clone on the same credential, because `retire_wave` reaches only
+the seats its caller minted and a drain registers a new planner every cycle. If a worktree
+cannot be reaped, the clone and workspace are left in place and the exit code is 1.
+
+`gbfleet until --teardown-on-done` is not offered. A drain cannot tear itself down while it
+runs: it holds the repository lock, and the service is mid-run.
+
 ## Debug output: what each vendor can be asked for
 
 `gbfleet up --debug` asks each child's CLI to write a debug log beside its stdout, and
