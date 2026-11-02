@@ -11,6 +11,7 @@ and starts `graphban_host.py upgrade` — not the source zip.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -131,26 +132,36 @@ def notes_payload(rel: dict | None, tag: str) -> dict:
     return {"tag": tag, "state": "present", "body": text}
 
 
-_feed_error = {"reason": ""}
+# Why the current fetch failed. Each check() job runs on its own thread and sets its own
+# holder here, so a reason belongs to one job of one call: concurrent requests, the
+# running-tag fetch, and abandoned timed-out threads cannot overwrite each other.
+_reason_slot: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "instance_update_reason", default=None)
+
+
+def _note_reason(reason: str) -> None:
+    holder = _reason_slot.get()
+    if holder is not None:
+        holder["reason"] = reason
 
 
 def _get_release(url: str, label: str) -> dict | None:
-    """One GitHub Release GET. Records why it failed in `_feed_error`. Never raises."""
+    """One GitHub Release GET. Records why it failed for the calling job. Never raises."""
     try:
         resp = httpx.get(url, headers=_GH_HEADERS, timeout=_FETCH_TIMEOUT)
         if resp.status_code != 200:
             logger.warning("%s status=%s", label, resp.status_code)
             if resp.status_code in (403, 429):
-                _feed_error["reason"] = (
+                _note_reason(
                     f"GitHub returned {resp.status_code} — rate limited or throttled")
             else:
-                _feed_error["reason"] = f"GitHub returned {resp.status_code}"
+                _note_reason(f"GitHub returned {resp.status_code}")
             return None
         return _parse_release(resp.json())
     except (httpx.TimeoutException, httpx.HTTPError, OSError, ValueError, TypeError,
             KeyError) as e:
         logger.warning("%s failed: %s", label, type(e).__name__)
-        _feed_error["reason"] = f"could not reach GitHub ({type(e).__name__})"
+        _note_reason(f"could not reach GitHub ({type(e).__name__})")
         return None
 
 
@@ -167,19 +178,25 @@ def fetch_tag(tag: str) -> dict | None:
     return _get_release(TAG_URL.format(tag=tag), f"update tag feed tag={tag}")
 
 
-def _run_concurrently(jobs: dict, deadline: float) -> dict:
+def _run_concurrently(jobs: dict, deadline: float) -> tuple[dict, dict]:
     """Run `jobs` (name -> zero-arg callable) on daemon threads and wait at most
-    `deadline` seconds in total. A job that has not finished is absent from the result;
-    its thread is abandoned (a stuck getaddrinfo cannot be cancelled).
+    `deadline` seconds in total. Returns (results, reasons). A job that has not
+    finished is absent from results; its thread is abandoned (a stuck getaddrinfo
+    cannot be cancelled) and only ever writes to this call's private dicts.
     """
     out: dict = {}
+    reasons: dict = {}
 
     def runner(name, fn):
+        holder = {"reason": ""}
+        _reason_slot.set(holder)  # a new thread starts with an empty context
         try:
-            out[name] = fn()
+            value = fn()
         except Exception as e:  # noqa: BLE001 — a failed fetch is unknown, not a 500
             logger.warning("update fetch %s raised %s", name, type(e).__name__)
-            out[name] = None
+            value = None
+        reasons[name] = holder["reason"]
+        out[name] = value
 
     threads = [threading.Thread(target=runner, args=(n, f), daemon=True)
                for n, f in jobs.items()]
@@ -188,7 +205,7 @@ def _run_concurrently(jobs: dict, deadline: float) -> dict:
     end = time.monotonic() + deadline
     for t in threads:
         t.join(max(0.0, end - time.monotonic()))
-    return dict(out)
+    return dict(out), dict(reasons)
 
 
 _cache: dict = {"at": 0.0, "payload": None}
@@ -327,12 +344,11 @@ def check(*, fetch=None, fetch_running=None, run=None, hosted: bool | None = Non
         running_fn = lambda tag: None  # noqa: E731 — tests stay offline
     got = run if run is not None else running()
     version = (got.get("version") or "").strip()
-    _feed_error["reason"] = ""
     jobs = {"latest": fetch_fn}
     if version and version not in PLACEHOLDER_VERSIONS:
         # Concurrent with the latest fetch; dropped below when latest is the running tag.
         jobs["running"] = lambda: running_fn(version)
-    done = _run_concurrently(jobs, CHECK_DEADLINE)
+    done, reasons = _run_concurrently(jobs, CHECK_DEADLINE)
     timed_out = "latest" not in done
     raw = done.get("latest")
     latest = None
@@ -382,7 +398,7 @@ def check(*, fetch=None, fetch_running=None, run=None, hosted: bool | None = Non
     if raw is None:
         base["feed_error"] = (
             f"the update feed did not answer within {CHECK_DEADLINE:g}s"
-            if timed_out else (_feed_error["reason"] or "the update feed returned nothing"))
+            if timed_out else (reasons.get("latest") or "the update feed returned nothing"))
     if version in PLACEHOLDER_VERSIONS:
         base["note"] = NOTE_PLACEHOLDER
         return base
