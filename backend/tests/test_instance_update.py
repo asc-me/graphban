@@ -8,6 +8,7 @@ from app.services import instance_update as svc
 def _offline_tag_feed(monkeypatch):
     """REST tests look up fetch_tag at call time. Do not hit GitHub."""
     monkeypatch.setattr(svc, "fetch_tag", lambda tag: None)
+    svc._cache.update(at=0.0, payload=None)
 
 
 def test_placeholder_version_is_unknown_even_when_the_feed_matches():

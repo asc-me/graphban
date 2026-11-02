@@ -477,7 +477,9 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
-  updateCheck: () => request<UpdateCheck>("/platform/update-check"),
+  // `refresh` bypasses the server's one-minute cache (the Check button).
+  updateCheck: (refresh = false) =>
+    request<UpdateCheck>(`/platform/update-check${refresh ? "?refresh=true" : ""}`),
   // What this box is serving right now. `/health`, not update-check: it asks no GitHub
   // feed, so polling it through an install cannot spend the unauthenticated rate limit.
   // Not under /api and needs no session. `timeoutMs` bounds one call — a request held by

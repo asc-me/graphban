@@ -265,6 +265,19 @@ describe("Updates Settings page", () => {
     expect(screen.getByRole("button", { name: /^install$/i })).toBeDisabled();
   });
 
+  it("an unreachable feed names why, instead of reading as no release", async () => {
+    updateCheckSpy.mockResolvedValue(
+      payload({
+        state: "unknown",
+        latest: null,
+        feed_error: "GitHub returned 403 — rate limited or throttled",
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText(/GitHub returned 403/)).toBeInTheDocument();
+    expect(screen.queryByText(/on the latest release/i)).not.toBeInTheDocument();
+  });
+
   it("hosted has Check and no Install", async () => {
     updateCheckSpy.mockResolvedValue(payload({ hosted: true }));
     renderPage(settingsPath("deployment/updates"), true);

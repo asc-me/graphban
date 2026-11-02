@@ -76,7 +76,7 @@ def _sync_root(project_id: str, folder: str) -> str:
 
 
 @router.get("/update-check")
-def update_check(_: User = Depends(get_current_user)):
+def update_check(refresh: bool = False, _: User = Depends(get_current_user)):
     """Whether this instance is current against the published stable cut (P32).
 
     Three states; unknown is not current. `apply` is true when this is not
@@ -84,9 +84,10 @@ def update_check(_: User = Depends(get_current_user)):
     `/opt/graphban` install). `notes` carries GitHub Release bodies for the
     running tag and, when a newer cut exists, the latest — empty is not
     unknown. JWT so it is a Settings fact, not a public oracle beyond
-    `/health`.
+    `/health`. Bounded by a 5 s total deadline; a definite answer is cached for
+    a minute and `?refresh=true` bypasses the cache.
     """
-    return instance_update.check()
+    return instance_update.check_cached(refresh=refresh)
 
 
 class UpdateApplyIn(BaseModel):

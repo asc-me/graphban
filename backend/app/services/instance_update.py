@@ -22,6 +22,8 @@ import subprocess  # nosec B404 — argv lists only, never shell=True
 import sys
 import tarfile
 import tempfile
+import threading
+import time
 
 import httpx
 
@@ -35,6 +37,10 @@ PLACEHOLDER_VERSIONS = frozenset({"", "unknown", "0.1.0"})
 FEED_URL = "https://api.github.com/repos/asc-me/graphban/releases/latest"
 TAG_URL = "https://api.github.com/repos/asc-me/graphban/releases/tags/{tag}"
 _FETCH_TIMEOUT = 3.0
+# httpx timeouts are per phase and do not cover name resolution, so the whole check
+# also runs under one wall-clock deadline (CHECK_DEADLINE).
+CHECK_DEADLINE = 5.0
+CACHE_TTL = 60.0
 _TAG_PREFIX = re.compile(r"^v", re.I)
 _GH_HEADERS = {"Accept": "application/vnd.github+json", "User-Agent": "graphban-api"}
 NOTES_STATES = ("present", "empty", "unknown")
@@ -125,18 +131,32 @@ def notes_payload(rel: dict | None, tag: str) -> dict:
     return {"tag": tag, "state": "present", "body": text}
 
 
-def fetch_latest() -> dict | None:
-    """Latest GitHub Release, or None on any failure. Never raises."""
+_feed_error = {"reason": ""}
+
+
+def _get_release(url: str, label: str) -> dict | None:
+    """One GitHub Release GET. Records why it failed in `_feed_error`. Never raises."""
     try:
-        resp = httpx.get(FEED_URL, headers=_GH_HEADERS, timeout=_FETCH_TIMEOUT)
+        resp = httpx.get(url, headers=_GH_HEADERS, timeout=_FETCH_TIMEOUT)
         if resp.status_code != 200:
-            logger.warning("update feed status=%s", resp.status_code)
+            logger.warning("%s status=%s", label, resp.status_code)
+            if resp.status_code in (403, 429):
+                _feed_error["reason"] = (
+                    f"GitHub returned {resp.status_code} — rate limited or throttled")
+            else:
+                _feed_error["reason"] = f"GitHub returned {resp.status_code}"
             return None
         return _parse_release(resp.json())
     except (httpx.TimeoutException, httpx.HTTPError, OSError, ValueError, TypeError,
             KeyError) as e:
-        logger.warning("update feed failed: %s", type(e).__name__)
+        logger.warning("%s failed: %s", label, type(e).__name__)
+        _feed_error["reason"] = f"could not reach GitHub ({type(e).__name__})"
         return None
+
+
+def fetch_latest() -> dict | None:
+    """Latest GitHub Release, or None on any failure. Never raises."""
+    return _get_release(FEED_URL, "update feed")
 
 
 def fetch_tag(tag: str) -> dict | None:
@@ -144,18 +164,50 @@ def fetch_tag(tag: str) -> dict | None:
     tag = _TAG_PREFIX.sub("", (tag or "").strip())
     if not tag or tag in PLACEHOLDER_VERSIONS:
         return None
-    try:
-        resp = httpx.get(
-            TAG_URL.format(tag=tag), headers=_GH_HEADERS, timeout=_FETCH_TIMEOUT,
-        )
-        if resp.status_code != 200:
-            logger.warning("update tag feed status=%s tag=%s", resp.status_code, tag)
-            return None
-        return _parse_release(resp.json())
-    except (httpx.TimeoutException, httpx.HTTPError, OSError, ValueError, TypeError,
-            KeyError) as e:
-        logger.warning("update tag feed failed: %s", type(e).__name__)
-        return None
+    return _get_release(TAG_URL.format(tag=tag), f"update tag feed tag={tag}")
+
+
+def _run_concurrently(jobs: dict, deadline: float) -> dict:
+    """Run `jobs` (name -> zero-arg callable) on daemon threads and wait at most
+    `deadline` seconds in total. A job that has not finished is absent from the result;
+    its thread is abandoned (a stuck getaddrinfo cannot be cancelled).
+    """
+    out: dict = {}
+
+    def runner(name, fn):
+        try:
+            out[name] = fn()
+        except Exception as e:  # noqa: BLE001 — a failed fetch is unknown, not a 500
+            logger.warning("update fetch %s raised %s", name, type(e).__name__)
+            out[name] = None
+
+    threads = [threading.Thread(target=runner, args=(n, f), daemon=True)
+               for n, f in jobs.items()]
+    for t in threads:
+        t.start()
+    end = time.monotonic() + deadline
+    for t in threads:
+        t.join(max(0.0, end - time.monotonic()))
+    return dict(out)
+
+
+_cache: dict = {"at": 0.0, "payload": None}
+
+
+def check_cached(*, refresh: bool = False) -> dict:
+    """`check()` with a short cache. `refresh` bypasses it (the Check button).
+    Only a definite answer is cached; `unknown` is retried on the next call.
+    """
+    now = time.monotonic()
+    hit = _cache["payload"]
+    if not refresh and hit is not None and now - _cache["at"] < CACHE_TTL:
+        return hit
+    payload = check()
+    if payload["state"] != "unknown":
+        _cache["at"], _cache["payload"] = now, payload
+    else:
+        _cache["payload"] = None
+    return payload
 
 
 def start_native(tag: str, asset: str, *, root: str | None = None,
@@ -275,7 +327,14 @@ def check(*, fetch=None, fetch_running=None, run=None, hosted: bool | None = Non
         running_fn = lambda tag: None  # noqa: E731 — tests stay offline
     got = run if run is not None else running()
     version = (got.get("version") or "").strip()
-    raw = fetch_fn()
+    _feed_error["reason"] = ""
+    jobs = {"latest": fetch_fn}
+    if version and version not in PLACEHOLDER_VERSIONS:
+        # Concurrent with the latest fetch; dropped below when latest is the running tag.
+        jobs["running"] = lambda: running_fn(version)
+    done = _run_concurrently(jobs, CHECK_DEADLINE)
+    timed_out = "latest" not in done
+    raw = done.get("latest")
     latest = None
     latest_tag = ""
     if raw and raw.get("tag"):
@@ -303,7 +362,7 @@ def check(*, fetch=None, fetch_running=None, run=None, hosted: bool | None = Non
         if raw and latest_tag == version:
             running_rel = raw
         else:
-            running_rel = running_fn(version)
+            running_rel = done.get("running")
     notes_running = notes_payload(running_rel, version or "unknown")
     notes_latest = None
     if latest and latest_tag != version:
@@ -318,7 +377,12 @@ def check(*, fetch=None, fetch_running=None, run=None, hosted: bool | None = Non
         "via": via,
         "hosted": bool(hosted_flag),
         "note": NOTE_UNREACHABLE,
+        "feed_error": "",
     }
+    if raw is None:
+        base["feed_error"] = (
+            f"the update feed did not answer within {CHECK_DEADLINE:g}s"
+            if timed_out else (_feed_error["reason"] or "the update feed returned nothing"))
     if version in PLACEHOLDER_VERSIONS:
         base["note"] = NOTE_PLACEHOLDER
         return base
