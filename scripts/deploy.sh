@@ -84,17 +84,22 @@ target_env() {
   printf '%s' "${val:-$default}"
 }
 
+# Every step announces itself as `==> text`, followed by an `@@ <epoch>` line. The Settings →
+# Updates panel (GET /api/platform/update-progress) reads those two to show which step is running
+# and for how long. Keep the `==>` text stable; the panel matches on it.
+step() { echo "==> $*"; echo "@@ $(date +%s)"; }
+
 WORKTREE="$(cd "$(dirname "$0")/.." && pwd)/../agentledger-wt-deploy"
 
 cd "$(dirname "$0")/.."
 git fetch -q origin
 
 if [ ! -d "$WORKTREE" ]; then
-  echo "==> creating the deploy worktree (one time)"
+  step "creating the deploy worktree (one time)"
   git worktree add --detach "$WORKTREE" "$REF"
 fi
 
-echo "==> pinning the deploy worktree to $REF"
+step "pinning the deploy worktree to $REF"
 git -C "$WORKTREE" fetch -q origin
 git -C "$WORKTREE" checkout -q --detach "$REF"
 # A worktree nobody works in should never have anything to clean. If it does, something has
@@ -106,7 +111,7 @@ if [ -n "$(git -C "$WORKTREE" status --porcelain)" ]; then
 fi
 
 GIT_SHA="$(git -C "$WORKTREE" rev-parse --short HEAD)"
-echo "==> shipping $GIT_SHA ($(git -C "$WORKTREE" log -1 --format=%s | cut -c1-60))"
+step "shipping $GIT_SHA ($(git -C "$WORKTREE" log -1 --format=%s | cut -c1-60))"
 
 # --exclude .env: there is no local one, so a bare --delete would DELETE the server's, and
 #   compose then reverts to default ports while the persisted volume keeps the old password.
@@ -126,8 +131,8 @@ else
     "$WORKTREE/" "$REMOTE:$TARGET_DIR"
 fi
 
-echo "==> building on $REMOTE"
-on_target "cd $(on_target_path) && GIT_SHA=$GIT_SHA docker compose up -d --build" >/dev/null
+step "building on $REMOTE"
+on_target "cd $(on_target_path) && GIT_SHA=$GIT_SHA BUILDKIT_PROGRESS=plain docker compose up -d --build" 2>&1
 
 # Read AFTER the sync, so a first deploy to a fresh box sees the .env it just arrived beside.
 # Defaults are compose's own, so an install that sets nothing still verifies correctly.
@@ -136,7 +141,7 @@ WEB_PORT="$(target_env WEB_PORT 8080)"
 PG_USER="$(target_env POSTGRES_USER agentledger)"
 PG_DB="$(target_env POSTGRES_DB agentledger)"
 
-echo "==> verifying release identity (api :$API_PORT, web :$WEB_PORT)"
+step "verifying release identity (api :$API_PORT, web :$WEB_PORT)"
 for _ in $(seq 1 30); do
   LIVE="$(on_target "curl -s http://localhost:$API_PORT/health" 2>/dev/null || true)"
   echo "$LIVE" | grep -q '"status":"ok"' && break
@@ -157,4 +162,4 @@ echo "$LIVE" | grep -q '"db":"ok"' || { echo "!! db is not ok" >&2; exit 1; }
 # revision looks identical to a successful one from the outside.
 [ "$LIVE_SHA" = "$GIT_SHA" ] || { echo "!! api serves $LIVE_SHA, expected $GIT_SHA" >&2; exit 1; }
 [ "$WEB_SHA" = "$GIT_SHA" ] || { echo "!! web serves $WEB_SHA, expected $GIT_SHA" >&2; exit 1; }
-echo "==> $GIT_SHA is live"
+step "$GIT_SHA is live"

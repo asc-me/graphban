@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 308 of the 308. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 309 of the 309. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -393,6 +393,7 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | --- | --- | --- |
 | GET | `/api/platform/update-check` | JWT | Whether this instance is current against the published stable GitHub Release. Three states: `current`, `available`, `unknown`. Unknown is not current. `apply` is true when not hosted and (compose helper socket or native `/opt/graphban`). `via` is `compose` / `native` / empty. `notes.running` / `notes.latest` are GitHub Release bodies (`present` / `empty` / `unknown`); `notes.latest` is null when current |
 | POST | `/api/platform/update-apply` | JWT | Start an apply of the advertised latest tag. Compose: host helper starts `deploy.sh`. Native: fetch `graphban-<tag>.tar.gz` and start `graphban_host.py upgrade`. 202 when started. Hosted 403. No apply path 503. Wrong tag 409. Not MCP |
+| GET | `/api/platform/update-progress` | JWT | The current Install's progress, read from its install log: `state` (`idle` / `running` / `succeeded` / `failed`), `steps` (`pending` / `active` / `done` / `failed`, with `started_at`), `current_line`, `error`, `tag`. Missing, unreadable or marker-less log is `idle` with a `reason`, status 200. Secret-looking values are masked |
 | GET / PATCH | `/api/platform` | JWT |
 | GET | `/api/platform/credentials` | JWT | Every credential in the caller's scope with `state`, `serves`, `is_decider`, derived `used_by`, and `falling_back` — projects pointing here that are NOT getting it because the row is unreachable or out of scope (PRD-25 §4), plus, for a decider that is the scope default, the projects that INHERIT it and so are not getting adjudication either (GRPH-995). Never returns a key, only `key_set`. `is_decider` is true when this row is the project's resolved `memory.decide` pointer (PRD-45 S2) |
 | POST | `/api/platform/credentials` | JWT |

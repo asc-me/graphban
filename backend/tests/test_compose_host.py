@@ -157,3 +157,19 @@ def test_apply_logs_deploy_output_so_a_failed_install_is_not_silent(tmp_path):
         time.sleep(0.05)
     assert "apply 2026.09.2" in text, text
     assert "deploy-was-here" in text, text
+
+
+def test_start_marker_written_before_script(tmp_path):
+    repo = tmp_path / "src"
+    (repo / "scripts").mkdir(parents=True)
+    script = repo / "scripts" / "deploy.sh"
+    script.write_text("#!/bin/sh\necho after\n")
+    script.chmod(0o755)
+    log = tmp_path / "apply" / "deploy.log"
+    seen = {}
+
+    def popen(cmd, **kw):
+        seen["log"] = log.read_text()  # the marker is already there at spawn time
+    ch.start_apply(repo, tmp_path / "box", "2026.11.1", log_path=log, popen=popen)
+    import re
+    assert re.search(r"^=== apply 2026\.11\.1 \S+ \d+$", seen["log"], re.M)

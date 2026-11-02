@@ -45,6 +45,7 @@ import type {
   LogExportView,
   BoxHealth,
   UpdateCheck,
+  UpdateProgress,
   UsageAggregate,
   Invite,
   InvitePreview,
@@ -480,6 +481,17 @@ export const api = {
   // `refresh` bypasses the server's one-minute cache (the Check button).
   updateCheck: (refresh = false) =>
     request<UpdateCheck>(`/platform/update-check${refresh ? "?refresh=true" : ""}`),
+  // The current Install's steps, from its log. Bounded per call: the API is recreated near
+  // the end of an install, and a request held by that must not hold the poll.
+  updateProgress: async (timeoutMs: number): Promise<UpdateProgress> => {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      return await request<UpdateProgress>("/platform/update-progress", { signal: ctl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  },
   // What this box is serving right now. `/health`, not update-check: it asks no GitHub
   // feed, so polling it through an install cannot spend the unauthenticated rate limit.
   // Not under /api and needs no session. `timeoutMs` bounds one call — a request held by

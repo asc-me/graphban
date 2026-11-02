@@ -57,10 +57,13 @@ function available(): UpdateCheck {
   });
 }
 
-const { updateCheckSpy, updateApplySpy, healthSpy, projectsSpy, configSpy } = vi.hoisted(() => ({
+const { updateCheckSpy, updateApplySpy, healthSpy, progressSpy, projectsSpy, configSpy } = vi.hoisted(() => ({
   updateCheckSpy: vi.fn(async () => payload()),
   updateApplySpy: vi.fn(async (tag: string) => ({ ok: true, started: true, tag })),
   healthSpy: vi.fn(async (_timeoutMs: number) => ({ status: "ok", version: "2026.09.1", git_sha: "d596e57" })),
+  progressSpy: vi.fn(async (_timeoutMs: number): Promise<unknown> => ({
+    state: "running", reason: "", tag: "2026.10.1", steps: [], current_line: "", error: "",
+  })),
   projectsSpy: vi.fn(async () => [proj]),
   configSpy: vi.fn(async () => ({ hosted_mode: false, signup_mode: "closed" })),
 }));
@@ -72,6 +75,7 @@ vi.mock("@/lib/api", () => ({
     updateCheck: updateCheckSpy,
     updateApply: updateApplySpy,
     health: healthSpy,
+    updateProgress: progressSpy,
     credentials: vi.fn(async () => []),
     platform: vi.fn(async () => null),
     syncStatus: vi.fn(async () => ({ linked: false, url: "", projects: [] })),
@@ -103,6 +107,9 @@ describe("Updates Settings page", () => {
     vi.restoreAllMocks();
     healthSpy.mockReset().mockResolvedValue({ status: "ok", version: "2026.09.1", git_sha: "d596e57" });
     updateApplySpy.mockReset().mockImplementation(async (tag: string) => ({ ok: true, started: true, tag }));
+    progressSpy.mockReset().mockResolvedValue({
+      state: "running", reason: "", tag: "2026.10.1", steps: [], current_line: "", error: "",
+    });
     localStorage.setItem("gb_last_project_tag", "APP");
     projectsSpy.mockResolvedValue([proj]);
     updateCheckSpy.mockResolvedValue(payload());
@@ -184,7 +191,7 @@ describe("Updates Settings page", () => {
     expect(screen.getByRole("button", { name: /installing/i })).toBeDisabled();
     expect(reload).not.toHaveBeenCalled();
     serving = "down";
-    expect(await screen.findByText(/restarting on 2026\.10\.1/i)).toBeInTheDocument();
+    expect(await screen.findByText(/restarting the API on 2026\.10\.1/i)).toBeInTheDocument();
     serving = "new";
     expect(await screen.findByText(/installed 2026\.10\.1/i)).toBeInTheDocument();
     await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
@@ -220,6 +227,63 @@ describe("Updates Settings page", () => {
     expect(await screen.findByText(/still not serving 2026\.10\.1/i)).toBeInTheDocument();
     expect(screen.getByText(/deploy\.log/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /installing/i })).not.toBeInTheDocument();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("after Install it polls update-progress, shows step marks and a timer, and restarts on a dropped request", async () => {
+    const user = userEvent.setup();
+    const reload = vi.spyOn(pageReload, "run").mockImplementation(() => {});
+    const startedAt = Math.floor(Date.now() / 1000) - 75;
+    let mode: "steps" | "down" | "new" = "steps";
+    progressSpy.mockImplementation(async () => {
+      if (mode !== "steps") throw new TypeError("Failed to fetch");
+      return {
+        state: "running", reason: "", tag: "2026.10.1", error: "",
+        current_line: "#12 RUN pip install",
+        steps: [
+          { key: "pin", label: "Pinning the deploy worktree", status: "done", started_at: startedAt - 10 },
+          { key: "build", label: "Building the images", status: "active", started_at: startedAt },
+          { key: "verify", label: "Verifying release identity", status: "pending", started_at: null },
+        ],
+      };
+    });
+    healthSpy.mockImplementation(async () => {
+      if (mode === "down") throw new TypeError("Failed to fetch");
+      return { status: "ok", version: mode === "new" ? "2026.10.1" : "2026.09.1", git_sha: "x" };
+    });
+    updateCheckSpy.mockResolvedValue(available());
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i }));
+    expect(await screen.findByText(/Building the images/)).toBeInTheDocument();
+    const steps = screen.getByRole("list", { name: /install steps/i }).querySelectorAll("li");
+    expect(Array.from(steps).map((li) => li.getAttribute("data-status"))).toEqual(["done", "active", "pending"]);
+    expect(screen.getByTestId("step-timer").textContent).toMatch(/^1:\d\d$/);
+    expect(screen.getByText("#12 RUN pip install")).toBeInTheDocument();
+    mode = "down";
+    expect(await screen.findByText(/restarting the API/i)).toBeInTheDocument();
+    mode = "new";
+    expect(await screen.findByText(/installed 2026\.10\.1/i)).toBeInTheDocument();
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+  });
+
+  it("a failed install shows the error line and the log location, and stops polling", async () => {
+    const user = userEvent.setup();
+    const reload = vi.spyOn(pageReload, "run").mockImplementation(() => {});
+    progressSpy.mockResolvedValue({
+      state: "failed", reason: "", tag: "2026.10.1", current_line: "!! api serves a, expected b",
+      error: "!! api serves a, expected b",
+      steps: [{ key: "verify", label: "Verifying release identity", status: "failed", started_at: null }],
+    });
+    updateCheckSpy.mockResolvedValue(available());
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i }));
+    expect(await screen.findByText(/install failed: !! api serves a, expected b/i)).toBeInTheDocument();
+    expect(screen.getByText(/deploy\.log/)).toBeInTheDocument();
+    const calls = progressSpy.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 30));
+    expect(progressSpy.mock.calls.length).toBe(calls);
     expect(reload).not.toHaveBeenCalled();
   });
 

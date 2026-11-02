@@ -90,6 +90,17 @@ def update_check(refresh: bool = False, _: User = Depends(get_current_user)):
     return instance_update.check_cached(refresh=refresh)
 
 
+@router.get("/update-progress")
+def update_progress(_: User = Depends(get_current_user)):
+    """Where the current Install is, read from the install log (GRPH-1298).
+
+    `state` is idle | running | succeeded | failed; `steps` are the `==>` steps the
+    script printed, in order. A missing, unreadable or marker-less log is `idle` with a
+    `reason`, never a 500. Secret-looking values are masked.
+    """
+    return instance_update.progress()
+
+
 class UpdateApplyIn(BaseModel):
     tag: str
 

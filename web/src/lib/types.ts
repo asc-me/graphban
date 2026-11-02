@@ -99,6 +99,26 @@ export interface UpdateCheck {
   feed_error?: string;
 }
 
+/** GET /api/platform/update-progress (GRPH-1298) — the current Install, read from its log. */
+export type UpdateProgressState = "idle" | "running" | "succeeded" | "failed";
+export interface UpdateProgressStep {
+  key: string;
+  label: string;
+  status: "pending" | "active" | "done" | "failed";
+  /** Epoch seconds the script printed for this step; null when not started or unstamped. */
+  started_at: number | null;
+}
+export interface UpdateProgress {
+  state: UpdateProgressState;
+  /** Why the state is idle (no log, unreadable, no start marker). */
+  reason: string;
+  tag: string;
+  steps: UpdateProgressStep[];
+  current_line: string;
+  error: string;
+  log_path?: string;
+}
+
 /** `/health` — the cut this box is serving. Install polls it, not update-check. */
 export interface BoxHealth {
   status: string;
