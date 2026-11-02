@@ -137,7 +137,7 @@ export interface AutoUpdateStatus {
   last_check_state: string;
   last_auto_install_tag: string;
   last_auto_install_at: string | null;
-  last_auto_install_outcome: "" | "started" | "succeeded" | "failed";
+  last_auto_install_outcome: "" | "started" | "succeeded" | "failed" | "skipped";
   last_auto_install_error: string;
 }
 /** Config only — the runtime `last_*` fields are not writable. */
