@@ -295,9 +295,15 @@ export function UpdatesPanel() {
       try {
         const got = await api.updateProgress(installTiming.requestMs);
         if (!alive.current) return;
-        setProgress(got);
-        setNowMs(Date.now());
-        if (got.state === "failed") failed = got;
+        // A section for another tag is an older attempt, not this install: treat it as
+        // not started yet rather than showing (or failing on) its steps.
+        if (got.tag === tag) {
+          setProgress(got);
+          setNowMs(Date.now());
+          if (got.state === "failed") failed = got;
+        } else {
+          setProgress(null);
+        }
       } catch {
         progressDown = true; // the API is being recreated; /health below says whether it is back
       }

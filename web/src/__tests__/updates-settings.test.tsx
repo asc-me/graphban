@@ -287,6 +287,27 @@ describe("Updates Settings page", () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
+  it("progress for another tag is an older attempt: no steps shown and no failure", async () => {
+    const user = userEvent.setup();
+    const reload = vi.spyOn(pageReload, "run").mockImplementation(() => {});
+    progressSpy.mockResolvedValue({
+      state: "failed", reason: "", tag: "2026.09.1", current_line: "!! old failure",
+      error: "!! old failure",
+      steps: [{ key: "build", label: "Building the images", status: "failed", started_at: null }],
+    });
+    healthSpy.mockResolvedValue({ status: "ok", version: "2026.09.1", git_sha: "x" });
+    updateCheckSpy.mockResolvedValue(available());
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i }));
+    await waitFor(() => expect(progressSpy.mock.calls.length).toBeGreaterThan(2));
+    expect(screen.queryByText(/install failed/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/old failure/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: /install steps/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /installing/i })).toBeInTheDocument();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
   it("a refused apply says why and does not poll", async () => {
     const user = userEvent.setup();
     updateApplySpy.mockRejectedValueOnce(

@@ -436,8 +436,10 @@ PROGRESS_STATES = ("idle", "running", "succeeded", "failed")
 _MARKER = re.compile(r"^=== apply (\S+) (\S+)(?: (\d+))?\s*$")
 _LINE_CAP = 300
 _TAIL_BYTES = 2 * 1024 * 1024
-# The `==>` lines deploy.sh and graphban_upgrade print. Matched by prefix, in script order;
-# a step the log never printed stays pending. No step is invented.
+# The `==>` lines deploy.sh prints. Matched by prefix, in script order; on the compose
+# log a step not yet printed is listed as pending. graphban_upgrade (the native log)
+# prints none of these but "<sha> is live", so that log lists only the steps it has
+# printed — no step is invented for a script that never prints it.
 KNOWN_STEPS = (
     ("worktree", "Creating the deploy worktree", "creating the deploy worktree"),
     ("pin", "Pinning the deploy worktree", "pinning the deploy worktree"),
@@ -479,8 +481,15 @@ def _step_key(text: str) -> str | None:
     return None
 
 
-def parse_progress(text: str) -> dict:
-    """Progress of the CURRENT attempt: the lines after the last start marker."""
+PROGRESS_SOURCES = ("compose", "native")
+
+
+def parse_progress(text: str, source: str = "compose") -> dict:
+    """Progress of the CURRENT attempt: the lines after the last start marker.
+
+    `source` names the script that wrote the log. Only deploy.sh's (compose) step list
+    is known in advance; for any other log only the steps it has printed are listed.
+    """
     lines = text.splitlines()
     start = None
     for i, ln in enumerate(lines):
@@ -523,8 +532,8 @@ def parse_progress(text: str) -> dict:
         present = [k for k in order if k in seen]
         failed_key = present[-1] if present else None
     for key, label, _p in KNOWN_STEPS:
-        if key == "worktree" and key not in seen:
-            continue  # one-time step; only shown when the script printed it
+        if key not in seen and (key == "worktree" or source != "compose"):
+            continue  # one-time step, or a step this log's script never prints
         info = seen.get(key)
         if info is None:
             status = "pending"
@@ -568,6 +577,6 @@ def progress(*, paths: list[str] | None = None) -> dict:
         text = _read_tail(path)
     except OSError as e:
         return _idle(f"the install log is unreadable: {type(e).__name__}")
-    out = parse_progress(text)
+    out = parse_progress(text, "native" if path.name == NATIVE_LOG else "compose")
     out["log_path"] = str(path)
     return out

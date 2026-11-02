@@ -123,7 +123,10 @@ systemctl --user enable --now graphban-compose-host.service
 
 **Install progress.** After Install the panel polls `GET /api/platform/update-progress`
 and lists the steps `deploy.sh` prints (`==>` lines), with a timer on the active one and
-the latest log line. Each install starts a new section in the log with a
+the latest log line. The native upgrade prints no step lines until `==> <sha> is live`,
+so on that path the panel shows only the latest log line until it finishes; no compose
+step is listed for it. A log section for a different tag than the one being installed is
+an older attempt and is ignored. Each install starts a new section in the log with a
 `=== apply <tag> <time> <epoch>` marker; only the newest section is read. The build's
 container output is kept in the log too. Secret-looking values (`…TOKEN=`, `password=`,
 bearer tokens) are masked. On a `!!` failure the panel stops and shows that line; it does

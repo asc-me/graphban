@@ -113,3 +113,39 @@ def test_deploy_build_output_not_discarded():
     sh = (pathlib.Path(__file__).resolve().parents[2] / "scripts" / "deploy.sh").read_text()
     line = next(ln for ln in sh.splitlines() if "docker compose up -d --build" in ln)
     assert "/dev/null" not in line
+
+
+# --- native log (graphban_upgrade prints only "<sha> is live" / "upgrade failed") -------
+
+NATIVE = "\n=== apply 2026.11.1 2026-11-01T10:00:00+0000 2000\n"
+
+
+def _wn(tmp_path, text):
+    p = tmp_path / svc.NATIVE_LOG
+    p.write_text(text, encoding="utf-8")
+    return str(p)
+
+
+def test_native_running_lists_no_compose_steps(tmp_path):
+    got = svc.progress(paths=[_wn(tmp_path, NATIVE + "    sha      abc\n")])
+    assert got["state"] == "running" and got["tag"] == "2026.11.1"
+    assert got["steps"] == []  # deploy.sh's pin/ship/build/verify are never printed here
+    assert got["current_line"] == "sha      abc"
+
+
+def test_native_succeeded_has_only_live(tmp_path):
+    got = svc.progress(paths=[_wn(tmp_path, NATIVE + "==> abc is live\n")])
+    assert got["state"] == "succeeded"
+    assert [(s["key"], s["status"]) for s in got["steps"]] == [("live", "done")]
+
+
+def test_native_failed(tmp_path):
+    got = svc.progress(paths=[_wn(tmp_path, NATIVE + "upgrade failed: api serves x\n")])
+    assert got["state"] == "failed" and got["error"] == "upgrade failed: api serves x"
+    assert got["steps"] == []
+
+
+def test_parse_progress_native_source_direct():
+    got = svc.parse_progress("=== apply T x 1\n==> abc is live\n", "native")
+    assert [s["key"] for s in got["steps"]] == ["live"]
+    assert all(s["status"] != "pending" for s in got["steps"])
