@@ -160,7 +160,7 @@ def test_criterion_3_a_sabotage_that_disables_the_primitive_fails_the_walk(
         _walk_3(client, auth, key, proj)
 
 
-# ---- 5, 8, 10: an org on the installed pack with a Regulated profile ----------------------
+# ---- 5, 8, 10: the installed pack with a Regulated profile, on an org and on a project ----
 
 #: §6.1's Regulated column: every seed rule on.
 REGULATED = {"review.sabotage_required": {"min_effort": 0}, "review.distinct_vendor": None,
@@ -210,45 +210,61 @@ def _toggles(client, org, pid):
     return {t["rule_id"]: t for t in r.json()["toggles"]}
 
 
-def _drift(client, org):
-    return client.get(f"/api/orgs/{org['id']}/rules/profiles/regulated/drift",
+# Criterion 10 is "Applying the Regulated profile to a project": walked through the project
+# endpoint (GRPH-1291), on every plan (D11), not through an org.
+
+def _apply_to_project(client, org, pid):
+    return client.post("/api/rules/profiles/regulated/apply", params={"project_id": pid},
+                       json={"reason": "we ship to a regulator"}, headers=org["owner"])
+
+
+def _project_drift(client, org, pid):
+    return client.get("/api/rules/profiles/regulated/drift", params={"project_id": pid},
                       headers=org["owner"]).json()
 
 
-def test_criterion_10_regulated_sets_each_rule_as_listed_with_one_profile_event(client, org):
-    r = _apply(client, org)
+@pytest.mark.parametrize("plan", ["free", "pro", "team"])
+def test_criterion_10_regulated_sets_each_rule_as_listed_with_one_profile_event(client, org,
+                                                                                plan):
+    _set_plan(org["id"], plan)
+    pid, other = org["ps"]
+    r = _apply_to_project(client, org, pid)
     assert r.status_code == 200, r.text
-    for pid in org["ps"]:
-        t = _toggles(client, org, pid)
-        for rid, params in REGULATED.items():
-            assert t[rid]["on"] == {"value": True, "source": "org"}, (pid, rid)
-            if params:
-                assert t[rid]["params"]["value"] == {**T.LIBRARY[rid].default_params, **params}
+    t = _toggles(client, org, pid)
+    for rid, params in REGULATED.items():
+        assert t[rid]["on"] == {"value": True, "source": "project"}, rid
+        if params:
+            assert t[rid]["params"]["value"] == {**T.LIBRARY[rid].default_params, **params}
+    # one project: the other is untouched
+    assert _toggles(client, org, other)[SAB]["on"]["source"] == "platform default"
     s = SessionLocal()
     try:
         ev = s.query(Event).filter(Event.action == "apply_rule_profile").all()
     finally:
         s.close()
     assert len(ev) == 1
+    assert ev[0].target_type == "project" and ev[0].target_id == pid
     assert ev[0].meta["profile"] == "regulated" and ev[0].meta["profile_version"] == "1"
     assert ev[0].meta["pack_version"] == "1.0.0"
-    assert _drift(client, org)["state"] == "clean"
+    assert _project_drift(client, org, pid)["state"] == "clean"
 
 
 def test_criterion_10_changing_one_rule_differs_from_regulated_in_1_rule(client, org):
-    _apply(client, org)
-    r = client.put(f"/api/orgs/{org['id']}/rule-toggles/review.distinct_vendor",
+    pid = org["ps"][0]
+    _apply_to_project(client, org, pid)
+    r = client.put("/api/rules/toggles/review.distinct_vendor", params={"project_id": pid},
                    json={"on": False, "reason": "single-vendor fleet"}, headers=org["owner"])
     assert r.status_code == 200, r.text
-    d = _drift(client, org)
-    assert d["state"] == "drifted"
-    assert {x["rule_id"] for x in d["drift"]} == {"review.distinct_vendor"}  # "in 1 rule"
-    assert {x["project_id"] for x in d["drift"]} == set(org["ps"])
-    assert all(x["kind"] == "weakening" for x in d["drift"])
+    d = _project_drift(client, org, pid)
+    assert d["state"] == "drifted" and d["differs_in"] == 1
+    assert d["summary"] == "differs from Regulated in 1 rule"
+    assert [x["rule_id"] for x in d["drift"]] == ["review.distinct_vendor"]
+    assert d["weakening"] == 1 and d["drift"][0]["kind"] == "weakening"
 
 
 def test_criterion_10_a_newer_pack_changing_regulated_is_offered_with_its_diff(client, db, org):
-    _apply(client, org)
+    pid = org["ps"][0]
+    _apply_to_project(client, org, pid)
     d = P.offer(*_regulated_pack(min_effort=2, pack_version="1.1.0", profile_version="2"),
                 trusted_keys=TRUST)
     assert d["from"] == "1.0.0" and d["to"] == "1.1.0"
@@ -256,11 +272,11 @@ def test_criterion_10_a_newer_pack_changing_regulated_is_offered_with_its_diff(c
     assert change["version"] == {"from": "1", "to": "2"}
     assert change["rules"]["from"][SAB]["params"] == {"min_effort": 0}
     assert change["rules"]["to"][SAB]["params"] == {"min_effort": 2}
-    # Offered, never applied: the pack, the profile and every project are as they were.
+    # Offered, never applied: the pack, the profile and the project are as they were.
     assert P.CURRENT.version == "1.0.0"
     assert P.CURRENT.profiles["regulated"]["version"] == "1"
-    assert _toggles(client, org, org["ps"][0])[SAB]["params"]["value"]["min_effort"] == 0
-    assert _drift(client, org)["state"] == "clean"
+    assert _toggles(client, org, pid)[SAB]["params"]["value"]["min_effort"] == 0
+    assert _project_drift(client, org, pid)["state"] == "clean"
 
 
 def test_criterion_5_a_locked_rule_is_read_only_on_every_project_and_refuses_overrides(

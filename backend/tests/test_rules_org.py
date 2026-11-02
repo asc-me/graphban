@@ -318,13 +318,18 @@ def test_apply_to_one_project_sets_toggles_and_audits_once(client, org):
 
 
 def test_apply_to_a_project_is_refused_whole_when_the_org_locks_a_rule(client, org):
-    client.put(f"/api/orgs/{org['id']}/rule-toggles/{OTHER}",
+    # Lock the rule that sorts LAST, so a write loop that refuses per rule would already have
+    # written OTHER: only the up-front lock check keeps the apply from being half done.
+    assert OTHER < RULE
+    client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
                json={"on": False, "locked": True, "reason": "freeze"}, headers=org["owner"])
     p = org["ps"][0]
     r = _apply_project(client, org, p)
     assert r.status_code == 409, r.text
-    assert OTHER in r.text and RULE not in r.json()['detail'].split('locked')[1]
-    assert _toggles(client, {"owner": org["owner"]}, p)[RULE]["on"]["value"] is False
+    assert RULE in r.text and OTHER not in r.json()['detail'].split('locked')[1]
+    toggles = _toggles(client, {"owner": org["owner"]}, p)
+    assert toggles[OTHER]["on"]["source"] != "project"
+    assert toggles[RULE]["on"]["value"] is False
 
 
 def test_apply_to_a_project_is_refused_for_an_api_key_or_the_engine(client, org):

@@ -122,11 +122,12 @@ def apply_project_profile(db: Session, user, project_id: str, profile_id: str, *
     rule plus one `apply_rule_profile` for the act. The project cannot lock, so `locked` is not
     applied. Refused whole, before any write, when the org has locked a rule the profile names."""
     rule_toggles._require_person(db, user)
-    why = rule_toggles._reason(reason)
+    # Who before what: a caller outside the project is refused as such, not for its reason.
     authz.require_writable(db, user.id, project_id)
     if authz.project_role(db, user.id, project_id) not in rule_toggles.PROJECT_ADMIN_ROLES:
         raise Refused(403, "applying a profile needs the project's owner or an admin",
                       rule_id=rule_toggles.ADMIN_RULE)
+    why = rule_toggles._reason(reason)
     prof, plan = _plan(profile_id)
     locked = sorted(rid for rid in plan if rule_toggles.resolve(db, rid, project_id)["locked"])
     if locked:
