@@ -301,6 +301,11 @@ class Settings(BaseSettings):
     # `memory.refresh_judgements` directly. Single-runner across workers (advisory lock).
     memory_judge_refresh_seconds: int = 300
 
+    # How often the auto-update loop wakes (GRPH-1299). Each tick decides, from the stored
+    # windows, whether a check or an install is due; most ticks do nothing. `0` disables the
+    # loop — the value the TEST suite runs at, which drives `auto_update.tick` directly.
+    auto_update_tick_seconds: int = 300
+
     # LLM call spans (GRPH-225). How long `llm_call_spans` rows live; 0 or negative
     # keeps everything. The table is telemetry, not the ledger — unbounded growth of
     # per-call rows is the difference between a cost panel and an ops incident.

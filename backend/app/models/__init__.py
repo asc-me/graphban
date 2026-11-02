@@ -3290,6 +3290,52 @@ class LogExportConfig(Base):
                                                  onupdate=utcnow)
 
 
+class AutoUpdateConfig(Base):
+    """This box's auto-update opt-in and windows (GRPH-1299). ONE row, no `project_id`.
+
+    Same shape as `LogExportConfig`: what this instance runs on is a "This box" fact.
+    `id` is always `services/auto_update.SINGLETON_ID`. Windows are local wall-clock
+    times in `timezone`; `*_days` are Monday=0..Sunday=6 and name the day a window STARTS
+    (a window may cross midnight). The `last_*` columns are runtime state beside the
+    config and are not in the PATCH schema.
+    """
+
+    __tablename__ = "auto_update_config"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
+                                          nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), default="UTC", server_default="UTC",
+                                          nullable=False)
+    check_days: Mapped[list] = mapped_column(JSON, default=lambda: [0, 1, 2, 3, 4, 5, 6])
+    check_start: Mapped[str] = mapped_column(String(5), default="02:00", server_default="02:00",
+                                             nullable=False)
+    check_end: Mapped[str] = mapped_column(String(5), default="05:00", server_default="05:00",
+                                           nullable=False)
+    install_days: Mapped[list] = mapped_column(JSON, default=lambda: [0, 1, 2, 3, 4, 5, 6])
+    install_start: Mapped[str] = mapped_column(String(5), default="02:00",
+                                               server_default="02:00", nullable=False)
+    install_end: Mapped[str] = mapped_column(String(5), default="05:00",
+                                             server_default="05:00", nullable=False)
+    last_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+                                                           nullable=True)
+    last_check_state: Mapped[str] = mapped_column(String(16), default="", server_default="",
+                                                  nullable=False)
+    last_check_tag: Mapped[str] = mapped_column(String(64), default="", server_default="",
+                                                nullable=False)
+    last_auto_install_tag: Mapped[str] = mapped_column(String(64), default="",
+                                                       server_default="", nullable=False)
+    last_auto_install_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+                                                                  nullable=True)
+    #: `` | started | succeeded | failed
+    last_auto_install_outcome: Mapped[str] = mapped_column(String(16), default="",
+                                                           server_default="", nullable=False)
+    last_auto_install_error: Mapped[str] = mapped_column(String(400), default="",
+                                                         server_default="", nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                 onupdate=utcnow)
+
+
 class LogExportBatch(Base):
     """One batch handed to the collector — or one Send-test-batch probe.
 

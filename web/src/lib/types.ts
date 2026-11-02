@@ -119,6 +119,39 @@ export interface UpdateProgress {
   log_path?: string;
 }
 
+/** GET/PATCH /api/platform/auto-update (GRPH-1299). Days are Mon=0..Sun=6. */
+export interface AutoUpdateWindow {
+  days: number[];
+  start: string;
+  end: string;
+}
+export interface AutoUpdateStatus {
+  available: boolean;
+  unavailable_reason: string;
+  enabled: boolean;
+  timezone: string;
+  check: AutoUpdateWindow;
+  install: AutoUpdateWindow;
+  next_check_at: string | null;
+  last_check_at: string | null;
+  last_check_state: string;
+  last_auto_install_tag: string;
+  last_auto_install_at: string | null;
+  last_auto_install_outcome: "" | "started" | "succeeded" | "failed";
+  last_auto_install_error: string;
+}
+/** Config only — the runtime `last_*` fields are not writable. */
+export interface AutoUpdatePatch {
+  enabled?: boolean;
+  timezone?: string;
+  check_days?: number[];
+  check_start?: string;
+  check_end?: string;
+  install_days?: number[];
+  install_start?: string;
+  install_end?: string;
+}
+
 /** `/health` — the cut this box is serving. Install polls it, not update-check. */
 export interface BoxHealth {
   status: string;

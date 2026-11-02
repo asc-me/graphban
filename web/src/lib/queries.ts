@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
-import type { EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleToggleWrite, ShardClass } from "./types";
+import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleToggleWrite, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -43,6 +43,7 @@ export const keys = {
    *  per-deployment choice: the same committed catalog resolves differently in two projects. */
   fleetTierMap: (projectId?: string) => ["fleet-tier-map", projectId] as const,
   updateCheck: ["update-check"] as const,
+  autoUpdate: ["auto-update"] as const,
   /** No project id: log export is one config for the whole box (PRD-47 S15). */
   logExport: ["log-export"] as const,
   orgGitops: (orgId: string) => ["org-gitops", orgId] as const,
@@ -699,6 +700,24 @@ export function useUpdateCheck() {
     // A cached `current` after the feed goes down is the lie this page exists to prevent.
     staleTime: 0,
     retry: false,
+  });
+}
+
+/** Deployment-wide (no project id). `staleTime: 0`: a cached "last auto-update" is stale news. */
+export function useAutoUpdate() {
+  return useQuery({
+    queryKey: keys.autoUpdate,
+    queryFn: () => api.autoUpdate(),
+    staleTime: 0,
+    retry: false,
+  });
+}
+
+export function useUpdateAutoUpdate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: AutoUpdatePatch) => api.updateAutoUpdate(body),
+    onSuccess: (data) => qc.setQueryData(keys.autoUpdate, data),
   });
 }
 

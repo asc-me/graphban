@@ -46,6 +46,8 @@ import type {
   BoxHealth,
   UpdateCheck,
   UpdateProgress,
+  AutoUpdatePatch,
+  AutoUpdateStatus,
   UsageAggregate,
   Invite,
   InvitePreview,
@@ -492,6 +494,12 @@ export const api = {
       clearTimeout(timer);
     }
   },
+  autoUpdate: () => request<AutoUpdateStatus>("/platform/auto-update"),
+  updateAutoUpdate: (body: AutoUpdatePatch) =>
+    request<AutoUpdateStatus>("/platform/auto-update", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   // What this box is serving right now. `/health`, not update-check: it asks no GitHub
   // feed, so polling it through an install cannot spend the unauthenticated rate limit.
   // Not under /api and needs no session. `timeoutMs` bounds one call — a request held by
