@@ -222,7 +222,8 @@ def org_rules_contribution(org_id: str, db: Session = Depends(get_db),
     authz.require_org_admin(db, user.id, org_id)
     quotas.require_org_rules(db, org_id)
     return {"opted_in": bool(db.get(Organization, org_id).telemetry_share),
-            "rules": rule_measure.contribution(db, org_id)}
+            "rules": rule_measure.contribution(db, org_id),
+            "observations": rule_measure.observation_contribution(db, org_id)}
 
 
 @router.get("/orgs/{org_id}/rules/platform-effect")
