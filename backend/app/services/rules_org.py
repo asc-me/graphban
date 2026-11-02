@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.errors import NotFound, Validation
+from app.errors import NotFound, Refused, Validation
 from app.models import Item, Project, RuleToggle
 from app.security import authz
 from app.services import events as events_svc
@@ -91,14 +91,9 @@ def _pin_changes(rule_id: str, pin: dict) -> dict:
     return changes
 
 
-def apply_profile(db: Session, user, org_id: str, profile_id: str, *, reason: str | None) -> dict:
-    """Pin a profile's rules across the org, locked. Refused whole when any rule it names
-    cannot be enforced by the loaded library."""
-    # D10 before anything else: the engine has no user id for the org-admin check to read, so a
-    # caller that is not a person is refused as such rather than failing on the lookup.
-    rule_toggles._require_person(db, user)
-    _admin(db, user, org_id)
-    why = rule_toggles._reason(reason)
+def _plan(profile_id: str) -> tuple[dict, dict[str, dict]]:
+    """The profile and its validated pins as toggle changes. Every pin is checked before the
+    first write, so a bad param on the last rule cannot leave the first ones applied."""
     prof = _profile(profile_id)
     pins = _pins(prof)
     if not pins:
@@ -111,14 +106,90 @@ def apply_profile(db: Session, user, org_id: str, profile_id: str, *, reason: st
         raise Validation("profile " + repr(profile_id) + " names rules this server cannot enforce: "
                          + "; ".join(f"{k} ({v})" for k, v in sorted(bad.items())),
                          hint="nothing was applied")
-    # Validate every pin before the first write, so a bad param on the last rule cannot leave
-    # the first ones applied.
     plan = {}
     for rid, pin in pins.items():
         changes = _pin_changes(rid, pin)
         if "params" in changes:
             rule_toggles._check_params(rule_toggles.LIBRARY[rid], changes["params"])
         plan[rid] = changes
+    return prof, plan
+
+
+def apply_project_profile(db: Session, user, project_id: str, profile_id: str, *,
+                          reason: str | None) -> dict:
+    """Apply a profile's rules to ONE project (D11 every plan, D13 a person's action): each
+    rule's project toggle and params as the profile lists them, one `set_rule_toggle` event per
+    rule plus one `apply_rule_profile` for the act. The project cannot lock, so `locked` is not
+    applied. Refused whole, before any write, when the org has locked a rule the profile names."""
+    rule_toggles._require_person(db, user)
+    # Who before what: a caller outside the project is refused as such, not for its reason.
+    authz.require_writable(db, user.id, project_id)
+    if authz.project_role(db, user.id, project_id) not in rule_toggles.PROJECT_ADMIN_ROLES:
+        raise Refused(403, "applying a profile needs the project's owner or an admin",
+                      rule_id=rule_toggles.ADMIN_RULE)
+    why = rule_toggles._reason(reason)
+    prof, plan = _plan(profile_id)
+    locked = sorted(rid for rid in plan if rule_toggles.resolve(db, rid, project_id)["locked"])
+    if locked:
+        raise Refused(409, f"profile {profile_id!r} names rules the org has locked: "
+                      + ", ".join(locked) + "; a project cannot override them",
+                      rule_id=rule_toggles.LOCK_RULE,
+                      meta={"locked_rules": locked, "project_id": project_id},
+                      hint="nothing was applied; ask an org admin to change the org's value "
+                           "or unlock the rule")
+    for rid, changes in sorted(plan.items()):
+        rule_toggles.set_project_toggle(
+            db, project_id, rid, {k: v for k, v in changes.items() if k != "locked"},
+            actor=user, reason=f"profile {profile_id} v{prof.get('version', '?')}: {why}")
+    events_svc.record_user(
+        db, user, action="apply_rule_profile", target_type="project", target_id=project_id,
+        project_id=project_id,
+        meta={"profile": profile_id, "profile_version": prof.get("version"),
+              "pack_version": rule_pack.CURRENT.version, "reason": why, "rules": sorted(plan)})
+    return {"project_id": project_id, "profile": profile_id, "applied": sorted(plan)}
+
+
+def project_drift(db: Session, user, project_id: str, profile_id: str) -> dict:
+    """How one project differs from the profile. A rule counts once however it differs;
+    turning a pinned-on rule off is `weakening` (D13). The lock is not compared: a project
+    cannot set it."""
+    authz.require_readable(db, user.id, project_id)
+    prof = _profile(profile_id)
+    rows = []
+    for rid, pin in sorted(_pins(prof).items()):
+        if rid not in rule_toggles.LIBRARY or rule_toggles.LIBRARY[rid].unmeasured_reason:
+            rows.append({"rule_id": rid, "kind": "unmeasured",
+                         "detail": "the loaded library cannot enforce this rule"})
+            continue
+        want_on = pin.get("state", "on") == "on"
+        want_params = {**rule_toggles.LIBRARY[rid].default_params, **pin.get("params", {})}
+        r = rule_toggles.resolve(db, rid, project_id)
+        on, params = r["on"]["value"], r["params"]["value"]
+        if on != want_on:
+            rows.append({"rule_id": rid, "kind": "weakening" if want_on else "changed",
+                         "detail": f"pinned {'on' if want_on else 'off'}, is "
+                                   f"{'on' if on else 'off'} ({r['on']['source']})"})
+        elif params != want_params:
+            rows.append({"rule_id": rid, "kind": "changed",
+                         "detail": f"pinned params {want_params}, are {params}"})
+    title = prof.get("title", profile_id)
+    n = len(rows)
+    return {"project_id": project_id, "profile": profile_id,
+            "state": "clean" if not rows else "drifted", "differs_in": n,
+            "summary": f"matches {title}" if not n else
+            f"differs from {title} in {n} rule{'s' if n != 1 else ''}",
+            "weakening": sum(r["kind"] == "weakening" for r in rows), "drift": rows}
+
+
+def apply_profile(db: Session, user, org_id: str, profile_id: str, *, reason: str | None) -> dict:
+    """Pin a profile's rules across the org, locked. Refused whole when any rule it names
+    cannot be enforced by the loaded library."""
+    # D10 before anything else: the engine has no user id for the org-admin check to read, so a
+    # caller that is not a person is refused as such rather than failing on the lookup.
+    rule_toggles._require_person(db, user)
+    _admin(db, user, org_id)
+    why = rule_toggles._reason(reason)
+    prof, plan = _plan(profile_id)
     applied = {}
     for rid, changes in sorted(plan.items()):
         applied[rid] = rule_toggles.set_org_toggle(

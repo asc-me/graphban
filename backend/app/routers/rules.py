@@ -246,6 +246,22 @@ def _org_call(fn, *args, **kw):
         raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
 
 
+@router.post("/rules/profiles/{profile_id}/apply")
+def apply_project_profile(profile_id: str, body: ProfileApply, project_id: str = "core",
+                          db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Apply the profile's rules to one project. Every plan (D11); a person's action (D13).
+    Refused naming `rules.org_lock_holds` when the org has locked a rule it names."""
+    return _org_call(rules_org.apply_project_profile, db, user, project_id, profile_id,
+                     reason=body.reason)
+
+
+@router.get("/rules/profiles/{profile_id}/drift")
+def project_profile_drift(profile_id: str, project_id: str = "core",
+                          db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """How the project differs from the profile; loosening a pinned rule is `weakening`."""
+    return _org_call(rules_org.project_drift, db, user, project_id, profile_id)
+
+
 @router.get("/orgs/{org_id}/rules/profiles")
 def org_profiles(org_id: str, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
