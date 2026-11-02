@@ -203,3 +203,29 @@ def test_it_writes_nothing():
     assert {t for t, _ in planner.calls} <= {"collision_clusters", "search_items",
                                              "get_item_details", "related_work"}
     assert "collision_clusters" in [t for t, _ in planner.calls]
+
+
+@pytest.mark.parametrize("exc", [
+    lambda: __import__("gbfleet.client", fromlist=["ToolFailed"]).ToolFailed(
+        "collision_clusters", "unauthorized",
+        "project 'graphban-rules' is outside this key's write scope"),
+])
+def test_a_server_refusal_is_reported_not_crashed_on(tmp_path, monkeypatch, capsys, exc):
+    """The dry run's refusal path named three exceptions `cli` never imported, so a key out of
+    scope ended in `NameError: name 'ToolFailed' is not defined` instead of the server's
+    sentence — the one line that says what to fix."""
+    from gbfleet import cli
+
+    def refuse(*_a, **_kw):
+        raise exc()
+
+    monkeypatch.setenv(cli.API_KEY_ENV, "k")
+    monkeypatch.setattr(cli, "make_adapter_factory", lambda *_a, **_kw: object())
+    monkeypatch.setattr(until_mod, "plan", refuse)
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+
+    code = cli.main(["until", "--repo", str(tmp_path), "--server", "http://x",
+                     "--project", "graphban-rules", "--adapter", "claude", "--dry-run"])
+
+    assert code == 2
+    assert "outside this key's write scope" in capsys.readouterr().err

@@ -16,7 +16,7 @@ from pathlib import Path
 from . import __version__
 from . import adopt as adopt_mod
 from .adapters import ADAPTERS, AdapterError, Tuning, checked_tuning, resolve
-from .client import ALLOWED_TOOLS, Graphban
+from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreachable, ToolFailed
 from . import doctor
 from . import service as service_mod
 from . import surface as surface_mod
