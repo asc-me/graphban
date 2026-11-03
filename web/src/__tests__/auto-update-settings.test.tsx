@@ -55,7 +55,7 @@ describe("AutoUpdateSettings", () => {
     expect(screen.getByText(/^Picked from this browser\.$/)).toBeInTheDocument();
     expect(screen.getAllByText("Upgrade window")).toHaveLength(1);
     // host_now 10:30Z is 02:30 in Los Angeles (PST on 2026-11-02).
-    expect(screen.getByText(/Box time is 02:30/)).toBeInTheDocument();
+    expect(screen.getByText(/Box time is 02:30 America\/Los_Angeles\./)).toBeInTheDocument();
     expect(screen.queryByText(/runs in this zone/)).toBeNull();
     await user.click(screen.getByRole("button", { name: "Sunday" }));
     await user.click(screen.getByRole("button", { name: /save auto-update/i }));
@@ -77,8 +77,8 @@ describe("AutoUpdateSettings", () => {
     expect(await screen.findByLabelText("Timezone")).toHaveValue("Europe/London");
     expect(screen.getByText(/^Your browser is in America\/Los_Angeles\./)).toBeInTheDocument();
     expect(screen.queryByText(/Picked from this browser/)).toBeNull();
-    // The box-time line follows the draft zone: 10:30Z is 10:30 GMT in London.
-    expect(screen.getByText(/Box time is 10:30/)).toBeInTheDocument();
+    // The box-time line follows the draft zone: 10:30Z is 10:30 in London.
+    expect(screen.getByText(/Box time is 10:30 Europe\/London\./)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Use it" }));
     expect(screen.getByLabelText("Timezone")).toHaveValue("America/Los_Angeles");
     expect(screen.getByText(/Box time is 02:30/)).toBeInTheDocument();
@@ -92,15 +92,35 @@ describe("AutoUpdateSettings", () => {
     expect(screen.getByText(/^Your browser is in America\/Los_Angeles\./)).toBeInTheDocument();
   });
 
-  it("Box time follows the zone as it is typed into the picker", async () => {
+  it("Timezone is a select of IANA zones and Box time follows the selected zone", async () => {
     getSpy.mockResolvedValue(status({ enabled: true, timezone: "UTC", timezone_set: true }));
     const user = userEvent.setup();
     renderIt();
     const tz = await screen.findByLabelText("Timezone");
+    expect(tz.tagName).toBe("SELECT");
+    expect(screen.getByRole("option", { name: "Asia/Tokyo" })).toBeInTheDocument();
     expect(screen.getByText(/^Box time is 10:30 UTC\. The window below runs on this clock\.$/)).toBeInTheDocument();
-    await user.clear(tz);
-    await user.type(tz, "Asia/Tokyo");
-    expect(screen.getByText(/^Box time is 19:30 .*\. The window below runs on this clock\.$/)).toBeInTheDocument();
+    await user.selectOptions(tz, "Asia/Tokyo");
+    expect(tz).toHaveValue("Asia/Tokyo");
+    expect(screen.getByText(/^Box time is 19:30 Asia\/Tokyo\. The window below runs on this clock\.$/)).toBeInTheDocument();
+  });
+
+  it("falls back to a text input when Intl.supportedValuesOf is missing", async () => {
+    const intl = Intl as unknown as { supportedValuesOf?: unknown };
+    const saved = intl.supportedValuesOf;
+    intl.supportedValuesOf = undefined;
+    try {
+      getSpy.mockResolvedValue(status({ enabled: true, timezone: "UTC", timezone_set: true }));
+      const user = userEvent.setup();
+      renderIt();
+      const tz = await screen.findByLabelText("Timezone");
+      expect(tz.tagName).toBe("INPUT");
+      await user.clear(tz);
+      await user.type(tz, "Asia/Tokyo");
+      expect(screen.getByText(/^Box time is 19:30 Asia\/Tokyo\./)).toBeInTheDocument();
+    } finally {
+      intl.supportedValuesOf = saved;
+    }
   });
 
   it("shows the install window when the stored windows differ", async () => {
@@ -116,7 +136,7 @@ describe("AutoUpdateSettings", () => {
   it("shows the installing box when the last outcome is started and progress is running", async () => {
     getSpy.mockResolvedValue(status({
       enabled: true, last_auto_install_tag: "2026.11.1", last_auto_install_outcome: "started",
-      last_auto_install_at: "2026-11-02T03:00:00+00:00",
+      last_auto_install_at: "2026-11-02T03:00:00+00:00", timezone: "Asia/Tokyo", timezone_set: true,
     }));
     const steps = [
       { key: "a", label: "Fetch", status: "done", started_at: null },
@@ -133,7 +153,7 @@ describe("AutoUpdateSettings", () => {
     expect(await screen.findByText(/Auto-update is installing 2026\.11\.1 — build images/)).toBeInTheDocument();
     expect(screen.getByText("1 / 3")).toBeInTheDocument();
     expect(screen.getAllByTestId("step-segment")).toHaveLength(3);
-    expect(screen.getByText(/^Started at 03:00 UTC\./)).toBeInTheDocument();
+    expect(screen.getByText(/^Started at 12:00 Asia\/Tokyo\./)).toBeInTheDocument();
     expect(screen.queryByText(/inside the upgrade window/)).toBeNull();
   });
 

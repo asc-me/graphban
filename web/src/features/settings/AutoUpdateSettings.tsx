@@ -55,6 +55,10 @@ export const browserZone = {
   },
 };
 
+const zoneSelectClass =
+  "h-9 w-64 rounded-(--radius-control) border border-control bg-surface-2 px-3 text-[13px] font-normal text-fg outline-none disabled:cursor-not-allowed";
+
+/** IANA zones from the browser, or null where Intl.supportedValuesOf is missing (text-input fallback). */
 function zoneList(): string[] | null {
   const f = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
   if (typeof f !== "function") return null;
@@ -90,24 +94,36 @@ function ZonePicker({ value, stored, storedSet, disabled, clock, onChange }: {
 }) {
   const zones = React.useMemo(zoneList, []);
   const browser = browserZone.get();
+  // Some ICU builds leave "UTC" (and a stored legacy alias) out of supportedValuesOf; keep them selectable.
+  const options = React.useMemo(() => {
+    if (!zones) return null;
+    const extra = ["UTC", value, stored].filter((z) => z && !zones.includes(z));
+    return [...new Set(extra), ...zones];
+  }, [zones, value, stored]);
   return (
     <div className="mt-3">
       <label className="flex flex-col items-start gap-1 text-[12px] font-semibold text-fg">
         Timezone
-        <Input
-          aria-label="Timezone"
-          className="w-64 font-normal"
-          list={zones ? "auto-update-zones" : undefined}
-          value={value}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.value)}
-        />
+        {options ? (
+          <select
+            aria-label="Timezone"
+            className={zoneSelectClass}
+            value={value}
+            disabled={disabled}
+            onChange={(e) => onChange(e.target.value)}
+          >
+            {options.map((z) => <option key={z} value={z}>{z}</option>)}
+          </select>
+        ) : (
+          <Input
+            aria-label="Timezone"
+            className="w-64 font-normal"
+            value={value}
+            disabled={disabled}
+            onChange={(e) => onChange(e.target.value)}
+          />
+        )}
       </label>
-      {zones ? (
-        <datalist id="auto-update-zones">
-          {zones.map((z) => <option key={z} value={z} />)}
-        </datalist>
-      ) : null}
       <p className="mt-1 text-[12px] text-muted">
         {!storedSet && value === browser ? "Picked from this browser." : ""}
         {storedSet && stored !== browser ? (
@@ -182,7 +198,7 @@ function WindowEditor({
   );
 }
 
-/** "HH:MM <zone>" for `iso` in `tz`; in `fallback` while `tz` is not a zone (mid-typing). */
+/** "HH:MM <IANA zone>" for `iso` in `tz`; in `fallback` while `tz` is not a zone (fallback input mid-typing). */
 function hostClock(iso: string, tz: string, fallback = "UTC"): string {
   try {
     new Intl.DateTimeFormat("en-GB", { timeZone: tz });
@@ -191,10 +207,10 @@ function hostClock(iso: string, tz: string, fallback = "UTC"): string {
   }
   try {
     const parts = new Intl.DateTimeFormat("en-GB", {
-      hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz, timeZoneName: "short",
+      hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz,
     }).formatToParts(new Date(iso));
     const g = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
-    return `${g("hour")}:${g("minute")} ${g("timeZoneName")}`;
+    return `${g("hour")}:${g("minute")} ${tz}`;
   } catch {
     return `${iso} ${tz}`;
   }
