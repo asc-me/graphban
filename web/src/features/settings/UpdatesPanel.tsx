@@ -11,9 +11,10 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import { AutoUpdateSettings } from "@/features/settings/AutoUpdateSettings";
+import { AutoUpdateSettings, StepBar, stepCount } from "@/features/settings/AutoUpdateSettings";
 import { Markdown } from "@/lib/markdown";
-import { keys, useConfig, useUpdateCheck } from "@/lib/queries";
+import { useQuery } from "@tanstack/react-query";
+import { keys, useAutoUpdate, useConfig, useUpdateCheck } from "@/lib/queries";
 import type { ReleaseNotes, UpdateCheck, UpdateProgress } from "@/lib/types";
 
 function Label({ children }: { children: React.ReactNode }) {
@@ -72,23 +73,29 @@ function StateCopy({ data }: { data: UpdateCheck }) {
   );
 }
 
-function NotesAccordion({
-  label,
-  notes,
-  defaultOpen,
-}: {
-  label: string;
-  notes: ReleaseNotes;
-  defaultOpen: boolean;
-}) {
+/** Top-level "- " bullet lines in a notes body. Notes carry no categories, so no chips. */
+export function changeCount(body: string): number {
+  return body.split("\n").filter((line) => line.startsWith("- ")).length;
+}
+
+/** One collapsed row per release, "N changes" at the right, expanding to the body. */
+function NotesAccordion({ label, notes }: { label: string; notes: ReleaseNotes }) {
+  const changes = notes.state === "present" ? changeCount(notes.body) : 0;
   return (
-    <details
-      className="rounded-[10px] border border-line-2 bg-surface p-3.5"
-      open={defaultOpen}
-    >
-      <summary className="cursor-pointer select-none font-mono text-[10.5px] uppercase tracking-wide text-faint">
-        {label}{" "}
-        <span className="font-mono normal-case tracking-normal text-fg">{notes.tag}</span>
+    <details className="rounded-[10px] border border-line-2 bg-surface p-3.5">
+      <summary className="flex cursor-pointer select-none items-center justify-between gap-2 font-mono text-[10.5px] uppercase tracking-wide text-faint">
+        <span>
+          {label}{" "}
+          <span className="font-mono normal-case tracking-normal text-fg">{notes.tag}</span>
+        </span>
+        {changes > 0 ? (
+          <span
+            data-testid="changes-pill"
+            className="rounded-full border border-line-2 px-1.5 py-px font-mono normal-case tracking-normal text-fg-2"
+          >
+            {changes} {changes === 1 ? "change" : "changes"}
+          </span>
+        ) : null}
       </summary>
       <div className="mt-2 text-[13px] leading-relaxed text-fg-2">
         {notes.state === "unknown" ? (
@@ -111,14 +118,8 @@ function ReleaseNotesList({ data }: { data: UpdateCheck }) {
   return (
     <div className="mt-4 space-y-2">
       <Label>Release notes</Label>
-      <NotesAccordion
-        label="This release"
-        notes={running}
-        defaultOpen={!showLatest}
-      />
-      {showLatest ? (
-        <NotesAccordion label="Latest release" notes={latest} defaultOpen />
-      ) : null}
+      {showLatest ? <NotesAccordion label="Latest release" notes={latest} /> : null}
+      <NotesAccordion label="This release" notes={running} />
     </div>
   );
 }
@@ -191,28 +192,65 @@ function elapsed(startedAt: number | null, nowMs: number): string {
 
 const MARK: Record<string, string> = { pending: "○", active: "●", done: "✓", failed: "✗" };
 
-function ProgressSteps({ progress, nowMs }: { progress: UpdateProgress; nowMs: number }) {
-  if (!progress.steps.length) return null;
+/**
+ * The progress header. A native install's log lists only the steps it has printed, so there
+ * is no known total: no "of M", and the count says so (GRPH-1302). Never invent pending steps.
+ */
+function progressHeadline(progress: UpdateProgress, tag: string, via: string | undefined): string {
+  const steps = progress.steps;
+  const failedStep = steps.find((st) => st.status === "failed");
+  if (failedStep) return `Upgrade to ${tag} stopped at ${failedStep.label.toLowerCase()}`;
+  if (progress.state === "failed") return `Upgrade to ${tag} failed`;
+  const activeIdx = steps.findIndex((st) => st.status === "active");
+  const done = steps.filter((st) => st.status === "done").length;
+  const n = activeIdx >= 0 ? activeIdx + 1 : Math.min(done + 1, steps.length);
+  return via === "native"
+    ? `Upgrading to ${tag} — step ${n}`
+    : `Upgrading to ${tag} — step ${n} of ${steps.length}`;
+}
+
+function ProgressSteps({ progress, nowMs, tag, via }: {
+  progress: UpdateProgress; nowMs: number; tag: string; via: string | undefined;
+}) {
+  const failed = progress.state === "failed";
+  if (!progress.steps.length && !failed) return null;
+  const steps = progress.steps;
+  const red = failed || steps.some((st) => st.status === "failed");
+  const count = stepCount(steps, via);
+  const native = via === "native";
   return (
-    <div className="mt-2 space-y-1">
-      <ol className="space-y-0.5 text-[12px]" aria-label="Install steps">
-        {progress.steps.map((st) => (
-          <li
-            key={st.key}
-            data-status={st.status}
-            className={st.status === "failed" ? "text-danger" : st.status === "pending" ? "text-faint" : "text-fg-2"}
-          >
-            <span aria-hidden className="mr-1.5 font-mono">{MARK[st.status]}</span>
-            {st.label}
-            <span className="sr-only"> ({st.status})</span>
-            {st.status === "active" && st.started_at !== null ? (
-              <span className="ml-1.5 font-mono text-faint" data-testid="step-timer">
-                {elapsed(st.started_at, nowMs)}
-              </span>
-            ) : null}
-          </li>
-        ))}
-      </ol>
+    <div className="mt-3 space-y-2">
+      <div className="flex items-center justify-between gap-2 text-[13px] font-semibold text-fg">
+        <span className="flex items-center gap-2" data-testid="progress-headline">
+          <span aria-hidden className={`h-2 w-2 rounded-full ${red ? "bg-danger" : "bg-accent"}`} />
+          {progressHeadline(progress, tag, via)}
+        </span>
+        <span className="font-mono text-[12px] font-normal text-fg-2" data-testid="step-count">{count}</span>
+      </div>
+      {steps.length ? <StepBar steps={steps} openEnded={native} /> : null}
+      {steps.length ? <div className="rounded-[10px] border border-line-2 bg-surface p-3">
+        <ol className="space-y-0.5 text-[12px]" aria-label="Install steps">
+          {steps.map((st) => (
+            <li
+              key={st.key}
+              data-status={st.status}
+              className={st.status === "failed" ? "text-danger" : st.status === "pending" ? "text-faint" : "text-fg-2"}
+            >
+              <span aria-hidden className="mr-1.5 font-mono">{MARK[st.status]}</span>
+              {st.label}
+              <span className="sr-only"> ({st.status})</span>
+              {st.status === "active" && st.started_at !== null ? (
+                <span className="ml-1.5 font-mono text-faint" data-testid="step-timer">
+                  {elapsed(st.started_at, nowMs)}
+                </span>
+              ) : null}
+            </li>
+          ))}
+          {native && progress.state === "running" ? (
+            <li className="italic text-muted">Further steps appear only if the log prints them</li>
+          ) : null}
+        </ol>
+      </div> : null}
       {progress.current_line ? (
         <p className="truncate font-mono text-small text-faint" title={progress.current_line}>
           {progress.current_line}
@@ -222,14 +260,27 @@ function ProgressSteps({ progress, nowMs }: { progress: UpdateProgress; nowMs: n
   );
 }
 
-function PhaseCopy({ phase, tag, from }: { phase: Phase; tag: string; from: string }) {
+function PhaseCopy({ phase, tag, from, via }: { phase: Phase; tag: string; from: string; via?: string }) {
   if (!phase) return null;
+  // Native (frame 5b): the compose sentences describe image builds this path never runs.
+  if (via === "native") {
+    return (
+      <>
+        <p className="mt-2 text-[12px] text-fg-2" data-testid="phase-copy">Upgrading to {tag}.</p>
+        <p className="mt-1 text-[12px] text-muted" data-testid="native-note">
+          The service restarts mid-upgrade, so this panel reconnects partway through. The steps
+          below were read back from the log after the restart; they don&apos;t tick live the way
+          Compose does.
+        </p>
+      </>
+    );
+  }
   const text = phase === "starting"
     ? "Starting the install…"
     : phase === "building"
       ? `Building ${tag}. This box keeps serving ${from} until the new cut is ready — this can take several minutes.`
       : `Restarting the API on ${tag}…`;
-  return <p className="mt-2 text-[12px] text-fg-2">{text}</p>;
+  return <p className="mt-2 text-[12px] text-fg-2" data-testid="phase-copy">{text}</p>;
 }
 
 export function UpdatesPanel() {
@@ -260,6 +311,15 @@ export function UpdatesPanel() {
     const t = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(t);
   }, [applying]);
+  const { data: auto } = useAutoUpdate();
+  const autoRunning = auto?.last_auto_install_outcome === "started" && !applying;
+  const { data: autoProgress } = useQuery({
+    queryKey: ["update-progress", "auto"],
+    queryFn: () => api.updateProgress(installTiming.requestMs),
+    enabled: autoRunning,
+    refetchInterval: installTiming.pollMs,
+    retry: false,
+  });
   const alive = React.useRef(true);
   React.useEffect(() => {
     alive.current = true;
@@ -353,61 +413,60 @@ export function UpdatesPanel() {
         Whether this box is on the published stable cut.
       </p>
       <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
-        <Label>Status</Label>
-        {isPending && !data && <p className="text-[13px] text-muted">Checking GitHub for a newer release — this can take a few seconds. No result yet is not "no release".</p>}
-        {isError && !data && (
-          <p className="text-[13px] text-fg-2">
-            Could not tell whether a newer cut exists. The check did not complete — not current.
-          </p>
-        )}
-        {data && <StateCopy data={data} />}
-        {data && (
-          <div className="mt-4">
-            <Label>How this box is deployed</Label>
-            <p className="text-[13px] text-fg-2">{methodCopy(data)}</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <Label>Status</Label>
+            {isPending && !data && <p className="text-[13px] text-muted">Checking GitHub for a newer release — this can take a few seconds. No result yet is not "no release".</p>}
+            {isError && !data && (
+              <p className="text-[13px] text-fg-2">
+                Could not tell whether a newer cut exists. The check did not complete — not current.
+              </p>
+            )}
+            {data && <StateCopy data={data} />}
           </div>
-        )}
-        {data && <ReleaseNotesList data={data} />}
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => { void refresh(); }}
-            disabled={isFetching || applying}
-          >
-            {isFetching && !applying ? "Checking…" : "Check for updates"}
-          </Button>
-          {!hosted && !confirming && (
-            <Button
-              type="button"
-              disabled={!canInstall || applying}
-              onClick={() => setConfirming(true)}
-            >
-              {applying ? "Installing…" : "Install"}
-            </Button>
-          )}
-          {!hosted && confirming && (
-            <>
-              <Button type="button" disabled={applying || !tag} onClick={() => { void install(); }}>
-                {applying ? "Installing…" : `Confirm install ${tag}`}
-              </Button>
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               <Button
                 type="button"
-                variant="ghost"
-                disabled={applying}
-                onClick={() => { setConfirming(false); setApplyError(""); }}
+                variant="outline"
+                onClick={() => { void refresh(); }}
+                disabled={isFetching || applying}
               >
-                Cancel
+                {isFetching && !applying ? "Checking…" : "Check for updates"}
               </Button>
-            </>
-          )}
+              {!hosted && !confirming && (
+                <Button
+                  type="button"
+                  disabled={!canInstall || applying}
+                  onClick={() => setConfirming(true)}
+                >
+                  {applying ? "Installing…" : "Install"}
+                </Button>
+              )}
+              {!hosted && confirming && (
+                <>
+                  <Button type="button" disabled={applying || !tag} onClick={() => { void install(); }}>
+                    {applying ? "Installing…" : `Confirm install ${tag}`}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    disabled={applying}
+                    onClick={() => { setConfirming(false); setApplyError(""); }}
+                  >
+                    Cancel
+                  </Button>
+                </>
+              )}
+            </div>
+            {!hosted && !installed && (
+              <p className="max-w-xs text-right text-[12px] text-muted">{installHint(data)}</p>
+            )}
+          </div>
         </div>
-        {!hosted && !installed && (
-          <p className="mt-2 text-[12px] text-muted">{installHint(data)}</p>
-        )}
         <div role="status" aria-live="polite">
-          <PhaseCopy phase={phase} tag={tag} from={data?.running.version ?? ""} />
-          {applying && progress ? <ProgressSteps progress={progress} nowMs={nowMs} /> : null}
+          <PhaseCopy phase={phase} tag={tag} from={data?.running.version ?? ""} via={data?.via} />
+          {(applying || progress?.state === "failed") && progress ? <ProgressSteps progress={progress} nowMs={nowMs} tag={tag} via={data?.via} /> : null}
           {installed ? (
             <p className="mt-2 text-[13px] font-semibold text-fg">
               Installed {installed}. Reloading this page to load the new release…
@@ -415,8 +474,19 @@ export function UpdatesPanel() {
           ) : null}
         </div>
         {applyError ? <p className="mt-2 text-[12px] text-danger">{applyError}</p> : null}
+        {data && (
+          <div className="mt-4">
+            <Label>How this box is deployed</Label>
+            <p className="text-[13px] text-fg-2">{methodCopy(data)}</p>
+          </div>
+        )}
+        {data && !applying ? <ReleaseNotesList data={data} /> : null}
       </div>
-      <AutoUpdateSettings progressError={progress?.state === "failed" ? progress.error : ""} />
+      <AutoUpdateSettings
+        progressError={progress?.state === "failed" ? progress.error : ""}
+        progress={applying ? progress : autoProgress ?? null}
+        via={data?.via}
+      />
     </div>
   );
 }

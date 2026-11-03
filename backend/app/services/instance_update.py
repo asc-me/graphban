@@ -437,9 +437,7 @@ _MARKER = re.compile(r"^=== apply (\S+) (\S+)(?: (\d+))?\s*$")
 _LINE_CAP = 300
 _TAIL_BYTES = 2 * 1024 * 1024
 # The `==>` lines deploy.sh prints. Matched by prefix, in script order; on the compose
-# log a step not yet printed is listed as pending. graphban_upgrade (the native log)
-# prints none of these but "<sha> is live", so that log lists only the steps it has
-# printed — no step is invented for a script that never prints it.
+# log a step not yet printed is listed as pending.
 KNOWN_STEPS = (
     ("worktree", "Creating the deploy worktree", "creating the deploy worktree"),
     ("pin", "Pinning the deploy worktree", "pinning the deploy worktree"),
@@ -447,6 +445,17 @@ KNOWN_STEPS = (
     ("build", "Building the images", "building on "),
     ("verify", "Verifying release identity", "verifying release identity"),
     ("live", "Release is live", None),  # "<sha> is live" — matched by suffix
+)
+# The `==>` lines graphban_upgrade.upgrade prints (GRPH-1302), in its order. That script
+# has no fixed total (deps run only sometimes), so a native log lists ONLY the steps it
+# has printed — none is invented as pending.
+NATIVE_STEPS = (
+    ("stop", "Stopping the service", "stopping the service"),
+    ("swap", "Swapping in the release", "swapping in the release"),
+    ("deps", "Installing Python dependencies", "installing python dependencies"),
+    ("start", "Starting the service", "starting the service"),
+    ("verify", "Verifying release identity", "verifying release identity"),
+    ("live", "Release is live", None),
 )
 _SECRET_KV = re.compile(
     r"(?i)\b([A-Za-z0-9_.-]*(?:token|secret|passw(?:or)?d|api[_-]?key|credential|private[_-]?key)"
@@ -472,9 +481,14 @@ def _idle(reason: str) -> dict:
             "current_line": "", "error": ""}
 
 
-def _step_key(text: str) -> str | None:
-    for key, _label, prefix in KNOWN_STEPS:
-        if prefix and text.startswith(prefix):
+def _steps_for(source: str) -> tuple:
+    return KNOWN_STEPS if source == "compose" else NATIVE_STEPS
+
+
+def _step_key(text: str, source: str = "compose") -> str | None:
+    low = text.lower()
+    for key, _label, prefix in _steps_for(source):
+        if prefix and low.startswith(prefix):
             return key
     if text.endswith(" is live"):
         return "live"
@@ -513,7 +527,7 @@ def parse_progress(text: str, source: str = "compose") -> dict:
             continue
         current = raw
         if raw.startswith("==> "):
-            key = _step_key(raw[4:])
+            key = _step_key(raw[4:], source)
             if key and key not in seen:
                 seen[key] = {"key": key, "text": raw[4:], "started_at": None}
                 last_key = key
@@ -522,7 +536,8 @@ def parse_progress(text: str, source: str = "compose") -> dict:
     failed = bool(error)
     live = "live" in seen
     steps = []
-    order = [k for k, _l, _p in KNOWN_STEPS]
+    known = _steps_for(source)
+    order = [k for k, _l, _p in known]
     active = None
     if not failed and not live:
         present = [k for k in order if k in seen]
@@ -531,7 +546,7 @@ def parse_progress(text: str, source: str = "compose") -> dict:
     if failed:
         present = [k for k in order if k in seen]
         failed_key = present[-1] if present else None
-    for key, label, _p in KNOWN_STEPS:
+    for key, label, _p in known:
         if key not in seen and (key == "worktree" or source != "compose"):
             continue  # one-time step, or a step this log's script never prints
         info = seen.get(key)

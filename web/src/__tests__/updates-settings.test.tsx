@@ -78,6 +78,7 @@ vi.mock("@/lib/api", () => ({
     updateProgress: progressSpy,
     autoUpdate: vi.fn(async () => ({
       available: false, unavailable_reason: "no apply path", enabled: false, timezone: "UTC",
+      timezone_set: false, host_now: "2026-11-02T10:30:00+00:00",
       check: { days: [0, 1, 2, 3, 4, 5, 6], start: "02:00", end: "05:00" },
       install: { days: [0, 1, 2, 3, 4, 5, 6], start: "02:00", end: "05:00" },
       next_check_at: null, last_check_at: null, last_check_state: "", last_auto_install_tag: "",
@@ -373,9 +374,12 @@ describe("Updates Settings page", () => {
   it("hosted has Check and no Install", async () => {
     updateCheckSpy.mockResolvedValue(payload({ hosted: true }));
     renderPage(settingsPath("deployment/updates"), true);
-    expect(await screen.findByRole("button", { name: /check for updates/i })).toBeInTheDocument();
+    // The page settles (and may remount) once the hosted config arrives; assert on the settled DOM.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /check for updates/i })).toBeInTheDocument();
+      expect(screen.getByText(/hosted\. the operator updates this instance/i)).toBeInTheDocument();
+    });
     expect(screen.queryByRole("button", { name: /^install$/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/hosted\. the operator updates this instance/i)).toBeInTheDocument();
   });
 
   it("empty via is not compose", async () => {
@@ -482,5 +486,124 @@ describe("Updates nav source", () => {
     expect(src).toContain('group: "This box"');
     expect(src).toContain('label: "Updates"');
     expect(src).toContain('settingsPath("deployment/updates")');
+  });
+
+  it("puts Check and Install in the Status header, before the release notes", async () => {
+    updateCheckSpy.mockResolvedValue(available());
+    renderPage();
+    const check = await screen.findByRole("button", { name: /check for updates/i });
+    const install = screen.getByRole("button", { name: /^install$/i });
+    const notes = screen.getByText("Release notes");
+    expect(check.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(install.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("shows step 4 of 6 with one segment per step and the failed one marked", async () => {
+    updateCheckSpy.mockResolvedValue(available());
+    const mk = (statuses: string[]) => ({
+      state: "running", reason: "", tag: "2026.10.1", current_line: "", error: "",
+      steps: statuses.map((status, i) => ({ key: `s${i}`, label: `Step ${i + 1}`, status, started_at: null })),
+    });
+    progressSpy.mockResolvedValue(mk(["done", "done", "done", "active", "pending", "pending"]));
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install/i }));
+    expect(await screen.findByText(/step 4 of 6/)).toBeInTheDocument();
+    expect(screen.getAllByTestId("step-segment")).toHaveLength(6);
+    progressSpy.mockResolvedValue({ ...mk(["done", "done", "done", "failed", "pending", "pending"]), state: "failed", error: "boom" });
+    expect(await screen.findByText(/stopped at step 4/)).toBeInTheDocument();
+    expect(screen.getAllByTestId("step-segment")[3]).toHaveAttribute("data-status", "failed");
+  });
+
+  it("a native install has no step total: no \"of M\", \"total not known\", one segment per step returned", async () => {
+    updateCheckSpy.mockResolvedValue({ ...available(), via: "native" });
+    progressSpy.mockResolvedValue({
+      state: "running", reason: "", tag: "2026.10.1", current_line: "", error: "",
+      steps: [
+        { key: "download", label: "Downloading", status: "done", started_at: null },
+        { key: "unpack", label: "Unpacking", status: "active", started_at: null },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install/i }));
+    const headline = await screen.findByTestId("progress-headline");
+    expect(headline).toHaveTextContent(/^Upgrading to 2026\.10\.1 — step 2$/);
+    expect(headline.textContent).not.toMatch(/\bof\b/);
+    expect(screen.getByTestId("step-count")).toHaveTextContent("1 done · total not known");
+    expect(screen.getAllByTestId("step-segment")).toHaveLength(2);
+    expect(screen.getByTestId("step-tail")).toBeInTheDocument();
+    expect(screen.getByText("Further steps appear only if the log prints them")).toBeInTheDocument();
+    // Frame 5b copy: "Upgrading to <tag>." plus the restart note, never the compose sentence.
+    expect(screen.getByTestId("phase-copy")).toHaveTextContent(/^Upgrading to 2026\.10\.1\.$/);
+    expect(screen.getByTestId("native-note")).toHaveTextContent(/^The service restarts mid-upgrade/);
+    expect(screen.queryByText(/This box keeps serving/)).toBeNull();
+    expect(screen.queryByText(/Building 2026/)).toBeNull();
+    // Only the two printed steps plus the trailing note; no pending step invented.
+    const items = screen.getByRole("list", { name: /install steps/i }).querySelectorAll("li[data-status]");
+    expect(items).toHaveLength(2);
+  });
+
+  it("a compose install shows the done / total count", async () => {
+    updateCheckSpy.mockResolvedValue(available());
+    progressSpy.mockResolvedValue({
+      state: "running", reason: "", tag: "2026.10.1", current_line: "", error: "",
+      steps: [
+        { key: "a", label: "Fetch", status: "done", started_at: null },
+        { key: "b", label: "Build", status: "active", started_at: null },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install/i }));
+    expect(await screen.findByTestId("step-count")).toHaveTextContent("1 / 2");
+    expect(screen.queryByTestId("step-tail")).toBeNull();
+    expect(screen.queryByText(/Further steps appear/)).toBeNull();
+    expect(screen.queryByTestId("native-note")).toBeNull();
+  });
+
+  it("a failure with no failed step reads \"Upgrade to <tag> failed\"", async () => {
+    updateCheckSpy.mockResolvedValue(available());
+    progressSpy.mockResolvedValue({
+      state: "failed", reason: "", tag: "2026.10.1", current_line: "", error: "boom",
+      steps: [{ key: "a", label: "Fetch", status: "done", started_at: null }],
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install/i }));
+    expect(await screen.findByTestId("progress-headline")).toHaveTextContent(/^Upgrade to 2026\.10\.1 failed$/);
+    expect(screen.getByText(/Install failed: boom/)).toBeInTheDocument();
+  });
+
+  it("the notes pill counts top-level bullet lines and draws no category chip", async () => {
+    updateCheckSpy.mockResolvedValue(payload({
+      notes: {
+        running: {
+          tag: "2026.09.1", state: "present",
+          body: "## What changed\n- #1201 gbfleet: teardown\n- #1202 UI: settings\n  - nested, not counted\n- #1203 infra: CI\nTrailing prose.\n",
+        },
+        latest: null,
+      },
+    }));
+    renderPage();
+    const pill = await screen.findByTestId("changes-pill");
+    expect(pill).toHaveTextContent("3 changes");
+    // A collapsed row: the pill sits in the summary, and the row starts closed.
+    expect(pill.closest("summary")).not.toBeNull();
+    expect(pill.closest("details")).not.toHaveAttribute("open");
+    for (const chip of ["gbfleet", "UI", "infra", "API"]) {
+      expect(screen.queryByText(chip, { exact: true })).toBeNull();
+    }
+  });
+
+  it("no pill when the notes are empty or unknown", async () => {
+    updateCheckSpy.mockResolvedValue(payload());
+    renderPage();
+    expect(await screen.findByText(/no notes on this release/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("changes-pill")).toBeNull();
   });
 });

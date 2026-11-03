@@ -711,3 +711,48 @@ def test_rest_update_check_caches_and_refresh_param_bypasses(client, auth, monke
     client.get("/api/platform/update-check?refresh=true", headers=auth)
     assert n["calls"] == 2
 
+
+
+# ---- native upgrade.log steps (GRPH-1302) ----------------------------------------------------
+
+_NATIVE_HEAD = "=== apply 2026.11.1 2026-11-03T02:00:00+0000 1793680000\n"
+
+
+def test_native_log_lists_the_stages_it_printed_with_labels():
+    text = (_NATIVE_HEAD + "==> stopping the service\n==> swapping in the release\n"
+            "==> starting the service\n")
+    got = svc.parse_progress(text, "native")
+    assert got["state"] == "running"
+    assert [(s["key"], s["label"], s["status"]) for s in got["steps"]] == [
+        ("stop", "Stopping the service", "done"),
+        ("swap", "Swapping in the release", "done"),
+        ("start", "Starting the service", "active"),
+    ]  # no deps (never printed), no pending verify/live invented
+
+
+def test_native_log_full_run_succeeds_in_script_order():
+    text = (_NATIVE_HEAD + "==> stopping the service\n==> swapping in the release\n"
+            "==> installing Python dependencies\n==> starting the service\n"
+            "==> verifying release identity\n    api      beef\n==> beef is live\n")
+    got = svc.parse_progress(text, "native")
+    assert got["state"] == "succeeded"
+    assert [s["label"] for s in got["steps"]] == [
+        "Stopping the service", "Swapping in the release", "Installing Python dependencies",
+        "Starting the service", "Verifying release identity", "Release is live"]
+    assert all(s["status"] == "done" for s in got["steps"])
+
+
+def test_native_log_failure_marks_the_last_printed_stage():
+    text = (_NATIVE_HEAD + "==> stopping the service\n==> swapping in the release\n"
+            "==> starting the service\n==> verifying release identity\n"
+            "upgrade failed: api serves 'cafe', expected 'beef'\n")
+    got = svc.parse_progress(text, "native")
+    assert got["state"] == "failed"
+    assert [s["status"] for s in got["steps"]] == ["done", "done", "done", "failed"]
+    assert got["steps"][-1]["key"] == "verify"
+
+
+def test_compose_log_does_not_take_native_stage_lines():
+    text = "=== apply T x 1\n==> stopping the service\n"
+    got = svc.parse_progress(text, "compose")
+    assert "stop" not in [s["key"] for s in got["steps"]]

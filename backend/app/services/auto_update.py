@@ -144,6 +144,8 @@ def update_config(db: Session, values: dict) -> AutoUpdateConfig:
             raise ValueError(f"{pre} window start and end must differ")
     for k, v in values.items():
         setattr(row, k, sorted(set(v)) if k.endswith("_days") else v)
+    if "timezone" in values:
+        row.timezone_set = True
     db.commit()
     db.refresh(row)
     return row
@@ -179,7 +181,8 @@ def status(db: Session, *, now: datetime | None = None, hosted: bool | None = No
     reason = unavailable_reason(hosted=hosted, can_apply=can_apply)
     return {
         "available": not reason, "unavailable_reason": reason,
-        "enabled": c.enabled, "timezone": c.timezone,
+        "enabled": c.enabled, "timezone": c.timezone, "timezone_set": c.timezone_set,
+        "host_now": _iso(now),
         "check": {"days": list(c.check_days), "start": c.check_start, "end": c.check_end},
         "install": {"days": list(c.install_days), "start": c.install_start,
                     "end": c.install_end},
