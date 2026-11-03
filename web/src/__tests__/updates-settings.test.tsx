@@ -373,9 +373,12 @@ describe("Updates Settings page", () => {
   it("hosted has Check and no Install", async () => {
     updateCheckSpy.mockResolvedValue(payload({ hosted: true }));
     renderPage(settingsPath("deployment/updates"), true);
-    expect(await screen.findByRole("button", { name: /check for updates/i })).toBeInTheDocument();
+    // The page settles (and may remount) once the hosted config arrives; assert on the settled DOM.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /check for updates/i })).toBeInTheDocument();
+      expect(screen.getByText(/hosted\. the operator updates this instance/i)).toBeInTheDocument();
+    });
     expect(screen.queryByRole("button", { name: /^install$/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/hosted\. the operator updates this instance/i)).toBeInTheDocument();
   });
 
   it("empty via is not compose", async () => {
@@ -482,5 +485,33 @@ describe("Updates nav source", () => {
     expect(src).toContain('group: "This box"');
     expect(src).toContain('label: "Updates"');
     expect(src).toContain('settingsPath("deployment/updates")');
+  });
+
+  it("puts Check and Install in the Status header, before the release notes", async () => {
+    updateCheckSpy.mockResolvedValue(available());
+    renderPage();
+    const check = await screen.findByRole("button", { name: /check for updates/i });
+    const install = screen.getByRole("button", { name: /^install$/i });
+    const notes = screen.getByText("Release notes");
+    expect(check.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(install.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("shows step 4 of 6 with one segment per step and the failed one marked", async () => {
+    updateCheckSpy.mockResolvedValue(available());
+    const mk = (statuses: string[]) => ({
+      state: "running", reason: "", tag: "2026.10.1", current_line: "", error: "",
+      steps: statuses.map((status, i) => ({ key: `s${i}`, label: `Step ${i + 1}`, status, started_at: null })),
+    });
+    progressSpy.mockResolvedValue(mk(["done", "done", "done", "active", "pending", "pending"]));
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install/i }));
+    expect(await screen.findByText(/step 4 of 6/)).toBeInTheDocument();
+    expect(screen.getAllByTestId("step-segment")).toHaveLength(6);
+    progressSpy.mockResolvedValue({ ...mk(["done", "done", "done", "failed", "pending", "pending"]), state: "failed", error: "boom" });
+    expect(await screen.findByText(/stopped at step 4/)).toBeInTheDocument();
+    expect(screen.getAllByTestId("step-segment")[3]).toHaveAttribute("data-status", "failed");
   });
 });

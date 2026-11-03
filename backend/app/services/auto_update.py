@@ -166,6 +166,24 @@ def _iso(dt: datetime | None) -> str | None:
     return _utc(dt).isoformat() if dt else None
 
 
+def host_timezone() -> str:
+    """The server's IANA zone name, "UTC" when it cannot be told (GRPH-1302)."""
+    import os
+    name = os.environ.get("TZ", "")
+    if not name:
+        try:
+            link = os.path.realpath("/etc/localtime")
+            if "zoneinfo/" in link:
+                name = link.split("zoneinfo/", 1)[1]
+        except OSError:
+            name = ""
+    try:
+        get_zone(name)
+        return name
+    except ValueError:
+        return "UTC"
+
+
 def status(db: Session, *, now: datetime | None = None, hosted: bool | None = None,
            can_apply: bool | None = None) -> dict:
     now = _utc(now or datetime.now(timezone.utc))
@@ -180,6 +198,7 @@ def status(db: Session, *, now: datetime | None = None, hosted: bool | None = No
     return {
         "available": not reason, "unavailable_reason": reason,
         "enabled": c.enabled, "timezone": c.timezone,
+        "host_timezone": host_timezone(), "host_now": _iso(now),
         "check": {"days": list(c.check_days), "start": c.check_start, "end": c.check_end},
         "install": {"days": list(c.install_days), "start": c.install_start,
                     "end": c.install_end},

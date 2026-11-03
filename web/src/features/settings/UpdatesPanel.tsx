@@ -11,9 +11,10 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import { AutoUpdateSettings } from "@/features/settings/AutoUpdateSettings";
+import { AutoUpdateSettings, StepBar, stepCount } from "@/features/settings/AutoUpdateSettings";
 import { Markdown } from "@/lib/markdown";
-import { keys, useConfig, useUpdateCheck } from "@/lib/queries";
+import { useQuery } from "@tanstack/react-query";
+import { keys, useAutoUpdate, useConfig, useUpdateCheck } from "@/lib/queries";
 import type { ReleaseNotes, UpdateCheck, UpdateProgress } from "@/lib/types";
 
 function Label({ children }: { children: React.ReactNode }) {
@@ -191,28 +192,45 @@ function elapsed(startedAt: number | null, nowMs: number): string {
 
 const MARK: Record<string, string> = { pending: "○", active: "●", done: "✓", failed: "✗" };
 
-function ProgressSteps({ progress, nowMs }: { progress: UpdateProgress; nowMs: number }) {
+function ProgressSteps({ progress, nowMs, tag }: { progress: UpdateProgress; nowMs: number; tag: string }) {
   if (!progress.steps.length) return null;
+  const steps = progress.steps;
+  const failedStep = steps.find((st) => st.status === "failed");
+  const activeIdx = steps.findIndex((st) => st.status === "active");
+  const done = steps.filter((st) => st.status === "done").length;
+  const n = activeIdx >= 0 ? activeIdx + 1 : Math.min(done + 1, steps.length);
   return (
-    <div className="mt-2 space-y-1">
-      <ol className="space-y-0.5 text-[12px]" aria-label="Install steps">
-        {progress.steps.map((st) => (
-          <li
-            key={st.key}
-            data-status={st.status}
-            className={st.status === "failed" ? "text-danger" : st.status === "pending" ? "text-faint" : "text-fg-2"}
-          >
-            <span aria-hidden className="mr-1.5 font-mono">{MARK[st.status]}</span>
-            {st.label}
-            <span className="sr-only"> ({st.status})</span>
-            {st.status === "active" && st.started_at !== null ? (
-              <span className="ml-1.5 font-mono text-faint" data-testid="step-timer">
-                {elapsed(st.started_at, nowMs)}
-              </span>
-            ) : null}
-          </li>
-        ))}
-      </ol>
+    <div className="mt-3 space-y-2">
+      <div className="flex items-center justify-between gap-2 text-[13px] font-semibold text-fg">
+        <span className="flex items-center gap-2">
+          <span aria-hidden className={`h-2 w-2 rounded-full ${failedStep ? "bg-danger" : "bg-accent"}`} />
+          {failedStep
+            ? `Upgrade to ${tag} stopped at ${failedStep.label.toLowerCase()}`
+            : `Upgrading to ${tag} — step ${n} of ${steps.length}`}
+        </span>
+        <span className="font-mono text-[12px] font-normal text-fg-2">{stepCount(steps)}</span>
+      </div>
+      <StepBar steps={steps} />
+      <div className="rounded-[10px] border border-line-2 bg-surface p-3">
+        <ol className="space-y-0.5 text-[12px]" aria-label="Install steps">
+          {steps.map((st) => (
+            <li
+              key={st.key}
+              data-status={st.status}
+              className={st.status === "failed" ? "text-danger" : st.status === "pending" ? "text-faint" : "text-fg-2"}
+            >
+              <span aria-hidden className="mr-1.5 font-mono">{MARK[st.status]}</span>
+              {st.label}
+              <span className="sr-only"> ({st.status})</span>
+              {st.status === "active" && st.started_at !== null ? (
+                <span className="ml-1.5 font-mono text-faint" data-testid="step-timer">
+                  {elapsed(st.started_at, nowMs)}
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+      </div>
       {progress.current_line ? (
         <p className="truncate font-mono text-small text-faint" title={progress.current_line}>
           {progress.current_line}
@@ -260,6 +278,15 @@ export function UpdatesPanel() {
     const t = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(t);
   }, [applying]);
+  const { data: auto } = useAutoUpdate();
+  const autoRunning = auto?.last_auto_install_outcome === "started" && !applying;
+  const { data: autoProgress } = useQuery({
+    queryKey: ["update-progress", "auto"],
+    queryFn: () => api.updateProgress(installTiming.requestMs),
+    enabled: autoRunning,
+    refetchInterval: installTiming.pollMs,
+    retry: false,
+  });
   const alive = React.useRef(true);
   React.useEffect(() => {
     alive.current = true;
@@ -353,61 +380,60 @@ export function UpdatesPanel() {
         Whether this box is on the published stable cut.
       </p>
       <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
-        <Label>Status</Label>
-        {isPending && !data && <p className="text-[13px] text-muted">Checking GitHub for a newer release — this can take a few seconds. No result yet is not "no release".</p>}
-        {isError && !data && (
-          <p className="text-[13px] text-fg-2">
-            Could not tell whether a newer cut exists. The check did not complete — not current.
-          </p>
-        )}
-        {data && <StateCopy data={data} />}
-        {data && (
-          <div className="mt-4">
-            <Label>How this box is deployed</Label>
-            <p className="text-[13px] text-fg-2">{methodCopy(data)}</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <Label>Status</Label>
+            {isPending && !data && <p className="text-[13px] text-muted">Checking GitHub for a newer release — this can take a few seconds. No result yet is not "no release".</p>}
+            {isError && !data && (
+              <p className="text-[13px] text-fg-2">
+                Could not tell whether a newer cut exists. The check did not complete — not current.
+              </p>
+            )}
+            {data && <StateCopy data={data} />}
           </div>
-        )}
-        {data && <ReleaseNotesList data={data} />}
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => { void refresh(); }}
-            disabled={isFetching || applying}
-          >
-            {isFetching && !applying ? "Checking…" : "Check for updates"}
-          </Button>
-          {!hosted && !confirming && (
-            <Button
-              type="button"
-              disabled={!canInstall || applying}
-              onClick={() => setConfirming(true)}
-            >
-              {applying ? "Installing…" : "Install"}
-            </Button>
-          )}
-          {!hosted && confirming && (
-            <>
-              <Button type="button" disabled={applying || !tag} onClick={() => { void install(); }}>
-                {applying ? "Installing…" : `Confirm install ${tag}`}
-              </Button>
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               <Button
                 type="button"
-                variant="ghost"
-                disabled={applying}
-                onClick={() => { setConfirming(false); setApplyError(""); }}
+                variant="outline"
+                onClick={() => { void refresh(); }}
+                disabled={isFetching || applying}
               >
-                Cancel
+                {isFetching && !applying ? "Checking…" : "Check for updates"}
               </Button>
-            </>
-          )}
+              {!hosted && !confirming && (
+                <Button
+                  type="button"
+                  disabled={!canInstall || applying}
+                  onClick={() => setConfirming(true)}
+                >
+                  {applying ? "Installing…" : "Install"}
+                </Button>
+              )}
+              {!hosted && confirming && (
+                <>
+                  <Button type="button" disabled={applying || !tag} onClick={() => { void install(); }}>
+                    {applying ? "Installing…" : `Confirm install ${tag}`}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    disabled={applying}
+                    onClick={() => { setConfirming(false); setApplyError(""); }}
+                  >
+                    Cancel
+                  </Button>
+                </>
+              )}
+            </div>
+            {!hosted && !installed && (
+              <p className="max-w-xs text-right text-[12px] text-muted">{installHint(data)}</p>
+            )}
+          </div>
         </div>
-        {!hosted && !installed && (
-          <p className="mt-2 text-[12px] text-muted">{installHint(data)}</p>
-        )}
         <div role="status" aria-live="polite">
           <PhaseCopy phase={phase} tag={tag} from={data?.running.version ?? ""} />
-          {applying && progress ? <ProgressSteps progress={progress} nowMs={nowMs} /> : null}
+          {(applying || progress?.state === "failed") && progress ? <ProgressSteps progress={progress} nowMs={nowMs} tag={tag} /> : null}
           {installed ? (
             <p className="mt-2 text-[13px] font-semibold text-fg">
               Installed {installed}. Reloading this page to load the new release…
@@ -415,8 +441,18 @@ export function UpdatesPanel() {
           ) : null}
         </div>
         {applyError ? <p className="mt-2 text-[12px] text-danger">{applyError}</p> : null}
+        {data && (
+          <div className="mt-4">
+            <Label>How this box is deployed</Label>
+            <p className="text-[13px] text-fg-2">{methodCopy(data)}</p>
+          </div>
+        )}
+        {data && !applying ? <ReleaseNotesList data={data} /> : null}
       </div>
-      <AutoUpdateSettings progressError={progress?.state === "failed" ? progress.error : ""} />
+      <AutoUpdateSettings
+        progressError={progress?.state === "failed" ? progress.error : ""}
+        progress={applying ? progress : autoProgress ?? null}
+      />
     </div>
   );
 }

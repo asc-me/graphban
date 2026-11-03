@@ -130,6 +130,9 @@ export interface AutoUpdateStatus {
   unavailable_reason: string;
   enabled: boolean;
   timezone: string;
+  /** The server's IANA zone and its clock now (GRPH-1302). */
+  host_timezone: string;
+  host_now: string;
   check: AutoUpdateWindow;
   install: AutoUpdateWindow;
   next_check_at: string | null;

@@ -360,3 +360,17 @@ def test_can_enable_with_an_apply_path(client, auth, monkeypatch):
     monkeypatch.setattr(instance_update, "helper_present", lambda path=None: True)
     r = client.patch("/api/platform/auto-update", headers=auth, json={"enabled": True})
     assert r.status_code == 200 and r.json()["enabled"] is True
+
+
+def test_status_reports_the_host_clock(box):
+    s = au.status(box, now=IN_WINDOW, hosted=False, can_apply=True)
+    assert s["host_now"] == IN_WINDOW.isoformat()
+    assert isinstance(s["host_timezone"], str) and s["host_timezone"]
+    au.get_zone(s["host_timezone"])  # a real IANA name, "UTC" at worst
+
+
+def test_host_timezone_falls_back_to_utc(monkeypatch):
+    monkeypatch.setenv("TZ", "Not/AZone")
+    assert au.host_timezone() == "UTC"
+    monkeypatch.setenv("TZ", "Europe/Berlin")
+    assert au.host_timezone() == "Europe/Berlin"

@@ -9,6 +9,7 @@ import type { AutoUpdateStatus } from "@/lib/types";
 function status(over: Partial<AutoUpdateStatus> = {}): AutoUpdateStatus {
   return {
     available: true, unavailable_reason: "", enabled: false, timezone: "UTC",
+    host_timezone: "Europe/Berlin", host_now: "2026-11-02T10:30:00+00:00",
     check: { days: [0, 1, 2, 3, 4, 5, 6], start: "02:00", end: "05:00" },
     install: { days: [0, 1, 2, 3, 4, 5, 6], start: "02:00", end: "05:00" },
     next_check_at: null, last_check_at: null, last_check_state: "",
@@ -39,30 +40,66 @@ describe("AutoUpdateSettings", () => {
     patchSpy.mockReset().mockImplementation(async (b) => status({ enabled: !!b.enabled }));
   });
 
-  it("saves the toggle, timezone and window editors", async () => {
+  it("saves one upgrade window as both check and install, on the host timezone", async () => {
     const user = userEvent.setup();
     renderIt();
-    const toggle = await screen.findByRole("checkbox", { name: /update this box automatically/i });
+    const toggle = await screen.findByRole("switch", { name: /update this box automatically/i });
+    expect(screen.queryByRole("group", { name: /upgrade window/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /save auto-update/i })).toBeNull();
     await user.click(toggle);
-    const tz = screen.getByLabelText("Timezone");
-    await user.clear(tz);
-    await user.type(tz, "America/New_York");
-    await user.click(within_group("Check window days", "Sun"));
+    expect(screen.queryByLabelText("Timezone")).toBeNull();
+    expect(screen.getAllByText("Upgrade window")).toHaveLength(1);
+    expect(screen.getByText(/host time is 11:30/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Sunday" }));
     await user.click(screen.getByRole("button", { name: /save auto-update/i }));
     await waitFor(() => expect(patchSpy).toHaveBeenCalledTimes(1));
     const body = patchSpy.mock.calls[0][0];
     expect(body.enabled).toBe(true);
-    expect(body.timezone).toBe("America/New_York");
+    expect(body.timezone).toBe("Europe/Berlin");
     expect(body.check_days).toEqual([0, 1, 2, 3, 4, 5]);
-    expect(body.install_days).toEqual([0, 1, 2, 3, 4, 5, 6]);
-    expect(body.check_start).toBe("02:00");
+    expect(body.install_days).toEqual(body.check_days);
+    expect(body.check_start).toBe(body.install_start);
+    expect(body.check_end).toBe(body.install_end);
     expect(body.install_end).toBe("05:00");
+  });
+
+  it("shows the install window when the stored windows differ", async () => {
+    getSpy.mockResolvedValue(status({
+      enabled: true,
+      check: { days: [0], start: "01:00", end: "02:00" },
+      install: { days: [1], start: "03:00", end: "04:00" },
+    }));
+    renderIt();
+    expect(await screen.findByLabelText("Upgrade window start")).toHaveValue("03:00");
+  });
+
+  it("shows the installing box when the last outcome is started and progress is running", async () => {
+    getSpy.mockResolvedValue(status({
+      enabled: true, last_auto_install_tag: "2026.11.1", last_auto_install_outcome: "started",
+      last_auto_install_at: "2026-11-02T03:00:00+00:00",
+    }));
+    const steps = [
+      { key: "a", label: "Fetch", status: "done", started_at: null },
+      { key: "b", label: "Build images", status: "active", started_at: null },
+      { key: "c", label: "Restart", status: "pending", started_at: null },
+    ] as const;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <AutoUpdateSettings progress={{ state: "running", reason: "", tag: "2026.11.1",
+          steps: [...steps], current_line: "", error: "" }} />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/Auto-update is installing 2026\.11\.1 — build images/)).toBeInTheDocument();
+    expect(screen.getByText("1 / 3")).toBeInTheDocument();
+    expect(screen.getAllByTestId("step-segment")).toHaveLength(3);
   });
 
   it("shows a save error", async () => {
     patchSpy.mockRejectedValue(new Error("'Mars/Base' is not a known timezone"));
     const user = userEvent.setup();
     renderIt();
+    await user.click(await screen.findByRole("switch", { name: /update this box automatically/i }));
     await user.click(await screen.findByRole("button", { name: /save auto-update/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/not a known timezone/);
   });
@@ -74,8 +111,8 @@ describe("AutoUpdateSettings", () => {
     getSpy.mockResolvedValue(status({ available: false, unavailable_reason: reason }));
     renderIt();
     expect(await screen.findByText(new RegExp(reason))).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: /update this box automatically/i })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /save auto-update/i })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: /update this box automatically/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /save auto-update/i })).toBeNull();
   });
 
   it("shows next check, last checked and the last auto-update", async () => {
@@ -114,9 +151,3 @@ describe("AutoUpdateSettings", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
-
-function within_group(groupName: string, day: string) {
-  const group = screen.getByRole("group", { name: groupName });
-  return Array.from(group.querySelectorAll("label")).find((l) => l.textContent === day)!
-    .querySelector("input")!;
-}
