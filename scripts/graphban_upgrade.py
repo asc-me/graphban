@@ -189,6 +189,12 @@ def stop(restart, *, drain: float = 10.0) -> None:
     time.sleep(min(drain, 10.0))
 
 
+def stage(text: str) -> None:
+    """One `==> ` line per real stage, flushed: stdout is upgrade.log, which the panel reads
+    while this runs (GRPH-1302). instance_update.NATIVE_STEPS matches these texts."""
+    print(f"==> {text}", flush=True)
+
+
 def upgrade(root: pathlib.Path, release: pathlib.Path, sha: str, *, base: str,
             python: pathlib.Path, restart, probe=health, web=web_sha,
             head=alembic_head, rewire=None, sync_deps=None,
@@ -209,8 +215,10 @@ def upgrade(root: pathlib.Path, release: pathlib.Path, sha: str, *, base: str,
         print(f"upgrade: {release} is not a directory", file=sys.stderr)
         return EXIT_MISMATCH
 
+    stage("stopping the service")
     stop(restart)
 
+    stage("swapping in the release")
     # KEEP THE OLD ONE. Rollback is re-running it, so it has to still exist — this is the line
     # that makes the recovery path real rather than aspirational.
     if previous.exists():
@@ -224,6 +232,7 @@ def upgrade(root: pathlib.Path, release: pathlib.Path, sha: str, *, base: str,
 
     deps_failed = False
     if sync_deps is not None:
+        stage("installing Python dependencies")
         deps_rc = sync_deps(root, current)
         if deps_rc not in (0, None):
             deps_failed = True
@@ -233,13 +242,15 @@ def upgrade(root: pathlib.Path, release: pathlib.Path, sha: str, *, base: str,
 
     ok, facts = False, {"api": "", "web": "", "alembic": ""}
     if not deps_failed:
+        stage("starting the service")
         restart("start")
+        stage("verifying release identity")
         ok, facts = verify(base, sha, root=root, python=python, probe=probe, web=web,
                            head=head)
     if ok:
         for fact in IDENTITY_FACTS:
             print(f"    {fact:<8} {facts[fact]}")
-        print(f"==> {sha} is live")
+        print(f"==> {sha} is live", flush=True)
         return EXIT_OK
 
     # ROLL BACK, and say what was wrong rather than only that something was.

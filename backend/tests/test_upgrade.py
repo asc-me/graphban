@@ -332,3 +332,39 @@ def test_uninstall_stops_the_service_first(tmp_path):
     seen, restart = calls_recorder()
     up.uninstall(tmp_path, restart=restart)
     assert seen and seen[0] == "stop"
+
+
+# ---- stage lines the panel reads from upgrade.log (GRPH-1302) -------------------------------
+
+def test_upgrade_prints_each_stage_in_order_before_live(install, release, capsys, monkeypatch):
+    monkeypatch.setattr(up.time, "sleep", lambda s: None)
+    probe, web = serving(NEW)
+    _, restart = calls_recorder()
+
+    rc = up.upgrade(install, release, NEW, base="http://x", python=pathlib.Path("py"),
+                    restart=restart, probe=probe, web=web, head=lambda r, p: "0091",
+                    sync_deps=lambda root, cur: 0)
+
+    assert rc == up.EXIT_OK
+    stages = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("==> ")]
+    assert stages == [
+        "==> stopping the service",
+        "==> swapping in the release",
+        "==> installing Python dependencies",
+        "==> starting the service",
+        "==> verifying release identity",
+        f"==> {NEW} is live",
+    ]
+
+
+def test_no_dependency_stage_when_deps_are_not_synced(install, release, capsys, monkeypatch):
+    monkeypatch.setattr(up.time, "sleep", lambda s: None)
+    probe, web = serving(NEW)
+    _, restart = calls_recorder()
+
+    up.upgrade(install, release, NEW, base="http://x", python=pathlib.Path("py"),
+               restart=restart, probe=probe, web=web, head=lambda r, p: "0091")
+
+    out = capsys.readouterr().out
+    assert "==> installing Python dependencies" not in out
+    assert "==> starting the service" in out

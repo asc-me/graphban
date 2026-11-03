@@ -78,28 +78,20 @@ export function changeCount(body: string): number {
   return body.split("\n").filter((line) => line.startsWith("- ")).length;
 }
 
-function NotesAccordion({
-  label,
-  notes,
-  defaultOpen,
-}: {
-  label: string;
-  notes: ReleaseNotes;
-  defaultOpen: boolean;
-}) {
+/** One collapsed row per release, "N changes" at the right, expanding to the body. */
+function NotesAccordion({ label, notes }: { label: string; notes: ReleaseNotes }) {
   const changes = notes.state === "present" ? changeCount(notes.body) : 0;
   return (
-    <details
-      className="rounded-[10px] border border-line-2 bg-surface p-3.5"
-      open={defaultOpen}
-    >
-      <summary className="cursor-pointer select-none font-mono text-[10.5px] uppercase tracking-wide text-faint">
-        {label}{" "}
-        <span className="font-mono normal-case tracking-normal text-fg">{notes.tag}</span>
+    <details className="rounded-[10px] border border-line-2 bg-surface p-3.5">
+      <summary className="flex cursor-pointer select-none items-center justify-between gap-2 font-mono text-[10.5px] uppercase tracking-wide text-faint">
+        <span>
+          {label}{" "}
+          <span className="font-mono normal-case tracking-normal text-fg">{notes.tag}</span>
+        </span>
         {changes > 0 ? (
           <span
             data-testid="changes-pill"
-            className="ml-2 rounded-full border border-line-2 px-1.5 py-px font-mono normal-case tracking-normal text-fg-2"
+            className="rounded-full border border-line-2 px-1.5 py-px font-mono normal-case tracking-normal text-fg-2"
           >
             {changes} {changes === 1 ? "change" : "changes"}
           </span>
@@ -126,14 +118,8 @@ function ReleaseNotesList({ data }: { data: UpdateCheck }) {
   return (
     <div className="mt-4 space-y-2">
       <Label>Release notes</Label>
-      <NotesAccordion
-        label="This release"
-        notes={running}
-        defaultOpen={!showLatest}
-      />
-      {showLatest ? (
-        <NotesAccordion label="Latest release" notes={latest} defaultOpen />
-      ) : null}
+      {showLatest ? <NotesAccordion label="Latest release" notes={latest} /> : null}
+      <NotesAccordion label="This release" notes={running} />
     </div>
   );
 }
@@ -208,7 +194,7 @@ const MARK: Record<string, string> = { pending: "○", active: "●", done: "✓
 
 /**
  * The progress header. A native install's log lists only the steps it has printed, so there
- * is no known total: no "of M" and no count (GRPH-1302). Never invent pending steps.
+ * is no known total: no "of M", and the count says so (GRPH-1302). Never invent pending steps.
  */
 function progressHeadline(progress: UpdateProgress, tag: string, via: string | undefined): string {
   const steps = progress.steps;
@@ -231,6 +217,7 @@ function ProgressSteps({ progress, nowMs, tag, via }: {
   const steps = progress.steps;
   const red = failed || steps.some((st) => st.status === "failed");
   const count = stepCount(steps, via);
+  const native = via === "native";
   return (
     <div className="mt-3 space-y-2">
       <div className="flex items-center justify-between gap-2 text-[13px] font-semibold text-fg">
@@ -238,11 +225,9 @@ function ProgressSteps({ progress, nowMs, tag, via }: {
           <span aria-hidden className={`h-2 w-2 rounded-full ${red ? "bg-danger" : "bg-accent"}`} />
           {progressHeadline(progress, tag, via)}
         </span>
-        {count ? (
-          <span className="font-mono text-[12px] font-normal text-fg-2" data-testid="step-count">{count}</span>
-        ) : null}
+        <span className="font-mono text-[12px] font-normal text-fg-2" data-testid="step-count">{count}</span>
       </div>
-      {steps.length ? <StepBar steps={steps} /> : null}
+      {steps.length ? <StepBar steps={steps} openEnded={native} /> : null}
       {steps.length ? <div className="rounded-[10px] border border-line-2 bg-surface p-3">
         <ol className="space-y-0.5 text-[12px]" aria-label="Install steps">
           {steps.map((st) => (
@@ -261,6 +246,9 @@ function ProgressSteps({ progress, nowMs, tag, via }: {
               ) : null}
             </li>
           ))}
+          {native && progress.state === "running" ? (
+            <li className="italic text-muted">Later steps appear as the native log prints them</li>
+          ) : null}
         </ol>
       </div> : null}
       {progress.current_line ? (

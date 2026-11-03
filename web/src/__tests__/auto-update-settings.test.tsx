@@ -49,9 +49,10 @@ describe("AutoUpdateSettings", () => {
     expect(screen.queryByRole("group", { name: /upgrade window/i })).toBeNull();
     expect(screen.queryByText("Upgrade window")).toBeNull();
     expect(screen.queryByRole("button", { name: /save auto-update/i })).toBeNull();
+    expect(screen.queryByLabelText("Timezone")).toBeNull();
     await user.click(toggle);
     expect(screen.getByLabelText("Timezone")).toHaveValue("America/Los_Angeles");
-    expect(screen.getByText("Detected from your browser.")).toBeInTheDocument();
+    expect(screen.getByText(/^Picked from this browser\. The upgrade window below runs in this zone\.$/)).toBeInTheDocument();
     expect(screen.getAllByText("Upgrade window")).toHaveLength(1);
     // host_now 10:30Z is 02:30 in Los Angeles (PST on 2026-11-02).
     expect(screen.getByText(/Box time is 02:30/)).toBeInTheDocument();
@@ -73,8 +74,8 @@ describe("AutoUpdateSettings", () => {
     const user = userEvent.setup();
     renderIt();
     expect(await screen.findByLabelText("Timezone")).toHaveValue("Europe/London");
-    expect(screen.getByText(/Your browser is in America\/Los_Angeles\./)).toBeInTheDocument();
-    expect(screen.queryByText("Detected from your browser.")).toBeNull();
+    expect(screen.getByText(/The upgrade window below runs in this zone\. Your browser is in America\/Los_Angeles\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Picked from this browser/)).toBeNull();
     // The box-time line follows the draft zone: 10:30Z is 10:30 GMT in London.
     expect(screen.getByText(/Box time is 10:30/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Use it" }));
@@ -86,7 +87,19 @@ describe("AutoUpdateSettings", () => {
     getSpy.mockResolvedValue(status({ enabled: true, timezone: "UTC", timezone_set: true }));
     renderIt();
     expect(await screen.findByLabelText("Timezone")).toHaveValue("UTC");
-    expect(screen.queryByText("Detected from your browser.")).toBeNull();
+    expect(screen.queryByText(/Picked from this browser/)).toBeNull();
+    expect(screen.getByText(/^The upgrade window below runs in this zone\. Your browser is in America\/Los_Angeles\./)).toBeInTheDocument();
+  });
+
+  it("Box time follows the zone as it is typed into the picker", async () => {
+    getSpy.mockResolvedValue(status({ enabled: true, timezone: "UTC", timezone_set: true }));
+    const user = userEvent.setup();
+    renderIt();
+    const tz = await screen.findByLabelText("Timezone");
+    expect(screen.getByText(/^Box time is 10:30 UTC\.$/)).toBeInTheDocument();
+    await user.clear(tz);
+    await user.type(tz, "Asia/Tokyo");
+    expect(screen.getByText(/^Box time is 19:30 /)).toBeInTheDocument();
   });
 
   it("shows the install window when the stored windows differ", async () => {
@@ -140,7 +153,9 @@ describe("AutoUpdateSettings", () => {
     );
     expect(await screen.findByText(/Auto-update is installing 2026\.11\.1 — unpack/)).toBeInTheDocument();
     expect(screen.queryByText(/\d+ \/ \d+/)).toBeNull();
+    expect(screen.getByText("1 done · total not known")).toBeInTheDocument();
     expect(screen.getAllByTestId("step-segment")).toHaveLength(2);
+    expect(screen.getByTestId("step-tail")).toBeInTheDocument();
   });
 
   it("shows a save error", async () => {

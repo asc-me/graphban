@@ -516,7 +516,7 @@ describe("Updates nav source", () => {
     expect(screen.getAllByTestId("step-segment")[3]).toHaveAttribute("data-status", "failed");
   });
 
-  it("a native install has no step total: no \"of M\", no count, one segment per step returned", async () => {
+  it("a native install has no step total: no \"of M\", \"total not known\", one segment per step returned", async () => {
     updateCheckSpy.mockResolvedValue({ ...available(), via: "native" });
     progressSpy.mockResolvedValue({
       state: "running", reason: "", tag: "2026.10.1", current_line: "", error: "",
@@ -532,8 +532,13 @@ describe("Updates nav source", () => {
     const headline = await screen.findByTestId("progress-headline");
     expect(headline).toHaveTextContent(/^Upgrading to 2026\.10\.1 — step 2$/);
     expect(headline.textContent).not.toMatch(/\bof\b/);
-    expect(screen.queryByTestId("step-count")).toBeNull();
+    expect(screen.getByTestId("step-count")).toHaveTextContent("1 done · total not known");
     expect(screen.getAllByTestId("step-segment")).toHaveLength(2);
+    expect(screen.getByTestId("step-tail")).toBeInTheDocument();
+    expect(screen.getByText("Later steps appear as the native log prints them")).toBeInTheDocument();
+    // Only the two printed steps plus the trailing note; no pending step invented.
+    const items = screen.getByRole("list", { name: /install steps/i }).querySelectorAll("li[data-status]");
+    expect(items).toHaveLength(2);
   });
 
   it("a compose install shows the done / total count", async () => {
@@ -550,6 +555,8 @@ describe("Updates nav source", () => {
     await user.click(await screen.findByRole("button", { name: /^install$/i }));
     await user.click(screen.getByRole("button", { name: /confirm install/i }));
     expect(await screen.findByTestId("step-count")).toHaveTextContent("1 / 2");
+    expect(screen.queryByTestId("step-tail")).toBeNull();
+    expect(screen.queryByText(/Later steps appear/)).toBeNull();
   });
 
   it("a failure with no failed step reads \"Upgrade to <tag> failed\"", async () => {
@@ -579,6 +586,9 @@ describe("Updates nav source", () => {
     renderPage();
     const pill = await screen.findByTestId("changes-pill");
     expect(pill).toHaveTextContent("3 changes");
+    // A collapsed row: the pill sits in the summary, and the row starts closed.
+    expect(pill.closest("summary")).not.toBeNull();
+    expect(pill.closest("details")).not.toHaveAttribute("open");
     for (const chip of ["gbfleet", "UI", "infra", "API"]) {
       expect(screen.queryByText(chip, { exact: true })).toBeNull();
     }

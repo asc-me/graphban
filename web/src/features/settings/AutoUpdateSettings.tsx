@@ -13,10 +13,13 @@ import { Input } from "@/components/ui/input";
 import { useAutoUpdate, useUpdateAutoUpdate } from "@/lib/queries";
 import type { AutoUpdateStatus, AutoUpdateWindow, UpdateProgress } from "@/lib/types";
 
-/** One bar segment per install step: done = accent, active = half, failed = danger, pending = line. */
-export function StepBar({ steps }: { steps: UpdateProgress["steps"] }) {
+/**
+ * One bar segment per install step: done = accent, active = half, failed = danger, pending =
+ * line. `openEnded` (a native install: no known total) adds a dotted tail, not invented steps.
+ */
+export function StepBar({ steps, openEnded = false }: { steps: UpdateProgress["steps"]; openEnded?: boolean }) {
   return (
-    <div className="flex gap-1" aria-hidden>
+    <div className="flex items-center gap-1" aria-hidden>
       {steps.map((st) => (
         <span
           key={st.key}
@@ -28,14 +31,17 @@ export function StepBar({ steps }: { steps: UpdateProgress["steps"] }) {
           {st.status === "active" ? <span className="absolute inset-y-0 left-0 w-1/2 bg-accent" /> : null}
         </span>
       ))}
+      {openEnded ? (
+        <span data-testid="step-tail" className="h-0 flex-1 border-t-2 border-dotted border-line" />
+      ) : null}
     </div>
   );
 }
 
-/** "done / total", or "" for a native install: its log has no known total (GRPH-1302). */
+/** "done / total"; a native install's log has no known total, so it says so (GRPH-1302). */
 export function stepCount(steps: UpdateProgress["steps"], via?: string): string {
-  if (via === "native") return "";
-  return `${steps.filter((x) => x.status === "done").length} / ${steps.length}`;
+  const done = steps.filter((x) => x.status === "done").length;
+  return via === "native" ? `${done} done · total not known` : `${done} / ${steps.length}`;
 }
 
 /** The browser's IANA zone; an object so tests can stub it. */
@@ -78,15 +84,15 @@ function toDraft(s: AutoUpdateStatus): Draft {
   };
 }
 
-function ZonePicker({ value, stored, storedSet, disabled, onChange }: {
-  value: string; stored: string; storedSet: boolean; disabled: boolean;
+function ZonePicker({ value, stored, storedSet, disabled, clock, onChange }: {
+  value: string; stored: string; storedSet: boolean; disabled: boolean; clock: string;
   onChange: (tz: string) => void;
 }) {
   const zones = React.useMemo(zoneList, []);
   const browser = browserZone.get();
   return (
     <div className="mt-3">
-      <label className="flex items-center gap-2 text-[12px] font-semibold text-fg">
+      <label className="flex flex-col items-start gap-1 text-[12px] font-semibold text-fg">
         Timezone
         <Input
           aria-label="Timezone"
@@ -102,23 +108,25 @@ function ZonePicker({ value, stored, storedSet, disabled, onChange }: {
           {zones.map((z) => <option key={z} value={z} />)}
         </datalist>
       ) : null}
-      {!storedSet && value === browser ? (
-        <p className="mt-1 text-[12px] text-muted">Detected from your browser.</p>
-      ) : null}
-      {storedSet && stored !== browser ? (
-        <p className="mt-1 text-[12px] text-muted">
-          Your browser is in {browser}.
-          {value !== browser ? (
-            <>
-              {" "}
-              <button type="button" className="text-accent underline-offset-2 hover:underline"
-                disabled={disabled} onClick={() => onChange(browser)}>
-                Use it
-              </button>
-            </>
-          ) : null}
-        </p>
-      ) : null}
+      <p className="mt-1 text-[12px] text-muted">
+        {!storedSet && value === browser ? "Picked from this browser. " : ""}
+        The upgrade window below runs in this zone.
+        {storedSet && stored !== browser ? (
+          <>
+            {" "}Your browser is in {browser}.
+            {value !== browser ? (
+              <>
+                {" "}
+                <button type="button" className="text-accent underline-offset-2 hover:underline"
+                  disabled={disabled} onClick={() => onChange(browser)}>
+                  Use it
+                </button>
+              </>
+            ) : null}
+          </>
+        ) : null}
+      </p>
+      <p className="mt-1 text-[12px] text-muted">Box time is {clock}.</p>
     </div>
   );
 }
@@ -242,11 +250,9 @@ export function AutoUpdateSettings({ progressError = "", progress = null, via }:
               Auto-update is installing {data.last_auto_install_tag}
               {activeStep ? ` — ${activeStep.label.toLowerCase()}` : ""}
             </span>
-            {stepCount(progress.steps, via) ? (
-              <span className="font-mono text-[12px] font-normal text-fg-2">{stepCount(progress.steps, via)}</span>
-            ) : null}
+            <span className="font-mono text-[12px] font-normal text-fg-2">{stepCount(progress.steps, via)}</span>
           </div>
-          <div className="mt-2"><StepBar steps={progress.steps} /></div>
+          <div className="mt-2"><StepBar steps={progress.steps} openEnded={via === "native"} /></div>
           <p className="mt-2 text-[12px] text-muted">
             Started at {hostClock(data.last_auto_install_at ?? data.host_now, data.timezone)}.
             {" "}Step detail is in Status above.
@@ -280,25 +286,6 @@ export function AutoUpdateSettings({ progressError = "", progress = null, via }:
       {locked ? (
         <p className="mt-3 border-t border-line-2 pt-2 text-[12px] text-muted">Auto-update is unavailable: {data.unavailable_reason}.</p>
       ) : null}
-      {on || (data.enabled && !locked) ? (
-        <>
-          <ZonePicker value={draft.timezone} stored={data.timezone} storedSet={data.timezone_set}
-            disabled={locked} onChange={(timezone) => setDraft({ ...draft, timezone })} />
-          <p className="mt-2 text-[12px] text-muted">
-            Box time is {hostClock(data.host_now, draft.timezone, data.timezone)}. The window below uses this clock.
-          </p>
-          <WindowEditor value={draft.window} disabled={locked}
-            onChange={(window) => setDraft({ ...draft, window })} />
-        </>
-      ) : null}
-      {on || (data.enabled && !locked) ? (
-        <div className="mt-3 flex items-center gap-2">
-          <Button type="button" disabled={locked || save.isPending} onClick={() => { void onSave(); }}>
-            {save.isPending ? "Saving…" : "Save auto-update"}
-          </Button>
-          {error ? <span role="alert" className="text-[12px] text-danger">{error}</span> : null}
-        </div>
-      ) : null}
       {data.enabled ? (
         <dl className="mt-3 space-y-0.5 text-[12px] text-fg-2">
           <div>Next check at {when(data.next_check_at, data.timezone)}</div>
@@ -306,8 +293,23 @@ export function AutoUpdateSettings({ progressError = "", progress = null, via }:
             {data.last_check_state ? ` — ${data.last_check_state}` : ""}</div>
         </dl>
       ) : null}
+      {on || (data.enabled && !locked) ? (
+        <>
+          <ZonePicker value={draft.timezone} stored={data.timezone} storedSet={data.timezone_set}
+            disabled={locked} clock={hostClock(data.host_now, draft.timezone, data.timezone)}
+            onChange={(timezone) => setDraft({ ...draft, timezone })} />
+          <WindowEditor value={draft.window} disabled={locked}
+            onChange={(window) => setDraft({ ...draft, window })} />
+          <div className="mt-3 flex items-center gap-2">
+            <Button type="button" disabled={locked || save.isPending} onClick={() => { void onSave(); }}>
+              {save.isPending ? "Saving…" : "Save auto-update"}
+            </Button>
+            {error ? <span role="alert" className="text-[12px] text-danger">{error}</span> : null}
+          </div>
+        </>
+      ) : null}
       {data.last_auto_install_tag ? (
-        <p className="mt-1 text-[12px] text-fg-2">
+        <p className="mt-2 text-[12px] text-fg-2">
           Last auto-update: <span className="font-mono">{data.last_auto_install_tag}</span>{" "}
           {data.last_auto_install_outcome || "started"} at {when(data.last_auto_install_at, data.timezone)}
         </p>
