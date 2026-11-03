@@ -3307,6 +3307,10 @@ class AutoUpdateConfig(Base):
                                           nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), default="UTC", server_default="UTC",
                                           nullable=False)
+    #: True once a PATCH has written `timezone` (GRPH-1302). "UTC" can be a real choice, so
+    #: the panel cannot tell the untouched default from the value alone.
+    timezone_set: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
+                                               nullable=False)
     check_days: Mapped[list] = mapped_column(JSON, default=lambda: [0, 1, 2, 3, 4, 5, 6])
     check_start: Mapped[str] = mapped_column(String(5), default="02:00", server_default="02:00",
                                              nullable=False)

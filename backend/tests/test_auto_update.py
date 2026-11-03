@@ -365,12 +365,18 @@ def test_can_enable_with_an_apply_path(client, auth, monkeypatch):
 def test_status_reports_the_host_clock(box):
     s = au.status(box, now=IN_WINDOW, hosted=False, can_apply=True)
     assert s["host_now"] == IN_WINDOW.isoformat()
-    assert isinstance(s["host_timezone"], str) and s["host_timezone"]
-    au.get_zone(s["host_timezone"])  # a real IANA name, "UTC" at worst
+    assert "host_timezone" not in s
 
 
-def test_host_timezone_falls_back_to_utc(monkeypatch):
-    monkeypatch.setenv("TZ", "Not/AZone")
-    assert au.host_timezone() == "UTC"
-    monkeypatch.setenv("TZ", "Europe/Berlin")
-    assert au.host_timezone() == "Europe/Berlin"
+def test_timezone_set_flips_on_the_first_patch_that_writes_timezone(client, auth):
+    got = client.get("/api/platform/auto-update", headers=auth).json()
+    assert got["timezone_set"] is False and got["timezone"] == "UTC"
+    assert got["host_now"]
+    # A PATCH that does not name the zone leaves it untouched.
+    r = client.patch("/api/platform/auto-update", headers=auth, json={"check_start": "01:00"})
+    assert r.status_code == 200 and r.json()["timezone_set"] is False
+    # Writing "UTC" — the default's own value — still counts as a choice.
+    r = client.patch("/api/platform/auto-update", headers=auth, json={"timezone": "UTC"})
+    assert r.status_code == 200 and r.json()["timezone_set"] is True
+    got = client.get("/api/platform/auto-update", headers=auth).json()
+    assert got["timezone_set"] is True and got["timezone"] == "UTC"

@@ -1,15 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AutoUpdateSettings } from "@/features/settings/AutoUpdateSettings";
+import { AutoUpdateSettings, browserZone } from "@/features/settings/AutoUpdateSettings";
 import type { AutoUpdateStatus } from "@/lib/types";
 
 function status(over: Partial<AutoUpdateStatus> = {}): AutoUpdateStatus {
   return {
     available: true, unavailable_reason: "", enabled: false, timezone: "UTC",
-    host_timezone: "Europe/Berlin", host_now: "2026-11-02T10:30:00+00:00",
+    timezone_set: false, host_now: "2026-11-02T10:30:00+00:00",
     check: { days: [0, 1, 2, 3, 4, 5, 6], start: "02:00", end: "05:00" },
     install: { days: [0, 1, 2, 3, 4, 5, 6], start: "02:00", end: "05:00" },
     next_check_at: null, last_check_at: null, last_check_state: "",
@@ -35,32 +35,58 @@ function renderIt(progressError = "") {
 }
 
 describe("AutoUpdateSettings", () => {
+  afterEach(() => vi.restoreAllMocks());
   beforeEach(() => {
+    vi.spyOn(browserZone, "get").mockReturnValue("America/Los_Angeles");
     getSpy.mockReset().mockResolvedValue(status());
     patchSpy.mockReset().mockImplementation(async (b) => status({ enabled: !!b.enabled }));
   });
 
-  it("saves one upgrade window as both check and install, on the host timezone", async () => {
+  it("saves one upgrade window as both check and install, in the browser zone until one is saved", async () => {
     const user = userEvent.setup();
     renderIt();
     const toggle = await screen.findByRole("switch", { name: /update this box automatically/i });
     expect(screen.queryByRole("group", { name: /upgrade window/i })).toBeNull();
+    expect(screen.queryByText("Upgrade window")).toBeNull();
     expect(screen.queryByRole("button", { name: /save auto-update/i })).toBeNull();
     await user.click(toggle);
-    expect(screen.queryByLabelText("Timezone")).toBeNull();
+    expect(screen.getByLabelText("Timezone")).toHaveValue("America/Los_Angeles");
+    expect(screen.getByText("Detected from your browser.")).toBeInTheDocument();
     expect(screen.getAllByText("Upgrade window")).toHaveLength(1);
-    expect(screen.getByText(/host time is 11:30/)).toBeInTheDocument();
+    // host_now 10:30Z is 02:30 in Los Angeles (PST on 2026-11-02).
+    expect(screen.getByText(/Box time is 02:30/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Sunday" }));
     await user.click(screen.getByRole("button", { name: /save auto-update/i }));
     await waitFor(() => expect(patchSpy).toHaveBeenCalledTimes(1));
     const body = patchSpy.mock.calls[0][0];
     expect(body.enabled).toBe(true);
-    expect(body.timezone).toBe("Europe/Berlin");
+    expect(body.timezone).toBe("America/Los_Angeles");
     expect(body.check_days).toEqual([0, 1, 2, 3, 4, 5]);
     expect(body.install_days).toEqual(body.check_days);
     expect(body.check_start).toBe(body.install_start);
     expect(body.check_end).toBe(body.install_end);
     expect(body.install_end).toBe("05:00");
+  });
+
+  it("keeps a saved zone that differs from the browser's and offers the browser's", async () => {
+    getSpy.mockResolvedValue(status({ enabled: true, timezone: "Europe/London", timezone_set: true }));
+    const user = userEvent.setup();
+    renderIt();
+    expect(await screen.findByLabelText("Timezone")).toHaveValue("Europe/London");
+    expect(screen.getByText(/Your browser is in America\/Los_Angeles\./)).toBeInTheDocument();
+    expect(screen.queryByText("Detected from your browser.")).toBeNull();
+    // The box-time line follows the draft zone: 10:30Z is 10:30 GMT in London.
+    expect(screen.getByText(/Box time is 10:30/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use it" }));
+    expect(screen.getByLabelText("Timezone")).toHaveValue("America/Los_Angeles");
+    expect(screen.getByText(/Box time is 02:30/)).toBeInTheDocument();
+  });
+
+  it("a saved UTC is a choice, not the unset default", async () => {
+    getSpy.mockResolvedValue(status({ enabled: true, timezone: "UTC", timezone_set: true }));
+    renderIt();
+    expect(await screen.findByLabelText("Timezone")).toHaveValue("UTC");
+    expect(screen.queryByText("Detected from your browser.")).toBeNull();
   });
 
   it("shows the install window when the stored windows differ", async () => {
@@ -93,6 +119,28 @@ describe("AutoUpdateSettings", () => {
     expect(await screen.findByText(/Auto-update is installing 2026\.11\.1 — build images/)).toBeInTheDocument();
     expect(screen.getByText("1 / 3")).toBeInTheDocument();
     expect(screen.getAllByTestId("step-segment")).toHaveLength(3);
+    expect(screen.getByText(/^Started at 03:00 UTC\./)).toBeInTheDocument();
+    expect(screen.queryByText(/inside the upgrade window/)).toBeNull();
+  });
+
+  it("a native auto-install has no step total", async () => {
+    getSpy.mockResolvedValue(status({
+      enabled: true, timezone_set: true, last_auto_install_tag: "2026.11.1",
+      last_auto_install_outcome: "started", last_auto_install_at: "2026-11-02T03:00:00+00:00",
+    }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <AutoUpdateSettings via="native" progress={{ state: "running", reason: "", tag: "2026.11.1",
+          steps: [
+            { key: "a", label: "Download", status: "done", started_at: null },
+            { key: "b", label: "Unpack", status: "active", started_at: null },
+          ], current_line: "", error: "" }} />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(/Auto-update is installing 2026\.11\.1 — unpack/)).toBeInTheDocument();
+    expect(screen.queryByText(/\d+ \/ \d+/)).toBeNull();
+    expect(screen.getAllByTestId("step-segment")).toHaveLength(2);
   });
 
   it("shows a save error", async () => {

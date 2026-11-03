@@ -1,7 +1,8 @@
 /**
  * Updates → Auto-update (GRPH-1299, redrawn in GRPH-1302). Opt-in, off by default. One
- * "Upgrade window" (weekdays, start/end) on the host's clock; saved as both the check and the
- * install window. Unavailable (and says why) on hosted boxes and boxes with no apply path.
+ * "Upgrade window" (weekdays, start/end) in the chosen time zone; saved as both the check and
+ * the install window. The zone stays a control: the API container has no TZ, so the server's
+ * own clock is UTC, not the owner's. Until a zone is saved the browser's is pre-selected. Unavailable (and says why) on hosted boxes and boxes with no apply path.
  * A failed auto-install is shown with its error; `progressError` is the install log's own
  * error line (GRPH-1298). `progress` is the live install log, for the "installing" box.
  */
@@ -31,8 +32,31 @@ export function StepBar({ steps }: { steps: UpdateProgress["steps"] }) {
   );
 }
 
-export function stepCount(steps: UpdateProgress["steps"]): string {
+/** "done / total", or "" for a native install: its log has no known total (GRPH-1302). */
+export function stepCount(steps: UpdateProgress["steps"], via?: string): string {
+  if (via === "native") return "";
   return `${steps.filter((x) => x.status === "done").length} / ${steps.length}`;
+}
+
+/** The browser's IANA zone; an object so tests can stub it. */
+export const browserZone = {
+  get: (): string => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    } catch {
+      return "UTC";
+    }
+  },
+};
+
+function zoneList(): string[] | null {
+  const f = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
+  if (typeof f !== "function") return null;
+  try {
+    return f("timeZone");
+  } catch {
+    return null;
+  }
 }
 
 const DAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
@@ -40,12 +64,63 @@ const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Satu
 
 interface Draft {
   enabled: boolean;
+  timezone: string;
   window: AutoUpdateWindow;
 }
 
 function toDraft(s: AutoUpdateStatus): Draft {
   // One window in the UI. When the stored windows differ, the install window is the one shown.
-  return { enabled: s.enabled, window: { ...s.install } };
+  // A never-saved zone is a draft of the browser's; nothing is written until Save.
+  return {
+    enabled: s.enabled,
+    timezone: s.timezone_set ? s.timezone : browserZone.get(),
+    window: { ...s.install },
+  };
+}
+
+function ZonePicker({ value, stored, storedSet, disabled, onChange }: {
+  value: string; stored: string; storedSet: boolean; disabled: boolean;
+  onChange: (tz: string) => void;
+}) {
+  const zones = React.useMemo(zoneList, []);
+  const browser = browserZone.get();
+  return (
+    <div className="mt-3">
+      <label className="flex items-center gap-2 text-[12px] font-semibold text-fg">
+        Timezone
+        <Input
+          aria-label="Timezone"
+          className="w-64 font-normal"
+          list={zones ? "auto-update-zones" : undefined}
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      </label>
+      {zones ? (
+        <datalist id="auto-update-zones">
+          {zones.map((z) => <option key={z} value={z} />)}
+        </datalist>
+      ) : null}
+      {!storedSet && value === browser ? (
+        <p className="mt-1 text-[12px] text-muted">Detected from your browser.</p>
+      ) : null}
+      {storedSet && stored !== browser ? (
+        <p className="mt-1 text-[12px] text-muted">
+          Your browser is in {browser}.
+          {value !== browser ? (
+            <>
+              {" "}
+              <button type="button" className="text-accent underline-offset-2 hover:underline"
+                disabled={disabled} onClick={() => onChange(browser)}>
+                Use it
+              </button>
+            </>
+          ) : null}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 function when(iso: string | null, tz: string): string {
@@ -100,7 +175,13 @@ function WindowEditor({
   );
 }
 
-function hostClock(iso: string, tz: string): string {
+/** "HH:MM <zone>" for `iso` in `tz`; in `fallback` while `tz` is not a zone (mid-typing). */
+function hostClock(iso: string, tz: string, fallback = "UTC"): string {
+  try {
+    new Intl.DateTimeFormat("en-GB", { timeZone: tz });
+  } catch {
+    tz = fallback;
+  }
   try {
     const parts = new Intl.DateTimeFormat("en-GB", {
       hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz, timeZoneName: "short",
@@ -112,9 +193,9 @@ function hostClock(iso: string, tz: string): string {
   }
 }
 
-export function AutoUpdateSettings(
-  { progressError = "", progress = null }: { progressError?: string; progress?: UpdateProgress | null },
-) {
+export function AutoUpdateSettings({ progressError = "", progress = null, via }: {
+  progressError?: string; progress?: UpdateProgress | null; via?: string;
+}) {
   const { data, isPending, isError } = useAutoUpdate();
   const save = useUpdateAutoUpdate();
   const [draft, setDraft] = React.useState<Draft | null>(null);
@@ -137,7 +218,7 @@ export function AutoUpdateSettings(
     try {
       await save.mutateAsync({
         enabled: draft!.enabled,
-        timezone: data!.host_timezone,
+        timezone: draft!.timezone.trim(),
         check_days: w.days, check_start: w.start, check_end: w.end,
         install_days: w.days, install_start: w.start, install_end: w.end,
       });
@@ -161,11 +242,13 @@ export function AutoUpdateSettings(
               Auto-update is installing {data.last_auto_install_tag}
               {activeStep ? ` — ${activeStep.label.toLowerCase()}` : ""}
             </span>
-            <span className="font-mono text-[12px] font-normal text-fg-2">{stepCount(progress.steps)}</span>
+            {stepCount(progress.steps, via) ? (
+              <span className="font-mono text-[12px] font-normal text-fg-2">{stepCount(progress.steps, via)}</span>
+            ) : null}
           </div>
           <div className="mt-2"><StepBar steps={progress.steps} /></div>
           <p className="mt-2 text-[12px] text-muted">
-            Started inside the upgrade window at {hostClock(data.last_auto_install_at ?? data.host_now, data.host_timezone)}.
+            Started at {hostClock(data.last_auto_install_at ?? data.host_now, data.timezone)}.
             {" "}Step detail is in Status above.
           </p>
         </div>
@@ -199,8 +282,10 @@ export function AutoUpdateSettings(
       ) : null}
       {on || (data.enabled && !locked) ? (
         <>
-          <p className="mt-3 text-[12px] text-muted">
-            This deployment&apos;s host time is {hostClock(data.host_now, data.host_timezone)}. The window below uses this clock.
+          <ZonePicker value={draft.timezone} stored={data.timezone} storedSet={data.timezone_set}
+            disabled={locked} onChange={(timezone) => setDraft({ ...draft, timezone })} />
+          <p className="mt-2 text-[12px] text-muted">
+            Box time is {hostClock(data.host_now, draft.timezone, data.timezone)}. The window below uses this clock.
           </p>
           <WindowEditor value={draft.window} disabled={locked}
             onChange={(window) => setDraft({ ...draft, window })} />

@@ -73,6 +73,11 @@ function StateCopy({ data }: { data: UpdateCheck }) {
   );
 }
 
+/** Top-level "- " bullet lines in a notes body. Notes carry no categories, so no chips. */
+export function changeCount(body: string): number {
+  return body.split("\n").filter((line) => line.startsWith("- ")).length;
+}
+
 function NotesAccordion({
   label,
   notes,
@@ -82,6 +87,7 @@ function NotesAccordion({
   notes: ReleaseNotes;
   defaultOpen: boolean;
 }) {
+  const changes = notes.state === "present" ? changeCount(notes.body) : 0;
   return (
     <details
       className="rounded-[10px] border border-line-2 bg-surface p-3.5"
@@ -90,6 +96,14 @@ function NotesAccordion({
       <summary className="cursor-pointer select-none font-mono text-[10.5px] uppercase tracking-wide text-faint">
         {label}{" "}
         <span className="font-mono normal-case tracking-normal text-fg">{notes.tag}</span>
+        {changes > 0 ? (
+          <span
+            data-testid="changes-pill"
+            className="ml-2 rounded-full border border-line-2 px-1.5 py-px font-mono normal-case tracking-normal text-fg-2"
+          >
+            {changes} {changes === 1 ? "change" : "changes"}
+          </span>
+        ) : null}
       </summary>
       <div className="mt-2 text-[13px] leading-relaxed text-fg-2">
         {notes.state === "unknown" ? (
@@ -192,26 +206,44 @@ function elapsed(startedAt: number | null, nowMs: number): string {
 
 const MARK: Record<string, string> = { pending: "○", active: "●", done: "✓", failed: "✗" };
 
-function ProgressSteps({ progress, nowMs, tag }: { progress: UpdateProgress; nowMs: number; tag: string }) {
-  if (!progress.steps.length) return null;
+/**
+ * The progress header. A native install's log lists only the steps it has printed, so there
+ * is no known total: no "of M" and no count (GRPH-1302). Never invent pending steps.
+ */
+function progressHeadline(progress: UpdateProgress, tag: string, via: string | undefined): string {
   const steps = progress.steps;
   const failedStep = steps.find((st) => st.status === "failed");
+  if (failedStep) return `Upgrade to ${tag} stopped at ${failedStep.label.toLowerCase()}`;
+  if (progress.state === "failed") return `Upgrade to ${tag} failed`;
   const activeIdx = steps.findIndex((st) => st.status === "active");
   const done = steps.filter((st) => st.status === "done").length;
   const n = activeIdx >= 0 ? activeIdx + 1 : Math.min(done + 1, steps.length);
+  return via === "native"
+    ? `Upgrading to ${tag} — step ${n}`
+    : `Upgrading to ${tag} — step ${n} of ${steps.length}`;
+}
+
+function ProgressSteps({ progress, nowMs, tag, via }: {
+  progress: UpdateProgress; nowMs: number; tag: string; via: string | undefined;
+}) {
+  const failed = progress.state === "failed";
+  if (!progress.steps.length && !failed) return null;
+  const steps = progress.steps;
+  const red = failed || steps.some((st) => st.status === "failed");
+  const count = stepCount(steps, via);
   return (
     <div className="mt-3 space-y-2">
       <div className="flex items-center justify-between gap-2 text-[13px] font-semibold text-fg">
-        <span className="flex items-center gap-2">
-          <span aria-hidden className={`h-2 w-2 rounded-full ${failedStep ? "bg-danger" : "bg-accent"}`} />
-          {failedStep
-            ? `Upgrade to ${tag} stopped at ${failedStep.label.toLowerCase()}`
-            : `Upgrading to ${tag} — step ${n} of ${steps.length}`}
+        <span className="flex items-center gap-2" data-testid="progress-headline">
+          <span aria-hidden className={`h-2 w-2 rounded-full ${red ? "bg-danger" : "bg-accent"}`} />
+          {progressHeadline(progress, tag, via)}
         </span>
-        <span className="font-mono text-[12px] font-normal text-fg-2">{stepCount(steps)}</span>
+        {count ? (
+          <span className="font-mono text-[12px] font-normal text-fg-2" data-testid="step-count">{count}</span>
+        ) : null}
       </div>
-      <StepBar steps={steps} />
-      <div className="rounded-[10px] border border-line-2 bg-surface p-3">
+      {steps.length ? <StepBar steps={steps} /> : null}
+      {steps.length ? <div className="rounded-[10px] border border-line-2 bg-surface p-3">
         <ol className="space-y-0.5 text-[12px]" aria-label="Install steps">
           {steps.map((st) => (
             <li
@@ -230,7 +262,7 @@ function ProgressSteps({ progress, nowMs, tag }: { progress: UpdateProgress; now
             </li>
           ))}
         </ol>
-      </div>
+      </div> : null}
       {progress.current_line ? (
         <p className="truncate font-mono text-small text-faint" title={progress.current_line}>
           {progress.current_line}
@@ -433,7 +465,7 @@ export function UpdatesPanel() {
         </div>
         <div role="status" aria-live="polite">
           <PhaseCopy phase={phase} tag={tag} from={data?.running.version ?? ""} />
-          {(applying || progress?.state === "failed") && progress ? <ProgressSteps progress={progress} nowMs={nowMs} tag={tag} /> : null}
+          {(applying || progress?.state === "failed") && progress ? <ProgressSteps progress={progress} nowMs={nowMs} tag={tag} via={data?.via} /> : null}
           {installed ? (
             <p className="mt-2 text-[13px] font-semibold text-fg">
               Installed {installed}. Reloading this page to load the new release…
@@ -452,6 +484,7 @@ export function UpdatesPanel() {
       <AutoUpdateSettings
         progressError={progress?.state === "failed" ? progress.error : ""}
         progress={applying ? progress : autoProgress ?? null}
+        via={data?.via}
       />
     </div>
   );

@@ -130,8 +130,9 @@ export interface AutoUpdateStatus {
   unavailable_reason: string;
   enabled: boolean;
   timezone: string;
-  /** The server's IANA zone and its clock now (GRPH-1302). */
-  host_timezone: string;
+  /** False until a PATCH has written `timezone` (GRPH-1302); "UTC" can be a real choice. */
+  timezone_set: boolean;
+  /** The server's clock now, ISO UTC (GRPH-1302). */
   host_now: string;
   check: AutoUpdateWindow;
   install: AutoUpdateWindow;
