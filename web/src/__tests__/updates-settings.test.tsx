@@ -535,7 +535,12 @@ describe("Updates nav source", () => {
     expect(screen.getByTestId("step-count")).toHaveTextContent("1 done · total not known");
     expect(screen.getAllByTestId("step-segment")).toHaveLength(2);
     expect(screen.getByTestId("step-tail")).toBeInTheDocument();
-    expect(screen.getByText("Later steps appear as the native log prints them")).toBeInTheDocument();
+    expect(screen.getByText("Further steps appear only if the log prints them")).toBeInTheDocument();
+    // Frame 5b copy: "Upgrading to <tag>." plus the restart note, never the compose sentence.
+    expect(screen.getByTestId("phase-copy")).toHaveTextContent(/^Upgrading to 2026\.10\.1\.$/);
+    expect(screen.getByTestId("native-note")).toHaveTextContent(/^The service restarts mid-upgrade/);
+    expect(screen.queryByText(/This box keeps serving/)).toBeNull();
+    expect(screen.queryByText(/Building 2026/)).toBeNull();
     // Only the two printed steps plus the trailing note; no pending step invented.
     const items = screen.getByRole("list", { name: /install steps/i }).querySelectorAll("li[data-status]");
     expect(items).toHaveLength(2);
@@ -556,7 +561,8 @@ describe("Updates nav source", () => {
     await user.click(screen.getByRole("button", { name: /confirm install/i }));
     expect(await screen.findByTestId("step-count")).toHaveTextContent("1 / 2");
     expect(screen.queryByTestId("step-tail")).toBeNull();
-    expect(screen.queryByText(/Later steps appear/)).toBeNull();
+    expect(screen.queryByText(/Further steps appear/)).toBeNull();
+    expect(screen.queryByTestId("native-note")).toBeNull();
   });
 
   it("a failure with no failed step reads \"Upgrade to <tag> failed\"", async () => {

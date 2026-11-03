@@ -109,11 +109,10 @@ function ZonePicker({ value, stored, storedSet, disabled, clock, onChange }: {
         </datalist>
       ) : null}
       <p className="mt-1 text-[12px] text-muted">
-        {!storedSet && value === browser ? "Picked from this browser. " : ""}
-        The upgrade window below runs in this zone.
+        {!storedSet && value === browser ? "Picked from this browser." : ""}
         {storedSet && stored !== browser ? (
           <>
-            {" "}Your browser is in {browser}.
+            Your browser is in {browser}.
             {value !== browser ? (
               <>
                 {" "}
@@ -126,7 +125,7 @@ function ZonePicker({ value, stored, storedSet, disabled, clock, onChange }: {
           </>
         ) : null}
       </p>
-      <p className="mt-1 text-[12px] text-muted">Box time is {clock}.</p>
+      <p className="mt-1 text-[12px] text-muted">Box time is {clock}. The window below runs on this clock.</p>
     </div>
   );
 }

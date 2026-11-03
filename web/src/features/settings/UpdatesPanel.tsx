@@ -247,7 +247,7 @@ function ProgressSteps({ progress, nowMs, tag, via }: {
             </li>
           ))}
           {native && progress.state === "running" ? (
-            <li className="italic text-muted">Later steps appear as the native log prints them</li>
+            <li className="italic text-muted">Further steps appear only if the log prints them</li>
           ) : null}
         </ol>
       </div> : null}
@@ -260,14 +260,27 @@ function ProgressSteps({ progress, nowMs, tag, via }: {
   );
 }
 
-function PhaseCopy({ phase, tag, from }: { phase: Phase; tag: string; from: string }) {
+function PhaseCopy({ phase, tag, from, via }: { phase: Phase; tag: string; from: string; via?: string }) {
   if (!phase) return null;
+  // Native (frame 5b): the compose sentences describe image builds this path never runs.
+  if (via === "native") {
+    return (
+      <>
+        <p className="mt-2 text-[12px] text-fg-2" data-testid="phase-copy">Upgrading to {tag}.</p>
+        <p className="mt-1 text-[12px] text-muted" data-testid="native-note">
+          The service restarts mid-upgrade, so this panel reconnects partway through. The steps
+          below were read back from the log after the restart; they don&apos;t tick live the way
+          Compose does.
+        </p>
+      </>
+    );
+  }
   const text = phase === "starting"
     ? "Starting the install…"
     : phase === "building"
       ? `Building ${tag}. This box keeps serving ${from} until the new cut is ready — this can take several minutes.`
       : `Restarting the API on ${tag}…`;
-  return <p className="mt-2 text-[12px] text-fg-2">{text}</p>;
+  return <p className="mt-2 text-[12px] text-fg-2" data-testid="phase-copy">{text}</p>;
 }
 
 export function UpdatesPanel() {
@@ -452,7 +465,7 @@ export function UpdatesPanel() {
           </div>
         </div>
         <div role="status" aria-live="polite">
-          <PhaseCopy phase={phase} tag={tag} from={data?.running.version ?? ""} />
+          <PhaseCopy phase={phase} tag={tag} from={data?.running.version ?? ""} via={data?.via} />
           {(applying || progress?.state === "failed") && progress ? <ProgressSteps progress={progress} nowMs={nowMs} tag={tag} via={data?.via} /> : null}
           {installed ? (
             <p className="mt-2 text-[13px] font-semibold text-fg">

@@ -52,10 +52,11 @@ describe("AutoUpdateSettings", () => {
     expect(screen.queryByLabelText("Timezone")).toBeNull();
     await user.click(toggle);
     expect(screen.getByLabelText("Timezone")).toHaveValue("America/Los_Angeles");
-    expect(screen.getByText(/^Picked from this browser\. The upgrade window below runs in this zone\.$/)).toBeInTheDocument();
+    expect(screen.getByText(/^Picked from this browser\.$/)).toBeInTheDocument();
     expect(screen.getAllByText("Upgrade window")).toHaveLength(1);
     // host_now 10:30Z is 02:30 in Los Angeles (PST on 2026-11-02).
     expect(screen.getByText(/Box time is 02:30/)).toBeInTheDocument();
+    expect(screen.queryByText(/runs in this zone/)).toBeNull();
     await user.click(screen.getByRole("button", { name: "Sunday" }));
     await user.click(screen.getByRole("button", { name: /save auto-update/i }));
     await waitFor(() => expect(patchSpy).toHaveBeenCalledTimes(1));
@@ -74,7 +75,7 @@ describe("AutoUpdateSettings", () => {
     const user = userEvent.setup();
     renderIt();
     expect(await screen.findByLabelText("Timezone")).toHaveValue("Europe/London");
-    expect(screen.getByText(/The upgrade window below runs in this zone\. Your browser is in America\/Los_Angeles\./)).toBeInTheDocument();
+    expect(screen.getByText(/^Your browser is in America\/Los_Angeles\./)).toBeInTheDocument();
     expect(screen.queryByText(/Picked from this browser/)).toBeNull();
     // The box-time line follows the draft zone: 10:30Z is 10:30 GMT in London.
     expect(screen.getByText(/Box time is 10:30/)).toBeInTheDocument();
@@ -88,7 +89,7 @@ describe("AutoUpdateSettings", () => {
     renderIt();
     expect(await screen.findByLabelText("Timezone")).toHaveValue("UTC");
     expect(screen.queryByText(/Picked from this browser/)).toBeNull();
-    expect(screen.getByText(/^The upgrade window below runs in this zone\. Your browser is in America\/Los_Angeles\./)).toBeInTheDocument();
+    expect(screen.getByText(/^Your browser is in America\/Los_Angeles\./)).toBeInTheDocument();
   });
 
   it("Box time follows the zone as it is typed into the picker", async () => {
@@ -96,10 +97,10 @@ describe("AutoUpdateSettings", () => {
     const user = userEvent.setup();
     renderIt();
     const tz = await screen.findByLabelText("Timezone");
-    expect(screen.getByText(/^Box time is 10:30 UTC\.$/)).toBeInTheDocument();
+    expect(screen.getByText(/^Box time is 10:30 UTC\. The window below runs on this clock\.$/)).toBeInTheDocument();
     await user.clear(tz);
     await user.type(tz, "Asia/Tokyo");
-    expect(screen.getByText(/^Box time is 19:30 /)).toBeInTheDocument();
+    expect(screen.getByText(/^Box time is 19:30 .*\. The window below runs on this clock\.$/)).toBeInTheDocument();
   });
 
   it("shows the install window when the stored windows differ", async () => {
