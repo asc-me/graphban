@@ -212,3 +212,37 @@ def test_refused_template_reason_reaches_the_rules_flow(client):
     rule = next(x for s in r.json()["stages"] for x in s["rules"]
                 if x["id"] == "review.sabotage_required")
     assert rule["enforcement"] == "unmeasured" and "major mismatch" in rule["unmeasured_reason"]
+
+
+# ---- the published contract (GRPH-1303) --------------------------------------------------
+
+import json  # noqa: E402
+
+CONTRACT_FILE = Path(__file__).resolve().parents[2] / "docs" / "rule-primitive-contract.json"
+
+
+def test_contract_file_matches_contract():
+    on_disk = json.loads(CONTRACT_FILE.read_text())
+    assert on_disk == json.loads(json.dumps(P.contract(), sort_keys=True)), (
+        "docs/rule-primitive-contract.json is stale: run scripts/gen_rule_contract.py")
+    assert CONTRACT_FILE.read_text() == json.dumps(P.contract(), indent=2, sort_keys=True) + "\n"
+    assert on_disk["api_version"] == P.PRIMITIVE_API
+
+
+def test_contract_file_goes_stale_when_a_param_changes(monkeypatch):
+    prim = next(p for p in P.PRIMITIVES.values() if p.params)
+    name = next(iter(prim.params))
+    old = prim.params[name]
+    monkeypatch.setitem(prim.params, name, P.Param("bool" if old.type != "bool" else "str"))
+    assert json.loads(CONTRACT_FILE.read_text()) != json.loads(json.dumps(P.contract()))
+
+
+def test_contract_route(client):
+    from tests.test_rule_toggles import _login
+    _person()[0].close()
+    auth = _login(client, "alex@ascme-labs.com")
+    r = client.get("/api/rules/contract", headers=auth)
+    assert r.status_code == 200
+    assert r.json() == json.loads(CONTRACT_FILE.read_text())
+    assert r.json()["api_version"] == P.PRIMITIVE_API
+    assert client.get("/api/rules/contract").status_code == 401

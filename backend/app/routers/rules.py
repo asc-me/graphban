@@ -19,6 +19,7 @@ from app.security.deps import get_current_user
 from app.services import events as events_svc
 from app.services import observations as observations_svc
 from app.services import quotas
+from app.services import rule_pack
 from app.services import rules as rules_svc
 from app.services import rule_measure
 from app.services import rules_org
@@ -34,6 +35,13 @@ def list_rules(project_id: str = "core", db: Session = Depends(get_db),
                user: User = Depends(get_current_user)):
     authz.require_readable(db, user.id, project_id)
     return {"version": __version__, "rules": rules_svc.registry(db, project_id)}
+
+
+@router.get("/rules/contract")
+def rule_primitive_contract(user: User = Depends(get_current_user)):
+    """The rule primitive contract this server runs (`rule_pack.contract()`), same JSON as
+    `docs/rule-primitive-contract.json`."""
+    return rule_pack.contract()
 
 
 @router.get("/rules/flow", response_model=RulesFlowOut)
