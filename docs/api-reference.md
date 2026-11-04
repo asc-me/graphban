@@ -626,7 +626,8 @@ Two response fields carry a distinction the UI depends on:
 | Method | Path | Auth |
 | --- | --- | --- |
 | GET | `/api/api-keys` | JWT |
-| POST | `/api/api-keys` | JWT (plaintext returned once) |
+| POST | `/api/api-keys` | JWT (plaintext returned once). Optional `origin`: `web`, `gban_setup`, `gban_swamp_setup` or `fleet` (anything else is 422); omitted stores NULL (unknown), and the key is returned with `origin` on every read |
+| POST | `/api/api-keys/{id}/rotate` | JWT — body `{expires_in_days}`; mints an identical replacement (name, scopes, roles, tool_tiers, posture, project, origin) and revokes the old row in ONE transaction; plaintext returned once. 404 for another user's or a missing row; 409 for a revoked row, a `sync` row, a fleet-wave row, or a `gban_setup` / `gban_swamp_setup` row (rerun the command instead) |
 | DELETE | `/api/api-keys/{id}` | JWT — **revokes**; the row stays, marked `revoked`, and authenticates no one |
 
 ## Reports (upstream feedback)

@@ -4430,7 +4430,7 @@ def mint_fleet_key(db: Session, *, user_id: str, project_id: str, role: str,
     tiers = ["fleet", "prd"] if any(r in ("planner", ALL_IN_ONE) for r in wanted) else []
     row, plaintext = generate_api_key(
         db, user_id, label or f"fleet {'+'.join(dict.fromkeys(wanted))}", scopes, project_id,
-        FLEET_KEY_DAYS, tool_tiers=tiers)
+        FLEET_KEY_DAYS, tool_tiers=tiers, origin="fleet")
     # `all-in-one` mints an UNNARROWED credential — all three roles — which is what makes an
     # agent registering on it unrestricted. It is still wave-tagged, so "End wave" sweeps it
     # like any other: the posture differs, the lifecycle does not.

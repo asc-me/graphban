@@ -1047,7 +1047,11 @@ export interface ApiKey {
   revoked: boolean;
   /** Set when Fleet minted this for a wave. Null/absent = hand-minted, never swept. */
   fleet_wave?: string | null;
+  /** Which surface minted it. Null/absent = unknown (an older gban), NOT `web`. */
+  origin?: ApiKeyOrigin | null;
 }
+
+export type ApiKeyOrigin = "web" | "gban_setup" | "gban_swamp_setup" | "fleet";
 
 export interface ApiKeyCreated extends ApiKey {
   plaintext: string;

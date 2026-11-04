@@ -165,7 +165,8 @@ gban swamp setup
 Steps 3 and 5 of [the Swamp runbook](https://github.com/asc-me/graphban/blob/main/docs/swamp.md):
 `repo init`, `extension source add`, `vault create`, and the **gate** credential — minted,
 piped to `swamp vault put` on stdin, then checked for the scopes it actually came back with.
-Every step is skipped when already done.
+Every step is skipped when already done. When the vault secret is already set it is left alone;
+`gban swamp setup --replace` mints a new gate credential and overwrites that vault entry.
 
 Two things it will not do. It does not install Swamp, because that install pipes a remote
 script into a shell. And it never writes the gate key into an MCP config: `gban setup`'s agent

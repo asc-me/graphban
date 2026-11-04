@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
 
@@ -982,6 +983,8 @@ class ApiKeyCreate(BaseModel):
     # Optional tool tiers (GRPH-571). Empty = the core manifest, which is the default and
     # not a degraded state. Never widens what the key may CALL — only what it is told about.
     tool_tiers: list[str] = []
+    # Which surface is minting (GRPH-1310). Optional; NULL = unknown.
+    origin: Literal["web", "gban_setup", "gban_swamp_setup", "fleet"] | None = None
 
     @field_validator("tool_tiers")
     @classmethod
@@ -1028,6 +1031,11 @@ class ApiKeyOut(ORMModel):
     # Without this on the list, a wave key and an ordinary API key look the same, and
     # End wave sweeping one of them is invisible until it happens.
     fleet_wave: str | None = None
+    origin: str | None = None
+
+
+class ApiKeyRotate(BaseModel):
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
 
 
 class ApiKeyCreated(ApiKeyOut):
