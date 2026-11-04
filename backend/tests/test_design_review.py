@@ -77,6 +77,34 @@ def test_compile_is_pure_and_refuses_unconfirmed_tier(db, pid, world):
     assert len(ds_svc._prompts(db, sid)) == 1  # nothing written
 
 
+def test_accept_set_constraints_is_a_person_and_unblocks_compile(db, pid):
+    """GRPH-1304. The flag is not a column a test pokes. A person accepts the current hash."""
+    from app.models import DesignAcceptance
+
+    prd = prd_svc.create_prd(db, title="Screens", project_id=pid, body=BODY)
+    approve(db, prd)
+    sid = ds_svc.open_design(db, pid, prd.id)["id"]
+    with pytest.raises(errors.Validation, match="no constraints"):
+        ds_svc.accept_set_constraints(db, pid, sid, "agent:GRPH-A2", "dana")
+    ds_svc.put_set_constraints(db, pid, sid, "Teal only.", screens=[{"screen": "home"}])
+    ds_svc.confirm_tier(db, pid, sid, "home", "BACKED", "route exists")
+    with pytest.raises(errors.Validation, match="constraints"):
+        _compile(db, pid, sid)
+    with pytest.raises(errors.Validation, match="no person"):
+        ds_svc.accept_set_constraints(db, pid, sid, "agent:GRPH-A2")
+    with pytest.raises(errors.Validation, match="not a person"):
+        ds_svc.accept_set_constraints(db, pid, sid, "agent:GRPH-A2", KEY)
+    out = ds_svc.accept_set_constraints(db, pid, sid, "agent:GRPH-A2", "dana")
+    assert out["constraints_accepted"] is True
+    assert (out["accepted_by"], out["relayed_by"]) == ("dana", "agent:GRPH-A2")
+    assert out["constraints_hash"] == content_hash("Teal only.")
+    row = db.scalars(select(DesignAcceptance).where(DesignAcceptance.kind == "constraints")).one()
+    assert (row.person, row.prompt_hash, row.screen) == ("dana", out["constraints_hash"], "")
+    _compile(db, pid, sid)
+    again = ds_svc.put_set_constraints(db, pid, sid, "Amber only.", screens=[{"screen": "home"}])
+    assert again["constraints_accepted"] is False
+
+
 def test_compile_refuses_unaccepted_constraints_and_candidates_are_not_indexed(db, pid, world):
     _, sid = world
     db.get(DesignSet, sid).constraints_accepted = False
@@ -268,6 +296,29 @@ def test_frozen_set_refuses_compile_and_canvas(db, pid, world, be):
         _compile(db, pid, sid)
     with pytest.raises(errors.Validation, match="frozen"):
         ds_svc.put_canvas(db, pid, sid, "home", b"x", "text/html", "h", backend=be)
+
+
+def test_mcp_accept_set_constraints_from_a_bare_credential_is_a_relay(client, auth, db, pid, world):
+    """Over MCP a call with no agent_id is `key:<name>`; it relays a named person or nothing."""
+    from tests.test_documents import _mcp
+
+    _, sid = world
+    db.get(DesignSet, sid).constraints_accepted = False
+    db.commit()
+    key = client.post("/api/api-keys", json={"name": "conskey"}, headers=auth).json()["plaintext"]
+    h = {"X-API-Key": key}
+
+    def call(args, n):
+        return _mcp(client, h, "accept_set_constraints",
+                    {"design_set_id": sid, "project_id": pid, **args}, n).json()
+
+    for n, args in enumerate([{}, {"accepted_by": "key:conskey"}], 1):
+        body = call(args, n)
+        assert "error" in body or body["result"].get("isError"), body
+    ok = call({"accepted_by": "dana"}, 3)["result"]["structuredContent"]
+    assert (ok["accepted_by"], ok["relayed_by"], ok["constraints_accepted"]) == (
+        "dana", "key:conskey", True)
+    _compile(db, pid, sid)
 
 
 def test_mcp_accept_prompt_from_a_bare_credential_is_a_relay(client, auth, db, pid, world):

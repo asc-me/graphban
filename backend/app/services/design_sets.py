@@ -152,6 +152,31 @@ def put_set_constraints(db: Session, project_id: str, set_id: str, body: str,
     return to_dict(db, ds)
 
 
+def accept_set_constraints(db: Session, project_id: str, set_id: str, actor: str,
+                           on_behalf_of: str = "") -> dict:
+    """A person accepts the constraints hash currently stored on the set (GRPH-1304).
+
+    A later `put_set_constraints` clears `constraints_accepted`, so this pins the hash that
+    is current now. The caller is always a relay; `on_behalf_of` is the person. The writer
+    of the constraints may be that person: unlike a compiled prompt, the constraints are
+    the person's own text.
+    """
+    ds = _get(db, project_id, set_id)
+    _writable(ds)
+    if not (ds.constraints_body or "").strip() or not ds.constraints_hash:
+        raise errors.Validation("no constraints to accept", hint="put_set_constraints first")
+    person, relayed = _person(db, actor, on_behalf_of)
+    ds.constraints_accepted = True
+    db.add(DesignAcceptance(
+        design_set_id=ds.id, kind="constraints", screen="",
+        prompt_hash=ds.constraints_hash, person=person, relayed_by=relayed))
+    db.commit()
+    return to_dict(db, ds) | {
+        "accepted_by": person, "relayed_by": relayed,
+        "constraints_hash": ds.constraints_hash,
+    }
+
+
 def _edit_sections(db: Session, ds: DesignSet, sections: list[str] | None) -> dict:
     old = list(ds.sections or [])
     new = [str(x) for x in sections] if sections is not None else old
