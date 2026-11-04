@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 310 of the 310. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 311 of the 311. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -625,7 +625,8 @@ Two response fields carry a distinction the UI depends on:
 | Method | Path | Auth |
 | --- | --- | --- |
 | GET | `/api/api-keys` | JWT |
-| POST | `/api/api-keys` | JWT (plaintext returned once) |
+| POST | `/api/api-keys` | JWT (plaintext returned once). Optional `origin`: `web`, `gban_setup`, `gban_swamp_setup` or `fleet` (anything else is 422); omitted stores NULL (unknown), and the key is returned with `origin` on every read |
+| POST | `/api/api-keys/{id}/rotate` | JWT — body `{expires_in_days}`; mints an identical replacement (name, scopes, roles, tool_tiers, posture, project, origin) and revokes the old row in ONE transaction; plaintext returned once. 404 for another user's or a missing row; 409 for a revoked row, a `sync` row, a fleet-wave row, or a `gban_setup` / `gban_swamp_setup` row (rerun the command instead) |
 | DELETE | `/api/api-keys/{id}` | JWT — **revokes**; the row stays, marked `revoked`, and authenticates no one |
 
 ## Reports (upstream feedback)

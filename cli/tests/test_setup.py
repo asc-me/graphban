@@ -153,6 +153,7 @@ def test_the_credential_is_minted_with_no_expiry_and_the_fleet_tier(tmp_path, wi
     assert body["expires_in_days"] is None, "the delegation credential must not expire"
     assert "fleet" in body["tool_tiers"]
     assert body["project_id"] == "core"
+    assert body["origin"] == "gban_setup"
 
 
 def test_the_supervisor_key_travels_in_the_environment_not_the_arguments(tmp_path, wired):
@@ -302,7 +303,9 @@ def test_a_configured_key_that_cannot_delegate_is_replaced_and_the_old_one_named
     # The configured key authenticates fine — it simply cannot see `delegate`. So it is
     # replaced rather than patched, and the one it replaces is named rather than orphaned
     # silently: `tool_tiers` are fixed at mint and no route changes them.
-    assert any("still live" in l["detail"] for l in lines)
+    assert not any("still live" in l["detail"] for l in lines)
+    assert any("no longer works" in l["detail"] and "if the old one still works" in l["detail"]
+               for l in lines)
     assert len(server.minted) == 1
     servers = json.loads(home.read_text())["projects"][str(repo.resolve())]["mcpServers"]
     assert servers["graphban"]["headers"]["X-API-Key"] != "gb_sk_weak"

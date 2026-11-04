@@ -150,7 +150,8 @@ def mint_gate(client: Client, project: str) -> dict:
     """
     return client.call("POST", "/api/api-keys",
                        {"name": f"{project} swamp gate", "project_id": project,
-                        "expires_in_days": None, "scopes": GATE_SCOPES})
+                        "expires_in_days": None, "scopes": GATE_SCOPES,
+                        "origin": "gban_swamp_setup"})
 
 
 def verify(url: str, key: str, project: str) -> list[dict]:
@@ -182,7 +183,7 @@ def verify(url: str, key: str, project: str) -> list[dict]:
 
 
 def setup(client: Client, url: str, project: str, repo: Path, adapter: Path,
-          *, init: bool = True) -> tuple[list[dict], int]:
+          *, init: bool = True, replace: bool = False) -> tuple[list[dict], int]:
     """Wire this checkout. Every step is skipped when already done and says which.
 
     Nothing here writes an MCP config. The gate key goes into the vault and nowhere else.
@@ -241,12 +242,13 @@ def setup(client: Client, url: str, project: str, repo: Path, adapter: Path,
                                   f"vault create failed: {_why(done)}")], 1
         lines.append(_line("local", PASS, "vault", f"created {VAULT!r} ({VAULT_TYPE})"))
 
-    if secret_present(repo):
+    if secret_present(repo) and not replace:
         # Left alone rather than replaced. Overwriting would strand a credential that is
         # still live on the server, and the person may have put a deliberate one there.
         lines.append(_line("local", PASS, "secret",
                            f"{VAULT}/{SECRET_KEY} already set — left alone. Delete it first "
-                           "to mint a new one"))
+                           "to mint a new one, or rerun with --replace to mint one and "
+                           "overwrite it"))
         return lines, _worst(lines)
 
     try:
