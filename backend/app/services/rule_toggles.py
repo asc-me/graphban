@@ -95,7 +95,13 @@ def _row(db: Session, rule_id: str, *, org_id: str | None = None,
 
 def _org_of(db: Session, project_id: str | None) -> str | None:
     p = db.get(Project, project_id) if project_id else None
-    return p.org_id if p else None
+    if p is None:
+        return None
+    if p.org_id:
+        return p.org_id
+    # A linked box's own projects have no org: the org layer is the cloud's decision it pulled.
+    from app.services import rules_org
+    return rules_org.pulled_org_id(db)
 
 
 def _resolve(rule: LibraryRule, proj: RuleToggle | None, org: RuleToggle | None,
