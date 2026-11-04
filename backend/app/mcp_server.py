@@ -1460,8 +1460,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "put_canvas",
         "description": (
-            "Store a design export (base64). Counts only against the accepted prompt_hash; "
-            "else an orphan."
+            "Store a design export (base64); only the accepted prompt_hash counts, else an "
+            "orphan. Zip: `root` is the screen member."
         ),
         "inputSchema": {
             "type": "object",
@@ -1471,6 +1471,7 @@ TOOLS: list[dict[str, Any]] = [
                 "bytes_b64": {"type": "string"},
                 "mime": {"type": "string"},
                 "prompt_hash": {"type": "string"},
+                "root": {"type": "string"},
             },
             "required": ["design_set_id", "screen", "bytes_b64", "mime", "prompt_hash"],
         },
@@ -4140,7 +4141,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 raise errors.Validation("bytes_b64 is not valid base64") from e
             return design_sets_svc.put_canvas(
                 db, pid, sid, str(args["screen"]), data, str(args["mime"]),
-                str(args["prompt_hash"]), actor=actor)
+                str(args["prompt_hash"]), actor=actor, root=str(args.get("root") or ""))
         if name == "file_finding":
             return design_sets_svc.file_finding(
                 db, pid, sid, str(args["screen"]), str(args["kind"]), str(args["text"]),

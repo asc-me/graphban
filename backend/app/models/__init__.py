@@ -3798,6 +3798,10 @@ class DesignCanvas(Base):
     content_hash: Mapped[str] = mapped_column(String)
     prompt_hash: Mapped[str] = mapped_column(String)
     document_id: Mapped[str] = mapped_column(String)
+    # A zip canvas: [{"path", "hash"}] for each file it contains, and the member that is the
+    # screen's root. NULL/"" for a single-file canvas.
+    members: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    root: Mapped[str] = mapped_column(String, default="", server_default="")
     created_by: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

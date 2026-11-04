@@ -498,9 +498,13 @@ def accept_prompt(db: Session, project_id: str, set_id: str, screen: str, actor:
 
 
 def put_canvas(db: Session, project_id: str, set_id: str, screen: str, data: bytes, mime: str,
-               prompt_hash: str, actor: str = "", backend=None) -> dict:
+               prompt_hash: str, actor: str = "", backend=None, root: str = "") -> dict:
     """Always stores the bytes (immutable, keyed by hash). They become the screen's reviewable
-    canvas only when `prompt_hash` is its accepted prompt hash; any other is an orphan."""
+    canvas only when `prompt_hash` is its accepted prompt hash; any other is an orphan.
+
+    A zip is the screen plus the files it imports: its members (path, hash) are recorded and
+    `root` names the member that is the screen. `changed` lists the members that differ from
+    the screen's current canvas. The server does not unpack it beyond reading the listing."""
     from app.services import documents as documents_svc
 
     ds = _get(db, project_id, set_id)
@@ -514,6 +518,24 @@ def put_canvas(db: Session, project_id: str, set_id: str, screen: str, data: byt
     import hashlib
 
     digest = hashlib.sha256(data).hexdigest()
+    members = _zip_members(data) if _is_zip(data, mime) else None
+    root = (root or "").strip()
+    if members is None and root:
+        raise errors.Validation("root names a member of a zip canvas; this upload is not a zip")
+    if members is not None:
+        if not members:
+            raise errors.Validation("zip canvas has no files")
+        paths = [m["path"] for m in members]
+        if not root and len(paths) == 1:
+            root = paths[0]
+        if root not in paths:
+            raise errors.Validation(
+                f"root {root!r} is not a member of the zip", hint=f"members: {paths}")
+    previous = None
+    if row.canvas_hash:
+        previous = db.scalars(select(DesignCanvas).where(
+            DesignCanvas.design_set_id == ds.id, DesignCanvas.screen == screen,
+            DesignCanvas.content_hash == row.canvas_hash)).first()
     doc = documents_svc.put_blob(
         db, project_id=project_id, kind="canvas", data=data, mime=mime, prd_id=ds.prd_id,
         set_id=ds.id, screen=f"{screen}@{digest[:16]}", title=f"{screen} canvas",
@@ -523,14 +545,42 @@ def put_canvas(db: Session, project_id: str, set_id: str, screen: str, data: byt
         DesignCanvas.content_hash == digest, DesignCanvas.prompt_hash == prompt_hash)).first()
     if have is None:
         db.add(DesignCanvas(design_set_id=ds.id, screen=screen, content_hash=digest,
-                            prompt_hash=prompt_hash, document_id=doc["id"], created_by=actor))
+                            prompt_hash=prompt_hash, document_id=doc["id"], created_by=actor,
+                            members=members, root=root))
     bound = bool(prompt_hash) and prompt_hash == row.prompt_hash
     if bound:
         row.canvas_hash = digest
     db.commit()
-    return {"design_set_id": ds.id, "screen": screen, "content_hash": digest,
-            "document_id": doc["id"], "prompt_hash": prompt_hash, "bound": bound,
-            "orphan": not bound}
+    out = {"design_set_id": ds.id, "screen": screen, "content_hash": digest,
+           "document_id": doc["id"], "prompt_hash": prompt_hash, "bound": bound,
+           "orphan": not bound}
+    if members is not None:
+        old = {m["path"]: m["hash"] for m in (previous.members or [])} if previous else {}
+        new = {m["path"]: m["hash"] for m in members}
+        out["members"] = members
+        out["root"] = root
+        out["changed"] = sorted(p for p in new if old.get(p) != new[p]) if previous else []
+        out["removed"] = sorted(p for p in old if p not in new)
+    return out
+
+
+def _is_zip(data: bytes, mime: str) -> bool:
+    return data[:4] == b"PK\x03\x04" or (mime or "").lower().endswith("zip")
+
+
+def _zip_members(data: bytes) -> list[dict]:
+    """Path and sha256 of every file in the zip, sorted by path."""
+    import hashlib
+    import io
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            out = [{"path": i.filename, "hash": hashlib.sha256(z.read(i)).hexdigest()}
+                   for i in z.infolist() if not i.is_dir()]
+    except (zipfile.BadZipFile, NotImplementedError, RuntimeError) as e:
+        raise errors.Validation("canvas is not a readable zip") from e
+    return sorted(out, key=lambda m: m["path"])
 
 
 def read_canvas(db: Session, project_id: str, set_id: str, content_hash_: str, backend=None):

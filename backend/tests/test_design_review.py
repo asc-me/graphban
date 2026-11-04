@@ -381,3 +381,35 @@ def test_mcp_review_loop_round_trip(client, auth, db, pid, world, tmp_path, monk
         "bytes_b64": base64.b64encode(b"<html>mcp2</html>").decode()})
     out = call(relay, "accept_design", {"design_set_id": sid, "accepted_by": "dana"})
     assert (out["status"], out["accepted_by"]) == ("accepted", "dana")
+
+
+def _zip(files: dict) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for k, v in files.items():
+            z.writestr(k, v)
+    return buf.getvalue()
+
+
+def test_zip_canvas_records_members_and_changes(db, pid, world, be):
+    _, sid = world
+    h = _compile(db, pid, sid)[0]["prompt_hash"]
+    ds_svc.accept_prompt(db, pid, sid, "home", "agent:GRPH-A2", "dana")
+    a = ds_svc.put_canvas(db, pid, sid, "home",
+                          _zip({"home.dc.html": "a", "ladder.dc.html": "b"}),
+                          "application/zip", h, backend=be, root="home.dc.html")
+    assert a["bound"] and a["root"] == "home.dc.html"
+    assert [m["path"] for m in a["members"]] == ["home.dc.html", "ladder.dc.html"]
+    b = ds_svc.put_canvas(db, pid, sid, "home",
+                          _zip({"home.dc.html": "a", "ladder.dc.html": "B"}),
+                          "application/zip", h, backend=be, root="home.dc.html")
+    assert b["changed"] == ["ladder.dc.html"] and b["removed"] == []
+    with pytest.raises(errors.Validation, match="not a member"):
+        ds_svc.put_canvas(db, pid, sid, "home", _zip({"x": "1", "y": "2"}),
+                          "application/zip", h, backend=be, root="z")
+    with pytest.raises(errors.Validation, match="not a zip"):
+        ds_svc.put_canvas(db, pid, sid, "home", b"<html/>", "text/html", h, backend=be,
+                          root="x")
