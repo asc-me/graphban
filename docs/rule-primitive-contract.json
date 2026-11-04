@@ -1,0 +1,79 @@
+{
+  "api_version": "1.5.0",
+  "primitives": [
+    {
+      "id": "evidence_attached",
+      "level": "checked",
+      "params": [
+        {
+          "name": "kinds",
+          "required": false,
+          "type": "str"
+        }
+      ]
+    },
+    {
+      "id": "evidence_required",
+      "level": "enforced",
+      "params": [
+        {
+          "name": "engine",
+          "required": false,
+          "type": "str"
+        },
+        {
+          "name": "path",
+          "required": false,
+          "type": "str"
+        }
+      ]
+    },
+    {
+      "id": "gap_followup_link",
+      "level": "enforced",
+      "params": []
+    },
+    {
+      "id": "human_only_clause",
+      "level": "enforced",
+      "params": []
+    },
+    {
+      "id": "reopen_on_red",
+      "level": "enforced",
+      "params": []
+    },
+    {
+      "id": "reviewer_property",
+      "level": "enforced",
+      "params": [
+        {
+          "name": "property",
+          "required": false,
+          "type": "str"
+        }
+      ]
+    },
+    {
+      "id": "sabotage_receipt",
+      "level": "enforced",
+      "params": [
+        {
+          "name": "min_effort",
+          "required": false,
+          "type": "int"
+        },
+        {
+          "name": "min_tests_failed",
+          "required": false,
+          "type": "int"
+        }
+      ]
+    },
+    {
+      "id": "staffing_scope",
+      "level": "checked",
+      "params": []
+    }
+  ]
+}
