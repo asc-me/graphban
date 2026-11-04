@@ -406,7 +406,8 @@ CORE_TOKENS = 8927
 # prd 2396 -> 3100 (GRPH-1279): the five design-set tools, tiered with the spec tools.
 # prd 3993 -> 4125 (GRPH-1304): `accept_set_constraints`. The whole bill is this tier;
 # CORE_TOKENS does not move.
-TIER_TOKENS = {"prd": 4125, "codegraph": 1795, "fleet": 1559, "misc": 1346}
+# prd 4125 -> 4259 (GRPH-1305): `canvas_check` on file_finding, `checks` on put_canvas.
+TIER_TOKENS = {"prd": 4259, "codegraph": 1795, "fleet": 1559, "misc": 1346}
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.
