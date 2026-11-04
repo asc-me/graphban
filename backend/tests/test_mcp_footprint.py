@@ -24,7 +24,7 @@ from app.services import tool_tiers
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 17629
+CEILING = 17775
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -201,7 +201,13 @@ CEILING = 17629
 # 17618 -> 17624 (GRPH-1271): update_item's evidence items carry the `test` run fields
 # (engine, scope, passed, failed, skipped) build.engine_evidence reads; paid for by shorter
 # update_item descriptions. CEILING does not move.
-MEASURED_TOKENS = 17624
+# 17624 -> 17756, and CEILING 17629 -> 17775 with it (GRPH-1304). One tool,
+# `accept_set_constraints`: a person accepts the constraints hash `put_set_constraints` stores.
+# The description is one sentence. It stays on the opt-in `prd` tier beside `accept_prompt`,
+# because the planner who relays that accept is the one `compile_prompts` refuses until this
+# hash is accepted. Hiding it from that manifest would leave the refusal with no tool to name.
+# TIER_TOKENS["prd"] pays the bill; CORE_TOKENS does not move. Headroom 19.
+MEASURED_TOKENS = 17756
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

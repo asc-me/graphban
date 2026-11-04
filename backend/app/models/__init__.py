@@ -3800,8 +3800,9 @@ class DesignCanvas(Base):
 
 
 class DesignAcceptance(Base):
-    """A human decision on a prompt (`kind` prompt) or the design (`kind` design). Names the
-    person and, when an agent relayed their words, the relaying agent."""
+    """A human decision on constraints (`kind` constraints), a prompt (`kind` prompt) or the
+    design (`kind` design). For constraints, `prompt_hash` holds the constraints hash.
+    Names the person and, when an agent relayed their words, the relaying agent."""
 
     __tablename__ = "design_acceptances"
 

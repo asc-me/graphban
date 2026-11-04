@@ -1398,6 +1398,20 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "accept_set_constraints",
+        "description": (
+            "A person accepts the current set constraints hash. Refused with no person."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "design_set_id": {"type": "string"},
+                "accepted_by": {"type": "string", "description": "The person (agent relay)."},
+            },
+            "required": ["design_set_id", "accepted_by"],
+        },
+    },
+    {
         "name": "confirm_tier",
         "description": (
             "Confirm a screen's tier BACKED|HALF|UNBACKED with a note saying what backs it or "
@@ -1528,7 +1542,8 @@ _PROJECT_SCOPED = {
     "describe_code", "get_code_map", "code_neighbors", "search_code", "graph_query",
     "link_code", "unlink_code", "record_scan", "scan_status", "scans_due", "create_prd",
     "put_document", "get_document", "search_docs",
-    "open_design", "put_preamble", "put_set_constraints", "confirm_tier", "get_design_set",
+    "open_design", "put_preamble", "put_set_constraints", "accept_set_constraints",
+    "confirm_tier", "get_design_set",
     "compile_prompts", "accept_prompt", "put_canvas", "file_finding", "resolve_finding",
     "accept_design",
 }
@@ -1993,6 +2008,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     "open_design": {"type": "object"},
     "put_preamble": {"type": "object"},
     "put_set_constraints": {"type": "object"},
+    "accept_set_constraints": {"type": "object"},
     "confirm_tier": {"type": "object"},
     "get_design_set": {"type": "object"},
     "compile_prompts": {"type": "object"},
@@ -4099,9 +4115,12 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             str(args["note"]), routes=args.get("routes"),
             confirmed_by=fleet_svc.caller_identity(str(args.get("agent_id") or "").strip(), key))
     if name in ("compile_prompts", "accept_prompt", "put_canvas", "file_finding",
-                "resolve_finding", "accept_design"):
+                "resolve_finding", "accept_design", "accept_set_constraints"):
         actor = fleet_svc.caller_identity(str(args.get("agent_id") or "").strip(), key)
         sid = str(args.get("design_set_id") or "")
+        if name == "accept_set_constraints":
+            return design_sets_svc.accept_set_constraints(
+                db, pid, sid, actor, str(args.get("accepted_by") or ""))
         if name == "compile_prompts":
             return design_sets_svc.compile_prompts(
                 db, pid, sid, screen=args.get("screen"), actor=actor)

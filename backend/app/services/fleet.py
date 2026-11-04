@@ -1284,6 +1284,9 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     "resolve_finding": ("planner", "worker"),
     "accept_prompt": ("planner",),
     "accept_design": ("planner",),
+    # GRPH-1304. Accepting the constraints hash is a person's decision, relayed like
+    # accept_prompt. Putting the candidate stays open to whoever builds the set.
+    "accept_set_constraints": ("planner",),
     "update_prd": ("planner",),
     "decompose_prd": ("planner",),
     "grill_prd": ("planner",),

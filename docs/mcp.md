@@ -115,7 +115,7 @@ Settings → API keys. `fleet.mint` gives a planner credential the `fleet` tier 
 operator can restore the pre-tiering manifest for a whole deployment with
 `MCP_DEFAULT_TOOL_TIERS=prd,codegraph,fleet,misc` — see [configuration.md](configuration.md).
 
-## The 78 tools
+## The 79 tools
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
 shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
@@ -146,7 +146,7 @@ that stops once the four dimensions are answered or deferred. The tool still wri
 The one-shot editor command (`POST /api/prds/{id}/ai` with `command=grill`) stays on the
 body-only prompt, which has no transcript and cannot know when to stop.
 
-**Every tool argues its role gate** (GRPH-516). 25 of the 78 tools are role-gated; the other
+**Every tool argues its role gate** (GRPH-516). 25 of the 79 tools are role-gated; the other
 49 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
 completeness guard forcing each new tool to be classified as a quality gate or an authority
 one, and `TOOL_ROLES` had no equivalent, so forty tools arrived at "open to everyone" without
@@ -366,7 +366,8 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `get_document` | `id` | One document row; `blob_key` omitted until stored |
 | `open_design` | `prd_id` | Open the PRD's design set (GRPH-1279); one open/accepted/stale set per PRD, refused on a closed PRD. Stores the preamble version and the PRD baseline hash (live body hash when unbaselined — draftable, never acceptable) |
 | `put_preamble` | `body`, `cites_prd_id` | Person only. Writes the project preamble citing the PRD's baseline hash; a new version marks sets built on the old one `stale` |
-| `put_set_constraints` | `design_set_id`, `body`, `sections?`, `screens?` | Candidate set constraints, the PRD sections gated, and screens `[{screen, routes}]` (code-graph tier proposal stored as a suggestion). Does not accept; re-pins a stale set |
+| `put_set_constraints` | `design_set_id`, `body`, `sections?`, `screens?` | Candidate set constraints, the PRD sections gated, and screens `[{screen, routes}]` (code-graph tier proposal stored as a suggestion). Does not accept; re-pins a stale set. A later put of the body clears `constraints_accepted` |
+| `accept_set_constraints` | `design_set_id`, `accepted_by` | A person accepts the constraints hash currently stored (GRPH-1304). Every caller is a relay, as for `accept_prompt`. Refused with no person, or a person that is an agent or a credential. A later `put_set_constraints` clears it |
 | `confirm_tier` | `design_set_id`, `screen`, `tier`, `note`, `routes?` | Confirm `BACKED`/`HALF`/`UNBACKED`; unconfirmed is never `BACKED` |
 | `compile_prompts` | `design_set_id`, `screen?` | Compile candidate `design_prompt` rows (GRPH-1280): a pure function of the PRD text, accepted set constraints, preamble, confirmed tier and open corrections — same inputs, same prompt hash. Refused (naming the screens) on an unconfirmed tier or unaccepted constraints; candidates are not indexed |
 | `accept_prompt` | `design_set_id`, `screen`, `accepted_by` | A person accepts the candidate prompt; every caller is a relay (a bare `key:` credential included) and `accepted_by` names the person (both are stored). Refused with no person, a person that is an agent or credential, or the compiler. Does not accept the design or embed |
