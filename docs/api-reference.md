@@ -90,7 +90,7 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | GET | `/api/sync/org-overview` | MCP (sync key) | Cloud side of the above. The org is resolved from the credential's project, never the request; `404` for a non-sync key or a project in no org. Deployments are sync keys grouped by name ("one key is one deployment") |
 | GET | `/api/sync/rule-decisions` | MCP (sync key) | Cloud side of the rule pull (GRPH-1297): the org's toggles with params, locks and applied profile as one versioned record (the version is a hash of the decisions). `404` for a non-sync key or a project in no org |
 | POST | `/api/sync/rule-decisions/applied` | MCP (sync key) | The box reports the version it applied; the cloud's "last synced" is only ever this report. Deployments in `/api/sync/org-overview` carry `rules` (applied vs published version, `pending`, `overdue`) |
-| POST | `/api/sync/pull-rules` | session (box admin) | BOX side: pull the org's published rule decisions, apply them as the org layer (project → org → platform, locks hold), then report the version applied; an unlinked box answers `pulled: false` with the reason |
+| POST | `/api/sync/pull-rules` | session (box admin) | BOX side: pull the org's published rule decisions, apply them as the org layer (project → org → platform, locks hold), then report the version applied — on demand; every `POST /api/sync/push` (and `graphban sync`) already does this as part of the sync, never failing the push. `409` when not linked, as `/push` |
 
 ## Rules (PRD-61)
 
@@ -755,7 +755,7 @@ Pushing and the portable bundle are a JWT on this box.
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | GET | `/api/sync/status` | JWT | Link state, never the credential, plus per-project sync state |
-| POST | `/api/sync/push` | JWT (write) | Push this project's code graph to the linked cloud. 409 when this box is not linked |
+| POST | `/api/sync/push` | JWT (write) | Push this project's code graph to the linked cloud. Also pulls and applies the org's rule decisions (GRPH-1297) and returns that outcome as `rules` — a failed pull never fails the push. 409 when this box is not linked |
 | POST | `/api/sync/purge` | JWT (write) | Delete this project's graph from the linked cloud and reset the local manifest. 409 when not linked |
 | POST | `/api/sync/code-graph` | MCP (sync scope) | Ingest nodes and edges. The cloud re-embeds. `remove` marks paths stale; `prune` marks everything absent from this batch |
 | DELETE | `/api/sync/code-graph` | MCP (sync scope) | Delete every node and edge in the key's project |

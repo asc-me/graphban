@@ -185,7 +185,8 @@ def push(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = ""
     # Privacy (D8): a project can opt out of ever pushing its graph off-network.
     cfg = db.get(PlatformConfig, project_id)
     if cfg is not None and not cfg.sync_graph:
-        return {"project_id": project_id, "skipped": True, "reason": "graph kept local (sync_graph off)"}
+        return {"project_id": project_id, "skipped": True, "reason": "graph kept local (sync_graph off)",
+                "rules": _pull_rules_on_sync(db, url, key)}
 
     nodes = {n.path: n for n in code_graph.list_nodes(db, project_id)}
     local = {p: (n.content_hash or "") for p, n in nodes.items()}
@@ -225,7 +226,8 @@ def push(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = ""
             _post(url, key, {"edges": [{"src": e.src, "dst": e.dst, "type": e.type} for e in edges]})
 
     return {"project_id": project_id, "pushed": sent, "removed": len(removed),
-            "unchanged": len(local) - len(changed)}
+            "unchanged": len(local) - len(changed),
+            "rules": _pull_rules_on_sync(db, url, key)}
 
 
 def purge(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = "") -> dict:
@@ -430,6 +432,17 @@ def org_overview(db: Session) -> dict:
 
 
 # ---- pulling the org's rule decisions (GRPH-1297) ----------------------------------------
+
+def _pull_rules_on_sync(db: Session, url: str, key: str) -> dict:
+    """Every sync (`graphban sync`, `POST /api/sync/push`) also pulls the org's rule decisions —
+    that is the box's sync cadence. Never fatal to the push: a failure is reported in the
+    result and the next sync tries again."""
+    try:
+        return pull_rule_decisions(db, cloud_url=url, api_key=key)
+    except Exception as e:  # noqa: BLE001 — the graph push already landed; never undo it
+        db.rollback()
+        return {"pulled": False, "error": f"{type(e).__name__}: {e}"}
+
 
 def pull_rule_decisions(db: Session, *, cloud_url: str = "", api_key: str = "") -> dict:
     """BOX: pull the org's published rule decisions, apply them, then report the version

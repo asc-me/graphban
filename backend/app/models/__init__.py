@@ -3587,6 +3587,18 @@ class BoxRuleSync(Base):
     reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class OrgRuleVersion(Base):
+    """CLOUD side (GRPH-1297): the org's currently published rule-decision version and when it
+    last moved. `changed_at` is when the version changed — a toggle set, a lock, a profile
+    applied, or a toggle dropped — so a box's `overdue` is measured from the real change."""
+
+    __tablename__ = "org_rule_versions"
+
+    org_id: Mapped[str] = mapped_column(String, primary_key=True)
+    version: Mapped[str] = mapped_column(String, default="")
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Document(Base):
     """A ledger row for a non-PRD governing document (GRPH-P64 "Document record").
 

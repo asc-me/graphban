@@ -150,3 +150,126 @@ def test_a_failed_report_is_retried_not_claimed(client, org, monkeypatch):  # no
     monkeypatch.setattr(code_sync.httpx, "post", boom)
     db = _db()
     assert code_sync.pull_rule_decisions(db, cloud_url="https://c", api_key="k")["reported"] is False
+
+
+# ---- the pull rides the box's sync cadence (bounce on 33583cc1) --------------------------
+
+class _FakeCloud:
+    """The cloud as the box sees it: a published record it can change, and the reports."""
+
+    def __init__(self, record):
+        self.record, self.reports, self.graph = record, [], []
+
+    def install(self, monkeypatch):
+        cloud = self
+
+        class Resp:
+            def __init__(self, body=None):
+                self.status_code, self._b = 200, body or {}
+            def json(self): return self._b
+            def raise_for_status(self): pass
+
+        def get(url, **k):
+            assert url.endswith("/api/sync/rule-decisions")
+            return Resp(dict(cloud.record))
+
+        def post(url, json=None, **k):
+            (cloud.reports if url.endswith("/rule-decisions/applied") else cloud.graph).append(json)
+            return Resp()
+
+        monkeypatch.setattr(code_sync.httpx, "get", get)
+        monkeypatch.setattr(code_sync.httpx, "post", post)
+        return self
+
+
+def test_a_normal_sync_applies_a_newly_published_lock(client, org, monkeypatch):  # noqa: F811
+    _self_host(monkeypatch)
+    pid = _box_project(client, org["owner"])
+    cloud = _FakeCloud(_record(version="v1", locked=False)).install(monkeypatch)
+    db = _db()
+    out = code_sync.push(db, project_id=pid, cloud_url="https://c", api_key="k")
+    assert out["rules"]["version"] == "v1" and T.resolve(db, RULE, pid)["locked"] is False
+    cloud.record = _record(version="v2", locked=True)          # the org locks the rule
+    out = code_sync.push(db, project_id=pid, cloud_url="https://c", api_key="k")
+    assert out["rules"] == {"pulled": True, "version": "v2", "changed": True, "reported": True}
+    assert cloud.reports[-1] == {"org_id": "org_cloud", "version": "v2"}
+    assert T.resolve(db, RULE, pid)["locked"] is True
+    with pytest.raises(Refused):
+        T.set_project_toggle(db, pid, RULE, {"on": False}, actor=_user(db), reason="try")
+
+
+def test_the_push_endpoint_pulls_rules_too(client, org, monkeypatch):  # noqa: F811
+    _self_host(monkeypatch)
+    pid = _box_project(client, org["owner"])
+    _FakeCloud(_record(version="v9")).install(monkeypatch)
+    monkeypatch.setattr(code_sync.settings, "sync_cloud_url", "https://c")
+    monkeypatch.setattr(code_sync.settings, "sync_api_key", "k")
+    r = client.post("/api/sync/push", json={"project_id": pid}, headers=org["owner"])
+    assert r.status_code == 200, r.text
+    assert r.json()["rules"]["version"] == "v9"
+    assert T.resolve(_db(), RULE, pid)["locked"] is True
+
+
+def test_a_failed_rule_pull_never_fails_the_push(client, org, monkeypatch):  # noqa: F811
+    import httpx
+    pid = _box_project(client, org["owner"])
+
+    def down(*a, **k):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(code_sync.httpx, "get", down)
+    monkeypatch.setattr(code_sync.httpx, "post", lambda *a, **k: None)
+    out = code_sync.push(_db(), project_id=pid, cloud_url="https://c", api_key="k")
+    assert out["project_id"] == pid and "pushed" in out
+    assert out["rules"]["pulled"] is False and "ConnectError" in out["rules"]["error"]
+
+
+def test_pull_rules_endpoint_not_linked_is_409_like_push(client, org, monkeypatch):  # noqa: F811
+    _self_host(monkeypatch)
+    monkeypatch.setattr(code_sync.settings, "sync_cloud_url", "")
+    monkeypatch.setattr(code_sync.settings, "sync_api_key", "")
+    r = client.post("/api/sync/pull-rules", headers=org["owner"])
+    assert r.status_code == 409, r.text
+
+
+# ---- `changed_at` moves with every decision, not only a toggle write ---------------------
+
+def _age(db, org_id, hours=5):
+    from datetime import timedelta
+    from app.models import OrgRuleVersion
+    row = db.get(OrgRuleVersion, org_id)
+    row.changed_at = row.changed_at - timedelta(hours=hours)
+    db.commit()
+    return row.changed_at
+
+
+def test_changed_at_moves_when_the_org_drops_a_toggle(client, org):  # noqa: F811
+    from app.models import RuleToggle
+    assert _apply(client, org).status_code == 200
+    db = _db()
+    old = _age(db, org["id"])
+    row = db.query(RuleToggle).filter_by(org_id=org["id"], rule_id=OTHER).one()
+    db.delete(row)
+    db.commit()
+    pub = RO.published_decisions(db, org["id"])
+    assert pub["changed_at"] > old
+
+
+def test_changed_at_moves_when_a_profile_is_applied(client, org):  # noqa: F811
+    db = _db()
+    RO.published_decisions(db, org["id"])
+    old = _age(db, org["id"])
+    assert _apply(client, org).status_code == 200
+    db.expire_all()
+    assert RO.published_decisions(db, org["id"])["changed_at"] > old
+
+
+def test_an_unchanged_record_keeps_its_changed_at_so_overdue_fires(client, org):  # noqa: F811
+    db = _db()
+    key = _key(db, org)
+    RO.record_box_applied(db, key, org["id"], "old")
+    RO.published_decisions(db, org["id"])
+    _age(db, org["id"])
+    pub = RO.published_decisions(db, org["id"])
+    st = RO.box_rule_state(db, key.id, pub)
+    assert st["pending"] is True and st["overdue"] is True

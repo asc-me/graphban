@@ -30,7 +30,8 @@ from sqlalchemy.orm import Session
 
 from app.errors import NotFound, Refused, Validation
 from app.models import (
-    ApiKey, BoxRuleSync, Event, Item, Organization, Project, RuleDecisionPull, RuleToggle, utcnow,
+    ApiKey, BoxRuleSync, Event, Item, Organization, OrgRuleVersion, Project, RuleDecisionPull,
+    RuleToggle, utcnow,
 )
 from app.security import authz
 from app.services import events as events_svc
@@ -204,6 +205,7 @@ def apply_profile(db: Session, user, org_id: str, profile_id: str, *, reason: st
         meta={"profile": profile_id, "profile_version": prof.get("version"),
               "pack_version": rule_pack.CURRENT.version, "reason": why,
               "rules": sorted(plan), "projects_changed": applied})
+    note_published(db, org_id)
     return {"org_id": org_id, "profile": profile_id, "applied": sorted(plan),
             "projects_changed": applied}
 
@@ -326,10 +328,7 @@ def _version(body: dict) -> str:
     return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()[:12]
 
 
-def published_decisions(db: Session, org_id: str) -> dict:
-    """CLOUD: the org's rule decisions as one versioned record — toggles with params, locks,
-    and the profile last applied. The version is a hash of the decisions, so it moves exactly
-    when a decision does."""
+def _decisions(db: Session, org_id: str) -> dict:
     org = db.get(Organization, org_id)
     toggles = [{"rule_id": r.rule_id, "on": r.on, "params": r.params, "locked": bool(r.locked)}
                for r in db.scalars(select(RuleToggle).where(RuleToggle.org_id == org_id)
@@ -339,10 +338,33 @@ def published_decisions(db: Session, org_id: str) -> dict:
                    .order_by(Event.id.desc()).limit(1))
     profile = ({"id": (ev.meta or {}).get("profile"), "version": (ev.meta or {}).get("profile_version")}
                if ev is not None else None)
-    changed = db.scalar(select(func.max(RuleToggle.updated_at)).where(RuleToggle.org_id == org_id))
-    body = {"org_id": org_id, "org_name": org.name if org else "", "toggles": toggles,
+    return {"org_id": org_id, "org_name": org.name if org else "", "toggles": toggles,
             "profile": profile}
-    return {**body, "version": _version(body), "changed_at": changed}
+
+
+def note_published(db: Session, org_id: str) -> OrgRuleVersion:
+    """CLOUD: stamp the org's published version, moving `changed_at` only when the version
+    moved. Called after every org decision write, and on every read as a backstop, so a
+    dropped toggle or an applied profile moves it just as a set does."""
+    version = _version(_decisions(db, org_id))
+    row = db.get(OrgRuleVersion, org_id)
+    if row is None:
+        row = OrgRuleVersion(org_id=org_id, version=version, changed_at=utcnow())
+        db.add(row)
+        db.commit()
+    elif row.version != version:
+        row.version, row.changed_at = version, utcnow()
+        db.commit()
+    return row
+
+
+def published_decisions(db: Session, org_id: str) -> dict:
+    """CLOUD: the org's rule decisions as one versioned record — toggles with params, locks,
+    and the profile last applied. The version is a hash of the decisions, so it moves exactly
+    when a decision does; `changed_at` is when it last moved."""
+    body = _decisions(db, org_id)
+    stamp = note_published(db, org_id)
+    return {**body, "version": _version(body), "changed_at": stamp.changed_at}
 
 
 def record_box_applied(db: Session, key: ApiKey, org_id: str, version: str) -> BoxRuleSync:

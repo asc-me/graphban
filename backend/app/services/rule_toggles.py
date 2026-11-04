@@ -282,6 +282,8 @@ def set_org_toggle(db: Session, org_id: str, rule_id: str, changes: dict, *, act
               "new": _snapshot(row), "projects_changed": changed})
     _switched_off(db, rule_id, [pid for pid in changed if before[pid]["on"]
                                 and not resolve(db, rule_id, pid)["on"]["value"]], user)
+    from app.services import rules_org  # rules_org imports this module → keep lazy
+    rules_org.note_published(db, org_id)  # GRPH-1297: linked boxes measure "overdue" from here
     return {"rule_id": rule_id, "org_id": org_id, **_snapshot(row), "projects_changed": changed}
 
 
