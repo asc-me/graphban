@@ -88,6 +88,9 @@ def _parser() -> argparse.ArgumentParser:
     swamp_setup = swamp_do.add_parser("setup", help="init, source, vault, and the gate key")
     swamp_setup.add_argument("--adapter", default=swamp_mod.DEFAULT_ADAPTER,
                              help=f"the graphban-swamp checkout (default: {swamp_mod.DEFAULT_ADAPTER})")
+    swamp_setup.add_argument("--replace", action="store_true",
+                             help="when the vault secret is already set, mint a new gate "
+                                  "credential and overwrite it")
     swamp_setup.add_argument("--no-init", action="store_true",
                              help="refuse rather than run `swamp repo init` here")
 
@@ -415,7 +418,8 @@ def cmd_swamp(args) -> int:
         print(f"{PROG}: {exc}", file=sys.stderr)
         return EXIT_REFUSED
     lines, code = swamp_mod.setup(client, url, project, repo,
-                                  Path(args.adapter).expanduser(), init=not args.no_init)
+                                  Path(args.adapter).expanduser(), init=not args.no_init,
+                                  replace=args.replace)
     human = [f"{PROG}: {project} — {how}" if how != "named" else f"{PROG}: {project}",
              doctor_mod.render(lines)]
     if code == 0:
