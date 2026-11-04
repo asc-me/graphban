@@ -391,7 +391,84 @@ def _findings(db: Session, ds_id: str, screen: str | None = None) -> list[Design
 def finding_dict(f: DesignFinding) -> dict:
     return {"id": f.id, "screen": f.screen, "kind": f.kind, "text": f.text,
             "canvas_hash": f.canvas_hash, "status": f.status, "reason": f.reason,
-            "winner": f.winner, "correction_id": f.correction_id, "created_by": f.created_by}
+            "winner": f.winner, "correction_id": f.correction_id, "created_by": f.created_by,
+            "canvas_check": f.canvas_check}
+
+
+def _norm_check(kind: str, check: dict | None) -> dict | None:
+    """Validate a finding's canvas check. Only the kinds that carry a correction may have one."""
+    if not check:
+        return None
+    if kind not in ("prompt_defect", "design_edit", "authority_conflict"):
+        raise errors.Validation(f"a {kind} cannot carry a canvas check",
+                                hint="only prompt_defect, design_edit, authority_conflict do")
+    if not isinstance(check, dict):
+        raise errors.Validation("canvas_check must be an object")
+    extra = set(check) - {"must_contain", "must_not_contain", "member"}
+    if extra:
+        raise errors.Validation(f"unknown canvas_check keys: {', '.join(sorted(extra))}",
+                                hint="must_contain, must_not_contain, member")
+    out: dict = {}
+    for key in ("must_contain", "must_not_contain"):
+        vals = check.get(key) or []
+        if not isinstance(vals, list) or not all(isinstance(v, str) and v for v in vals):
+            raise errors.Validation(f"canvas_check.{key} must be a list of non-empty strings")
+        out[key] = vals
+    member = check.get("member") or ""
+    if not isinstance(member, str):
+        raise errors.Validation("canvas_check.member must be a string")
+    out["member"] = member
+    if not out["must_contain"] and not out["must_not_contain"]:
+        raise errors.Validation("canvas_check names no text to look for")
+    return out
+
+
+def _canvas_haystack(data: bytes, member: str) -> tuple[bytes | None, str]:
+    """The bytes the check reads: the whole canvas, or the named member of a zip canvas."""
+    if not member:
+        return data, ""
+    import io
+    import zipfile
+
+    if not zipfile.is_zipfile(io.BytesIO(data)):
+        return None, f"the canvas is not a zip, so it has no member {member!r}"
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        try:
+            return z.read(member), ""
+        except KeyError:
+            return None, f"the canvas zip has no member {member!r}"
+
+
+def run_canvas_check(check: dict, data: bytes) -> list[str]:
+    """Failures of `check` against canvas bytes; empty means it passes."""
+    hay, err = _canvas_haystack(data, check.get("member") or "")
+    if hay is None:
+        return [err]
+    fails = [f"missing: {t!r}" for t in check.get("must_contain") or []
+             if t.encode() not in hay]
+    fails += [f"present but forbidden: {t!r}" for t in check.get("must_not_contain") or []
+              if t.encode() in hay]
+    return fails
+
+
+def _accepted_canvas(db: Session, ds: DesignSet, screen: str):
+    """Latest canvas drawn from the screen's accepted prompt, or None."""
+    row = _screen_row(ds, screen)
+    if not row.prompt_hash:
+        return None
+    return db.scalars(select(DesignCanvas).where(
+        DesignCanvas.design_set_id == ds.id, DesignCanvas.screen == screen,
+        DesignCanvas.prompt_hash == row.prompt_hash).order_by(DesignCanvas.id.desc())).first()
+
+
+def _check_results(db: Session, ds: DesignSet, screen: str, data: bytes) -> list[dict]:
+    out = []
+    for f in _findings(db, ds.id):
+        if f.screen != screen or f.status != "open" or not f.canvas_check:
+            continue
+        fails = run_canvas_check(f.canvas_check, data)
+        out.append({"finding_id": f.id, "passed": not fails, "failures": fails})
+    return out
 
 
 def _chunk_text(doc: Document) -> str:
@@ -527,8 +604,9 @@ def put_canvas(db: Session, project_id: str, set_id: str, screen: str, data: byt
     bound = bool(prompt_hash) and prompt_hash == row.prompt_hash
     if bound:
         row.canvas_hash = digest
+    checks = _check_results(db, ds, screen, data)
     db.commit()
-    return {"design_set_id": ds.id, "screen": screen, "content_hash": digest,
+    return {"checks": checks, "design_set_id": ds.id, "screen": screen, "content_hash": digest,
             "document_id": doc["id"], "prompt_hash": prompt_hash, "bound": bound,
             "orphan": not bound}
 
@@ -567,7 +645,8 @@ def _add_correction(db: Session, ds: DesignSet, screen: str, text: str, actor: s
 
 
 def file_finding(db: Session, project_id: str, set_id: str, screen: str, kind: str, text: str,
-                 canvas_hash: str = "", winner: str = "", actor: str = "") -> dict:
+                 canvas_hash: str = "", winner: str = "", actor: str = "",
+                 canvas_check: dict | None = None) -> dict:
     ds = _get(db, project_id, set_id)
     _writable(ds)
     row = _screen_row(ds, screen)
@@ -589,6 +668,7 @@ def file_finding(db: Session, project_id: str, set_id: str, screen: str, kind: s
             raise errors.Validation(
                 f"canvas_hash {canvas_hash!r} is not a canvas stored for {screen!r}",
                 hint="name the hash of the canvas that was reviewed")
+    check = _norm_check(kind, canvas_check)
     if kind == "authority_conflict" and winner not in WINNERS:
         raise errors.Validation(f"winner must be one of {', '.join(WINNERS)}",
                                 hint="shipped decision, then the PRD, then the design")
@@ -608,7 +688,8 @@ def file_finding(db: Session, project_id: str, set_id: str, screen: str, kind: s
         return finding_dict(dup) | {"duplicate": True}
     f = DesignFinding(id=f"FND-{uuid.uuid4().hex[:10]}", design_set_id=ds.id, screen=screen,
                       kind=kind, text=text, text_hash=digest, canvas_hash=canvas_hash,
-                      winner=winner if kind == "authority_conflict" else "", created_by=actor)
+                      winner=winner if kind == "authority_conflict" else "", created_by=actor,
+                      canvas_check=check)
     if kind in ("prompt_defect", "design_edit", "authority_conflict"):
         ctext = text if kind != "authority_conflict" else (
             f"Authority conflict ({f.winner} governs): draw the absence of - {text}")
@@ -629,7 +710,9 @@ def file_finding(db: Session, project_id: str, set_id: str, screen: str, kind: s
 
 
 def resolve_finding(db: Session, project_id: str, finding_id: str, status: str, reason: str = "",
-                    actor: str = "") -> dict:
+                    actor: str = "", backend=None) -> dict:
+    from app.services import documents as documents_svc
+
     f = db.get(DesignFinding, finding_id)
     ds = db.get(DesignSet, f.design_set_id) if f is not None else None
     if f is None or ds is None or ds.project_id != project_id:
@@ -649,6 +732,21 @@ def resolve_finding(db: Session, project_id: str, finding_id: str, status: str, 
                 "applied needs its correction in the latest compiled prompt for the screen",
                 hint="store the correction, then compile_prompts for this screen"
                      if corr else "a spec_gap has no correction; withdraw it or request_rebaseline")
+        if f.canvas_check:
+            cv = _accepted_canvas(db, ds, f.screen)
+            if cv is None:
+                raise errors.Validation(
+                    "applied needs a canvas for the accepted prompt, and this finding's check "
+                    "reads it",
+                    hint="put_canvas drawn from the screen's accepted prompt_hash")
+            data, _ = documents_svc.read_blob(db, project_id, cv.document_id,
+                                                backend=backend)
+            fails = run_canvas_check(f.canvas_check, data)
+            if fails:
+                raise errors.Validation(
+                    "applied needs the latest canvas to pass this finding's check: "
+                    + "; ".join(fails),
+                    hint="redraw the canvas, then put_canvas again")
     elif corr is not None:
         corr.status = "withdrawn"
     f.status, f.reason, f.resolved_by = status, (reason or "").strip(), actor

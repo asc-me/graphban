@@ -1461,7 +1461,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "put_canvas",
         "description": (
             "Store a design export (base64). Counts only against the accepted prompt_hash; "
-            "else an orphan."
+            "else an orphan. Returns `checks`: pass or fail per open finding on the screen "
+            "that carries a canvas_check."
         ),
         "inputSchema": {
             "type": "object",
@@ -1479,7 +1480,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "file_finding",
         "description": (
             "File a canvas finding. prompt_defect, design_edit, authority_conflict add a "
-            "correction; spec_gap cites a PRD heading and blocks accept_design only."
+            "correction; spec_gap cites a PRD heading and blocks accept_design only. The first "
+            "three may carry canvas_check {must_contain, must_not_contain, member?}: resolve "
+            "applied stays refused until the latest canvas for the accepted prompt passes it."
         ),
         "inputSchema": {
             "type": "object",
@@ -1491,6 +1494,15 @@ TOOLS: list[dict[str, Any]] = [
                 "text": {"type": "string"},
                 "canvas_hash": {"type": "string"},
                 "winner": {"type": "string", "enum": ["shipped_decision", "prd", "design"]},
+                "canvas_check": {
+                    "type": "object",
+                    "properties": {
+                        "must_contain": {"type": "array", "items": {"type": "string"}},
+                        "must_not_contain": {"type": "array", "items": {"type": "string"}},
+                        "member": {"type": "string",
+                                   "description": "Zip member to read; empty reads the bytes."},
+                    },
+                },
             },
             "required": ["design_set_id", "screen", "kind", "text"],
         },
@@ -4145,7 +4157,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             return design_sets_svc.file_finding(
                 db, pid, sid, str(args["screen"]), str(args["kind"]), str(args["text"]),
                 canvas_hash=str(args.get("canvas_hash") or ""),
-                winner=str(args.get("winner") or ""), actor=actor)
+                winner=str(args.get("winner") or ""), actor=actor,
+                canvas_check=args.get("canvas_check"))
         return design_sets_svc.resolve_finding(
             db, pid, str(args["finding_id"]), str(args["status"]),
             str(args.get("reason") or ""), actor=actor)
