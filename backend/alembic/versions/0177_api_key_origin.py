@@ -20,8 +20,11 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     with op.batch_alter_table("api_keys") as batch:
         batch.add_column(sa.Column("origin", sa.String(), nullable=True))
+    backfill(op.get_bind())
 
-    conn = op.get_bind()
+
+def backfill(conn) -> None:
+    """Classify existing rows by shape. Dialect-free: scopes is read in Python."""
     keys = sa.table(
         "api_keys",
         sa.column("id", sa.String), sa.column("name", sa.String),

@@ -119,6 +119,11 @@ def rotate_key(key_id: str, body: ApiKeyRotate, db: Session = Depends(get_db),
     if old.origin in _RERUN:
         raise Refused(409, f"this key was minted by `{_RERUN[old.origin]}`; rerun that command",
                       rule_id=ROTATE_RULE)
+    if old.project_id is not None:
+        # Same guards as create: a user who lost access must not rotate into a dead key.
+        authz.require_readable(db, user.id, old.project_id)
+        if "gate" in (old.scopes or []):
+            authz.require_writable(db, user.id, old.project_id)
     try:
         row, plaintext = generate_api_key(
             db, user.id, old.name, list(old.scopes or []), old.project_id, body.expires_in_days,

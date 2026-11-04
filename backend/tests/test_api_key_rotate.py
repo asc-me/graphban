@@ -94,3 +94,24 @@ def test_rotate_failure_leaves_nothing_behind(client, auth, monkeypatch):
         assert len(rows) == 1 and rows[0].revoked is False
     finally:
         db.close()
+
+
+def test_rotate_refused_once_project_access_is_lost(client, auth):
+    from app.models import Membership
+
+    pid = client.post("/api/projects", json={"name": "RotLost"}, headers=auth).json()["id"]
+    k = _mint(client, auth, project_id=pid)
+    db = SessionLocal()
+    try:
+        db.query(Membership).filter(Membership.project_id == pid).delete()
+        db.commit()
+    finally:
+        db.close()
+    r = client.post(f"/api/api-keys/{k['id']}/rotate", json={}, headers=auth)
+    assert r.status_code == 404, r.text
+    db = SessionLocal()
+    try:
+        assert db.get(ApiKey, k["id"]).revoked is False
+        assert db.query(ApiKey).filter(ApiKey.name == "k").count() == 1
+    finally:
+        db.close()

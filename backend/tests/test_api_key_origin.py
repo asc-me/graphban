@@ -3,8 +3,6 @@ import importlib.util
 import pathlib
 
 import sqlalchemy as sa
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 
 
 def _proj(client, auth, name="OriginProj"):
@@ -51,26 +49,31 @@ def _migration():
     return mod
 
 
-def test_backfill_classifies_by_shape():
-    eng = sa.create_engine("sqlite://")
-    md = sa.MetaData()
-    keys = sa.Table(
-        "api_keys", md, sa.Column("id", sa.String, primary_key=True), sa.Column("name", sa.String),
-        sa.Column("scopes", sa.JSON), sa.Column("project_id", sa.String),
-        sa.Column("fleet_wave", sa.String))
-    md.create_all(eng)
-    with eng.begin() as conn:
-        conn.execute(keys.insert(), [
-            dict(id="wave", name="fleet worker", scopes=["read", "write"], project_id="p1", fleet_wave="w1"),
-            dict(id="gate", name="p1 swamp gate", scopes=["read", "write", "gate"], project_id="p1", fleet_wave=None),
-            dict(id="deleg", name="p1 delegation", scopes=["read", "write"], project_id="p1", fleet_wave=None),
-            dict(id="plain", name="my key", scopes=["read", "write"], project_id="p1", fleet_wave=None),
-            dict(id="synclike", name="p1 delegation", scopes=["read", "sync"], project_id="p1", fleet_wave=None),
-        ])
-        ctx = MigrationContext.configure(conn)
-        mod = _migration()
-        with Operations.context(ctx):
-            mod.upgrade()
-        got = dict(conn.execute(sa.text("select id, origin from api_keys")).fetchall())
-    assert got == {"wave": "fleet", "gate": "gban_swamp_setup", "deleg": "gban_setup",
-                   "plain": None, "synclike": None}
+def test_backfill_classifies_by_shape(client, auth):
+    """Runs on the suite's engine, so on Postgres it reads a real JSON column."""
+    from app.db import SessionLocal, engine
+    from app.models import ApiKey, User
+
+    pid = _proj(client, auth, "BackfillP")
+    db = SessionLocal()
+    try:
+        uid = db.query(User).first().id
+        shapes = {
+            "wave": ("fleet worker", ["read", "write"], "w1"),
+            "gate": (f"{pid} swamp gate", ["read", "write", "gate"], None),
+            "deleg": (f"{pid} delegation", ["read", "write"], None),
+            "plain": ("my key", ["read", "write"], None),
+            "synclike": (f"{pid} delegation", ["read", "sync"], None),
+        }
+        for kid, (name, scopes, wave) in shapes.items():
+            db.add(ApiKey(id=f"bf-{kid}", user_id=uid, name=name, prefix=kid, hashed_key=f"h-{kid}",
+                          scopes=scopes, project_id=pid, fleet_wave=wave, origin=None))
+        db.commit()
+    finally:
+        db.close()
+    with engine.begin() as conn:
+        _migration().backfill(conn)
+        got = dict(conn.execute(
+            sa.text("select id, origin from api_keys where id like 'bf-%'")).fetchall())
+    assert got == {"bf-wave": "fleet", "bf-gate": "gban_swamp_setup", "bf-deleg": "gban_setup",
+                   "bf-plain": None, "bf-synclike": None}
