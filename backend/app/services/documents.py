@@ -212,8 +212,15 @@ def put_document(
     if not (body or "").strip():
         raise errors.Validation("body is empty", hint="a preamble needs text")
     prd = prd_svc.get_prd(db, prd_id)
-    if prd is None or prd.project_id != project_id:
-        raise errors.NotFound(f"prd not found in this project: {prd_id}")
+    if prd is None:
+        raise errors.NotFound(f"prd not found: {prd_id}")
+    if prd.project_id != project_id:
+        # A cite may cross projects inside one org (GRPH-1307): the visual system has one owner.
+        from app.models import Project
+
+        mine, theirs = db.get(Project, project_id), db.get(Project, prd.project_id)
+        if mine is None or theirs is None or mine.org_id != theirs.org_id:
+            raise errors.NotFound(f"prd not found in this project: {prd_id}")
     base = prd_svc.baseline_of(db, prd.id)
     if base is None:
         # A precondition on the cited PRD, not a policy refusal: a Validation, so it stays

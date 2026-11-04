@@ -242,3 +242,36 @@ def test_mcp_round_trip(client, auth, db, pid):
                                  "tier": "UNBACKED", "note": "no route yet"}, 4)
     assert got["screens"][0]["tier_confirmed"] is True
     assert call("get_design_set", {"design_set_id": opened["id"]}, 5)["status"] == "open"
+
+
+def _other_project(db, org_id=None):
+    db.add(Project(id="console", name="Console", tag="GBC", org_id=org_id))
+    db.commit()
+    return "console"
+
+
+def test_preamble_cites_a_baselined_prd_in_another_project_and_follows_its_baseline(db, pid):
+    other = _other_project(db)
+    base = _prd(db, pid, title="Visual system")
+    pre = ds_svc.put_preamble(db, other, "Be calm.", base.id, created_by=KEY)
+    assert pre["cites_prd_id"] == base.id
+    assert pre["prd_hash"] == content_hash(prd_svc.baseline_of(db, base.id).body)
+    out = ds_svc.open_design(db, other, _prd(db, other).id)
+    _rebaseline(db, base, BODY.replace("teal", "amber"))
+    got = ds_svc.get_design_set(db, other, out["id"])
+    assert got["status"] == "stale" and got["stale_reason"] == "prd_baseline"
+
+
+def test_cross_project_cite_still_needs_a_baseline_and_the_same_org(db, pid):
+    other = _other_project(db)
+    with pytest.raises(errors.Validation):
+        ds_svc.put_preamble(db, other, "x", _prd(db, pid, baselined=False, title="d").id,
+                            created_by=KEY)
+    from app.models import Organization
+
+    db.add(Organization(id="org-x", name="X"))
+    db.commit()
+    db.get(Project, pid).org_id = "org-x"
+    db.commit()
+    with pytest.raises(errors.NotFound):
+        ds_svc.put_preamble(db, other, "x", _prd(db, pid, title="e").id, created_by=KEY)
