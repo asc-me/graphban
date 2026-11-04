@@ -246,3 +246,16 @@ def test_contract_route(client):
     assert r.json() == json.loads(CONTRACT_FILE.read_text())
     assert r.json()["api_version"] == P.PRIMITIVE_API
     assert client.get("/api/rules/contract").status_code == 401
+
+
+def test_contract_route_answers_an_agent_api_key(client, auth):
+    """Pack CI holds a key, not a login: the route must answer `X-API-Key` (GRPH-1303 bounce)."""
+    key = client.post("/api/api-keys", json={"name": "pack-ci"}, headers=auth).json()
+    for headers in ({"X-API-Key": key["plaintext"]},
+                    {"Authorization": f"Bearer {key['plaintext']}"}):
+        r = client.get("/api/rules/contract", headers=headers)
+        assert r.status_code == 200, r.text
+        assert r.json() == json.loads(CONTRACT_FILE.read_text())
+        assert r.json()["api_version"] == P.PRIMITIVE_API
+    assert client.get("/api/rules/contract",
+                      headers={"X-API-Key": "not-a-key"}).status_code == 401

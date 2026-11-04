@@ -15,7 +15,7 @@ from app.schemas import (ObservationBackfillOut, ObservationsOut, OrgRuleToggleO
                          RulesFlowOut, RulesOut, RuleToggleOut, RuleTogglesOut,
                          RuleToggleWrite, UnmappedRefusalsOut)
 from app.security import authz
-from app.security.deps import get_current_user
+from app.security.deps import get_current_user, get_user_or_agent_key
 from app.services import events as events_svc
 from app.services import observations as observations_svc
 from app.services import quotas
@@ -38,9 +38,13 @@ def list_rules(project_id: str = "core", db: Session = Depends(get_db),
 
 
 @router.get("/rules/contract")
-def rule_primitive_contract(user: User = Depends(get_current_user)):
+def rule_primitive_contract(principal=Depends(get_user_or_agent_key)):
     """The rule primitive contract this server runs (`rule_pack.contract()`), same JSON as
-    `docs/rule-primitive-contract.json`."""
+    `docs/rule-primitive-contract.json`.
+
+    Either credential: pack CI, the consumer, holds an agent key, not a login. The body is
+    server-wide static data, the same bytes every release tag already publishes in the repo,
+    so no project scope is checked and nothing is withheld from a key that a person sees."""
     return rule_pack.contract()
 
 
