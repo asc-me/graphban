@@ -2101,6 +2101,9 @@ class ApiKey(Base):
     # Tags keys the Fleet view minted for one wave, so "End wave" revokes exactly those and
     # never a key a human made by hand (PRD-17 D-g). NULL = hand-minted, never swept.
     fleet_wave: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # Which surface minted this key: web, gban_setup, gban_swamp_setup or fleet. NULL =
+    # unknown (an older gban sends nothing) — NOT `web`. Drives the Keys tab's row actions.
+    origin: Mapped[str | None] = mapped_column(String, nullable=True)
     # The POSTURE this credential was minted for (PRD-17). `single` means all-in-one was
     # chosen deliberately; NULL means unspecified — a legacy key, or one a fleet shares.
     #

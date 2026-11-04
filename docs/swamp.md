@@ -80,7 +80,9 @@ It resolves the project from the directory, runs `repo init` / `extension source
 `vault create` only where they are missing, mints the **gate** credential and pipes it to
 `swamp vault put` on **stdin**, then asks the key what scopes it actually got. Re-running
 changes nothing: an existing `graphban-api-key` is left alone rather than replaced, because
-overwriting it strands a credential that is still live on the server.
+overwriting it strands a credential that is still live on the server. To rotate it on purpose, run
+`gban swamp setup --replace`: it mints a new gate credential and overwrites the vault entry
+(then revoke the old one in Settings → API keys).
 
 It does **not** install Swamp — step 4 pipes a remote script into a shell, which is for a
 person to read and run — and it never writes the gate key into an MCP config. That last part
