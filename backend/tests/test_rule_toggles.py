@@ -387,3 +387,74 @@ def test_no_library_says_so(client, monkeypatch):
     auth = _login(client, "alex@ascme-labs.com")
     r = client.get("/api/rules/toggles", params={"project_id": "core"}, headers=auth)
     assert r.json() == {"library_loaded": False, "toggles": []}
+
+
+# ---- GRPH-1325: org-level read and the dry-run preview ------------------------------------
+
+def _org_rows():
+    from app.models import RuleToggle
+
+    db = _db()
+    try:
+        return db.query(RuleToggle).filter(RuleToggle.org_id.isnot(None)).count()
+    finally:
+        db.close()
+
+
+def _get_org(client, org):
+    return client.get(f"/api/orgs/{org['id']}/rule-toggles", headers=org["owner"])
+
+
+def test_org_read_inherited_adopted_and_locked(client, org):
+    r = _get_org(client, org)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["library_loaded"] is True
+    rule = body["rules"][0]
+    assert rule["on"] == {"value": False, "source": "platform default"} and rule["locked"] is False
+    assert {p["project_id"] for p in rule["projects"]} == {org["a"], org["b"]}
+
+    _put_org(client, org, {"on": True, "reason": "adopt"})
+    _put_project(client, org, org["a"], {"on": False, "reason": "ours"})
+    rule = _get_org(client, org).json()["rules"][0]
+    assert rule["on"] == {"value": True, "source": "org"}
+    by = {p["project_id"]: p for p in rule["projects"]}
+    assert by[org["a"]]["on"] == {"value": False, "source": "project"}
+    assert by[org["b"]]["on"] == {"value": True, "source": "org"}
+
+    _put_org(client, org, {"locked": True, "reason": "regulated"})
+    rule = _get_org(client, org).json()["rules"][0]
+    assert rule["locked"] is True
+    assert all(p["on"] == {"value": True, "source": "org"} for p in rule["projects"])
+
+
+def test_org_read_with_no_projects_and_plan_gate(client, org):
+    db = _db()
+    try:  # an org with no projects still reads: one call, not one per project
+        empty = T.org_view(db, "org-without-projects")
+    finally:
+        db.close()
+    assert empty["rules"][0]["projects"] == [] and empty["library_loaded"] is True
+    _set_plan(org["id"], "free")
+    assert _get_org(client, org).status_code == 402
+
+
+def test_preview_writes_nothing(client, org):
+    _put_project(client, org, org["a"], {"on": True, "reason": "ours"})
+    rows, events = _org_rows(), len(_toggle_events())
+    r = client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}", params={"dry_run": "true"},
+                   json={"on": True, "locked": True, "reason": "preview"}, headers=org["owner"])
+    assert r.status_code == 200, r.text
+    assert _org_rows() == rows and len(_toggle_events()) == events
+    assert _get_org(client, org).json()["rules"][0]["locked"] is False
+
+
+def test_preview_agrees_with_the_write(client, org):
+    _put_project(client, org, org["a"], {"on": False, "reason": "ours"})
+    body = {"on": True, "locked": True, "reason": "regulated"}
+    prev = client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}", params={"dry_run": "true"},
+                      json=body, headers=org["owner"]).json()
+    real = _put_org(client, org, body).json()
+    assert prev["projects_changed"] and sorted(prev["projects_changed"]) == sorted(
+        real["projects_changed"])
+    assert prev == real
