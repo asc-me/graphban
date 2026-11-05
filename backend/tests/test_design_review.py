@@ -383,6 +383,62 @@ def test_mcp_review_loop_round_trip(client, auth, db, pid, world, tmp_path, monk
     assert (out["status"], out["accepted_by"]) == ("accepted", "dana")
 
 
+def test_canvas_check_gates_applied(db, pid, world, be):
+    """GRPH-1305: `applied` reads the canvas when the finding carries a check."""
+    import io
+    import zipfile
+
+    _, sid = world
+    h, canvas = _ready(db, pid, sid, be)
+    check = {"must_contain": ["Rule 7"], "must_not_contain": ["TODO"], "member": "rules.html"}
+    f = ds_svc.file_finding(db, pid, sid, "home", "design_edit", "Rule 7 is half drawn", canvas,
+                            actor="agent:GRPH-A3", canvas_check=check)
+    assert f["canvas_check"]["member"] == "rules.html"
+    h2 = f["recompiled"]["prompt_hash"]
+    ds_svc.accept_prompt(db, pid, sid, "home", "agent:GRPH-A2", "dana")
+
+    def zipped(body: bytes) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("rules.html", body)
+        return buf.getvalue()
+
+    bad = ds_svc.put_canvas(db, pid, sid, "home", zipped(b"Rule 7 TODO"), "application/zip", h2,
+                            backend=be)
+    assert bad["checks"] == [{"finding_id": f["id"], "passed": False,
+                              "failures": ["present but forbidden: 'TODO'"],
+                              "counts": True}]
+    with pytest.raises(errors.Validation, match="pass this finding's check"):
+        ds_svc.resolve_finding(db, pid, f["id"], "applied", backend=be)
+    good = ds_svc.put_canvas(db, pid, sid, "home", zipped(b"Rule 7 done"), "application/zip", h2,
+                             backend=be)
+    assert good["checks"][0]["passed"]
+    # An orphan upload (not the accepted prompt) reports its check but does not count.
+    orphan = ds_svc.put_canvas(db, pid, sid, "home", zipped(b"Rule 7 orphan"),
+                               "application/zip", "not-the-accepted-hash", backend=be)
+    assert orphan["orphan"] and orphan["checks"][0] == {
+        "finding_id": f["id"], "passed": True, "failures": [], "counts": False}
+    # Re-uploading the earlier failing bytes creates no new row but rebinds the screen to
+    # them: the gate must read the bound canvas, not the newest row.
+    again = ds_svc.put_canvas(db, pid, sid, "home", zipped(b"Rule 7 TODO"), "application/zip",
+                              h2, backend=be)
+    assert again["content_hash"] == bad["content_hash"] and not again["checks"][0]["passed"]
+    with pytest.raises(errors.Validation, match="pass this finding's check"):
+        ds_svc.resolve_finding(db, pid, f["id"], "applied", backend=be)
+    # And the reverse: re-uploading the passing bytes lets it through.
+    ds_svc.put_canvas(db, pid, sid, "home", zipped(b"Rule 7 done"), "application/zip", h2,
+                      backend=be)
+    assert ds_svc.resolve_finding(db, pid, f["id"], "applied", backend=be)["status"] == "applied"
+
+
+def test_canvas_check_only_on_correction_kinds(db, pid, world, be):
+    _, sid = world
+    _, canvas = _ready(db, pid, sid, be)
+    with pytest.raises(errors.Validation, match="cannot carry"):
+        ds_svc.file_finding(db, pid, sid, "home", "spec_gap", "Goals", canvas,
+                            actor="agent:GRPH-A3", canvas_check={"must_contain": ["x"]})
+
+
 def _zip(files: dict) -> bytes:
     import io
     import zipfile

@@ -3829,6 +3829,8 @@ class DesignFinding(Base):
     status: Mapped[str] = mapped_column(String, default="open", server_default="open")
     reason: Mapped[str] = mapped_column(Text, default="", server_default="")
     correction_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # {must_contain: [..], must_not_contain: [..], member: ""} the canvas must pass (GRPH-1305)
+    canvas_check: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_by: Mapped[str] = mapped_column(String, default="", server_default="")
     resolved_by: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
