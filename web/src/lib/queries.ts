@@ -48,6 +48,8 @@ export const keys = {
   fleetTierMap: (projectId?: string) => ["fleet-tier-map", projectId] as const,
   updateCheck: ["update-check"] as const,
   autoUpdate: ["auto-update"] as const,
+  rulePack: ["rule-pack"] as const,
+  rulePackAvailable: ["rule-pack-available"] as const,
   /** No project id: log export is one config for the whole box (PRD-47 S15). */
   logExport: ["log-export"] as const,
   orgGitops: (orgId: string) => ["org-gitops", orgId] as const,
@@ -776,6 +778,16 @@ export function useUpdateCheck() {
     staleTime: 0,
     retry: false,
   });
+}
+
+/** The installed pack. Server-wide, so no project id. */
+export function useRulePack() {
+  return useQuery({ queryKey: keys.rulePack, queryFn: () => api.rulePackStatus(), staleTime: 0, retry: false });
+}
+
+/** Newest pack on the feed. A cached `current` after the feed goes down is the lie to avoid. */
+export function useRulePackAvailable() {
+  return useQuery({ queryKey: keys.rulePackAvailable, queryFn: () => api.rulePackAvailable(), staleTime: 0, retry: false });
 }
 
 /** Deployment-wide (no project id). `staleTime: 0`: a cached "last auto-update" is stale news. */
