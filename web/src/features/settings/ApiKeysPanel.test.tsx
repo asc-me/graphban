@@ -472,3 +472,113 @@ describe("docs overlay", () => {
   });
 });
 
+
+describe("design-audit gaps (GRPH-1313)", () => {
+  const dialog = () => screen.getByRole("dialog");
+
+  it("rotate dialog lists where the old value lives", async () => {
+    keyList = [
+      key({ id: "ag", name: "agent-k", origin: "web" }),
+      key({ id: "gt", name: "gate-k", origin: "web", scopes: ["read", "write", "gate"] }),
+    ];
+    view();
+    const user = await keysTab();
+    const rotates = await screen.findAllByRole("button", { name: "Rotate" });
+    await user.click(rotates[0]);
+    const note = within(dialog()).getByText(/Update/).parentElement!;
+    expect(note).toHaveTextContent("~/.claude.json");
+    expect(note).toHaveTextContent("~/.codex/config.toml");
+    await user.click(within(dialog()).getByRole("button", { name: "Cancel" }));
+    await user.click((await screen.findAllByRole("button", { name: "Rotate" }))[1]);
+    expect(within(dialog()).getByText(/Update/).parentElement!).toHaveTextContent("GRAPHBAN_GATE_KEY");
+  });
+
+  it("rotate dialog shows Now and the New expiry preview", async () => {
+    keyList = [key({ id: "ne", name: "no-exp", origin: "web" })];
+    view();
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "Rotate" }));
+    expect(dialog()).toHaveTextContent(/Now\s*No expiry/);
+    expect(dialog()).toHaveTextContent("New expiry: none");
+    await user.selectOptions(within(dialog()).getByRole("combobox"), "30");
+    const d = new Date(Date.now() + 30 * 86400000).toLocaleDateString();
+    expect(dialog()).toHaveTextContent(`New expiry: ${d}`);
+  });
+
+  it("shows the current expiry date in Now", async () => {
+    keyList = [key({ id: "ex", origin: "web", expires_at: "2099-01-01T00:00:00Z" })];
+    view();
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "Rotate" }));
+    expect(dialog()).toHaveTextContent(`Now ${new Date("2099-01-01T00:00:00Z").toLocaleDateString()}`);
+  });
+
+  it("destructive confirms are danger; rotate is not", async () => {
+    keyList = [
+      key({ id: "r1", name: "plain", origin: "web" }),
+      key({ id: "r2", name: "setup", origin: "gban_setup" }),
+      key({ id: "r3", name: "link", scopes: ["sync"], origin: "web" }),
+    ];
+    view();
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "Rotate" }));
+    expect(within(dialog()).getByRole("button", { name: "Rotate key" }).className).not.toContain("text-st-blocked");
+    await user.click(within(dialog()).getByRole("button", { name: "Cancel" }));
+    for (const [row, confirm] of [["Revoke and rerun…", "Revoke key"], ["Unlink and relink…", "Unlink and relink"]]) {
+      await user.click(screen.getByRole("button", { name: row }));
+      expect(within(dialog()).getByRole("button", { name: confirm }).className).toContain("text-st-blocked");
+      await user.click(within(dialog()).getByRole("button", { name: "Cancel" }));
+    }
+    await user.click(screen.getAllByRole("button", { name: "Revoke" })[0]);
+    expect(within(dialog()).getByRole("button", { name: "Revoke key" }).className).toContain("text-st-blocked");
+  });
+
+  it("row actions are bordered buttons; no-expiry rows say so", async () => {
+    keyList = [key({ id: "b1", origin: "web" })];
+    view();
+    await keysTab();
+    for (const n of ["Rotate", "Revoke"]) {
+      expect((await screen.findByRole("button", { name: n })).className).toContain("border-control");
+    }
+    expect(screen.getByText(/no expiry/i)).toBeInTheDocument();
+  });
+
+  it("orders newer live, older live, then revoked", async () => {
+    keyList = [
+      key({ id: "old", name: "old-live", created_at: "2026-01-01T00:00:00Z" }),
+      key({ id: "rev", name: "revoked-one", revoked: true, created_at: "2026-09-01T00:00:00Z" }),
+      key({ id: "new", name: "new-live", created_at: "2026-06-01T00:00:00Z" }),
+    ];
+    view();
+    await keysTab();
+    await screen.findByText("new-live");
+    const names = ["new-live", "old-live", "revoked-one"].map((n) => screen.getByText(n));
+    const order = [...document.querySelectorAll("span")].filter((e) => names.includes(e));
+    expect(order.map((e) => e.textContent)).toEqual(["new-live", "old-live", "revoked-one"]);
+  });
+
+  it("each mint form has a labelled Key expiry select", async () => {
+    view();
+    const user = userEvent.setup();
+    for (const n of ["Mint agent key", "Mint link key", "Mint gate key"]) {
+      await user.click(await screen.findByRole("button", { name: n, expanded: false }));
+      expect(screen.getByLabelText("Key expiry")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: n, expanded: true }));
+    }
+  });
+
+  it("rotated command wraps and the close button after a mint is the default variant", async () => {
+    keyList = [key({ id: "rc", origin: "web" })];
+    view();
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "Rotate" }));
+    await user.click(within(dialog()).getByRole("button", { name: "Rotate key" }));
+    const pre = await within(dialog()).findByText(/claude mcp add/);
+    expect(pre.className).not.toMatch(/truncate|text-ellipsis/);
+    expect(pre.className).toContain("break-all");
+    await user.click(within(dialog()).getByRole("button", { name: /close/ }));
+    await user.click(screen.getByRole("tab", { name: "Set up" }));
+    await mint("Agent key", "x");
+    expect((await screen.findByRole("button", { name: "I’ve copied it — close" })).className).toContain("bg-accent");
+  });
+});

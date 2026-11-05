@@ -86,6 +86,11 @@ const REVOKE_WHAT: Record<KeyKind, string> = {
   sync: "This unlinks the deployment that holds it. It stops pushing its code graph.",
   gate: "CI holding this key can no longer attest, so items it would have passed stay short of done.",
 };
+const ROTATE_WHERE: Record<KeyKind, string> = {
+  agent: "~/.claude.json · ~/.grok/config.toml · ~/.cursor/mcp.json · ~/.codex/config.toml",
+  sync: "",
+  gate: "the CI secret GRAPHBAN_GATE_KEY",
+};
 const ROTATE_WHAT: Record<KeyKind, string> = {
   agent: "The old key stops working immediately. You’ll need to update the MCP config of every client using it.",
   sync: "The old key stops working immediately. You’ll need to re-link the deployment that holds it.",
@@ -240,7 +245,7 @@ function MintedBanner({ created, onClose }: { created: Created; onClose: () => v
         </>
       )}
       <div className="mt-3">
-        <Button size="sm" variant="ghost" onClick={onClose}>I’ve copied it — close</Button>
+        <Button size="sm" onClick={onClose}>I’ve copied it — close</Button>
       </div>
     </div>
   );
@@ -398,10 +403,13 @@ function MintForm({ kind, onMinted, onCancel }: {
       )}
 
       <div className="mb-3">
+        <label className="mb-1 block font-mono text-[10px] uppercase tracking-wide text-faint" htmlFor={`expiry-${kind}`}>
+          Key expiry
+        </label>
         <select
+          id={`expiry-${kind}`}
           value={expiry ?? ""} onChange={(e) => setExpiry(e.target.value ? Number(e.target.value) : null)}
           className="rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
-          aria-label="Key expiry"
         >
           <option value="">No expiry</option>
           <option value="30">Expires in 30 days</option>
@@ -588,6 +596,8 @@ function KeyDialog({ dlg, projectName, onClose, onRelink }: {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [expiry, setExpiry] = React.useState<number | null>(k.expires_at ? 90 : null);
+  const dateLabel = (d: Date) => d.toLocaleDateString();
+  const newExpiry = expiry === null ? "none" : dateLabel(new Date(Date.now() + expiry * 86400000));
   const [rotated, setRotated] = React.useState<{ plaintext: string; prefix: string } | null>(null);
   const [revokedDone, setRevokedDone] = React.useState(false);
   const { copied, copy } = useCopied();
@@ -632,7 +642,7 @@ function KeyDialog({ dlg, projectName, onClose, onRelink }: {
             <GateCiTable plaintext={rotated.plaintext} prefix={rotated.prefix} />
           ) : (
             <div className="mt-3 flex items-start gap-2">
-              <pre className="flex-1 overflow-x-auto rounded-md border border-line-2 bg-surface-3 p-2 font-mono text-small text-fg-2">{mcp}</pre>
+              <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded-md border border-line-2 bg-surface-3 p-2 font-mono text-small text-fg-2">{mcp}</pre>
               <CopyButton label="Copy claude mcp add" text={mcp} id="mcp" copied={copied} copy={copy} />
             </div>
           )}
@@ -648,19 +658,27 @@ function KeyDialog({ dlg, projectName, onClose, onRelink }: {
       <Modal title={`Rotate “${k.name}”`}>
         {summary}
         <p className="mb-2 text-[12px] text-muted">Mint a new secret and revoke this one.</p>
+        <p className="mb-1 text-[12px] text-muted">
+          Now <span className="text-fg-2">{k.expires_at ? dateLabel(new Date(k.expires_at)) : "No expiry"}</span>
+        </p>
         <label className="mb-1 block font-mono text-[10px] uppercase tracking-wide text-faint" htmlFor="rotate-expiry">New key expiry</label>
-        <select
-          id="rotate-expiry" value={expiry ?? ""} onChange={(e) => setExpiry(e.target.value ? Number(e.target.value) : null)}
-          className="mb-3 rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
-        >
-          <option value="">No expiry</option>
-          <option value="30">30 days from today</option>
-          <option value="90">90 days from today</option>
-          <option value="365">365 days from today</option>
-        </select>
+        <div className="mb-3 flex items-center gap-3">
+          <select
+            id="rotate-expiry" value={expiry ?? ""} onChange={(e) => setExpiry(e.target.value ? Number(e.target.value) : null)}
+            className="rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
+          >
+            <option value="">No expiry</option>
+            <option value="30">30 days from today</option>
+            <option value="90">90 days from today</option>
+            <option value="365">365 days from today</option>
+          </select>
+          <span className="text-[11.5px] text-muted">New expiry: {newExpiry}</span>
+        </div>
         <div className="rounded-md border border-st-blocked/40 p-2">
           <span className="mr-2 font-mono text-[10px] uppercase tracking-wide text-st-blocked">Update</span>
-          <span className="text-[12px] text-fg-2">{ROTATE_WHAT[kind]}</span>
+          <span className="text-[12px] text-fg-2">
+            {ROTATE_WHAT[kind]}{ROTATE_WHERE[kind] && <> Old value lives in: {ROTATE_WHERE[kind]}</>}
+          </span>
         </div>
         <p className="mt-2 text-small text-faint">
           One server step: mints the replacement with the same name, scopes, project and tool tiers, and revokes this key.
@@ -706,7 +724,7 @@ function KeyDialog({ dlg, projectName, onClose, onRelink }: {
         <div className="mt-3 flex justify-end gap-2">
           <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
           {/* The soft delete ONLY: a rotate here would mint a key that nothing stores. */}
-          <Button size="sm" disabled={busy} onClick={() => run(async () => {
+          <Button size="sm" variant="danger" disabled={busy} onClick={() => run(async () => {
             await api.revokeApiKey(k.id);
             setRevokedDone(true);
           }, "Could not revoke the key.")}>Revoke key</Button>
@@ -726,7 +744,7 @@ function KeyDialog({ dlg, projectName, onClose, onRelink }: {
         {errorLine}
         <div className="mt-3 flex justify-end gap-2">
           <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button size="sm" disabled={busy} onClick={() => run(async () => {
+          <Button size="sm" variant="danger" disabled={busy} onClick={() => run(async () => {
             await api.revokeApiKey(k.id);
             onRelink();
           }, "Could not revoke the key.")}>Unlink and relink</Button>
@@ -744,7 +762,7 @@ function KeyDialog({ dlg, projectName, onClose, onRelink }: {
       {errorLine}
       <div className="mt-3 flex justify-end gap-2">
         <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
-        <Button size="sm" disabled={busy} onClick={() => run(async () => {
+        <Button size="sm" variant="danger" disabled={busy} onClick={() => run(async () => {
           // The catch in `run` is the point: this was a bare await once, and a failing revoke
           // produced no toast, no error and no change (GRPH-788).
           await api.revokeApiKey(k.id);
@@ -773,7 +791,6 @@ function KeyRow({ k, projectName, onAction }: {
   const [connect, setConnect] = React.useState(false);
   const kind = kindOf(k);
   const expired = k.expires_at ? new Date(k.expires_at) <= new Date() : false;
-  const action = "rounded px-1.5 py-0.5 text-small text-muted hover:text-fg-2";
 
   // Which actions a row gets follows from what made it: a wave key is swept by End wave, a
   // link key is a deployment identity, and a gban-minted key is stored somewhere only that
@@ -795,18 +812,6 @@ function KeyRow({ k, projectName, onAction }: {
         <span className={cn(chip, k.project_id ? "border-line-2 text-muted" : "border-[rgba(167,139,250,0.3)] text-purple-2")}>
           {k.project_id ? projectName(k.project_id) : "All projects"}
         </span>
-        {k.expires_at && (
-          <span className={cn("font-mono text-meta uppercase tracking-wide", expired ? "text-st-blocked" : "text-faint-2")}
-                title={`Expires ${new Date(k.expires_at).toLocaleDateString()}`}>
-            {expired ? "expired" : `expires ${new Date(k.expires_at).toLocaleDateString()}`}
-          </span>
-        )}
-        {k.fleet_wave && (
-          <span className="font-mono text-meta uppercase tracking-wide text-[color:var(--color-st-review)]"
-                title="End wave sweeps this and never a hand-minted key">
-            {k.fleet_wave} · swept by End wave
-          </span>
-        )}
         <span className={cn("ml-auto font-mono text-[10px]", k.last_used ? "text-faint-2" : "text-amber-400")} title={k.last_used ?? undefined}>
           {lastUsedLabel(k.last_used)}
         </span>
@@ -833,10 +838,21 @@ function KeyRow({ k, projectName, onAction }: {
           <span className="font-mono text-meta uppercase tracking-wide text-faint">revoked</span>
         ) : (
           actions.map(([label, type]) => (
-            <button key={label} className={cn(action, type === "revoke" && "hover:text-st-blocked")} onClick={() => onAction(type)}>
+            <Button key={label} size="sm" variant="outline" onClick={() => onAction(type)}>
               {label}
-            </button>
+            </Button>
           ))
+        )}
+        <div className="basis-full" aria-hidden />
+        <span className={cn("font-mono text-meta uppercase tracking-wide", expired ? "text-st-blocked" : "text-faint-2")}
+              title={k.expires_at ? `Expires ${new Date(k.expires_at).toLocaleDateString()}` : undefined}>
+          {!k.expires_at ? "no expiry" : expired ? "expired" : `expires ${new Date(k.expires_at).toLocaleDateString()}`}
+        </span>
+        {k.fleet_wave && (
+          <span className="font-mono text-meta uppercase tracking-wide text-[color:var(--color-st-review)]"
+                title="End wave sweeps this and never a hand-minted key">
+            {k.fleet_wave} · swept by End wave
+          </span>
         )}
       </div>
       {details && <MintedWith k={k} projectName={projectName} />}
@@ -882,7 +898,9 @@ function KeysTab({ rows, loading, error, onRetry, projectName, onAction }: {
       {GROUPS.map((g) => {
         // Revoked rows stay (greyed) — dropping them would make a deliberately revoked
         // credential look like one that never existed — but only live ones are counted.
-        const inGroup = rows.filter((k) => kindOf(k) === g.kind);
+        const inGroup = rows
+          .filter((k) => kindOf(k) === g.kind)
+          .sort((a, b) => Number(a.revoked) - Number(b.revoked) || Date.parse(b.created_at) - Date.parse(a.created_at));
         const live = inGroup.filter((k) => !k.revoked).length;
         return (
           <section key={g.kind} className="mb-5" aria-label={g.title}>
