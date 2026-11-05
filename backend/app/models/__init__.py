@@ -3822,6 +3822,9 @@ class DesignFinding(Base):
     text_hash: Mapped[str] = mapped_column(String)
     canvas_hash: Mapped[str] = mapped_column(String, default="", server_default="")
     winner: Mapped[str] = mapped_column(String, default="", server_default="")
+    # A zip canvas (GRPH-1306): the member the finding is about and its hash when filed.
+    member: Mapped[str] = mapped_column(String, default="", server_default="")
+    member_hash: Mapped[str] = mapped_column(String, default="", server_default="")
     # open | applied | rejected | withdrawn
     status: Mapped[str] = mapped_column(String, default="open", server_default="open")
     reason: Mapped[str] = mapped_column(Text, default="", server_default="")
@@ -3845,6 +3848,10 @@ class DesignCanvas(Base):
     content_hash: Mapped[str] = mapped_column(String)
     prompt_hash: Mapped[str] = mapped_column(String)
     document_id: Mapped[str] = mapped_column(String)
+    # A zip canvas: [{"path", "hash"}] for each file it contains, and the member that is the
+    # screen's root. NULL/"" for a single-file canvas.
+    members: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    root: Mapped[str] = mapped_column(String, default="", server_default="")
     created_by: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
