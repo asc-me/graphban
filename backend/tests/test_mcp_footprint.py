@@ -207,7 +207,7 @@ CEILING = 17775
 # because the planner who relays that accept is the one `compile_prompts` refuses until this
 # hash is accepted. Hiding it from that manifest would leave the refusal with no tool to name.
 # TIER_TOKENS["prd"] pays the bill; CORE_TOKENS does not move. Headroom 19.
-MEASURED_TOKENS = 17769
+MEASURED_TOKENS = 17774
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

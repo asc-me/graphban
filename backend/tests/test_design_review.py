@@ -413,3 +413,82 @@ def test_zip_canvas_records_members_and_changes(db, pid, world, be):
     with pytest.raises(errors.Validation, match="not a zip"):
         ds_svc.put_canvas(db, pid, sid, "home", b"<html/>", "text/html", h, backend=be,
                           root="x")
+
+
+def test_zip_canvas_after_a_single_file_canvas_reports_removed(db, pid, world, be):
+    """A zip replacing a single-file canvas: every member is new, so every member changed. A zip
+    dropping a file lists it in `removed`."""
+    _, sid = world
+    h, _ = _ready(db, pid, sid, be)  # a single-file canvas is current
+    a = ds_svc.put_canvas(db, pid, sid, "home", _zip({"home.dc.html": "a", "ladder.dc.html": "b"}),
+                          "application/zip", h, backend=be, root="home.dc.html")
+    assert a["bound"] and a["changed"] == ["home.dc.html", "ladder.dc.html"]
+    assert a["removed"] == []
+    b = ds_svc.put_canvas(db, pid, sid, "home", _zip({"home.dc.html": "a2"}),
+                          "application/zip", h, backend=be)
+    assert b["root"] == "home.dc.html"  # one file: it is the root
+    assert b["changed"] == ["home.dc.html"] and b["removed"] == ["ladder.dc.html"]
+    screen = ds_svc.get_design_set(db, pid, sid)["screens"][0]
+    assert screen["root"] == "home.dc.html"
+    assert [m["path"] for m in screen["members"]] == ["home.dc.html"]
+
+
+def test_finding_names_a_member_and_an_edit_elsewhere_is_visible(db, pid, world, be):
+    """The review miss: the finding is about Ladder, the next export edits Harness only."""
+    _, sid = world
+    h = _compile(db, pid, sid)[0]["prompt_hash"]
+    ds_svc.accept_prompt(db, pid, sid, "home", "agent:GRPH-A2", "dana")
+    first = _zip({"harness.dc.html": "h1", "ladder.dc.html": "l1"})
+    c1 = ds_svc.put_canvas(db, pid, sid, "home", first, "application/zip", h, backend=be,
+                           root="harness.dc.html")["content_hash"]
+    with pytest.raises(errors.Validation, match="not a file of canvas"):
+        ds_svc.file_finding(db, pid, sid, "home", "design_edit", "Ladder rungs overlap", c1,
+                            actor="agent:GRPH-A3", member="nope.dc.html")
+    f = ds_svc.file_finding(db, pid, sid, "home", "design_edit", "Ladder rungs overlap", c1,
+                            actor="agent:GRPH-A3", member="ladder.dc.html")
+    assert f["member"] == "ladder.dc.html" and f["member_hash"]
+    # the correction recompiled the screen: accept it and export against the new hash
+    h2 = f["recompiled"]["prompt_hash"]
+    ds_svc.accept_prompt(db, pid, sid, "home", "agent:GRPH-A2", "dana")
+    out = ds_svc.put_canvas(db, pid, sid, "home",
+                            _zip({"harness.dc.html": "h2", "ladder.dc.html": "l1"}),
+                            "application/zip", h2, backend=be, root="harness.dc.html")
+    assert out["findings"] == [{"finding_id": f["id"], "member": "ladder.dc.html",
+                                "member_changed": False, "member_present": True,
+                                "changed_elsewhere": ["harness.dc.html"]}]
+    drift = ds_svc.get_design_set(db, pid, sid)["screens"][0]["findings"][0]["drift"]
+    assert drift["member_changed"] is False and drift["changed_elsewhere"] == ["harness.dc.html"]
+    # the named member read back from the reviewed canvas
+    assert ds_svc.read_canvas(db, pid, sid, c1, backend=be, member="ladder.dc.html")[0] == b"l1"
+    # fixed in the member it names: visible as such
+    fixed = ds_svc.put_canvas(db, pid, sid, "home",
+                              _zip({"harness.dc.html": "h2", "ladder.dc.html": "l2"}),
+                              "application/zip", h2, backend=be, root="harness.dc.html")
+    assert fixed["findings"][0]["member_changed"] is True
+    ds_svc.resolve_finding(db, pid, f["id"], "applied")
+    acc = ds_svc.accept_design(db, pid, sid, "agent:GRPH-A2", "dana")
+    assert acc["screens"][0]["root"] == "harness.dc.html"
+    assert acc["screens"][0]["findings"][0]["drift"]["member_changed"] is True
+
+
+def test_zip_canvas_bounds_entries_and_decompressed_size(db, pid, world, be):
+    """A zip bomb: a few KB that expands to many MB is refused while it is read, whatever the
+    archive declares, and so is a zip with too many entries."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr("home.dc.html", b"\0" * (4 * 1024 * 1024))
+    bomb = buf.getvalue()
+    assert len(bomb) < 64 * 1024
+    with pytest.raises(errors.Validation, match="expands past"):
+        ds_svc._zip_members(bomb, max_bytes=1024 * 1024)
+    with pytest.raises(errors.Validation, match="at most 2"):
+        ds_svc._zip_members(_zip({"a": "1", "b": "2", "c": "3"}), max_members=2)
+    _, sid = world
+    h = _compile(db, pid, sid)[0]["prompt_hash"]
+    ds_svc.accept_prompt(db, pid, sid, "home", "agent:GRPH-A2", "dana")
+    many = _zip({f"f{i}.html": "x" for i in range(ds_svc.ZIP_MAX_MEMBERS + 1)})
+    with pytest.raises(errors.Validation, match="files; at most"):
+        ds_svc.put_canvas(db, pid, sid, "home", many, "application/zip", h, backend=be)

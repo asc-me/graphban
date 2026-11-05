@@ -1460,8 +1460,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "put_canvas",
         "description": (
-            "Store a design export (base64); only the accepted prompt_hash counts, else an "
-            "orphan. Zip: `root` is the screen member."
+            "Store a design export (base64): bound on the accepted prompt_hash, else orphan. "
+            "Zip: root/member name files."
         ),
         "inputSchema": {
             "type": "object",
@@ -1492,6 +1492,7 @@ TOOLS: list[dict[str, Any]] = [
                 "text": {"type": "string"},
                 "canvas_hash": {"type": "string"},
                 "winner": {"type": "string", "enum": ["shipped_decision", "prd", "design"]},
+                "member": {"type": "string"},
             },
             "required": ["design_set_id", "screen", "kind", "text"],
         },
@@ -4146,7 +4147,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             return design_sets_svc.file_finding(
                 db, pid, sid, str(args["screen"]), str(args["kind"]), str(args["text"]),
                 canvas_hash=str(args.get("canvas_hash") or ""),
-                winner=str(args.get("winner") or ""), actor=actor)
+                winner=str(args.get("winner") or ""), actor=actor,
+                member=str(args.get("member") or ""))
         return design_sets_svc.resolve_finding(
             db, pid, str(args["finding_id"]), str(args["status"]),
             str(args.get("reason") or ""), actor=actor)

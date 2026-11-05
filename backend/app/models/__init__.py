@@ -3822,6 +3822,9 @@ class DesignFinding(Base):
     text_hash: Mapped[str] = mapped_column(String)
     canvas_hash: Mapped[str] = mapped_column(String, default="", server_default="")
     winner: Mapped[str] = mapped_column(String, default="", server_default="")
+    # A zip canvas (GRPH-1306): the member the finding is about and its hash when filed.
+    member: Mapped[str] = mapped_column(String, default="", server_default="")
+    member_hash: Mapped[str] = mapped_column(String, default="", server_default="")
     # open | applied | rejected | withdrawn
     status: Mapped[str] = mapped_column(String, default="open", server_default="open")
     reason: Mapped[str] = mapped_column(Text, default="", server_default="")
