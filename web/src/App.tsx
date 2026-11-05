@@ -25,6 +25,7 @@ import { LiveView } from "@/features/live/LiveView";
 import { MemoryReviewView } from "@/features/memory/MemoryReviewView";
 import { InviteAcceptPage } from "@/features/onboarding/InviteAcceptPage";
 import { PrdEditorView } from "@/features/prds/PrdEditorView";
+import { ConflictRecordView } from "@/features/prds/ConflictRecordView";
 import { PrdListView } from "@/features/prds/PrdListView";
 import { ProfileView } from "@/features/profile/ProfileView";
 import { ProjectHome } from "@/features/projecthome/ProjectHome";
@@ -91,6 +92,7 @@ const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["lessons", <LessonsView />],
   ["lessons/:id", <LessonsView />],
   ["prds", <PrdListView />],
+  ["prds/conflict/:id", <ConflictRecordView />],
   ["prds/:id", <PrdEditorView />],
   ["feedback-kit", <FeedbackKitView />],
 ];

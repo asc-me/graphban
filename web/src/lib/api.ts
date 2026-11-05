@@ -1212,6 +1212,8 @@ export const api = {
       updated_db: string[];
       updated_file: string[];
       conflicts: string[];
+      conflict_details?: ConflictDetail[];
+      export_status?: "ok" | "failed";
       in_sync: number;
     }>(`/platform/gdrive/sync${projectQuery(projectId)}`, { method: "POST" }),
 
@@ -1392,3 +1394,14 @@ export const api = {
 };
 
 export type { GitopsPatch, GitopsView, Status };
+
+/** One hash conflict from a sync report: facts only, neither body. */
+export interface ConflictDetail {
+  prd_id: string;
+  status: string;
+  ledger_hash: string;
+  file_hash: string;
+  file_name: string;
+  byte_length: number;
+  path: string;
+}
