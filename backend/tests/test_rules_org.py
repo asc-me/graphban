@@ -357,3 +357,104 @@ def test_project_drift_counts_a_changed_rule_once_and_flags_weakening(client, or
     assert d["differs_in"] == 1 and d["weakening"] == 1
     assert d["summary"] == "differs from Standard in 1 rule"
     assert d["drift"][0]["kind"] == "weakening"
+
+
+# ---- offered profile updates (GRPH-1328) ---------------------------------------------------
+
+def _newer_pack(monkeypatch):
+    """Load a pack whose `standard` is v2: OTHER dropped (weakening), RULE's params changed."""
+    cur = P.CURRENT
+    prof = {"id": "standard", "title": "Standard", "version": "2",
+            "rules": {RULE: {"state": "on", "params": {"n": 5}}}}
+    monkeypatch.setattr(P, "CURRENT", P.Pack(
+        cur.name, "1.1.0", cur.primitive_api, cur.min_server, {}, {},
+        {**cur.profiles, "standard": prof}, cur.mappings))
+
+
+def _events(*actions):
+    from app.models import Event
+
+    db = _db()
+    try:
+        return [e for e in db.query(Event).order_by(Event.id) if e.action in actions]
+    finally:
+        db.close()
+
+
+def test_update_is_offered_with_diff_and_loading_writes_nothing(client, org, monkeypatch):
+    _apply(client, org)
+    before = len(_events("set_rule_toggle"))
+    _newer_pack(monkeypatch)
+    assert len(_events("set_rule_toggle")) == before  # loading wrote no toggle event
+    assert _toggles(client, {"owner": org["owner"]}, org["ps"][1])[RULE]["params"]["value"] == {"n": 3}
+    r = client.get(_url(org, "profiles/updates"), headers=org["owner"])
+    assert r.status_code == 200, r.text
+    (u,) = r.json()["updates"]
+    assert (u["profile"], u["applied_version"], u["offered_version"]) == ("standard", "1", "2")
+    by = {(d["rule_id"], d["change"]): d for d in u["diff"]}
+    assert by[(OTHER, "removed")]["kind"] == "weakening"
+    assert by[(RULE, "params_changed")]["to"] == {"n": 5}
+    assert u["weakening"] == 1
+
+
+def test_project_update_is_offered_and_accepted(client, org, monkeypatch):
+    p = org["ps"][0]
+    _apply_project(client, org, p)
+    _newer_pack(monkeypatch)
+    pr = client.get("/api/rules/profiles/updates", params={"project_id": p}, headers=org["owner"])
+    assert [x["profile"] for x in pr.json()["updates"]] == ["standard"]
+    r = client.post("/api/rules/profiles/standard/updates/accept", params={"project_id": p},
+                    json={"reason": "go"}, headers=org["owner"])
+    assert r.status_code == 200, r.text
+    assert [e.meta["profile_version"] for e in _events("apply_rule_profile")] == ["1", "2"]
+
+
+def test_never_applied_or_current_profile_is_not_offered(client, org, monkeypatch):
+    _newer_pack(monkeypatch)
+    assert client.get(_url(org, "profiles/updates"), headers=org["owner"]).json()["updates"] == []
+    _apply(client, org)  # applies v2
+    assert client.get(_url(org, "profiles/updates"), headers=org["owner"]).json()["updates"] == []
+
+
+def test_accept_applies_once_with_the_new_version(client, org, monkeypatch):
+    _apply(client, org)
+    _newer_pack(monkeypatch)
+    url = _url(org, "profiles/standard/updates/accept")
+    assert client.post(url, json={"reason": ""}, headers=org["owner"]).status_code == 422
+    assert client.post(url, json={"reason": "ok", "version": "9"}, headers=org["owner"]).status_code == 422
+    r = client.post(url, json={"reason": "ok", "version": "2"}, headers=org["owner"])
+    assert r.status_code == 200, r.text
+    evs = _events("apply_rule_profile")
+    assert [e.meta["profile_version"] for e in evs] == ["1", "2"]
+    assert _toggles(client, {"owner": org["owner"]}, org["ps"][1])[RULE]["params"]["value"] == {"n": 5}
+    assert client.get(_url(org, "profiles/updates"), headers=org["owner"]).json()["updates"] == []
+    assert client.post(url, json={"reason": "again"}, headers=org["owner"]).status_code == 404
+
+
+def test_accept_is_refused_for_a_key_or_engine_and_under_an_org_lock(client, org, monkeypatch):
+    from fastapi import HTTPException
+
+    from app.models import ApiKey
+
+    p = org["ps"][0]
+    _apply_project(client, org, p)
+    _newer_pack(monkeypatch)
+    db = _db()
+    for actor in (ApiKey(id="k1", project_id=p), ("engine", "recommend")):
+        with pytest.raises(HTTPException) as e:
+            RO.accept_project_update(db, actor, p, "standard", reason="x")
+        assert e.value.status_code == 403 and e.value.rule_id == T.PERSON_RULE
+    client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
+               json={"on": False, "locked": True, "reason": "freeze"}, headers=org["owner"])
+    n = len(_events("apply_rule_profile"))
+    r = client.post(f"/api/rules/profiles/standard/updates/accept", params={"project_id": p},
+                    json={"reason": "go"}, headers=org["owner"])
+    assert r.status_code == 409 and len(_events("apply_rule_profile")) == n
+
+
+def test_updates_org_scope_is_plan_gated(client, org, monkeypatch):
+    _apply(client, org)
+    _set_plan(org["id"], "free")
+    assert client.get(_url(org, "profiles/updates"), headers=org["owner"]).status_code == 402
+    assert client.post(_url(org, "profiles/standard/updates/accept"), json={"reason": "x"},
+                       headers=org["owner"]).status_code == 402

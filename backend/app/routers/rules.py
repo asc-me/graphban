@@ -265,6 +265,12 @@ class ProfileApply(BaseModel):
     reason: str = ""
 
 
+class ProfileAccept(BaseModel):
+    reason: str = ""
+    #: The offered version being accepted; refused when the pack has moved on since it was read.
+    version: str | None = None
+
+
 def _org_call(fn, *args, **kw):
     try:
         return fn(*args, **kw)
@@ -272,6 +278,37 @@ def _org_call(fn, *args, **kw):
         raise HTTPException(404, str(e)) from e
     except Validation as e:
         raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+
+
+@router.get("/rules/profiles/updates")
+def project_profile_updates(project_id: str = "core", db: Session = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+    """Applied profiles the loaded pack has a newer version of, with the diff. Reads only."""
+    return _org_call(rules_org.project_updates, db, user, project_id)
+
+
+@router.post("/rules/profiles/{profile_id}/updates/accept")
+def accept_project_profile_update(profile_id: str, body: ProfileAccept, project_id: str = "core",
+                                  db: Session = Depends(get_db),
+                                  user: User = Depends(get_current_user)):
+    """Accept the offered version for one project: the ordinary apply, all-or-nothing."""
+    return _org_call(rules_org.accept_project_update, db, user, project_id, profile_id,
+                     reason=body.reason, version=body.version)
+
+
+@router.get("/orgs/{org_id}/rules/profiles/updates")
+def org_profile_updates(org_id: str, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """Applied profiles the loaded pack has a newer version of, with the diff. Reads only."""
+    return _org_call(rules_org.org_updates, db, user, org_id)
+
+
+@router.post("/orgs/{org_id}/rules/profiles/{profile_id}/updates/accept")
+def accept_org_profile_update(org_id: str, profile_id: str, body: ProfileAccept,
+                              db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Accept the offered version across the org: the ordinary apply, all-or-nothing."""
+    return _org_call(rules_org.accept_org_update, db, user, org_id, profile_id,
+                     reason=body.reason, version=body.version)
 
 
 @router.post("/rules/profiles/{profile_id}/apply")
