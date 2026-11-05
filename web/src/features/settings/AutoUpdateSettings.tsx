@@ -14,8 +14,8 @@ import { useAutoUpdate, useUpdateAutoUpdate } from "@/lib/queries";
 import type { AutoUpdateStatus, AutoUpdateWindow, UpdateProgress } from "@/lib/types";
 
 /**
- * One bar segment per install step: done = accent, active = half, failed = danger, pending =
- * line. `openEnded` (a native install: no known total) adds a dotted tail, not invented steps.
+ * One bar segment per install step: done = accent, active = sweeping bar, failed = danger, pending =
+ * surface-4. `openEnded` (a native install: no known total) adds a dotted tail, not invented steps.
  */
 export function StepBar({ steps, openEnded = false }: { steps: UpdateProgress["steps"]; openEnded?: boolean }) {
   return (
@@ -25,14 +25,15 @@ export function StepBar({ steps, openEnded = false }: { steps: UpdateProgress["s
           key={st.key}
           data-testid="step-segment"
           data-status={st.status}
-          className={`relative h-1.5 flex-1 overflow-hidden rounded-full ${
-            st.status === "failed" ? "bg-danger" : st.status === "done" ? "bg-accent" : "bg-line"}`}
+          className={`u-seg relative h-[5px] flex-1 overflow-hidden rounded-full ${
+            st.status === "failed" ? "bg-danger" : st.status === "done" ? "bg-accent"
+              : st.status === "active" ? "u-seg-active" : "bg-surface-4"}`}
         >
-          {st.status === "active" ? <span className="absolute inset-y-0 left-0 w-1/2 bg-accent" /> : null}
+          {st.status === "active" ? <span data-testid="step-sweep" className="u-sweep" /> : null}
         </span>
       ))}
       {openEnded ? (
-        <span data-testid="step-tail" className="h-0 flex-1 border-t-2 border-dotted border-line" />
+        <span data-testid="step-tail" className="h-0 flex-1 border-t-2 border-dotted border-surface-4" style={{ flexBasis: 22, flexGrow: 0 }} />
       ) : null}
     </div>
   );

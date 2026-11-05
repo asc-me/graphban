@@ -82,6 +82,51 @@ export function changeCount(body: string): number {
   return body.split("\n").filter((line) => line.startsWith("- ")).length;
 }
 
+/** A "- #1301 Title (GRPH-1315)" line split into its PR number, ticket ids and remaining title. */
+export function parseCall(line: string): { pr: string; tickets: string[]; title: string } {
+  let rest = line.replace(/^-\s+/, "");
+  const m = /^(#\d+)\s*/.exec(rest);
+  const pr = m ? m[1] : "";
+  if (m) rest = rest.slice(m[0].length);
+  const tickets = rest.match(/\b[A-Z][A-Z0-9]*-\d+\b/g) ?? [];
+  let title = rest;
+  for (const t of tickets) title = title.replace(t, "");
+  title = title.replace(/\(\s*[,\s]*\)/g, "").replace(/\s{2,}/g, " ").trim();
+  return { pr, tickets, title };
+}
+
+/** Body of a release note: the "Since <prev>" list as pill rows, the rest as markdown. */
+function NotesBody({ body }: { body: string }) {
+  const lines = body.split("\n");
+  const at = lines.findIndex((l) => /^\*\*Since\b.*\*\*\s*$/.test(l.trim()));
+  if (at < 0) return <Markdown source={body} />;
+  let end = at + 1;
+  while (end < lines.length && (lines[end].trim() === "" || lines[end].startsWith("- "))) end++;
+  const calls = lines.slice(at + 1, end).filter((l) => l.startsWith("- "));
+  if (!calls.length) return <Markdown source={body} />;
+  const before = lines.slice(0, at + 1).join("\n");
+  const after = lines.slice(end).join("\n");
+  return (
+    <>
+      <Markdown source={before} />
+      <ul className="u-calls" aria-label="Changes">
+        {calls.map((l, i) => {
+          const c = parseCall(l);
+          const wip = /^WIP: salvaged/.test(c.title);
+          return (
+            <li key={i} className="u-call" data-testid="release-call" data-pr={c.pr || undefined}>
+              {c.pr ? <span className="u-pill text-muted">{c.pr}</span> : null}
+              {c.tickets.map((t) => <span key={t} className="u-pill text-accent">{t}</span>)}
+              <span className={`u-call-title ${wip ? "text-faint" : ""}`}>{c.title}</span>
+            </li>
+          );
+        })}
+      </ul>
+      {after.trim() ? <Markdown source={after} /> : null}
+    </>
+  );
+}
+
 /** One collapsed row per release, "N changes" at the right, expanding to the body. */
 function NotesAccordion({ label, notes }: { label: string; notes: ReleaseNotes }) {
   const changes = notes.state === "present" ? changeCount(notes.body) : 0;
@@ -89,6 +134,7 @@ function NotesAccordion({ label, notes }: { label: string; notes: ReleaseNotes }
     <details className="rounded-[10px] border border-line-2 bg-surface p-3.5">
       <summary className="flex cursor-pointer select-none items-center justify-between gap-2 font-mono text-[10.5px] uppercase tracking-wide text-faint">
         <span>
+          <span aria-hidden className="u-chev mr-1.5 inline-block">▸</span>
           {label}{" "}
           <span className="font-mono normal-case tracking-normal text-fg">{notes.tag}</span>
         </span>
@@ -108,7 +154,7 @@ function NotesAccordion({ label, notes }: { label: string; notes: ReleaseNotes }
         {notes.state === "empty" ? (
           <p>No notes on this release.</p>
         ) : null}
-        {notes.state === "present" ? <Markdown source={notes.body} /> : null}
+        {notes.state === "present" ? <NotesBody body={notes.body} /> : null}
       </div>
     </details>
   );
@@ -226,26 +272,28 @@ function ProgressSteps({ progress, nowMs, tag, via, complete = false }: {
     <div className="mt-3 space-y-2">
       <div className="flex items-center justify-between gap-2 text-[13px] font-semibold text-fg">
         <span className="flex items-center gap-2" data-testid="progress-headline">
-          <span aria-hidden className={`h-2 w-2 rounded-full ${red ? "bg-danger" : complete ? "bg-st-done" : "bg-accent"}`} />
+          <span aria-hidden className={`h-[7px] w-[7px] rounded-full ${red ? "bg-danger" : complete ? "bg-st-done" : "u-dot-live bg-accent"}`} />
           {complete ? "Upgrade complete" : progressHeadline(progress, tag, via)}
         </span>
         <span className="font-mono text-[12px] font-normal text-fg-2" data-testid="step-count">{count}</span>
       </div>
       {steps.length ? <StepBar steps={steps} openEnded={native} /> : null}
-      {steps.length ? <div className="rounded-[10px] border border-line-2 bg-surface p-3">
+      {steps.length ? <div className="rounded-[10px] border border-line-2 bg-surface py-1">
         <ol className="text-[12px]" aria-label="Install steps">
           {steps.map((st) => (
             <li
               key={st.key}
               data-status={st.status}
-              className={`flex min-h-8 items-center ${
+              className={`u-step flex min-h-8 items-center px-3 ${
                 st.status === "failed" ? "text-danger" : st.status === "pending" ? "text-faint" : "text-fg-2"}`}
             >
-              <span aria-hidden className={`mr-1.5 font-mono ${st.status === "done" ? "text-accent" : ""}`}>{MARK[st.status]}</span>
-              <span className={st.status === "active" ? "font-semibold text-fg" : ""}>{st.label}</span>
+              <span aria-hidden className={`u-mk mr-2.5 w-3.5 flex-none text-center font-mono text-[12px] ${
+                st.status === "done" ? "text-st-done" : st.status === "active" ? "text-accent"
+                  : st.status === "failed" ? "text-danger" : "text-faint"}`}>{MARK[st.status]}</span>
+              <span className={st.status === "active" ? "font-medium text-fg" : ""}>{st.label}</span>
               <span className="sr-only"> ({st.status})</span>
               {st.status === "active" && st.started_at !== null ? (
-                <span className="ml-auto font-mono text-faint" data-testid="step-timer">
+                <span className="ml-auto font-mono text-[11.5px] text-faint" data-testid="step-timer">
                   {elapsed(st.started_at, nowMs)}
                 </span>
               ) : null}
@@ -287,6 +335,35 @@ function PhaseCopy({ phase, tag, from, via }: { phase: Phase; tag: string; from:
       ? <>Building {t}. This box keeps serving <span className="font-mono">{from}</span> until the new cut is ready — this can take several minutes.</>
       : <>Restarting the API on {t}…</>;
   return <p className="mt-2 text-[12px] text-fg-2" data-testid="phase-copy">{text}</p>;
+}
+
+/**
+ * The design's swap(): when the card's view changes, its height animates from the old to the
+ * new height (.45s) and the new content enters from opacity 0 / translateY(4px). Reduced motion
+ * skips it. (The old content is already replaced by React, so its 220ms fade-out is not drawn.)
+ */
+function useCardSwap(ref: React.RefObject<HTMLDivElement | null>, view: string) {
+  const last = React.useRef<{ view: string; h: number } | null>(null);
+  React.useLayoutEffect(() => {
+    const card = ref.current;
+    if (!card) return;
+    const prev = last.current;
+    const h1 = card.offsetHeight;
+    last.current = { view, h: h1 };
+    if (!prev || prev.view === view || typeof window.matchMedia !== "function"
+      || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    card.classList.add("u-card-anim", "u-enter");
+    card.style.height = `${prev.h}px`;
+    void card.offsetHeight;
+    card.style.height = `${h1}px`;
+    const raf = requestAnimationFrame(() => card.classList.remove("u-enter"));
+    const done = setTimeout(() => {
+      card.style.height = "";
+      card.classList.remove("u-card-anim");
+      last.current = { view, h: card.offsetHeight };
+    }, 480);
+    return () => { cancelAnimationFrame(raf); clearTimeout(done); };
+  }, [ref, view]);
 }
 
 export function UpdatesPanel() {
@@ -448,13 +525,17 @@ export function UpdatesPanel() {
     );
   }
 
+  const view = installed ? "complete" : applying || autoInstalling ? "installing" : "plain";
+  const cardRef = React.useRef<HTMLDivElement>(null);
+  useCardSwap(cardRef, view);
+  const showInstall = !hosted && !installed && !autoInstalling;
   return (
     <div className="max-w-2xl">
       <div className="text-lead font-semibold">Updates</div>
       <p className="mb-3 mt-0.5 text-body text-muted">
         Whether this box is on the published stable cut.
       </p>
-      <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
+      <div ref={cardRef} className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
         {applying ? <Label>Status</Label> : <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <Label>Status</Label>
@@ -467,29 +548,36 @@ export function UpdatesPanel() {
             {data && <StateCopy data={data} />}
           </div>
           <div className="flex flex-col items-end gap-1">
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              {!installed ? <Button
-                type="button"
-                variant="outline"
-                onClick={() => { void refresh(); }}
-                disabled={isFetching || applying}
-              >
-                {isFetching && !applying ? "Checking…" : "Check for updates"}
-              </Button> : null}
-              {!hosted && !installed && !autoInstalling && !confirming && (
+            <div className="u-act justify-end" data-testid="install-group" data-confirm={showInstall && confirming ? "true" : "false"}>
+              {!installed ? (
+                <span className="u-slot u-slot-check" data-testid="slot-check" inert={showInstall && confirming} aria-hidden={showInstall && confirming ? true : undefined}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => { void refresh(); }}
+                    disabled={isFetching || applying}
+                  >
+                    {isFetching && !applying ? "Checking…" : "Check for updates"}
+                  </Button>
+                </span>
+              ) : null}
+              {showInstall ? (
                 <Button
                   type="button"
-                  disabled={!canInstall || applying}
-                  onClick={() => setConfirming(true)}
+                  className="u-install"
+                  disabled={confirming ? applying || !tag : !canInstall || applying}
+                  onClick={() => { if (confirming) void install(); else setConfirming(true); }}
                 >
-                  {applying ? "Installing…" : "Install"}
-                </Button>
-              )}
-              {!hosted && !installed && !autoInstalling && confirming && (
-                <>
-                  <Button type="button" disabled={applying || !tag} onClick={() => { void install(); }}>
+                  <span className="u-lbl u-lbl-a" aria-hidden={confirming ? true : undefined}>
+                    {applying ? "Installing…" : "Install"}
+                  </span>
+                  <span className="u-lbl u-lbl-b" aria-hidden={confirming ? undefined : true}>
                     {applying ? "Installing…" : `Confirm install ${tag}`}
-                  </Button>
+                  </span>
+                </Button>
+              ) : null}
+              {showInstall ? (
+                <span className="u-slot u-slot-cancel" data-testid="slot-cancel" inert={!confirming} aria-hidden={confirming ? undefined : true}>
                   <Button
                     type="button"
                     variant="ghost"
@@ -498,8 +586,8 @@ export function UpdatesPanel() {
                   >
                     Cancel
                   </Button>
-                </>
-              )}
+                </span>
+              ) : null}
             </div>
             {!hosted && !installed && !autoInstalling && (
               installHint(data) ? <p className="max-w-xs text-right text-[12px] text-muted">{installHint(data)}</p> : null
