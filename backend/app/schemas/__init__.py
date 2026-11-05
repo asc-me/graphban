@@ -1805,6 +1805,8 @@ class RuleTogglesOut(BaseModel):
     #: False until a rule pack is loaded: an empty `toggles` then means "no library", not
     #: "nothing adopted".
     library_loaded: bool
+    #: Why the installed pack is not in force (refused at startup), else None.
+    library_reason: str | None = None
     toggles: list[RuleToggleOut]
 
 
