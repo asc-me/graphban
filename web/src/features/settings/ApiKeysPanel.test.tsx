@@ -142,6 +142,56 @@ describe("tabs", () => {
   });
 });
 
+describe("visual pass (design audit 2026-11-04)", () => {
+  it("underlines the selected tab with the accent and no other", async () => {
+    view();
+    const setup = await screen.findByRole("tab", { name: "Set up" });
+    const keysT = screen.getByRole("tab", { name: /Keys/ });
+    expect(setup.className).toMatch(/border-accent/);
+    expect(keysT.className).not.toMatch(/border-accent/);
+  });
+
+  it("drops the subtitle line", async () => {
+    view();
+    await screen.findByRole("tab", { name: "Set up" });
+    expect(screen.queryByText(/An API key is who the process is/)).toBeNull();
+  });
+
+  it("holds the gban title and the notes in one card", async () => {
+    view();
+    const title = await screen.findByText(/Set up a project with/);
+    const notes = screen.getByText(/Not this page either/i);
+    expect(title.closest("[data-testid='gban-card']")).not.toBeNull();
+    expect(title.closest("[data-testid='gban-card']")).toBe(notes.closest("[data-testid='gban-card']"));
+  });
+
+  it("draws each closed Mint key button in the default lime variant", async () => {
+    view();
+    await screen.findByRole("tab", { name: "Set up" });
+    for (const n of ["Mint agent key", "Mint link key", "Mint gate key"]) {
+      expect(screen.getByRole("button", { name: n }).className).toContain("bg-accent");
+    }
+  });
+
+  it("labels the agent form in sentence case, not uppercase mono", async () => {
+    view();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Mint agent key" }));
+    for (const t of ["Name", "Scope", "Key expiry"]) {
+      expect(screen.getByText(t).className).not.toMatch(/uppercase/);
+    }
+  });
+
+  it("writes a group heading in sentence case and a row expiry as a short date", async () => {
+    keyList = [key({ id: "x", name: "soon", expires_at: "2099-11-10T12:00:00Z" })];
+    view();
+    await keysTab();
+    const h = await screen.findByRole("heading", { name: "Agent keys" });
+    expect(h.className).not.toMatch(/uppercase/);
+    expect(await screen.findByText(/expires Nov 10, 2099/i)).toBeInTheDocument();
+  });
+});
+
 describe("minting", () => {
   it("posts origin web and no scopes override for an agent key", async () => {
     view();
@@ -472,3 +522,135 @@ describe("docs overlay", () => {
   });
 });
 
+
+describe("design-audit gaps (GRPH-1313)", () => {
+  const dialog = () => screen.getByRole("dialog");
+
+  it("rotate dialog lists where the old value lives", async () => {
+    keyList = [
+      key({ id: "ag", name: "agent-k", origin: "web" }),
+      key({ id: "gt", name: "gate-k", origin: "web", scopes: ["read", "write", "gate"] }),
+    ];
+    view();
+    const user = await keysTab();
+    const rotates = await screen.findAllByRole("button", { name: "Rotate" });
+    await user.click(rotates[0]);
+    const note = within(dialog()).getByText(/Update/).parentElement!;
+    expect(note).toHaveTextContent("~/.claude.json");
+    expect(note).toHaveTextContent("~/.codex/config.toml");
+    await user.click(within(dialog()).getByRole("button", { name: "Cancel" }));
+    await user.click((await screen.findAllByRole("button", { name: "Rotate" }))[1]);
+    expect(within(dialog()).getByText(/Update/).parentElement!).toHaveTextContent("GRAPHBAN_GATE_KEY");
+  });
+
+  it("rotate dialog shows Now and the New expiry preview", async () => {
+    keyList = [key({ id: "ne", name: "no-exp", origin: "web" })];
+    view();
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "Rotate" }));
+    expect(dialog()).toHaveTextContent(/Now\s*No expiry/);
+    expect(dialog()).toHaveTextContent("New expiry: none");
+    await user.selectOptions(within(dialog()).getByRole("combobox"), "30");
+    const d = new Date(Date.now() + 30 * 86400000).toLocaleDateString();
+    expect(dialog()).toHaveTextContent(`New expiry: ${d}`);
+  });
+
+  it("shows the current expiry date in Now", async () => {
+    keyList = [key({ id: "ex", origin: "web", expires_at: "2099-01-01T00:00:00Z" })];
+    view();
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "Rotate" }));
+    expect(dialog()).toHaveTextContent(`Now ${new Date("2099-01-01T00:00:00Z").toLocaleDateString()}`);
+  });
+
+  it("destructive confirms are danger; rotate is not", async () => {
+    keyList = [
+      key({ id: "r1", name: "plain", origin: "web" }),
+      key({ id: "r2", name: "setup", origin: "gban_setup" }),
+      key({ id: "r3", name: "link", scopes: ["sync"], origin: "web" }),
+    ];
+    view();
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "Rotate" }));
+    expect(within(dialog()).getByRole("button", { name: "Rotate key" }).className).not.toContain("text-st-blocked");
+    await user.click(within(dialog()).getByRole("button", { name: "Cancel" }));
+    for (const [row, confirm] of [["Revoke and rerun…", "Revoke key"], ["Unlink and relink…", "Unlink and relink"]]) {
+      await user.click(screen.getByRole("button", { name: row }));
+      expect(within(dialog()).getByRole("button", { name: confirm }).className).toContain("text-st-blocked");
+      await user.click(within(dialog()).getByRole("button", { name: "Cancel" }));
+    }
+    await user.click(screen.getAllByRole("button", { name: "Revoke" })[0]);
+    expect(within(dialog()).getByRole("button", { name: "Revoke key" }).className).toContain("text-st-blocked");
+  });
+
+  it("row actions are bordered buttons; no-expiry rows say so", async () => {
+    keyList = [key({ id: "b1", origin: "web" })];
+    view();
+    await keysTab();
+    for (const n of ["Rotate", "Revoke"]) {
+      expect((await screen.findByRole("button", { name: n })).className).toContain("border-control");
+    }
+    expect(screen.getByText(/no expiry/i)).toBeInTheDocument();
+  });
+
+  it("meta items (expiry, wave, origin) wrap to the second line; buttons stay on the first", async () => {
+    keyList = [
+      key({ id: "m1", name: "setup-row", origin: "gban_setup" }),
+      key({ id: "m2", name: "swamp-row", origin: "gban_swamp_setup", fleet_wave: "wave-7" }),
+    ];
+    view();
+    await keysTab();
+    await screen.findByText("setup-row");
+    for (const [label, extra] of [["via gban setup", []], ["via gban swamp setup", [/wave-7/]]] as const) {
+      const meta = screen.getByText(label).closest("[data-line]")!;
+      expect(meta.getAttribute("data-line")).toBe("meta");
+      expect(within(meta as HTMLElement).getByText(/no expiry/i)).toBeInTheDocument();
+      for (const re of extra) expect(within(meta as HTMLElement).getByText(re)).toBeInTheDocument();
+      expect(within(meta as HTMLElement).queryAllByRole("button")).toHaveLength(0);
+      const first = meta.parentElement!.querySelector('[data-line="first"]') as HTMLElement;
+      expect(first.className).not.toContain("flex-wrap");
+      const buttons = within(first).getAllByRole("button", { name: /^(Revoke|Revoke and rerun…)$/ });
+      expect(buttons.length).toBeGreaterThan(0);
+      for (const b of buttons) expect(b.className).toContain("flex-none");
+    }
+  });
+
+  it("orders newer live, older live, then revoked", async () => {
+    keyList = [
+      key({ id: "old", name: "old-live", created_at: "2026-01-01T00:00:00Z" }),
+      key({ id: "rev", name: "revoked-one", revoked: true, created_at: "2026-09-01T00:00:00Z" }),
+      key({ id: "new", name: "new-live", created_at: "2026-06-01T00:00:00Z" }),
+    ];
+    view();
+    await keysTab();
+    await screen.findByText("new-live");
+    const names = ["new-live", "old-live", "revoked-one"].map((n) => screen.getByText(n));
+    const order = [...document.querySelectorAll("span")].filter((e) => names.includes(e));
+    expect(order.map((e) => e.textContent)).toEqual(["new-live", "old-live", "revoked-one"]);
+  });
+
+  it("each mint form has a labelled Key expiry select", async () => {
+    view();
+    const user = userEvent.setup();
+    for (const n of ["Mint agent key", "Mint link key", "Mint gate key"]) {
+      await user.click(await screen.findByRole("button", { name: n, expanded: false }));
+      expect(screen.getByLabelText("Key expiry")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: n, expanded: true }));
+    }
+  });
+
+  it("rotated command wraps and the close button after a mint is the default variant", async () => {
+    keyList = [key({ id: "rc", origin: "web" })];
+    view();
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "Rotate" }));
+    await user.click(within(dialog()).getByRole("button", { name: "Rotate key" }));
+    const pre = await within(dialog()).findByText(/claude mcp add/);
+    expect(pre.className).not.toMatch(/truncate|text-ellipsis/);
+    expect(pre.className).toContain("break-all");
+    await user.click(within(dialog()).getByRole("button", { name: /close/ }));
+    await user.click(screen.getByRole("tab", { name: "Set up" }));
+    await mint("Agent key", "x");
+    expect((await screen.findByRole("button", { name: "I’ve copied it — close" })).className).toContain("bg-accent");
+  });
+});
