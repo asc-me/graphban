@@ -452,22 +452,30 @@ def run_canvas_check(check: dict, data: bytes) -> list[str]:
 
 
 def _accepted_canvas(db: Session, ds: DesignSet, screen: str):
-    """Latest canvas drawn from the screen's accepted prompt, or None."""
+    """The screen's bound canvas (`row.canvas_hash`) drawn from its accepted prompt, or None.
+
+    Looked up by hash, the same way accept_design does: re-uploading earlier bytes creates no
+    new row, so "newest row" is not "the canvas the screen carries"."""
     row = _screen_row(ds, screen)
-    if not row.prompt_hash:
+    if not row.prompt_hash or not row.canvas_hash:
         return None
     return db.scalars(select(DesignCanvas).where(
         DesignCanvas.design_set_id == ds.id, DesignCanvas.screen == screen,
-        DesignCanvas.prompt_hash == row.prompt_hash).order_by(DesignCanvas.id.desc())).first()
+        DesignCanvas.content_hash == row.canvas_hash,
+        DesignCanvas.prompt_hash == row.prompt_hash)).first()
 
 
-def _check_results(db: Session, ds: DesignSet, screen: str, data: bytes) -> list[dict]:
+def _check_results(db: Session, ds: DesignSet, screen: str, data: bytes,
+                   counts: bool) -> list[dict]:
+    """Per open correction's check. `counts` is False for an orphan upload: its result is
+    reported but cannot satisfy the applied gate, which reads only the bound canvas."""
     out = []
     for f in _findings(db, ds.id):
         if f.screen != screen or f.status != "open" or not f.canvas_check:
             continue
         fails = run_canvas_check(f.canvas_check, data)
-        out.append({"finding_id": f.id, "passed": not fails, "failures": fails})
+        out.append({"finding_id": f.id, "passed": not fails, "failures": fails,
+                    "counts": counts})
     return out
 
 
@@ -604,7 +612,7 @@ def put_canvas(db: Session, project_id: str, set_id: str, screen: str, data: byt
     bound = bool(prompt_hash) and prompt_hash == row.prompt_hash
     if bound:
         row.canvas_hash = digest
-    checks = _check_results(db, ds, screen, data)
+    checks = _check_results(db, ds, screen, data, counts=bound)
     db.commit()
     return {"checks": checks, "design_set_id": ds.id, "screen": screen, "content_hash": digest,
             "document_id": doc["id"], "prompt_hash": prompt_hash, "bound": bound,

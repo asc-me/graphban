@@ -406,12 +406,28 @@ def test_canvas_check_gates_applied(db, pid, world, be):
     bad = ds_svc.put_canvas(db, pid, sid, "home", zipped(b"Rule 7 TODO"), "application/zip", h2,
                             backend=be)
     assert bad["checks"] == [{"finding_id": f["id"], "passed": False,
-                              "failures": ["present but forbidden: 'TODO'"]}]
+                              "failures": ["present but forbidden: 'TODO'"],
+                              "counts": True}]
     with pytest.raises(errors.Validation, match="pass this finding's check"):
         ds_svc.resolve_finding(db, pid, f["id"], "applied", backend=be)
     good = ds_svc.put_canvas(db, pid, sid, "home", zipped(b"Rule 7 done"), "application/zip", h2,
                              backend=be)
     assert good["checks"][0]["passed"]
+    # An orphan upload (not the accepted prompt) reports its check but does not count.
+    orphan = ds_svc.put_canvas(db, pid, sid, "home", zipped(b"Rule 7 orphan"),
+                               "application/zip", "not-the-accepted-hash", backend=be)
+    assert orphan["orphan"] and orphan["checks"][0] == {
+        "finding_id": f["id"], "passed": True, "failures": [], "counts": False}
+    # Re-uploading the earlier failing bytes creates no new row but rebinds the screen to
+    # them: the gate must read the bound canvas, not the newest row.
+    again = ds_svc.put_canvas(db, pid, sid, "home", zipped(b"Rule 7 TODO"), "application/zip",
+                              h2, backend=be)
+    assert again["content_hash"] == bad["content_hash"] and not again["checks"][0]["passed"]
+    with pytest.raises(errors.Validation, match="pass this finding's check"):
+        ds_svc.resolve_finding(db, pid, f["id"], "applied", backend=be)
+    # And the reverse: re-uploading the passing bytes lets it through.
+    ds_svc.put_canvas(db, pid, sid, "home", zipped(b"Rule 7 done"), "application/zip", h2,
+                      backend=be)
     assert ds_svc.resolve_finding(db, pid, f["id"], "applied", backend=be)["status"] == "applied"
 
 
