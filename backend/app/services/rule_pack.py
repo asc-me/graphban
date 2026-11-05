@@ -28,15 +28,20 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
+import re
+import time
 import tarfile
 import tomllib
 from dataclasses import dataclass, field
 
+import httpx
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import InstalledRulePack
 from app.services import events as events_svc
 from app.services import rule_toggles
@@ -489,3 +494,120 @@ def reload_persisted(db: Session) -> Pack | None:
     LOAD_REFUSAL = ""
     _REFUSED_SHA = ""
     return pack
+
+
+# ---- discover and fetch packs from the releases feed (GRPH-1334 / D10) -------------------
+
+logger = logging.getLogger(__name__)
+
+_TAG_PREFIX = "pack-v"
+_VERSION_RE = re.compile(r"^\d+(\.\d+){0,3}$")
+_FEED_TIMEOUT = 5.0
+#: A definite feed answer is reused this long; `refresh` bypasses it. A feed failure is
+#: never cached, so the next read retries.
+FEED_TTL = 60.0
+_available_cache: dict[str, tuple[float, dict]] = {}
+
+
+class PackFeedError(Exception):
+    """The releases feed, or an asset it lists, could not be read."""
+
+
+def _get(url: str, *, accept: str | None = None) -> httpx.Response:
+    headers = {"User-Agent": "graphban-api"}
+    if accept:
+        headers["Accept"] = accept
+    try:
+        resp = httpx.get(url, headers=headers, timeout=_FEED_TIMEOUT, follow_redirects=True)
+    except (httpx.HTTPError, OSError) as e:
+        raise PackFeedError(f"could not reach {url}: {e}") from e
+    if resp.status_code != 200:
+        raise PackFeedError(f"{url} returned {resp.status_code}")
+    return resp
+
+
+def _releases() -> list[dict]:
+    resp = _get(settings.rule_pack_feed_url, accept="application/vnd.github+json")
+    try:
+        data = resp.json()
+    except ValueError as e:
+        raise PackFeedError(f"the releases feed is not JSON: {e}") from e
+    if not isinstance(data, list):
+        raise PackFeedError("the releases feed is not a list of releases")
+    out = []
+    for rel in data:
+        if not isinstance(rel, dict) or rel.get("draft") or rel.get("prerelease"):
+            continue
+        tag = str(rel.get("tag_name") or "")
+        if tag.startswith(_TAG_PREFIX) and _VERSION_RE.match(tag[len(_TAG_PREFIX):]):
+            out.append(rel)
+    out.sort(key=lambda r: _ver(str(r["tag_name"])[len(_TAG_PREFIX):]), reverse=True)
+    return out
+
+
+def _download(rel: dict, version: str) -> tuple[bytes, bytes]:
+    tar_name, sig_name = f"graphban-rules-{version}.tar", f"graphban-rules-{version}.tar.sig"
+    urls = {tar_name: "", sig_name: ""}
+    for a in rel.get("assets") or []:
+        if isinstance(a, dict) and a.get("name") in urls:
+            urls[a["name"]] = str(a.get("browser_download_url") or "")
+    for name, url in urls.items():
+        if not url:
+            raise PackFeedError(f"release {rel.get('tag_name')} has no asset {name}")
+    artifact, sig = _get(urls[tar_name]).content, _get(urls[sig_name]).content
+    if len(artifact) > MAX_ARTIFACT_BYTES:
+        raise PackRefused("pack artifact is too large")
+    return artifact, sig
+
+
+def fetch_version(version: str) -> tuple[bytes, bytes]:
+    """The artifact and signature published for `version`. Unverified: callers load them."""
+    version = (version or "").strip()
+    if not _VERSION_RE.match(version):
+        raise PackRefused(f"unreadable version {version!r}")
+    for rel in _releases():
+        if rel["tag_name"] == _TAG_PREFIX + version:
+            return _download(rel, version)
+    raise PackFeedError(f"no release {_TAG_PREFIX}{version} in the feed")
+
+
+def _loadable(artifact: bytes, signature: bytes, server_version: str | None) -> Pack | None:
+    """The verified pack when this server can load it: min_server met and a primitive API of
+    the same major. None otherwise (a pack this server cannot load is never offered)."""
+    try:
+        pack = load(artifact, signature, server_version=server_version)
+        if _ver(pack.primitive_api)[0] != _ver(PRIMITIVE_API)[0]:
+            return None
+    except PackRefused:
+        return None
+    return pack
+
+
+def available(db: Session, *, refresh: bool = False, server_version: str | None = None) -> dict:
+    """The newest pack on the feed this server can load, with its notes. `state` is `current`
+    (nothing newer), `available`, or `unknown` with `feed_error` (a failed feed is never
+    `current`). Reads only: nothing is installed (D10)."""
+    row = _latest(db)
+    installed = row.version if row is not None else None
+    base = {"installed_version": installed, "version": None, "notes": None, "feed_error": None}
+    key = f"{settings.rule_pack_feed_url}|{server_version or __version__}"
+    hit = _available_cache.get(key)
+    if hit and not refresh and time.monotonic() - hit[0] < FEED_TTL:
+        newest = hit[1]
+    else:
+        try:
+            newest = {}
+            for rel in _releases():
+                version = str(rel["tag_name"])[len(_TAG_PREFIX):]
+                artifact, sig = _download(rel, version)
+                pack = _loadable(artifact, sig, server_version)
+                if pack is not None:
+                    newest = {"version": pack.version, "notes": str(rel.get("body") or "")}
+                    break
+        except (PackFeedError, PackRefused, KeyError, ValueError) as e:
+            logger.info("rule pack feed failed: %s", e)
+            return {**base, "state": "unknown", "feed_error": str(e)}
+        _available_cache[key] = (time.monotonic(), newest)
+    if newest and (installed is None or _ver(newest["version"]) > _ver(installed)):
+        return {**base, **newest, "state": "available"}
+    return {**base, "state": "current"}
