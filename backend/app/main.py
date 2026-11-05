@@ -40,6 +40,7 @@ from app.routers import (
     requests,
     rules,
     slice_pull,
+    specs,
     sync,
     tracker_links,
     usage,
@@ -476,6 +477,7 @@ app.include_router(public.router, prefix=API)
 app.include_router(reports.router, prefix=API)
 app.include_router(sync.router, prefix=API)
 app.include_router(documents.router, prefix=API)
+app.include_router(specs.router, prefix=API)
 app.include_router(linear.router, prefix=API)
 app.include_router(slice_pull.router, prefix=API)
 app.include_router(mcp_router, prefix=API)
