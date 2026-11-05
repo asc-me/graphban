@@ -213,9 +213,10 @@ def put_document(
         raise errors.Validation(
             f"put_document does not write {kind!r} rows",
             hint="prompt, constraint, review and canvas rows come from the design-set operations")
-    if not created_by.startswith("key:"):
+    if not created_by.startswith(("key:", "user:")):
         # A registered agent id is not a person. `caller_identity` stamps a bare credential
-        # as `key:<name>`; anything else is an agent seat.
+        # as `key:<name>`, and a signed-in person (the web reader) is `user:<id>`; anything
+        # else is an agent seat.
         raise errors.Validation(
             "preamble rows are written by a person, not an agent seat",
             hint="call put_document with a human credential")

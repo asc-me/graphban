@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 315 of the 315. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 320 of the 320. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -764,3 +764,19 @@ Pushing and the portable bundle are a JWT on this box.
 | GET | `/api/sync/export` | JWT | A portable bundle of summaries and structure, without vectors |
 | POST | `/api/sync/import` | JWT (write) | Import a bundle. This instance re-embeds on arrival |
 | GET | `/api/documents/{doc_id}/bytes` | JWT (read) | The stored bytes of a document blob by id; 409 `blob_pending` while the backend write is pending, 404 with no row |
+
+## Spec reader (GRPH-1319 / GRPH-P66)
+
+The reader's surface over the preamble, set constraints and design sets, which were MCP-only
+before. Reads are assembled in `services/specs.py`; writes go to `services/design_sets.py`. A
+document body comes with `body_state`: `stored` (the text, hash-checked, possibly empty),
+`pending`, `unreadable`, or `absent`. `body` is null unless it is `stored`.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/specs/prds/{prd_id}` | JWT (read) | With `project_id`: the PRD's live `content_hash`, `baseline_hash` (null = no baseline) and its design set, if it has one |
+| GET | `/api/specs/preamble` | JWT (read) | The governing preamble, its versions, and the design sets that pin an older version. 404 when the project has none |
+| PUT | `/api/specs/preamble` | JWT (write) | `put_preamble` as the signed-in person: a new version, which stales the sets that pinned the old one (`stale_reason` preamble) |
+| GET | `/api/specs/design-sets/{set_id}` | JWT (read) | Set constraints body and acceptance, plus each screen's prompt state (`none` / `compiled` / `accepted` / `stale`) and why a compile is refused |
+| POST | `/api/specs/design-sets/{set_id}/accept-constraints` | JWT (write) | Accept the stored constraints hash as the person in this session. A later constraints put clears it |
+| POST | `/api/specs/design-sets/{set_id}/compile` | JWT (write) | `compile_prompts` for one `screen` (or all). 422 while the constraints are not accepted or a tier is unconfirmed |
