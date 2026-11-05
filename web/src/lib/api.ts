@@ -45,6 +45,9 @@ import type {
   LogExportView,
   BoxHealth,
   UpdateCheck,
+  RulePackAvailable,
+  RulePackOffer,
+  RulePackStatus,
   UpdateProgress,
   AutoUpdatePatch,
   AutoUpdateStatus,
@@ -494,6 +497,14 @@ export const api = {
       clearTimeout(timer);
     }
   },
+  rulePackStatus: () => request<RulePackStatus>("/rules/pack"),
+  rulePackAvailable: (refresh = false) =>
+    request<RulePackAvailable>(`/rules/pack/available${refresh ? "?refresh=true" : ""}`),
+  offerRulePack: (version: string) =>
+    request<RulePackOffer>("/rules/pack/offer", { method: "POST", body: JSON.stringify({ version }) }),
+  /** `sha256` is the preview's; the server answers 409 when the pack on the feed is not that one. */
+  acceptRulePack: (version: string, sha256: string) =>
+    request<RulePackStatus>("/rules/pack/accept", { method: "POST", body: JSON.stringify({ version, sha256 }) }),
   autoUpdate: () => request<AutoUpdateStatus>("/platform/auto-update"),
   updateAutoUpdate: (body: AutoUpdatePatch) =>
     request<AutoUpdateStatus>("/platform/auto-update", {

@@ -78,6 +78,8 @@ vi.mock("@/lib/api", () => ({
     updateApply: updateApplySpy,
     health: healthSpy,
     updateProgress: progressSpy,
+    rulePackStatus: vi.fn(async () => ({ installed: false, loaded: false, name: null, version: null, sha256: null, installed_at: null, installed_by: null, reason: "none" })),
+    rulePackAvailable: vi.fn(async () => ({ state: "current", installed_version: null, version: null, notes: null, feed_error: null })),
     autoUpdate: vi.fn(async () => ({
       available: false, unavailable_reason: "no apply path", enabled: false, timezone: "UTC",
       timezone_set: false, host_now: "2026-11-02T10:30:00+00:00",
@@ -683,6 +685,9 @@ describe("Updates nav source", () => {
   });
 
   it("hosted shows no Install and no deploy.sh hint", async () => {
+    // This block's default progress is a running install, which would resume on mount and
+    // hide the Check button; the test is about hosted, so nothing is running.
+    progressSpy.mockResolvedValue({ state: "idle", reason: "", tag: "", steps: [], current_line: "", error: "" });
     updateCheckSpy.mockResolvedValue({ ...available(), hosted: true });
     renderPage(settingsPath("deployment/updates"), true);
     await screen.findByRole("button", { name: /check for updates/i });
