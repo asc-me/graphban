@@ -159,9 +159,9 @@ function WindowEditor({
   value, disabled, onChange,
 }: { value: AutoUpdateWindow; disabled: boolean; onChange: (w: AutoUpdateWindow) => void }) {
   return (
-    <fieldset className="mt-3" disabled={disabled}>
-      <legend className="mb-1 text-[12px] font-semibold text-fg">Upgrade window</legend>
-      <div className="flex flex-wrap items-center gap-3">
+    <fieldset className="mt-3 rounded-[10px] border border-line p-3" disabled={disabled}>
+      <legend className="px-1 font-mono text-[10px] uppercase tracking-wide text-faint">Upgrade window</legend>
+      <div className="space-y-3">
         <div className="flex gap-1.5" role="group" aria-label="Upgrade window days">
           {DAYS.map((d, i) => {
             const on = value.days.includes(i);
@@ -183,16 +183,18 @@ function WindowEditor({
             );
           })}
         </div>
-        <label className="flex items-center gap-1 text-[12px] text-fg-2">
-          Start
-          <Input aria-label="Upgrade window start" type="time" className="w-28" value={value.start}
-            onChange={(e) => onChange({ ...value, start: e.target.value })} />
-        </label>
-        <label className="flex items-center gap-1 text-[12px] text-fg-2">
-          End
-          <Input aria-label="Upgrade window end" type="time" className="w-28" value={value.end}
-            onChange={(e) => onChange({ ...value, end: e.target.value })} />
-        </label>
+        <div className="flex gap-3">
+          <label className="flex flex-col gap-1 text-[12px] text-fg-2">
+            Start
+            <Input aria-label="Upgrade window start" type="time" className="w-28" value={value.start}
+              onChange={(e) => onChange({ ...value, start: e.target.value })} />
+          </label>
+          <label className="flex flex-col gap-1 text-[12px] text-fg-2">
+            End
+            <Input aria-label="Upgrade window end" type="time" className="w-28" value={value.end}
+              onChange={(e) => onChange({ ...value, end: e.target.value })} />
+          </label>
+        </div>
       </div>
     </fieldset>
   );
@@ -251,6 +253,7 @@ export function AutoUpdateSettings({ progressError = "", progress = null, via }:
   }
 
   const on = draft.enabled && !locked;
+  const hasBody = locked || data.enabled || on || !!data.last_auto_install_tag;
   const installing = data.last_auto_install_outcome === "started" && !!data.last_auto_install_tag
     && progress?.state === "running" && progress.tag === data.last_auto_install_tag;
   const failureText = progressError || data.last_auto_install_error;
@@ -300,8 +303,19 @@ export function AutoUpdateSettings({ progressError = "", progress = null, via }:
           <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-surface transition-all ${on ? "left-[18px]" : "left-0.5"}`} />
         </button>
       </div>
+      {hasBody ? (
+        <div className="mt-3 space-y-2 border-t border-line pt-3">
+      {data.last_auto_install_tag ? (
+        <p className="text-[12px] text-fg-2">
+          Last auto-update: <span className="font-mono">{data.last_auto_install_tag}</span>{" "}
+          {data.last_auto_install_outcome || "started"} at {when(data.last_auto_install_at, data.timezone)}
+        </p>
+      ) : null}
+      {data.last_auto_install_outcome === "skipped" && data.last_auto_install_error ? (
+        <p className="mt-1 text-[12px] text-fg-2">Skipped: {data.last_auto_install_error}</p>
+      ) : null}
       {locked ? (
-        <p className="mt-3 border-t border-line-2 pt-2 text-[12px] text-muted">Auto-update is unavailable: {data.unavailable_reason}.</p>
+        <p className="text-[12px] text-muted">Auto-update is unavailable: {data.unavailable_reason}.</p>
       ) : null}
       {data.enabled ? (
         <dl className="mt-3 space-y-0.5 text-[12px] text-fg-2">
@@ -325,14 +339,7 @@ export function AutoUpdateSettings({ progressError = "", progress = null, via }:
           </div>
         </>
       ) : null}
-      {data.last_auto_install_tag ? (
-        <p className="mt-2 text-[12px] text-fg-2">
-          Last auto-update: <span className="font-mono">{data.last_auto_install_tag}</span>{" "}
-          {data.last_auto_install_outcome || "started"} at {when(data.last_auto_install_at, data.timezone)}
-        </p>
-      ) : null}
-      {data.last_auto_install_outcome === "skipped" && data.last_auto_install_error ? (
-        <p className="mt-1 text-[12px] text-fg-2">Skipped: {data.last_auto_install_error}</p>
+        </div>
       ) : null}
     </div>
   );

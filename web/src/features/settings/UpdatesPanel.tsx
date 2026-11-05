@@ -46,10 +46,11 @@ function StateCopy({ data }: { data: UpdateCheck }) {
   if (data.state === "available" && data.latest) {
     return (
       <div className="space-y-2">
-        <p className="text-lead font-semibold">Update available</p>
+        <h3 className="text-lead font-semibold">
+          Update available <span className="font-mono">{data.latest.tag}</span>
+        </h3>
         <p className="text-[13px] text-fg-2">
-          <span className="font-mono text-fg">{data.latest.tag}</span> is available. This
-          box is on <Cut version={v} sha={sha} />.
+          Running <Cut version={v} sha={sha} />.
         </p>
         {data.hosted ? (
           <p className="text-[12px] text-muted">
@@ -62,12 +63,15 @@ function StateCopy({ data }: { data: UpdateCheck }) {
   return (
     <div className="space-y-2">
       <p className="text-lead font-semibold">Could not check</p>
-      <p className="text-[13px] text-fg-2">
-        Could not tell whether a newer cut exists. This box reports <Cut version={v} sha={sha} />.
-      </p>
       {data.feed_error ? (
-        <p className="text-[12px] text-muted">Update feed: {data.feed_error}.</p>
-      ) : null}
+        <p className="text-[13px] text-fg-2">
+          {data.feed_error}{/[.!?]$/.test(data.feed_error) ? "" : "."}
+        </p>
+      ) : (
+        <p className="text-[13px] text-fg-2">
+          Could not tell whether a newer cut exists. This box reports <Cut version={v} sha={sha} />.
+        </p>
+      )}
       {data.note ? <p className="text-[12px] text-muted">{data.note}</p> : null}
     </div>
   );
@@ -114,6 +118,8 @@ function ReleaseNotesList({ data }: { data: UpdateCheck }) {
   const running = data.notes?.running;
   const latest = data.notes?.latest;
   if (!running) return null;
+  // Unknown latest notes (a failed check) is no notes block at all.
+  if (data.state === "unknown" || (data.state === "available" && latest?.state === "unknown")) return null;
   const showLatest = data.state === "available" && latest && latest.tag !== running.tag;
   return (
     <div className="mt-4 space-y-2">
@@ -144,12 +150,10 @@ function installHint(data: UpdateCheck | undefined): string {
   if (data.state === "current") {
     return "Install is disabled — this box is already on the latest release.";
   }
-  if (data.apply && data.via === "native") {
-    return "Install unpacks the published tarball and swaps /opt/graphban/current. The API will be down for a few seconds.";
+  if (data.apply || data.hosted) {
+    return "";
   }
-  if (data.apply) {
-    return "Install rebuilds this box from the published cut. The build takes a few minutes while this release keeps serving; the API is down for a few seconds at the end.";
-  }
+  // No apply path on a self-hosted box: still say how to install by hand.
   const tag = data.latest?.tag;
   return tag
     ? `Install from this page needs a compose host helper or a native /opt/graphban install. Until then: scripts/deploy.sh ${tag}`
@@ -229,25 +233,26 @@ function ProgressSteps({ progress, nowMs, tag, via, complete = false }: {
       </div>
       {steps.length ? <StepBar steps={steps} openEnded={native} /> : null}
       {steps.length ? <div className="rounded-[10px] border border-line-2 bg-surface p-3">
-        <ol className="space-y-0.5 text-[12px]" aria-label="Install steps">
+        <ol className="text-[12px]" aria-label="Install steps">
           {steps.map((st) => (
             <li
               key={st.key}
               data-status={st.status}
-              className={st.status === "failed" ? "text-danger" : st.status === "pending" ? "text-faint" : "text-fg-2"}
+              className={`flex min-h-8 items-center ${
+                st.status === "failed" ? "text-danger" : st.status === "pending" ? "text-faint" : "text-fg-2"}`}
             >
-              <span aria-hidden className="mr-1.5 font-mono">{MARK[st.status]}</span>
-              {st.label}
+              <span aria-hidden className={`mr-1.5 font-mono ${st.status === "done" ? "text-accent" : ""}`}>{MARK[st.status]}</span>
+              <span className={st.status === "active" ? "font-semibold text-fg" : ""}>{st.label}</span>
               <span className="sr-only"> ({st.status})</span>
               {st.status === "active" && st.started_at !== null ? (
-                <span className="ml-1.5 font-mono text-faint" data-testid="step-timer">
+                <span className="ml-auto font-mono text-faint" data-testid="step-timer">
                   {elapsed(st.started_at, nowMs)}
                 </span>
               ) : null}
             </li>
           ))}
           {native && progress.state === "running" && !complete ? (
-            <li className="italic text-muted">Further steps appear only if the log prints them</li>
+            <li className="flex min-h-8 items-center italic text-muted">Further steps appear only if the log prints them</li>
           ) : null}
         </ol>
       </div> : null}
@@ -266,7 +271,7 @@ function PhaseCopy({ phase, tag, from, via }: { phase: Phase; tag: string; from:
   if (via === "native") {
     return (
       <>
-        <p className="mt-2 text-[12px] text-fg-2" data-testid="phase-copy">Upgrading to {tag}.</p>
+        <p className="mt-2 text-[12px] text-fg-2" data-testid="phase-copy">Upgrading to <span className="font-mono">{tag}</span>.</p>
         <p className="mt-1 text-[12px] text-muted" data-testid="native-note">
           The service restarts mid-upgrade, so this panel reconnects partway through. The steps
           below were read back from the log after the restart; they don&apos;t tick live the way
@@ -275,11 +280,12 @@ function PhaseCopy({ phase, tag, from, via }: { phase: Phase; tag: string; from:
       </>
     );
   }
+  const t = <span className="font-mono">{tag}</span>;
   const text = phase === "starting"
     ? "Starting the install…"
     : phase === "building"
-      ? `Building ${tag}. This box keeps serving ${from} until the new cut is ready — this can take several minutes.`
-      : `Restarting the API on ${tag}…`;
+      ? <>Building {t}. This box keeps serving <span className="font-mono">{from}</span> until the new cut is ready — this can take several minutes.</>
+      : <>Restarting the API on {t}…</>;
   return <p className="mt-2 text-[12px] text-fg-2" data-testid="phase-copy">{text}</p>;
 }
 
@@ -449,7 +455,7 @@ export function UpdatesPanel() {
         Whether this box is on the published stable cut.
       </p>
       <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        {applying ? <Label>Status</Label> : <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <Label>Status</Label>
             {isPending && !data && <p className="text-[13px] text-muted">Checking GitHub for a newer release — this can take a few seconds. No result yet is not "no release".</p>}
@@ -496,10 +502,10 @@ export function UpdatesPanel() {
               )}
             </div>
             {!hosted && !installed && !autoInstalling && (
-              <p className="max-w-xs text-right text-[12px] text-muted">{installHint(data)}</p>
+              installHint(data) ? <p className="max-w-xs text-right text-[12px] text-muted">{installHint(data)}</p> : null
             )}
           </div>
-        </div>
+        </div>}
         <div role="status" aria-live="polite">
           <PhaseCopy phase={phase} tag={installTag || tag} from={data?.running.version ?? ""} via={data?.via} />
           {(applying || installed || progress?.state === "failed") && progress

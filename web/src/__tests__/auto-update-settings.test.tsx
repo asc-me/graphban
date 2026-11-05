@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -233,6 +233,35 @@ describe("AutoUpdateSettings", () => {
     renderIt("");
     expect(await screen.findByText(/already on 2026\.11\.1/)).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("the run line sits at the top of the body, before the Timezone label", async () => {
+    getSpy.mockResolvedValue(status({
+      enabled: true, last_auto_install_tag: "2026.11.1", last_auto_install_outcome: "skipped",
+      last_auto_install_error: "already on 2026.11.1",
+    }));
+    renderIt("");
+    const run = await screen.findByText(/Last auto-update:/);
+    const tz = screen.getByText("Timezone");
+    expect(run.compareDocumentPosition(tz) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(run.parentElement!.className).toContain("border-t");
+  });
+
+  it("the upgrade window is a fieldset holding the day pills and Start and End inputs", async () => {
+    getSpy.mockResolvedValue(status({ enabled: true }));
+    renderIt();
+    const legend = await screen.findByText(/^upgrade window$/i, { selector: "legend" });
+    const fs = legend.closest("fieldset")!;
+    expect(fs.className).toContain("border-line");
+    expect(within(fs).getAllByRole("button")).toHaveLength(7);
+    expect(within(fs).getByLabelText("Upgrade window start")).toBeInTheDocument();
+    expect(within(fs).getByLabelText("Upgrade window end")).toBeInTheDocument();
+    expect(within(fs).getByText("Start")).toBeInTheDocument();
+    expect(within(fs).getByText("End")).toBeInTheDocument();
+    // Both labels sit over their inputs (stacked), the two side by side.
+    for (const name of ["Upgrade window start", "Upgrade window end"]) {
+      expect(within(fs).getByLabelText(name).closest("label")!.className).toContain("flex-col");
+    }
   });
 
   it("a selected day pill reads text-bg, not text-white, on the accent fill", async () => {
