@@ -787,4 +787,18 @@ describe("Updates panel layout pass (design audit)", () => {
     expect(screen.getByText("Install is disabled until a check succeeds.")).toBeInTheDocument();
     expect(screen.queryByText(/release notes/i)).not.toBeInTheDocument();
   });
+
+  it("a self-hosted box without apply keeps the scripts/deploy.sh <tag> fallback hint", async () => {
+    updateCheckSpy.mockResolvedValue({ ...available(), apply: false, via: "" });
+    renderPage();
+    expect(await screen.findByText(/Until then: scripts\/deploy\.sh 2026\.10\.1/)).toBeInTheDocument();
+  });
+
+  it("with Install available, the long install hint under the buttons is dropped", async () => {
+    updateCheckSpy.mockResolvedValue(available());
+    renderPage();
+    await screen.findByRole("button", { name: /^install$/i });
+    expect(screen.queryByText(/Install rebuilds this box/)).toBeNull();
+    expect(screen.queryByText(/scripts\/deploy\.sh/)).toBeNull();
+  });
 });

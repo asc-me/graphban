@@ -258,6 +258,10 @@ describe("AutoUpdateSettings", () => {
     expect(within(fs).getByLabelText("Upgrade window end")).toBeInTheDocument();
     expect(within(fs).getByText("Start")).toBeInTheDocument();
     expect(within(fs).getByText("End")).toBeInTheDocument();
+    // Both labels sit over their inputs (stacked), the two side by side.
+    for (const name of ["Upgrade window start", "Upgrade window end"]) {
+      expect(within(fs).getByLabelText(name).closest("label")!.className).toContain("flex-col");
+    }
   });
 
   it("a selected day pill reads text-bg, not text-white, on the accent fill", async () => {

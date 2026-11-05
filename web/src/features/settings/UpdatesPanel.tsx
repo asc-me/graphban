@@ -150,7 +150,14 @@ function installHint(data: UpdateCheck | undefined): string {
   if (data.state === "current") {
     return "Install is disabled — this box is already on the latest release.";
   }
-  return "";
+  if (data.apply || data.hosted) {
+    return "";
+  }
+  // No apply path on a self-hosted box: still say how to install by hand.
+  const tag = data.latest?.tag;
+  return tag
+    ? `Install from this page needs a compose host helper or a native /opt/graphban install. Until then: scripts/deploy.sh ${tag}`
+    : "Install from this page needs a compose host helper or a native /opt/graphban install.";
 }
 
 /**

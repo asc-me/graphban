@@ -184,16 +184,16 @@ function WindowEditor({
           })}
         </div>
         <div className="flex gap-3">
-        <label className="flex flex-col gap-1 text-[12px] text-fg-2">
-          Start
-          <Input aria-label="Upgrade window start" type="time" className="w-28" value={value.start}
-            onChange={(e) => onChange({ ...value, start: e.target.value })} />
-        </label>
-        <label className="flex items-center gap-1 text-[12px] text-fg-2">
-          End
-          <Input aria-label="Upgrade window end" type="time" className="w-28" value={value.end}
-            onChange={(e) => onChange({ ...value, end: e.target.value })} />
-        </label>
+          <label className="flex flex-col gap-1 text-[12px] text-fg-2">
+            Start
+            <Input aria-label="Upgrade window start" type="time" className="w-28" value={value.start}
+              onChange={(e) => onChange({ ...value, start: e.target.value })} />
+          </label>
+          <label className="flex flex-col gap-1 text-[12px] text-fg-2">
+            End
+            <Input aria-label="Upgrade window end" type="time" className="w-28" value={value.end}
+              onChange={(e) => onChange({ ...value, end: e.target.value })} />
+          </label>
         </div>
       </div>
     </fieldset>
