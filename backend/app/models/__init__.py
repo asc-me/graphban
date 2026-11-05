@@ -3555,6 +3555,53 @@ class RuleToggle(Base):
     )
 
 
+class RuleDecisionPull(Base):
+    """BOX side (GRPH-1297): the org rule decision this linked box last applied.
+
+    Singleton (`id="instance"`). The box pulls the cloud's published record and writes the
+    org's toggles under a mirror `Organization` row of the same id, so its projects resolve
+    project → org → platform exactly as a local org decision does. `applied_version` is what
+    the box has actually applied, never what the cloud has published.
+    """
+
+    __tablename__ = "rule_decision_pull"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default="instance")
+    org_id: Mapped[str] = mapped_column(String, default="")
+    applied_version: Mapped[str] = mapped_column(String, default="")
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    profile: Mapped[str | None] = mapped_column(String, nullable=True)
+    profile_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: The box told the cloud it applied `applied_version`. False = report still owed.
+    reported: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+
+
+class BoxRuleSync(Base):
+    """CLOUD side (GRPH-1297): the rule-decision version one linked box (one sync key) last
+    reported applying. Written only from the box's own report, so a box that has not pulled
+    keeps showing its old version."""
+
+    __tablename__ = "box_rule_syncs"
+
+    key_id: Mapped[str] = mapped_column(String, primary_key=True)
+    org_id: Mapped[str] = mapped_column(String, index=True)
+    applied_version: Mapped[str] = mapped_column(String, default="")
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class OrgRuleVersion(Base):
+    """CLOUD side (GRPH-1297): the org's currently published rule-decision version and when it
+    last moved. `changed_at` is when the version changed — a toggle set, a lock, a profile
+    applied, or a toggle dropped — so a box's `overdue` is measured from the real change."""
+
+    __tablename__ = "org_rule_versions"
+
+    org_id: Mapped[str] = mapped_column(String, primary_key=True)
+    version: Mapped[str] = mapped_column(String, default="")
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Document(Base):
     """A ledger row for a non-PRD governing document (GRPH-P64 "Document record").
 
@@ -3775,6 +3822,9 @@ class DesignFinding(Base):
     text_hash: Mapped[str] = mapped_column(String)
     canvas_hash: Mapped[str] = mapped_column(String, default="", server_default="")
     winner: Mapped[str] = mapped_column(String, default="", server_default="")
+    # A zip canvas (GRPH-1306): the member the finding is about and its hash when filed.
+    member: Mapped[str] = mapped_column(String, default="", server_default="")
+    member_hash: Mapped[str] = mapped_column(String, default="", server_default="")
     # open | applied | rejected | withdrawn
     status: Mapped[str] = mapped_column(String, default="open", server_default="open")
     reason: Mapped[str] = mapped_column(Text, default="", server_default="")
@@ -3800,6 +3850,10 @@ class DesignCanvas(Base):
     content_hash: Mapped[str] = mapped_column(String)
     prompt_hash: Mapped[str] = mapped_column(String)
     document_id: Mapped[str] = mapped_column(String)
+    # A zip canvas: [{"path", "hash"}] for each file it contains, and the member that is the
+    # screen's root. NULL/"" for a single-file canvas.
+    members: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    root: Mapped[str] = mapped_column(String, default="", server_default="")
     created_by: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

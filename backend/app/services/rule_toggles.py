@@ -95,7 +95,13 @@ def _row(db: Session, rule_id: str, *, org_id: str | None = None,
 
 def _org_of(db: Session, project_id: str | None) -> str | None:
     p = db.get(Project, project_id) if project_id else None
-    return p.org_id if p else None
+    if p is None:
+        return None
+    if p.org_id:
+        return p.org_id
+    # A linked box's own projects have no org: the org layer is the cloud's decision it pulled.
+    from app.services import rules_org
+    return rules_org.pulled_org_id(db)
 
 
 def _resolve(rule: LibraryRule, proj: RuleToggle | None, org: RuleToggle | None,
@@ -276,6 +282,8 @@ def set_org_toggle(db: Session, org_id: str, rule_id: str, changes: dict, *, act
               "new": _snapshot(row), "projects_changed": changed})
     _switched_off(db, rule_id, [pid for pid in changed if before[pid]["on"]
                                 and not resolve(db, rule_id, pid)["on"]["value"]], user)
+    from app.services import rules_org  # rules_org imports this module → keep lazy
+    rules_org.note_published(db, org_id)  # GRPH-1297: linked boxes measure "overdue" from here
     return {"rule_id": rule_id, "org_id": org_id, **_snapshot(row), "projects_changed": changed}
 
 

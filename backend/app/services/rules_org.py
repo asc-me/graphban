@@ -19,15 +19,20 @@ Everything here is org-admin and premium (D11: `quotas.require_org_rules`, self-
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import time
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFound, Refused, Validation
-from app.models import Item, Project, RuleToggle
+from app.models import (
+    ApiKey, BoxRuleSync, Event, Item, Organization, OrgRuleVersion, Project, RuleDecisionPull,
+    RuleToggle, utcnow,
+)
 from app.security import authz
 from app.services import events as events_svc
 from app.services import quotas
@@ -200,6 +205,7 @@ def apply_profile(db: Session, user, org_id: str, profile_id: str, *, reason: st
         meta={"profile": profile_id, "profile_version": prof.get("version"),
               "pack_version": rule_pack.CURRENT.version, "reason": why,
               "rules": sorted(plan), "projects_changed": applied})
+    note_published(db, org_id)
     return {"org_id": org_id, "profile": profile_id, "applied": sorted(plan),
             "projects_changed": applied}
 
@@ -305,3 +311,123 @@ def recommended(db: Session, user, org_id: str, *, refresh: bool = False) -> dic
         RuleToggle.org_id == org_id, RuleToggle.on.is_(True))))
     return {**hit[2], "suggestions": [s for s in hit[2]["suggestions"] if s["rule_id"] not in org_on],
             "computed_at": hit[1], "age_seconds": int(time.monotonic() - hit[0])}
+
+
+# ---- linked boxes pull the org's decisions (GRPH-1297) -----------------------------------
+#
+# "The box pushes; the control plane never reaches in." The cloud only PUBLISHES a versioned
+# record on the sync credential; the box pulls it, applies it, and reports the version it
+# applied. The cloud's "last applied" is therefore only ever what the box said.
+
+#: A box is flagged when it has not applied the published version this long after the
+#: decision changed (it pulls on its sync cadence).
+EXPECTED_INTERVAL = timedelta(hours=1)
+
+
+def _version(body: dict) -> str:
+    return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
+def _decisions(db: Session, org_id: str) -> dict:
+    org = db.get(Organization, org_id)
+    toggles = [{"rule_id": r.rule_id, "on": r.on, "params": r.params, "locked": bool(r.locked)}
+               for r in db.scalars(select(RuleToggle).where(RuleToggle.org_id == org_id)
+                                   .order_by(RuleToggle.rule_id))]
+    ev = db.scalar(select(Event).where(Event.action == "apply_rule_profile",
+                                       Event.target_type == "org", Event.target_id == org_id)
+                   .order_by(Event.id.desc()).limit(1))
+    profile = ({"id": (ev.meta or {}).get("profile"), "version": (ev.meta or {}).get("profile_version")}
+               if ev is not None else None)
+    return {"org_id": org_id, "org_name": org.name if org else "", "toggles": toggles,
+            "profile": profile}
+
+
+def note_published(db: Session, org_id: str) -> OrgRuleVersion:
+    """CLOUD: stamp the org's published version, moving `changed_at` only when the version
+    moved. Called after every org decision write, and on every read as a backstop, so a
+    dropped toggle or an applied profile moves it just as a set does."""
+    version = _version(_decisions(db, org_id))
+    row = db.get(OrgRuleVersion, org_id)
+    if row is None:
+        row = OrgRuleVersion(org_id=org_id, version=version, changed_at=utcnow())
+        db.add(row)
+        db.commit()
+    elif row.version != version:
+        row.version, row.changed_at = version, utcnow()
+        db.commit()
+    return row
+
+
+def published_decisions(db: Session, org_id: str) -> dict:
+    """CLOUD: the org's rule decisions as one versioned record — toggles with params, locks,
+    and the profile last applied. The version is a hash of the decisions, so it moves exactly
+    when a decision does; `changed_at` is when it last moved."""
+    body = _decisions(db, org_id)
+    stamp = note_published(db, org_id)
+    return {**body, "version": _version(body), "changed_at": stamp.changed_at}
+
+
+def record_box_applied(db: Session, key: ApiKey, org_id: str, version: str) -> BoxRuleSync:
+    """CLOUD: a box reports the version it applied. Per sync key, latest report wins."""
+    row = db.get(BoxRuleSync, key.id)
+    now = utcnow()
+    if row is None:
+        row = BoxRuleSync(key_id=key.id, org_id=org_id)
+        db.add(row)
+    if row.applied_version != version:
+        row.applied_at = now
+    row.org_id, row.applied_version, row.reported_at = org_id, version, now
+    db.commit()
+    return row
+
+
+def box_rule_state(db: Session, key_id: str, published: dict) -> dict:
+    """CLOUD: one box's rule-sync state against the published record — what the console
+    reads as "pending: last synced <time>". Never claims a version the box did not report."""
+    row = db.get(BoxRuleSync, key_id)
+    applied = row.applied_version if row else None
+    current = applied == published["version"]
+    overdue = False
+    if not current:
+        since = published.get("changed_at")
+        if since is not None and since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        overdue = bool(since and utcnow() - since > EXPECTED_INTERVAL)
+    return {"applied_version": applied, "applied_at": row.applied_at if row else None,
+            "published_version": published["version"],
+            "pending": not current, "overdue": overdue}
+
+
+def pulled_org_id(db: Session) -> str | None:
+    """BOX: the org whose decisions this box has applied, if any."""
+    row = db.get(RuleDecisionPull, "instance")
+    return row.org_id if row is not None and row.org_id and row.applied_version else None
+
+
+def apply_decisions(db: Session, record: dict) -> RuleDecisionPull:
+    """BOX: write a pulled record as the org layer of this box's own resolution (project →
+    org → platform, locks hold). Replaces the org's rows wholesale, so a toggle the org has
+    dropped stops applying. Records the version applied and when."""
+    org_id, version = record.get("org_id"), record.get("version")
+    if not org_id or not version or not isinstance(record.get("toggles"), list):
+        raise Validation("a rule-decision record needs org_id, version and toggles")
+    if db.get(Organization, org_id) is None:
+        db.add(Organization(id=org_id, name=record.get("org_name") or org_id))
+        db.flush()
+    wanted = {t["rule_id"]: t for t in record["toggles"]}
+    for row in db.scalars(select(RuleToggle).where(RuleToggle.org_id == org_id)):
+        if row.rule_id not in wanted:
+            db.delete(row)
+    existing = {r.rule_id: r for r in db.scalars(
+        select(RuleToggle).where(RuleToggle.org_id == org_id))}
+    for rid, t in wanted.items():
+        row = existing.get(rid) or RuleToggle(rule_id=rid, org_id=org_id)
+        row.on, row.params, row.locked = t.get("on"), t.get("params"), bool(t.get("locked"))
+        db.add(row)
+    pull = db.get(RuleDecisionPull, "instance") or RuleDecisionPull(id="instance")
+    prof = record.get("profile") or {}
+    pull.org_id, pull.applied_version, pull.applied_at = org_id, version, utcnow()
+    pull.profile, pull.profile_version, pull.reported = prof.get("id"), prof.get("version"), False
+    db.add(pull)
+    db.commit()
+    return pull

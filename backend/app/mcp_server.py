@@ -1460,8 +1460,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "put_canvas",
         "description": (
-            "Store a design export (base64). Counts only against the accepted prompt_hash; "
-            "else an orphan."
+            "Store a design export (base64): bound on the accepted prompt_hash, else orphan. "
+            "Zip: root/member name files."
         ),
         "inputSchema": {
             "type": "object",
@@ -1471,6 +1471,7 @@ TOOLS: list[dict[str, Any]] = [
                 "bytes_b64": {"type": "string"},
                 "mime": {"type": "string"},
                 "prompt_hash": {"type": "string"},
+                "root": {"type": "string"},
             },
             "required": ["design_set_id", "screen", "bytes_b64", "mime", "prompt_hash"],
         },
@@ -1478,8 +1479,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "file_finding",
         "description": (
-            "File a canvas finding. prompt_defect, design_edit, authority_conflict add a "
-            "correction; spec_gap cites a PRD heading and blocks accept_design only."
+            "File a canvas finding. Every kind but spec_gap adds a correction; spec_gap cites "
+            "a PRD heading and blocks only accept_design."
         ),
         "inputSchema": {
             "type": "object",
@@ -1491,6 +1492,7 @@ TOOLS: list[dict[str, Any]] = [
                 "text": {"type": "string"},
                 "canvas_hash": {"type": "string"},
                 "winner": {"type": "string", "enum": ["shipped_decision", "prd", "design"]},
+                "member": {"type": "string"},
                 "canvas_check": {"type": "object"},
             },
             "required": ["design_set_id", "screen", "kind", "text"],
@@ -1499,7 +1501,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "resolve_finding",
         "description": (
-            "Resolve a finding: applied (correction compiled in), rejected or withdrawn (reason)."
+            "Resolve a finding: applied (gates pass), rejected/withdrawn (reason)."
         ),
         "inputSchema": {
             "type": "object",
@@ -4141,12 +4143,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 raise errors.Validation("bytes_b64 is not valid base64") from e
             return design_sets_svc.put_canvas(
                 db, pid, sid, str(args["screen"]), data, str(args["mime"]),
-                str(args["prompt_hash"]), actor=actor)
+                str(args["prompt_hash"]), actor=actor, root=str(args.get("root") or ""))
         if name == "file_finding":
             return design_sets_svc.file_finding(
                 db, pid, sid, str(args["screen"]), str(args["kind"]), str(args["text"]),
                 canvas_hash=str(args.get("canvas_hash") or ""),
                 winner=str(args.get("winner") or ""), actor=actor,
+                member=str(args.get("member") or ""),
                 canvas_check=args.get("canvas_check"))
         return design_sets_svc.resolve_finding(
             db, pid, str(args["finding_id"]), str(args["status"]),

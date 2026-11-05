@@ -102,6 +102,62 @@ def cloud_org_overview(db: Session = Depends(get_db), key: ApiKey = Depends(get_
     return out
 
 
+def _linked(fn, *args, **kwargs):
+    """Run a box-side sync call; `409` when this box is not linked to a cloud — the one answer
+    every sync trigger (push, purge, pull-rules) gives for that state."""
+    try:
+        return fn(*args, **kwargs)
+    except code_sync.NotLinked as e:
+        raise HTTPException(409, str(e))
+
+
+def _key_org(db: Session, key: ApiKey):
+    targets = authz.key_sync_ids(db, key)
+    project = db.get(Project, targets[0]) if targets else None
+    org_id = project.org_id if project is not None else None
+    if not org_id:
+        raise HTTPException(404, "no organization for this credential (needs a 'sync' key "
+                                 "on an org project)")
+    return org_id
+
+
+@router.get("/rule-decisions")
+def cloud_rule_decisions(db: Session = Depends(get_db), key: ApiKey = Depends(get_agent_key)):
+    """CLOUD: the org's rule decisions as a versioned record, readable on the box's sync
+    credential (GRPH-1297). The box pulls it; nothing reaches into the box."""
+    from app.services import rules_org
+
+    out = rules_org.published_decisions(db, _key_org(db, key))
+    out["changed_at"] = out["changed_at"].isoformat() if out["changed_at"] else None
+    return out
+
+
+class RuleDecisionApplied(BaseModel):
+    org_id: str
+    version: str
+
+
+@router.post("/rule-decisions/applied")
+def cloud_rule_decisions_applied(body: RuleDecisionApplied, db: Session = Depends(get_db),
+                                 key: ApiKey = Depends(get_agent_key)):
+    """CLOUD: the box reports the version it applied (the only source of "last synced")."""
+    from app.services import rules_org
+
+    org_id = _key_org(db, key)
+    if body.org_id != org_id:
+        raise HTTPException(404, "no such organization for this credential")
+    row = rules_org.record_box_applied(db, key, org_id, body.version)
+    return {"applied_version": row.applied_version, "applied_at": row.applied_at}
+
+
+@router.post("/pull-rules")
+def trigger_pull_rules(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """BOX: pull and apply the org's rule decisions now, without waiting for the next sync
+    (every `POST /push` pulls them too). Box admin only; `409` when not linked, as `/push`."""
+    refuse_unless_box_admin(db, user, "pull the org's rule decisions")
+    return _linked(code_sync.pull_rule_decisions, db)
+
+
 @router.post("/link", response_model=SyncStatusOut)
 def link_instance(
     body: SyncLinkIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)
@@ -248,10 +304,7 @@ def trigger_push(
     (AL-139) — the `graphban sync` trigger. Only a member who can write the project may
     sync it; a `409` means the instance isn't linked to a cloud."""
     authz.require_writable(db, user.id, body.project_id, "item")
-    try:
-        return code_sync.push(db, project_id=body.project_id)
-    except code_sync.NotLinked as e:
-        raise HTTPException(409, str(e))
+    return _linked(code_sync.push, db, project_id=body.project_id)
 
 
 @router.post("/purge")
@@ -263,10 +316,7 @@ def trigger_purge(
     """Delete THIS project's code graph from its linked cloud tenant (AL-137 D8) and reset the
     local sync manifest. Write-gated; `409` when not linked."""
     authz.require_writable(db, user.id, body.project_id, "item")
-    try:
-        return code_sync.purge(db, project_id=body.project_id)
-    except code_sync.NotLinked as e:
-        raise HTTPException(409, str(e))
+    return _linked(code_sync.purge, db, project_id=body.project_id)
 
 
 # ---- portable export/import (AL-140): a secondary transport with no cloud ----
