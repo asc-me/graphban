@@ -97,6 +97,12 @@ const ROTATE_WHAT: Record<KeyKind, string> = {
   gate: "The old key stops working immediately. You’ll need to update the CI secret before the next run attests.",
 };
 
+/** "Nov 10, 2026" — the row/expiry format; the uppercase is CSS on the mono label. */
+const shortDate = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+const fieldLabel = "mb-1 block text-body text-fg-2";
+const selectCls = "w-[380px] max-w-full rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12px] text-muted";
+
 function useCopied() {
   const [copied, setCopied] = React.useState<string | null>(null);
   const copy = (id: string, text: string) =>
@@ -295,15 +301,15 @@ function MintForm({ kind, onMinted, onCancel }: {
 
   return (
     <div className="mt-3 rounded-[11px] border border-line-2 bg-surface-2 p-3" data-testid={`mint-form-${kind}`}>
-      <label className="mb-1 block font-mono text-[10px] uppercase tracking-wide text-faint" htmlFor={`name-${kind}`}>
-        {info.nameLabel}
+      <label className={fieldLabel} htmlFor={`name-${kind}`}>
+        Name
       </label>
-      <Input id={`name-${kind}`} value={name} onChange={(e) => setName(e.target.value)} placeholder={info.ph} className="max-w-xs" />
+      <Input id={`name-${kind}`} aria-label={info.nameLabel} value={name} onChange={(e) => setName(e.target.value)} placeholder={info.ph} className="w-[380px] max-w-full" />
       <p className="mb-3 mt-1 text-small text-faint">{info.hint}</p>
 
       {kind === "agent" && (
         <div className="mb-3">
-          <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-faint">Scope</div>
+          <div className="mb-1 text-body text-fg-2">Scope</div>
           <div className="mb-1.5 flex gap-1.5" role="group" aria-label="Key scope">
             {([["project", "One project"], ["global", "Global"]] as const).map(([id, label]) => (
               <button
@@ -329,12 +335,12 @@ function MintForm({ kind, onMinted, onCancel }: {
               <p className="mt-1 text-[11.5px] text-st-blocked">
                 A global key can&apos;t supervise a fleet drain — the server refuses its records.
               </p>
-              <label className="mb-1 mt-2 block font-mono text-[10px] uppercase tracking-wide text-faint" htmlFor="checkout-project">
+              <label className={cn(fieldLabel, "mt-2")} htmlFor="checkout-project">
                 Checkout project
               </label>
               <select
                 id="checkout-project" value={checkout} onChange={(e) => setCheckout(e.target.value)}
-                className="rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
+                className={selectCls}
               >
                 {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
@@ -346,14 +352,15 @@ function MintForm({ kind, onMinted, onCancel }: {
 
       {pinned && (
         <div className="mb-3">
-          <label className="mb-1 block font-mono text-[10px] uppercase tracking-wide text-faint" htmlFor={`pin-${kind}`}>
-            {kind === "agent" ? "Pinned project · required" : "Target project · exactly one"}
+          <label className={fieldLabel} htmlFor={`pin-${kind}`}>
+            {kind === "agent" ? "Pinned project" : "Target project"}
+            <span className="text-faint"> · {kind === "agent" ? "required" : "exactly one"}</span>
           </label>
           <select
             id={`pin-${kind}`}
             aria-label={info.targetLabel ?? "Pinned project"}
             value={pin} onChange={(e) => setPin(e.target.value)}
-            className="rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
+            className={selectCls}
           >
             <option value="">Choose a project…</option>
             {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -364,10 +371,10 @@ function MintForm({ kind, onMinted, onCancel }: {
 
       {kind === "gate" && (
         <div className="mb-3">
-          <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-faint">Scopes</div>
+          <div className="mb-1 text-body text-fg-2">Scopes</div>
           <div className="mb-1 flex gap-1.5">
             {["READ", "WRITE", "GATE"].map((s) => (
-              <span key={s} className={cn(chip, "border-line-2 text-fg-2")}>{s}</span>
+              <span key={s} className={cn(chip, s === "GATE" ? "border-accent/40 text-accent" : "border-line-2 text-fg-2")}>{s}</span>
             ))}
           </div>
           <p className="text-small text-faint">Fixed. Attest goes through <code className="font-mono">update_item</code>, which needs <code className="font-mono">write</code>.</p>
@@ -376,7 +383,7 @@ function MintForm({ kind, onMinted, onCancel }: {
 
       {kind === "agent" && (
         <div className="mb-3">
-          <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-faint">Extra tool tiers · optional</div>
+          <div className="mb-1 text-body text-fg-2">Extra tool tiers<span className="text-faint"> · optional</span></div>
           <p className="mb-1.5 text-[11.5px] text-muted">
             None selected means core-only — the default. A tier changes what <code className="font-mono">tools/list</code>{" "}
             advertises; a tool left out is still <em className="not-italic text-fg-2">callable</em>. Fixed at mint. The{" "}
@@ -391,7 +398,7 @@ function MintForm({ kind, onMinted, onCancel }: {
                   onClick={() => setTiers((cur) => (on ? cur.filter((x) => x !== id) : [...cur, id]))}
                   className={cn(
                     "rounded-md border px-2.5 py-1 text-[11.5px] transition-colors",
-                    on ? "border-accent/50 bg-surface-3 text-fg" : "border-control text-muted hover:text-fg-2",
+                    on ? "border-accent/50 bg-surface-3 text-fg" : "border-dashed border-control text-muted hover:text-fg-2",
                   )}
                 >
                   {on ? "✓" : "+"} {label}
@@ -403,13 +410,13 @@ function MintForm({ kind, onMinted, onCancel }: {
       )}
 
       <div className="mb-3">
-        <label className="mb-1 block font-mono text-[10px] uppercase tracking-wide text-faint" htmlFor={`expiry-${kind}`}>
+        <label className={fieldLabel} htmlFor={`expiry-${kind}`}>
           Key expiry
         </label>
         <select
           id={`expiry-${kind}`}
           value={expiry ?? ""} onChange={(e) => setExpiry(e.target.value ? Number(e.target.value) : null)}
-          className="rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
+          className={selectCls}
         >
           <option value="">No expiry</option>
           <option value="30">Expires in 30 days</option>
@@ -422,14 +429,14 @@ function MintForm({ kind, onMinted, onCancel }: {
           for a fresh identity, defeating the authorship ban. Stated here because this is where
           the all-in-one posture is actually chosen. */}
       {kind === "agent" && (
-        <p className="mb-3 text-[12px] text-faint" data-testid="mint-hazard">
+        <p className="mb-3 rounded-md border border-st-review/40 px-3 py-2 text-[12px] text-muted" data-testid="mint-hazard">
           An agent on this key can mint itself a fresh seat, and the authorship ban is keyed on identity. For a fleet,
           mint role-narrowed wave keys on <Link to="/fleet" className="text-fg-2 underline-offset-2 hover:underline">Fleet</Link>.
         </p>
       )}
       {error && <p role="alert" className="mb-2 text-[12px] text-st-blocked">{error}</p>}
-      <div className="flex gap-2">
-        <Button size="sm" variant="ghost" onClick={onCancel}>Cancel</Button>
+      <div className="flex justify-end gap-2">
+        <Button size="sm" variant="outline" onClick={onCancel}>Cancel</Button>
         <Button size="sm" onClick={mint} disabled={!name.trim() || busy}>{info.mint}</Button>
       </div>
     </div>
@@ -442,62 +449,73 @@ function SetUpTab({ openKind, setOpenKind, onMinted }: {
   const { copied, copy } = useCopied();
   return (
     <div>
-      <div className="mb-1 text-[13px] text-fg-2">
-        Set up a project with <code className="font-mono">gban</code>
-      </div>
-      <p className="mb-2 text-[12px] text-muted">
-        This is how a repository gets a key. Run these at a terminal — this page does not do it, and this block mints nothing.
-      </p>
-      <div className="mb-3 rounded-[11px] border border-line-2 bg-surface-2">
-        {GBAN_COMMANDS.map(([cmd, text], i) => (
-          <div key={cmd} className={cn("px-3 py-2.5", i > 0 && "border-t border-line")}>
-            <div className="mb-1 flex items-center gap-2">
-              <code className="font-mono text-[12px] text-fg-2">{cmd}</code>
-              <CopyButton label={`Copy ${cmd}`} text={cmd} id={`cmd${i}`} copied={copied} copy={copy} />
+      <div className="mb-4 rounded-[11px] border border-line-2 bg-surface-2 p-3" data-testid="gban-card">
+        <div className="mb-1 text-lead font-semibold text-fg">
+          Set up a project with <code className="font-mono">gban</code>
+        </div>
+        <p className="mb-2 text-[12px] text-muted">
+          This is how a repository gets a key. Run these at a terminal — this page does not do it, and this block mints nothing.
+        </p>
+        <div className="mb-3 rounded-[11px] border border-line-2 bg-surface-3">
+          {GBAN_COMMANDS.map(([cmd, text], i) => (
+            <div key={cmd} className={cn("px-3 py-2.5", i > 0 && "border-t border-line")}>
+              <div className="mb-1 flex items-center gap-2">
+                <code className="font-mono text-[12px] text-fg-2">{cmd}</code>
+                <CopyButton label={`Copy ${cmd}`} text={cmd} id={`cmd${i}`} copied={copied} copy={copy} />
+              </div>
+              <p className="text-[11.5px] text-muted">{text}</p>
             </div>
-            <p className="text-[11.5px] text-muted">{text}</p>
-          </div>
-        ))}
-      </div>
-      <div className="mb-4 rounded-[11px] border border-line-2 p-3">
-        <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-faint">Not this page either</div>
-        <p className="mb-1.5 text-[12px] leading-relaxed text-muted">
-          <span className="text-fg-2">Wave key</span> — expires after <code className="font-mono">FLEET_KEY_DAYS</code>. Mint it with{" "}
-          <code className="font-mono">gban keys mint</code> or on <Link to="/fleet" className="text-fg-2 underline-offset-2 hover:underline">Fleet</Link>.
-          End wave sweeps only keys tagged <code className="font-mono">fleet_wave</code>; a hand-minted key is never swept.
-        </p>
-        <p className="mb-1.5 text-[12px] leading-relaxed text-muted">
-          <span className="text-fg-2">Integration gate keys</span> — GitHub, Swamp and other integrations that attest checked work.
-          An integration’s own setup mints and stores its key (Swamp: <code className="font-mono">gban swamp setup</code>, into the
-          Swamp vault), never into an MCP config or where <code className="font-mono">gban setup</code> wrote the agent key. An agent
-          that can attest its own work turns the gate into theatre, and nothing errors when it does.{" "}
-          <a className="text-fg-2 underline-offset-2 hover:underline" href={INTEGRATION_DOCS}>Integration docs →</a>
-        </p>
-        <p className="text-[12px] text-muted">Which key is that agent on? <code className="font-mono">gban keys</code></p>
+          ))}
+        </div>
+        <div className="border-t border-line pt-3">
+          <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-faint">Not this page either</div>
+          <p className="mb-1.5 text-[12px] leading-relaxed text-muted">
+            <span className="text-fg-2">Wave key</span> — expires after <code className="font-mono">FLEET_KEY_DAYS</code>. Mint it with{" "}
+            <code className="font-mono">gban keys mint</code> or on <Link to="/fleet" className="text-accent underline-offset-2 hover:underline">Fleet</Link>.
+            End wave sweeps only keys tagged <code className="font-mono">fleet_wave</code>; a hand-minted key is never swept.
+          </p>
+          <p className="mb-1.5 text-[12px] leading-relaxed text-muted">
+            <span className="text-fg-2">Integration gate keys</span> — GitHub, Swamp and other integrations that attest checked work.
+            An integration’s own setup mints and stores its key (Swamp: <code className="font-mono">gban swamp setup</code>, into the
+            Swamp vault), never into an MCP config or where <code className="font-mono">gban setup</code> wrote the agent key. An agent
+            that can attest its own work turns the gate into theatre, and nothing errors when it does.{" "}
+            <a className="text-accent underline-offset-2 hover:underline" href={INTEGRATION_DOCS}>Integration docs →</a>
+          </p>
+          <p className="text-[12px] text-muted">Which key is that agent on? <code className="font-mono">gban keys</code></p>
+        </div>
       </div>
 
-      <div className="mb-1 text-[13px] text-fg-2">Mint a key by hand</div>
+      <div className="mb-1 text-lead font-semibold text-fg">Mint a key by hand</div>
       <p className="mb-2 text-[12px] text-muted">Only when the CLI is the wrong tool. Each kind has its own form.</p>
       <div className="space-y-2">
         {(["agent", "sync", "gate"] as KeyKind[]).map((kind) => {
           const info = KIND_INFO[kind];
           const open = openKind === kind;
           return (
-            <div key={kind} className="rounded-[11px] border border-line-2 bg-surface-2 p-3">
+            <div key={kind} className={cn("rounded-[11px] border bg-surface-2 p-3", open ? "border-accent/40" : "border-line-2")}>
               <div className="flex items-center gap-3">
-                <span className="text-[13px] text-fg-2">{info.title}</span>
-                {info.tag && <span className={cn(chip, "border-accent/40 text-accent")}>{info.tag}</span>}
-                <span className="flex-1 text-[11.5px] text-muted">{info.desc}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[13px] font-semibold text-fg">{info.title}</span>
+                    {info.tag && <span className={cn(chip, "border-st-next/40 text-st-next")}>{info.tag}</span>}
+                  </div>
+                  <div className="text-[11.5px] text-muted">{info.desc}</div>
+                </div>
                 {kind === "gate" && (
-                  <a className="text-[11.5px] text-muted hover:text-fg-2" href={INTEGRATION_DOCS}>Integration docs</a>
+                  <a
+                    href={INTEGRATION_DOCS}
+                    className="flex h-8 flex-none items-center rounded-(--radius-control) border border-st-next/40 px-3 text-[12px] text-st-next hover:bg-surface-3"
+                  >
+                    Integration docs
+                  </a>
                 )}
-                <button
+                <Button
+                  size="sm" variant={open ? "outline" : "default"} className="flex-none"
                   aria-expanded={open} aria-label={info.mint}
                   onClick={() => setOpenKind(open ? null : kind)}
-                  className="rounded-md border border-control px-3 py-1 text-[12px] text-fg-2 hover:text-fg"
                 >
                   {open ? "Close" : "Mint key"}
-                </button>
+                </Button>
               </div>
               {open && <MintForm kind={kind} onMinted={onMinted} onCancel={() => setOpenKind(null)} />}
             </div>
@@ -564,7 +582,7 @@ function MintedWith({ k, projectName }: { k: ApiKey; projectName: (id: string | 
         </div>
         <div className="flex items-baseline gap-3">
           <span className={label}>Expires</span>
-          <span className="text-fg-2">{k.expires_at ? new Date(k.expires_at).toLocaleDateString() : "No expiry"}</span>
+          <span className="text-fg-2">{k.expires_at ? shortDate(new Date(k.expires_at)) : "No expiry"}</span>
         </div>
       </div>
     </div>
@@ -665,7 +683,7 @@ function KeyDialog({ dlg, projectName, onClose, onRelink }: {
         <div className="mb-3 flex items-center gap-3">
           <select
             id="rotate-expiry" value={expiry ?? ""} onChange={(e) => setExpiry(e.target.value ? Number(e.target.value) : null)}
-            className="rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
+            className={selectCls}
           >
             <option value="">No expiry</option>
             <option value="30">30 days from today</option>
@@ -846,8 +864,8 @@ function KeyRow({ k, projectName, onAction }: {
       {/* Line 2: the meta items (expiry, wave tag, origin tag) sit under the name. */}
       <div data-line="meta" className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 pb-2.5 pt-1">
         <span className={cn("font-mono text-meta uppercase tracking-wide", expired ? "text-st-blocked" : "text-faint-2")}
-              title={k.expires_at ? `Expires ${new Date(k.expires_at).toLocaleDateString()}` : undefined}>
-          {!k.expires_at ? "no expiry" : expired ? "expired" : `expires ${new Date(k.expires_at).toLocaleDateString()}`}
+              title={k.expires_at ? `Expires ${shortDate(new Date(k.expires_at))}` : undefined}>
+          {!k.expires_at ? "no expiry" : expired ? <>expired <span>{shortDate(new Date(k.expires_at!))}</span></> : `expires ${shortDate(new Date(k.expires_at))}`}
         </span>
         {k.fleet_wave && (
           <span className="font-mono text-meta uppercase tracking-wide text-[color:var(--color-st-review)]"
@@ -908,8 +926,8 @@ function KeysTab({ rows, loading, error, onRetry, projectName, onAction }: {
         return (
           <section key={g.kind} className="mb-5" aria-label={g.title}>
             <div className="mb-1 flex items-center gap-2">
-              <h3 className="font-mono text-[10px] uppercase tracking-wide text-faint">{g.title}</h3>
-              <span className="font-mono text-[10px] text-faint-2" aria-label={`${g.title} count`}>{live}</span>
+              <h3 className="text-lead font-semibold text-fg">{g.title}</h3>
+              <span className="font-mono text-[10px] text-faint" aria-label={`${g.title} count`}>{live}</span>
             </div>
             <p className="mb-2.5 max-w-[74ch] text-[11.5px] leading-relaxed text-muted">{g.blurb}</p>
             <div className="space-y-2">
@@ -944,7 +962,7 @@ export function ApiKeysPanel() {
   return (
     <div className="mb-6 max-w-2xl">
       <div className="flex items-center justify-between gap-3">
-        <div className="text-lead font-semibold">API keys</div>
+        <h2 className="text-title font-semibold">API keys</h2>
         <div className="flex items-center gap-3">
           {/* AI Providers' "Looking for API keys?" is the other direction. This page mints
               Graphban keys; LLM credentials (what the box runs on) live there. */}
@@ -956,21 +974,17 @@ export function ApiKeysPanel() {
           </Link>
         </div>
       </div>
-      <p className="mb-3 mt-0.5 text-body text-muted">
-        An API key is who the process is — put it in MCP config once. Roles for a wave are{" "}
-        <Link to="/fleet" className="text-fg-2 underline-offset-2 hover:underline">seats on Fleet</Link>, not a new key.
-      </p>
-      <div role="tablist" className="mb-4 flex gap-1.5">
+      <div role="tablist" className="mb-4 mt-3 flex gap-5 border-b border-line-2">
         {tabs.map(([id, label]) => (
           <button
             key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
             className={cn(
-              "flex items-center gap-1.5 rounded-md border px-3 py-1 text-[12px] transition-colors",
-              tab === id ? "border-accent/50 bg-surface-3 text-fg" : "border-control text-muted hover:text-fg-2",
+              "-mb-px flex items-center gap-1.5 border-b-2 px-0.5 pb-2 text-body transition-colors",
+              tab === id ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg-2",
             )}
           >
             {label}
-            {id === "keys" && <span className="font-mono text-[10px] text-faint-2" data-testid="keys-count">{liveCount}</span>}
+            {id === "keys" && <span className="font-mono text-[10px] text-faint" data-testid="keys-count">{liveCount}</span>}
           </button>
         ))}
       </div>

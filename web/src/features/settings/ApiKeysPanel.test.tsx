@@ -142,6 +142,56 @@ describe("tabs", () => {
   });
 });
 
+describe("visual pass (design audit 2026-11-04)", () => {
+  it("underlines the selected tab with the accent and no other", async () => {
+    view();
+    const setup = await screen.findByRole("tab", { name: "Set up" });
+    const keysT = screen.getByRole("tab", { name: /Keys/ });
+    expect(setup.className).toMatch(/border-accent/);
+    expect(keysT.className).not.toMatch(/border-accent/);
+  });
+
+  it("drops the subtitle line", async () => {
+    view();
+    await screen.findByRole("tab", { name: "Set up" });
+    expect(screen.queryByText(/An API key is who the process is/)).toBeNull();
+  });
+
+  it("holds the gban title and the notes in one card", async () => {
+    view();
+    const title = await screen.findByText(/Set up a project with/);
+    const notes = screen.getByText(/Not this page either/i);
+    expect(title.closest("[data-testid='gban-card']")).not.toBeNull();
+    expect(title.closest("[data-testid='gban-card']")).toBe(notes.closest("[data-testid='gban-card']"));
+  });
+
+  it("draws each closed Mint key button in the default lime variant", async () => {
+    view();
+    await screen.findByRole("tab", { name: "Set up" });
+    for (const n of ["Mint agent key", "Mint link key", "Mint gate key"]) {
+      expect(screen.getByRole("button", { name: n }).className).toContain("bg-accent");
+    }
+  });
+
+  it("labels the agent form in sentence case, not uppercase mono", async () => {
+    view();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Mint agent key" }));
+    for (const t of ["Name", "Scope", "Key expiry"]) {
+      expect(screen.getByText(t).className).not.toMatch(/uppercase/);
+    }
+  });
+
+  it("writes a group heading in sentence case and a row expiry as a short date", async () => {
+    keyList = [key({ id: "x", name: "soon", expires_at: "2099-11-10T12:00:00Z" })];
+    view();
+    await keysTab();
+    const h = await screen.findByRole("heading", { name: "Agent keys" });
+    expect(h.className).not.toMatch(/uppercase/);
+    expect(await screen.findByText(/expires Nov 10, 2099/i)).toBeInTheDocument();
+  });
+});
+
 describe("minting", () => {
   it("posts origin web and no scopes override for an agent key", async () => {
     view();
