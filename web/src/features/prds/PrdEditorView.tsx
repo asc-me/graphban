@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, ChevronDown, Copy, FlaskConical, ListChecks } from "lucide-react";
+import { Check, ChevronDown, Copy, FlaskConical, ListChecks } from "lucide-react";
 import * as React from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
@@ -17,7 +17,8 @@ import { cn } from "@/lib/cn";
 import { lineDiff } from "@/lib/diff";
 import { Markdown } from "@/lib/markdown";
 import { publicApi } from "@/lib/publicApi";
-import { keys, useGrillState, useIntentDiff, useItems, usePrd, usePrdRequests, usePrdVersions, useUpdateItem } from "@/lib/queries";
+import { keys, useGrillState, useIntentDiff, useItems, usePrd, usePrdRequests, usePrdVersions, useSpecPrd, useUpdateItem } from "@/lib/queries";
+import { useProjectCtx } from "@/features/ProjectContext";
 import type { Item, PrdStatus, PrdVersion, PrototypeVerdictOut } from "@/lib/types";
 
 import { AssistantPanel } from "@/features/assistant/AssistantPanel";
@@ -29,6 +30,7 @@ import { PrdRequestsPanel } from "./PrdRequests";
 import { AcceptancePanel } from "./AcceptancePanel";
 import { IntentDiff } from "./IntentDiff";
 import { TargetActivity } from "@/features/activity/TargetActivity";
+import { DesignSetSummary, HashChip, LinkedItemsList, ReaderHeader, errText } from "./SpecReaderView";
 
 const AI_COMMANDS = [
   { key: "expand", label: "Expand" },
@@ -41,11 +43,23 @@ const AI_COMMANDS = [
  *  only through the labels. */
 type RightTab = "preview" | "requests" | "assistant" | "grill" | "coverage" | "acceptance" | "history";
 
+/** Why a status is visible in the menu and cannot be picked (GRPH-1319). */
+const UNSETTABLE: Record<"approved" | "closed", string> = {
+  approved: "Finishing the grill approves a PRD; it is not picked.",
+  closed: "Closing the PRD closes it; it is not picked.",
+};
+
+/** The PRD document of the Spec reader (GRPH-1319). Also the editor it always was: the
+ *  views below operate on the PRD that is open. `/prds/new` is an empty draft with no id;
+ *  the first save creates it. */
 export function PrdEditorView() {
-  const { id = "" } = useParams();
-  const navigate = useNavigate();
+  const { id: routeId = "" } = useParams();
+  const isNew = routeId === "new";
+  const id = isNew ? "" : routeId;
   const qc = useQueryClient();
+  const { activeId } = useProjectCtx();
   const { data: prd } = usePrd(id);
+  const { data: facts } = useSpecPrd(prd?.project_id ?? "", id);
   const { data: versions = [] } = usePrdVersions(id);
   const { data: grill } = useGrillState(id);
   const { data: diff } = useIntentDiff(id);
@@ -58,6 +72,7 @@ export function PrdEditorView() {
   const { data: linkedReqs = [] } = usePrdRequests(id);
   const [diffVersion, setDiffVersion] = React.useState<PrdVersion | null>(null);
   const [saving, setSaving] = React.useState(false);
+  const [saveErr, setSaveErr] = React.useState("");
   const [aiBusy, setAiBusy] = React.useState<string | null>(null);
 
   // Load draft when the PRD arrives / changes id.
@@ -68,30 +83,45 @@ export function PrdEditorView() {
     }
   }, [prd?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  if (isNew) {
+    return <NewPrdReader projectId={activeId} />;
+  }
   if (!prd) {
     return <div className="flex h-full items-center justify-center text-[13px] text-muted">Loading…</div>;
   }
 
   const dirty = title !== prd.title || body !== prd.body;
+  const closed = prd.status === "closed";
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: keys.prd(id) });
     qc.invalidateQueries({ queryKey: keys.prds });
+    qc.invalidateQueries({ queryKey: ["spec-prd"] });
   };
 
   async function save() {
     setSaving(true);
+    setSaveErr("");
     try {
-      await api.updatePrd(id, { title, body });
+      // Saving an approved PRD writes the next draft on the same row; the baseline stays
+      // what default search returns. A closed PRD is terminal and the server says so.
+      await api.updatePrd(id, prd?.status === "approved" ? { title, body, status: "draft" } : { title, body });
       refresh();
+    } catch (e) {
+      setSaveErr(errText(e));
     } finally {
       setSaving(false);
     }
   }
 
   async function setStatus(status: PrdStatus) {
-    await api.updatePrd(id, { status });
-    refresh();
+    setSaveErr("");
+    try {
+      await api.updatePrd(id, { status });
+      refresh();
+    } catch (e) {
+      setSaveErr(errText(e));
+    }
   }
 
   async function snapshot() {
@@ -118,10 +148,7 @@ export function PrdEditorView() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* Header */}
-      <div className="flex flex-none items-center gap-3 border-b border-line px-5 py-3">
-        <button onClick={() => navigate("/prds")} className="text-faint hover:text-fg">
-          <ArrowLeft size={16} />
-        </button>
+      <ReaderHeader kind="PRD">
         <span className="font-mono text-small text-faint">{prd.id}</span>
         <input
           value={title}
@@ -141,7 +168,10 @@ export function PrdEditorView() {
         >
           {saving ? "Saving…" : dirty ? "Save" : "Saved"}
         </Button>
-      </div>
+      </ReaderHeader>
+
+      <SpecFactsBand status={prd.status} facts={facts} closed={closed} />
+      {saveErr && <p className="mx-5 mt-2 text-small text-st-blocked" data-testid="spec-error">{saveErr}</p>}
 
       {/* Toolbar */}
       <div className="flex flex-none items-center gap-2 border-b border-line px-5 py-2">
@@ -196,6 +226,7 @@ export function PrdEditorView() {
               <div className="flex justify-end">
                 <LinkItemsMenu prdId={id} linked={prd.linked} onChange={refresh} />
               </div>
+              <LinkedItemsList projectId={prd.project_id} linked={prd.linked} />
               <PrdRequestsPanel prdId={id} projectId={prd.project_id} />
             </div>
           ) : rightTab === "assistant" ? (
@@ -225,6 +256,83 @@ export function PrdEditorView() {
               <TargetActivity projectId={prd.project_id} targetType="prd" targetId={id} />
             </>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Status, hashes and the design set: what the reader says about the document it opened. */
+function SpecFactsBand({ status, facts, closed }: { status: PrdStatus; facts?: import("@/lib/api").SpecPrdFacts; closed: boolean }) {
+  return (
+    <div className="flex flex-none flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-5 py-2 text-small text-muted" data-testid="spec-facts">
+      {facts?.baseline_hash ? (
+        <HashChip label="baseline" hash={facts.baseline_hash} />
+      ) : facts ? (
+        <span className="font-mono text-[10.5px] text-faint" data-testid="no-baseline">no baseline</span>
+      ) : null}
+      {facts && status !== "approved" && facts.baseline_hash && <HashChip label="live" hash={facts.content_hash} />}
+      {status === "draft" && (
+        <span data-testid="draft-line">A draft is not the spec. Default search does not return it.</span>
+      )}
+      {status === "approved" && (
+        <span data-testid="approved-line">Saving writes the next draft. This baseline stays what search returns.</span>
+      )}
+      {closed && <span data-testid="closed-line">A closed PRD takes no edits. Changes after the close become a new PRD.</span>}
+      {facts?.design_set && <DesignSetSummary ds={facts.design_set} />}
+    </div>
+  );
+}
+
+/** An empty draft with no id and no baseline. The first save creates the PRD. */
+function NewPrdReader({ projectId }: { projectId: string }) {
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+  const [title, setTitle] = React.useState("");
+  const [body, setBody] = React.useState("");
+  const [saving, setSaving] = React.useState(false);
+  const [err, setErr] = React.useState("");
+
+  async function save() {
+    setSaving(true);
+    setErr("");
+    try {
+      const prd = await api.createPrd(projectId, title.trim() || "Untitled PRD", "blank", body);
+      qc.invalidateQueries({ queryKey: keys.prds });
+      navigate(`/prds/${prd.id}`, { replace: true });
+    } catch (e) {
+      setErr(errText(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col" data-testid="new-prd-reader">
+      <ReaderHeader kind="PRD">
+        <span className="font-mono text-small text-faint">no id yet</span>
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Title"
+          className="min-w-0 flex-1 bg-transparent text-[15px] font-semibold outline-none placeholder:text-faint"
+        />
+        <Button size="sm" onClick={save} disabled={saving || !projectId}>{saving ? "Saving…" : "Save"}</Button>
+      </ReaderHeader>
+      <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-2 text-small text-muted" data-testid="spec-facts">
+        <span className="font-mono text-[10.5px] text-faint" data-testid="no-baseline">no baseline</span>
+        <span data-testid="draft-line">A draft is not the spec. Default search does not return it.</span>
+      </div>
+      {err && <p className="mx-5 mt-2 text-small text-st-blocked" data-testid="spec-error">{err}</p>}
+      <div className="grid min-h-0 flex-1 grid-cols-2">
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          spellCheck={false}
+          className="min-h-0 resize-none border-r border-control bg-surface/40 p-5 font-mono text-body leading-relaxed text-fg-2 outline-none"
+        />
+        <div className="min-h-0 overflow-y-auto p-5">
+          <Markdown source={body} />
         </div>
       </div>
     </div>
@@ -277,6 +385,16 @@ function StatusMenu({
             <span className="font-mono text-small uppercase tracking-wide" style={{ color: PRD_STATUS_META[s].color }}>
               {PRD_STATUS_META[s].label}
             </span>
+          </DropdownMenuItem>
+        ))}
+        {/* Visible and refused, each with its reason (GRPH-1319). */}
+        {(["approved", "closed"] as const).map((s) => (
+          <DropdownMenuItem key={s} disabled data-testid={`status-refused-${s}`}>
+            <span className="h-1.5 w-1.5 rounded-full" style={{ background: PRD_STATUS_META[s].color }} />
+            <span className="font-mono text-small uppercase tracking-wide" style={{ color: PRD_STATUS_META[s].color }}>
+              {PRD_STATUS_META[s].label}
+            </span>
+            <span className="ml-2 text-meta text-faint">{UNSETTABLE[s]}</span>
           </DropdownMenuItem>
         ))}
         <ApprovedIsEarned complete={complete} />

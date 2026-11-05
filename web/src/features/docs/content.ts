@@ -93,6 +93,16 @@ const CONTENT: Record<string, DocEntry> = {
     ],
   },
 
+  "spec-reader": {
+    badge: "SPEC READER",
+    title: "Spec reader",
+    tagline: "The preamble or a design set's constraints, opened from Specs.",
+    sections: [
+      { num: 1, h: "Preamble", b: "Edit and save writes the next preamble version. Design sets pinned to the old version show as stale until they are compiled again." },
+      { num: 2, h: "Set constraints", b: "Not hand-edited: a candidate body is accepted as written, by the person in this session. Compile stays refused until then, and a later change to the body returns the set to not accepted." },
+    ],
+  },
+
   "prd-editor": {
     badge: "PRD EDITOR",
     title: "PRD editor",
@@ -612,6 +622,7 @@ export function docFor(pathname: string): DocEntry {
   const { path, projectRoot } = hostedView(pathname);
   if (projectRoot) return CONTENT["project-home"];
 
+  if (path === "/prds/preamble" || /^\/prds\/constraints\/[^/]+$/.test(path)) return CONTENT["spec-reader"];
   if (/^\/prds\/[^/]+$/.test(path)) return CONTENT["prd-editor"];
   if (/^\/lessons(?:\/[^/]+)?$/.test(path)) return CONTENT["/lessons"];
   if (path === "/home") return CONTENT["/home"];

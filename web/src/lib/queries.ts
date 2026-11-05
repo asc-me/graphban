@@ -33,6 +33,9 @@ export const keys = {
   prds: ["prds"] as const,
   prd: (id: string) => ["prd", id] as const,
   prdVersions: (id: string) => ["prd-versions", id] as const,
+  specPrd: (projectId: string, id: string) => ["spec-prd", projectId, id] as const,
+  specPreamble: (projectId: string) => ["spec-preamble", projectId] as const,
+  specDesignSet: (setId: string) => ["spec-design-set", setId] as const,
   prdRequests: (id: string) => ["prd-requests", id] as const,
   prdSuggestions: (id: string) => ["prd-request-suggestions", id] as const,
   closeReport: (id: string) => ["close-report", id] as const,
@@ -374,6 +377,34 @@ export function usePrd(id: string) {
   return useQuery({ queryKey: keys.prd(id), queryFn: () => api.prd(id), enabled: !!id });
 }
 
+/** Hashes and design set for the Spec reader's header (GRPH-1319). */
+export function useSpecPrd(projectId: string, id: string) {
+  return useQuery({
+    queryKey: keys.specPrd(projectId, id),
+    queryFn: () => api.specPrd(projectId, id),
+    enabled: !!projectId && !!id,
+  });
+}
+
+/** The project preamble. A 404 is "not found", which the reader says — not an empty body. */
+export function useSpecPreamble(projectId: string) {
+  return useQuery({
+    queryKey: keys.specPreamble(projectId),
+    queryFn: () => api.specPreamble(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useSpecDesignSet(setId: string) {
+  return useQuery({
+    queryKey: keys.specDesignSet(setId),
+    queryFn: () => api.specDesignSet(setId),
+    enabled: !!setId,
+    retry: false,
+  });
+}
+
 export function usePrdVersions(id: string) {
   return useQuery({ queryKey: keys.prdVersions(id), queryFn: () => api.prdVersions(id), enabled: !!id });
 }
@@ -485,6 +516,35 @@ export function useReindexStatus(projectId: string) {
     queryFn: () => api.reindexStatus(projectId),
     enabled: !!projectId,
     refetchInterval: (q) => (q.state.data?.running ? 2000 : false),
+  });
+}
+
+/** Sync storage facts + row sync states (GRPH-1320). A GET is a read; Run sync is the write. */
+export function useSyncStorage(projectId?: string) {
+  return useQuery({
+    queryKey: ["sync-storage", projectId],
+    queryFn: () => api.syncStorage(projectId!),
+    enabled: !!projectId,
+  });
+}
+
+export function useSaveSyncStorage(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { folder_path?: string; blob_dir?: string }) => api.saveSyncStorage(projectId, body),
+    onSuccess: (data) => qc.setQueryData(["sync-storage", projectId], data),
+  });
+}
+
+export function useRunSyncStorage(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.runSyncStorage(projectId),
+    onSuccess: (data) => {
+      qc.setQueryData(["sync-storage", projectId], data);
+      // A run can import a draft or pull a file edit into a draft body.
+      qc.invalidateQueries({ queryKey: keys.prds });
+    },
   });
 }
 

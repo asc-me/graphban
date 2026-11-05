@@ -213,9 +213,10 @@ def put_document(
         raise errors.Validation(
             f"put_document does not write {kind!r} rows",
             hint="prompt, constraint, review and canvas rows come from the design-set operations")
-    if not created_by.startswith("key:"):
+    if not created_by.startswith(("key:", "user:")):
         # A registered agent id is not a person. `caller_identity` stamps a bare credential
-        # as `key:<name>`; anything else is an agent seat.
+        # as `key:<name>`, and a signed-in person (the web reader) is `user:<id>`; anything
+        # else is an agent seat.
         raise errors.Validation(
             "preamble rows are written by a person, not an agent seat",
             hint="call put_document with a human credential")
@@ -277,11 +278,12 @@ def to_dict(doc: Document) -> dict:
     return out
 
 
-def default_backend():
-    from app.config import settings
-    from app.services.drive_sync import LocalFolderBackend
+def default_backend(db: Session | None = None):
+    """The box's blob directory (GRPH-1320: `sync_storage_config.blob_dir`, default
+    `<SYNC_DIR>/blobs`). Changing it does not move bytes already stored."""
+    from app.services.sync_storage import blob_backend
 
-    return LocalFolderBackend(settings.sync_dir)
+    return blob_backend(db)
 
 
 def _store(db: Session, doc: Document, data: bytes, backend) -> None:
@@ -305,7 +307,7 @@ def put_blob(
     call, so a backend failure leaves a `pending` row and a retry stores the same hash."""
     if kind not in KINDS:
         raise errors.Validation(f"unknown kind {kind!r}", hint=f"one of {', '.join(KINDS)}")
-    backend = backend or default_backend()
+    backend = backend or default_backend(db)
     digest = hashlib.sha256(data).hexdigest()
     rows = list(db.scalars(select(Document).where(
         Document.project_id == project_id, Document.kind == kind,
@@ -341,7 +343,7 @@ def read_blob(db: Session, project_id: str, doc_id: str, backend=None) -> tuple[
             hint=f"blob {doc.content_hash} is pending; a retry of the put stores that same hash")
     if doc.blob_status != "stored":
         raise errors.NotFound(f"document has no bytes: {doc_id}")
-    data = (backend or default_backend()).get_bytes(doc.blob_key)
+    data = (backend or default_backend(db)).get_bytes(doc.blob_key)
     if data is None:
         raise errors.NotFound(f"blob {doc.blob_key} missing from the backend")
     return data, doc.blob_mime

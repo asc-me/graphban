@@ -950,6 +950,24 @@ export const api = {
   updatePrd: (id: string, body: { title?: string; status?: PrdStatus; body?: string }) =>
     request<Prd>(`/prds/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   prdVersions: (id: string) => request<PrdVersion[]>(`/prds/${id}/versions`),
+  // The Spec reader (GRPH-1319). Writes go to the services that own each record.
+  specPrd: (projectId: string, id: string) =>
+    request<SpecPrdFacts>(`/specs/prds/${id}?project_id=${encodeURIComponent(projectId)}`),
+  specPreamble: (projectId: string) =>
+    request<SpecPreamble>(`/specs/preamble?project_id=${encodeURIComponent(projectId)}`),
+  putPreamble: (projectId: string, body: string, citesPrdId: string) =>
+    request<SpecPreamble>("/specs/preamble", {
+      method: "PUT",
+      body: JSON.stringify({ project_id: projectId, body, cites_prd_id: citesPrdId }),
+    }),
+  specDesignSet: (setId: string) => request<SpecDesignSet>(`/specs/design-sets/${setId}`),
+  acceptSetConstraints: (setId: string) =>
+    request<SpecDesignSet>(`/specs/design-sets/${setId}/accept-constraints`, { method: "POST" }),
+  compileScreen: (setId: string, screen?: string) =>
+    request<SpecDesignSet>(`/specs/design-sets/${setId}/compile`, {
+      method: "POST",
+      body: JSON.stringify(screen ? { screen } : {}),
+    }),
   snapshotPrd: (id: string, note: string) =>
     request<Prd>(`/prds/${id}/versions`, { method: "POST", body: JSON.stringify({ note }) }),
   linkPrd: (id: string, itemId: string, add: boolean) =>
@@ -1205,6 +1223,16 @@ export const api = {
     request<PlatformConfig>(`/platform/gdrive/disconnect${projectQuery(projectId)}`, { method: "POST" }),
   gdriveSync: (projectId: string) =>
     request<SyncReport>(`/platform/gdrive/sync${projectQuery(projectId)}`, { method: "POST" }),
+  // Sync storage on Specs (GRPH-1320): folder path, blob directory, index; row sync states.
+  syncStorage: (projectId: string) =>
+    request<SyncStorageStatus>(`/platform/sync-storage${projectQuery(projectId)}`),
+  saveSyncStorage: (projectId: string, body: { folder_path?: string; blob_dir?: string }) =>
+    request<SyncStorageStatus>(`/platform/sync-storage${projectQuery(projectId)}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  runSyncStorage: (projectId: string) =>
+    request<SyncStorageStatus>(`/platform/sync-storage/run${projectQuery(projectId)}`, { method: "POST" }),
 
   // Local↔cloud sync link (AL-141). Status/link/unlink are instance-wide; push/purge/
   // export/import are per-project (the credential is resolved server-side).
@@ -1384,6 +1412,60 @@ export const api = {
 
 export type { GitopsPatch, GitopsView, Status };
 
+/** A document body's state in the Spec reader (GRPH-1319). Never a blank string standing in
+ *  for "pending" or "unreadable": `body` is null unless `body_state` is `stored`. */
+export type SpecBodyState = "stored" | "pending" | "unreadable" | "absent";
+
+export interface SpecPrdFacts {
+  prd_id: string;
+  status: PrdStatus;
+  version: string;
+  content_hash: string;
+  /** null = no baseline, which the reader labels; never an empty hash. */
+  baseline_hash: string | null;
+  baseline_version: string | null;
+  design_set: SpecDesignSet | null;
+}
+
+export interface SpecScreen {
+  screen: string;
+  tier: string;
+  tier_confirmed: boolean;
+  /** none = no prompt yet; compiled = a candidate nobody accepted. */
+  prompt: "none" | "compiled" | "accepted" | "stale";
+  /** Why a compile of this screen would be refused now. Empty = compile is offered. */
+  compile_refused: string[];
+}
+
+export interface SpecDesignSet {
+  id: string;
+  prd_id: string;
+  status: string;
+  stale_reason: string;
+  constraints_hash: string;
+  constraints_accepted: boolean;
+  preamble_version: number;
+  body_state: SpecBodyState;
+  body: string | null;
+  screens: SpecScreen[];
+  history: { constraints_hash: string; person: string; relayed_by: string; current: boolean }[];
+}
+
+export interface SpecPreamble {
+  id: string;
+  version: number;
+  title: string;
+  cites_prd_id: string;
+  prd_hash: string;
+  content_hash: string;
+  created_by: string;
+  sections: { heading: string; text: string }[];
+  body_state: SpecBodyState;
+  body: string | null;
+  history: { version: number; content_hash: string; created_by: string; governing: boolean }[];
+  stale_sets: { id: string; prd_id: string; status: string; stale_reason: string; preamble_version: number }[];
+}
+
 /** What one Drive sync run reports. The conflict record page reads it from router state. */
 export interface SyncReport {
   folder: string;
@@ -1397,6 +1479,58 @@ export interface SyncReport {
   /** `failed` when a file write failed; the ledger row is left as it was. Not a conflict. */
   export_status?: "ok" | "failed";
   in_sync: number;
+  /** Files the box could not read (permissions, corrupt bytes). Not conflicts, never blank bodies. */
+  read_failures?: SyncReadFailure[];
+}
+
+export interface SyncReadFailure {
+  file_name: string;
+  path: string;
+  error: string;
+  /** The PRD whose file it is, when the last sync named it; null for a stray file. */
+  prd_id: string | null;
+}
+
+/** One sync-storage path fact. `ok` false means the box cannot read it; `error` says why. */
+export interface SyncPathFact {
+  path: string;
+  /** False: the default under SYNC_DIR is in effect. */
+  configured: boolean;
+  ok: boolean;
+  writable: boolean;
+  error: string;
+  /** Folder only: where this project's files go, `<folder>/<project>`. */
+  project_path?: string;
+}
+
+export type RowSyncState =
+  | "in_sync"
+  | "not_exported"
+  | "ledger_changed"
+  | "file_changed"
+  | "conflict"
+  | "read_failed"
+  | "unknown";
+
+export interface SyncStorageRow {
+  prd_id: string;
+  title: string;
+  status: string;
+  sync_state: RowSyncState;
+  file_name: string;
+  error: string;
+}
+
+export interface SyncStorageStatus {
+  folder: SyncPathFact;
+  blob_dir: SyncPathFact;
+  index: { available: boolean; reason: string; chunks: number | null; mode: "vector" | "lexical" | null };
+  rows: SyncStorageRow[];
+  /** What a run would do, read without syncing. Null when the folder cannot be read. */
+  report: SyncReport | null;
+  last_run: { at: string | null; export_status: "ok" | "failed" | "not_run" | null; error: string };
+  /** Present on the run response only: the report of the sync that just ran (null if it could not run). */
+  run?: SyncReport | null;
 }
 
 /** One hash conflict from a sync report: facts only, neither body. */
