@@ -120,9 +120,40 @@ def _parse_release(body: dict) -> dict | None:
         if str(item.get("name") or "") == want:
             asset = str(item.get("browser_download_url") or "").strip()
             break
+    contract = ""
+    for item in body.get("assets") or []:
+        if str(item.get("name") or "") == CONTRACT_ASSET:
+            contract = str(item.get("browser_download_url") or "").strip()
+            break
     raw = body.get("body")
     notes_body = "" if raw is None else str(raw)
-    return {"tag": tag, "url": url, "asset": asset, "notes_body": notes_body}
+    return {"tag": tag, "url": url, "asset": asset, "notes_body": notes_body,
+            "contract_asset": contract}
+
+
+#: The rule-primitive contract file a release carries (docs/rule-primitive-contract.json).
+CONTRACT_ASSET = "rule-primitive-contract.json"
+_contract_cache: dict[str, str] = {}
+
+
+def fetch_contract_api(url: str) -> str | None:
+    """The `api_version` in a release's contract file, or None when it cannot be read.
+    Never raises; a definite answer is remembered (a release asset does not change)."""
+    if not url:
+        return None
+    if url in _contract_cache:
+        return _contract_cache[url]
+    try:
+        resp = httpx.get(url, headers=_GH_HEADERS, timeout=_FETCH_TIMEOUT, follow_redirects=True)
+        if resp.status_code != 200:
+            return None
+        api = resp.json().get("api_version")
+    except (httpx.HTTPError, OSError, ValueError, TypeError, AttributeError):
+        return None
+    if not isinstance(api, str) or not api:
+        return None
+    _contract_cache[url] = api
+    return api
 
 
 def notes_payload(rel: dict | None, tag: str) -> dict:
@@ -376,6 +407,7 @@ def check(*, fetch=None, fetch_running=None, run=None, hosted: bool | None = Non
             "tag": latest_tag,
             "url": str(raw.get("url") or ""),
             "asset": str(raw.get("asset") or ""),
+            "contract_asset": str(raw.get("contract_asset") or ""),
         }
     hosted_flag = settings.hosted_mode if hosted is None else hosted
     present = helper if helper is not None else helper_present()
