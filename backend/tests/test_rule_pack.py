@@ -6,6 +6,7 @@ repo. A primitive change that breaks a template fails these tests, and so the pr
 """
 import base64
 import io
+import json
 import tarfile
 from pathlib import Path
 
@@ -479,21 +480,79 @@ def test_compat_compatible_refused_and_unknown(client, trusted):
 def test_update_check_reports_pack_compat(client, trusted, monkeypatch):
     from app.services import instance_update as U
     h = _login(client)
-    payload = {"state": "available", "latest": {"tag": "2099.1.1", "contract_asset": "u"}}
+    payload = {"state": "available", "latest": {"tag": "2099.1.1"}}
+    asked = []
     monkeypatch.setattr(U, "check_cached", lambda refresh=False: dict(payload))
-    monkeypatch.setattr(U, "fetch_contract_api", lambda url: "1.5.0")
+    monkeypatch.setattr(U, "fetch_contract_api", lambda tag: asked.append(tag) or "1.5.0")
     assert client.get("/api/platform/update-check", headers=h).json()["pack_compat"] is None
     art, sig = build(FIX / "api1")
     client.post("/api/rules/pack/accept", json=_body(art, sig, sha256=P.sha256_of(art)),
                 headers=h)
     got = client.get("/api/platform/update-check", headers=h).json()
     assert got["pack_compat"]["state"] == "compatible"
-    monkeypatch.setattr(U, "fetch_contract_api", lambda url: None)
+    assert asked and asked[-1] == "2099.1.1"  # the contract is read for the available tag
+    monkeypatch.setattr(U, "fetch_contract_api", lambda tag: None)
     got = client.get("/api/platform/update-check", headers=h).json()
     assert got["pack_compat"]["state"] == "unknown" and got["pack_compat"]["reason"]
-    monkeypatch.setattr(U, "fetch_contract_api", lambda url: "2.0.0")
+    monkeypatch.setattr(U, "fetch_contract_api", lambda tag: "2.0.0")
     got = client.get("/api/platform/update-check", headers=h).json()
     assert got["pack_compat"]["state"] == "refused" and got["pack_compat"]["reason"]
+
+
+class _Resp:
+    def __init__(self, status, body):
+        self.status_code, self._body = status, body
+
+    def json(self):
+        return self._body
+
+
+def _fresh_contract_cache(U, monkeypatch):
+    monkeypatch.setattr(U, "_contract_cache", {})
+    monkeypatch.setattr(U, "_contract_miss", {})
+
+
+def test_contract_is_read_from_the_tagged_tree_where_it_ships(monkeypatch):
+    """The contract ships as docs/rule-primitive-contract.json in the tagged tree (the release
+    tarball is that tree); no release asset carries it. Read it there."""
+    from app.services import instance_update as U
+    repo = Path(__file__).resolve().parents[2]
+    shipped = repo / "docs" / "rule-primitive-contract.json"
+    assert shipped.is_file()
+    assert U.CONTRACT_URL.endswith("/{tag}/docs/rule-primitive-contract.json")
+    _fresh_contract_cache(U, monkeypatch)
+    urls = []
+
+    def get(url, **kw):
+        urls.append(url)
+        return _Resp(200, json.loads(shipped.read_text()))
+    monkeypatch.setattr(U.httpx, "get", get)
+    want = json.loads(shipped.read_text())["api_version"]
+    assert U.fetch_contract_api("v2099.1.1") == want
+    assert urls == ["https://raw.githubusercontent.com/asc-me/graphban/2099.1.1/"
+                    "docs/rule-primitive-contract.json"]
+    assert U.fetch_contract_api("2099.1.1") == want and len(urls) == 1  # a tag does not change
+
+
+def test_contract_miss_is_cached_briefly_not_refetched_every_check(monkeypatch):
+    from app.services import instance_update as U
+    _fresh_contract_cache(U, monkeypatch)
+    calls = []
+
+    def get(url, **kw):
+        calls.append(url)
+        raise U.httpx.ConnectError("down")
+    monkeypatch.setattr(U.httpx, "get", get)
+    assert U.fetch_contract_api("2099.1.1") is None
+    assert U.fetch_contract_api("2099.1.1") is None
+    assert len(calls) == 1  # the miss is remembered
+    U._contract_miss["2099.1.1"] -= U.CONTRACT_MISS_TTL + 1  # the miss ages out
+    monkeypatch.setattr(U.httpx, "get", lambda url, **kw: _Resp(404, {}))
+    assert U.fetch_contract_api("2099.1.1") is None
+    monkeypatch.setattr(U.httpx, "get", lambda url, **kw: _Resp(200, {"api_version": ""}))
+    U._contract_miss.clear()
+    assert U.fetch_contract_api("2099.1.1") is None  # malformed is unknown, not compatible
+    assert U.fetch_contract_api("") is None and U.fetch_contract_api("unknown") is None
 
 
 def test_pack_needing_a_newer_server_reports_installed_not_loaded_with_reason(client, trusted):

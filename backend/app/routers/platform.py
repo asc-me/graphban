@@ -97,7 +97,7 @@ def update_check(refresh: bool = False, db: Session = Depends(get_db),
     compat = None
     if latest and out.get("state") == "available":
         compat = rule_pack_svc.compat(
-            db, latest["tag"], instance_update.fetch_contract_api(latest.get("contract_asset", "")))
+            db, latest["tag"], instance_update.fetch_contract_api(latest["tag"]))
     out["pack_compat"] = compat  # null when no pack is installed or no newer release
     return out
 

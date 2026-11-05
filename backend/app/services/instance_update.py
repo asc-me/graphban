@@ -120,39 +120,46 @@ def _parse_release(body: dict) -> dict | None:
         if str(item.get("name") or "") == want:
             asset = str(item.get("browser_download_url") or "").strip()
             break
-    contract = ""
-    for item in body.get("assets") or []:
-        if str(item.get("name") or "") == CONTRACT_ASSET:
-            contract = str(item.get("browser_download_url") or "").strip()
-            break
     raw = body.get("body")
     notes_body = "" if raw is None else str(raw)
-    return {"tag": tag, "url": url, "asset": asset, "notes_body": notes_body,
-            "contract_asset": contract}
+    return {"tag": tag, "url": url, "asset": asset, "notes_body": notes_body}
 
 
-#: The rule-primitive contract file a release carries (docs/rule-primitive-contract.json).
-CONTRACT_ASSET = "rule-primitive-contract.json"
+#: Where a release's rule-primitive contract ships: docs/rule-primitive-contract.json in the
+#: tagged tree (the release tarball is that tree). Read at the tag, not from a release asset.
+CONTRACT_URL = ("https://raw.githubusercontent.com/asc-me/graphban/{tag}/"
+                "docs/rule-primitive-contract.json")
+#: A miss (unreachable, 404, malformed) is remembered this long so every update-check
+#: does not pay another outbound fetch; a definite answer is kept (a tag does not change).
+CONTRACT_MISS_TTL = CACHE_TTL
 _contract_cache: dict[str, str] = {}
+_contract_miss: dict[str, float] = {}
 
 
-def fetch_contract_api(url: str) -> str | None:
-    """The `api_version` in a release's contract file, or None when it cannot be read.
-    Never raises; a definite answer is remembered (a release asset does not change)."""
-    if not url:
+def fetch_contract_api(tag: str) -> str | None:
+    """The `api_version` in release `tag`'s contract file, or None when it cannot be read.
+    Never raises. A definite answer is cached for good; a miss for CONTRACT_MISS_TTL."""
+    tag = _TAG_PREFIX.sub("", (tag or "").strip())
+    if not tag or tag in PLACEHOLDER_VERSIONS:
         return None
-    if url in _contract_cache:
-        return _contract_cache[url]
+    if tag in _contract_cache:
+        return _contract_cache[tag]
+    missed = _contract_miss.get(tag)
+    if missed is not None and time.monotonic() - missed < CONTRACT_MISS_TTL:
+        return None
+    api = None
     try:
-        resp = httpx.get(url, headers=_GH_HEADERS, timeout=_FETCH_TIMEOUT, follow_redirects=True)
-        if resp.status_code != 200:
-            return None
-        api = resp.json().get("api_version")
-    except (httpx.HTTPError, OSError, ValueError, TypeError, AttributeError):
-        return None
+        resp = httpx.get(CONTRACT_URL.format(tag=tag), headers={"User-Agent": "graphban-api"},
+                         timeout=_FETCH_TIMEOUT, follow_redirects=True)
+        if resp.status_code == 200:
+            api = resp.json().get("api_version")
+    except (httpx.HTTPError, OSError, ValueError, TypeError, AttributeError) as e:
+        logger.info("rule-primitive contract fetch failed tag=%s: %s", tag, e)
     if not isinstance(api, str) or not api:
+        _contract_miss[tag] = time.monotonic()
         return None
-    _contract_cache[url] = api
+    _contract_miss.pop(tag, None)
+    _contract_cache[tag] = api
     return api
 
 
@@ -407,7 +414,6 @@ def check(*, fetch=None, fetch_running=None, run=None, hosted: bool | None = Non
             "tag": latest_tag,
             "url": str(raw.get("url") or ""),
             "asset": str(raw.get("asset") or ""),
-            "contract_asset": str(raw.get("contract_asset") or ""),
         }
     hosted_flag = settings.hosted_mode if hosted is None else hosted
     present = helper if helper is not None else helper_present()

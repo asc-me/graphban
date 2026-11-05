@@ -80,7 +80,6 @@ def test_fetch_latest_strips_v_and_drops_empty(monkeypatch):
         "url": "https://github.com/asc-me/graphban/releases/tag/2026.09.1",
         "asset": "",
         "notes_body": "",
-        "contract_asset": "",
     }
 
 
