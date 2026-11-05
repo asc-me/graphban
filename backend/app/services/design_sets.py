@@ -337,8 +337,15 @@ def refresh(db: Session, project_id: str, prd_id: str | None = None) -> int:
     """Re-check every live set of the project against the current preamble and PRD hashes, marking
     the ones that moved `stale`. Called after a preamble write or a baseline change. Returns the
     number marked."""
-    pre = _preamble(db, project_id)
     n = 0
+    if prd_id:
+        # Other projects whose preamble cites this PRD (a cross-project cite, GRPH-1307).
+        others = db.scalars(select(Document.project_id).where(
+            Document.kind == "preamble", Document.governing.is_(True),
+            Document.prd_id == prd_id, Document.project_id != project_id).distinct()).all()
+        for other in others:
+            n += refresh(db, other)
+    pre = _preamble(db, project_id)
     for ds in db.scalars(select(DesignSet).where(
             DesignSet.project_id == project_id, DesignSet.status.in_(("open", "accepted")))):
         # A set pinned to no preamble (version 0) was compiled without one, so the first preamble
