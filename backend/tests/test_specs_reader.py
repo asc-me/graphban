@@ -75,7 +75,8 @@ def test_put_preamble_bumps_version_and_names_sets_pinned_to_the_old_one(client,
     assert r.status_code == 200, r.text
     out = r.json()
     assert out["version"] == 2 and out["body_state"] == "stored" and out["body"] == "Be bold."
-    assert out["created_by"].startswith("key:")
+    me = client.get("/api/auth/me", headers=auth).json()
+    assert out["created_by"] == f"user:{me['id']}"
     stale = {s["id"]: s for s in out["stale_sets"]}
     assert stale[ds["id"]]["status"] == "stale" and stale[ds["id"]]["stale_reason"] == "preamble"
     assert [h["version"] for h in out["history"]] == [1, 2]
@@ -146,3 +147,18 @@ def test_stale_prompt_stays_stale_after_acceptance(client, auth, db, pid):
 
 def test_unknown_set_is_404(client, auth):
     assert client.get("/api/specs/design-sets/DS-nope", headers=auth).status_code == 404
+
+
+def test_preamble_gate_takes_a_signed_in_person_and_refuses_an_agent_seat(db, pid):
+    from app import errors
+    from app.services import documents as doc_svc
+
+    base = _prd(db, pid, title="Visual system")
+    doc_svc.put_document(db, project_id=pid, kind="preamble", body="Be calm.",
+                         prd_id=base.id, created_by="user:u-1")
+    rows = db.scalars(select(Document).where(Document.project_id == pid,
+                                             Document.kind == "preamble")).all()
+    assert [r.created_by for r in rows] == ["user:u-1"]
+    with pytest.raises(errors.Validation):
+        doc_svc.put_document(db, project_id=pid, kind="preamble", body="Be bold.",
+                             prd_id=base.id, created_by="GRPH-A1")

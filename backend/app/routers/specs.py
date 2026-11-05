@@ -14,7 +14,6 @@ from app.models import DesignSet, User
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import design_sets as design_svc
-from app.services import fleet as fleet_svc
 from app.services import specs as specs_svc
 
 router = APIRouter(prefix="/specs", tags=["specs"])
@@ -68,10 +67,10 @@ class PreambleIn(BaseModel):
 def put_preamble(body: PreambleIn, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
     authz.require_writable(db, user.id, body.project_id)
-    # A signed-in person is a human credential, which is what `put_document` requires of a
-    # preamble writer; stamped with the credential prefix so it reads as one, not as a seat.
+    # A signed-in person is stamped `user:<id>`, the repo's provenance for a person. Not
+    # `key:` — that names an API-key credential, and `key:<name>` resolves by key name.
     _call(design_svc.put_preamble, db, body.project_id, body.body, body.cites_prd_id,
-          created_by=f"{fleet_svc.CREDENTIAL_PREFIX}{_person(user)}")
+          created_by=f"user:{user.id}")
     return specs_svc.preamble_view(db, body.project_id)
 
 
