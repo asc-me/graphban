@@ -273,3 +273,27 @@ def test_an_unchanged_record_keeps_its_changed_at_so_overdue_fires(client, org):
     pub = RO.published_decisions(db, org["id"])
     st = RO.box_rule_state(db, key.id, pub)
     assert st["pending"] is True and st["overdue"] is True
+
+
+def test_org_admin_route_serves_each_boxes_sync_state(client, org, monkeypatch):  # noqa: F811
+    db = _db()
+    key = _key(db, org)
+    r = client.get(f"/api/orgs/{org['id']}/rules/sync", headers=org["owner"])
+    assert r.status_code == 200, r.text
+    box = [b for b in r.json()["boxes"] if b["name"] == "box-1"][0]
+    assert box["applied_version"] is None and box["pending"] is True
+    RO.record_box_applied(db, key, org["id"], "old")
+    box = [b for b in client.get(f"/api/orgs/{org['id']}/rules/sync",
+                                 headers=org["owner"]).json()["boxes"] if b["name"] == "box-1"][0]
+    assert box["applied_version"] == "old" and box["pending"] is True
+    pub = RO.published_decisions(db, org["id"])
+    RO.record_box_applied(db, key, org["id"], pub["version"])
+    box = [b for b in client.get(f"/api/orgs/{org['id']}/rules/sync",
+                                 headers=org["owner"]).json()["boxes"] if b["name"] == "box-1"][0]
+    assert box["pending"] is False and box["applied_version"] == pub["version"]
+
+
+def test_org_sync_route_refuses_non_admin_and_other_org(client, org):  # noqa: F811
+    stranger = _login(client, "dana@ascme-labs.com")
+    assert client.get(f"/api/orgs/{org['id']}/rules/sync", headers=stranger).status_code in (403, 404)
+    assert client.get("/api/orgs/nope/rules/sync", headers=org["owner"]).status_code == 404
