@@ -3421,6 +3421,19 @@ class RuleSuggestionDismissal(Base):
     dismissed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class OrgRuleSuggestionDismissal(Base):
+    """An org recommendation an org admin dismissed (GRPH-1326). Keyed on (org, suggestion id);
+    `fingerprint` hashes the evidence it was dismissed against, so it returns when that changes.
+    Never a rule toggle (D10)."""
+
+    __tablename__ = "org_rule_suggestion_dismissals"
+
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), primary_key=True)
+    suggestion_id: Mapped[str] = mapped_column(String, primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String, default="")
+    dismissed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Observation(Base):
     """One typed fact about how work went, derived from a record the server already holds
     (PRD-63 S1 / D2): a sabotage receipt, an attestation, a status move, a typed refusal.
