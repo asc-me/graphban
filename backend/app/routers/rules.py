@@ -301,3 +301,23 @@ def org_recommended_rules(org_id: str, refresh: bool = False, db: Session = Depe
     """Library rules implied by at least ORG_MIN_PROJECTS projects. Computed weekly; the reply
     carries its age. Suggestions only."""
     return rules_org.recommended(db, user, org_id, refresh=refresh)
+
+
+@router.get("/orgs/{org_id}/rules/recommended/dismissed")
+def org_dismissed_recommendations(org_id: str, db: Session = Depends(get_db),
+                                  user: User = Depends(get_current_user)):
+    """Org suggestions dismissed against their present evidence, so the panel can offer Restore."""
+    return {"suggestions": rules_org.dismissed(db, user, org_id)}
+
+
+@router.post("/orgs/{org_id}/rules/recommended/{suggestion_id}/dismiss", status_code=204)
+def dismiss_org_recommendation(org_id: str, suggestion_id: str, db: Session = Depends(get_db),
+                               user: User = Depends(get_current_user)):
+    """Dismiss an org suggestion against its present evidence. Writes no rule toggle."""
+    _org_call(rules_org.dismiss, db, user, org_id, suggestion_id)
+
+
+@router.delete("/orgs/{org_id}/rules/recommended/{suggestion_id}/dismiss", status_code=204)
+def restore_org_recommendation(org_id: str, suggestion_id: str, db: Session = Depends(get_db),
+                               user: User = Depends(get_current_user)):
+    _org_call(rules_org.restore, db, user, org_id, suggestion_id)

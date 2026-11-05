@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 315 of the 315. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 317 of the 317. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -119,7 +119,10 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | GET | `/api/orgs/{org_id}/rules/profiles` | JWT (org owner/admin) | Oversight profiles of the loaded rule pack (PRD-63 S4, `services/rules_org.py`). `team`/`enterprise` only: 402 otherwise (D11) |
 | POST | `/api/orgs/{org_id}/rules/profiles/{profile_id}/apply` | JWT (org owner/admin) | Pin the profile's rules across the org, locked, with a required `reason`. All-or-nothing: 422 and nothing written when it names a rule the library cannot enforce. One `set_rule_toggle` event per rule and one `apply_rule_profile` event |
 | GET | `/api/orgs/{org_id}/rules/profiles/{profile_id}/drift` | JWT (org owner/admin) | Per project and rule, where the live value differs from the profile's pin: `weakening` (loosens the pin: pinned on and now off, or no longer locked), `changed` (any other difference, such as an off pin turned on or different params), or `unmeasured`; `state` is `clean` or `drifted` |
-| GET | `/api/orgs/{org_id}/rules/recommended` | JWT (org owner/admin) | Library rules implied in at least `org_min_projects` projects (the larger of 2 and 20% of active projects; active = an item moved in 30 days). Computed weekly, returned with `computed_at` and `age_seconds`; `?refresh=true` recomputes. A rule the org already has on is left out at read time, so adopting one takes it off the list at once. `projects_without_observations` lists projects that contributed nothing |
+| GET | `/api/orgs/{org_id}/rules/recommended` | JWT (org owner/admin) | Library rules implied in at least `org_min_projects` projects (the larger of 2 and 20% of active projects; active = an item moved in 30 days). Computed weekly, returned with `computed_at` and `age_seconds`; `?refresh=true` recomputes. A rule the org already has on is left out at read time, so adopting one takes it off the list at once; a dismissed suggestion is likewise left out at read time. `projects_without_observations` lists projects that contributed nothing |
+| POST | `/api/orgs/{org_id}/rules/recommended/{id}/dismiss` | JWT (org owner/admin) | Dismiss an org suggestion (`org.rule.<rule_id>`), keyed on id + an evidence fingerprint over the contributing projects' evidence; it returns when that evidence changes. `team`/`enterprise` only (402 otherwise). 204, or 404 for an unknown id. Never writes a rule toggle |
+| GET | `/api/orgs/{org_id}/rules/recommended/dismissed` | JWT (org owner/admin) | `{suggestions[]}` dismissed against their present evidence, for Restore |
+| DELETE | `/api/orgs/{org_id}/rules/recommended/{id}/dismiss` | JWT (org owner/admin) | Restore a dismissed org suggestion. 204, or 404 when it was not dismissed |
 | GET | `/api/rules/refusals/unmapped` | JWT (project reader) | `?project_id=&days=7` (1–90). `refusal_unmapped` events grouped by `where`+`status` over the whole window, no row cap, ranked by count: `groups[]` `{where, status, platform, count, last_at, daily[days]}` plus `recording_since` (earliest refusal event in the same scope as the groups; null = none ever recorded there). Attribution: an event belongs to the project it was recorded against (MCP: the calling key's project or the call's `project_id`); one naming no project is the platform bucket, returned with `platform: true` only to a platform admin, or on a self-hosted instance to the project's owner — never to a hosted owner who is not a platform admin |
 
 ## Items (tracker)
