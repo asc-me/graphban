@@ -74,6 +74,7 @@ vi.mock("@/features/live/LiveView", stub("LiveView"));
 vi.mock("@/features/memory/MemoryReviewView", stub("MemoryReviewView"));
 vi.mock("@/features/lessons/LessonsView", stub("LessonsView"));
 vi.mock("@/features/prds/PrdListView", stub("PrdListView"));
+vi.mock("@/features/prds/SpecsLibraryView", stub("SpecsLibraryView"));
 vi.mock("@/features/prds/PrdEditorView", stub("PrdEditorView"));
 vi.mock("@/features/feedback/FeedbackKitView", stub("FeedbackKitView"));
 vi.mock("@/features/home/HomeView", stub("HomeView"));

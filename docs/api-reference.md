@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 333 of the 333. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 334 of the 334. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -786,8 +786,13 @@ before. Reads are assembled in `services/specs.py`; writes go to `services/desig
 document body comes with `body_state`: `stored` (the text, hash-checked, possibly empty),
 `pending`, `unreadable`, or `absent`. `body` is null unless it is `stored`.
 
+`GET /api/specs/library` is the Specs library (GRPH-1318): one read for the page. The text
+filter on that page narrows the loaded list by id and title. It is not this endpoint and it
+is not `search_docs`.
+
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
+| GET | `/api/specs/library` | JWT (read) | With `project_id`: PRD id, title, version, status, `content_hash`, `baseline_hash` (null = no baseline), `sync_state`, and — only when `sync_state` is `conflict` — ledger hash, file hash, file name, byte length, and path. The preamble or null (not a 404). Set-constraints and screen-prompt rows. `conflict_ids` lists sync conflicts only: a failed export or a read failure does not count. No document bodies |
 | GET | `/api/specs/prds/{prd_id}` | JWT (read) | With `project_id`: the PRD's live `content_hash`, `baseline_hash` (null = no baseline) and its design set, if it has one |
 | GET | `/api/specs/preamble` | JWT (read) | The governing preamble, its versions, and the design sets that pin an older version. 404 when the project has none |
 | PUT | `/api/specs/preamble` | JWT (write) | `put_preamble` as the signed-in person: a new version, which stales the sets that pinned the old one (`stale_reason` preamble) |

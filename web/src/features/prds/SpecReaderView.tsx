@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import * as React from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -151,6 +151,7 @@ export function PreambleReaderView() {
     try {
       const out = await api.putPreamble(activeId, draft, cites.trim());
       qc.setQueryData(keys.specPreamble(activeId), out);
+      qc.invalidateQueries({ queryKey: keys.specLibrary(activeId) });
       setEditing(false);
     } catch (e) {
       setErr(errText(e));
@@ -232,7 +233,7 @@ export function PreambleReaderView() {
 
 // ---------------------------------------------------------------- set constraints
 
-const PROMPT_WORD: Record<SpecScreen["prompt"], string> = {
+export const PROMPT_WORD: Record<SpecScreen["prompt"], string> = {
   none: "no prompt yet",
   compiled: "compiled, not accepted",
   accepted: "accepted prompt",
@@ -241,7 +242,10 @@ const PROMPT_WORD: Record<SpecScreen["prompt"], string> = {
 
 export function SetConstraintsReaderView() {
   const { setId = "" } = useParams();
+  const [search] = useSearchParams();
+  const screenQ = search.get("screen") ?? "";
   const qc = useQueryClient();
+  const { activeId } = useProjectCtx();
   const { data: me } = useMe();
   const { data: ds, error, isLoading } = useSpecDesignSet(setId);
   const [tab, setTab] = React.useState<DocTab>("preview");
@@ -258,6 +262,7 @@ export function SetConstraintsReaderView() {
     setErr("");
     try {
       qc.setQueryData(keys.specDesignSet(setId), await fn());
+      qc.invalidateQueries({ queryKey: keys.specLibrary(activeId) });
     } catch (e) {
       setErr(errText(e));
     } finally {
@@ -300,7 +305,7 @@ export function SetConstraintsReaderView() {
         {tab === "preview" ? (
           <div className="space-y-5">
             <BodyView state={ds.body_state} body={ds.body} absent="No set constraints have been written for this set." />
-            <DesignSetScreens ds={ds} busy={busy} onCompile={(screen) => run(`compile:${screen}`, () => api.compileScreen(setId, screen))} />
+            <DesignSetScreens ds={ds} busy={busy} current={screenQ} onCompile={(screen) => run(`compile:${screen}`, () => api.compileScreen(setId, screen))} />
           </div>
         ) : (
           <div className="space-y-1.5" data-testid="constraints-history">
@@ -319,8 +324,14 @@ export function SetConstraintsReaderView() {
   );
 }
 
-/** Each screen: its prompt state and whether a compile is refused. */
-export function DesignSetScreens({ ds, busy, onCompile }: { ds: SpecDesignSet; busy?: string | null; onCompile?: (screen: string) => void }) {
+/** Each screen: its prompt state and whether a compile is refused.
+ *  `current` is the screen named by `?screen=` when Specs opened this set. */
+export function DesignSetScreens({ ds, busy, onCompile, current }: {
+  ds: SpecDesignSet;
+  busy?: string | null;
+  onCompile?: (screen: string) => void;
+  current?: string;
+}) {
   return (
     <div data-testid="design-set-screens">
       <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-faint">
@@ -328,21 +339,34 @@ export function DesignSetScreens({ ds, busy, onCompile }: { ds: SpecDesignSet; b
       </div>
       {ds.screens.length === 0 && <p className="text-body text-muted">This set lists no screens yet.</p>}
       <div className="space-y-1.5">
-        {ds.screens.map((s) => (
-          <div key={s.screen} className="flex items-center gap-2 rounded-[10px] border border-line-2 bg-surface-2 px-3 py-2" data-testid="design-screen" data-screen={s.screen}>
-            <span className="min-w-0 flex-1 truncate text-[13px] text-fg-2">{s.screen}</span>
-            <span className="font-mono text-[10.5px] text-muted" data-testid="screen-prompt">{PROMPT_WORD[s.prompt]}</span>
-            {s.compile_refused.length > 0 ? (
-              <span className="font-mono text-[10.5px] text-muted" data-testid="screen-compile">
-                compile refused: {s.compile_refused.join("; ")}
-              </span>
-            ) : onCompile ? (
-              <Button size="sm" variant="outline" disabled={!!busy} onClick={() => onCompile(s.screen)} data-testid="screen-compile">
-                {busy === `compile:${s.screen}` ? "Compiling…" : "Compile"}
-              </Button>
-            ) : null}
-          </div>
-        ))}
+        {ds.screens.map((s) => {
+          const on = !!current && current === s.screen;
+          return (
+            <div
+              key={s.screen}
+              className={cn(
+                "flex items-center gap-2 rounded-[10px] border bg-surface-2 px-3 py-2",
+                on ? "border-control-hover" : "border-line-2",
+              )}
+              data-testid="design-screen"
+              data-screen={s.screen}
+              data-current={on ? "true" : undefined}
+              aria-current={on ? "true" : undefined}
+            >
+              <span className="min-w-0 flex-1 truncate text-[13px] text-fg-2">{s.screen}</span>
+              <span className="font-mono text-[10.5px] text-muted" data-testid="screen-prompt">{PROMPT_WORD[s.prompt]}</span>
+              {s.compile_refused.length > 0 ? (
+                <span className="font-mono text-[10.5px] text-muted" data-testid="screen-compile">
+                  compile refused: {s.compile_refused.join("; ")}
+                </span>
+              ) : onCompile ? (
+                <Button size="sm" variant="outline" disabled={!!busy} onClick={() => onCompile(s.screen)} data-testid="screen-compile">
+                  {busy === `compile:${s.screen}` ? "Compiling…" : "Compile"}
+                </Button>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
       {ds.constraints_accepted && ds.screens.some((s) => s.prompt === "stale") && (
         <p className="mt-2 text-small text-muted" data-testid="stale-until-compiled">

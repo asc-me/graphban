@@ -274,6 +274,21 @@ describe("Set constraints document", () => {
     expect(screen.getByTestId("screen-prompt")).toHaveTextContent("stale");
   });
 
+  it("marks the screen named in the query as the current row", async () => {
+    const ds = set(true, "accepted");
+    ds.screens.push({
+      screen: "away", tier: "BACKED", tier_confirmed: true, prompt: "none", compile_refused: [],
+    });
+    mocks.specDesignSet.mockResolvedValue(ds);
+    show("/prds/constraints/DS-1?screen=away");
+    const rows = await screen.findAllByTestId("design-screen");
+    const away = rows.find((r) => r.getAttribute("data-screen") === "away");
+    const home = rows.find((r) => r.getAttribute("data-screen") === "home");
+    expect(away).toHaveAttribute("aria-current", "true");
+    expect(away).toHaveAttribute("data-current", "true");
+    expect(home).not.toHaveAttribute("aria-current");
+  });
+
   it("says a missing set was not found", async () => {
     mocks.specDesignSet.mockRejectedValue(new NotFoundError("design set not found"));
     show("/prds/constraints/DS-nope");
