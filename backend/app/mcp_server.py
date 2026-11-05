@@ -1491,6 +1491,8 @@ TOOLS: list[dict[str, Any]] = [
                 "text": {"type": "string"},
                 "canvas_hash": {"type": "string"},
                 "winner": {"type": "string", "enum": ["shipped_decision", "prd", "design"]},
+                "cites_file": {"type": "string"},
+                "cites_symbol": {"type": "string"},
             },
             "required": ["design_set_id", "screen", "kind", "text"],
         },
@@ -4145,7 +4147,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             return design_sets_svc.file_finding(
                 db, pid, sid, str(args["screen"]), str(args["kind"]), str(args["text"]),
                 canvas_hash=str(args.get("canvas_hash") or ""),
-                winner=str(args.get("winner") or ""), actor=actor)
+                winner=str(args.get("winner") or ""), actor=actor,
+                cites_file=str(args.get("cites_file") or ""),
+                cites_symbol=str(args.get("cites_symbol") or ""))
         return design_sets_svc.resolve_finding(
             db, pid, str(args["finding_id"]), str(args["status"]),
             str(args.get("reason") or ""), actor=actor)
