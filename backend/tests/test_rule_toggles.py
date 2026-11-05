@@ -386,7 +386,7 @@ def test_no_library_says_so(client, monkeypatch):
     monkeypatch.setattr(T, "LIBRARY", {})
     auth = _login(client, "alex@ascme-labs.com")
     r = client.get("/api/rules/toggles", params={"project_id": "core"}, headers=auth)
-    assert r.json() == {"library_loaded": False, "toggles": []}
+    assert r.json() == {"library_loaded": False, "library_reason": None, "toggles": []}
 
 
 # ---- GRPH-1325: org-level read and the dry-run preview ------------------------------------

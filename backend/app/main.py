@@ -82,6 +82,19 @@ async def lifespan(app: FastAPI):
             finally:
                 db.close()
 
+    # The installed rule pack (GRPH-1329): every worker re-verifies and registers it, since
+    # the library is per-process. Never fatal: a pack that no longer verifies is refused with
+    # its reason (shown in the Library group) and the server serves without it.
+    db = SessionLocal()
+    try:
+        from app.services import rule_pack
+
+        rule_pack.reload_persisted(db)
+    except Exception:  # noqa: BLE001
+        logger.warning("installed rule pack reload failed", exc_info=True)
+    finally:
+        db.close()
+
     # LLM span retention (GRPH-225), once before serving and never fatal: janitorial
     # work on telemetry does not justify taking the box down, and a boot that dies on
     # a DELETE is exactly the "unhandled error takes down every self-host install"
