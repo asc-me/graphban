@@ -27,7 +27,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFound, Validation
-from app.models import Agent, Entitlement, EntitlementEvent, Project, utcnow
+from app.models import (Agent, Entitlement, EntitlementEvent, Organization, Project, User,
+                        utcnow)
 from app.services import quotas
 
 EVENTS: tuple[str, ...] = ("spawn_start", "registered", "limit_hit", "spawn_failed", "spend")
@@ -210,6 +211,28 @@ def _projection(row: Entitlement, events: list[EntitlementEvent], now: datetime,
                      f"token_budget of {row.token_budget} read as per reset period"}
 
 
+def daily_tokens(events: list[EntitlementEvent], now: datetime, days: int = 7) -> list[int | None]:
+    """Reported tokens per UTC day for the trailing `days` days, oldest first, today last.
+    A day with no spend report is None, never 0: nobody reporting is not the same as no spend."""
+    today = now.astimezone(timezone.utc).date()
+    out: dict = {today - timedelta(days=i): None for i in range(days)}
+    for e in events:
+        if e.event == "spend" and e.tokens is not None:
+            d = _aware(e.created_at).astimezone(timezone.utc).date()
+            if d in out:
+                out[d] = (out[d] or 0) + e.tokens
+    return [out[today - timedelta(days=i)] for i in range(days - 1, -1, -1)]
+
+
+def _runner_label(db: Session, row: Entitlement) -> dict:
+    """The runner or agent label this entitlement is declared on, and the owner of a
+    subscription. `label` is None when nothing is bound or declared (not an empty string)."""
+    labels = [a.label for a in _declarers(db, row) if a.label]
+    label = row.runner or (", ".join(labels) if labels else None)
+    owner = db.get(User, row.owner_user_id) if row.owner_user_id else None
+    return {"label": label, "owner": (owner.name or owner.handle) if owner else None}
+
+
 def forecast(db: Session, row: Entitlement, *, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     events = _events(db, row.id)
@@ -224,6 +247,10 @@ def forecast(db: Session, row: Entitlement, *, now: datetime | None = None) -> d
     return {
         "id": row.id, "vendor": row.vendor, "kind": row.kind, "plan_label": row.plan_label,
         "state": base["state"], "vendor_text": base["vendor_text"], "since": base["since"],
+        "runner": _runner_label(db, row),
+        "daily_tokens": daily_tokens(events, now),
+        # When the vendor text in `vendor_text` was recorded; None when there is no text.
+        "seen_at": base["since"] if base["vendor_text"] else None,
         # The vendor's reset words and the owner's stated cadence, verbatim: D5 never parses
         # a reset into a time, so there is no countdown to show.
         "reset_cadence": row.reset_cadence or None,
@@ -277,9 +304,13 @@ def capacity(db: Session, org_id: str, *, now: datetime | None = None) -> dict:
     quotas.require_capacity_routing(db, org_id)
     now = now or datetime.now(timezone.utc)
     from app.services import routing  # routing imports this module
+    rows = _capacity_rows(db, org_id)
+    org = db.get(Organization, org_id)
     return {"org_id": org_id, "as_of": now.isoformat(),
+            "org": {"name": org.name if org else "", "entitlement_count": len(rows)},
+            "routing_decisions": routing.decisions_by_verdict(db, org_id, now=now),
             "review_reserve": routing.reserve(routing.rank(db, org_id, now=now)),
-            "entitlements": [forecast(db, r, now=now) for r in _capacity_rows(db, org_id)],
+            "entitlements": [forecast(db, r, now=now) for r in rows],
             "utilization": utilization(db, org_id, now=now)}
 
 

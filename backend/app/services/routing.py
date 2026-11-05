@@ -346,3 +346,57 @@ def axis(db: Session, project_id: str | None, agent_ids: list[str]) -> dict[str,
                      "reason": ("review reserve: no other vendor has headroom to review (D7)"
                                 if mine else "no declared entitlement has headroom")})
     return out
+
+
+# ---- the Harness Capacity tab: what the router did over the rollup window --------------------
+
+#: (key, label) in display order. A decision is classed by what it recorded; the router writes a
+#: `claim` row for each routed claim and a `reservation` row when it holds an item for a runner.
+VERDICTS: tuple[tuple[str, str], ...] = (
+    ("claimed", "Claimed on an entitlement"),
+    ("held", "Held for another runner"),
+    ("deferred", "Deferred to a reset"),
+    ("review_reserve", "Review reserve refused a build"),
+    ("next_rung", "Fell to the next ladder rung"),
+)
+_RECENT = 5
+
+
+def verdict_of(row: RoutingDecision) -> str | None:
+    reason = row.reason or ""
+    if reason.startswith("deferred to reset"):
+        return "deferred"
+    if reason.startswith("review reserve"):
+        return "review_reserve"
+    if row.kind == "reservation":
+        return "held"
+    if row.kind == "claim":
+        return "claimed" if row.entitlement_id else "next_rung"
+    return None
+
+
+def decisions_by_verdict(db: Session, org_id: str, *, now: datetime | None = None) -> dict:
+    """RoutingDecision rows for the org over the trailing 7 days, grouped by verdict, with up to
+    5 recent rows each (reason verbatim). With no rows at all, `reason` says why."""
+    now = now or datetime.now(timezone.utc)
+    start = now - timedelta(days=7)
+    rows = [r for r in db.scalars(
+        select(RoutingDecision).join(Item, Item.id == RoutingDecision.item_id)
+        .join(Project, Project.id == Item.project_id)
+        .where(Project.org_id == org_id, RoutingDecision.created_at >= start)
+        .order_by(RoutingDecision.id.desc())).all()]
+    groups = []
+    for key, label in VERDICTS:
+        mine = [r for r in rows if verdict_of(r) == key]
+        recent = []
+        for r in mine[:_RECENT]:
+            item = db.get(Item, r.item_id)
+            recent.append({"item_key": item.key if item is not None else r.item_id,
+                           "entitlement_id": r.entitlement_id, "reason": r.reason,
+                           "at": _aware(r.created_at).isoformat()})
+        groups.append({"verdict": key, "label": label, "count": len(mine), "recent": recent})
+    reason = None
+    if not rows:
+        reason = "no claims routed in window"
+    return {"window_start": start.isoformat(), "window_end": now.isoformat(),
+            "groups": groups, "reason": reason}
