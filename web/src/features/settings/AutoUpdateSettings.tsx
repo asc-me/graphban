@@ -267,7 +267,8 @@ export function AutoUpdateSettings({ progressError = "", progress = null, via }:
       {installing && progress ? (
         <div role="status" className="mb-3 rounded-md border border-accent p-3">
           <div className="flex items-center justify-between text-[13px] font-semibold text-fg">
-            <span>
+            <span className="flex items-center gap-2">
+              <span aria-hidden data-testid="auto-install-dot" className="u-dot-live h-[7px] w-[7px] flex-none rounded-full bg-accent" />
               Auto-update is installing {data.last_auto_install_tag}
               {activeStep ? ` — ${activeStep.label.toLowerCase()}` : ""}
             </span>

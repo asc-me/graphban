@@ -363,9 +363,9 @@ body::before {
 .u-act[data-confirm="true"] .u-lbl-b { max-width: 220px; opacity: 1; transition-delay: 0s, .3s; }
 
 .u-card-anim { transition: height .45s cubic-bezier(.45,.05,.25,1); overflow: hidden; }
-.u-card-anim > * { transition: opacity .22s ease, transform .3s cubic-bezier(.2,.7,.2,1); }
-.u-fading > * { opacity: 0; }
-.u-enter > * { opacity: 0; transform: translateY(4px); transition: none; }
+.u-swap { transition: opacity .22s ease, transform .3s cubic-bezier(.2,.7,.2,1); }
+.u-swap.u-fading { opacity: 0; }
+.u-swap.u-enter { opacity: 0; transform: translateY(4px); transition: none; }
 
 .u-seg { transition: background .3s ease; }
 .u-seg-active { background: color-mix(in srgb, var(--color-accent) 18%, transparent); }
@@ -387,7 +387,7 @@ details[open] > summary .u-chev { transform: rotate(90deg); }
 .u-pill { flex: none; font-family: var(--font-mono); font-size: 10px; letter-spacing: .02em; border: 1px solid currentColor; border-radius: 999px; padding: 1px 7px; line-height: 16px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .u-slot, .u-lbl, .u-install, .u-seg, .u-step, .u-step .u-mk, .u-card-anim, .u-card-anim > *, .u-chev { transition: none; }
+  .u-slot, .u-lbl, .u-install, .u-seg, .u-step, .u-step .u-mk, .u-card-anim, .u-swap, .u-chev { transition: none; }
   .u-dot-live, .u-sweep { animation: none; }
   .u-sweep { width: 50%; }
 }

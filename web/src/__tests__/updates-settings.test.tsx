@@ -889,4 +889,41 @@ describe("Updates panel layout pass (design audit)", () => {
     expect(screen.queryAllByTestId("release-call")).toHaveLength(0);
     expect(screen.getAllByRole("listitem").map((l) => l.textContent)).toEqual(["one", "two"]);
   });
+
+  it("a view change fades the old card content out for 220ms before the new content mounts", async () => {
+    const mm = vi.fn((q: string) => ({
+      matches: false, media: q, onchange: null,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+    }));
+    const prev = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: mm });
+    try {
+      await startInstall();
+      // Straight after Confirm: the plain content is still mounted, fading and inert; no steps yet.
+      const body = await screen.findByTestId("card-body");
+      await waitFor(() => expect(body).toHaveClass("u-fading"));
+      expect(body).toHaveAttribute("data-view", "plain");
+      expect(body).toHaveAttribute("inert");
+      expect(body.querySelector("[data-testid='install-group']")).not.toBeNull();
+      expect(screen.queryByRole("list", { name: /install steps/i, hidden: true })).toBeNull();
+      // After the fade the installing content mounts and the fading class is gone.
+      expect(await screen.findByRole("list", { name: /install steps/i })).toBeInTheDocument();
+      const after = screen.getByTestId("card-body");
+      expect(after).not.toHaveClass("u-fading");
+      expect(after).toHaveAttribute("data-view", "installing");
+      expect(after).not.toHaveAttribute("inert");
+      expect(after.querySelector("[data-testid='install-group']")).toBeNull();
+    } finally {
+      Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: prev });
+    }
+  });
+
+  it("index.css fades .u-swap out on .u-fading and drops the transition for reduced motion", () => {
+    const css = readFileSync("src/index.css", "utf8");
+    expect(css).toMatch(/\.u-swap\s*\{[^}]*opacity \.22s/);
+    expect(css).toMatch(/\.u-swap\.u-fading\s*\{\s*opacity:\s*0/);
+    const reduced = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(reduced).toMatch(/\.u-swap[,\s]/);
+  });
 });

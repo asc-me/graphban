@@ -337,33 +337,78 @@ function PhaseCopy({ phase, tag, from, via }: { phase: Phase; tag: string; from:
   return <p className="mt-2 text-[12px] text-fg-2" data-testid="phase-copy">{text}</p>;
 }
 
+/** Whether the card may animate: matchMedia exists and the user has not asked for reduced motion. */
+function motionAllowed(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/** How long the old card content fades out before the new content mounts (the design's 220ms). */
+export const SWAP_FADE_MS = 220;
+
 /**
- * The design's swap(): when the card's view changes, its height animates from the old to the
- * new height (.45s) and the new content enters from opacity 0 / translateY(4px). Reduced motion
- * skips it. (The old content is already replaced by React, so its 220ms fade-out is not drawn.)
+ * The design's swap(). When the card's view changes, the old content stays mounted (frozen as it
+ * last rendered, inert) and fades out over 220ms. Then the new content mounts, the card's height
+ * animates from the old height to the new one (.45s), and the new content enters from opacity 0
+ * and translateY(4px). Reduced motion swaps at once with no animation.
  */
-function useCardSwap(ref: React.RefObject<HTMLDivElement | null>, view: string) {
-  const last = React.useRef<{ view: string; h: number } | null>(null);
+function useCardSwap(ref: React.RefObject<HTMLDivElement | null>, view: string, content: React.ReactNode) {
+  const [shown, setShown] = React.useState(view);
+  const frozen = React.useRef<React.ReactNode>(content);
+  const fromHeight = React.useRef(0);
+  const animate = motionAllowed();
+  const fading = shown !== view && animate;
+
+  // The last content drawn outside a fade is what fades out when the view next changes.
   React.useLayoutEffect(() => {
+    if (!fading) frozen.current = content;
+  });
+
+  React.useEffect(() => {
+    if (shown === view) return;
+    if (!motionAllowed()) { setShown(view); return; }
+    fromHeight.current = ref.current?.offsetHeight ?? 0;
+    const t = setTimeout(() => setShown(view), SWAP_FADE_MS);
+    return () => clearTimeout(t);
+  }, [ref, view, shown]);
+
+  const first = React.useRef(true);
+  React.useLayoutEffect(() => {
+    if (first.current) { first.current = false; return; }
     const card = ref.current;
-    if (!card) return;
-    const prev = last.current;
+    const body = card?.firstElementChild as HTMLElement | null;
+    if (!card || !body || !motionAllowed() || !fromHeight.current) return;
     const h1 = card.offsetHeight;
-    last.current = { view, h: h1 };
-    if (!prev || prev.view === view || typeof window.matchMedia !== "function"
-      || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    card.classList.add("u-card-anim", "u-enter");
-    card.style.height = `${prev.h}px`;
+    card.style.height = `${fromHeight.current}px`;
+    card.classList.add("u-card-anim");
+    body.classList.add("u-enter");
     void card.offsetHeight;
     card.style.height = `${h1}px`;
-    const raf = requestAnimationFrame(() => card.classList.remove("u-enter"));
+    const raf = requestAnimationFrame(() => body.classList.remove("u-enter"));
     const done = setTimeout(() => {
       card.style.height = "";
       card.classList.remove("u-card-anim");
-      last.current = { view, h: card.offsetHeight };
     }, 480);
-    return () => { cancelAnimationFrame(raf); clearTimeout(done); };
-  }, [ref, view]);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(done);
+      card.style.height = "";
+      card.classList.remove("u-card-anim");
+      body.classList.remove("u-enter");
+    };
+  }, [ref, shown]);
+
+  return (
+    <div
+      className={`u-swap${fading ? " u-fading" : ""}`}
+      data-testid="card-body"
+      data-view={fading ? shown : view}
+      inert={fading}
+      aria-hidden={fading ? true : undefined}
+    >
+      {fading ? frozen.current : content}
+    </div>
+  );
 }
 
 export function UpdatesPanel() {
@@ -527,8 +572,91 @@ export function UpdatesPanel() {
 
   const view = installed ? "complete" : applying || autoInstalling ? "installing" : "plain";
   const cardRef = React.useRef<HTMLDivElement>(null);
-  useCardSwap(cardRef, view);
   const showInstall = !hosted && !installed && !autoInstalling;
+  const cardBody = (
+    <>
+      {applying ? <Label>Status</Label> : <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <Label>Status</Label>
+          {isPending && !data && <p className="text-[13px] text-muted">Checking GitHub for a newer release — this can take a few seconds. No result yet is not "no release".</p>}
+          {isError && !data && (
+            <p className="text-[13px] text-fg-2">
+              Could not tell whether a newer cut exists. The check did not complete — not current.
+            </p>
+          )}
+          {data && <StateCopy data={data} />}
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <div className="u-act justify-end" data-testid="install-group" data-confirm={showInstall && confirming ? "true" : "false"}>
+            {!installed ? (
+              <span className="u-slot u-slot-check" data-testid="slot-check" inert={showInstall && confirming} aria-hidden={showInstall && confirming ? true : undefined}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => { void refresh(); }}
+                  disabled={isFetching || applying}
+                >
+                  {isFetching && !applying ? "Checking…" : "Check for updates"}
+                </Button>
+              </span>
+            ) : null}
+            {showInstall ? (
+              <Button
+                type="button"
+                className="u-install"
+                disabled={confirming ? applying || !tag : !canInstall || applying}
+                onClick={() => { if (confirming) void install(); else setConfirming(true); }}
+              >
+                <span className="u-lbl u-lbl-a" aria-hidden={confirming ? true : undefined}>
+                  {applying ? "Installing…" : "Install"}
+                </span>
+                <span className="u-lbl u-lbl-b" aria-hidden={confirming ? undefined : true}>
+                  {applying ? "Installing…" : `Confirm install ${tag}`}
+                </span>
+              </Button>
+            ) : null}
+            {showInstall ? (
+              <span className="u-slot u-slot-cancel" data-testid="slot-cancel" inert={!confirming} aria-hidden={confirming ? undefined : true}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={applying}
+                  onClick={() => { setConfirming(false); setApplyError(""); }}
+                >
+                  Cancel
+                </Button>
+              </span>
+            ) : null}
+          </div>
+          {!hosted && !installed && !autoInstalling && (
+            installHint(data) ? <p className="max-w-xs text-right text-[12px] text-muted">{installHint(data)}</p> : null
+          )}
+        </div>
+      </div>}
+      <div role="status" aria-live="polite">
+        <PhaseCopy phase={phase} tag={installTag || tag} from={data?.running.version ?? ""} via={data?.via} />
+        {(applying || installed || progress?.state === "failed") && progress
+          ? <ProgressSteps progress={progress} nowMs={nowMs} tag={installTag || tag} via={data?.via} complete={Boolean(installed)} />
+          : autoInstalling && autoProgress
+            ? <ProgressSteps progress={autoProgress} nowMs={nowMs} tag={auto?.last_auto_install_tag ?? ""} via={data?.via} />
+            : null}
+        {installed ? (
+          <p className="mt-2 text-[13px] font-semibold text-fg">
+            Installed {installed}. Reloading this page to load the new release…
+          </p>
+        ) : null}
+      </div>
+      {applyError ? <p className="mt-2 text-[12px] text-danger">{applyError}</p> : null}
+      {data && (
+        <div className="mt-4">
+          <Label>How this box is deployed</Label>
+          <p className="text-[13px] text-fg-2">{methodCopy(data)}</p>
+        </div>
+      )}
+      {data && !applying ? <ReleaseNotesList data={data} /> : null}
+    </>
+  );
+  const swap = useCardSwap(cardRef, view, cardBody);
   return (
     <div className="max-w-2xl">
       <div className="text-lead font-semibold">Updates</div>
@@ -536,85 +664,7 @@ export function UpdatesPanel() {
         Whether this box is on the published stable cut.
       </p>
       <div ref={cardRef} className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
-        {applying ? <Label>Status</Label> : <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <Label>Status</Label>
-            {isPending && !data && <p className="text-[13px] text-muted">Checking GitHub for a newer release — this can take a few seconds. No result yet is not "no release".</p>}
-            {isError && !data && (
-              <p className="text-[13px] text-fg-2">
-                Could not tell whether a newer cut exists. The check did not complete — not current.
-              </p>
-            )}
-            {data && <StateCopy data={data} />}
-          </div>
-          <div className="flex flex-col items-end gap-1">
-            <div className="u-act justify-end" data-testid="install-group" data-confirm={showInstall && confirming ? "true" : "false"}>
-              {!installed ? (
-                <span className="u-slot u-slot-check" data-testid="slot-check" inert={showInstall && confirming} aria-hidden={showInstall && confirming ? true : undefined}>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => { void refresh(); }}
-                    disabled={isFetching || applying}
-                  >
-                    {isFetching && !applying ? "Checking…" : "Check for updates"}
-                  </Button>
-                </span>
-              ) : null}
-              {showInstall ? (
-                <Button
-                  type="button"
-                  className="u-install"
-                  disabled={confirming ? applying || !tag : !canInstall || applying}
-                  onClick={() => { if (confirming) void install(); else setConfirming(true); }}
-                >
-                  <span className="u-lbl u-lbl-a" aria-hidden={confirming ? true : undefined}>
-                    {applying ? "Installing…" : "Install"}
-                  </span>
-                  <span className="u-lbl u-lbl-b" aria-hidden={confirming ? undefined : true}>
-                    {applying ? "Installing…" : `Confirm install ${tag}`}
-                  </span>
-                </Button>
-              ) : null}
-              {showInstall ? (
-                <span className="u-slot u-slot-cancel" data-testid="slot-cancel" inert={!confirming} aria-hidden={confirming ? undefined : true}>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    disabled={applying}
-                    onClick={() => { setConfirming(false); setApplyError(""); }}
-                  >
-                    Cancel
-                  </Button>
-                </span>
-              ) : null}
-            </div>
-            {!hosted && !installed && !autoInstalling && (
-              installHint(data) ? <p className="max-w-xs text-right text-[12px] text-muted">{installHint(data)}</p> : null
-            )}
-          </div>
-        </div>}
-        <div role="status" aria-live="polite">
-          <PhaseCopy phase={phase} tag={installTag || tag} from={data?.running.version ?? ""} via={data?.via} />
-          {(applying || installed || progress?.state === "failed") && progress
-            ? <ProgressSteps progress={progress} nowMs={nowMs} tag={installTag || tag} via={data?.via} complete={Boolean(installed)} />
-            : autoInstalling && autoProgress
-              ? <ProgressSteps progress={autoProgress} nowMs={nowMs} tag={auto?.last_auto_install_tag ?? ""} via={data?.via} />
-              : null}
-          {installed ? (
-            <p className="mt-2 text-[13px] font-semibold text-fg">
-              Installed {installed}. Reloading this page to load the new release…
-            </p>
-          ) : null}
-        </div>
-        {applyError ? <p className="mt-2 text-[12px] text-danger">{applyError}</p> : null}
-        {data && (
-          <div className="mt-4">
-            <Label>How this box is deployed</Label>
-            <p className="text-[13px] text-fg-2">{methodCopy(data)}</p>
-          </div>
-        )}
-        {data && !applying ? <ReleaseNotesList data={data} /> : null}
+        {swap}
       </div>
       <AutoUpdateSettings
         progressError={progress?.state === "failed" ? progress.error : ""}
