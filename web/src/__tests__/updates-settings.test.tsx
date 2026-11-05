@@ -882,6 +882,22 @@ describe("Updates panel layout pass (design audit)", () => {
     expect(screen.getByTestId("changes-pill")).toHaveTextContent("3 changes");
   });
 
+  it("the real 2026.11.5 salvaged line drops the dangling items= once its id is a pill", async () => {
+    withNotes([
+      "**Since 2026.11.4**",
+      "- #1307 WIP: salvaged by gbfleet (claude) items=GRPH-1329",
+      "",
+    ].join("\n"));
+    renderPage();
+    await screen.findByText("This release");
+    const row = screen.getAllByTestId("release-call").find((r) => r.getAttribute("data-pr") === "#1307")!;
+    expect(Array.from(row.querySelectorAll(".u-pill")).map((e) => e.textContent)).toEqual(["#1307", "GRPH-1329"]);
+    const title = row.querySelector(".u-call-title")!;
+    expect(title.textContent).toBe("WIP: salvaged by gbfleet (claude)");
+    expect(title.textContent).not.toMatch(/items=/);
+    expect(title).toHaveClass("text-faint");
+  });
+
   it("notes with no Since list render as markdown as before", async () => {
     withNotes("Plain.\n\n- one\n- two\n");
     renderPage();

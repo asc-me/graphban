@@ -92,6 +92,8 @@ export function parseCall(line: string): { pr: string; tickets: string[]; title:
   let title = rest;
   for (const t of tickets) title = title.replace(t, "");
   title = title.replace(/\(\s*[,\s]*\)/g, "").replace(/\s{2,}/g, " ").trim();
+  // "items=GRPH-1329" with the id lifted out leaves a bare "items=" behind; drop it.
+  if (tickets.length) title = title.replace(/\s*\bitems=[,\s]*$/, "").trim();
   return { pr, tickets, title };
 }
 
