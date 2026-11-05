@@ -428,10 +428,43 @@ def status(db: Session) -> dict:
         return {"installed": False, "loaded": False, "name": None, "version": None,
                 "sha256": None, "installed_at": None, "installed_by": None,
                 "reason": "No rule pack has been installed on this server"}
-    return {"installed": True, "loaded": CURRENT is not None and CURRENT_SHA == row.sha256,
+    loaded = CURRENT is not None and CURRENT_SHA == row.sha256
+    reason = LOAD_REFUSAL
+    if not loaded and not reason:
+        # Installed but not in force and no word why: say so rather than read as all clear.
+        reason = (f"installed pack {row.name} {row.version} is not in force on this server "
+                  "and no reason was recorded")
+    return {"installed": True, "loaded": loaded,
             "name": row.name, "version": row.version, "sha256": row.sha256,
             "installed_at": row.installed_at, "installed_by": row.installed_by,
-            "reason": LOAD_REFUSAL}
+            "reason": reason,
+            "warning": None if loaded else reason}
+
+
+def compat(db: Session, tag: str, contract_api: str | None) -> dict | None:
+    """Will the release `tag` still load the installed pack? `compatible`, `refused` (with the
+    reason) or `unknown` (with the reason); None when no pack is installed. Unknown is never
+    compatible. Reports only: nothing here changes what is in force (D10)."""
+    row = _latest(db)
+    if row is None:
+        return None
+    try:
+        meta = _toml(_files(row.artifact), "pack.toml")
+        need, api = str(meta["min_server"]), str(meta["primitive_api"])
+        if _ver(tag) < _ver(need):
+            return {"state": "refused",
+                    "reason": f"installed pack {row.name} {row.version} needs server {need} "
+                              f"or newer; the available release is {tag}"}
+        if not contract_api:
+            return {"state": "unknown",
+                    "reason": f"release {tag} did not publish its rule-primitive contract"}
+        if _ver(api)[0] != _ver(contract_api)[0]:
+            return {"state": "refused",
+                    "reason": f"installed pack {row.name} {row.version} targets primitive API "
+                              f"{api}; release {tag} provides {contract_api}"}
+    except (PackRefused, KeyError, ValueError, tarfile.TarError) as e:
+        return {"state": "unknown", "reason": f"could not read the installed pack: {e}"}
+    return {"state": "compatible", "reason": ""}
 
 
 def reload_persisted(db: Session) -> Pack | None:

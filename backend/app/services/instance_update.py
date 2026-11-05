@@ -125,6 +125,44 @@ def _parse_release(body: dict) -> dict | None:
     return {"tag": tag, "url": url, "asset": asset, "notes_body": notes_body}
 
 
+#: Where a release's rule-primitive contract ships: docs/rule-primitive-contract.json in the
+#: tagged tree (the release tarball is that tree). Read at the tag, not from a release asset.
+CONTRACT_URL = ("https://raw.githubusercontent.com/asc-me/graphban/{tag}/"
+                "docs/rule-primitive-contract.json")
+#: A miss (unreachable, 404, malformed) is remembered this long so every update-check
+#: does not pay another outbound fetch; a definite answer is kept (a tag does not change).
+CONTRACT_MISS_TTL = CACHE_TTL
+_contract_cache: dict[str, str] = {}
+_contract_miss: dict[str, float] = {}
+
+
+def fetch_contract_api(tag: str) -> str | None:
+    """The `api_version` in release `tag`'s contract file, or None when it cannot be read.
+    Never raises. A definite answer is cached for good; a miss for CONTRACT_MISS_TTL."""
+    tag = _TAG_PREFIX.sub("", (tag or "").strip())
+    if not tag or tag in PLACEHOLDER_VERSIONS:
+        return None
+    if tag in _contract_cache:
+        return _contract_cache[tag]
+    missed = _contract_miss.get(tag)
+    if missed is not None and time.monotonic() - missed < CONTRACT_MISS_TTL:
+        return None
+    api = None
+    try:
+        resp = httpx.get(CONTRACT_URL.format(tag=tag), headers={"User-Agent": "graphban-api"},
+                         timeout=_FETCH_TIMEOUT, follow_redirects=True)
+        if resp.status_code == 200:
+            api = resp.json().get("api_version")
+    except (httpx.HTTPError, OSError, ValueError, TypeError, AttributeError) as e:
+        logger.info("rule-primitive contract fetch failed tag=%s: %s", tag, e)
+    if not isinstance(api, str) or not api:
+        _contract_miss[tag] = time.monotonic()
+        return None
+    _contract_miss.pop(tag, None)
+    _contract_cache[tag] = api
+    return api
+
+
 def notes_payload(rel: dict | None, tag: str) -> dict:
     """`state` is present / empty / unknown. Unknown is not an empty changelog."""
     tag = _TAG_PREFIX.sub("", (tag or "").strip()) or "unknown"

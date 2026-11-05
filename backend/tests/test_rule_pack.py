@@ -6,6 +6,7 @@ repo. A primitive change that breaks a template fails these tests, and so the pr
 """
 import base64
 import io
+import json
 import tarfile
 from pathlib import Path
 
@@ -440,3 +441,144 @@ def test_persisted_pack_that_no_longer_verifies_is_refused_with_its_reason(clien
     assert st["installed"] and not st["loaded"] and "does not verify" in st["reason"]
     t = client.get("/api/rules/toggles", headers=h).json()
     assert t["library_loaded"] is False and "does not verify" in t["library_reason"]
+
+
+# ---- warn before / after a server upgrade refuses the pack (GRPH-1333) -------------------
+
+def _install_api1(client):
+    db, user = _person()
+    art, sig = build(FIX / "api1")
+    P.accept(db, user, art, sig, P.sha256_of(art), trusted_keys=TRUST)
+    return db
+
+
+def test_compat_has_no_answer_without_a_pack(client, trusted):
+    db, _ = _person()
+    try:
+        assert P.compat(db, "2099.1.1", "1.5.0") is None
+    finally:
+        db.close()
+
+
+def test_compat_compatible_refused_and_unknown(client, trusted):
+    db = _install_api1(client)
+    try:
+        assert P.compat(db, "2026.11.5", "1.5.0")["state"] == "compatible"
+        # release older than the pack's min_server
+        old = P.compat(db, "2026.9.1", "1.5.0")
+        assert old["state"] == "refused" and "2026.10.1" in old["reason"]
+        # release whose primitive API major moved on
+        major = P.compat(db, "2099.1.1", "2.0.0")
+        assert major["state"] == "refused" and "2.0.0" in major["reason"]
+        # release that did not publish its contract: unknown, never compatible
+        unk = P.compat(db, "2099.1.1", None)
+        assert unk["state"] == "unknown" and unk["reason"]
+    finally:
+        db.close()
+
+
+def test_update_check_reports_pack_compat(client, trusted, monkeypatch):
+    from app.services import instance_update as U
+    h = _login(client)
+    payload = {"state": "available", "latest": {"tag": "2099.1.1"}}
+    asked = []
+    monkeypatch.setattr(U, "check_cached", lambda refresh=False: dict(payload))
+    monkeypatch.setattr(U, "fetch_contract_api", lambda tag: asked.append(tag) or "1.5.0")
+    assert client.get("/api/platform/update-check", headers=h).json()["pack_compat"] is None
+    art, sig = build(FIX / "api1")
+    client.post("/api/rules/pack/accept", json=_body(art, sig, sha256=P.sha256_of(art)),
+                headers=h)
+    got = client.get("/api/platform/update-check", headers=h).json()
+    assert got["pack_compat"]["state"] == "compatible"
+    assert asked and asked[-1] == "2099.1.1"  # the contract is read for the available tag
+    monkeypatch.setattr(U, "fetch_contract_api", lambda tag: None)
+    got = client.get("/api/platform/update-check", headers=h).json()
+    assert got["pack_compat"]["state"] == "unknown" and got["pack_compat"]["reason"]
+    monkeypatch.setattr(U, "fetch_contract_api", lambda tag: "2.0.0")
+    got = client.get("/api/platform/update-check", headers=h).json()
+    assert got["pack_compat"]["state"] == "refused" and got["pack_compat"]["reason"]
+
+
+class _Resp:
+    def __init__(self, status, body):
+        self.status_code, self._body = status, body
+
+    def json(self):
+        return self._body
+
+
+def _fresh_contract_cache(U, monkeypatch):
+    monkeypatch.setattr(U, "_contract_cache", {})
+    monkeypatch.setattr(U, "_contract_miss", {})
+
+
+def test_contract_is_read_from_the_tagged_tree_where_it_ships(monkeypatch):
+    """The contract ships as docs/rule-primitive-contract.json in the tagged tree (the release
+    tarball is that tree); no release asset carries it. Read it there."""
+    from app.services import instance_update as U
+    repo = Path(__file__).resolve().parents[2]
+    shipped = repo / "docs" / "rule-primitive-contract.json"
+    assert shipped.is_file()
+    assert U.CONTRACT_URL.endswith("/{tag}/docs/rule-primitive-contract.json")
+    _fresh_contract_cache(U, monkeypatch)
+    urls = []
+
+    def get(url, **kw):
+        urls.append(url)
+        return _Resp(200, json.loads(shipped.read_text()))
+    monkeypatch.setattr(U.httpx, "get", get)
+    want = json.loads(shipped.read_text())["api_version"]
+    assert U.fetch_contract_api("v2099.1.1") == want
+    assert urls == ["https://raw.githubusercontent.com/asc-me/graphban/2099.1.1/"
+                    "docs/rule-primitive-contract.json"]
+    assert U.fetch_contract_api("2099.1.1") == want and len(urls) == 1  # a tag does not change
+
+
+def test_contract_miss_is_cached_briefly_not_refetched_every_check(monkeypatch):
+    from app.services import instance_update as U
+    _fresh_contract_cache(U, monkeypatch)
+    calls = []
+
+    def get(url, **kw):
+        calls.append(url)
+        raise U.httpx.ConnectError("down")
+    monkeypatch.setattr(U.httpx, "get", get)
+    assert U.fetch_contract_api("2099.1.1") is None
+    assert U.fetch_contract_api("2099.1.1") is None
+    assert len(calls) == 1  # the miss is remembered
+    U._contract_miss["2099.1.1"] -= U.CONTRACT_MISS_TTL + 1  # the miss ages out
+    monkeypatch.setattr(U.httpx, "get", lambda url, **kw: _Resp(404, {}))
+    assert U.fetch_contract_api("2099.1.1") is None
+    monkeypatch.setattr(U.httpx, "get", lambda url, **kw: _Resp(200, {"api_version": ""}))
+    U._contract_miss.clear()
+    assert U.fetch_contract_api("2099.1.1") is None  # malformed is unknown, not compatible
+    assert U.fetch_contract_api("") is None and U.fetch_contract_api("unknown") is None
+
+
+def test_pack_needing_a_newer_server_reports_installed_not_loaded_with_reason(client, trusted):
+    db, user = _person()
+    try:
+        newer = (FIX / "api1/pack.toml").read_text().replace("2026.10.1", "2099.1.1")
+        art, sig = build(FIX / "api1", {"pack.toml": newer})
+        P.accept(db, user, art, sig, P.sha256_of(art), trusted_keys=TRUST,
+                 server_version="2100.1.1")
+        _forget()
+        assert P.reload_persisted(db) is None
+        st = P.status(db)
+        assert st["installed"] is True and st["loaded"] is False
+        assert st["reason"] and "2099.1.1" in st["reason"]
+        assert st["warning"] == st["reason"]
+    finally:
+        db.close()
+
+
+def test_not_loaded_without_a_recorded_reason_is_still_a_warning(client, trusted):
+    db = _install_api1(client)
+    try:
+        _forget()
+        P.CURRENT_SHA = "x"  # status() would sync; a worker that skipped the load
+        P._REFUSED_SHA = P._latest_sha(db)
+        st = P.status(db)
+        assert st["loaded"] is False and st["warning"]
+    finally:
+        db.close()
