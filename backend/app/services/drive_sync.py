@@ -47,8 +47,10 @@ class SyncBackend:
 
 
 class LocalFolderBackend(SyncBackend):
-    def __init__(self, root: str | os.PathLike):
+    def __init__(self, root: str | os.PathLike, blob_root: str | os.PathLike | None = None):
         self.root = Path(root)
+        # The box's blob directory (GRPH-1320). Unset keeps the historical `<root>/blobs`.
+        self.blob_root = Path(blob_root) if blob_root else self.root / "blobs"
 
     def _dir(self, subdir: str) -> Path:
         d = self.root / subdir
@@ -56,10 +58,17 @@ class LocalFolderBackend(SyncBackend):
         return d
 
     def list(self, subdir: str) -> list[dict]:
-        d = self._dir(subdir)
+        d = self.root / subdir
         out = []
+        if not d.is_dir():
+            return out  # a read creates nothing; the first write makes the directory
         for p in sorted(d.glob("*.md")):
-            out.append({"name": p.name, "content": p.read_text(encoding="utf-8")})
+            # A file the box cannot read (permissions, a corrupt or non-UTF-8 file) is a read
+            # failure on that file, never an empty body: `content` None plus the reason.
+            try:
+                out.append({"name": p.name, "content": p.read_text(encoding="utf-8")})
+            except (OSError, UnicodeDecodeError) as e:
+                out.append({"name": p.name, "content": None, "error": _read_error(e)})
         return out
 
     def write(self, subdir: str, name: str, content: str) -> None:
@@ -75,7 +84,7 @@ class LocalFolderBackend(SyncBackend):
     def _blob_path(self, key: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{64}", key):
             raise ValueError(f"not a sha256 key: {key!r}")
-        return self.root / "blobs" / key[:2] / key
+        return self.blob_root / key[:2] / key
 
     def put_bytes(self, key: str, data: bytes) -> None:
         p = self._blob_path(key)
@@ -89,6 +98,12 @@ class LocalFolderBackend(SyncBackend):
     def get_bytes(self, key: str) -> bytes | None:
         p = self._blob_path(key)
         return p.read_bytes() if p.exists() else None
+
+
+def _read_error(e: Exception) -> str:
+    if isinstance(e, UnicodeDecodeError):
+        return "not valid UTF-8 text (corrupt or binary file)"
+    return f"{type(e).__name__}: {getattr(e, 'strerror', None) or e}"
 
 
 # ---- Front-matter helpers ----
@@ -140,16 +155,58 @@ def _safe_name(prd) -> str:
 
 # ---- The sync engine ----
 
+#: What a sync does with one PRD, decided from the ledger body, the last-synced hash and the
+#: file. `sync` acts on it; `sync_storage.status` reads it without acting (GRPH-1320).
+ACTIONS = ("read_failed", "export_new", "adopt", "converged", "conflict", "import_file",
+           "export_ledger", "in_sync")
+
+
+def classify(prd, st, f: dict | None, *, unreadable_names: set[str] = frozenset()
+             ) -> tuple[str, str, str | None]:
+    """(action, ledger_hash, file_hash) for one PRD. Pure: reads nothing, writes nothing."""
+    db_hash = _hash(prd.body)
+    name = st.file_name if st and st.file_name else _safe_name(prd)
+    if f is None:
+        return ("read_failed" if name in unreadable_names else "export_new"), db_hash, None
+    file_hash = _hash(strip_front_matter(f["content"]))
+    last = st.last_hash if st else None
+    if last is None:
+        # First time we see this file for this PRD: adopt if identical, else flag.
+        return ("adopt" if file_hash == db_hash else "conflict"), db_hash, file_hash
+    db_changed = db_hash != last
+    file_changed = file_hash != last
+    if db_changed and file_changed:
+        # Both moved: never clobber either side.
+        return ("converged" if file_hash == db_hash else "conflict"), db_hash, file_hash
+    if file_changed:
+        if prd.status not in ("draft", "review") or prd.pending_rebaseline:
+            # Drive is an export and draft-import channel, not the baseline.
+            return "conflict", db_hash, file_hash
+        return "import_file", db_hash, file_hash
+    if db_changed:
+        return "export_ledger", db_hash, file_hash
+    return "in_sync", db_hash, file_hash
+
+
+
 def sync(db: Session, project_id: str, root_dir: str | os.PathLike, backend: SyncBackend | None = None) -> dict:
     backend = backend or LocalFolderBackend(root_dir)
     report = {"exported": [], "imported": [], "updated_db": [], "updated_file": [], "conflicts": [], "in_sync": 0,
-              "conflict_details": [], "export_status": "ok"}
+              "conflict_details": [], "export_status": "ok", "read_failures": []}
 
     prds = prd_svc.list_prds(db, project_id=project_id)
     files = backend.list(PRDS_SUBDIR)
     files_by_id: dict[str, dict] = {}
     unmatched = []
+    unreadable: dict[str, dict] = {}
     for f in files:
+        if f.get("content") is None:
+            # Not a conflict and not an import: nothing is known about the file but its name.
+            unreadable[f["name"]] = f
+            report["read_failures"].append({
+                "file_name": f["name"], "path": f"{PRDS_SUBDIR}/{f['name']}",
+                "error": f.get("error") or "unreadable", "prd_id": None})
+            continue
         fid = parse_front_matter_id(f["content"])
         (files_by_id.__setitem__(fid, f) if fid else unmatched.append(f))
 
@@ -184,47 +241,30 @@ def sync(db: Session, project_id: str, root_dir: str | os.PathLike, backend: Syn
     for prd in prds:
         st = states.get(prd.id)
         f = files_by_id.get(prd.id)
-        db_body = prd.body
-        db_hash = _hash(db_body)
         name = st.file_name if st and st.file_name else _safe_name(prd)
+        action, db_hash, file_hash = classify(prd, st, f, unreadable_names=set(unreadable))
 
-        if f is None:
+        if action == "read_failed":
+            # This PRD's own file is there but unreadable: do not export over it, and do not
+            # read it as a blank body. The ledger row is untouched.
+            for rf in report["read_failures"]:
+                if rf["file_name"] == name:
+                    rf["prd_id"] = prd.id
+        elif action == "export_new":
             if safe_write(name, render(prd)):
                 save_state(prd.id, name, db_hash)
                 report["exported"].append(prd.id)
-            continue
-
-        file_body = strip_front_matter(f["content"])
-        file_hash = _hash(file_body)
-        last = st.last_hash if st else None
-
-        if last is None:
-            # First time we see this file for this PRD: adopt if identical, else flag.
-            if file_hash == db_hash:
-                save_state(prd.id, f["name"], db_hash)
-                report["in_sync"] += 1
-            else:
-                conflict(prd, f, db_hash, file_hash)
-            continue
-
-        db_changed = db_hash != last
-        file_changed = file_hash != last
-        if db_changed and file_changed:
-            if file_hash == db_hash:
-                save_state(prd.id, f["name"], db_hash)
-                report["in_sync"] += 1
-            else:
-                conflict(prd, f, db_hash, file_hash)  # both moved → don't clobber
-        elif file_changed:
-            if prd.status not in ("draft", "review") or prd.pending_rebaseline:
-                # Drive is an export and draft-import channel, not the baseline.
-                conflict(prd, f, db_hash, file_hash)
-                continue
-            prd_svc.update_prd(db, prd.id, body=file_body)
+        elif action in ("adopt", "converged"):
+            save_state(prd.id, f["name"], db_hash)
+            report["in_sync"] += 1
+        elif action == "conflict":
+            conflict(prd, f, db_hash, file_hash)
+        elif action == "import_file":
+            prd_svc.update_prd(db, prd.id, body=strip_front_matter(f["content"]))
             prd_svc.create_version(db, prd.id, note="Body came from the Drive folder (file edit).")
             save_state(prd.id, f["name"], file_hash)
             report["updated_db"].append(prd.id)
-        elif db_changed:
+        elif action == "export_ledger":
             if safe_write(name, render(prd)):
                 save_state(prd.id, name, db_hash)
                 report["updated_file"].append(prd.id)

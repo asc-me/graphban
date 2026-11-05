@@ -18,7 +18,9 @@ from app.schemas import (
 from app.providers import registry as provider_registry
 from app.security import authz
 from app.security.deps import get_agent_key, get_current_user
+from app import errors
 from app.services import drive_sync
+from app.services import sync_storage as sync_storage_svc
 from app.services import events as events_svc
 from app.services import items as items_svc
 from app.services import credential_retry
@@ -613,3 +615,50 @@ def gdrive_sync(project_id: str = "core", db: Session = Depends(get_db), user: U
     root = _sync_root(project_id, cfg.gdrive_folder)
     report = drive_sync.sync(db, project_id, root_dir=root)
     return {"folder": root, "prds_dir": os.path.join(root, drive_sync.PRDS_SUBDIR), **report}
+
+
+class SyncStorageIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    folder_path: str | None = None
+    blob_dir: str | None = None
+
+
+def _require_self_hosted_box() -> None:
+    """Sync storage paths are this box's disk; on a hosted deployment the disk is not the
+    tenant's. A 400 with the reason, as `PATCH /auto-update` answers a box that cannot apply."""
+    if settings.hosted_mode:
+        raise HTTPException(400, "sync storage is a self-hosted box setting; a hosted "
+                                 "deployment does not take filesystem paths")
+
+
+@router.get("/sync-storage")
+def get_sync_storage(project_id: str = "core", db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Sync storage on Specs (GRPH-1320): the folder path, the blob directory, whether the
+    index is available, and each PRD row's sync state, read without syncing."""
+    authz.require_readable(db, user.id, project_id)
+    return sync_storage_svc.status(db, project_id)
+
+
+@router.put("/sync-storage")
+def put_sync_storage(body: SyncStorageIn, project_id: str = "core", db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Save the box's sync configuration (folder path, blob directory). A box fact, so it is
+    the project owner's to set and not available on a hosted deployment, whose disk is not the
+    tenant's. An unreadable path is saved and shown as a failure on its fact."""
+    authz.require_project_owner(db, user.id, project_id, "project")
+    _require_self_hosted_box()
+    try:
+        sync_storage_svc.update_config(db, **body.model_dump(exclude_unset=True))
+    except errors.Validation as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if getattr(e, "hint", "") else ""))
+    return sync_storage_svc.status(db, project_id)
+
+
+@router.post("/sync-storage/run")
+def run_sync_storage(project_id: str = "core", db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Run sync, then return the refreshed facts and row states plus the run's report."""
+    authz.require_writable(db, user.id, project_id)
+    _require_self_hosted_box()
+    return sync_storage_svc.run(db, project_id)
