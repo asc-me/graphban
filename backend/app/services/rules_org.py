@@ -150,7 +150,8 @@ def apply_project_profile(db: Session, user, project_id: str, profile_id: str, *
         db, user, action="apply_rule_profile", target_type="project", target_id=project_id,
         project_id=project_id,
         meta={"profile": profile_id, "profile_version": prof.get("version"),
-              "pack_version": rule_pack.CURRENT.version, "reason": why, "rules": sorted(plan)})
+              "pack_version": rule_pack.CURRENT.version, "reason": why, "rules": sorted(plan),
+              "pins": _pins(prof)})
     return {"project_id": project_id, "profile": profile_id, "applied": sorted(plan)}
 
 
@@ -204,7 +205,7 @@ def apply_profile(db: Session, user, org_id: str, profile_id: str, *, reason: st
         db, user, action="apply_rule_profile", target_type="org", target_id=org_id,
         meta={"profile": profile_id, "profile_version": prof.get("version"),
               "pack_version": rule_pack.CURRENT.version, "reason": why,
-              "rules": sorted(plan), "projects_changed": applied})
+              "rules": sorted(plan), "projects_changed": applied, "pins": _pins(prof)})
     note_published(db, org_id)
     return {"org_id": org_id, "profile": profile_id, "applied": sorted(plan),
             "projects_changed": applied}
@@ -244,6 +245,101 @@ def drift(db: Session, user, org_id: str, profile_id: str) -> dict:
                              "detail": "; ".join(details)})
     return {"org_id": org_id, "profile": profile_id, "projects": len(project_ids),
             "state": "clean" if not rows else "drifted", "drift": rows}
+
+
+# ---- offered profile updates (GRPH-1328 / GBC-P6 §2, D10, D12, D13) -----------------------
+#
+# A newer pack that changes a profile is OFFERED with its diff; nothing is written until a
+# person accepts it. Loading a pack touches no toggle. The applied version is read from the
+# `apply_rule_profile` event (which also keeps the pins it applied, to diff against).
+
+def _last_applied(db: Session, target_type: str, target_id: str) -> dict[str, Event]:
+    """Latest `apply_rule_profile` event per profile for one org or project."""
+    out: dict[str, Event] = {}
+    for ev in db.scalars(select(Event).where(
+            Event.action == "apply_rule_profile", Event.target_type == target_type,
+            Event.target_id == target_id).order_by(Event.id)):
+        pid = (ev.meta or {}).get("profile")
+        if pid:
+            out[pid] = ev
+    return out
+
+
+def _pin_diff(old: dict[str, dict], new: dict[str, dict]) -> list[dict]:
+    rows = []
+    for rid in sorted(set(old) | set(new)):
+        a, b = old.get(rid), new.get(rid)
+        if a is None:
+            rows.append({"rule_id": rid, "change": "added", "kind": "changed", "to": b})
+        elif b is None:
+            # Dropping a pin lets the rule be loosened: weakening, as drift counts it.
+            rows.append({"rule_id": rid, "change": "removed", "kind": "weakening", "from": a})
+        else:
+            sa, sb = a.get("state", "on"), b.get("state", "on")
+            if sa != sb:
+                rows.append({"rule_id": rid, "change": "state_changed",
+                             "kind": "weakening" if sa == "on" else "changed",
+                             "from": sa, "to": sb})
+            if a.get("params", {}) != b.get("params", {}):
+                rows.append({"rule_id": rid, "change": "params_changed", "kind": "changed",
+                             "from": a.get("params", {}), "to": b.get("params", {})})
+    return rows
+
+
+def _offers(applied: dict[str, Event]) -> list[dict]:
+    pack = rule_pack.CURRENT
+    out = []
+    for pid, ev in sorted(applied.items()):
+        prof = pack.profiles.get(pid) if pack else None
+        meta = ev.meta or {}
+        if prof is None or str(prof.get("version")) == str(meta.get("profile_version")):
+            continue
+        old = meta.get("pins")
+        rows = _pin_diff(old, _pins(prof)) if isinstance(old, dict) else None
+        out.append({"profile": pid, "applied_version": meta.get("profile_version"),
+                    "offered_version": prof.get("version"), "pack_version": pack.version,
+                    # None: applied before pins were recorded, so there is nothing to diff against.
+                    "diff": rows,
+                    "weakening": sum(r["kind"] == "weakening" for r in rows) if rows is not None else None})
+    return out
+
+
+def org_updates(db: Session, user, org_id: str) -> dict:
+    _admin(db, user, org_id)
+    return {"org_id": org_id, "updates": _offers(_last_applied(db, "org", org_id))}
+
+
+def project_updates(db: Session, user, project_id: str) -> dict:
+    authz.require_readable(db, user.id, project_id)
+    return {"project_id": project_id, "updates": _offers(_last_applied(db, "project", project_id))}
+
+
+def _require_offer(offers: list[dict], profile_id: str, version: str | None) -> None:
+    offer = next((o for o in offers if o["profile"] == profile_id), None)
+    if offer is None:
+        raise NotFound(f"profile {profile_id!r} has no update on offer",
+                       hint="it was never applied here, or the applied version is the loaded one")
+    if version is not None and str(version) != str(offer["offered_version"]):
+        raise Validation(f"profile {profile_id!r} is now offered at version "
+                         f"{offer['offered_version']}, not {version}", hint="read the diff again")
+
+
+def accept_org_update(db: Session, user, org_id: str, profile_id: str, *, reason: str | None,
+                      version: str | None = None) -> dict:
+    """Apply the offered version through the ordinary org apply: all-or-nothing, a person only."""
+    rule_toggles._require_person(db, user)
+    _admin(db, user, org_id)
+    _require_offer(_offers(_last_applied(db, "org", org_id)), profile_id, version)
+    return apply_profile(db, user, org_id, profile_id, reason=reason)
+
+
+def accept_project_update(db: Session, user, project_id: str, profile_id: str, *,
+                          reason: str | None, version: str | None = None) -> dict:
+    """As `accept_org_update` for one project; refused whole under an org lock."""
+    rule_toggles._require_person(db, user)
+    authz.require_writable(db, user.id, project_id)
+    _require_offer(_offers(_last_applied(db, "project", project_id)), profile_id, version)
+    return apply_project_profile(db, user, project_id, profile_id, reason=reason)
 
 
 # ---- org recommendations (D6) -------------------------------------------------------------
