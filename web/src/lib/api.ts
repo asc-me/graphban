@@ -1205,6 +1205,16 @@ export const api = {
     request<PlatformConfig>(`/platform/gdrive/disconnect${projectQuery(projectId)}`, { method: "POST" }),
   gdriveSync: (projectId: string) =>
     request<SyncReport>(`/platform/gdrive/sync${projectQuery(projectId)}`, { method: "POST" }),
+  // Sync storage on Specs (GRPH-1320): folder path, blob directory, index; row sync states.
+  syncStorage: (projectId: string) =>
+    request<SyncStorageStatus>(`/platform/sync-storage${projectQuery(projectId)}`),
+  saveSyncStorage: (projectId: string, body: { folder_path?: string; blob_dir?: string }) =>
+    request<SyncStorageStatus>(`/platform/sync-storage${projectQuery(projectId)}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  runSyncStorage: (projectId: string) =>
+    request<SyncStorageStatus>(`/platform/sync-storage/run${projectQuery(projectId)}`, { method: "POST" }),
 
   // Local↔cloud sync link (AL-141). Status/link/unlink are instance-wide; push/purge/
   // export/import are per-project (the credential is resolved server-side).
@@ -1397,6 +1407,58 @@ export interface SyncReport {
   /** `failed` when a file write failed; the ledger row is left as it was. Not a conflict. */
   export_status?: "ok" | "failed";
   in_sync: number;
+  /** Files the box could not read (permissions, corrupt bytes). Not conflicts, never blank bodies. */
+  read_failures?: SyncReadFailure[];
+}
+
+export interface SyncReadFailure {
+  file_name: string;
+  path: string;
+  error: string;
+  /** The PRD whose file it is, when the last sync named it; null for a stray file. */
+  prd_id: string | null;
+}
+
+/** One sync-storage path fact. `ok` false means the box cannot read it; `error` says why. */
+export interface SyncPathFact {
+  path: string;
+  /** False: the default under SYNC_DIR is in effect. */
+  configured: boolean;
+  ok: boolean;
+  writable: boolean;
+  error: string;
+  /** Folder only: where this project's files go, `<folder>/<project>`. */
+  project_path?: string;
+}
+
+export type RowSyncState =
+  | "in_sync"
+  | "not_exported"
+  | "ledger_changed"
+  | "file_changed"
+  | "conflict"
+  | "read_failed"
+  | "unknown";
+
+export interface SyncStorageRow {
+  prd_id: string;
+  title: string;
+  status: string;
+  sync_state: RowSyncState;
+  file_name: string;
+  error: string;
+}
+
+export interface SyncStorageStatus {
+  folder: SyncPathFact;
+  blob_dir: SyncPathFact;
+  index: { available: boolean; reason: string; chunks: number | null; mode: "vector" | "lexical" | null };
+  rows: SyncStorageRow[];
+  /** What a run would do, read without syncing. Null when the folder cannot be read. */
+  report: SyncReport | null;
+  last_run: { at: string | null; export_status: "ok" | "failed" | "not_run" | null; error: string };
+  /** Present on the run response only: the report of the sync that just ran (null if it could not run). */
+  run?: SyncReport | null;
 }
 
 /** One hash conflict from a sync report: facts only, neither body. */
