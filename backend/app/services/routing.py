@@ -350,24 +350,27 @@ def axis(db: Session, project_id: str | None, agent_ids: list[str]) -> dict[str,
 
 # ---- the Harness Capacity tab: what the router did over the rollup window --------------------
 
-#: (key, label) in display order. A decision is classed by what it recorded; the router writes a
-#: `claim` row for each routed claim and a `reservation` row when it holds an item for a runner.
-VERDICTS: tuple[tuple[str, str], ...] = (
-    ("claimed", "Claimed on an entitlement"),
-    ("held", "Held for another runner"),
-    ("deferred", "Deferred to a reset"),
-    ("review_reserve", "Review reserve refused a build"),
-    ("next_rung", "Fell to the next ladder rung"),
+#: (key, label, not_recorded) in display order. The router writes a `claim` row for each claim it
+#: lets through (on an entitlement, or on none: the ladder's next rung) and a `reservation` row
+#: when it holds an item for another runner. It writes NOTHING when the review reserve refuses a
+#: build (gate() returns the refusal and the claim is skipped), and nothing defers an item to a
+#: reset, so those two groups carry `count: None` and a note, never 0 (the rollup's rule).
+VERDICTS: tuple[tuple[str, str, str | None], ...] = (
+    ("claimed", "Claimed on an entitlement", None),
+    ("held", "Held for another runner", None),
+    ("deferred", "Deferred to a reset",
+     "not recorded: the router does not write a decision when it defers an item to a reset. "
+     "This is unknown, not zero."),
+    ("review_reserve", "Review reserve refused a build",
+     "not recorded: a review-reserve refusal skips the claim without writing a decision. "
+     "This is unknown, not zero."),
+    ("next_rung", "Fell to the next ladder rung", None),
 )
 _RECENT = 5
 
 
 def verdict_of(row: RoutingDecision) -> str | None:
-    reason = row.reason or ""
-    if reason.startswith("deferred to reset"):
-        return "deferred"
-    if reason.startswith("review reserve"):
-        return "review_reserve"
+    """Class a row the router wrote. Only the verdicts it records can come back from here."""
     if row.kind == "reservation":
         return "held"
     if row.kind == "claim":
@@ -377,7 +380,8 @@ def verdict_of(row: RoutingDecision) -> str | None:
 
 def decisions_by_verdict(db: Session, org_id: str, *, now: datetime | None = None) -> dict:
     """RoutingDecision rows for the org over the trailing 7 days, grouped by verdict, with up to
-    5 recent rows each (reason verbatim). With no rows at all, `reason` says why."""
+    5 recent rows each (reason verbatim). A verdict the router never records is `count: None`
+    with a `note`, not 0. With no rows at all, `reason` says why."""
     now = now or datetime.now(timezone.utc)
     start = now - timedelta(days=7)
     rows = [r for r in db.scalars(
@@ -386,7 +390,11 @@ def decisions_by_verdict(db: Session, org_id: str, *, now: datetime | None = Non
         .where(Project.org_id == org_id, RoutingDecision.created_at >= start)
         .order_by(RoutingDecision.id.desc())).all()]
     groups = []
-    for key, label in VERDICTS:
+    for key, label, not_recorded in VERDICTS:
+        if not_recorded:
+            groups.append({"verdict": key, "label": label, "count": None, "recent": [],
+                           "note": not_recorded})
+            continue
         mine = [r for r in rows if verdict_of(r) == key]
         recent = []
         for r in mine[:_RECENT]:
@@ -394,7 +402,8 @@ def decisions_by_verdict(db: Session, org_id: str, *, now: datetime | None = Non
             recent.append({"item_key": item.key if item is not None else r.item_id,
                            "entitlement_id": r.entitlement_id, "reason": r.reason,
                            "at": _aware(r.created_at).isoformat()})
-        groups.append({"verdict": key, "label": label, "count": len(mine), "recent": recent})
+        groups.append({"verdict": key, "label": label, "count": len(mine), "recent": recent,
+                       "note": None})
     reason = None
     if not rows:
         reason = "no claims routed in window"
