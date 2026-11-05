@@ -543,6 +543,28 @@ describe("design-audit gaps (GRPH-1313)", () => {
     expect(screen.getByText(/no expiry/i)).toBeInTheDocument();
   });
 
+  it("meta items (expiry, wave, origin) wrap to the second line; buttons stay on the first", async () => {
+    keyList = [
+      key({ id: "m1", name: "setup-row", origin: "gban_setup" }),
+      key({ id: "m2", name: "swamp-row", origin: "gban_swamp_setup", fleet_wave: "wave-7" }),
+    ];
+    view();
+    await keysTab();
+    await screen.findByText("setup-row");
+    for (const [label, extra] of [["via gban setup", []], ["via gban swamp setup", [/wave-7/]]] as const) {
+      const meta = screen.getByText(label).closest("[data-line]")!;
+      expect(meta.getAttribute("data-line")).toBe("meta");
+      expect(within(meta as HTMLElement).getByText(/no expiry/i)).toBeInTheDocument();
+      for (const re of extra) expect(within(meta as HTMLElement).getByText(re)).toBeInTheDocument();
+      expect(within(meta as HTMLElement).queryAllByRole("button")).toHaveLength(0);
+      const first = meta.parentElement!.querySelector('[data-line="first"]') as HTMLElement;
+      expect(first.className).not.toContain("flex-wrap");
+      const buttons = within(first).getAllByRole("button", { name: /^(Revoke|Revoke and rerun…)$/ });
+      expect(buttons.length).toBeGreaterThan(0);
+      for (const b of buttons) expect(b.className).toContain("flex-none");
+    }
+  });
+
   it("orders newer live, older live, then revoked", async () => {
     keyList = [
       key({ id: "old", name: "old-live", created_at: "2026-01-01T00:00:00Z" }),

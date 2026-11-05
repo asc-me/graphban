@@ -804,15 +804,14 @@ function KeyRow({ k, projectName, onAction }: {
 
   return (
     <div className={cn("rounded-[11px] border border-line-2 bg-surface-2", k.revoked && "opacity-50")}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5">
-        <span className="text-[13px] text-fg-2">{k.name}</span>
-        <code className="font-mono text-small text-faint">{k.prefix}…</code>
-        {k.origin === "gban_setup" && <span className={cn(chip, "border-line-2 text-muted")}>via gban setup</span>}
-        {k.origin === "gban_swamp_setup" && <span className={cn(chip, "border-line-2 text-muted")}>via gban swamp setup</span>}
-        <span className={cn(chip, k.project_id ? "border-line-2 text-muted" : "border-[rgba(167,139,250,0.3)] text-purple-2")}>
+      {/* Line 1 never wraps: the name side shrinks, the actions stay right-aligned on it. */}
+      <div data-line="first" className="flex items-center gap-x-3 px-3 pt-2.5">
+        <span className="max-w-[40%] flex-none truncate text-[13px] text-fg-2" title={k.name}>{k.name}</span>
+        <code className="min-w-0 truncate font-mono text-small text-faint">{k.prefix}…</code>
+        <span className={cn(chip, "flex-none", k.project_id ? "border-line-2 text-muted" : "border-[rgba(167,139,250,0.3)] text-purple-2")}>
           {k.project_id ? projectName(k.project_id) : "All projects"}
         </span>
-        <span className={cn("ml-auto font-mono text-[10px]", k.last_used ? "text-faint-2" : "text-amber-400")} title={k.last_used ?? undefined}>
+        <span className={cn("ml-auto flex-none whitespace-nowrap font-mono text-[10px]", k.last_used ? "text-faint-2" : "text-amber-400")} title={k.last_used ?? undefined}>
           {lastUsedLabel(k.last_used)}
         </span>
         <button
@@ -823,27 +822,29 @@ function KeyRow({ k, projectName, onAction }: {
           Minted with
         </button>
         {!k.revoked && kind === "agent" && (
-          <button className={cn("font-mono text-meta uppercase tracking-wide hover:text-fg", connect ? "text-accent" : "text-faint")}
+          <button className={cn("flex-none font-mono text-meta uppercase tracking-wide hover:text-fg", connect ? "text-accent" : "text-faint")}
                   onClick={() => setConnect(!connect)} title="Connect an agent (MCP setup)">
             Connect
           </button>
         )}
         {!k.revoked && kind === "gate" && (
-          <button className={cn("font-mono text-meta uppercase tracking-wide hover:text-fg", connect ? "text-accent" : "text-faint")}
+          <button className={cn("flex-none font-mono text-meta uppercase tracking-wide hover:text-fg", connect ? "text-accent" : "text-faint")}
                   onClick={() => setConnect(!connect)}>
             CI secrets
           </button>
         )}
         {k.revoked ? (
-          <span className="font-mono text-meta uppercase tracking-wide text-faint">revoked</span>
+          <span className="flex-none font-mono text-meta uppercase tracking-wide text-faint">revoked</span>
         ) : (
           actions.map(([label, type]) => (
-            <Button key={label} size="sm" variant="outline" onClick={() => onAction(type)}>
+            <Button key={label} size="sm" variant="outline" className="flex-none whitespace-nowrap" onClick={() => onAction(type)}>
               {label}
             </Button>
           ))
         )}
-        <div className="basis-full" aria-hidden />
+      </div>
+      {/* Line 2: the meta items (expiry, wave tag, origin tag) sit under the name. */}
+      <div data-line="meta" className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 pb-2.5 pt-1">
         <span className={cn("font-mono text-meta uppercase tracking-wide", expired ? "text-st-blocked" : "text-faint-2")}
               title={k.expires_at ? `Expires ${new Date(k.expires_at).toLocaleDateString()}` : undefined}>
           {!k.expires_at ? "no expiry" : expired ? "expired" : `expires ${new Date(k.expires_at).toLocaleDateString()}`}
@@ -854,6 +855,8 @@ function KeyRow({ k, projectName, onAction }: {
             {k.fleet_wave} · swept by End wave
           </span>
         )}
+        {k.origin === "gban_setup" && <span className={cn(chip, "border-line-2 text-muted")}>via gban setup</span>}
+        {k.origin === "gban_swamp_setup" && <span className={cn(chip, "border-line-2 text-muted")}>via gban swamp setup</span>}
       </div>
       {details && <MintedWith k={k} projectName={projectName} />}
       {connect && kind === "agent" && (
