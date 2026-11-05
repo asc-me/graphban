@@ -97,6 +97,52 @@ export interface UpdateCheck {
   note: string;
   /** Why the feed gave no answer (status code, timeout). Empty when it answered. */
   feed_error?: string;
+  /** Will the installed rule pack load on `latest`? Null: no pack installed or no newer release.
+   *  `unknown` is never compatible. */
+  pack_compat?: PackCompat | null;
+}
+
+export interface PackCompat {
+  state: "compatible" | "refused" | "unknown";
+  reason: string;
+}
+
+/** GET /api/rules/pack — the installed pack, or the server's words for why none is in force. */
+export interface RulePackStatus {
+  installed: boolean;
+  loaded: boolean;
+  name: string | null;
+  version: string | null;
+  sha256: string | null;
+  installed_at: string | null;
+  installed_by: string | null;
+  reason: string;
+  warning?: string | null;
+}
+
+/** GET /api/rules/pack/available. `unknown` carries `feed_error` and is never `current`. */
+export interface RulePackAvailable {
+  state: "current" | "available" | "unknown";
+  installed_version: string | null;
+  version: string | null;
+  notes: string | null;
+  feed_error: string | null;
+}
+
+export interface RulePackSide {
+  added: string[];
+  removed: string[];
+  changed: Record<string, Record<string, { from: unknown; to: unknown }>>;
+}
+
+/** POST /api/rules/pack/offer — the diff against the pack in force, and the sha256 Accept echoes. */
+export interface RulePackOffer {
+  from: string | null;
+  to: string;
+  rules: RulePackSide;
+  profiles: RulePackSide;
+  newly_refused: Record<string, string>;
+  sha256: string;
 }
 
 /** GET /api/platform/update-progress (GRPH-1298) — the current Install, read from its log. */

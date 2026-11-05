@@ -15,7 +15,7 @@ import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { useCanvasListbox, type CanvasListNode } from "@/lib/graph/useGraphKeyboard";
 import { useGraphViewport, zoomAbout } from "@/lib/graph/useGraphViewport";
-import { useConfig, useGitops, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
+import { useConfig, useGitops, useRulePack, useRulePackAvailable, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
 import { relTime } from "@/lib/relTime";
 import { projectPath, settingsPath, tagFromPath } from "@/lib/routes";
 import type { RuleFlowRule, RuleStage, RuleSuggestion, RulesFlow } from "@/lib/types";
@@ -171,6 +171,7 @@ export function RulesView() {
             >
               Recommended
             </button>
+            <RulePackPills />
             <ModelPill flow={flow} loading={q.isLoading} />
           </div>
         }
@@ -230,6 +231,35 @@ export function RulesView() {
         {sheet === "recommended" && <RecommendedSheet returnTo={recommendedBtn} onClose={() => setSheet(null)} onOpenValue={openValueSuggestion} />}
       </div>
     </div>
+  );
+}
+
+/**
+ * Pills near the header: a newer pack is on the feed, or the installed pack is not in force.
+ * Current, loading and unknown (feed down, or a hosted non-admin's 403) show nothing: an
+ * unknown state must not read as "current", and must not shout either.
+ */
+function RulePackPills() {
+  const avail = useRulePackAvailable();
+  const pack = useRulePack();
+  const notLoaded = pack.data?.installed === true && !pack.data.loaded;
+  const available = avail.data?.state === "available";
+  if (!notLoaded && !available) return null;
+  const to = settingsPath("deployment/updates");
+  const cls = "inline-flex h-7 items-center rounded-full border px-2.5 text-small";
+  return (
+    <>
+      {notLoaded && (
+        <Link to={to} data-testid="rules-pack-not-loaded" className={cn(cls, "border-danger text-danger")}>
+          Rule pack not loaded
+        </Link>
+      )}
+      {available && (
+        <Link to={to} data-testid="rules-pack-update" className={cn(cls, "border-accent text-accent")}>
+          Update available{avail.data?.version ? ` · ${avail.data.version}` : ""}
+        </Link>
+      )}
+    </>
   );
 }
 

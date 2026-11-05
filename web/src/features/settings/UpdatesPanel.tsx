@@ -12,6 +12,7 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { AutoUpdateSettings, StepBar, stepCount } from "@/features/settings/AutoUpdateSettings";
+import { RulePackCard } from "@/features/settings/RulePackCard";
 import { Markdown } from "@/lib/markdown";
 import { useQuery } from "@tanstack/react-query";
 import { keys, useAutoUpdate, useConfig, useUpdateCheck } from "@/lib/queries";
@@ -667,6 +668,9 @@ export function UpdatesPanel() {
       </p>
       <div ref={cardRef} className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
         {swap}
+      </div>
+      <div className="mt-3">
+        <RulePackCard packCompat={data?.pack_compat} />
       </div>
       <AutoUpdateSettings
         progressError={progress?.state === "failed" ? progress.error : ""}
