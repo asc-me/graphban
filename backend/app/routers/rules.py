@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import get_db
 from app.models import Organization, User
 from app.errors import NotFound, Refused, Validation
-from app.schemas import (ObservationBackfillOut, ObservationsOut, OrgRuleToggleOut,
+from app.schemas import (ObservationBackfillOut, ObservationsOut, OrgRuleToggleOut, OrgRuleTogglesOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
                          RulesFlowOut, RulesOut, RuleToggleOut, RuleTogglesOut,
                          RuleToggleWrite, UnmappedRefusalsOut)
@@ -155,11 +155,11 @@ def org_observations(org_id: str, stage: str | None = None, kind: str | None = N
 
 
 # ---- library rule toggles (GRPH-1262 / PRD-P63 §8, D4) -----------------------------------
-def _toggle_write(fn, *args, body: RuleToggleWrite, user: User, db: Session):
+def _toggle_write(fn, *args, body: RuleToggleWrite, user: User, db: Session, **kw):
     changes = body.model_dump(exclude_unset=True)
     reason = changes.pop("reason", "")
     try:
-        return fn(db, *args, changes, actor=user, reason=reason)
+        return fn(db, *args, changes, actor=user, reason=reason, **kw)
     except NotFound as e:
         raise HTTPException(404, str(e)) from e
     except Validation as e:
@@ -191,13 +191,25 @@ def set_project_rule_toggle(rule_id: str, body: RuleToggleWrite, project_id: str
     return next(t for t in rule_toggles.effective(db, project_id) if t["rule_id"] == rule_id)
 
 
+@router.get("/orgs/{org_id}/rule-toggles", response_model=OrgRuleTogglesOut)
+def org_rule_toggles(org_id: str, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """The org's `on` / `params` / `locked` per library rule, and each project's effective
+    value with its `source`. Org owners/admins on `team` / `enterprise` (402 otherwise)."""
+    authz.require_org_admin(db, user.id, org_id)
+    quotas.require_org_rules(db, org_id)
+    return rule_toggles.org_view(db, org_id)
+
+
 @router.put("/orgs/{org_id}/rule-toggles/{rule_id}", response_model=OrgRuleToggleOut)
 def set_org_rule_toggle(org_id: str, rule_id: str, body: RuleToggleWrite,
+                        dry_run: bool = False,
                         db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """The org's value and lock, for every project in the org at once — one audit event
-    naming the projects it changed. Org admins on `team` / `enterprise` (402 otherwise)."""
+    naming the projects it changed. Org admins on `team` / `enterprise` (402 otherwise).
+    `?dry_run=true` returns the same reply (including `projects_changed`) and writes nothing."""
     return _toggle_write(rule_toggles.set_org_toggle, org_id, rule_id, body=body, user=user,
-                         db=db)
+                         db=db, dry_run=dry_run)
 
 
 # ---- measurement (GRPH-1265 / PRD-P63 S5, D8, D9) ----------------------------------------

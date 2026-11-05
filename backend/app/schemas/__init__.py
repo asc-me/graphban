@@ -1820,6 +1820,28 @@ class RuleToggleWrite(BaseModel):
     reason: str = ""
 
 
+class OrgProjectToggleOut(BaseModel):
+    project_id: str
+    on: RuleToggleValueOut
+    params: RuleToggleValueOut
+
+
+class OrgRuleStateOut(BaseModel):
+    rule_id: str
+    stage: str
+    title: str
+    on: RuleToggleValueOut
+    params: RuleToggleValueOut
+    locked: bool
+    projects: list[OrgProjectToggleOut]
+
+
+class OrgRuleTogglesOut(BaseModel):
+    org_id: str
+    library_loaded: bool
+    rules: list[OrgRuleStateOut]
+
+
 class OrgRuleToggleOut(BaseModel):
     rule_id: str
     org_id: str
