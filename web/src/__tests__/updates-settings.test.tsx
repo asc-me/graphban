@@ -151,7 +151,7 @@ describe("Updates Settings page", () => {
       }),
     );
     renderPage();
-    expect(await screen.findByText(/is available/i)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /update available/i })).toBeInTheDocument();
     expect(screen.getAllByText(/2026\.10\.1/).length).toBeGreaterThan(0);
     expect(screen.queryByText(/on the latest release/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/up to date/i)).not.toBeInTheDocument();
@@ -197,11 +197,13 @@ describe("Updates Settings page", () => {
     renderPage();
     await user.click(await screen.findByRole("button", { name: /^install$/i }));
     await user.click(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i }));
-    expect(await screen.findByText(/building 2026\.10\.1\. this box keeps serving 2026\.09\.1/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /installing/i })).toBeDisabled();
+    await waitFor(() => expect(screen.getByTestId("phase-copy").textContent).toMatch(
+      /building 2026\.10\.1\. this box keeps serving 2026\.09\.1/i));
+    expect(screen.queryByRole("button", { name: /installing/i })).not.toBeInTheDocument();
     expect(reload).not.toHaveBeenCalled();
     serving = "down";
-    expect(await screen.findByText(/restarting the API on 2026\.10\.1/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("phase-copy").textContent).toMatch(
+      /restarting the API on 2026\.10\.1/i));
     serving = "new";
     expect(await screen.findByText(/installed 2026\.10\.1/i)).toBeInTheDocument();
     await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
@@ -315,7 +317,7 @@ describe("Updates Settings page", () => {
     expect(screen.queryByText(/install failed/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/old failure/)).not.toBeInTheDocument();
     expect(screen.queryByRole("list", { name: /install steps/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /installing/i })).toBeInTheDocument();
+    expect(screen.getByTestId("phase-copy")).toBeInTheDocument();
     expect(reload).not.toHaveBeenCalled();
   });
 
@@ -711,5 +713,78 @@ describe("Updates nav source", () => {
   it("index.css defines --color-danger as an alias of the blocked status colour", () => {
     const css = readFileSync("src/index.css", "utf8");
     expect(css).toMatch(/--color-danger:\s*var\(--color-st-blocked\)/);
+  });
+});
+
+describe("Updates panel layout pass (design audit)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.restoreAllMocks();
+    localStorage.setItem("gb_last_project_tag", "APP");
+    projectsSpy.mockResolvedValue([proj]);
+    updateApplySpy.mockReset().mockImplementation(async (tag: string) => ({ ok: true, started: true, tag }));
+    updateCheckSpy.mockReset();
+    progressSpy.mockReset();
+    healthSpy.mockReset();
+    healthSpy.mockResolvedValue({ status: "ok", version: "2026.09.1", git_sha: "x" });
+    progressSpy.mockResolvedValue({ state: "idle", reason: "no log", tag: "", steps: [], current_line: "", error: "" });
+    running = {
+      state: "running", reason: "", tag: "2026.10.1", current_line: "pulling layers",
+      error: "",
+      steps: [
+        { key: "a", label: "Fetching", status: "done", started_at: 1 },
+        { key: "b", label: "Building the images", status: "active", started_at: Math.floor(Date.now() / 1000) - 5 },
+      ],
+    };
+    Object.assign(installTiming, { pollMs: 5, requestMs: 50, budgetMs: 5000, reloadMs: 5 });
+  });
+
+  let running: unknown;
+  async function startInstall() {
+    const user = userEvent.setup();
+    updateCheckSpy.mockResolvedValue(available());
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    progressSpy.mockResolvedValue(running);
+    await user.click(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i }));
+  }
+
+  it("while installing the Status card has no heading and no Check button", async () => {
+    await startInstall();
+    expect(await screen.findByRole("list", { name: /install steps/i })).toBeInTheDocument();
+    expect(screen.queryByText(/update available/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /check for updates/i })).not.toBeInTheDocument();
+    expect(screen.getByText("pulling layers")).toBeInTheDocument();
+    expect(screen.getByText(/how this box is deployed/i)).toBeInTheDocument();
+  });
+
+  it("the active step's elapsed time is its own right-aligned element after the label", async () => {
+    await startInstall();
+    const timer = await screen.findByTestId("step-timer");
+    expect(timer.className).toMatch(/ml-auto/);
+    expect(timer.className).toMatch(/font-mono/);
+    const row = timer.closest("li")!;
+    expect(row.textContent).toMatch(/Building the images.*\d+:\d\d/);
+  });
+
+  it("an available update puts the tag in the heading", async () => {
+    updateCheckSpy.mockResolvedValue(available());
+    renderPage();
+    const h = await screen.findByRole("heading", { name: /update available/i });
+    expect(h).toHaveTextContent("2026.10.1");
+    expect(screen.getByText(/Running/)).toBeInTheDocument();
+    expect(screen.queryByText(/install rebuilds this box/i)).not.toBeInTheDocument();
+  });
+
+  it("a failed check with unknown notes shows no release notes block", async () => {
+    updateCheckSpy.mockResolvedValue(payload({
+      state: "unknown", latest: null, feed_error: "GitHub did not answer within 5s",
+      notes: { running: { tag: "2026.09.1", state: "unknown", body: "" }, latest: null },
+    } as Partial<UpdateCheck>));
+    renderPage();
+    expect(await screen.findByText("Could not check")).toBeInTheDocument();
+    expect(screen.getByText("GitHub did not answer within 5s.")).toBeInTheDocument();
+    expect(screen.getByText("Install is disabled until a check succeeds.")).toBeInTheDocument();
+    expect(screen.queryByText(/release notes/i)).not.toBeInTheDocument();
   });
 });
