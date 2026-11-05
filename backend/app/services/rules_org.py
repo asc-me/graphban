@@ -30,7 +30,8 @@ from sqlalchemy.orm import Session
 
 from app.errors import NotFound, Refused, Validation
 from app.models import (
-    ApiKey, BoxRuleSync, Event, Item, Organization, OrgRuleVersion, Project, RuleDecisionPull,
+    ApiKey, BoxRuleSync, Event, Item, Organization, OrgRuleSuggestionDismissal, OrgRuleVersion,
+    Project, RuleDecisionPull,
     RuleToggle, utcnow,
 )
 from app.security import authz
@@ -422,8 +423,9 @@ def _compute(db: Session, org_id: str, *, refresh: bool = False) -> dict:
         for s in suggestions:
             if s["kind"] != "rule" or not s["rule_id"]:
                 continue
-            g = by_rule.setdefault(s["rule_id"], {"suggestion": s, "projects": {}})
+            g = by_rule.setdefault(s["rule_id"], {"suggestion": s, "projects": {}, "prints": {}})
             g["projects"][pid] = s["score"] or 0
+            g["prints"][pid] = s["fingerprint"]
     out = []
     for rid, g in sorted(by_rule.items()):
         n = len(g["projects"])
@@ -435,7 +437,11 @@ def _compute(db: Session, org_id: str, *, refresh: bool = False) -> dict:
                     "why": f"{n} of the org's projects carry observations implying this rule. "
                            "Nothing turns it on but an org admin.",
                     "projects": n, "project_ids": sorted(g["projects"]),
-                    "score": round(sum(g["projects"].values()), 2), "effect": s["effect"]})
+                    "score": round(sum(g["projects"].values()), 2), "effect": s["effect"],
+                    # Any contributing project's evidence moving, or the set of projects
+                    # changing, changes this: that is what re-opens a dismissal.
+                    "fingerprint": hashlib.sha256("\n".join(
+                        f"{p}:{f}" for p, f in sorted(g["prints"].items())).encode()).hexdigest()[:16]})
     out.sort(key=lambda r: -r["score"])
     return {"org_min_projects": floor, "active_projects": len(active),
             "projects": len(project_ids), "suggestions": out,
@@ -454,8 +460,56 @@ def recommended(db: Session, user, org_id: str, *, refresh: bool = False) -> dic
     # suggestion must not keep being offered it until the cache turns over.
     org_on = set(db.scalars(select(RuleToggle.rule_id).where(
         RuleToggle.org_id == org_id, RuleToggle.on.is_(True))))
-    return {**hit[2], "suggestions": [s for s in hit[2]["suggestions"] if s["rule_id"] not in org_on],
+    marks = _marks(db, org_id)
+    return {**hit[2], "suggestions": [s for s in hit[2]["suggestions"]
+                                      if s["rule_id"] not in org_on
+                                      and marks.get(s["id"]) != s["fingerprint"]],
             "computed_at": hit[1], "age_seconds": int(time.monotonic() - hit[0])}
+
+
+def _marks(db: Session, org_id: str) -> dict[str, str]:
+    return {d.suggestion_id: d.fingerprint for d in db.scalars(
+        select(OrgRuleSuggestionDismissal).where(OrgRuleSuggestionDismissal.org_id == org_id))}
+
+
+def _current(db: Session, org_id: str) -> list[dict]:
+    hit = _cache.get(org_id)
+    if hit is None or time.monotonic() - hit[0] >= CACHE_TTL_SECONDS:
+        hit = (time.monotonic(), datetime.now(timezone.utc).isoformat(), _compute(db, org_id))
+        _cache[org_id] = hit
+    return hit[2]["suggestions"]
+
+
+def dismiss(db: Session, user, org_id: str, suggestion_id: str) -> None:
+    """Dismiss against the evidence as it stands now. Writes no toggle (D10)."""
+    _admin(db, user, org_id)
+    current = next((s for s in _current(db, org_id) if s["id"] == suggestion_id), None)
+    if current is None:
+        raise NotFound("No such suggestion")
+    row = db.get(OrgRuleSuggestionDismissal, (org_id, suggestion_id))
+    if row is None:
+        db.add(OrgRuleSuggestionDismissal(org_id=org_id, suggestion_id=suggestion_id,
+                                          fingerprint=current["fingerprint"]))
+    else:
+        row.fingerprint = current["fingerprint"]
+        row.dismissed_at = datetime.now(timezone.utc)
+    db.commit()
+
+
+def dismissed(db: Session, user, org_id: str) -> list[dict]:
+    """Suggestions dismissed against their present evidence, for Restore."""
+    _admin(db, user, org_id)
+    marks = _marks(db, org_id)
+    return [s for s in _current(db, org_id) if marks.get(s["id"]) == s["fingerprint"]]
+
+
+def restore(db: Session, user, org_id: str, suggestion_id: str) -> None:
+    _admin(db, user, org_id)
+    row = db.get(OrgRuleSuggestionDismissal, (org_id, suggestion_id))
+    if row is None:
+        raise NotFound("That suggestion is not dismissed")
+    db.delete(row)
+    db.commit()
 
 
 # ---- linked boxes pull the org's decisions (GRPH-1297) -----------------------------------
