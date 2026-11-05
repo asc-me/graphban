@@ -25,6 +25,7 @@ from app.services import events as events_svc
 from app.services import items as items_svc
 from app.services import credential_retry
 from app.services import reindex
+from app.services import rule_pack as rule_pack_svc
 from app.services import auto_update as auto_update_svc
 from app.services import instance_update
 from app.services import platform as platform_svc
@@ -79,7 +80,8 @@ def _sync_root(project_id: str, folder: str) -> str:
 
 
 @router.get("/update-check")
-def update_check(refresh: bool = False, _: User = Depends(get_current_user)):
+def update_check(refresh: bool = False, db: Session = Depends(get_db),
+                 _: User = Depends(get_current_user)):
     """Whether this instance is current against the published stable cut (P32).
 
     Three states; unknown is not current. `apply` is true when this is not
@@ -90,7 +92,14 @@ def update_check(refresh: bool = False, _: User = Depends(get_current_user)):
     `/health`. Bounded by a 5 s total deadline; a definite answer is cached for
     a minute and `?refresh=true` bypasses the cache.
     """
-    return instance_update.check_cached(refresh=refresh)
+    out = dict(instance_update.check_cached(refresh=refresh))
+    latest = out.get("latest")
+    compat = None
+    if latest and out.get("state") == "available":
+        compat = rule_pack_svc.compat(
+            db, latest["tag"], instance_update.fetch_contract_api(latest.get("contract_asset", "")))
+    out["pack_compat"] = compat  # null when no pack is installed or no newer release
+    return out
 
 
 @router.get("/update-progress")
