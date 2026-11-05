@@ -18,8 +18,14 @@ def db(client):
 
 
 class _Resp:
+    status_code = 200
+
     def raise_for_status(self):
         pass
+
+
+class _NoOrg(_Resp):
+    status_code = 404   # the rule-decision pull every push makes (GRPH-1297): no org here
 
 
 def _capture(monkeypatch, fail_on=None):
@@ -33,6 +39,7 @@ def _capture(monkeypatch, fail_on=None):
         return _Resp()
 
     monkeypatch.setattr(code_sync.httpx, "post", fake_post)
+    monkeypatch.setattr(code_sync.httpx, "get", lambda *a, **k: _NoOrg())
     return calls
 
 
