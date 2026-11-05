@@ -1,6 +1,7 @@
 """PRD-P63 S4 (GRPH-1264): oversight profiles and org recommendations (D6, D11, D13)."""
 import pytest
 
+from app.models import RuleToggle
 from app.services import rule_pack as P
 from app.services import rule_toggles as T
 from app.services import rules as R
@@ -486,3 +487,62 @@ def test_applied_profiles_report_project_alone_and_inherited(client, org):
 def test_applied_profiles_are_plan_gated(client, org):
     _set_plan(org["id"], "free")
     assert client.get(_url(org, "profiles/applied"), headers=org["owner"]).status_code == 402
+
+
+def _org_sugg(client, org, **kw):
+    return client.get(_url(org, "recommended"), headers=org["owner"], **kw).json()["suggestions"]
+
+
+def test_org_dismissal_hides_restores_and_returns_on_new_evidence(client, org):
+    _observe(org["ps"][0])
+    _observe(org["ps"][1])
+    sid = f"org.rule.{RULE}"
+    assert [s["id"] for s in _org_sugg(client, org)] == [sid]
+    d = _url(org, f"recommended/{sid}/dismiss")
+    assert client.post(d, headers=org["owner"]).status_code == 204
+    # read time, no ?refresh and no cache turnover needed
+    assert _org_sugg(client, org) == []
+    listed = client.get(_url(org, "recommended/dismissed"), headers=org["owner"]).json()
+    assert [s["id"] for s in listed["suggestions"]] == [sid]
+    # D10: dismissing wrote no toggle
+    db = _db()
+    try:
+        assert db.query(RuleToggle).count() == 0
+    finally:
+        db.close()
+    assert client.delete(d, headers=org["owner"]).status_code == 204
+    assert client.delete(d, headers=org["owner"]).status_code == 404
+    assert [s["id"] for s in _org_sugg(client, org)] == [sid]
+    # dismiss again, then the evidence changes: it comes back
+    client.post(d, headers=org["owner"])
+    assert _org_sugg(client, org) == []
+    _observe_more(org["ps"][0])
+    rr.clear_cache()
+    RO.clear_cache()
+    client.get(_url(org, "recommended"), params={"refresh": True}, headers=org["owner"])
+    assert [s["id"] for s in _org_sugg(client, org)] == [sid]
+    assert client.get(_url(org, "recommended/dismissed"),
+                      headers=org["owner"]).json()["suggestions"] == []
+
+
+def test_org_dismissal_unknown_id_and_plan(client, org):
+    _observe(org["ps"][0])
+    _observe(org["ps"][1])
+    assert client.post(_url(org, "recommended/org.rule.ghost/dismiss"),
+                       headers=org["owner"]).status_code == 404
+    _set_plan(org["id"], "free")
+    assert client.post(_url(org, f"recommended/org.rule.{RULE}/dismiss"),
+                       headers=org["owner"]).status_code == 402
+    assert client.get(_url(org, "recommended/dismissed"), headers=org["owner"]).status_code == 402
+
+
+def _observe_more(pid):
+    from app.models import Observation
+
+    db = _db()
+    try:
+        db.add(Observation(project_id=pid, kind="predicate_exempted", stage="review",
+                           dedupe_key="extra", ref={}))
+        db.commit()
+    finally:
+        db.close()
