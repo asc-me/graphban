@@ -27,6 +27,7 @@ import { InviteAcceptPage } from "@/features/onboarding/InviteAcceptPage";
 import { PrdEditorView } from "@/features/prds/PrdEditorView";
 import { ConflictRecordView } from "@/features/prds/ConflictRecordView";
 import { PrdListView } from "@/features/prds/PrdListView";
+import { PreambleReaderView, SetConstraintsReaderView } from "@/features/prds/SpecReaderView";
 import { ProfileView } from "@/features/profile/ProfileView";
 import { ProjectHome } from "@/features/projecthome/ProjectHome";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -93,6 +94,8 @@ const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["lessons/:id", <LessonsView />],
   ["prds", <PrdListView />],
   ["prds/conflict/:id", <ConflictRecordView />],
+  ["prds/preamble", <PreambleReaderView />],
+  ["prds/constraints/:setId", <SetConstraintsReaderView />],
   ["prds/:id", <PrdEditorView />],
   ["feedback-kit", <FeedbackKitView />],
 ];

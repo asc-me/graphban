@@ -950,6 +950,24 @@ export const api = {
   updatePrd: (id: string, body: { title?: string; status?: PrdStatus; body?: string }) =>
     request<Prd>(`/prds/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   prdVersions: (id: string) => request<PrdVersion[]>(`/prds/${id}/versions`),
+  // The Spec reader (GRPH-1319). Writes go to the services that own each record.
+  specPrd: (projectId: string, id: string) =>
+    request<SpecPrdFacts>(`/specs/prds/${id}?project_id=${encodeURIComponent(projectId)}`),
+  specPreamble: (projectId: string) =>
+    request<SpecPreamble>(`/specs/preamble?project_id=${encodeURIComponent(projectId)}`),
+  putPreamble: (projectId: string, body: string, citesPrdId: string) =>
+    request<SpecPreamble>("/specs/preamble", {
+      method: "PUT",
+      body: JSON.stringify({ project_id: projectId, body, cites_prd_id: citesPrdId }),
+    }),
+  specDesignSet: (setId: string) => request<SpecDesignSet>(`/specs/design-sets/${setId}`),
+  acceptSetConstraints: (setId: string) =>
+    request<SpecDesignSet>(`/specs/design-sets/${setId}/accept-constraints`, { method: "POST" }),
+  compileScreen: (setId: string, screen?: string) =>
+    request<SpecDesignSet>(`/specs/design-sets/${setId}/compile`, {
+      method: "POST",
+      body: JSON.stringify(screen ? { screen } : {}),
+    }),
   snapshotPrd: (id: string, note: string) =>
     request<Prd>(`/prds/${id}/versions`, { method: "POST", body: JSON.stringify({ note }) }),
   linkPrd: (id: string, itemId: string, add: boolean) =>
@@ -1393,6 +1411,60 @@ export const api = {
 };
 
 export type { GitopsPatch, GitopsView, Status };
+
+/** A document body's state in the Spec reader (GRPH-1319). Never a blank string standing in
+ *  for "pending" or "unreadable": `body` is null unless `body_state` is `stored`. */
+export type SpecBodyState = "stored" | "pending" | "unreadable" | "absent";
+
+export interface SpecPrdFacts {
+  prd_id: string;
+  status: PrdStatus;
+  version: string;
+  content_hash: string;
+  /** null = no baseline, which the reader labels; never an empty hash. */
+  baseline_hash: string | null;
+  baseline_version: string | null;
+  design_set: SpecDesignSet | null;
+}
+
+export interface SpecScreen {
+  screen: string;
+  tier: string;
+  tier_confirmed: boolean;
+  /** none = no prompt yet; compiled = a candidate nobody accepted. */
+  prompt: "none" | "compiled" | "accepted" | "stale";
+  /** Why a compile of this screen would be refused now. Empty = compile is offered. */
+  compile_refused: string[];
+}
+
+export interface SpecDesignSet {
+  id: string;
+  prd_id: string;
+  status: string;
+  stale_reason: string;
+  constraints_hash: string;
+  constraints_accepted: boolean;
+  preamble_version: number;
+  body_state: SpecBodyState;
+  body: string | null;
+  screens: SpecScreen[];
+  history: { constraints_hash: string; person: string; relayed_by: string; current: boolean }[];
+}
+
+export interface SpecPreamble {
+  id: string;
+  version: number;
+  title: string;
+  cites_prd_id: string;
+  prd_hash: string;
+  content_hash: string;
+  created_by: string;
+  sections: { heading: string; text: string }[];
+  body_state: SpecBodyState;
+  body: string | null;
+  history: { version: number; content_hash: string; created_by: string; governing: boolean }[];
+  stale_sets: { id: string; prd_id: string; status: string; stale_reason: string; preamble_version: number }[];
+}
 
 /** What one Drive sync run reports. The conflict record page reads it from router state. */
 export interface SyncReport {

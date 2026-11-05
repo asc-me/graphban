@@ -33,6 +33,9 @@ export const keys = {
   prds: ["prds"] as const,
   prd: (id: string) => ["prd", id] as const,
   prdVersions: (id: string) => ["prd-versions", id] as const,
+  specPrd: (projectId: string, id: string) => ["spec-prd", projectId, id] as const,
+  specPreamble: (projectId: string) => ["spec-preamble", projectId] as const,
+  specDesignSet: (setId: string) => ["spec-design-set", setId] as const,
   prdRequests: (id: string) => ["prd-requests", id] as const,
   prdSuggestions: (id: string) => ["prd-request-suggestions", id] as const,
   closeReport: (id: string) => ["close-report", id] as const,
@@ -372,6 +375,34 @@ export function useGrillDefer(id: string) {
 
 export function usePrd(id: string) {
   return useQuery({ queryKey: keys.prd(id), queryFn: () => api.prd(id), enabled: !!id });
+}
+
+/** Hashes and design set for the Spec reader's header (GRPH-1319). */
+export function useSpecPrd(projectId: string, id: string) {
+  return useQuery({
+    queryKey: keys.specPrd(projectId, id),
+    queryFn: () => api.specPrd(projectId, id),
+    enabled: !!projectId && !!id,
+  });
+}
+
+/** The project preamble. A 404 is "not found", which the reader says — not an empty body. */
+export function useSpecPreamble(projectId: string) {
+  return useQuery({
+    queryKey: keys.specPreamble(projectId),
+    queryFn: () => api.specPreamble(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useSpecDesignSet(setId: string) {
+  return useQuery({
+    queryKey: keys.specDesignSet(setId),
+    queryFn: () => api.specDesignSet(setId),
+    enabled: !!setId,
+    retry: false,
+  });
 }
 
 export function usePrdVersions(id: string) {

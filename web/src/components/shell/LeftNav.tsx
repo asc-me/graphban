@@ -47,7 +47,7 @@ export const SECTIONS: SectionDef[] = [
       { view: "triage", icon: <Radar size={15} />, label: "Triage", desc: "Overlaps and duplicates before work starts" },
       { view: "tracker", icon: <ListChecks size={15} />, label: "Tracker", desc: "One linear stream of work", count: "items_open" },
       { view: "requests", icon: <Star size={15} />, label: "Requests", desc: "Submissions from the public form", count: "requests_untriaged" },
-      { view: "prds", icon: <BarChart3 size={15} />, label: "PRDs", desc: "Versioned specs with linked items" },
+      { view: "prds", icon: <BarChart3 size={15} />, label: "Specs", desc: "PRDs, the preamble and set constraints" },
       { view: "roadmap", icon: <Map size={15} />, label: "Roadmap", desc: "MVP → Post-MVP → Later" },
     ],
   },
