@@ -281,3 +281,139 @@ def test_contract_route_answers_an_agent_api_key(client, auth):
         assert r.json()["api_version"] == P.PRIMITIVE_API
     assert client.get("/api/rules/contract",
                       headers={"X-API-Key": "not-a-key"}).status_code == 401
+
+
+# ---- install on a server (GRPH-1329) -----------------------------------------------------
+import base64
+
+
+def _login(client):
+    r = client.post("/api/auth/login", json={"email": "alex@ascme-labs.com",
+                                             "password": "graphban"})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+def _body(art, sig, **extra):
+    return {"artifact_b64": base64.b64encode(art).decode(),
+            "signature_b64": base64.b64encode(sig).decode(), **extra}
+
+
+@pytest.fixture()
+def trusted(monkeypatch):
+    monkeypatch.setattr(P, "TRUSTED_PUBLIC_KEYS", TRUST)
+    monkeypatch.setattr(P, "LOAD_REFUSAL", "")
+    T.LIBRARY.clear()
+    P.CURRENT = None
+
+
+def test_offer_applies_nothing_then_accept_installs_and_survives_restart(client, trusted):
+    h = _login(client)
+    art, sig = build(FIX / "api1")
+    r = client.post("/api/rules/pack/offer", json=_body(art, sig), headers=h)
+    assert r.status_code == 200, r.text
+    offered = r.json()
+    assert offered["from"] is None and offered["rules"]["added"]
+    assert offered["sha256"] == P.sha256_of(art)
+    st = client.get("/api/rules/pack", headers=h).json()
+    assert st["installed"] is False and "No rule pack" in st["reason"]
+    assert not T.library_loaded()
+
+    r = client.post("/api/rules/pack/accept",
+                    json=_body(art, sig, sha256=offered["sha256"]), headers=h)
+    assert r.status_code == 200, r.text
+    st = client.get("/api/rules/pack", headers=h).json()
+    assert st["installed"] and st["loaded"] and st["sha256"] == offered["sha256"]
+    assert st["version"] == "1.0.0" and st["installed_by"] and st["installed_at"]
+    assert len(T.LIBRARY) == len(offered["rules"]["added"])
+
+    from app.db import SessionLocal
+    from app.models import Event
+    db = SessionLocal()
+    try:
+        ev = db.query(Event).filter(Event.action == "install_rule_pack").all()
+        assert len(ev) == 1
+        assert ev[0].meta["old_version"] is None and ev[0].meta["new_version"] == "1.0.0"
+        assert ev[0].meta["sha256"] == offered["sha256"]
+
+        # Restart: process state gone, the table remains.
+        T.LIBRARY.clear()
+        P.CURRENT = None
+        assert P.reload_persisted(db) is not None
+        assert P.CURRENT.version == "1.0.0" and len(T.LIBRARY) == len(offered["rules"]["added"])
+    finally:
+        db.close()
+
+
+def test_accept_with_a_different_artifact_is_refused(client, trusted):
+    h = _login(client)
+    art, sig = build(FIX / "api1")
+    other, osig = build(FIX / "api1", {"pack.toml": (FIX / "api1/pack.toml").read_text()
+                                       .replace('version = "1.0.0"', 'version = "1.0.1"')})
+    r = client.post("/api/rules/pack/accept",
+                    json=_body(other, osig, sha256=P.sha256_of(art)), headers=h)
+    assert r.status_code == 409
+    assert client.get("/api/rules/pack", headers=h).json()["installed"] is False
+
+
+def test_tampered_artifact_is_refused_and_previous_pack_stays(client, trusted):
+    h = _login(client)
+    art, sig = build(FIX / "api1")
+    assert client.post("/api/rules/pack/accept",
+                       json=_body(art, sig, sha256=P.sha256_of(art)), headers=h).status_code == 200
+    bad = art[:-1] + bytes([art[-1] ^ 1])
+    msg = "pack signature does not verify against any trusted key"
+    r = client.post("/api/rules/pack/offer", json=_body(bad, sig), headers=h)
+    assert r.status_code == 422 and msg in r.text
+    r = client.post("/api/rules/pack/accept",
+                    json=_body(bad, sig, sha256=P.sha256_of(bad)), headers=h)
+    assert r.status_code == 422 and msg in r.text
+    st = client.get("/api/rules/pack", headers=h).json()
+    assert st["sha256"] == P.sha256_of(art) and st["loaded"]
+
+
+def test_agent_key_cannot_offer_or_accept(client, trusted):
+    h = _login(client)
+    pid = client.get("/api/projects", headers=h).json()[0]["id"]
+    key = client.post("/api/api-keys", json={"name": "k", "project_id": pid},
+                      headers=h).json()["plaintext"]
+    art, sig = build(FIX / "api1")
+    k = {"X-API-Key": key}
+    assert client.post("/api/rules/pack/offer", json=_body(art, sig),
+                       headers=k).status_code == 401
+    assert client.post("/api/rules/pack/accept",
+                       json=_body(art, sig, sha256=P.sha256_of(art)),
+                       headers=k).status_code == 401
+    db, _ = _person()
+    try:
+        from app.models import ApiKey
+        ak = db.query(ApiKey).first()
+        for fn in (lambda: P.offer_pack(db, ak, art, sig, trusted_keys=TRUST),
+                   lambda: P.accept(db, ak, art, sig, P.sha256_of(art), trusted_keys=TRUST)):
+            with pytest.raises(Exception) as e:
+                fn()
+            assert getattr(e.value, "rule_id", None) == T.PERSON_RULE
+    finally:
+        db.close()
+    assert client.get("/api/rules/pack", headers=h).json()["installed"] is False
+
+
+def test_persisted_pack_that_no_longer_verifies_is_refused_with_its_reason(client, trusted,
+                                                                         monkeypatch):
+    h = _login(client)
+    art, sig = build(FIX / "api1")
+    client.post("/api/rules/pack/accept", json=_body(art, sig, sha256=P.sha256_of(art)),
+                headers=h)
+    T.LIBRARY.clear()
+    P.CURRENT = None
+    monkeypatch.setattr(P, "TRUSTED_PUBLIC_KEYS", ("00" * 32,))
+    db, _ = _person()
+    try:
+        assert P.reload_persisted(db) is None
+    finally:
+        db.close()
+    assert not T.library_loaded()
+    st = client.get("/api/rules/pack", headers=h).json()
+    assert st["installed"] and not st["loaded"] and "does not verify" in st["reason"]
+    t = client.get("/api/rules/toggles", headers=h).json()
+    assert t["library_loaded"] is False and "does not verify" in t["library_reason"]

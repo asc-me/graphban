@@ -26,6 +26,7 @@ changes in each rule and profile; `install` applies it and takes the acting `Use
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import tarfile
 import tomllib
@@ -33,8 +34,11 @@ from dataclasses import dataclass, field
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models import InstalledRulePack
+from app.services import events as events_svc
 from app.services import rule_toggles
 from app.services.rules import Enforcer
 from app.version import __version__
@@ -335,3 +339,94 @@ def offer(artifact: bytes, signature: bytes, *, trusted_keys: tuple[str, ...] | 
     """Verify a newer pack and say what it would change. Nothing is applied (D10)."""
     return diff(CURRENT, load(artifact, signature, trusted_keys=trusted_keys,
                               server_version=server_version))
+
+
+# ---- install on a server: offer, accept, persist, reload (GRPH-1329 / D10, D12) ----------
+
+#: Why the persisted pack is not in force, when it is not. The Library group reads this in
+#: place of "no rule pack loaded". "" when a pack is in force or none was ever installed.
+LOAD_REFUSAL = ""
+
+
+class PackMismatch(Exception):
+    """Accept was given a different artifact than the one that was offered."""
+
+
+def sha256_of(artifact: bytes) -> str:
+    return hashlib.sha256(artifact).hexdigest()
+
+
+def offer_pack(db: Session, actor: object, artifact: bytes, signature: bytes, *,
+               trusted_keys: tuple[str, ...] | None = None,
+               server_version: str | None = None) -> dict:
+    """A person's Offer: the diff against the pack in force plus the artifact's sha256, which
+    Accept must echo. Applies nothing, persists nothing."""
+    rule_toggles._require_person(db, actor)
+    return {**offer(artifact, signature, trusted_keys=trusted_keys, server_version=server_version),
+            "sha256": sha256_of(artifact)}
+
+
+def accept(db: Session, actor: object, artifact: bytes, signature: bytes, sha256: str, *,
+           trusted_keys: tuple[str, ...] | None = None,
+           server_version: str | None = None) -> dict:
+    """A person's Accept (the only path that installs a pack). Pinned to the offered sha256, so
+    what was previewed is what is applied. Persists, installs, and writes one audit event."""
+    global LOAD_REFUSAL
+    user = rule_toggles._require_person(db, actor)
+    actual = sha256_of(artifact)
+    if actual != (sha256 or "").lower():
+        raise PackMismatch(f"artifact sha256 {actual} is not the offered {sha256!r}; "
+                           "offer it again")
+    old = CURRENT.version if CURRENT else None
+    # Verifies the signature and server version first: a refused pack raises here and the
+    # previous pack, in memory and in the table, stays in force.
+    pack = install(db, user, artifact, signature, trusted_keys=trusted_keys,
+                   server_version=server_version)
+    db.add(InstalledRulePack(name=pack.name, version=pack.version, sha256=actual,
+                             artifact=artifact, signature=signature, installed_by=user.id))
+    db.commit()
+    LOAD_REFUSAL = ""
+    events_svc.record_user(
+        db, user, action="install_rule_pack", target_type="rule_pack", target_id=pack.name,
+        meta={"old_version": old, "new_version": pack.version, "sha256": actual})
+    return status(db)
+
+
+def _latest(db: Session) -> InstalledRulePack | None:
+    return db.scalars(select(InstalledRulePack)
+                      .order_by(InstalledRulePack.id.desc()).limit(1)).first()
+
+
+def status(db: Session) -> dict:
+    """The installed pack, or the server's own words for why there is none. `loaded` says
+    whether it is in force in this process."""
+    row = _latest(db)
+    if row is None:
+        return {"installed": False, "loaded": False, "name": None, "version": None,
+                "sha256": None, "installed_at": None, "installed_by": None,
+                "reason": "No rule pack has been installed on this server"}
+    return {"installed": True, "loaded": CURRENT is not None and CURRENT.version == row.version,
+            "name": row.name, "version": row.version, "sha256": row.sha256,
+            "installed_at": row.installed_at, "installed_by": row.installed_by,
+            "reason": LOAD_REFUSAL}
+
+
+def reload_persisted(db: Session) -> Pack | None:
+    """Startup, in every worker: re-verify the persisted pack and register its library. One
+    that no longer verifies, or needs a newer server, is refused with its reason (`LOAD_REFUSAL`)
+    and registers nothing."""
+    global CURRENT, LOAD_REFUSAL
+    row = _latest(db)
+    if row is None:
+        return None
+    try:
+        pack = load(row.artifact, row.signature)
+    except PackRefused as e:
+        LOAD_REFUSAL = (f"installed pack {row.name} {row.version} is not in force: {e}")
+        return None
+    rule_toggles.LIBRARY.clear()
+    for tid, t in pack.templates.items():
+        rule_toggles.register(_library_rule(tid, t, pack.refused.get(tid, "")))
+    CURRENT = pack
+    LOAD_REFUSAL = ""
+    return pack

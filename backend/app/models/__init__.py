@@ -3555,6 +3555,23 @@ class RuleToggle(Base):
     )
 
 
+class InstalledRulePack(Base):
+    """A rule pack a person accepted (GRPH-1329 / PRD-P63 D10, D12). The newest row is the pack
+    in force; older rows are the install history. The artifact and its signature are stored
+    verbatim so every worker re-verifies and reloads the same bytes at startup."""
+
+    __tablename__ = "installed_rule_packs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String)
+    version: Mapped[str] = mapped_column(String)
+    sha256: Mapped[str] = mapped_column(String(64))
+    artifact: Mapped[bytes] = mapped_column(LargeBinary)
+    signature: Mapped[bytes] = mapped_column(LargeBinary)
+    installed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class RuleDecisionPull(Base):
     """BOX side (GRPH-1297): the org rule decision this linked box last applied.
 

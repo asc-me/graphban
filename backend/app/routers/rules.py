@@ -2,6 +2,8 @@
 
 The registry is read-only. Toggles are the one write here, and a write here is a person's:
 these routes take a logged-in user, never an API key (PRD-P63 D10)."""
+import base64
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -9,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import Organization, User
-from app.errors import NotFound, Validation
+from app.errors import NotFound, Refused, Validation
 from app.schemas import (ObservationBackfillOut, ObservationsOut, OrgRuleToggleOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
                          RulesFlowOut, RulesOut, RuleToggleOut, RuleTogglesOut,
@@ -171,6 +173,7 @@ def rule_toggles_for_project(project_id: str = "core", db: Session = Depends(get
     `source` (`project` | `org` | `platform default`) and the org's lock."""
     authz.require_readable(db, user.id, project_id)
     return {"library_loaded": rule_toggles.library_loaded(),
+            "library_reason": rule_pack.LOAD_REFUSAL or None,
             "toggles": rule_toggles.effective(db, project_id)}
 
 
@@ -301,3 +304,64 @@ def org_recommended_rules(org_id: str, refresh: bool = False, db: Session = Depe
     """Library rules implied by at least ORG_MIN_PROJECTS projects. Computed weekly; the reply
     carries its age. Suggestions only."""
     return rules_org.recommended(db, user, org_id, refresh=refresh)
+
+
+# ---- install a signed rule pack (GRPH-1329 / PRD-P63 D10, D12) ---------------------------
+class PackUpload(BaseModel):
+    """The artifact and its signature, base64. `sha256` is the offer's, echoed on Accept."""
+    artifact_b64: str
+    signature_b64: str
+
+
+class PackAccept(PackUpload):
+    sha256: str
+
+
+def _pack_bytes(body: PackUpload) -> tuple[bytes, bytes]:
+    try:
+        return (base64.b64decode(body.artifact_b64, validate=True),
+                base64.b64decode(body.signature_b64, validate=True))
+    except ValueError:
+        raise HTTPException(422, "artifact_b64 and signature_b64 must be base64") from None
+
+
+def _pack_person(user: User) -> User:
+    """A pack is server-wide. Hosted, only the operator's allowlist installs one; self-hosted,
+    any logged-in person (an API key never reaches here: `get_current_user`)."""
+    if settings.hosted_mode and not quotas.is_platform_admin(user):
+        raise Refused(403, "only a platform admin installs a rule pack on a hosted server",
+                      rule_id=rule_toggles.PERSON_RULE)
+    return user
+
+
+@router.get("/rules/pack")
+def rule_pack_status(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The installed pack's version, sha256, installed_at and installed_by, or the server's
+    own words (`reason`) for why none is in force."""
+    return rule_pack.status(db)
+
+
+@router.post("/rules/pack/offer")
+def offer_rule_pack(body: PackUpload, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    """Verify a pack and return its diff against the pack in force and its `sha256`.
+    Applies nothing. A person's request only (D10)."""
+    artifact, sig = _pack_bytes(body)
+    try:
+        return rule_pack.offer_pack(db, _pack_person(user), artifact, sig)
+    except rule_pack.PackRefused as e:
+        raise HTTPException(422, str(e)) from e
+
+
+@router.post("/rules/pack/accept")
+def accept_rule_pack(body: PackAccept, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Install the offered pack. `sha256` must be the offer's, so what was previewed is what is
+    applied (409 otherwise). A person's request only (D10); one audit event."""
+    artifact, sig = _pack_bytes(body)
+    try:
+        return rule_pack.accept(db, _pack_person(user), artifact, sig, body.sha256)
+    except rule_pack.PackMismatch as e:
+        raise HTTPException(409, str(e)) from e
+    except rule_pack.PackRefused as e:
+        raise HTTPException(422, str(e)) from e
