@@ -381,3 +381,31 @@ def test_mcp_review_loop_round_trip(client, auth, db, pid, world, tmp_path, monk
         "bytes_b64": base64.b64encode(b"<html>mcp2</html>").decode()})
     out = call(relay, "accept_design", {"design_set_id": sid, "accepted_by": "dana"})
     assert (out["status"], out["accepted_by"]) == ("accepted", "dana")
+
+
+def test_correction_citing_changed_code_is_stale_not_a_rule(db, pid, world, be):
+    from app.models import CodeNode
+
+    _, sid = world
+    _, canvas = _ready(db, pid, sid, be)
+    with pytest.raises(errors.Validation, match="no described code node"):
+        ds_svc.file_finding(db, pid, sid, "home", "prompt_defect", "Quote A", canvas,
+                            actor="agent:GRPH-A3", cites_file="routing.py", cites_symbol="warn")
+    node = CodeNode(id="cn_t1", project_id=pid, path="routing.py::warn", kind="symbol",
+                    name="warn", content_hash="h1")
+    db.add(node)
+    db.commit()
+    f = ds_svc.file_finding(db, pid, sid, "home", "prompt_defect", "Quote A", canvas,
+                            actor="agent:GRPH-A3", cites_file="routing.py", cites_symbol="warn")
+    first = "\n".join(c.text for c in db.get(Document, f["recompiled"]["document_id"]).chunks)
+    assert "[C" in first
+    node.content_hash = "h2"
+    db.commit()
+    p = _compile(db, pid, sid)[0]
+    text = "\n".join(c.text for c in db.get(Document, p["document_id"]).chunks)
+    assert "stale C" in text and "[C" not in text
+    with pytest.raises(errors.Validation, match="latest compiled prompt"):
+        ds_svc.resolve_finding(db, pid, f["id"], "applied")
+    with pytest.raises(errors.Validation, match="needs a reason"):
+        ds_svc.resolve_finding(db, pid, f["id"], "withdrawn")
+    assert db.get(DesignCorrection, f["correction_id"]).status == "open"

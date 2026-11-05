@@ -3757,6 +3757,10 @@ class DesignCorrection(Base):
     status: Mapped[str] = mapped_column(String, default="open", server_default="open")  # | withdrawn
     created_by: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # GRPH-1308: the code this correction quotes. cited_path is the CodeNode path
+    # (`file::symbol`); cited_hash is that node's content_hash when the correction was stored.
+    cited_path: Mapped[str] = mapped_column(String, default="", server_default="")
+    cited_hash: Mapped[str] = mapped_column(String, default="", server_default="")
 
 
 class DesignFinding(Base):

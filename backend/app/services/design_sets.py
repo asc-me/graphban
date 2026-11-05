@@ -399,11 +399,22 @@ def _chunk_text(doc: Document) -> str:
                         if c.governing)
 
 
+def correction_stale(db: Session, ds: DesignSet, c: DesignCorrection) -> bool:
+    """A correction that cites code is stale once that code's node changed or went away."""
+    if not c.cited_path:
+        return False
+    node = db.scalars(select(CodeNode).where(
+        CodeNode.project_id == ds.project_id, CodeNode.path == c.cited_path)).first()
+    return node is None or node.content_hash != c.cited_hash
+
+
 def _compile_text(db: Session, ds: DesignSet, row: DesignScreen, prd, base) -> str:
     pre = _preamble(db, ds.project_id)
     corrections = list(db.scalars(select(DesignCorrection).where(
         DesignCorrection.design_set_id == ds.id, DesignCorrection.screen == row.screen,
         DesignCorrection.status == "open").order_by(DesignCorrection.id)))
+    stale = [c for c in corrections if correction_stale(db, ds, c)]
+    corrections = [c for c in corrections if c not in stale]
     body = base.body if base is not None else prd.body
     head = [f"## Screen\n{row.screen}"]
     if base is None:
@@ -414,6 +425,10 @@ def _compile_text(db: Session, ds: DesignSet, row: DesignScreen, prd, base) -> s
     head.append("## Standing preamble\n" + (_chunk_text(pre) if pre is not None else "(none)"))
     head.append("## Corrections\n" + ("\n".join(f"[C{c.id}] {c.text}" for c in corrections)
                                       if corrections else "(none)"))
+    if stale:
+        # Not a rule: the code it quotes changed. The finding stays open for a person.
+        head.append("## Stale corrections (the cited code changed; not rules)\n" + "\n".join(
+            f"stale C{c.id} cites {c.cited_path}: {c.text}" for c in stale))
     return "\n\n".join(head) + "\n"
 
 
@@ -551,26 +566,44 @@ def _headings(body: str) -> list[str]:
     return [m.group(1).strip() for m in re.finditer(r"^#{1,6}\s+(.*\S)\s*$", body or "", re.M)]
 
 
-def _add_correction(db: Session, ds: DesignSet, screen: str, text: str, actor: str) -> DesignCorrection:
+def _add_correction(db: Session, ds: DesignSet, screen: str, text: str, actor: str,
+                    cited_path: str = "", cited_hash: str = "") -> DesignCorrection:
     digest = content_hash(text)
     have = db.scalars(select(DesignCorrection).where(
         DesignCorrection.design_set_id == ds.id, DesignCorrection.screen == screen,
         DesignCorrection.text_hash == digest)).first()
     if have is not None:
         have.status = "open"
+        if cited_path:
+            have.cited_path, have.cited_hash = cited_path, cited_hash
         return have
     c = DesignCorrection(design_set_id=ds.id, screen=screen, text=text, text_hash=digest,
-                         created_by=actor)
+                         created_by=actor, cited_path=cited_path, cited_hash=cited_hash)
     db.add(c)
     db.flush()
     return c
 
 
 def file_finding(db: Session, project_id: str, set_id: str, screen: str, kind: str, text: str,
-                 canvas_hash: str = "", winner: str = "", actor: str = "") -> dict:
+                 canvas_hash: str = "", winner: str = "", actor: str = "",
+                 cites_file: str = "", cites_symbol: str = "") -> dict:
     ds = _get(db, project_id, set_id)
     _writable(ds)
     row = _screen_row(ds, screen)
+    cited_path = cited_hash = ""
+    if cites_file or cites_symbol:
+        if not (cites_file and cites_symbol):
+            raise errors.Validation("cites_file and cites_symbol go together")
+        if kind == "spec_gap":
+            raise errors.Validation("a spec_gap has no correction to cite code from")
+        cited_path = f"{cites_file.strip()}::{cites_symbol.strip()}"
+        node = db.scalars(select(CodeNode).where(
+            CodeNode.project_id == project_id, CodeNode.path == cited_path)).first()
+        if node is None or not node.content_hash:
+            raise errors.Validation(
+                f"no described code node {cited_path!r} with a content hash",
+                hint="describe_code that symbol first, so a later change can be seen")
+        cited_hash = node.content_hash
     if kind not in FINDING_KINDS:
         raise errors.Validation(f"unknown kind {kind!r}", hint=f"one of {', '.join(FINDING_KINDS)}")
     text = (text or "").strip()
@@ -612,7 +645,8 @@ def file_finding(db: Session, project_id: str, set_id: str, screen: str, kind: s
     if kind in ("prompt_defect", "design_edit", "authority_conflict"):
         ctext = text if kind != "authority_conflict" else (
             f"Authority conflict ({f.winner} governs): draw the absence of - {text}")
-        f.correction_id = _add_correction(db, ds, screen, ctext, actor).id
+        f.correction_id = _add_correction(db, ds, screen, ctext, actor,
+                                          cited_path, cited_hash).id
         if canvas_hash and canvas_hash == row.canvas_hash:
             row.canvas_hash = ""  # the reviewed canvas is superseded, not deleted
     db.add(f)
