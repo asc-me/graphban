@@ -86,7 +86,7 @@ describe("GRPH-1151 badge counts", () => {
     await waitFor(() => expect(row("Tracker")).toHaveTextContent("10"));
     expect(row("Requests")).toHaveTextContent("6");
     expect(row("Triage")).not.toHaveTextContent(/\d/);
-    expect(row("PRDs")).not.toHaveTextContent(/\d/);
+    expect(row("Specs")).not.toHaveTextContent(/\d/);
   });
 
   it("shows Build counts in its folded-out rows and Live green with the live suffix", async () => {

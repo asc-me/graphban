@@ -80,7 +80,7 @@ afterEach(() => {
 describe("GRPH-1142 grouping", () => {
   it("lists the decided pages in the decided order", () => {
     expect(SECTIONS.map((s) => [s.label, s.pages.map((p) => p.label)])).toEqual([
-      ["Plan", ["Triage", "Tracker", "Requests", "PRDs", "Roadmap"]],
+      ["Plan", ["Triage", "Tracker", "Requests", "Specs", "Roadmap"]],
       ["Build", ["Links", "Code graph", "Stack", "Rules", "MCP Tools", "Fleet", "Outposts"]],
       ["Observe", ["Memory", "Lessons", "Activity", "Live", "Harness"]],
     ]);

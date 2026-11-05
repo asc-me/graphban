@@ -192,7 +192,7 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     expect(within(plan!).getByText("Requests")).toBeInTheDocument();
     expect(within(plan!).getByText("Triage")).toBeInTheDocument();
     expect(within(plan!).queryByText("Dashboard")).not.toBeInTheDocument();
-    expect(within(plan!).getByText("PRDs")).toBeInTheDocument();
+    expect(within(plan!).getByText("Specs")).toBeInTheDocument();
     expect(within(plan!).getByText("Roadmap")).toBeInTheDocument();
     // Five Plan links. Putting Dashboard back under Plan fails this count.
     expect(within(plan!).getAllByRole("link")).toHaveLength(5);
