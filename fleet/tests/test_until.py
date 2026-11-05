@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from gbfleet import until
 from gbfleet.cli import make_launch_factory
 from gbfleet.client import ALLOWED_TOOLS, Graphban
 from gbfleet.seat import Seat
@@ -1091,6 +1092,42 @@ def test_a_refused_delegation_does_not_stop_the_spawn(
     )
     assert result.spawned == 0, result.detail
     assert delegations == []
+
+
+def test_a_bounced_item_is_delegated_again_by_the_same_run(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1315. The child exits and the item is back in `next` (a bounce): the server keeps
+    offering it. The running loop must hand it out again — before the fix it never did, the
+    run read idle, and only a restart re-delegated it (GRPH-1310, 1313, 1314, 1322, 1323)."""
+    workspace = tmp_path / "ws"
+    delegations: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]], delegations=delegations,
+        sticky_clusters=True,
+    )
+    run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+        limits=Limits(max_workers=1, max_children=2),
+    )
+    # The cap ends the run, so the count past two is the cap's business; one is the bug.
+    assert [d["id"] for d in delegations][:2] == ["GRPH-7", "GRPH-7"]
+
+
+def test_a_delegation_stays_while_its_child_runs_and_a_hold_stays_until_a_merge():
+    """GRPH-1315. Releasing is per child: an item a live child has is not offered twice, and
+    a GRPH-798 hold is lifted by a merge, not by somebody else's exit."""
+    class C:
+        pass
+    running, exited = C(), C()
+    delegated = {"A", "B", "H", "R"}
+    owners = {"A": running, "B": exited}
+    until._release_delegated(delegated, owners, [exited], held={"H": ["GRPH-1"]})
+    # B: its child exited. R: marked with no child (a refused bound seat), nothing holds it.
+    assert delegated == {"A", "H"}
+    assert owners == {"A": running}
 
 
 # ---- PRD-36 D9 / criteria 12, 13: the loop mints BOUND seats ----------------------------------
