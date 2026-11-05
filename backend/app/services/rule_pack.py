@@ -44,8 +44,11 @@ from app.version import __version__
 PRIMITIVE_API = "1.5.0"
 
 #: Raw Ed25519 public keys (hex) whose signatures are trusted. The graphban-rules signing job
-#: holds the matching private key. Empty until that key is provided: no pack loads without one.
-TRUSTED_PUBLIC_KEYS: tuple[str, ...] = ()
+#: holds the matching private key; it never enters this repo. An empty tuple would refuse every pack.
+TRUSTED_PUBLIC_KEYS: tuple[str, ...] = (
+    # graphban-rules pack signing key (public half, raw Ed25519 hex)
+    "27fbd4565cc36d610e846acf1c04ab0fb62aa3332b6b9010959e757dac3a336e",
+)
 
 STAGES = ("Spec", "Plan", "Build", "Review", "Merge", "Release", "Learn")
 #: Strongest first; a template may claim no more than its primitive provides.
