@@ -801,4 +801,145 @@ describe("Updates panel layout pass (design audit)", () => {
     expect(screen.queryByText(/Install rebuilds this box/)).toBeNull();
     expect(screen.queryByText(/scripts\/deploy\.sh/)).toBeNull();
   });
+
+  it("Install and Confirm are one group: Check and Cancel stay mounted, inert flips, data-confirm follows", async () => {
+    updateCheckSpy.mockResolvedValue(available());
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    const group = screen.getByTestId("install-group");
+    expect(group).toHaveAttribute("data-confirm", "true");
+    expect(screen.getByTestId("slot-check")).toHaveAttribute("inert");
+    expect(screen.getByTestId("slot-cancel")).not.toHaveAttribute("inert");
+    expect(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Check for updates" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(group).toHaveAttribute("data-confirm", "false");
+    expect(screen.getByTestId("slot-check")).not.toHaveAttribute("inert");
+    expect(screen.getByTestId("slot-cancel")).toHaveAttribute("inert");
+    expect(screen.getByRole("button", { name: "Check for updates" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^install$/i })).toBeInTheDocument();
+  });
+
+  it("the active step segment has a sweep child; running dot pulses, complete dot is st-done", async () => {
+    updateCheckSpy.mockResolvedValue(available());
+    const mk = (statuses: string[]) => ({
+      state: "running", reason: "", tag: "2026.10.1", current_line: "", error: "",
+      steps: statuses.map((status, i) => ({ key: `s${i}`, label: `Step ${i + 1}`, status, started_at: null })),
+    });
+    progressSpy.mockResolvedValue(mk(["done", "active", "pending"]));
+    const user = userEvent.setup();
+    progressSpy.mockResolvedValueOnce({ state: "idle", reason: "", tag: "", steps: [], current_line: "", error: "" });
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install/i }));
+    await screen.findByText(/step 2 of 3/);
+    const segs = screen.getAllByTestId("step-segment");
+    expect(segs[1].querySelector(".u-sweep")).not.toBeNull();
+    expect(segs[0].querySelector(".u-sweep")).toBeNull();
+    expect(segs[0].className).toContain("bg-accent");
+    expect(segs[2].className).toContain("bg-surface-4");
+    const dot = screen.getByTestId("progress-headline").firstElementChild!;
+    expect(dot.className).toContain("u-dot-live");
+  });
+
+  it("index.css defines the sweep and pulse keyframes and disables both for reduced motion", () => {
+    const css = readFileSync("src/index.css", "utf8");
+    expect(css).toMatch(/@keyframes u-sweep/);
+    expect(css).toMatch(/@keyframes u-pulse/);
+    const rm = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce) {\n  .u-slot"));
+    expect(rm).toMatch(/\.u-dot-live,\s*\.u-sweep\s*\{\s*animation:\s*none/);
+  });
+
+  const SINCE = [
+    "Intro line.", "", "**Since 2026.11.4**",
+    "- #1301 Re-delegate a bounced item without restarting the drain (GRPH-1315)",
+    "- #1302 Bump graphban-fleet to 0.18.10",
+    "- WIP: salvaged by gbfleet (claude) items=GRPH-1329 (#1307)", "",
+    "**Verify**", "Run it.", "",
+  ].join("\n");
+
+  function withNotes(body: string) {
+    updateCheckSpy.mockResolvedValue(payload({
+      notes: { running: { tag: "2026.11.5", state: "present", body }, latest: null },
+    }));
+  }
+
+  it("Since list renders as pill rows, not markdown bullets", async () => {
+    withNotes(SINCE);
+    renderPage();
+    await screen.findByText("This release");
+    const rows = screen.getAllByTestId("release-call");
+    const r1 = rows.find((r) => r.getAttribute("data-pr") === "#1301")!;
+    const pills1 = Array.from(r1.querySelectorAll(".u-pill")).map((e) => e.textContent);
+    expect(pills1).toEqual(["#1301", "GRPH-1315"]);
+    expect(r1).toHaveTextContent("Re-delegate a bounced item without restarting the drain");
+    const r2 = rows.find((r) => r.getAttribute("data-pr") === "#1302")!;
+    expect(Array.from(r2.querySelectorAll(".u-pill")).map((e) => e.textContent)).toEqual(["#1302"]);
+    expect(document.querySelectorAll("li:not([data-testid=release-call])").length).toBe(0);
+    expect(screen.getByText("Intro line.")).toBeInTheDocument();
+    expect(screen.getByText("Run it.")).toBeInTheDocument();
+    expect(screen.getByTestId("changes-pill")).toHaveTextContent("3 changes");
+  });
+
+  it("the real 2026.11.5 salvaged line drops the dangling items= once its id is a pill", async () => {
+    withNotes([
+      "**Since 2026.11.4**",
+      "- #1307 WIP: salvaged by gbfleet (claude) items=GRPH-1329",
+      "",
+    ].join("\n"));
+    renderPage();
+    await screen.findByText("This release");
+    const row = screen.getAllByTestId("release-call").find((r) => r.getAttribute("data-pr") === "#1307")!;
+    expect(Array.from(row.querySelectorAll(".u-pill")).map((e) => e.textContent)).toEqual(["#1307", "GRPH-1329"]);
+    const title = row.querySelector(".u-call-title")!;
+    expect(title.textContent).toBe("WIP: salvaged by gbfleet (claude)");
+    expect(title.textContent).not.toMatch(/items=/);
+    expect(title).toHaveClass("text-faint");
+  });
+
+  it("notes with no Since list render as markdown as before", async () => {
+    withNotes("Plain.\n\n- one\n- two\n");
+    renderPage();
+    await screen.findByText("This release");
+    expect(screen.queryAllByTestId("release-call")).toHaveLength(0);
+    expect(screen.getAllByRole("listitem").map((l) => l.textContent)).toEqual(["one", "two"]);
+  });
+
+  it("a view change fades the old card content out for 220ms before the new content mounts", async () => {
+    const mm = vi.fn((q: string) => ({
+      matches: false, media: q, onchange: null,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+    }));
+    const prev = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: mm });
+    try {
+      await startInstall();
+      // Straight after Confirm: the plain content is still mounted, fading and inert; no steps yet.
+      const body = await screen.findByTestId("card-body");
+      await waitFor(() => expect(body).toHaveClass("u-fading"));
+      expect(body).toHaveAttribute("data-view", "plain");
+      expect(body).toHaveAttribute("inert");
+      expect(body.querySelector("[data-testid='install-group']")).not.toBeNull();
+      expect(screen.queryByRole("list", { name: /install steps/i, hidden: true })).toBeNull();
+      // After the fade the installing content mounts and the fading class is gone.
+      expect(await screen.findByRole("list", { name: /install steps/i })).toBeInTheDocument();
+      const after = screen.getByTestId("card-body");
+      expect(after).not.toHaveClass("u-fading");
+      expect(after).toHaveAttribute("data-view", "installing");
+      expect(after).not.toHaveAttribute("inert");
+      expect(after.querySelector("[data-testid='install-group']")).toBeNull();
+    } finally {
+      Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: prev });
+    }
+  });
+
+  it("index.css fades .u-swap out on .u-fading and drops the transition for reduced motion", () => {
+    const css = readFileSync("src/index.css", "utf8");
+    expect(css).toMatch(/\.u-swap\s*\{[^}]*opacity \.22s/);
+    expect(css).toMatch(/\.u-swap\.u-fading\s*\{\s*opacity:\s*0/);
+    const reduced = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(reduced).toMatch(/\.u-swap[,\s]/);
+  });
 });

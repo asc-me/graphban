@@ -157,6 +157,35 @@ describe("AutoUpdateSettings", () => {
     expect(screen.queryByText(/inside the upgrade window/)).toBeNull();
   });
 
+  it("a running automatic install sweeps its active segment and pulses its headline dot", async () => {
+    getSpy.mockResolvedValue(status({
+      enabled: true, last_auto_install_tag: "2026.11.5", last_auto_install_outcome: "started",
+      last_auto_install_at: "2026-11-02T03:00:00+00:00",
+    }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <AutoUpdateSettings via="compose" progress={{ state: "running", reason: "", tag: "2026.11.5",
+          steps: [
+            { key: "a", label: "Fetch", status: "done", started_at: null },
+            { key: "b", label: "Build images", status: "active", started_at: null },
+            { key: "c", label: "Restart", status: "pending", started_at: null },
+          ], current_line: "", error: "" }} />
+      </QueryClientProvider>,
+    );
+    const box = (await screen.findByText(/Auto-update is installing 2026\.11\.5/)).closest("[role='status']") as HTMLElement;
+    const segs = within(box).getAllByTestId("step-segment");
+    const active = segs.find((s) => s.dataset.status === "active")!;
+    expect(active).toHaveClass("u-seg-active");
+    expect(active.querySelector(".u-sweep")).not.toBeNull();
+    expect(segs.filter((s) => s.querySelector(".u-sweep"))).toHaveLength(1);
+    expect(segs.find((s) => s.dataset.status === "done")).toHaveClass("bg-accent");
+    expect(segs.find((s) => s.dataset.status === "pending")).toHaveClass("bg-surface-4");
+    const dot = within(box).getByTestId("auto-install-dot");
+    expect(dot).toHaveClass("u-dot-live");
+    expect(dot).toHaveClass("bg-accent");
+  });
+
   it("a native auto-install has no step total", async () => {
     getSpy.mockResolvedValue(status({
       enabled: true, timezone_set: true, last_auto_install_tag: "2026.11.1",
