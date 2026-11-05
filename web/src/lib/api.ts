@@ -1204,18 +1204,7 @@ export const api = {
   gdriveDisconnect: (projectId: string) =>
     request<PlatformConfig>(`/platform/gdrive/disconnect${projectQuery(projectId)}`, { method: "POST" }),
   gdriveSync: (projectId: string) =>
-    request<{
-      folder: string;
-      prds_dir: string;
-      exported: string[];
-      imported: string[];
-      updated_db: string[];
-      updated_file: string[];
-      conflicts: string[];
-      conflict_details?: ConflictDetail[];
-      export_status?: "ok" | "failed";
-      in_sync: number;
-    }>(`/platform/gdrive/sync${projectQuery(projectId)}`, { method: "POST" }),
+    request<SyncReport>(`/platform/gdrive/sync${projectQuery(projectId)}`, { method: "POST" }),
 
   // Local↔cloud sync link (AL-141). Status/link/unlink are instance-wide; push/purge/
   // export/import are per-project (the credential is resolved server-side).
@@ -1394,6 +1383,21 @@ export const api = {
 };
 
 export type { GitopsPatch, GitopsView, Status };
+
+/** What one Drive sync run reports. The conflict record page reads it from router state. */
+export interface SyncReport {
+  folder: string;
+  prds_dir: string;
+  exported: string[];
+  imported: string[];
+  updated_db: string[];
+  updated_file: string[];
+  conflicts: string[];
+  conflict_details?: ConflictDetail[];
+  /** `failed` when a file write failed; the ledger row is left as it was. Not a conflict. */
+  export_status?: "ok" | "failed";
+  in_sync: number;
+}
 
 /** One hash conflict from a sync report: facts only, neither body. */
 export interface ConflictDetail {
