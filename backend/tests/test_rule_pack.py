@@ -129,7 +129,29 @@ def test_tampered_artifact_is_refused():
 
 def test_no_trusted_key_fails_closed():
     with pytest.raises(P.PackRefused, match="no trusted public key"):
-        P.load(*build(FIX / "api1"))
+        P.load(*build(FIX / "api1"), trusted_keys=())
+
+
+def test_default_trusted_key_is_the_graphban_rules_key():
+    assert P.TRUSTED_PUBLIC_KEYS == (
+        "27fbd4565cc36d610e846acf1c04ab0fb62aa3332b6b9010959e757dac3a336e",)
+
+
+def test_throwaway_key_loads_when_trusted_and_is_refused_by_default_keys():
+    art, sig = build(FIX / "api1")
+    assert P.load(art, sig, trusted_keys=TRUST) is not None
+    with pytest.raises(P.PackRefused,
+                       match="pack signature does not verify against any trusted key"):
+        P.load(art, sig)
+
+
+def test_flipped_byte_fails_verify():
+    art, sig = build(FIX / "api1")
+    P.verify(art, sig, TRUST)
+    flipped = bytearray(art)
+    flipped[0] ^= 1
+    with pytest.raises(P.PackRefused):
+        P.verify(bytes(flipped), sig, TRUST)
 
 
 def test_newer_server_required_names_both_versions_and_last_good_stays(client):
