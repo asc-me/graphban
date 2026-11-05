@@ -374,9 +374,11 @@ def org_rule_sync(org_id: str, db: Session = Depends(get_db),
 
 # ---- install a signed rule pack (GRPH-1329 / PRD-P63 D10, D12) ---------------------------
 class PackUpload(BaseModel):
-    """The artifact and its signature, base64. `sha256` is the offer's, echoed on Accept."""
-    artifact_b64: str
-    signature_b64: str
+    """Either the artifact and its signature (base64), or a published `version` the server
+    downloads itself. `sha256` is the offer's, echoed on Accept."""
+    artifact_b64: str | None = None
+    signature_b64: str | None = None
+    version: str | None = None
 
 
 class PackAccept(PackUpload):
@@ -384,6 +386,15 @@ class PackAccept(PackUpload):
 
 
 def _pack_bytes(body: PackUpload) -> tuple[bytes, bytes]:
+    if body.version:
+        try:
+            return rule_pack.fetch_version(body.version)
+        except rule_pack.PackFeedError as e:
+            raise HTTPException(502, f"could not fetch the pack: {e}") from e
+        except rule_pack.PackRefused as e:
+            raise HTTPException(422, str(e)) from e
+    if not body.artifact_b64 or not body.signature_b64:
+        raise HTTPException(422, "send a version, or artifact_b64 and signature_b64")
     try:
         return (base64.b64decode(body.artifact_b64, validate=True),
                 base64.b64decode(body.signature_b64, validate=True))
@@ -405,6 +416,15 @@ def rule_pack_status(db: Session = Depends(get_db), user: User = Depends(get_cur
     """The installed pack's version, sha256, installed_at and installed_by, or the server's
     own words (`reason`) for why none is in force."""
     return rule_pack.status(db)
+
+
+@router.get("/rules/pack/available")
+def rule_pack_available(refresh: bool = False, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """The newest published pack this server can load: `state` current | available | unknown
+    (`feed_error` set), `version`, `notes`, `installed_version`. Reads only (D10)."""
+    _pack_person(user)
+    return rule_pack.available(db, refresh=refresh)
 
 
 @router.post("/rules/pack/offer")

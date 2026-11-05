@@ -86,6 +86,11 @@ class Settings(BaseSettings):
     # verify inbound GitHub webhook HMAC when set; trust X-Forwarded-For only behind a
     # known proxy; refuse to start on a weak/default JWT secret when required.
     github_webhook_secret: str = ""
+    # Where newer rule packs are discovered (GRPH-1334): a GitHub releases feed (JSON list)
+    # whose releases are tagged `pack-v<version>` with `graphban-rules-<version>.tar` and
+    # `.tar.sig` assets. Self-hosters can mirror it; tests point it at a fixture.
+    rule_pack_feed_url: str = ("https://api.github.com/repos/asc-me/"
+                               "graphban-rules-releases/releases")
     trusted_proxy: bool = False
     # How many proxies stand between this app and the internet (GRPH-553). 0 = none; the
     # socket peer is the caller.
