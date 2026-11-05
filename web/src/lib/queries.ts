@@ -36,6 +36,7 @@ export const keys = {
   specPrd: (projectId: string, id: string) => ["spec-prd", projectId, id] as const,
   specPreamble: (projectId: string) => ["spec-preamble", projectId] as const,
   specDesignSet: (setId: string) => ["spec-design-set", setId] as const,
+  specLibrary: (projectId: string) => ["spec-library", projectId] as const,
   prdRequests: (id: string) => ["prd-requests", id] as const,
   prdSuggestions: (id: string) => ["prd-request-suggestions", id] as const,
   closeReport: (id: string) => ["close-report", id] as const,
@@ -405,6 +406,15 @@ export function useSpecDesignSet(setId: string) {
   });
 }
 
+/** The Specs list (GRPH-1318). One read; the page filters it. A missing preamble is null, not an error. */
+export function useSpecLibrary(projectId?: string) {
+  return useQuery({
+    queryKey: keys.specLibrary(projectId ?? ""),
+    queryFn: () => api.specLibrary(projectId!),
+    enabled: !!projectId,
+  });
+}
+
 export function usePrdVersions(id: string) {
   return useQuery({ queryKey: keys.prdVersions(id), queryFn: () => api.prdVersions(id), enabled: !!id });
 }
@@ -532,7 +542,11 @@ export function useSaveSyncStorage(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: { folder_path?: string; blob_dir?: string }) => api.saveSyncStorage(projectId, body),
-    onSuccess: (data) => qc.setQueryData(["sync-storage", projectId], data),
+    onSuccess: (data) => {
+      qc.setQueryData(["sync-storage", projectId], data);
+      // A new folder changes what each row's sync state can be.
+      qc.invalidateQueries({ queryKey: keys.specLibrary(projectId) });
+    },
   });
 }
 
@@ -542,8 +556,9 @@ export function useRunSyncStorage(projectId: string) {
     mutationFn: () => api.runSyncStorage(projectId),
     onSuccess: (data) => {
       qc.setQueryData(["sync-storage", projectId], data);
-      // A run can import a draft or pull a file edit into a draft body.
+      // A run can import a draft or pull a file edit into a draft body, and it moves sync state.
       qc.invalidateQueries({ queryKey: keys.prds });
+      qc.invalidateQueries({ queryKey: keys.specLibrary(projectId) });
     },
   });
 }

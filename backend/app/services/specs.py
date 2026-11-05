@@ -1,8 +1,11 @@
-"""What the Spec reader shows (GRPH-1319 / GRPH-P66 "Spec reader").
+"""What Specs shows (GRPH-P66).
 
-Read-side assembly over records other modules own: a PRD's live and baseline hashes, the
-project preamble, one design set's constraints, and each screen's prompt state. Every write
-goes through the owning service (`prds`, `design_sets`, `documents`); nothing here writes.
+`library` is the one list the Specs page reads (GRPH-1318): PRD rows, the preamble, and
+design-set documents, with each PRD's sync fact and no document bodies. `prd_facts`,
+`preamble_view`, and `design_set_view` are the Spec reader (GRPH-1319). Every write goes
+through the owning service (`prds`, `design_sets`, `documents`); nothing here writes.
+`sync_storage.status` may create an empty config row on its first read. That is the only
+side effect, and this module never runs a sync.
 
 The body of a document has three honest states, never two: `stored` (the text, whose hash
 matches the row — including an empty body), `pending` (the row exists, its body has not
@@ -132,4 +135,92 @@ def design_set_view(db: Session, project_id: str, set_id: str) -> dict:
         "history": [{"constraints_hash": a.prompt_hash, "person": a.person,
                      "relayed_by": a.relayed_by,
                      "current": a.prompt_hash == ds.constraints_hash} for a in accepted],
+    }
+
+
+def _conflict_fact(detail: dict) -> dict:
+    """Hashes and the file's name, length, and path. Never either body."""
+    return {
+        "ledger_hash": detail["ledger_hash"],
+        "file_hash": detail["file_hash"],
+        "file_name": detail["file_name"],
+        "byte_length": detail["byte_length"],
+        "path": detail["path"],
+    }
+
+
+def library(db: Session, project_id: str) -> dict:
+    """One list for the Specs page.
+
+    PRD rows carry the live hash, the baseline hash (null when there is none), and the
+    sync state from `sync_storage.status`. A conflict row also carries the ledger hash,
+    the file hash, and the path. The preamble is null when the project has none — this
+    list does not 404 for that. Design-set rows are set constraints and screen prompts.
+    No body text is included. `conflict_ids` is only rows whose sync state is conflict:
+    a failed export or a file the box could not read is not one of them.
+    """
+    # Imported here: sync_storage is a reader of prds, and this module is too.
+    from app.services import sync_storage
+
+    storage = sync_storage.status(db, project_id)
+    sync_by = {r["prd_id"]: r for r in storage["rows"]}
+    report = storage.get("report") or {}
+    details = {
+        d["prd_id"]: _conflict_fact(d)
+        for d in (report.get("conflict_details") or [])
+    }
+    prd_rows = []
+    for prd in prd_svc.list_prds(db, project_id=project_id):
+        base = prd_svc.baseline_of(db, prd.id)
+        state = sync_by.get(prd.id, {}).get("sync_state", "unknown")
+        prd_rows.append({
+            "id": prd.id,
+            "title": prd.title,
+            "version": prd.version,
+            "status": prd.status,
+            "content_hash": content_hash(prd.body or ""),
+            "baseline_hash": content_hash(base.body) if base is not None else None,
+            "baseline_version": base.version if base is not None else None,
+            "sync_state": state,
+            # Only a real conflict carries file facts. A ledger-newer or unreadable row does not.
+            "conflict": details.get(prd.id) if state == "conflict" else None,
+        })
+    pre = preamble_view(db, project_id)
+    preamble = None if pre is None else {
+        "id": pre["id"],
+        "title": pre["title"] or "Preamble",
+        "version": pre["version"],
+        "content_hash": pre["content_hash"],
+    }
+    documents = []
+    sets = db.scalars(
+        select(DesignSet).where(DesignSet.project_id == project_id).order_by(DesignSet.created_at)
+    ).all()
+    for ds in sets:
+        documents.append({
+            "kind": "constraints",
+            "set_id": ds.id,
+            "prd_id": ds.prd_id,
+            "screen": "",
+            "title": "Set constraints",
+            "status": "accepted" if ds.constraints_accepted else "not accepted",
+            "hash": ds.constraints_hash,
+            "set_status": ds.status,
+        })
+        for screen in ds.screens:
+            documents.append({
+                "kind": "screen",
+                "set_id": ds.id,
+                "prd_id": ds.prd_id,
+                "screen": screen.screen,
+                "title": screen.screen,
+                "status": _prompt_state(db, ds, screen.screen),
+                "hash": screen.prompt_hash or "",
+                "set_status": ds.status,
+            })
+    return {
+        "prds": prd_rows,
+        "preamble": preamble,
+        "documents": documents,
+        "conflict_ids": [p["id"] for p in prd_rows if p["sync_state"] == "conflict"],
     }

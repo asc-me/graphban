@@ -1,8 +1,9 @@
-"""The Spec reader's REST surface (GRPH-1319 / GRPH-P66).
+"""Specs REST (GRPH-P66).
 
-Thin: reads come from `services/specs.py`, writes from the services that own each record —
-`design_sets.put_preamble`, `design_sets.accept_set_constraints`, `design_sets.compile_prompts`.
-Until this router the preamble, set constraints and design sets were reachable only over MCP.
+`GET /library` is the Specs list (GRPH-1318). The other routes are the Spec reader
+(GRPH-1319). Reads come from `services/specs.py`. Writes go to the services that own each
+record — `design_sets.put_preamble`, `design_sets.accept_set_constraints`,
+`design_sets.compile_prompts`.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -38,6 +39,18 @@ def _set_project(db: Session, user: User, set_id: str, write: bool) -> str:
 
 def _person(user: User) -> str:
     return (user.name or user.email or user.handle).strip()
+
+
+@router.get("/library")
+def library(project_id: str, db: Session = Depends(get_db),
+            user: User = Depends(get_current_user)):
+    """One list: PRDs, the preamble or null, and design-set documents. No bodies.
+
+    The text filter on the Specs page is not this endpoint. `conflict_ids` counts rows
+    whose sync state is conflict, not a failed export and not a file that could not be read.
+    """
+    authz.require_readable(db, user.id, project_id)
+    return _call(specs_svc.library, db, project_id)
 
 
 @router.get("/prds/{prd_id}")

@@ -149,6 +149,86 @@ def test_unknown_set_is_404(client, auth):
     assert client.get("/api/specs/design-sets/DS-nope", headers=auth).status_code == 404
 
 
+def test_library_lists_prd_preamble_and_design_documents(client, auth, db, pid):
+    """One read: a draft with no baseline, the preamble, set constraints, and a screen.
+
+    Bodies stay on the reader. This payload does not carry them, and a missing preamble
+    is null rather than a 404.
+    """
+    bare = client.get("/api/specs/library", params={"project_id": pid}, headers=auth)
+    assert bare.status_code == 200, bare.text
+    assert bare.json()["preamble"] is None
+
+    # A preamble cites a baselined PRD. The draft beside it has no baseline of its own.
+    cited = _prd(db, pid, title="Visual system")
+    prd = _prd(db, pid, baselined=False, title="Library draft")
+    ds_svc.put_preamble(db, pid, "Be calm.", cited.id, created_by=KEY)
+    sid = ds_svc.open_design(db, pid, prd.id)["id"]
+    ds_svc.put_set_constraints(db, pid, sid, "Stay calm.", screens=[{"screen": "Home"}])
+
+    r = client.get("/api/specs/library", params={"project_id": pid}, headers=auth)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert "Be calm." not in r.text and "Stay calm." not in r.text
+
+    row = next(p for p in out["prds"] if p["id"] == prd.id)
+    assert row["status"] == "draft" and row["title"] == "Library draft"
+    assert row["baseline_hash"] is None and row["baseline_version"] is None
+    assert row["content_hash"] == content_hash(BODY) and row["conflict"] is None
+    assert prd.id not in out["conflict_ids"]
+
+    pre = out["preamble"]
+    assert set(pre) == {"id", "title", "version", "content_hash"}
+    assert pre["title"] == "Preamble" and pre["content_hash"] == content_hash("Be calm.")
+
+    ours = [d for d in out["documents"] if d["prd_id"] == prd.id]
+    assert [(d["kind"], d["title"], d["status"]) for d in ours] == [
+        ("constraints", "Set constraints", "not accepted"),
+        ("screen", "Home", "none"),
+    ]
+    constraints, screen = ours
+    assert constraints["set_id"] == sid and constraints["hash"] == content_hash("Stay calm.")
+    assert constraints["screen"] == "" and screen["screen"] == "Home" and screen["hash"] == ""
+    assert set(constraints) == {
+        "kind", "set_id", "prd_id", "screen", "title", "status", "hash", "set_status",
+    }
+
+
+def test_library_conflict_carries_hashes_not_bodies(client, auth, db, pid, tmp_path):
+    """An approved file that no longer matches is a conflict: hashes and path, neither body.
+
+    Exporting the other PRDs in the project does not put them in `conflict_ids`.
+    """
+    prd = _prd(db, pid, baselined=True, title="Governed")
+    saved = client.put(
+        "/api/platform/sync-storage", params={"project_id": pid},
+        json={"folder_path": str(tmp_path)}, headers=auth)
+    assert saved.status_code == 200, saved.text
+    ran = client.post("/api/platform/sync-storage/run", params={"project_id": pid}, headers=auth)
+    assert ran.status_code == 200, ran.text
+    assert prd.id in ran.json()["run"]["exported"]
+
+    folder = tmp_path / pid / "PRDs"
+    mine = next(f for f in folder.glob("*.md") if "Tokens" in f.read_text())
+    mine.write_text(mine.read_text().replace("Tokens", "FOLDER"))
+
+    r = client.get("/api/specs/library", params={"project_id": pid}, headers=auth)
+    assert r.status_code == 200, r.text
+    assert "FOLDER" not in r.text
+    out = r.json()
+    row = next(p for p in out["prds"] if p["id"] == prd.id)
+    assert row["status"] == "approved" and row["sync_state"] == "conflict"
+    assert row["baseline_hash"] == content_hash(BODY)
+    assert row["content_hash"] == content_hash(BODY)
+    assert out["conflict_ids"] == [prd.id]
+    fact = row["conflict"]
+    assert set(fact) == {"ledger_hash", "file_hash", "file_name", "byte_length", "path"}
+    assert fact["ledger_hash"] != fact["file_hash"]
+    assert fact["path"].endswith(mine.name)
+    assert "FOLDER" not in str(fact) and "Tokens" not in str(fact)
+    assert all(p["sync_state"] == "conflict" for p in out["prds"] if p["id"] in out["conflict_ids"])
+
+
 def test_preamble_gate_takes_a_signed_in_person_and_refuses_an_agent_seat(db, pid):
     from app import errors
     from app.services import documents as doc_svc

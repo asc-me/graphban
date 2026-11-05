@@ -950,6 +950,9 @@ export const api = {
   updatePrd: (id: string, body: { title?: string; status?: PrdStatus; body?: string }) =>
     request<Prd>(`/prds/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   prdVersions: (id: string) => request<PrdVersion[]>(`/prds/${id}/versions`),
+  // The Specs library (GRPH-1318). One list. The text filter is not this call.
+  specLibrary: (projectId: string) =>
+    request<SpecLibrary>(`/specs/library?project_id=${encodeURIComponent(projectId)}`),
   // The Spec reader (GRPH-1319). Writes go to the services that own each record.
   specPrd: (projectId: string, id: string) =>
     request<SpecPrdFacts>(`/specs/prds/${id}?project_id=${encodeURIComponent(projectId)}`),
@@ -1464,6 +1467,56 @@ export interface SpecPreamble {
   body: string | null;
   history: { version: number; content_hash: string; created_by: string; governing: boolean }[];
   stale_sets: { id: string; prd_id: string; status: string; stale_reason: string; preamble_version: number }[];
+}
+
+/** File facts for one conflict on the Specs list. Neither body. */
+export interface SpecLibraryConflict {
+  ledger_hash: string;
+  file_hash: string;
+  file_name: string;
+  byte_length: number;
+  path: string;
+}
+
+/** One PRD on the Specs list. `baseline_hash` null means no baseline. `sync_state` is a row sync word. */
+export interface SpecLibraryPrd {
+  id: string;
+  title: string;
+  version: string;
+  status: string;
+  content_hash: string;
+  baseline_hash: string | null;
+  baseline_version: string | null;
+  sync_state: string;
+  conflict: SpecLibraryConflict | null;
+}
+
+/** The project preamble, slim. Null on the library when the project has none — not a 404. */
+export interface SpecLibraryPreamble {
+  id: string;
+  title: string;
+  version: number;
+  content_hash: string;
+}
+
+/** A set-constraints row or a screen-prompt row. `status` is acceptance, or the prompt word. */
+export interface SpecLibraryDocument {
+  kind: "constraints" | "screen";
+  set_id: string;
+  prd_id: string;
+  screen: string;
+  title: string;
+  status: string;
+  hash: string;
+  set_status: string;
+}
+
+/** The Specs page's one read. `conflict_ids` is sync conflicts only, not export or read failures. */
+export interface SpecLibrary {
+  prds: SpecLibraryPrd[];
+  preamble: SpecLibraryPreamble | null;
+  documents: SpecLibraryDocument[];
+  conflict_ids: string[];
 }
 
 /** What one Drive sync run reports. The conflict record page reads it from router state. */
