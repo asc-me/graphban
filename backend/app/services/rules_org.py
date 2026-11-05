@@ -398,6 +398,29 @@ def box_rule_state(db: Session, key_id: str, published: dict) -> dict:
             "pending": not current, "overdue": overdue}
 
 
+def org_box_states(db: Session, user, org_id: str) -> dict:
+    """CLOUD: every linked box's rule-sync state for an org admin (JWT), the same
+    `box_rule_state` a box reads with its sync key. Boxes are grouped by deployment name,
+    as the box window groups them. Reads only what boxes reported; never reaches into one."""
+    from app.services import galaxy as galaxy_svc  # galaxy imports items → avoid a cycle
+
+    _admin(db, user, org_id)
+    published = published_decisions(db, org_id)
+    groups: dict[str, dict] = {}
+    for d in galaxy_svc.deployments(db, org_id):
+        if d["revoked"]:
+            continue
+        g = groups.setdefault(d["label"], {"name": d["label"], "projects": set(),
+                                           "rules": None})
+        if g["rules"] is None:
+            g["rules"] = box_rule_state(db, d["credential_id"], published)
+        g["projects"].add(d["project_id"])
+    boxes = [{"name": g["name"], "projects": sorted(g["projects"]), **g["rules"]}
+             for g in groups.values()]
+    return {"org_id": org_id, "published_version": published["version"],
+            "published_at": published["changed_at"], "boxes": boxes}
+
+
 def pulled_org_id(db: Session) -> str | None:
     """BOX: the org whose decisions this box has applied, if any."""
     row = db.get(RuleDecisionPull, "instance")
