@@ -560,6 +560,11 @@ def _loop(
     agent_id = str(identity.get("agent_id") or identity.get("id"))
     empty = 0
     delegated: set[str] = set()
+    # GRPH-1315: which child each delegated item was handed to. `delegated` stops THIS loop
+    # offering an item while a child has it; once that child exits the server's state is the
+    # answer again. Without this, a bounced item back in `next` was never offered by the
+    # running loop — it read idle, and only a restart (a fresh, empty set) re-delegated it.
+    owners: dict[str, object] = {}
     tiers = tiers or TierTable()
     minted = minted_start
     mint_deadline = time.monotonic() + mint_budget
@@ -642,11 +647,14 @@ def _loop(
                                   adapter=chosen[0], said=said)
             else:
                 try:
+                    before = len(children)
                     _spawn_one(
                         wave, children, occupied, persist, seat, factory,
                         repo, workspace, wave_name, supervisor, limits, planner, debug,
                         base=base, ledger=planner,
                     )
+                    if seed and len(children) > before:
+                        owners[seed] = children[-1]
                     return
                 except VendorLimit as caught:
                     exc = caught
@@ -717,6 +725,7 @@ def _loop(
             # where `watch_tick` already reported the child costs nothing.
             _report_exits(finished, supervisor, wave)
             _reap_all(wave, finished, client=planner, base_branch=base)
+            _release_delegated(delegated, owners, finished, held)
             children[:] = [c for c in children if c.running]
             persist()
             if any("handoff-failed" in f for f in wave.failures):
@@ -1581,6 +1590,30 @@ def _lift(planner: Graphban, item_id: str) -> None:
             planner.call("update_item", id=item_id, blocker="")
     except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
         observe.emit("hold_unlifted", item=item_id, detail=str(exc))
+
+
+def _release_delegated(delegated: set[str], owners: dict[str, object], finished: list,
+                       held: dict[str, list[str]]) -> None:
+    """GRPH-1315. Let the server decide again about items whose child has exited.
+
+    Released: an item handed to a child in `finished`, and an item marked without a child
+    (a refused bound seat, a spawn that failed) that no GRPH-798 hold explains — the exit
+    is the moment the server's answer may have changed. Kept: an item a still-running child
+    has, and a held item, which a merge lifts instead. A released item that is in review or
+    done is not delegable; `_delegate_next` reads it and counts it as an occupier, which is
+    what it is.
+    """
+    gone = {id(c) for c in finished}
+    for item_id in list(delegated):
+        owner = owners.get(item_id)
+        if owner is not None and id(owner) not in gone:
+            continue
+        if owner is None and item_id in held:
+            continue
+        delegated.discard(item_id)
+        owners.pop(item_id, None)
+        observe.emit("delegation_released", item=item_id,
+                     detail=f"{item_id}: its child exited; the server decides whether it is offered again")
 
 
 def _adopt_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str]) -> None:

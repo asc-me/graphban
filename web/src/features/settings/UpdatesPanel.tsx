@@ -46,10 +46,11 @@ function StateCopy({ data }: { data: UpdateCheck }) {
   if (data.state === "available" && data.latest) {
     return (
       <div className="space-y-2">
-        <p className="text-lead font-semibold">Update available</p>
+        <h3 className="text-lead font-semibold">
+          Update available <span className="font-mono">{data.latest.tag}</span>
+        </h3>
         <p className="text-[13px] text-fg-2">
-          <span className="font-mono text-fg">{data.latest.tag}</span> is available. This
-          box is on <Cut version={v} sha={sha} />.
+          Running <Cut version={v} sha={sha} />.
         </p>
         {data.hosted ? (
           <p className="text-[12px] text-muted">
@@ -62,12 +63,15 @@ function StateCopy({ data }: { data: UpdateCheck }) {
   return (
     <div className="space-y-2">
       <p className="text-lead font-semibold">Could not check</p>
-      <p className="text-[13px] text-fg-2">
-        Could not tell whether a newer cut exists. This box reports <Cut version={v} sha={sha} />.
-      </p>
       {data.feed_error ? (
-        <p className="text-[12px] text-muted">Update feed: {data.feed_error}.</p>
-      ) : null}
+        <p className="text-[13px] text-fg-2">
+          {data.feed_error}{/[.!?]$/.test(data.feed_error) ? "" : "."}
+        </p>
+      ) : (
+        <p className="text-[13px] text-fg-2">
+          Could not tell whether a newer cut exists. This box reports <Cut version={v} sha={sha} />.
+        </p>
+      )}
       {data.note ? <p className="text-[12px] text-muted">{data.note}</p> : null}
     </div>
   );
@@ -114,6 +118,8 @@ function ReleaseNotesList({ data }: { data: UpdateCheck }) {
   const running = data.notes?.running;
   const latest = data.notes?.latest;
   if (!running) return null;
+  // Unknown latest notes (a failed check) is no notes block at all.
+  if (data.state === "unknown" || (data.state === "available" && latest?.state === "unknown")) return null;
   const showLatest = data.state === "available" && latest && latest.tag !== running.tag;
   return (
     <div className="mt-4 space-y-2">
@@ -144,12 +150,10 @@ function installHint(data: UpdateCheck | undefined): string {
   if (data.state === "current") {
     return "Install is disabled — this box is already on the latest release.";
   }
-  if (data.apply && data.via === "native") {
-    return "Install unpacks the published tarball and swaps /opt/graphban/current. The API will be down for a few seconds.";
+  if (data.apply || data.hosted) {
+    return "";
   }
-  if (data.apply) {
-    return "Install rebuilds this box from the published cut. The build takes a few minutes while this release keeps serving; the API is down for a few seconds at the end.";
-  }
+  // No apply path on a self-hosted box: still say how to install by hand.
   const tag = data.latest?.tag;
   return tag
     ? `Install from this page needs a compose host helper or a native /opt/graphban install. Until then: scripts/deploy.sh ${tag}`
@@ -209,8 +213,8 @@ function progressHeadline(progress: UpdateProgress, tag: string, via: string | u
     : `Upgrading to ${tag} — step ${n} of ${steps.length}`;
 }
 
-function ProgressSteps({ progress, nowMs, tag, via }: {
-  progress: UpdateProgress; nowMs: number; tag: string; via: string | undefined;
+function ProgressSteps({ progress, nowMs, tag, via, complete = false }: {
+  progress: UpdateProgress; nowMs: number; tag: string; via: string | undefined; complete?: boolean;
 }) {
   const failed = progress.state === "failed";
   if (!progress.steps.length && !failed) return null;
@@ -222,32 +226,33 @@ function ProgressSteps({ progress, nowMs, tag, via }: {
     <div className="mt-3 space-y-2">
       <div className="flex items-center justify-between gap-2 text-[13px] font-semibold text-fg">
         <span className="flex items-center gap-2" data-testid="progress-headline">
-          <span aria-hidden className={`h-2 w-2 rounded-full ${red ? "bg-danger" : "bg-accent"}`} />
-          {progressHeadline(progress, tag, via)}
+          <span aria-hidden className={`h-2 w-2 rounded-full ${red ? "bg-danger" : complete ? "bg-st-done" : "bg-accent"}`} />
+          {complete ? "Upgrade complete" : progressHeadline(progress, tag, via)}
         </span>
         <span className="font-mono text-[12px] font-normal text-fg-2" data-testid="step-count">{count}</span>
       </div>
       {steps.length ? <StepBar steps={steps} openEnded={native} /> : null}
       {steps.length ? <div className="rounded-[10px] border border-line-2 bg-surface p-3">
-        <ol className="space-y-0.5 text-[12px]" aria-label="Install steps">
+        <ol className="text-[12px]" aria-label="Install steps">
           {steps.map((st) => (
             <li
               key={st.key}
               data-status={st.status}
-              className={st.status === "failed" ? "text-danger" : st.status === "pending" ? "text-faint" : "text-fg-2"}
+              className={`flex min-h-8 items-center ${
+                st.status === "failed" ? "text-danger" : st.status === "pending" ? "text-faint" : "text-fg-2"}`}
             >
-              <span aria-hidden className="mr-1.5 font-mono">{MARK[st.status]}</span>
-              {st.label}
+              <span aria-hidden className={`mr-1.5 font-mono ${st.status === "done" ? "text-accent" : ""}`}>{MARK[st.status]}</span>
+              <span className={st.status === "active" ? "font-semibold text-fg" : ""}>{st.label}</span>
               <span className="sr-only"> ({st.status})</span>
               {st.status === "active" && st.started_at !== null ? (
-                <span className="ml-1.5 font-mono text-faint" data-testid="step-timer">
+                <span className="ml-auto font-mono text-faint" data-testid="step-timer">
                   {elapsed(st.started_at, nowMs)}
                 </span>
               ) : null}
             </li>
           ))}
-          {native && progress.state === "running" ? (
-            <li className="italic text-muted">Further steps appear only if the log prints them</li>
+          {native && progress.state === "running" && !complete ? (
+            <li className="flex min-h-8 items-center italic text-muted">Further steps appear only if the log prints them</li>
           ) : null}
         </ol>
       </div> : null}
@@ -266,7 +271,7 @@ function PhaseCopy({ phase, tag, from, via }: { phase: Phase; tag: string; from:
   if (via === "native") {
     return (
       <>
-        <p className="mt-2 text-[12px] text-fg-2" data-testid="phase-copy">Upgrading to {tag}.</p>
+        <p className="mt-2 text-[12px] text-fg-2" data-testid="phase-copy">Upgrading to <span className="font-mono">{tag}</span>.</p>
         <p className="mt-1 text-[12px] text-muted" data-testid="native-note">
           The service restarts mid-upgrade, so this panel reconnects partway through. The steps
           below were read back from the log after the restart; they don&apos;t tick live the way
@@ -275,11 +280,12 @@ function PhaseCopy({ phase, tag, from, via }: { phase: Phase; tag: string; from:
       </>
     );
   }
+  const t = <span className="font-mono">{tag}</span>;
   const text = phase === "starting"
     ? "Starting the install…"
     : phase === "building"
-      ? `Building ${tag}. This box keeps serving ${from} until the new cut is ready — this can take several minutes.`
-      : `Restarting the API on ${tag}…`;
+      ? <>Building {t}. This box keeps serving <span className="font-mono">{from}</span> until the new cut is ready — this can take several minutes.</>
+      : <>Restarting the API on {t}…</>;
   return <p className="mt-2 text-[12px] text-fg-2" data-testid="phase-copy">{text}</p>;
 }
 
@@ -291,7 +297,7 @@ export function UpdatesPanel() {
   const refresh = () => qc.fetchQuery({
     queryKey: keys.updateCheck, queryFn: () => api.updateCheck(true), staleTime: 0,
   }).catch(() => undefined);
-  const hosted = config?.hosted_mode ?? data?.hosted ?? false;
+  const hosted = Boolean(config?.hosted_mode || data?.hosted);
   const canInstall = Boolean(
     data?.apply
     && data.state === "available"
@@ -304,6 +310,7 @@ export function UpdatesPanel() {
   const [applyError, setApplyError] = React.useState("");
   const [phase, setPhase] = React.useState<Phase>("");
   const [installed, setInstalled] = React.useState("");
+  const [installTag, setInstallTag] = React.useState("");
   const [progress, setProgress] = React.useState<UpdateProgress | null>(null);
   const [nowMs, setNowMs] = React.useState(() => Date.now());
   React.useEffect(() => {
@@ -320,11 +327,35 @@ export function UpdatesPanel() {
     refetchInterval: installTiming.pollMs,
     retry: false,
   });
+  const autoInstalling = autoRunning && autoProgress?.state === "running"
+    && autoProgress.tag === auto?.last_auto_install_tag;
   const alive = React.useRef(true);
   React.useEffect(() => {
     alive.current = true;
     return () => { alive.current = false; };
   }, []);
+
+  const resumed = React.useRef(false);
+  React.useEffect(() => {
+    if (!data || resumed.current) return;
+    resumed.current = true;
+    void (async () => {
+      let got: UpdateProgress;
+      try {
+        got = await api.updateProgress(installTiming.requestMs);
+      } catch {
+        return;
+      }
+      if (!alive.current || got.state !== "running" || !got.tag) return;
+      setInstallTag(got.tag);
+      setProgress(got);
+      setNowMs(Date.now());
+      setApplying(true);
+      setPhase("building");
+      await pollInstall(got.tag, data.via);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
 
   async function install() {
     if (!tag) return;
@@ -333,6 +364,7 @@ export function UpdatesPanel() {
     setApplyError("");
     setPhase("starting");
     setProgress(null);
+    setInstallTag(tag);
     try {
       await api.updateApply(tag);
     } catch (err) {
@@ -345,6 +377,11 @@ export function UpdatesPanel() {
       }
       // No status: deploy.sh recreates the API container, so a dropped request is the apply starting.
     }
+    await pollInstall(tag, via);
+  }
+
+  /** The poll an Install starts, and the one a page opened mid-install resumes. */
+  async function pollInstall(tag: string, via: string | undefined) {
     // Poll /health, not update-check: every update-check asks GitHub, and a 15-minute
     // poll of it spends the unauthenticated limit and then reads `unknown` forever.
     const deadline = Date.now() + installTiming.budgetMs;
@@ -370,6 +407,7 @@ export function UpdatesPanel() {
       }
       if (failed) {
         setApplying(false);
+        setConfirming(false);
         setPhase("");
         const where = via === "compose"
           ? "The full log is deploy.log beside the helper's socket on the host (~/.graphban-apply/deploy.log by default)."
@@ -384,6 +422,10 @@ export function UpdatesPanel() {
           setApplying(false);
           setConfirming(false);
           setInstalled(tag);
+          setProgress((p) => p && {
+            ...p, state: "succeeded" as UpdateProgress["state"],
+            steps: p.steps.map((st) => ({ ...st, status: "done" as typeof st.status })),
+          });
           void refresh();
           // The web container was rebuilt too; this tab is still running the old bundle.
           setTimeout(() => { if (alive.current) pageReload.run(); }, installTiming.reloadMs);
@@ -413,7 +455,7 @@ export function UpdatesPanel() {
         Whether this box is on the published stable cut.
       </p>
       <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        {applying ? <Label>Status</Label> : <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <Label>Status</Label>
             {isPending && !data && <p className="text-[13px] text-muted">Checking GitHub for a newer release — this can take a few seconds. No result yet is not "no release".</p>}
@@ -426,15 +468,15 @@ export function UpdatesPanel() {
           </div>
           <div className="flex flex-col items-end gap-1">
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <Button
+              {!installed ? <Button
                 type="button"
                 variant="outline"
                 onClick={() => { void refresh(); }}
                 disabled={isFetching || applying}
               >
                 {isFetching && !applying ? "Checking…" : "Check for updates"}
-              </Button>
-              {!hosted && !confirming && (
+              </Button> : null}
+              {!hosted && !installed && !autoInstalling && !confirming && (
                 <Button
                   type="button"
                   disabled={!canInstall || applying}
@@ -443,7 +485,7 @@ export function UpdatesPanel() {
                   {applying ? "Installing…" : "Install"}
                 </Button>
               )}
-              {!hosted && confirming && (
+              {!hosted && !installed && !autoInstalling && confirming && (
                 <>
                   <Button type="button" disabled={applying || !tag} onClick={() => { void install(); }}>
                     {applying ? "Installing…" : `Confirm install ${tag}`}
@@ -459,14 +501,18 @@ export function UpdatesPanel() {
                 </>
               )}
             </div>
-            {!hosted && !installed && (
-              <p className="max-w-xs text-right text-[12px] text-muted">{installHint(data)}</p>
+            {!hosted && !installed && !autoInstalling && (
+              installHint(data) ? <p className="max-w-xs text-right text-[12px] text-muted">{installHint(data)}</p> : null
             )}
           </div>
-        </div>
+        </div>}
         <div role="status" aria-live="polite">
-          <PhaseCopy phase={phase} tag={tag} from={data?.running.version ?? ""} via={data?.via} />
-          {(applying || progress?.state === "failed") && progress ? <ProgressSteps progress={progress} nowMs={nowMs} tag={tag} via={data?.via} /> : null}
+          <PhaseCopy phase={phase} tag={installTag || tag} from={data?.running.version ?? ""} via={data?.via} />
+          {(applying || installed || progress?.state === "failed") && progress
+            ? <ProgressSteps progress={progress} nowMs={nowMs} tag={installTag || tag} via={data?.via} complete={Boolean(installed)} />
+            : autoInstalling && autoProgress
+              ? <ProgressSteps progress={autoProgress} nowMs={nowMs} tag={auto?.last_auto_install_tag ?? ""} via={data?.via} />
+              : null}
           {installed ? (
             <p className="mt-2 text-[13px] font-semibold text-fg">
               Installed {installed}. Reloading this page to load the new release…
