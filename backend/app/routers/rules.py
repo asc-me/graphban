@@ -334,6 +334,14 @@ def org_profiles(org_id: str, db: Session = Depends(get_db),
     return rules_org.list_profiles(db, user, org_id)
 
 
+@router.get("/orgs/{org_id}/rules/profiles/applied")
+def org_applied_profiles(org_id: str, db: Session = Depends(get_db),
+                         user: User = Depends(get_current_user)):
+    """The profile applied to each project and whether it was applied to the project alone or
+    inherited from the org's apply. Org admins on `team` / `enterprise`."""
+    return _org_call(rules_org.applied_profiles, db, user, org_id)
+
+
 @router.post("/orgs/{org_id}/rules/profiles/{profile_id}/apply")
 def apply_org_profile(org_id: str, profile_id: str, body: ProfileApply,
                       db: Session = Depends(get_db), user: User = Depends(get_current_user)):
