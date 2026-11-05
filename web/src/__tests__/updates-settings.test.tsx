@@ -8,7 +8,9 @@ import { docFor } from "@/features/docs/content";
 import { ProjectProvider } from "@/features/ProjectContext";
 import { SettingsView } from "@/features/settings/SettingsView";
 import { installTiming, pageReload } from "@/features/settings/UpdatesPanel";
+import { api } from "@/lib/api";
 import { settingsPath } from "@/lib/routes";
+import { readFileSync } from "node:fs";
 import type { Project, UpdateCheck } from "@/lib/types";
 
 const proj: Project = {
@@ -116,7 +118,7 @@ describe("Updates Settings page", () => {
     healthSpy.mockReset().mockResolvedValue({ status: "ok", version: "2026.09.1", git_sha: "d596e57" });
     updateApplySpy.mockReset().mockImplementation(async (tag: string) => ({ ok: true, started: true, tag }));
     progressSpy.mockReset().mockResolvedValue({
-      state: "running", reason: "", tag: "2026.10.1", steps: [], current_line: "", error: "",
+      state: "idle", reason: "no log", tag: "", steps: [], current_line: "", error: "",
     });
     localStorage.setItem("gb_last_project_tag", "APP");
     projectsSpy.mockResolvedValue([proj]);
@@ -260,6 +262,7 @@ describe("Updates Settings page", () => {
       return { status: "ok", version: mode === "new" ? "2026.10.1" : "2026.09.1", git_sha: "x" };
     });
     updateCheckSpy.mockResolvedValue(available());
+    progressSpy.mockResolvedValueOnce({ state: "idle", reason: "", tag: "", steps: [], current_line: "", error: "" }); // the mount probe
     renderPage();
     await user.click(await screen.findByRole("button", { name: /^install$/i }));
     await user.click(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i }));
@@ -506,6 +509,7 @@ describe("Updates nav source", () => {
     });
     progressSpy.mockResolvedValue(mk(["done", "done", "done", "active", "pending", "pending"]));
     const user = userEvent.setup();
+    progressSpy.mockResolvedValueOnce({ state: "idle", reason: "", tag: "", steps: [], current_line: "", error: "" }); // the mount probe
     renderPage();
     await user.click(await screen.findByRole("button", { name: /^install$/i }));
     await user.click(screen.getByRole("button", { name: /confirm install/i }));
@@ -526,6 +530,7 @@ describe("Updates nav source", () => {
       ],
     });
     const user = userEvent.setup();
+    progressSpy.mockResolvedValueOnce({ state: "idle", reason: "", tag: "", steps: [], current_line: "", error: "" }); // the mount probe
     renderPage();
     await user.click(await screen.findByRole("button", { name: /^install$/i }));
     await user.click(screen.getByRole("button", { name: /confirm install/i }));
@@ -556,6 +561,7 @@ describe("Updates nav source", () => {
       ],
     });
     const user = userEvent.setup();
+    progressSpy.mockResolvedValueOnce({ state: "idle", reason: "", tag: "", steps: [], current_line: "", error: "" }); // the mount probe
     renderPage();
     await user.click(await screen.findByRole("button", { name: /^install$/i }));
     await user.click(screen.getByRole("button", { name: /confirm install/i }));
@@ -605,5 +611,96 @@ describe("Updates nav source", () => {
     renderPage();
     expect(await screen.findByText(/no notes on this release/i)).toBeInTheDocument();
     expect(screen.queryByTestId("changes-pill")).toBeNull();
+  });
+
+  beforeEach(() => {
+    updateApplySpy.mockClear();
+    Object.assign(installTiming, { pollMs: 1, requestMs: 50, budgetMs: 2000, reloadMs: 1 });
+  });
+
+  const runningSteps = [
+    { key: "pin", label: "Pinning the deploy worktree", status: "done", started_at: null },
+    { key: "build", label: "Building the images", status: "active", started_at: null },
+  ];
+  const running = (tag = "2026.10.1") => ({
+    state: "running", reason: "", tag, current_line: "", error: "", steps: runningSteps,
+  });
+
+  it("resumes a running install on mount: progress for the tag, no enabled Install, no click", async () => {
+    updateCheckSpy.mockResolvedValue(available());
+    progressSpy.mockResolvedValue(running());
+    renderPage();
+    expect(await screen.findByTestId("progress-headline")).toHaveTextContent("Upgrading to 2026.10.1");
+    expect(screen.queryByRole("button", { name: /^install$/i })).toBeNull();
+    expect(updateApplySpy).not.toHaveBeenCalled();
+  });
+
+  it("a failed install returns the header to Check for updates and Install", async () => {
+    const user = userEvent.setup();
+    updateCheckSpy.mockResolvedValue(available());
+    progressSpy.mockResolvedValueOnce({ state: "idle", reason: "", tag: "", steps: [], current_line: "", error: "" });
+    progressSpy.mockResolvedValue({
+      state: "failed", reason: "", tag: "2026.10.1", current_line: "", error: "boom",
+      steps: [{ key: "verify", label: "Verifying release identity", status: "failed", started_at: null }],
+    });
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install/i }));
+    const msg = await screen.findByText(/install failed: boom/i);
+    expect(msg.className).toContain("text-danger");
+    expect(screen.getByRole("button", { name: /check for updates/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^install$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /confirm install/i })).toBeNull();
+    expect(screen.getByRole("list", { name: /install steps/i }).querySelector("li")?.className).toContain("text-danger");
+  });
+
+  it("an automatic install shows the progress in the Status card and no Install", async () => {
+    updateCheckSpy.mockResolvedValue(available());
+    vi.mocked(api.autoUpdate).mockResolvedValueOnce({
+      available: true, unavailable_reason: "", enabled: true, timezone: "UTC", timezone_set: true,
+      host_now: "2026-11-02T10:30:00+00:00",
+      check: { days: [0], start: "02:00", end: "05:00" }, install: { days: [0], start: "02:00", end: "05:00" },
+      next_check_at: null, last_check_at: null, last_check_state: "", last_auto_install_tag: "2026.10.1",
+      last_auto_install_at: "2026-11-02T10:00:00+00:00", last_auto_install_outcome: "started",
+      last_auto_install_error: "",
+    });
+    progressSpy.mockResolvedValue(running());
+    renderPage();
+    const headline = await screen.findByTestId("progress-headline");
+    expect(headline.closest("div.rounded-\\[13px\\]")?.textContent).toContain("Status");
+    expect(screen.queryByRole("button", { name: /^install$/i })).toBeNull();
+  });
+
+  it("hosted shows no Install and no deploy.sh hint", async () => {
+    updateCheckSpy.mockResolvedValue({ ...available(), hosted: true });
+    renderPage(settingsPath("deployment/updates"), true);
+    await screen.findByRole("button", { name: /check for updates/i });
+    expect(screen.queryByRole("button", { name: /install/i })).toBeNull();
+    expect(screen.queryByText(/scripts\/deploy\.sh/)).toBeNull();
+  });
+
+  it("a finished install keeps the steps, all done, as Upgrade complete, with no Install or Check", async () => {
+    const user = userEvent.setup();
+    const reload = vi.spyOn(pageReload, "run").mockImplementation(() => {});
+    installTiming.reloadMs = 60_000;
+    updateCheckSpy.mockResolvedValue(available());
+    progressSpy.mockResolvedValueOnce({ state: "idle", reason: "", tag: "", steps: [], current_line: "", error: "" });
+    progressSpy.mockResolvedValue(running());
+    healthSpy.mockResolvedValue({ status: "ok", version: "2026.10.1", git_sha: "n" });
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install/i }));
+    expect(await screen.findByText(/^Upgrade complete$/)).toBeInTheDocument();
+    for (const li of screen.getByRole("list", { name: /install steps/i }).querySelectorAll("li")) {
+      expect(li).toHaveAttribute("data-status", "done");
+    }
+    expect(screen.queryByRole("button", { name: /install/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /check for updates/i })).toBeNull();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("index.css defines --color-danger as an alias of the blocked status colour", () => {
+    const css = readFileSync("src/index.css", "utf8");
+    expect(css).toMatch(/--color-danger:\s*var\(--color-st-blocked\)/);
   });
 });

@@ -234,4 +234,41 @@ describe("AutoUpdateSettings", () => {
     expect(await screen.findByText(/already on 2026\.11\.1/)).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
   });
+
+  it("a selected day pill reads text-bg, not text-white, on the accent fill", async () => {
+    const user = userEvent.setup();
+    getSpy.mockResolvedValue(status({ enabled: true }));
+    renderIt();
+    await user.click(await screen.findByRole("button", { name: "Sunday" }));
+    const pill = screen.getByRole("button", { name: "Sunday" });
+    const on = pill.getAttribute("aria-pressed") === "true" ? pill : screen.getByRole("button", { name: "Monday" });
+    expect(on.className).toContain("text-bg");
+    expect(on.className).not.toContain("text-white");
+  });
+
+  it("puts a full stop after a failure error that lacks one", async () => {
+    getSpy.mockResolvedValue(status({
+      last_auto_install_outcome: "failed", last_auto_install_tag: "2026.10.1",
+      last_auto_install_error: "x failed",
+    }));
+    renderIt();
+    expect(await screen.findByRole("alert")).toHaveTextContent("x failed. It will not be retried");
+  });
+
+  it("does not double the full stop when the error already ends with one", async () => {
+    getSpy.mockResolvedValue(status({
+      last_auto_install_outcome: "failed", last_auto_install_tag: "2026.10.1",
+      last_auto_install_error: "x failed.",
+    }));
+    renderIt();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("x failed. It will not be retried");
+    expect(alert).not.toHaveTextContent("..");
+  });
+
+  it("the failure box carries the danger colour", async () => {
+    getSpy.mockResolvedValue(status({ last_auto_install_outcome: "failed", last_auto_install_tag: "t" }));
+    renderIt();
+    expect((await screen.findByRole("alert")).className).toContain("text-danger");
+  });
 });

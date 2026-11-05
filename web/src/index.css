@@ -97,6 +97,7 @@
   --color-st-review: #e0b34a;
   --color-st-done: #5fd07a;
   --color-st-blocked: #ff6b6b;
+  --color-danger: var(--color-st-blocked);
 
   --color-ty-bug: #ff8f8f;
   --color-ty-feature: #c6f24e;

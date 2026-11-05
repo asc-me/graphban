@@ -176,7 +176,7 @@ function WindowEditor({
                   days: on ? value.days.filter((x) => x !== i) : [...value.days, i].sort(),
                 })}
                 className={`h-8 w-8 rounded-full border text-small ${
-                  on ? "border-accent bg-accent text-white" : "border-control bg-surface text-fg-2"}`}
+                  on ? "border-accent bg-accent text-bg" : "border-control bg-surface text-fg-2"}`}
               >
                 {d}
               </button>
@@ -253,6 +253,8 @@ export function AutoUpdateSettings({ progressError = "", progress = null, via }:
   const on = draft.enabled && !locked;
   const installing = data.last_auto_install_outcome === "started" && !!data.last_auto_install_tag
     && progress?.state === "running" && progress.tag === data.last_auto_install_tag;
+  const failureText = progressError || data.last_auto_install_error;
+  const failureDetail = failureText ? `: ${failureText}${/[.!?]$/.test(failureText) ? "" : "."}` : ".";
   const activeStep = progress?.steps.find((x) => x.status === "active");
 
   return (
@@ -277,7 +279,7 @@ export function AutoUpdateSettings({ progressError = "", progress = null, via }:
       {failed ? (
         <p role="alert" className="mb-3 rounded-md border border-danger p-2 text-[13px] font-semibold text-danger">
           The last automatic update to {data.last_auto_install_tag} failed
-          {progressError || data.last_auto_install_error ? `: ${progressError || data.last_auto_install_error}` : "."}
+          {failureDetail}
           {" "}It will not be retried; install a newer release or use Install above.
         </p>
       ) : null}
