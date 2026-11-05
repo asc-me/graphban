@@ -547,18 +547,45 @@ def test_a_pin_refuses_a_stranger_and_admits_the_parent(client, key, db):
 
 
 def test_a_seat_is_not_offered_an_item_pinned_to_a_live_author(client, key, db):
-    """GRPH-1332. The author is the delegator's own child, so lineage admits a plain
+    """GRPH-1332, clause 1. The author is the delegator's own child, so lineage admits a plain
     re-delegation; a SEAT is minted new and could never hold the pin. It is refused with a
-    wait naming the pin's expiry, and handed out once the author is offline."""
+    wait naming the pin and when the reservation ends, and no delegation row is written."""
     planner = _agent(client, key, "planner")
     item, did, child = _bounced(client, key, db, planner)
+    stored = _stored(db, item)
     e = _err(_delegate(client, key, item, planner, seat=True))
     assert e["code"] == "conflict"
-    assert f"pinned_to={child}" in e["message"] and "reserved_until=" in e["message"]
-    assert not any(r.item_id == _stored(db, item).id and r.id != did for r in _rows(db))
+    assert f"pinned_to={child}" in e["message"]
+    assert "pinned_until=" in e["message"] and "reserved_until=" in e["message"]
+    stamp = e["message"].split("reserved_until=", 1)[1].split(")", 1)[0].split(";", 1)[0].strip()
+    reserved = datetime.fromisoformat(stamp)
+    pinned = stored.bounce_pinned_until
+    pinned = pinned if pinned.tzinfo else pinned.replace(tzinfo=timezone.utc)
+    # The earlier of the pin's expiry and the author going offline.
+    assert reserved <= pinned
+    assert reserved > datetime.now(timezone.utc)
+    assert not any(r.item_id == stored.id and r.id != did for r in _rows(db))
 
+
+def test_a_pinned_item_is_handed_to_a_seat_once_its_author_is_offline(client, key, db):
+    """GRPH-1332, clause 2. The same bounce, with the author offline: the pin no longer
+    reserves anything, so the seat is minted and the item handed out."""
+    planner = _agent(client, key, "planner")
+    item, did, child = _bounced(client, key, db, planner, title="offline-author")
+    assert _err(_delegate(client, key, item, planner, seat=True))["code"] == "conflict"
     author = db.get(Agent, child)
     author.last_seen_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    db.commit()
+    out = _ok(_delegate(client, key, item, planner, seat=True))
+    assert out["enrolment_code"]
+
+
+def test_a_pinned_item_is_handed_to_a_seat_once_the_pin_lapses(client, key, db):
+    """GRPH-1332. The author still online, but the pin's clock has run out: handed out."""
+    planner = _agent(client, key, "planner")
+    item, did, child = _bounced(client, key, db, planner, title="lapsed-pin")
+    stored = _stored(db, item)
+    stored.bounce_pinned_until = datetime.now(timezone.utc) - timedelta(seconds=1)
     db.commit()
     out = _ok(_delegate(client, key, item, planner, seat=True))
     assert out["enrolment_code"]

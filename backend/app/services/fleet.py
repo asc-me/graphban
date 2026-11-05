@@ -3815,6 +3815,26 @@ def bounce_pin_holder(item: Item, *, now: datetime | None = None) -> str | None:
     return item.bounce_pinned_to
 
 
+
+def bounce_pin_reserved_until(item: Item) -> datetime | None:
+    """When a LIVE bounce pin stops reserving the item: its expiry, or the moment its author
+    goes offline (`last_seen_at` + presence TTL), whichever is first (GRPH-1332).
+
+    The same two exits `bounce_pin_holder` reads, as a time, so a caller told "wait" is told
+    how long. None when the pin is not live.
+    """
+    if bounce_pin_holder(item) is None:
+        return None
+    until = item.bounce_pinned_until
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+    db = object_session(item)
+    author = db.get(Agent, item.bounce_pinned_to) if db is not None else None
+    seen = _aware(author.last_seen_at) if author is not None else None
+    if seen is not None:
+        until = min(until, seen + timedelta(seconds=presence_ttl_seconds()))
+    return until
+
 # ---- D4: the divvy, and reservations over a moving partition -------------------------------
 
 def extend_reservations(db: Session, *, agent_id: str, item_id: str,
