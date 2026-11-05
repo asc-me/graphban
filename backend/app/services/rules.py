@@ -113,6 +113,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "Linking, re-pointing or unlinking this deployment's cloud org is done by the box's "
          "operator or an owner/admin of one of their projects, not by any member.",
          "enforced", _src("app/routers/sync.py", "refuse_unless_box_admin"), "code", scope="org"),
+    Rule("keys.rotate_only_where_it_replaces", "build", "A key is rotated only where rotating replaces it",
+         "Rotate refuses a revoked key, a link key (relink instead), a fleet-wave key (End wave) "
+         "and a key a gban command minted and stored (rerun that command).",
+         "enforced", _src("app/routers/apikeys.py", "rotate_key"), "code"),
     Rule("reach.deploy_not_delegable", "plan", "Deploy-reach work is not delegated",
          "An item declared reach=deploy acts on a running system and is never delegated.",
          "enforced", _src("app/services/delegation.py", "Refused"), "code"),

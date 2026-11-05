@@ -887,6 +887,7 @@ export const api = {
     expiresInDays?: number | null,
     scopes?: string[],
     toolTiers?: string[],
+    origin?: string,
   ) =>
     request<ApiKeyCreated>("/api-keys", {
       method: "POST",
@@ -900,7 +901,14 @@ export const api = {
         // Optional MCP tool tiers (GRPH-571). Omitted/empty → the core manifest. Never
         // widens what the key may CALL — only what its `tools/list` advertises.
         ...(toolTiers?.length ? { tool_tiers: toolTiers } : {}),
+        ...(origin ? { origin } : {}),
       }),
+    }),
+  /** One server transaction: mint the identical replacement, revoke the old (GRPH-1310). */
+  rotateApiKey: (id: string, expiresInDays: number | null) =>
+    request<ApiKeyCreated>(`/api-keys/${id}/rotate`, {
+      method: "POST",
+      body: JSON.stringify({ expires_in_days: expiresInDays }),
     }),
   revokeApiKey: (id: string) => request<void>(`/api-keys/${id}`, { method: "DELETE" }),
 

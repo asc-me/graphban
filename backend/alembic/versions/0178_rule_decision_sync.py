@@ -1,8 +1,8 @@
 """Linked boxes pull org rule decisions: `rule_decision_pull` (box) and `box_rule_syncs` and
 `org_rule_versions` (cloud) (GRPH-1297).
 
-Revision ID: 0177
-Revises: 0176
+Revision ID: 0178
+Revises: 0177
 """
 
 from typing import Sequence, Union
@@ -10,8 +10,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0177"
-down_revision: Union[str, None] = "0176"
+revision: str = "0178"
+down_revision: Union[str, None] = "0177"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

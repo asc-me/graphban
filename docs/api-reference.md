@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 313 of the 313. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 315 of the 315. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -97,6 +97,7 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | GET | `/api/rules` | JWT (project reader) | The rule registry (`services/rules.py`): every delivery rule with its enforcement, typed enforcer and truth. Gitops rows carry the effective value and `source` from `gitops.resolve`; a gitops rule is `advisory` (or `unmeasured`), never `enforced` |
+| GET | `/api/rules/contract` | JWT or agent API key (`X-API-Key` / `Bearer`) | The rule primitive contract this server runs (`rule_pack.contract()`): `api_version`, then each primitive's `id`, `level` and `params` (`name`, `type`, `required`). Read-only; the same JSON as the generated `docs/rule-primitive-contract.json` (`scripts/gen_rule_contract.py`) |
 | GET | `/api/rules/flow` | JWT (project reader) | The registry placed on the Rules map's seven fixed stages (`rules.flow`): each stage's `state` is the weakest of its used rules, `not_used` only when every rule on it is unused under the project's gitops `model`, and `unmeasured` when no rule is registered. Unused rules stay listed with `used: false` |
 | GET | `/api/rules/refusal-coverage` | JWT (project reader) | The "N of M refusal sites name their rule" number the build of this package published (`rules.refusal_coverage`, GRPH-1192): `{published, n, m, commit, published_at}`. Read from package data, never computed at request time; a build that did not publish returns `published: false` with null `n`, `m`, `commit` and `published_at` — not zero |
 | GET | `/api/rules/recommended` | JWT (project reader) | Recommended-rules suggestions (`services/rules_recommend.py`): `suggestions[]` (`kind` value\|code\|rule\|proposal, `evidence[]`, `fingerprint`; `rule` adds `score`, `replay`, `effect` from the pack's observation mapping, `proposal` a redacted `report` for the library) and an always-present `sources[]` (`read` or `not_available` + reason such as `not_connected`). Computed on open, cached ~60s per project; never writes a rule, and a saved value suggestion is advisory |
@@ -628,7 +629,8 @@ Two response fields carry a distinction the UI depends on:
 | Method | Path | Auth |
 | --- | --- | --- |
 | GET | `/api/api-keys` | JWT |
-| POST | `/api/api-keys` | JWT (plaintext returned once) |
+| POST | `/api/api-keys` | JWT (plaintext returned once). Optional `origin`: `web`, `gban_setup`, `gban_swamp_setup` or `fleet` (anything else is 422); omitted stores NULL (unknown), and the key is returned with `origin` on every read |
+| POST | `/api/api-keys/{id}/rotate` | JWT — body `{expires_in_days}`; mints an identical replacement (name, scopes, roles, tool_tiers, posture, project, origin) and revokes the old row in ONE transaction; plaintext returned once. 404 for another user's or a missing row; 409 for a revoked row, a `sync` row, a fleet-wave row, or a `gban_setup` / `gban_swamp_setup` row (rerun the command instead) |
 | DELETE | `/api/api-keys/{id}` | JWT — **revokes**; the row stays, marked `revoked`, and authenticates no one |
 
 ## Reports (upstream feedback)

@@ -55,12 +55,17 @@ def generate_api_key(
     project_id: str | None = None,
     expires_in_days: int | None = None,
     tool_tiers: list[str] | None = None,
+    origin: str | None = None,
+    roles: list[str] | None = None,
+    posture: str | None = None,
+    commit: bool = True,
 ) -> tuple[ApiKey, str]:
     """Create a key row and return (row, plaintext). Plaintext is not persisted.
 
     `project_id` scopes the key to one project (agent writes target it by default);
     None makes a global key. `expires_in_days` sets an optional lifetime; None =
-    non-expiring.
+    non-expiring. `origin` records which surface minted it (NULL = unknown). `commit=False`
+    flushes instead, so a caller (the rotate route) can finish a larger transaction.
     """
     raw = MINT_PREFIX + secrets.token_hex(20)
     row = ApiKey(
@@ -75,10 +80,17 @@ def generate_api_key(
         # storing one shape keeps a hand-minted key indistinguishable from a migrated one.
         tool_tiers=list(tool_tiers) if tool_tiers else None,
         expires_at=utcnow() + timedelta(days=expires_in_days) if expires_in_days else None,
+        origin=origin,
+        posture=posture,
     )
+    if roles is not None:
+        row.roles = list(roles)
     db.add(row)
-    db.commit()
-    db.refresh(row)
+    if commit:
+        db.commit()
+        db.refresh(row)
+    else:
+        db.flush()
     return row, raw
 
 

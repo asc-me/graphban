@@ -72,6 +72,16 @@ describe("SyncCredentialInstall", () => {
   });
 });
 
+
+/** Open a kind's mint card on Set up and submit it (the card toggle and the submit share a label). */
+async function openCard(user: ReturnType<typeof userEvent.setup>, label: string) {
+  await user.click(await screen.findByRole("button", { name: label, expanded: false }));
+}
+async function submitMint(user: ReturnType<typeof userEvent.setup>, label: string) {
+  const btn = screen.getAllByRole("button", { name: label }).find((b) => !b.hasAttribute("aria-expanded"))!;
+  await user.click(btn);
+}
+
 describe("minting a sync credential", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -82,9 +92,10 @@ describe("minting a sync credential", () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByRole("link", { name: "API keys" }));
-    await user.click(screen.getByRole("button", { name: "Link key" }));
+    await openCard(user, "Mint link key");
     await user.type(screen.getByPlaceholderText(/laptop/), "laptop — core");
-    await user.click(screen.getByRole("button", { name: /Mint link key/ }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Link key target project" }), "core");
+    await submitMint(user, "Mint link key");
 
     await waitFor(() =>
       expect(api.createApiKey).toHaveBeenCalledWith(
@@ -94,6 +105,7 @@ describe("minting a sync credential", () => {
         ["sync"],
         // A sync credential calls no MCP tools, so it is minted with no tier (GRPH-571).
         undefined,
+        "web",
       ),
     );
   });
@@ -102,9 +114,10 @@ describe("minting a sync credential", () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByRole("link", { name: "API keys" }));
-    await user.click(screen.getByRole("button", { name: "Link key" }));
+    await openCard(user, "Mint link key");
     await user.type(screen.getByPlaceholderText(/laptop/), "laptop");
-    await user.click(screen.getByRole("button", { name: /Mint link key/ }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Link key target project" }), "core");
+    await submitMint(user, "Mint link key");
 
     await waitFor(() =>
       expect(document.querySelector("pre")?.textContent).toContain("graphban link"),
@@ -116,15 +129,17 @@ describe("minting a sync credential", () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByRole("link", { name: "API keys" }));
+    await openCard(user, "Mint agent key");
     expect(screen.getByPlaceholderText("Agent key name (e.g. claude-code)")).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("Key name (e.g. claude-code)")).not.toBeInTheDocument();
     await user.type(screen.getByPlaceholderText(/claude-code/), "ci-agent");
-    await user.click(screen.getByRole("button", { name: /Mint agent key/ }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Pinned project" }), "core");
+    await submitMint(user, "Mint agent key");
 
     await waitFor(() =>
       // undefined scopes → the backend default ["read","write"]; `[]` tiers → the core MCP
       // manifest, which is likewise the backend default (GRPH-571).
-      expect(api.createApiKey).toHaveBeenCalledWith("ci-agent", "core", null, undefined, []),
+      expect(api.createApiKey).toHaveBeenCalledWith("ci-agent", "core", null, undefined, [], "web"),
     );
     // The snippet's default must match the key's default: a project-scoped key registers
     // project-scoped, without the operator translating between the two by hand.
@@ -139,12 +154,13 @@ describe("minting a sync credential", () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByRole("link", { name: "API keys" }));
+    await openCard(user, "Mint agent key");
     await user.click(screen.getByRole("button", { name: "Global" }));
     await user.type(screen.getByPlaceholderText(/claude-code/), "fleet-wide");
-    await user.click(screen.getByRole("button", { name: /Mint agent key/ }));
+    await submitMint(user, "Mint agent key");
 
     await waitFor(() =>
-      expect(api.createApiKey).toHaveBeenCalledWith("fleet-wide", null, null, undefined, []),
+      expect(api.createApiKey).toHaveBeenCalledWith("fleet-wide", null, null, undefined, [], "web"),
     );
     // The toggle's whole point: an unbound key's connect command is user-scoped in the
     // harness, so no project file ever carries a key that outlives it.
@@ -164,7 +180,7 @@ describe("hosted Sync / Link is the cloud-org mint, not the self-host paste form
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByRole("link", { name: "API keys" }));
-    expect(await screen.findByRole("button", { name: /Mint agent key/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Mint agent key/ })).toBeInTheDocument(); // Set up tab is the default
     expect(screen.queryByRole("heading", { name: /^credentials$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /^Cloud link$/ })).not.toBeInTheDocument();
   });

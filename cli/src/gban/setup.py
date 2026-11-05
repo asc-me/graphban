@@ -375,7 +375,8 @@ def mint(client: Client, project: str, label: str = "") -> dict:
                         "project_id": project,
                         # NULL, deliberately. See the module docstring: only seats expire.
                         "expires_in_days": None,
-                        "tool_tiers": TIERS})
+                        "tool_tiers": TIERS,
+                        "origin": "gban_setup"})
 
 
 def verify(url: str, key: str, project: str) -> list[dict]:
@@ -474,8 +475,9 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
         # A key that cannot do the job is replaced, never patched: `tool_tiers` are fixed at
         # mint and there is no route that changes them.
         lines.append(_line("config", UNKNOWN, "credential",
-                           "the configured key cannot delegate, so a new one is being minted; "
-                           "the old one is still live — remove it in Settings → API keys"))
+                           "the configured credential no longer works (revoked, or it cannot "
+                           "delegate), so a new one is being minted; if the old one still "
+                           "works, remove it in Settings → API keys"))
     if not key:
         try:
             minted = mint(client, project)

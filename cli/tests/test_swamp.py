@@ -165,6 +165,7 @@ def test_the_key_is_minted_with_write_as_well_as_gate(tmp_path, wired, ctx):
     assert set(body["scopes"]) == {"read", "write", "gate"}
     assert body["project_id"] == "core", "an unpinned gate key attests everywhere"
     assert body["expires_in_days"] is None
+    assert body["origin"] == "gban_swamp_setup"
 
 
 def test_a_key_that_came_back_without_write_fails_here_not_in_ci(tmp_path, wired, ctx):
@@ -204,7 +205,20 @@ def test_an_existing_secret_is_left_alone(tmp_path, wired, ctx):
 
     assert code == 0
     assert server.minted == [], "minted a second gate key over a working one"
-    assert any("left alone" in l["detail"] for l in lines)
+    assert any("left alone" in l["detail"] and "--replace" in l["detail"] for l in lines)
+
+
+def test_replace_mints_and_overwrites_a_present_secret(tmp_path, wired, ctx):
+    repo, adapter = _tree(tmp_path)
+    fake = wired(Swamp(vaults=["secrets"], keys=["graphban-api-key"], sources=[str(adapter)]))
+    server = Server()
+
+    lines, code = swamp_mod.setup(ctx(server), URL, "core", repo, adapter, replace=True)
+
+    assert code == 0
+    assert len(server.minted) == 1
+    assert server.minted[0]["origin"] == "gban_swamp_setup"
+    assert "gb_sk_gate1" in fake.stdin, "the new key was not written to the vault"
 
 
 def test_an_initialised_repo_is_never_reinitialised(tmp_path, wired, ctx):

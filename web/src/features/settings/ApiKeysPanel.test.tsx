@@ -1,27 +1,16 @@
 /**
- * Minting a `gate` key from the UI (GRPH-580).
+ * Settings → API keys (GRPH-580 gate keys, GRPH-1310 the 2026-11-04 redraw).
  *
- * The scope shipped in GRPH-541, completion was made to depend on it in GRPH-543, and a CI
- * adapter was built for it in GRPH-551 — and until this change the only way to create one was
- * curl with a JWT. The item's framing is the point: a capability nobody can create is a
- * capability nobody uses, and the completion gate then runs permanently under the weak path,
- * where a reviewer's `sign_off` is the only thing that can ever attest. That looks identical
- * to a working gate.
+ * **Several claims here fail silently, which is why they are tested rather than eyeballed:**
  *
- * **Two of the three claims here fail silently, which is why they are tested rather than
- * eyeballed.** A picker button is visible in a screenshot; these are not:
- *
- * - the scopes that reach the API. `["gate"]` alone mints a key the server accepts — `gate` is
- *   in `API_KEY_SCOPES` — and which then 403s on the first real attestation, because
- *   `attest_ci.py` attests via `update_item` and `mcp_server` refuses a mutating tool without
- *   `write`. The key would be created, stored as a CI secret, and fail once, in CI, months
- *   later. `fleet.mint` carries read+write+gate for this exact reason.
- * - what the operator is told to DO with it. Routing a gate key to `McpInstall` — the old
- *   behaviour for anything non-sync — hands a completion-attesting credential to the agent
- *   doing the work, which is the arrangement the scope exists to prevent.
- *
- * The third (a gate key listed as an agent key) is merely visible-but-wrong: the old
- * partition was `sync` vs everything-else, so the scope that matters would not be shown.
+ * - the scopes that reach the API. `["gate"]` alone mints a key the server accepts and which
+ *   then 403s on the first real attestation, because `attest_ci.py` attests via `update_item`
+ *   and `mcp_server` refuses a mutating tool without `write`.
+ * - what the operator is told to DO with a gate key. Routing it to the MCP install hands a
+ *   completion-attesting credential to the agent doing the work.
+ * - which row action a row gets. Rotating a `gban setup` key mints a spare live key; rotating a
+ *   link key forges a new deployment identity. Only the rotate route may replace a key, and
+ *   never as a create plus a DELETE from the browser.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
@@ -30,7 +19,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { docFor } from "@/features/docs/content";
-import { ApiKeysPanel } from "@/features/settings/SettingsView";
+import { ApiKeysPanel } from "@/features/settings/ApiKeysPanel";
 import { ProjectProvider } from "@/features/ProjectContext";
 import { settingsPath } from "@/lib/routes";
 import type { ApiKey, Project } from "@/lib/types";
@@ -50,26 +39,32 @@ const proj = (id: string): Project => ({
 });
 
 let keyList: ApiKey[] = [];
+let listFails: string | null = null;
 
 const revokeApiKey = vi.fn(async (_id: string) => undefined);
-
-// Declared WITH parameters so `mock.calls[0][3]` is typed — a no-arg `vi.fn` gives an empty
-// tuple, and indexing it passes the test while failing the typecheck.
+const rotateApiKey = vi.fn(async (_id: string, _days: number | null) => ({
+  ...key({ id: "key_rot", name: "rotated", prefix: "gb_new" }), plaintext: "gb_sk_rotated_plain",
+}));
+// Declared WITH parameters so `mock.calls[0][3]` is typed.
 const createApiKey = vi.fn(
   async (name: string, _projectId: string | null, _days?: number | null, _scopes?: string[],
-         _tiers?: string[]) => ({
+         _tiers?: string[], _origin?: string) => ({
     ...key({ id: "key_new", name }), plaintext: "gb_live_plaintext",
   }),
 );
+const listKeys = vi.fn(async () => {
+  if (listFails) throw new Error(JSON.stringify({ detail: listFails }));
+  return [...keyList];
+});
 
 vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
   api: {
-    projects: vi.fn(async () => [proj("core")]),
-    // A SNAPSHOT, not the shared array — returning the live one puts it into react-query's
-    // cache, where mutating it in place means the cache can never be stale.
-    apiKeys: vi.fn(async () => [...keyList]),
+    projects: vi.fn(async () => [proj("core"), proj("other")]),
+    // A SNAPSHOT, not the shared array — the live one in react-query's cache could never be stale.
+    apiKeys: () => listKeys(),
     createApiKey: (...a: Parameters<typeof createApiKey>) => createApiKey(...a),
+    rotateApiKey: (...a: Parameters<typeof rotateApiKey>) => rotateApiKey(...a),
     revokeApiKey: (...a: Parameters<typeof revokeApiKey>) => revokeApiKey(...a),
     syncLinks: vi.fn(async () => []),
   },
@@ -88,335 +83,369 @@ function view() {
   );
 }
 
-/** Pick the kind, name it, create it. */
-async function mint(kind: string, name = "github-actions") {
+/** Open the Keys tab. */
+async function keysTab() {
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: kind }));
-  await user.type(screen.getByPlaceholderText(/key name/i), name);
-  await user.click(screen.getByRole("button", { name: /Mint gate key|Mint agent key|Mint link key/ }));
+  await user.click(await screen.findByRole("tab", { name: /Keys/ }));
+  return user;
+}
+
+/** Open a kind's form on Set up, pick its project where one is needed, name it, mint. */
+async function mint(kind: "Agent key" | "Link key" | "Gate key", name = "github-actions", project = "core") {
+  const user = userEvent.setup();
+  const mintBtn = { "Agent key": "Mint agent key", "Link key": "Mint link key", "Gate key": "Mint gate key" }[kind];
+  // The card's toggle and the form's submit share a label; the toggle is the aria-expanded one.
+  await user.click(await screen.findByRole("button", { name: mintBtn, expanded: false }));
+  await user.type(screen.getByLabelText(new RegExp(`${kind} name`, "i")), name);
+  const pin = screen.queryByRole("combobox", { name: /target project|Pinned project/i });
+  if (pin && project) await user.selectOptions(pin, project);
+  const submit = screen.getAllByRole("button", { name: mintBtn }).find((b) => !b.hasAttribute("aria-expanded"))!;
+  await user.click(submit);
+  return user;
 }
 
 beforeEach(() => {
   keyList = [];
+  listFails = null;
   createApiKey.mockClear();
+  rotateApiKey.mockClear();
   revokeApiKey.mockReset();
   revokeApiKey.mockResolvedValue(undefined);
 });
 
-describe("minting a gate key", () => {
-  it("offers the kind at all", async () => {
+describe("tabs", () => {
+  it("opens on Set up with the gban block and three collapsed mint cards", async () => {
     view();
-    expect(await screen.findByRole("button", { name: "Gate key" })).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Set up", selected: true })).toBeInTheDocument();
+    expect(screen.getByText("gban login")).toBeInTheDocument();
+    expect(screen.getByText("gban setup --auto")).toBeInTheDocument();
+    expect(screen.getByText(/Not this page either/i)).toBeInTheDocument();
+    for (const n of ["Mint agent key", "Mint link key", "Mint gate key"]) {
+      expect(screen.getByRole("button", { name: n })).toHaveAttribute("aria-expanded", "false");
+    }
+    expect(screen.getByText("INTEGRATION")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: /Integration docs/ })[0])
+      .toHaveAttribute("href", "https://github.com/asc-me/graphban/tree/main/docs");
   });
 
-  it("says what the scope is FOR, not just its name", async () => {
-    // The item's acceptance. A picker entry reading "Gate key" and nothing else leaves an
-    // operator to guess, and the wrong guess — giving it to the building agent — is the one
-    // arrangement that defeats the gate while looking correct.
+  it("counts only keys not marked revoked on the Keys tab", async () => {
+    keyList = [key({ id: "a", name: "live" }), key({ id: "b", name: "dead", revoked: true })];
     view();
-    const btn = await screen.findByRole("button", { name: "Gate key" });
-    const desc = btn.getAttribute("title") ?? "";
-    expect(desc).toMatch(/attests|attest/i);
-    expect(desc).toMatch(/done/i);
-    expect(desc).toMatch(/never for the agent doing the work/i);
+    await waitFor(() => expect(screen.getByTestId("keys-count")).toHaveTextContent("1"));
   });
 
-  it("sends scopes that can actually attest, not `gate` alone", async () => {
-    // THE ONE THAT MATTERS. `["gate"]` is accepted by the schema and dead in practice.
+  it("keeps the two header links where they went", async () => {
     view();
-    await mint("Gate key");
+    expect(await screen.findByRole("link", { name: "Looking for seats?" })).toHaveAttribute("href", "/fleet");
+    expect(screen.getByRole("link", { name: "Looking for LLM credentials?" }))
+      .toHaveAttribute("href", settingsPath("deployment/providers"));
+  });
+});
 
+describe("minting", () => {
+  it("posts origin web and no scopes override for an agent key", async () => {
+    view();
+    await mint("Agent key", "claude-code");
     await waitFor(() => expect(createApiKey).toHaveBeenCalled());
-    const scopes = createApiKey.mock.calls[0][3];
-    expect(scopes).toContain("gate");
-    expect(scopes).toContain("write"); // else `update_item` 403s at attest time
+    const call = createApiKey.mock.calls[0];
+    expect(call[3]).toBeUndefined(); // the backend default; never hand the gate to every agent
+    expect(call[5]).toBe("web");
+    expect(call[1]).toBe("core");
+    expect(await screen.findByText(/Copy now — shown once/i)).toBeInTheDocument();
+    expect(screen.getByText("gb_live_plaintext")).toBeInTheDocument();
+    expect(screen.getByText(/Connect an agent/i)).toBeInTheDocument();
   });
 
-  it("pins the key to a project — a global gate key attests everywhere", async () => {
-    // THE BOUNCE. `key_gate_ids` falls back to every writable project when
-    // project_id is null, so a leaked CI secret would complete work across all of
-    // them. Sync already refused to be global; the UI still offered the checkbox
-    // for gate and never asserted createApiKey's projectId.
+  it("refuses a pinned agent mint without a project, in the form", async () => {
     view();
-    await mint("Gate key");
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Mint agent key", expanded: false }));
+    await user.type(screen.getByLabelText(/Agent key name/i), "x");
+    await user.click(screen.getAllByRole("button", { name: "Mint agent key" }).find((b) => !b.hasAttribute("aria-expanded"))!);
+    expect(await screen.findByText(/Pick a project/i)).toBeInTheDocument();
+    expect(createApiKey).not.toHaveBeenCalled();
+  });
 
+  it("a global agent key shows the AGENTS.md snippet and the fleet-drain warning", async () => {
+    view();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Mint agent key", expanded: false }));
+    await user.click(screen.getByRole("button", { name: "Global" }));
+    expect(screen.getByText(/can't supervise a fleet drain — the server refuses its records/)).toBeInTheDocument();
+    await user.type(screen.getByLabelText(/Agent key name/i), "g");
+    await user.click(screen.getAllByRole("button", { name: "Mint agent key" }).find((b) => !b.hasAttribute("aria-expanded"))!);
     await waitFor(() => expect(createApiKey).toHaveBeenCalled());
-    const projectId = createApiKey.mock.calls[0][1];
-    expect(projectId).toBe("core");
-    expect(screen.queryByText(/make it global/i)).toBeNull();
-    expect(screen.getByText(/exactly one project/i)).toBeInTheDocument();
+    expect(createApiKey.mock.calls[0][1]).toBeNull();
+    expect(await screen.findByLabelText("Copy AGENTS.md project")).toBeInTheDocument();
   });
 
-  it("tells the operator to store it as a CI secret, not in an MCP config", async () => {
+  it("sends tiers only for an agent key, and toggles them off again", async () => {
+    view();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Mint agent key", expanded: false }));
+    const fleet = screen.getByRole("button", { name: /Fleet admin/ });
+    await user.click(fleet);
+    await user.click(fleet);
+    await user.click(screen.getByRole("button", { name: /PRDs/ }));
+    await user.type(screen.getByLabelText(/Agent key name/i), "t");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Pinned project" }), "core");
+    await user.click(screen.getAllByRole("button", { name: "Mint agent key" }).find((b) => !b.hasAttribute("aria-expanded"))!);
+    await waitFor(() => expect(createApiKey).toHaveBeenCalled());
+    expect(createApiKey.mock.calls[0][4]).toEqual(["prd"]);
+  });
+
+  it("does not offer tiers on the link form", async () => {
+    view();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Mint link key", expanded: false }));
+    expect(screen.queryByRole("button", { name: /Fleet admin/ })).toBeNull();
+  });
+
+  it("a gate mint sends read+write+gate, pinned, and shows the CI table not the MCP picker", async () => {
     view();
     await mint("Gate key");
-
-    expect(await screen.findByText(/GRAPHBAN_GATE_KEY/)).toBeInTheDocument();
-    // The MCP install block names clients to paste a stanza into. Its absence is the claim:
-    // a gate key in an agent's MCP config is the failure this scope exists to prevent.
+    await waitFor(() => expect(createApiKey).toHaveBeenCalled());
+    const call = createApiKey.mock.calls[0];
+    expect(call[3]).toEqual(expect.arrayContaining(["read", "write", "gate"]));
+    expect(call[1]).toBe("core");
+    expect(call[5]).toBe("web");
+    const table = await screen.findByTestId("gate-ci-table");
+    expect(within(table).getByLabelText("URL your CI runner reaches")).toHaveValue(window.location.origin);
+    expect(within(table).getByText("GRAPHBAN_URL")).toBeInTheDocument();
+    expect(within(table).getByText("GRAPHBAN_GATE_KEY")).toBeInTheDocument();
+    expect(within(table).getByText(/gh variable set GRAPHBAN_URL/)).toBeInTheDocument();
+    expect(within(table).getByText(/gh secret set GRAPHBAN_GATE_KEY/)).toBeInTheDocument();
+    expect(within(table).getByText(/127\.0\.0\.1:8080/)).toBeInTheDocument();
+    expect(within(table).getByText(/graphban\.local:8080/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Claude Code|Cursor/ })).toBeNull();
   });
 
-  it("still mints an ordinary agent key with no scopes override", async () => {
-    // The regression guard. `undefined` means the backend default `["read","write"]`; sending
-    // `["read","write","gate"]` to every key would hand the gate to every agent, which is the
-    // same defect as the MCP-config one and easier to introduce.
+  it("shows a server refusal verbatim", async () => {
+    createApiKey.mockRejectedValueOnce(new Error(JSON.stringify({ detail: "a 'gate' credential must target one project" })));
     view();
-    await mint("Agent key", "claude-code");
-
-    await waitFor(() => expect(createApiKey).toHaveBeenCalled());
-    expect(createApiKey.mock.calls[0][3]).toBeUndefined();
+    await mint("Gate key");
+    expect(await screen.findByText(/The server refused the mint: a 'gate' credential must target one project/)).toBeInTheDocument();
   });
 });
 
-describe("tool tiers (GRPH-571)", () => {
-  it("mints with no tiers by default", async () => {
-    // The default IS core-only, and it is not a degraded state. If the picker defaulted to
-    // everything selected, tiering would be a no-op for every key made in the UI — which is
-    // the same shape as the backend bug where `None` tiers meant "all tiers".
-    view();
-    await mint("Agent key", "plain");
-
-    await waitFor(() => expect(createApiKey).toHaveBeenCalled());
-    expect(createApiKey.mock.calls[0][4]).toEqual([]);
-  });
-
-  it("sends the tiers that were picked", async () => {
-    const user = userEvent.setup();
-    view();
-    await user.click(await screen.findByRole("button", { name: "Agent key" }));
-    await user.click(screen.getByRole("button", { name: "PRDs" }));
-    await user.click(screen.getByRole("button", { name: "Fleet admin" }));
-    await user.type(screen.getByPlaceholderText(/key name/i), "planner");
-    await user.click(screen.getByRole("button", { name: /Mint agent key/ }));
-
-    await waitFor(() => expect(createApiKey).toHaveBeenCalled());
-    expect(createApiKey.mock.calls[0][4]).toEqual(["prd", "fleet"]);
-  });
-
-  it("toggles a tier off again", async () => {
-    // A picker that only ever adds looks identical to a working one until someone changes
-    // their mind.
-    const user = userEvent.setup();
-    view();
-    await user.click(await screen.findByRole("button", { name: "Agent key" }));
-    await user.click(screen.getByRole("button", { name: "PRDs" }));
-    await user.click(screen.getByRole("button", { name: "PRDs" }));
-    await user.type(screen.getByPlaceholderText(/key name/i), "k");
-    await user.click(screen.getByRole("button", { name: /Mint agent key/ }));
-
-    await waitFor(() => expect(createApiKey).toHaveBeenCalled());
-    expect(createApiKey.mock.calls[0][4]).toEqual([]);
-  });
-
-  it("says the Fleet admin tier is not a seat", async () => {
-    // Same word, two objects: being in a fleet needs a seat; this tier is for the
-    // supervisor or planner key. Reading it as a permission to join a wave would mint
-    // the wrong object.
-    view();
-    const btn = await screen.findByRole("button", { name: "Fleet admin" });
-    expect(btn.getAttribute("title") ?? "").toMatch(/seat/i);
-  });
-
-  it("says a tiered-out tool is still callable", async () => {
-    // The one thing an operator must not misread. Reading a tier as a permission would mean
-    // granting all four to every key "to be safe", which is tiering switched off.
-    view();
-    await screen.findByRole("button", { name: "Agent key" });
-    expect(screen.getByText(/still/)).toBeInTheDocument();
-    expect(screen.getByText(/callable/)).toBeInTheDocument();
-  });
-
-  it("does not offer tiers for a link key", async () => {
-    // A link key calls no MCP tools at all, so a tier on it is a control that does
-    // nothing — and a control that does nothing teaches the wrong model of what tiers are.
-    const user = userEvent.setup();
-    view();
-    await user.click(await screen.findByRole("button", { name: "Link key" }));
-
-    expect(screen.queryByRole("button", { name: "PRDs" })).toBeNull();
-  });
-
-  it("names the kind Link key, the same object Sync / Link mints", async () => {
-    // API keys used to say "Sync credential" while Sync / Link said "link key".
-    // Two names for one mint is the pairing hole this slice closes.
-    view();
-    expect(await screen.findByRole("button", { name: "Link key" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Sync credential" })).toBeNull();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Link key" }));
-    expect(screen.getByRole("button", { name: /Mint link key/ })).toBeInTheDocument();
-    // Cloud / Sync already names this picker "Link key target project".
-    // "Sync target project" was the old name of the same object.
-    expect(screen.getByLabelText("Link key target project")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Sync target project")).not.toBeInTheDocument();
-    // The name field sat next to "Mint link key" still saying "Key name".
-    expect(screen.getByPlaceholderText("Link key name (e.g. laptop — acme-core)")).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("Key name (e.g. laptop — acme-core)")).not.toBeInTheDocument();
-  });
-
-  it("names the agent mint Mint agent key, like the other two kinds", async () => {
-    // Link and gate already name the object on the button. "Mint key" did not.
-    view();
-    expect(await screen.findByRole("button", { name: "Mint agent key" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Mint key$/ })).not.toBeInTheDocument();
-  });
-
-  it("names the agent and gate name fields, like Link key name", async () => {
-    // #587 named the link key field. Agent and gate still said "Key name".
-    view();
-    expect(await screen.findByPlaceholderText("Agent key name (e.g. claude-code)")).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("Key name (e.g. claude-code)")).not.toBeInTheDocument();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Gate key" }));
-    expect(screen.getByPlaceholderText("Gate key name (e.g. github-actions)")).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("Key name (e.g. github-actions)")).not.toBeInTheDocument();
-  });
-});
-
-describe("listing", () => {
-  it("shows a gate key under its own heading rather than as an agent key", async () => {
-    keyList = [key({ id: "key_g", name: "github-actions", scopes: ["read", "write", "gate"] })];
-    view();
-
-    // Wait for the KEY, not for the heading. The headings render before the query resolves,
-    // so `findByText("Gate keys")` returns while both lists are still empty — the first
-    // version of this test asserted the key was absent from the agent list at a moment when
-    // it was absent from every list, and survived the mutation that puts it in the wrong one.
-    const rows = await screen.findAllByText("github-actions");
-    expect(rows).toHaveLength(1); // in exactly one group, not rendered under both
-    expect(screen.getByText("Gate keys").parentElement!).toContainElement(rows[0]);
-  });
-
-  it("labels a wave-tagged key so End wave sweeping it is visible on this list", async () => {
+describe("Keys tab", () => {
+  it("shows three groups with counts, and NONE for an empty one", async () => {
     keyList = [
-      key({ id: "key_h", name: "hand-minted" }),
-      key({ id: "key_w", name: "fleet worker", fleet_wave: "wave-1" }),
+      key({ id: "a1", name: "agent-one" }),
+      key({ id: "a2", name: "agent-two" }),
+      key({ id: "g1", name: "gate-one", scopes: ["read", "write", "gate"] }),
     ];
     view();
+    await keysTab();
+    await screen.findByText("agent-one");
+    expect(screen.getByRole("region", { name: "Agent keys" })).toHaveTextContent(/Agent keys\s*2/);
+    expect(screen.getByRole("region", { name: "Gate keys" })).toHaveTextContent(/Gate keys\s*1/);
+    const link = screen.getByRole("region", { name: "Link keys" });
+    expect(within(link).getByText("None")).toBeInTheDocument();
+    expect(link).toHaveTextContent(/No deployment is linked/);
+    // a gate key is in its own group, not also listed as an agent key
+    expect(screen.getAllByText("gate-one")).toHaveLength(1);
+    expect(within(screen.getByRole("region", { name: "Gate keys" })).getByText("gate-one")).toBeInTheDocument();
+  });
+
+  it("shows loading, then NOT LOADED with the reason, and Retry refetches", async () => {
+    listFails = "database is down";
+    view();
+    await keysTab();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Not loaded/i);
+    expect(alert).toHaveTextContent("database is down");
+    listFails = null;
+    keyList = [key({ id: "z", name: "back-again" })];
+    const before = listKeys.mock.calls.length;
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("back-again")).toBeInTheDocument();
+    expect(listKeys.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it("renders a loading status while the list is in flight", async () => {
+    let release: (v: ApiKey[]) => void = () => undefined;
+    listKeys.mockImplementationOnce(() => new Promise<ApiKey[]>((r) => { release = r; }));
+    view();
+    await keysTab();
+    expect(await screen.findByRole("status")).toBeInTheDocument();
+    release([]);
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  });
+
+  it("labels a wave key, an origin, a never-used key, and an expired one", async () => {
+    keyList = [
+      key({ id: "w", name: "fleet worker", fleet_wave: "wave-1" }),
+      key({ id: "s", name: "p delegation", origin: "gban_setup", last_used: "2026-01-01T00:00:00Z" }),
+      key({ id: "m", name: "swamp gate", scopes: ["read", "write", "gate"], origin: "gban_swamp_setup" }),
+      key({ id: "e", name: "old", expires_at: "2020-01-01T00:00:00Z" }),
+    ];
+    view();
+    await keysTab();
     expect(await screen.findByText(/wave-1 · swept by End wave/)).toBeInTheDocument();
-    expect(screen.queryByText(/hand-minted/)).toBeInTheDocument();
-    expect(screen.getByText("hand-minted").closest("div")?.textContent ?? "")
-      .not.toMatch(/swept by End wave/);
+    expect(screen.getByText("via gban setup")).toBeInTheDocument();
+    expect(screen.getByText("via gban swamp setup")).toBeInTheDocument();
+    expect(screen.getByText("expired")).toBeInTheDocument();
+    expect(screen.getAllByText("never used").length).toBeGreaterThan(0);
   });
 
-  it("points roles at Fleet, not at minting another key", async () => {
+  it("offers each row only the actions its origin allows", async () => {
+    keyList = [
+      key({ id: "web", name: "web-agent", origin: "web" }),
+      key({ id: "wave", name: "wave-agent", fleet_wave: "w" }),
+      key({ id: "lnk", name: "link-one", scopes: ["sync"] }),
+      key({ id: "gs", name: "setup-agent", origin: "gban_setup" }),
+      key({ id: "sw", name: "swamp-gate", scopes: ["read", "write", "gate"], origin: "gban_swamp_setup" }),
+    ];
     view();
-    const link = await screen.findByRole("link", { name: /seats on Fleet/i });
-    expect(link).toHaveAttribute("href", "/fleet");
+    await keysTab();
+    await screen.findByText("web-agent");
+    const rowOf = (n: string) => screen.getByText(n).closest("div")!.parentElement!;
+    const labels = (n: string) => within(rowOf(n)).getAllByRole("button")
+      .map((b) => b.textContent).filter((t) => ["Rotate", "Revoke", "Unlink and relink…", "Revoke and rerun…"].includes(t ?? ""));
+    expect(labels("web-agent")).toEqual(["Rotate", "Revoke"]);
+    expect(labels("wave-agent")).toEqual(["Revoke"]);
+    expect(labels("link-one")).toEqual(["Unlink and relink…", "Revoke"]);
+    expect(labels("setup-agent")).toEqual(["Revoke and rerun…", "Revoke"]);
+    expect(labels("swamp-gate")).toEqual(["Revoke and rerun…", "Revoke"]);
   });
 
-  it("sends someone looking for seats to Fleet, not a second mint on this page", async () => {
-    // The reverse of Fleet's "Looking for MCP?". A seat is not an API key; minting
-    // another key here would be the two-surfaces bug wearing the other shirt.
+  it("greys a revoked row, tags it, and gives it no actions", async () => {
+    keyList = [key({ id: "r", name: "dead-key", revoked: true }), key({ id: "l", name: "live-key" })];
     view();
-    expect(await screen.findByRole("link", { name: /looking for seats\?/i }))
-      .toHaveAttribute("href", "/fleet");
+    await keysTab();
+    const dead = (await screen.findByText("dead-key")).closest("div")!.parentElement!;
+    expect(dead.className).toMatch(/opacity-50/);
+    expect(within(dead).getByText("revoked")).toBeInTheDocument();
+    expect(within(dead).queryByRole("button", { name: "Revoke" })).toBeNull();
+    expect(within(dead).queryByRole("button", { name: "Rotate" })).toBeNull();
+    const live = screen.getByText("live-key").closest("div")!.parentElement!;
+    expect(live.className).not.toMatch(/opacity-50/);
   });
 
-  it("sends someone looking for LLM credentials to AI Providers, not a mint here", async () => {
-    // The reverse of AI Providers' "Looking for API keys?". An Anthropic key is
-    // not a Graphban API key; minting one here would be the two-surfaces bug.
+  it("keeps permissions in the Minted with disclosure, with the server's tool count", async () => {
+    keyList = [key({ id: "a", name: "claude-code", tool_tiers: ["prd"], tool_count: 34 })];
     view();
-    expect(await screen.findByRole("link", { name: /looking for llm credentials\?/i }))
-      .toHaveAttribute("href", "/settings/deployment/providers");
+    const user = await keysTab();
+    await screen.findByText("claude-code");
+    expect(screen.queryByTestId("minted-with")).toBeNull();
+    await user.click(screen.getByTitle("Minted with"));
+    const panel = screen.getByTestId("minted-with");
+    expect(panel).toHaveTextContent("core");
+    expect(panel).toHaveTextContent("PRDs");
+    expect(panel).toHaveTextContent("34 tools");
+    expect(panel).toHaveTextContent("Pinned to core");
   });
 
-  it("says what the absence of a gate key COSTS", async () => {
-    // An empty state reading "No gate keys" is true and useless. The reason the list is empty
-    // is the reason the gate is running on its weak path.
+  it("shows CI SECRETS on a gate row with no copyable key value", async () => {
+    keyList = [key({ id: "g", name: "gh-actions", prefix: "gb_sk_zz", scopes: ["read", "write", "gate"] })];
     view();
-    expect(await screen.findByText(/nothing can attest/i)).toBeInTheDocument();
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "CI secrets" }));
+    const table = screen.getByTestId("gate-ci-table");
+    expect(within(table).getByText(/the key starting gb_sk_zz/)).toBeInTheDocument();
+    expect(within(table).queryByLabelText("Copy GRAPHBAN_GATE_KEY value")).toBeNull();
+    expect(within(table).getByLabelText("Copy GRAPHBAN_URL value")).toBeInTheDocument();
   });
 });
 
-/**
- * The "minted with" detail. The permissions chosen at mint time (scopes + MCP tool tiers)
- * were never shown again after the one-time plaintext banner, which made a key's tool tiers
- * impossible to audit once it was in an agent's config. The detail expand surfaces them.
- */
-describe("minted-with detail", () => {
-  /** Open the chevron on the row for the key with the given name. */
-  async function expand(name: string) {
-    const user = userEvent.setup();
-    await screen.findByText(name);
-    await user.click(screen.getAllByTitle("Minted with")[0]);
-  }
-
-  it("is collapsed until the chevron is opened", async () => {
-    // The row leads with name/prefix/project; the permissions are a disclosure, not wallpaper.
-    keyList = [key({ id: "key_a", name: "claude-code", tool_tiers: ["prd"] })];
+describe("row dialogs", () => {
+  it("Rotate calls the rotate route once — no create, no DELETE — and shows the plaintext once", async () => {
+    keyList = [key({ id: "k1", name: "web-agent", origin: "web", expires_at: "2099-01-01T00:00:00Z" })];
     view();
-    await screen.findByText("claude-code");
-    expect(screen.queryByTestId("minted-with")).toBeNull();
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "Rotate" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByLabelText("New key expiry")).toHaveValue("90");
+    expect(within(dialog).getByText(/update the MCP config of every client/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Rotate key" }));
+    await waitFor(() => expect(rotateApiKey).toHaveBeenCalledTimes(1));
+    expect(rotateApiKey).toHaveBeenCalledWith("k1", 90);
+    expect(createApiKey).not.toHaveBeenCalled();
+    expect(revokeApiKey).not.toHaveBeenCalled();
+    expect(await screen.findByText(/New key — shown once/i)).toBeInTheDocument();
+    expect(screen.getByText("gb_sk_rotated_plain")).toBeInTheDocument();
+    expect(screen.getByText(/claude mcp add/)).toBeInTheDocument();
   });
 
-  it("shows the scopes and tier labels an agent key was minted with", async () => {
-    keyList = [key({ id: "key_a", name: "planner", scopes: ["read", "write"], tool_tiers: ["prd", "fleet"] })];
+  it("Rotate on a gate row ends in the CI table", async () => {
+    keyList = [key({ id: "g", name: "ci", scopes: ["read", "write", "gate"], origin: "web" })];
     view();
-    await expand("planner");
-    const block = await screen.findByTestId("minted-with");
-    expect(block.textContent).toMatch(/read/);
-    expect(block.textContent).toMatch(/write/);
-    expect(block.textContent).toMatch(/PRDs/);
-    expect(block.textContent).toMatch(/Fleet admin/);
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "Rotate" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Rotate key" }));
+    expect(await screen.findByTestId("gate-ci-table")).toBeInTheDocument();
+    expect(rotateApiKey).toHaveBeenCalledWith("g", null);
   });
 
-  it("names core explicitly when no extra tiers were granted", async () => {
-    // Core-only is the DEFAULT, not a degraded state. An empty tools row would read as "we
-    // forgot to say" rather than "this is the default". project_id is null so the Target row
-    // ("Global…") cannot collide with the "core" chip being asserted.
-    keyList = [key({ id: "key_a", name: "plain", project_id: null, tool_tiers: [] })];
+  it("a rotate failure stays inside the dialog", async () => {
+    rotateApiKey.mockRejectedValueOnce(new Error(JSON.stringify({ detail: "key is already revoked" })));
+    keyList = [key({ id: "k1", name: "web-agent", origin: "web" })];
     view();
-    await expand("plain");
-    const block = await screen.findByTestId("minted-with");
-    expect(block.textContent).toMatch(/core/);
-    expect(block.textContent).not.toMatch(/PRDs/);
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "Rotate" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Rotate key" }));
+    expect(await within(screen.getByRole("dialog")).findByText("key is already revoked")).toBeInTheDocument();
   });
 
-  it("shows the manifest size beside the tiers — 34 is the answer, not an absence", async () => {
-    // The operator's question ("I minted with everything and see 34 tools") is answered here,
-    // from the server's count, not a client-side sum over the tier labels.
-    keyList = [key({ id: "key_a", name: "plain", project_id: null, tool_tiers: [], tool_count: 34 })];
+  it("Revoke and rerun sends only DELETE, then names gban setup", async () => {
+    keyList = [key({ id: "k1", name: "p delegation", origin: "gban_setup" })];
     view();
-    await expand("plain");
-    expect((await screen.findByTestId("minted-with")).textContent).toMatch(/34 tools/);
+    const user = await keysTab();
+    expect(await screen.findByText("p delegation")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rotate" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Revoke and rerun…" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Revoke key" }));
+    await waitFor(() => expect(revokeApiKey).toHaveBeenCalledWith("k1"));
+    expect(rotateApiKey).not.toHaveBeenCalled();
+    expect(createApiKey).not.toHaveBeenCalled();
+    const done = await screen.findByRole("dialog", { name: /revoked/ });
+    expect(within(done).getByText("gban setup")).toBeInTheDocument();
   });
 
-  it("omits the count rather than guessing when the server did not report one", async () => {
-    keyList = [key({ id: "key_a", name: "old-server", project_id: null, tool_tiers: ["prd"] })];
+  it("a gban swamp setup row names --replace", async () => {
+    keyList = [key({ id: "k1", name: "swamp gate", scopes: ["read", "write", "gate"], origin: "gban_swamp_setup" })];
     view();
-    await expand("old-server");
-    expect((await screen.findByTestId("minted-with")).textContent).not.toMatch(/\d+ tools/);
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "Revoke and rerun…" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Revoke key" }));
+    const done = await screen.findByRole("dialog", { name: /revoked/ });
+    expect(within(done).getByText("gban swamp setup --replace")).toBeInTheDocument();
   });
 
-  it("keeps the row itself to name, prefix and target — permissions live in the disclosure", async () => {
-    keyList = [key({ id: "key_a", name: "planner", scopes: ["read", "write"], tool_tiers: ["prd"], tool_count: 42 })];
+  it("a link row offers Unlink and relink, not Rotate; confirming revokes then opens the link form", async () => {
+    keyList = [key({ id: "l", name: "laptop", scopes: ["sync"] })];
     view();
-    // Scoped to the row: the mint form above it has its own "PRDs" chip.
-    const row = within((await screen.findByText("planner")).closest("div")!);
-    expect(row.queryByText("PRDs")).toBeNull();
-    expect(row.queryByText(/42 tools/)).toBeNull();
-    expect(screen.getByRole("button", { name: /minted with/i })).toBeTruthy();
+    const user = await keysTab();
+    expect(await screen.findByText("laptop")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rotate" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Unlink and relink…" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Unlink and relink" }));
+    await waitFor(() => expect(revokeApiKey).toHaveBeenCalledWith("l"));
+    expect(await screen.findByTestId("mint-form-sync")).toBeInTheDocument();
   });
 
-  it("does not advertise MCP tools for a link key — it calls none", async () => {
-    // A link key pushes a code graph and never touches the MCP endpoint, so a tools row would
-    // describe a capability it does not have. The block itself must still render (the scopes
-    // and target are real), which is why the absence is checked ON the block, not the page.
-    keyList = [key({ id: "key_l", name: "laptop", scopes: ["sync"] })];
+  it("Revoke names the consequence for the kind and keeps an error inside the dialog", async () => {
+    revokeApiKey.mockRejectedValueOnce(new Error(JSON.stringify({ detail: "boom" })));
+    keyList = [key({ id: "k1", name: "web-agent" })];
     view();
-    await expand("laptop");
-    const block = await screen.findByTestId("minted-with");
-    expect(block.textContent).not.toMatch(/MCP tools/);
-    expect(block.textContent).toMatch(/sync/);
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "Revoke" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(/Every MCP client using this key stops on its next call/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Revoke key" }));
+    expect(await within(dialog).findByText("boom")).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
-  it("does not advertise MCP tools for a gate key — it attests, it does not call", async () => {
-    keyList = [key({ id: "key_g", name: "ci", scopes: ["read", "write", "gate"] })];
+  it("a successful Revoke closes the dialog", async () => {
+    keyList = [key({ id: "k1", name: "web-agent" })];
     view();
-    await expand("ci");
-    const block = await screen.findByTestId("minted-with");
-    expect(block.textContent).not.toMatch(/MCP tools/);
-    expect(block.textContent).toMatch(/gate/);
+    const user = await keysTab();
+    await user.click(await screen.findByRole("button", { name: "Revoke" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Revoke key" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(revokeApiKey).toHaveBeenCalledWith("k1");
   });
 });
 
@@ -443,69 +472,3 @@ describe("docs overlay", () => {
   });
 });
 
-/**
- * A revoked key is history, not noise (GRPH-788 / GRPH-789).
- *
- * `ApiKeyOut` has carried `revoked` since AL-72 and `GET /api-keys` returns every row, but
- * this panel never read the flag — so a credential killed by End wave or by
- * `POST /fleet/keys/revoke-expired` rendered identically to a working one. FleetView already
- * greys its dead credentials; the two views disagreed about the same rows.
- *
- * Asserted rather than eyeballed because "looks the same" is precisely the failure: a
- * screenshot of a list of keys cannot tell you which of them still authenticate.
- */
-describe("a revoked key does not look live", () => {
-  it("greys the row and offers no revoke control", async () => {
-    keyList = [key({ id: "key_dead", name: "dead one", revoked: true })];
-    view();
-
-    // The OUTERMOST row wrapper: KeyGroup wraps every row and each group's child renders its
-    // own wrapper inside it, so `closest` finds the inner one and the styling is on the outer.
-    const label = await screen.findByText("dead one");
-    const wrappers = Array.from(document.querySelectorAll<HTMLElement>("div"))
-      .filter((d) => d.contains(label) && d.className.includes("rounded-[11px]"));
-    const row = wrappers[0];
-    expect(row.className).toContain("opacity-50");
-    expect(within(row).getByText("revoked")).toBeInTheDocument();
-    expect(within(row).queryByTitle("Revoke")).toBeNull();
-  });
-
-  it("renders a live key differently from a revoked one", async () => {
-    // The control. Both assertions above would also pass if EVERY row were greyed, which
-    // would be the same defect wearing the fix's clothes.
-    keyList = [key({ id: "key_live", name: "live one" })];
-    view();
-
-    expect(await screen.findByTitle("Revoke")).toBeInTheDocument();
-    expect(screen.queryByText("revoked")).toBeNull();
-  });
-});
-
-describe("revoking says so when it fails", () => {
-  it("surfaces the error instead of doing nothing visible", async () => {
-    // The bug: `revoke()` was a bare `await` with no catch, so a failing request produced no
-    // toast, no error and no change — and the request DID fail for every key that had ever
-    // made a call, because the route hard-deleted a row the telemetry FK points at.
-    keyList = [key({ id: "key_used", name: "used one" })];
-    // Shaped like what `request()` actually throws: the raw FastAPI body. Asserting the
-    // fallback string instead would assert the one branch the operator should never see —
-    // the server's own reason is the thing worth putting in front of them.
-    revokeApiKey.mockRejectedValue(new Error(JSON.stringify({ detail: "key not found" })));
-    view();
-
-    await userEvent.setup().click(await screen.findByTitle("Revoke"));
-
-    await waitFor(() => expect(revokeApiKey).toHaveBeenCalledWith("key_used"));
-    expect(await screen.findByText(/key not found/i)).toBeInTheDocument();
-  });
-
-  it("says nothing when it works", async () => {
-    keyList = [key({ id: "key_used", name: "used one" })];
-    view();
-
-    await userEvent.setup().click(await screen.findByTitle("Revoke"));
-
-    await waitFor(() => expect(revokeApiKey).toHaveBeenCalled());
-    expect(screen.queryByText(/key not found/i)).toBeNull();
-  });
-});
