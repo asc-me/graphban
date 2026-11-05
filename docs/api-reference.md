@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 311 of the 311. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 315 of the 315. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -88,12 +88,16 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | DELETE | `/api/sync/link` | JWT (box admin) | Unlink — stops all sync; local data untouched |
 | GET | `/api/sync/org` | JWT | The Organization window: org `name`/`host`/`plan`, the linking credential's org `role`, `counts` (members, teams, org policy rules, deployments) and every deployment with `projects`, `here` and `last_sync_at`. Fetched from the cloud and cached 30 s. Unreachable → `reachable: false`, `unreachable_since` (first failure), the last known identity, **`counts: null`** and null deployment figures — never stale numbers shown as current — except this box's own `last_sync_at`. Linked answers also carry `can_unlink` — whether the *viewer* is a box admin (`role` is the linking credential's, not theirs). Unlinked → `{"linked": false}` and nothing else |
 | GET | `/api/sync/org-overview` | MCP (sync key) | Cloud side of the above. The org is resolved from the credential's project, never the request; `404` for a non-sync key or a project in no org. Deployments are sync keys grouped by name ("one key is one deployment") |
+| GET | `/api/sync/rule-decisions` | MCP (sync key) | Cloud side of the rule pull (GRPH-1297): the org's toggles with params, locks and applied profile as one versioned record (the version is a hash of the decisions). `404` for a non-sync key or a project in no org |
+| POST | `/api/sync/rule-decisions/applied` | MCP (sync key) | The box reports the version it applied; the cloud's "last synced" is only ever this report. Deployments in `/api/sync/org-overview` carry `rules` (applied vs published version, `pending`, `overdue`) |
+| POST | `/api/sync/pull-rules` | session (box admin) | BOX side: pull the org's published rule decisions, apply them as the org layer (project → org → platform, locks hold), then report the version applied — on demand; every `POST /api/sync/push` (and `graphban sync`) already does this as part of the sync, never failing the push. `409` when not linked, as `/push` |
 
 ## Rules (PRD-61)
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | GET | `/api/rules` | JWT (project reader) | The rule registry (`services/rules.py`): every delivery rule with its enforcement, typed enforcer and truth. Gitops rows carry the effective value and `source` from `gitops.resolve`; a gitops rule is `advisory` (or `unmeasured`), never `enforced` |
+| GET | `/api/rules/contract` | JWT or agent API key (`X-API-Key` / `Bearer`) | The rule primitive contract this server runs (`rule_pack.contract()`): `api_version`, then each primitive's `id`, `level` and `params` (`name`, `type`, `required`). Read-only; the same JSON as the generated `docs/rule-primitive-contract.json` (`scripts/gen_rule_contract.py`) |
 | GET | `/api/rules/flow` | JWT (project reader) | The registry placed on the Rules map's seven fixed stages (`rules.flow`): each stage's `state` is the weakest of its used rules, `not_used` only when every rule on it is unused under the project's gitops `model`, and `unmeasured` when no rule is registered. Unused rules stay listed with `used: false` |
 | GET | `/api/rules/refusal-coverage` | JWT (project reader) | The "N of M refusal sites name their rule" number the build of this package published (`rules.refusal_coverage`, GRPH-1192): `{published, n, m, commit, published_at}`. Read from package data, never computed at request time; a build that did not publish returns `published: false` with null `n`, `m`, `commit` and `published_at` — not zero |
 | GET | `/api/rules/recommended` | JWT (project reader) | Recommended-rules suggestions (`services/rules_recommend.py`): `suggestions[]` (`kind` value\|code\|rule\|proposal, `evidence[]`, `fingerprint`; `rule` adds `score`, `replay`, `effect` from the pack's observation mapping, `proposal` a redacted `report` for the library) and an always-present `sources[]` (`read` or `not_available` + reason such as `not_connected`). Computed on open, cached ~60s per project; never writes a rule, and a saved value suggestion is advisory |
@@ -753,7 +757,7 @@ Pushing and the portable bundle are a JWT on this box.
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | GET | `/api/sync/status` | JWT | Link state, never the credential, plus per-project sync state |
-| POST | `/api/sync/push` | JWT (write) | Push this project's code graph to the linked cloud. 409 when this box is not linked |
+| POST | `/api/sync/push` | JWT (write) | Push this project's code graph to the linked cloud. Also pulls and applies the org's rule decisions (GRPH-1297) and returns that outcome as `rules` — a failed pull never fails the push. 409 when this box is not linked |
 | POST | `/api/sync/purge` | JWT (write) | Delete this project's graph from the linked cloud and reset the local manifest. 409 when not linked |
 | POST | `/api/sync/code-graph` | MCP (sync scope) | Ingest nodes and edges. The cloud re-embeds. `remove` marks paths stale; `prune` marks everything absent from this batch |
 | DELETE | `/api/sync/code-graph` | MCP (sync scope) | Delete every node and edge in the key's project |
