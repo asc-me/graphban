@@ -828,6 +828,13 @@ def _loop(
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
                                               request, prd, repo, base, held=held,
                                               merger=merger, bound_out=flags)
+            if seed is None and flags.get("pinned_until"):
+                # GRPH-1332. A bounced item is reserved for its live author: a wait, not
+                # idle. The pin ends with its expiry or the author going offline, so this is
+                # bounded; the item was not marked delegated, so the next tick offers it.
+                empty = 0
+                sleep(poll)
+                continue
             if seed is None:
                 # No takeable work this tick. Fall through to the idle counter below.
                 pass
@@ -1837,6 +1844,15 @@ def _delegate_next(
                 got_code = reply.get("enrolment_code") if isinstance(reply, dict) else None
                 code = str(got_code) if got_code else None
             except ToolFailed as exc:
+                if "reserved_until=" in str(exc):
+                    # GRPH-1332. Pinned to its author after a bounce: reported as a wait and
+                    # NOT marked delegated, so a later tick re-offers it once the pin lapses.
+                    stamp = str(exc).split("reserved_until=", 1)[1].split(")", 1)[0].strip()
+                    observe.emit("delegate_pinned", item=candidate,
+                                 detail=f"{candidate} is reserved for its author until {stamp}")
+                    if bound_out is not None:
+                        bound_out["pinned_until"] = stamp
+                    continue
                 observe.emit("bound_seat_refused", item=candidate, detail=str(exc))
                 delegated.add(candidate)
                 continue

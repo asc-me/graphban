@@ -69,6 +69,7 @@ def _clients(
     calls: list | None = None,
     bound_seats: bool = False,
     bound_refused: bool = False,
+    pinned_ticks: int = 0,
     sticky_clusters: bool = False,
     gitops: dict | None = None,
     drop_delegated: bool = False,
@@ -89,6 +90,7 @@ def _clients(
     seen_agents = {"yes": False}
     # GRPH-1189: what the real server does — an item a child holds leaves `collision_clusters`.
     taken: set[str] = set()
+    pinned_left = [pinned_ticks]
 
     def handler(request: httpx.Request) -> httpx.Response:
         ack = telemetry_ack(request)
@@ -150,6 +152,11 @@ def _clients(
                 return _error(delegate_fails, f"refused ({delegate_fails})", rid)
             if bound_refused and args.get("seat"):
                 return _error("conflict", "areas are reserved by GRPH-A9", rid)
+            if pinned_left[0] > 0 and args.get("seat"):
+                pinned_left[0] -= 1
+                return _error("conflict", "GRPH-7 is pinned to its author GRPH-A1 after a bounce "
+                              "(pinned_to=GRPH-A1; pinned_until=2026-11-05T13:54:16+00:00; "
+                              "reserved_until=2026-11-05T13:54:16+00:00)", rid)
             if delegations is not None:
                 delegations.append(dict(args))
             return _mcp({"delegation_id": f"dlg_{len(delegations or [])}", "state": "open",
@@ -1193,6 +1200,26 @@ def test_a_refused_bound_seat_does_not_fall_back_to_unbound(
     # available, and the next tick will retry after the pin lapses or the holder releases.
     assert result.spawned == 0, "a refused bound seat should not spawn an unbound child"
     assert "mint_enrolment" not in calls, "no unbound fallback means no mint_enrolment"
+
+
+def test_a_pinned_item_spawns_nothing_until_the_server_stops_reporting_the_pin(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1332. A bounced item reserved for its live author is a wait: no seat is spawned,
+    the run does not read idle, and the same run delegates it once the pin is gone."""
+    workspace = tmp_path / "ws"
+    delegations: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]], delegations=delegations,
+        bound_seats=True, pinned_ticks=3,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert [d["id"] for d in delegations] == ["GRPH-7"], "delegated once, after the pin lapsed"
+    assert result.spawned == 1, result.detail
 
 
 def test_a_stale_hold_is_not_a_holding():

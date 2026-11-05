@@ -919,12 +919,17 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
             hint="only a claimable item can be delegated")
     holder = fleet_svc.bounce_pin_holder(item)
     if holder is not None and holder != agent.id:
-        if lineage(db, db.get(Agent, holder), agent.id) is None:
+        # GRPH-1332. A seat is minted NEW for this delegation, so it can never be the pin's
+        # holder: the lineage exemption (the author is the delegator's own child) admits a
+        # re-delegation to that child, not a fresh seat. Offering the item to one only
+        # spends a child start on a claim `pinned_elsewhere` refuses.
+        if seat or lineage(db, db.get(Agent, holder), agent.id) is None:
             until = _aware(item.bounce_pinned_until)
+            stamp = until.isoformat() if until else None
             raise DelegationRefused(
                 f"{item.key} is pinned to its author {holder} after a bounce",
-                hint="wait for the pin to lapse, or let the author retry",
-                detail={"pinned_to": holder, "pinned_until": until.isoformat() if until else None})
+                hint="wait for the pin to lapse (or the author to go offline), then delegate again",
+                detail={"pinned_to": holder, "pinned_until": stamp, "reserved_until": stamp})
     now = _now()
     if seat:
         # The mint gate is the mint gate: whoever may call mint_enrolment may bind a seat.

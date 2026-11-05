@@ -546,6 +546,24 @@ def test_a_pin_refuses_a_stranger_and_admits_the_parent(client, key, db):
     assert _ok(_delegate(client, key, item, planner, tier="frontier"))["state"] == "open"
 
 
+def test_a_seat_is_not_offered_an_item_pinned_to_a_live_author(client, key, db):
+    """GRPH-1332. The author is the delegator's own child, so lineage admits a plain
+    re-delegation; a SEAT is minted new and could never hold the pin. It is refused with a
+    wait naming the pin's expiry, and handed out once the author is offline."""
+    planner = _agent(client, key, "planner")
+    item, did, child = _bounced(client, key, db, planner)
+    e = _err(_delegate(client, key, item, planner, seat=True))
+    assert e["code"] == "conflict"
+    assert f"pinned_to={child}" in e["message"] and "reserved_until=" in e["message"]
+    assert not any(r.item_id == _stored(db, item).id and r.id != did for r in _rows(db))
+
+    author = db.get(Agent, child)
+    author.last_seen_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    db.commit()
+    out = _ok(_delegate(client, key, item, planner, seat=True))
+    assert out["enrolment_code"]
+
+
 def test_redelegation_after_a_bounce_carries_the_history(client, key, db):
     """13 / D10."""
     planner = _agent(client, key, "planner")
