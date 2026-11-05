@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app import errors
 from app.hashing import content_hash
-from app.models import Document, DocumentChunk, Prd
+from app.models import Document, DocumentChunk, Prd, Project
 from app.services import prds as prd_svc
 
 KINDS = ("preamble", "set_constraints", "design_prompt", "design_review", "canvas")
@@ -193,6 +193,16 @@ def backfill_embeddings(db: Session) -> int:
     return n
 
 
+def _may_cite(db: Session, project_id: str, prd_project_id: str) -> bool:
+    """A preamble cites a PRD in its own project, or in another project of the same org
+    (GRPH-1307): the visual system has one owner. No org means no cross-project layer — two
+    orgless projects are not one tenant, so neither may cite the other."""
+    if prd_project_id == project_id:
+        return True
+    mine, theirs = db.get(Project, project_id), db.get(Project, prd_project_id)
+    return bool(mine and theirs and mine.org_id and mine.org_id == theirs.org_id)
+
+
 def put_document(
     db: Session, *, project_id: str, kind: str, body: str, prd_id: str,
     title: str = "", created_by: str = "",
@@ -212,15 +222,10 @@ def put_document(
     if not (body or "").strip():
         raise errors.Validation("body is empty", hint="a preamble needs text")
     prd = prd_svc.get_prd(db, prd_id)
-    if prd is None:
-        raise errors.NotFound(f"prd not found: {prd_id}")
-    if prd.project_id != project_id:
-        # A cite may cross projects inside one org (GRPH-1307): the visual system has one owner.
-        from app.models import Project
-
-        mine, theirs = db.get(Project, project_id), db.get(Project, prd.project_id)
-        if mine is None or theirs is None or mine.org_id != theirs.org_id:
-            raise errors.NotFound(f"prd not found in this project: {prd_id}")
+    if prd is None or not _may_cite(db, project_id, prd.project_id):
+        # One message for "no such PRD" and "a PRD you may not cite", so a refusal never tells
+        # the caller that a PRD id exists in another tenant.
+        raise errors.NotFound(f"prd not found in this project: {prd_id}")
     base = prd_svc.baseline_of(db, prd.id)
     if base is None:
         # A precondition on the cited PRD, not a policy refusal: a Validation, so it stays
