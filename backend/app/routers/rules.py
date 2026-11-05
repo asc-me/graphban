@@ -313,3 +313,11 @@ def org_recommended_rules(org_id: str, refresh: bool = False, db: Session = Depe
     """Library rules implied by at least ORG_MIN_PROJECTS projects. Computed weekly; the reply
     carries its age. Suggestions only."""
     return rules_org.recommended(db, user, org_id, refresh=refresh)
+
+
+@router.get("/orgs/{org_id}/rules/sync")
+def org_rule_sync(org_id: str, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """Each linked box's rule-sync state (applied vs published version, pending, overdue),
+    read from what boxes reported. A box that never reported has no applied version."""
+    return _org_call(rules_org.org_box_states, db, user, org_id)

@@ -6,7 +6,7 @@ from app.models import ApiKey
 from app.services import code_sync
 from app.services import rule_toggles as T
 from app.services import rules_org as RO
-from tests.test_rule_toggles import RULE, _db, _login
+from tests.test_rule_toggles import RULE, _db, _login, _set_plan
 from tests.test_rules_org import OTHER, _apply, org  # noqa: F401  (org is a fixture)
 
 
@@ -273,3 +273,67 @@ def test_an_unchanged_record_keeps_its_changed_at_so_overdue_fires(client, org):
     pub = RO.published_decisions(db, org["id"])
     st = RO.box_rule_state(db, key.id, pub)
     assert st["pending"] is True and st["overdue"] is True
+
+
+def test_org_admin_route_serves_each_boxes_sync_state(client, org, monkeypatch):  # noqa: F811
+    db = _db()
+    key = _key(db, org)
+    r = client.get(f"/api/orgs/{org['id']}/rules/sync", headers=org["owner"])
+    assert r.status_code == 200, r.text
+    box = [b for b in r.json()["boxes"] if b["name"] == "box-1"][0]
+    assert box["applied_version"] is None and box["pending"] is True
+    RO.record_box_applied(db, key, org["id"], "old")
+    box = [b for b in client.get(f"/api/orgs/{org['id']}/rules/sync",
+                                 headers=org["owner"]).json()["boxes"] if b["name"] == "box-1"][0]
+    assert box["applied_version"] == "old" and box["pending"] is True
+    pub = RO.published_decisions(db, org["id"])
+    RO.record_box_applied(db, key, org["id"], pub["version"])
+    box = [b for b in client.get(f"/api/orgs/{org['id']}/rules/sync",
+                                 headers=org["owner"]).json()["boxes"] if b["name"] == "box-1"][0]
+    assert box["pending"] is False and box["applied_version"] == pub["version"]
+
+
+def test_org_sync_route_reports_published_and_overdue(client, org):  # noqa: F811
+    db = _db()
+    key = _key(db, org)
+    RO.record_box_applied(db, key, org["id"], "old")
+    pub = RO.published_decisions(db, org["id"])
+    r = client.get(f"/api/orgs/{org['id']}/rules/sync", headers=org["owner"]).json()
+    assert r["published_version"] == pub["version"] and r["published_at"] is not None
+    box = [b for b in r["boxes"] if b["name"] == "box-1"][0]
+    assert box["published_version"] == pub["version"]
+    assert box["pending"] is True and box["overdue"] is False   # just published: not overdue yet
+    _age(db, org["id"])
+    box = [b for b in client.get(f"/api/orgs/{org['id']}/rules/sync",
+                                 headers=org["owner"]).json()["boxes"] if b["name"] == "box-1"][0]
+    assert box["pending"] is True and box["overdue"] is True
+
+
+def test_org_sync_route_refuses_a_plain_member_with_403(client, org):  # noqa: F811
+    from app.models import OrgMembership
+    db = _db()
+    try:
+        db.add(OrgMembership(org_id=org["id"], user_id="u2", role="member"))
+        db.commit()
+    finally:
+        db.close()
+    member = _login(client, "dana@ascme-labs.com")
+    r = client.get(f"/api/orgs/{org['id']}/rules/sync", headers=member)
+    assert r.status_code == 403, r.text
+
+
+def test_org_sync_route_is_404_for_a_real_org_the_caller_is_not_in(client, org):  # noqa: F811
+    dana = _login(client, "dana@ascme-labs.com")
+    other = client.post("/api/orgs", json={"name": "Elsewhere"}, headers=dana)
+    assert other.status_code in (200, 201), other.text
+    _set_plan(other.json()["id"], "team")
+    r = client.get(f"/api/orgs/{other.json()['id']}/rules/sync", headers=org["owner"])
+    assert r.status_code == 404, r.text
+
+
+def test_org_sync_route_needs_team_or_enterprise(client, org):  # noqa: F811
+    _set_plan(org["id"], "free")
+    r = client.get(f"/api/orgs/{org['id']}/rules/sync", headers=org["owner"])
+    assert r.status_code == 402, r.text
+    _set_plan(org["id"], "enterprise")
+    assert client.get(f"/api/orgs/{org['id']}/rules/sync", headers=org["owner"]).status_code == 200

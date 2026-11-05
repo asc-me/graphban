@@ -436,6 +436,7 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     cfg.set_main_option("script_location", str(_BACKEND / "alembic"))
     cfg.set_main_option("path_separator", "os")
     script = ScriptDirectory.from_config(cfg)
+    # 0181 (GRPH-1320, sync storage config) on
     # 0180 (GRPH-1305, design finding canvas check) on
     # 0179 (GRPH-1306, design canvas members) on
     # 0178 (GRPH-1297, rule decision sync) on
@@ -464,7 +465,8 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     # on 0146 (GRPH-1137, decision waits) on 0145 (GRPH-1134, item done_at)
     # on 0144 (GRPH-1133, per-user UI preferences) on 0143
     # (GRPH-1127, scan finding grain); linear through 0140.
-    assert script.get_heads() == ["0180"]
+    assert script.get_heads() == ["0181"]
+    assert script.get_revision("0181").down_revision == "0180"
     assert script.get_revision("0180").down_revision == "0179"
     assert script.get_revision("0179").down_revision == "0178"
     assert script.get_revision("0178").down_revision == "0177"

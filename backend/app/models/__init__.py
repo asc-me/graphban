@@ -2147,6 +2147,33 @@ class SyncState(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class SyncStorageConfig(Base):
+    """This box's sync storage (GRPH-1320). ONE row, no `project_id`: a box fact.
+
+    `folder_path` is the whole setup — a local folder, not an account; pointing it at a Google
+    Drive Desktop folder is how Drive is reached. Each project syncs `<folder>/<project_id>/PRDs`.
+    `blob_dir` holds content-addressed bytes (`<blob_dir>/<aa>/<sha256>`); the ledger row is the
+    record. Empty means the default under `settings.sync_dir`. `id` is always
+    `services/sync_storage.SINGLETON_ID`. The `last_*` columns are what the last run said.
+    """
+
+    __tablename__ = "sync_storage_config"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    folder_path: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                             nullable=False)
+    blob_dir: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                          nullable=False)
+    #: `` (never run) | ok | failed | not_run (folder unreadable). A failed export rolls nothing back.
+    last_export_status: Mapped[str] = mapped_column(String(16), default="", server_default="",
+                                                    nullable=False)
+    last_error: Mapped[str] = mapped_column(String(400), default="", server_default="",
+                                            nullable=False)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                 onupdate=utcnow)
+
+
 class CodeSyncState(Base):
     """Per-project manifest of the code graph last pushed to the linked cloud tenant (AL-139):
     `manifest` is {path: content_hash} of what the cloud confirmed — the diff base for an

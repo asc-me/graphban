@@ -23,13 +23,14 @@ import {
 import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
-import { keys, usePrds } from "@/lib/queries";
+import { keys, usePrds, useSyncStorage } from "@/lib/queries";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { relTime } from "@/lib/relTime";
 
 import { PRD_STATUS_ORDER, prdStatusMeta } from "./meta";
 import { RequestDots } from "./PrdRequests";
+import { rowSyncMeta, SyncStoragePanel } from "./SyncStoragePanel";
 
 /** "2h ago" -> "2h"; absence stays a dash. */
 function shortAgo(rel: string | null): string {
@@ -40,6 +41,12 @@ export function PrdListView() {
   const { activeId } = useProjectCtx();
   const { data: prds = [], isLoading, isError, refetch } = usePrds(activeId);
   const navigate = useNavigate();
+  // Sync storage is read beside the list, never in front of it: its failure does not hide a row.
+  const sync = useSyncStorage(activeId);
+  const syncRows = React.useMemo(
+    () => new Map((sync.data?.rows ?? []).map((r) => [r.prd_id, r])),
+    [sync.data],
+  );
   const views = useViews("prds");
   const [condensed, toggleCondensed] = useCondensed();
 
@@ -123,6 +130,8 @@ export function PrdListView() {
           <div className="space-y-2 p-4">
             {visible.map((p) => {
               const meta = prdStatusMeta(p.status);
+              const syncRow = syncRows.get(p.id);
+              const syncMeta = syncRow ? rowSyncMeta(syncRow.sync_state) : null;
               return (
                 <div
                   key={p.id}
@@ -151,6 +160,15 @@ export function PrdListView() {
                   <span className="flex-none rounded-md bg-surface-4 px-1.5 py-0.5 font-mono text-[10px] text-muted-2">
                     {p.version}
                   </span>
+                  {syncMeta && (
+                    <span
+                      data-testid={`row-sync-${p.id}`}
+                      title={syncRow?.error || syncRow?.file_name || undefined}
+                      className={"w-[84px] flex-none text-right font-mono text-[10px] " + syncMeta.className}
+                    >
+                      {syncMeta.label}
+                    </span>
+                  )}
                   <span
                     className="flex w-[86px] flex-none items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide"
                     style={{ color: meta.color }}
@@ -165,6 +183,15 @@ export function PrdListView() {
               );
             })}
           </div>
+        )}
+        {!isLoading && activeId && (
+          <SyncStoragePanel
+            projectId={activeId}
+            data={sync.data}
+            isLoading={sync.isLoading}
+            isError={sync.isError}
+            onRetry={() => sync.refetch()}
+          />
         )}
       </div>
       {showing && <ViewFooter shown={visible.length} hidden={hidden} onShowHidden={showHidden} />}

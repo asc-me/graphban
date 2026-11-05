@@ -519,6 +519,35 @@ export function useReindexStatus(projectId: string) {
   });
 }
 
+/** Sync storage facts + row sync states (GRPH-1320). A GET is a read; Run sync is the write. */
+export function useSyncStorage(projectId?: string) {
+  return useQuery({
+    queryKey: ["sync-storage", projectId],
+    queryFn: () => api.syncStorage(projectId!),
+    enabled: !!projectId,
+  });
+}
+
+export function useSaveSyncStorage(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { folder_path?: string; blob_dir?: string }) => api.saveSyncStorage(projectId, body),
+    onSuccess: (data) => qc.setQueryData(["sync-storage", projectId], data),
+  });
+}
+
+export function useRunSyncStorage(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.runSyncStorage(projectId),
+    onSuccess: (data) => {
+      qc.setQueryData(["sync-storage", projectId], data);
+      // A run can import a draft or pull a file edit into a draft body.
+      qc.invalidateQueries({ queryKey: keys.prds });
+    },
+  });
+}
+
 export function usePlatform(projectId: string) {
   return useQuery({
     queryKey: ["platform", projectId],
