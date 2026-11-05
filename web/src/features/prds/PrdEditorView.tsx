@@ -97,6 +97,8 @@ export function PrdEditorView() {
     qc.invalidateQueries({ queryKey: keys.prd(id) });
     qc.invalidateQueries({ queryKey: keys.prds });
     qc.invalidateQueries({ queryKey: ["spec-prd"] });
+    // Specs keeps this list for 15s. A save changes the row's status and live hash.
+    qc.invalidateQueries({ queryKey: keys.specLibrary(activeId) });
   };
 
   async function save() {
@@ -299,6 +301,7 @@ function NewPrdReader({ projectId }: { projectId: string }) {
     try {
       const prd = await api.createPrd(projectId, title.trim() || "Untitled PRD", "blank", body);
       qc.invalidateQueries({ queryKey: keys.prds });
+      qc.invalidateQueries({ queryKey: keys.specLibrary(projectId) });
       navigate(`/prds/${prd.id}`, { replace: true });
     } catch (e) {
       setErr(errText(e));

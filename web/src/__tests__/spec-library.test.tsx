@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,14 @@ import type { SpecLibrary, SpecLibraryPrd } from "@/lib/api";
 const mocks = vi.hoisted(() => ({
   specLibrary: vi.fn(),
   syncStorage: vi.fn(),
+  prd: vi.fn(),
+  specPrd: vi.fn(),
+  updatePrd: vi.fn(),
+  prdVersions: vi.fn(async () => []),
+  grillState: vi.fn(async () => null),
+  intentDiff: vi.fn(async () => null),
+  prdRequests: vi.fn(async () => []),
+  platform: vi.fn(async () => ({ effective_chat_provider: "anthropic" })),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -21,8 +29,13 @@ vi.mock("@/lib/api", () => ({
     ...mocks,
   },
 }));
+vi.mock("@/lib/publicApi", () => ({ publicApi: { uploadAttachment: vi.fn() } }));
+vi.mock("@/features/assistant/AssistantPanel", () => ({ AssistantPanel: () => null }));
+vi.mock("@/features/prds/GrillPanel", () => ({ GrillPanel: () => null }));
+vi.mock("@/features/prds/ApprovalEval", () => ({ ApprovalEval: () => null }));
 
 const { SpecsLibraryView } = await import("@/features/prds/SpecsLibraryView");
+const { PrdEditorView } = await import("@/features/prds/PrdEditorView");
 
 const H = (c: string) => `sha256:${c.repeat(8)}`;
 
@@ -148,8 +161,12 @@ function ScreenProbe() {
   return <div data-testid="screen-probe">{setId}?screen={params.get("screen") ?? ""}</div>;
 }
 
-function show() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function show(opts: { staleTime?: number; reader?: boolean } = {}) {
+  const qc = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, refetchOnWindowFocus: false, staleTime: opts.staleTime ?? 0 },
+    },
+  });
   render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={["/prds"]}>
@@ -160,7 +177,7 @@ function show() {
             <Route path="/prds/preamble" element={<div>preamble reader</div>} />
             <Route path="/prds/constraints/:setId" element={<ScreenProbe />} />
             <Route path="/prds/new" element={<div>new prd</div>} />
-            <Route path="/prds/:id" element={<div>prd reader</div>} />
+            <Route path="/prds/:id" element={opts.reader ? <PrdEditorView /> : <div>prd reader</div>} />
             <Route path="/prds" element={<SpecsLibraryView />} />
           </Routes>
         </ProjectProvider>
@@ -173,6 +190,19 @@ beforeEach(() => {
   mocks.specLibrary.mockReset();
   mocks.syncStorage.mockReset();
   mocks.syncStorage.mockResolvedValue(syncStatus());
+  mocks.prd.mockReset();
+  mocks.specPrd.mockReset();
+  mocks.updatePrd.mockReset();
+  mocks.prdVersions.mockReset();
+  mocks.prdVersions.mockResolvedValue([]);
+  mocks.grillState.mockReset();
+  mocks.grillState.mockResolvedValue(null);
+  mocks.intentDiff.mockReset();
+  mocks.intentDiff.mockResolvedValue(null);
+  mocks.prdRequests.mockReset();
+  mocks.prdRequests.mockResolvedValue([]);
+  mocks.platform.mockReset();
+  mocks.platform.mockResolvedValue({ effective_chat_provider: "anthropic" });
 });
 
 describe("Specs library", () => {
@@ -306,6 +336,68 @@ describe("Specs library", () => {
     expect(note).toHaveTextContent("No preamble in this project.");
     expect(within(note).queryByRole("button")).toBeNull();
     expect(within(note).queryByRole("link")).toBeNull();
+  });
+
+  it("saving an approved PRD through the reader refreshes the row to draft and keeps the baseline", async () => {
+    const approved = library({
+      prds: [prd({
+        id: "GRPH-P9",
+        title: "Governed",
+        version: "v1.0",
+        status: "approved",
+        content_hash: H("d"),
+        baseline_hash: H("d"),
+        baseline_version: "v1.0",
+        sync_state: "in_sync",
+        conflict: null,
+      })],
+      preamble: null,
+      documents: [],
+      conflict_ids: [],
+    });
+    const drafted = {
+      ...approved,
+      prds: [{ ...approved.prds[0], status: "draft" as const, version: "v1.1", content_hash: H("e") }],
+    };
+    let saved = false;
+    mocks.specLibrary.mockImplementation(async () => (saved ? drafted : approved));
+    mocks.prd.mockResolvedValue({
+      id: "GRPH-P9", title: "Governed", status: "approved", version: "v1.0",
+      linked: [], project_id: "core", body: "Ship it.", updated_at: "", created_at: "",
+    });
+    mocks.specPrd.mockResolvedValue({
+      prd_id: "GRPH-P9", status: "approved", version: "v1.0", content_hash: H("d"),
+      baseline_hash: H("d"), baseline_version: "v1.0", design_set: null,
+    });
+    mocks.updatePrd.mockImplementation(async () => {
+      saved = true;
+      return {
+        id: "GRPH-P9", title: "Governed", status: "draft", version: "v1.1",
+        linked: [], project_id: "core", body: "Ship it. More.", updated_at: "", created_at: "",
+      };
+    });
+
+    const user = userEvent.setup();
+    show({ staleTime: 15_000, reader: true });
+    const row = await screen.findByTestId("spec-row-prd-GRPH-P9");
+    expect(within(row).getByText("Approved")).toBeInTheDocument();
+    expect(within(row).getByTestId("hash-baseline")).toBeInTheDocument();
+
+    await user.click(row);
+    await user.click(screen.getByTestId("spec-open"));
+    await screen.findByTestId("approved-line");
+    await user.type(document.querySelector("textarea")!, " More.");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocks.updatePrd).toHaveBeenCalled());
+    expect(mocks.updatePrd.mock.calls[0][1]).toMatchObject({ status: "draft" });
+
+    await user.click(screen.getByRole("button", { name: "Specs" }));
+    await waitFor(() => {
+      const again = screen.getByTestId("spec-row-prd-GRPH-P9");
+      expect(within(again).getByText("Draft")).toBeInTheDocument();
+      expect(within(again).getByTestId("hash-baseline")).toBeInTheDocument();
+    });
+    expect(mocks.specLibrary.mock.calls.length).toBeGreaterThan(1);
   });
 
   it("says there are no specs yet and still offers New PRD", async () => {

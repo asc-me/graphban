@@ -309,7 +309,7 @@ function RowButton({
       onClick={onClick}
       className={cn(
         "flex w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-[12px] border px-3 py-2 text-left",
-        pressed ? "border-line-hover bg-surface-3" : "border-line-2 bg-surface-2 hover:border-line-hover",
+        pressed ? "border-control-hover bg-surface-3" : "border-control bg-surface-2 hover:border-control-hover",
       )}
     >
       {children}

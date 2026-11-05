@@ -151,6 +151,7 @@ export function PreambleReaderView() {
     try {
       const out = await api.putPreamble(activeId, draft, cites.trim());
       qc.setQueryData(keys.specPreamble(activeId), out);
+      qc.invalidateQueries({ queryKey: keys.specLibrary(activeId) });
       setEditing(false);
     } catch (e) {
       setErr(errText(e));
@@ -244,6 +245,7 @@ export function SetConstraintsReaderView() {
   const [search] = useSearchParams();
   const screenQ = search.get("screen") ?? "";
   const qc = useQueryClient();
+  const { activeId } = useProjectCtx();
   const { data: me } = useMe();
   const { data: ds, error, isLoading } = useSpecDesignSet(setId);
   const [tab, setTab] = React.useState<DocTab>("preview");
@@ -260,6 +262,7 @@ export function SetConstraintsReaderView() {
     setErr("");
     try {
       qc.setQueryData(keys.specDesignSet(setId), await fn());
+      qc.invalidateQueries({ queryKey: keys.specLibrary(activeId) });
     } catch (e) {
       setErr(errText(e));
     } finally {
