@@ -458,3 +458,31 @@ def test_updates_org_scope_is_plan_gated(client, org, monkeypatch):
     assert client.get(_url(org, "profiles/updates"), headers=org["owner"]).status_code == 402
     assert client.post(_url(org, "profiles/standard/updates/accept"), json={"reason": "x"},
                        headers=org["owner"]).status_code == 402
+
+
+def test_applied_profiles_report_project_alone_and_inherited(client, org):
+    a, b, c = org["ps"]
+    url = _url(org, "profiles/applied")
+
+    def rows():
+        r = client.get(url, headers=org["owner"])
+        assert r.status_code == 200, r.text
+        return {x["project_id"]: x for x in r.json()["projects"]}
+
+    assert all(x["profile"] is None and x["source"] is None for x in rows().values())
+    assert _apply_project(client, org, a).status_code == 200
+    got = rows()
+    assert got[a]["profile"] == "standard" and got[a]["source"] == "project"
+    assert got[a]["profile_version"] == "1"
+    assert got[a]["drift_path"] == f"/api/rules/profiles/standard/drift?project_id={a}"
+    assert got[b]["profile"] is None and got[c]["profile"] is None
+    assert _apply(client, org).status_code == 200
+    got = rows()
+    assert all(x["profile"] == "standard" and x["source"] == "org" for x in got.values())
+    d = client.get(got[a]["drift_path"], headers=org["owner"])
+    assert d.status_code == 200 and d.json()["profile"] == "standard"
+
+
+def test_applied_profiles_are_plan_gated(client, org):
+    _set_plan(org["id"], "free")
+    assert client.get(_url(org, "profiles/applied"), headers=org["owner"]).status_code == 402

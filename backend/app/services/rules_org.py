@@ -247,6 +247,55 @@ def drift(db: Session, user, org_id: str, profile_id: str) -> dict:
             "state": "clean" if not rows else "drifted", "drift": rows}
 
 
+def applied_profiles(db: Session, user, org_id: str) -> dict:
+    """The profile each project in the org has applied (GRPH-1330), and where it came from.
+
+    Read from `apply_rule_profile` events: the latest one wins per project, whether it was an
+    apply to that project alone (`source: project`) or the org's apply (`source: org`,
+    inherited). A project with neither says `profile: null, source: null`. `drift_path` is the
+    read that measures the project against the reported profile."""
+    _admin(db, user, org_id)
+    project_ids = list(db.scalars(select(Project.id).where(Project.org_id == org_id)
+                                  .order_by(Project.id)))
+    latest: dict[str, tuple[tuple, str, Event]] = {}
+
+    def keep(pid: str, ev: Event, source: str) -> None:
+        if not (ev.meta or {}).get("profile"):
+            return
+        rank = (ev.ts, ev.id)
+        if pid not in latest or rank > latest[pid][0]:
+            latest[pid] = (rank, source, ev)
+
+    org_ev = _last_applied_any(db, "org", org_id)
+    for pid in project_ids:
+        if org_ev is not None:
+            keep(pid, org_ev, "org")
+    for ev in db.scalars(select(Event).where(
+            Event.action == "apply_rule_profile", Event.target_type == "project",
+            Event.target_id.in_(project_ids or [""])).order_by(Event.ts, Event.id)):
+        keep(ev.target_id, ev, "project")
+    rows = []
+    for pid in project_ids:
+        if pid not in latest:
+            rows.append({"project_id": pid, "profile": None, "profile_version": None,
+                         "source": None, "applied_at": None, "drift_path": None})
+            continue
+        _, source, ev = latest[pid]
+        prof = ev.meta["profile"]
+        rows.append({"project_id": pid, "profile": prof,
+                     "profile_version": ev.meta.get("profile_version"), "source": source,
+                     "applied_at": ev.ts.isoformat() if ev.ts else None,
+                     "drift_path": f"/api/rules/profiles/{prof}/drift?project_id={pid}"})
+    return {"org_id": org_id, "projects": rows}
+
+
+def _last_applied_any(db: Session, target_type: str, target_id: str) -> Event | None:
+    """The single latest `apply_rule_profile` event for an org or project, any profile."""
+    return db.scalars(select(Event).where(
+        Event.action == "apply_rule_profile", Event.target_type == target_type,
+        Event.target_id == target_id).order_by(Event.ts.desc(), Event.id.desc()).limit(1)).first()
+
+
 # ---- offered profile updates (GRPH-1328 / GBC-P6 §2, D10, D12, D13) -----------------------
 #
 # A newer pack that changes a profile is OFFERED with its diff; nothing is written until a
