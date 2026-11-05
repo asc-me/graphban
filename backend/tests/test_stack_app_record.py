@@ -436,6 +436,7 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     cfg.set_main_option("script_location", str(_BACKEND / "alembic"))
     cfg.set_main_option("path_separator", "os")
     script = ScriptDirectory.from_config(cfg)
+    # 0178 (GRPH-1297, rule decision sync) on
     # 0177 (GRPH-1310, api_keys.origin) on
     # 0176 (GRPH-1302, auto-update timezone_set) on
     # 0175 (GRPH-1299, auto-update config) on
@@ -461,7 +462,8 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     # on 0146 (GRPH-1137, decision waits) on 0145 (GRPH-1134, item done_at)
     # on 0144 (GRPH-1133, per-user UI preferences) on 0143
     # (GRPH-1127, scan finding grain); linear through 0140.
-    assert script.get_heads() == ["0177"]
+    assert script.get_heads() == ["0178"]
+    assert script.get_revision("0178").down_revision == "0177"
     assert script.get_revision("0177").down_revision == "0176"
     assert script.get_revision("0176").down_revision == "0175"
     assert script.get_revision("0175").down_revision == "0174"

@@ -185,7 +185,8 @@ def push(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = ""
     # Privacy (D8): a project can opt out of ever pushing its graph off-network.
     cfg = db.get(PlatformConfig, project_id)
     if cfg is not None and not cfg.sync_graph:
-        return {"project_id": project_id, "skipped": True, "reason": "graph kept local (sync_graph off)"}
+        return {"project_id": project_id, "skipped": True, "reason": "graph kept local (sync_graph off)",
+                "rules": _pull_rules_on_sync(db, url, key)}
 
     nodes = {n.path: n for n in code_graph.list_nodes(db, project_id)}
     local = {p: (n.content_hash or "") for p, n in nodes.items()}
@@ -225,7 +226,8 @@ def push(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = ""
             _post(url, key, {"edges": [{"src": e.src, "dst": e.dst, "type": e.type} for e in edges]})
 
     return {"project_id": project_id, "pushed": sent, "removed": len(removed),
-            "unchanged": len(local) - len(changed)}
+            "unchanged": len(local) - len(changed),
+            "rules": _pull_rules_on_sync(db, url, key)}
 
 
 def purge(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = "") -> dict:
@@ -321,12 +323,18 @@ def cloud_org_overview(db: Session, key: ApiKey) -> dict | None:
     if org is None:
         return None
 
+    from app.services import rules_org  # rules_org imports rule_toggles → keep lazy
+
+    published = rules_org.published_decisions(db, org.id)
     groups: dict[str, dict] = {}
     for d in galaxy_svc.deployments(db, org.id):
         if d["revoked"]:
             continue
         g = groups.setdefault(d["label"], {"name": d["label"], "projects": set(),
-                                           "here": False, "last_sync_at": None})
+                                           "here": False, "last_sync_at": None,
+                                           "rules": None})
+        if g["rules"] is None:
+            g["rules"] = rules_org.box_rule_state(db, d["credential_id"], published)
         g["projects"].add(d["project_id"])
         g["here"] = g["here"] or d["credential_id"] == key.id
         if d["last_push_at"] and (g["last_sync_at"] is None or d["last_push_at"] > g["last_sync_at"]):
@@ -421,3 +429,46 @@ def org_overview(db: Session) -> dict:
             "fetched_at": cached.get("fetched_at"),
             "org": last.get("org") or {"name": status.get("org") or "", "host": None, "plan": None},
             "role": last.get("role"), "counts": None, "deployments": deployments}
+
+
+# ---- pulling the org's rule decisions (GRPH-1297) ----------------------------------------
+
+def _pull_rules_on_sync(db: Session, url: str, key: str) -> dict:
+    """Every sync (`graphban sync`, `POST /api/sync/push`) also pulls the org's rule decisions —
+    that is the box's sync cadence. Never fatal to the push: a failure is reported in the
+    result and the next sync tries again."""
+    try:
+        return pull_rule_decisions(db, cloud_url=url, api_key=key)
+    except Exception as e:  # noqa: BLE001 — the graph push already landed; never undo it
+        db.rollback()
+        return {"pulled": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def pull_rule_decisions(db: Session, *, cloud_url: str = "", api_key: str = "") -> dict:
+    """BOX: pull the org's published rule decisions, apply them, then report the version
+    applied. The box initiates both calls; the cloud never reaches in. The report is retried
+    on the next pull if it failed, so the cloud never shows a version the box did not apply."""
+    from app.models import RuleDecisionPull
+    from app.services import rules_org
+
+    url, key = _target(db, cloud_url, api_key)
+    base, headers = url.rstrip("/"), {"X-API-Key": key}
+    resp = httpx.get(f"{base}/api/sync/rule-decisions", headers=headers, timeout=_TIMEOUT)
+    if resp.status_code == 404:
+        return {"pulled": False, "reason": "no organization for this credential"}
+    resp.raise_for_status()
+    record = resp.json()
+    pull = db.get(RuleDecisionPull, "instance")
+    changed = pull is None or pull.applied_version != record.get("version")
+    if changed:
+        pull = rules_org.apply_decisions(db, record)
+    try:
+        httpx.post(f"{base}/api/sync/rule-decisions/applied", headers=headers, timeout=_TIMEOUT,
+                   json={"org_id": pull.org_id, "version": pull.applied_version}
+                   ).raise_for_status()
+        pull.reported = True
+        db.commit()
+    except (httpx.HTTPError, OSError):
+        pass  # reported stays False; the next pull reports it
+    return {"pulled": True, "version": pull.applied_version, "changed": changed,
+            "reported": pull.reported}
