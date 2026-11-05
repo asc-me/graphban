@@ -253,14 +253,56 @@ def screen_dict(s: DesignScreen) -> dict:
             "findings": s.findings or []}
 
 
+def _canvas(db: Session, ds_id: str, screen: str, digest: str) -> DesignCanvas | None:
+    if not digest:
+        return None
+    return db.scalars(select(DesignCanvas).where(
+        DesignCanvas.design_set_id == ds_id, DesignCanvas.screen == screen,
+        DesignCanvas.content_hash == digest)).first()
+
+
+def _member_map(cv: DesignCanvas | None) -> dict[str, str]:
+    return {m["path"]: m["hash"] for m in (cv.members or [])} if cv is not None else {}
+
+
+def _member_drift(f: DesignFinding, reviewed: dict[str, str], now: dict[str, str]) -> dict:
+    """How the canvas moved since the one `f` reviewed, seen from the member `f` names: did that
+    member change, and which other members changed instead (the review-miss case)."""
+    if not f.member or not now:
+        return {}
+    others = sorted(p for p in set(reviewed) | set(now)
+                    if p != f.member and reviewed.get(p) != now.get(p))
+    return {"member_changed": now.get(f.member) != f.member_hash,
+            "member_present": f.member in now, "changed_elsewhere": others}
+
+
+def _screen_findings(db: Session, ds: DesignSet, s: DesignScreen) -> list[dict]:
+    cur = _member_map(_canvas(db, ds.id, s.screen, s.canvas_hash))
+    out = []
+    for f in _findings(db, ds.id, s.screen):
+        d = finding_dict(f)
+        if f.member and cur and f.canvas_hash != s.canvas_hash:
+            d["drift"] = _member_drift(
+                f, _member_map(_canvas(db, ds.id, s.screen, f.canvas_hash)), cur)
+        out.append(d)
+    return out
+
+
+def _screen_canvas(db: Session, ds: DesignSet, s: DesignScreen) -> dict:
+    cv = _canvas(db, ds.id, s.screen, s.canvas_hash)
+    if cv is None or cv.members is None:
+        return {}
+    return {"members": cv.members, "root": cv.root}
+
+
 def to_dict(db: Session, ds: DesignSet) -> dict:
     out = {
         "id": ds.id, "project_id": ds.project_id, "prd_id": ds.prd_id, "status": ds.status,
         "preamble_version": ds.preamble_version, "preamble_hash": ds.preamble_hash,
         "constraints_hash": ds.constraints_hash, "constraints_accepted": ds.constraints_accepted,
         "sections": ds.sections or [], "prd_hash": ds.prd_hash, "prd_baselined": ds.prd_baselined,
-        "screens": [screen_dict(s) | {"findings": [
-            finding_dict(f) for f in _findings(db, ds.id, s.screen)]} for s in ds.screens],
+        "screens": [screen_dict(s) | _screen_canvas(db, ds, s)
+                    | {"findings": _screen_findings(db, ds, s)} for s in ds.screens],
         "acceptance_blockers": acceptance_blockers(ds),
     }
     if ds.status == "stale":
@@ -391,7 +433,8 @@ def _findings(db: Session, ds_id: str, screen: str | None = None) -> list[Design
 def finding_dict(f: DesignFinding) -> dict:
     return {"id": f.id, "screen": f.screen, "kind": f.kind, "text": f.text,
             "canvas_hash": f.canvas_hash, "status": f.status, "reason": f.reason,
-            "winner": f.winner, "correction_id": f.correction_id, "created_by": f.created_by}
+            "winner": f.winner, "correction_id": f.correction_id, "created_by": f.created_by,
+            "member": f.member, "member_hash": f.member_hash}
 
 
 def _chunk_text(doc: Document) -> str:
@@ -498,9 +541,13 @@ def accept_prompt(db: Session, project_id: str, set_id: str, screen: str, actor:
 
 
 def put_canvas(db: Session, project_id: str, set_id: str, screen: str, data: bytes, mime: str,
-               prompt_hash: str, actor: str = "", backend=None) -> dict:
+               prompt_hash: str, actor: str = "", backend=None, root: str = "") -> dict:
     """Always stores the bytes (immutable, keyed by hash). They become the screen's reviewable
-    canvas only when `prompt_hash` is its accepted prompt hash; any other is an orphan."""
+    canvas only when `prompt_hash` is its accepted prompt hash; any other is an orphan.
+
+    A zip is the screen plus the files it imports: its members (path, hash) are recorded and
+    `root` names the member that is the screen. `changed` lists the members that differ from
+    the screen's current canvas. The server does not unpack it beyond reading the listing."""
     from app.services import documents as documents_svc
 
     ds = _get(db, project_id, set_id)
@@ -514,6 +561,20 @@ def put_canvas(db: Session, project_id: str, set_id: str, screen: str, data: byt
     import hashlib
 
     digest = hashlib.sha256(data).hexdigest()
+    members = _zip_members(data) if _is_zip(data, mime) else None
+    root = (root or "").strip()
+    if members is None and root:
+        raise errors.Validation("root names a member of a zip canvas; this upload is not a zip")
+    if members is not None:
+        if not members:
+            raise errors.Validation("zip canvas has no files")
+        paths = [m["path"] for m in members]
+        if not root and len(paths) == 1:
+            root = paths[0]
+        if root not in paths:
+            raise errors.Validation(
+                f"root {root!r} is not a member of the zip", hint=f"members: {paths}")
+    previous = _canvas(db, ds.id, screen, row.canvas_hash)
     doc = documents_svc.put_blob(
         db, project_id=project_id, kind="canvas", data=data, mime=mime, prd_id=ds.prd_id,
         set_id=ds.id, screen=f"{screen}@{digest[:16]}", title=f"{screen} canvas",
@@ -523,18 +584,90 @@ def put_canvas(db: Session, project_id: str, set_id: str, screen: str, data: byt
         DesignCanvas.content_hash == digest, DesignCanvas.prompt_hash == prompt_hash)).first()
     if have is None:
         db.add(DesignCanvas(design_set_id=ds.id, screen=screen, content_hash=digest,
-                            prompt_hash=prompt_hash, document_id=doc["id"], created_by=actor))
+                            prompt_hash=prompt_hash, document_id=doc["id"], created_by=actor,
+                            members=members, root=root))
     bound = bool(prompt_hash) and prompt_hash == row.prompt_hash
     if bound:
         row.canvas_hash = digest
     db.commit()
-    return {"design_set_id": ds.id, "screen": screen, "content_hash": digest,
-            "document_id": doc["id"], "prompt_hash": prompt_hash, "bound": bound,
-            "orphan": not bound}
+    out = {"design_set_id": ds.id, "screen": screen, "content_hash": digest,
+           "document_id": doc["id"], "prompt_hash": prompt_hash, "bound": bound,
+           "orphan": not bound}
+    if members is not None:
+        old = {m["path"]: m["hash"] for m in (previous.members or [])} if previous else {}
+        new = {m["path"]: m["hash"] for m in members}
+        out["members"] = members
+        out["root"] = root
+        out["changed"] = sorted(p for p in new if old.get(p) != new[p]) if previous else []
+        out["removed"] = sorted(p for p in old if p not in new)
+        # Findings that name a member: say whether this upload touched it, or only others.
+        drift = []
+        for f in _findings(db, ds.id, screen):
+            if not f.member or f.status in ("rejected", "withdrawn") or f.canvas_hash == digest:
+                continue
+            reviewed = _member_map(_canvas(db, ds.id, screen, f.canvas_hash))
+            drift.append({"finding_id": f.id, "member": f.member}
+                         | _member_drift(f, reviewed, new))
+        out["findings"] = drift
+    return out
 
 
-def read_canvas(db: Session, project_id: str, set_id: str, content_hash_: str, backend=None):
-    """Fetch stored canvas bytes by content hash (orphans included)."""
+def _is_zip(data: bytes, mime: str) -> bool:
+    return data[:4] == b"PK\x03\x04" or (mime or "").lower().endswith("zip")
+
+
+#: A canvas zip is a screen and the handful of files it imports. These bound what hashing it
+#: may cost, whatever the archive claims about itself: a small upload must not expand without
+#: limit (a zip bomb) or list a million entries.
+ZIP_MAX_MEMBERS = 500
+ZIP_MAX_BYTES = 64 * 1024 * 1024
+_ZIP_CHUNK = 64 * 1024
+
+
+def _zip_members(data: bytes, max_members: int | None = None,
+                 max_bytes: int | None = None) -> list[dict]:
+    """Path and sha256 of every file in the zip, sorted by path. Each member is hashed as a
+    stream and the decompressed total is counted as it is read, so the declared sizes in the
+    archive are never trusted."""
+    import hashlib
+    import io
+    import zipfile
+
+    max_members = ZIP_MAX_MEMBERS if max_members is None else max_members
+    max_bytes = ZIP_MAX_BYTES if max_bytes is None else max_bytes
+    out: list[dict] = []
+    total = 0
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            infos = [i for i in z.infolist() if not i.is_dir()]
+            if len(infos) > max_members:
+                raise errors.Validation(
+                    f"canvas zip has {len(infos)} files; at most {max_members}",
+                    hint="zip the screen and the files it imports, nothing else")
+            seen: set[str] = set()
+            for i in infos:
+                if i.filename in seen:
+                    raise errors.Validation(f"canvas zip lists {i.filename!r} twice")
+                seen.add(i.filename)
+                h = hashlib.sha256()
+                with z.open(i) as fh:
+                    while chunk := fh.read(_ZIP_CHUNK):
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise errors.Validation(
+                                f"canvas zip expands past {max_bytes} bytes",
+                                hint="zip the screen and the files it imports, nothing else")
+                        h.update(chunk)
+                out.append({"path": i.filename, "hash": h.hexdigest()})
+    except (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError) as e:
+        raise errors.Validation("canvas is not a readable zip") from e
+    return sorted(out, key=lambda m: m["path"])
+
+
+def read_canvas(db: Session, project_id: str, set_id: str, content_hash_: str, backend=None,
+                member: str = ""):
+    """Fetch stored canvas bytes by content hash (orphans included). With `member`, the bytes of
+    that one file of a zip canvas (its hash was checked against the recorded one)."""
     from app.services import documents as documents_svc
 
     ds = _get(db, project_id, set_id)
@@ -542,7 +675,37 @@ def read_canvas(db: Session, project_id: str, set_id: str, content_hash_: str, b
         DesignCanvas.design_set_id == ds.id, DesignCanvas.content_hash == content_hash_)).first()
     if cv is None:
         raise errors.NotFound(f"no canvas {content_hash_} in {ds.id}")
-    return documents_svc.read_blob(db, project_id, cv.document_id, backend=backend)
+    data, mime = documents_svc.read_blob(db, project_id, cv.document_id, backend=backend)
+    if not member:
+        return data, mime
+    want = _member_map(cv).get(member)
+    if want is None:
+        raise errors.NotFound(f"{member!r} is not a member of canvas {content_hash_}",
+                              hint=f"members: {sorted(_member_map(cv))}")
+    import hashlib
+    import io
+    import zipfile
+
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        info = z.getinfo(member)
+        if info.file_size > ZIP_MAX_BYTES:
+            raise errors.Validation(f"member {member!r} is larger than {ZIP_MAX_BYTES} bytes")
+        with z.open(info) as fh:
+            body = fh.read(ZIP_MAX_BYTES + 1)
+    if len(body) > ZIP_MAX_BYTES or hashlib.sha256(body).hexdigest() != want:
+        raise errors.Validation(f"member {member!r} does not match its recorded hash")
+    return body, "application/octet-stream"
+
+
+def canvas_info(db: Session, project_id: str, set_id: str, content_hash_: str) -> dict:
+    """What a stored canvas is: its screen, prompt hash and, for a zip, members and root."""
+    ds = _get(db, project_id, set_id)
+    cv = db.scalars(select(DesignCanvas).where(
+        DesignCanvas.design_set_id == ds.id, DesignCanvas.content_hash == content_hash_)).first()
+    if cv is None:
+        raise errors.NotFound(f"no canvas {content_hash_} in {ds.id}")
+    return {"screen": cv.screen, "content_hash": cv.content_hash, "prompt_hash": cv.prompt_hash,
+            "members": cv.members, "root": cv.root}
 
 
 def _headings(body: str) -> list[str]:
@@ -567,7 +730,8 @@ def _add_correction(db: Session, ds: DesignSet, screen: str, text: str, actor: s
 
 
 def file_finding(db: Session, project_id: str, set_id: str, screen: str, kind: str, text: str,
-                 canvas_hash: str = "", winner: str = "", actor: str = "") -> dict:
+                 canvas_hash: str = "", winner: str = "", actor: str = "",
+                 member: str = "") -> dict:
     ds = _get(db, project_id, set_id)
     _writable(ds)
     row = _screen_row(ds, screen)
@@ -581,14 +745,23 @@ def file_finding(db: Session, project_id: str, set_id: str, screen: str, kind: s
         raise errors.Validation(
             "the actor that compiled the current prompt cannot file a finding on it",
             hint="another writer files the finding")
+    member = (member or "").strip()
+    if member and not canvas_hash:
+        raise errors.Validation("member names a file of a canvas; give its canvas_hash too")
+    member_hash = ""
     if kind != "spec_gap" or canvas_hash:
-        known = db.scalars(select(DesignCanvas.id).where(
-            DesignCanvas.design_set_id == ds.id, DesignCanvas.screen == screen,
-            DesignCanvas.content_hash == canvas_hash)).first()
+        known = _canvas(db, ds.id, screen, canvas_hash)
         if known is None:
             raise errors.Validation(
                 f"canvas_hash {canvas_hash!r} is not a canvas stored for {screen!r}",
                 hint="name the hash of the canvas that was reviewed")
+        if member:
+            members = _member_map(known)
+            if member not in members:
+                raise errors.Validation(
+                    f"member {member!r} is not a file of canvas {canvas_hash}",
+                    hint=f"members: {sorted(members)}" if members else "this canvas is not a zip")
+            member_hash = members[member]
     if kind == "authority_conflict" and winner not in WINNERS:
         raise errors.Validation(f"winner must be one of {', '.join(WINNERS)}",
                                 hint="shipped decision, then the PRD, then the design")
@@ -608,7 +781,8 @@ def file_finding(db: Session, project_id: str, set_id: str, screen: str, kind: s
         return finding_dict(dup) | {"duplicate": True}
     f = DesignFinding(id=f"FND-{uuid.uuid4().hex[:10]}", design_set_id=ds.id, screen=screen,
                       kind=kind, text=text, text_hash=digest, canvas_hash=canvas_hash,
-                      winner=winner if kind == "authority_conflict" else "", created_by=actor)
+                      winner=winner if kind == "authority_conflict" else "", created_by=actor,
+                      member=member, member_hash=member_hash)
     if kind in ("prompt_defect", "design_edit", "authority_conflict"):
         ctext = text if kind != "authority_conflict" else (
             f"Authority conflict ({f.winner} governs): draw the absence of - {text}")
@@ -675,7 +849,8 @@ def _review_record(db: Session, ds: DesignSet) -> str:
         if f.status != "applied":
             continue
         corr = db.get(DesignCorrection, f.correction_id) if f.correction_id else None
-        lines.append(f"- [x] {f.screen}: {f.kind}: {corr.text if corr else f.text}")
+        where = f"{f.screen} ({f.member})" if f.member else f.screen
+        lines.append(f"- [x] {where}: {f.kind}: {corr.text if corr else f.text}")
     return "## Review record\n" + ("\n".join(lines) if lines else "No findings were applied.")
 
 
