@@ -635,6 +635,15 @@ describe("Updates nav source", () => {
     expect(updateApplySpy).not.toHaveBeenCalled();
   });
 
+  it("a resumed install names its own tag in the phase line, not the latest available", async () => {
+    updateCheckSpy.mockResolvedValue(available());
+    progressSpy.mockResolvedValue(running("2026.09.9"));
+    renderPage();
+    expect(await screen.findByTestId("progress-headline")).toHaveTextContent("Upgrading to 2026.09.9");
+    expect(screen.getByTestId("phase-copy")).toHaveTextContent("Building 2026.09.9.");
+    expect(screen.getByTestId("phase-copy")).not.toHaveTextContent("2026.10.1");
+  });
+
   it("a failed install returns the header to Check for updates and Install", async () => {
     const user = userEvent.setup();
     updateCheckSpy.mockResolvedValue(available());

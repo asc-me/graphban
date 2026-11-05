@@ -501,7 +501,7 @@ export function UpdatesPanel() {
           </div>
         </div>
         <div role="status" aria-live="polite">
-          <PhaseCopy phase={phase} tag={tag} from={data?.running.version ?? ""} via={data?.via} />
+          <PhaseCopy phase={phase} tag={installTag || tag} from={data?.running.version ?? ""} via={data?.via} />
           {(applying || installed || progress?.state === "failed") && progress
             ? <ProgressSteps progress={progress} nowMs={nowMs} tag={installTag || tag} via={data?.via} complete={Boolean(installed)} />
             : autoInstalling && autoProgress
