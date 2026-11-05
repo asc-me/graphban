@@ -241,9 +241,13 @@ def set_project_toggle(db: Session, project_id: str, rule_id: str, changes: dict
 
 
 def set_org_toggle(db: Session, org_id: str, rule_id: str, changes: dict, *, actor: object,
-                   reason: str | None) -> dict:
+                   reason: str | None, dry_run: bool = False) -> dict:
     """The org's value for a rule, and its lock. Applies to every project that inherits it —
-    every project at all, when locked — recorded as ONE event naming the projects it changed."""
+    every project at all, when locked — recorded as ONE event naming the projects it changed.
+
+    `dry_run` runs the same checks and the same resolution, then rolls the change back before
+    anything is committed: no RuleToggle row, no event, no published-version stamp. The reply
+    is what the write would return, so a preview and the write cannot disagree."""
     user = _require_person(db, actor)
     rule = _rule(rule_id)
     why = _reason(reason)
@@ -274,6 +278,15 @@ def set_org_toggle(db: Session, org_id: str, rule_id: str, changes: dict, *, act
         if row.params is None:
             row.params = dict(rule.default_params)
     row.updated_by = user.id
+    if dry_run:
+        try:
+            db.flush()  # resolve() below must see the change; the rollback takes it back
+            changed = [pid for pid in project_ids
+                       if _value(resolve(db, rule_id, pid)) != before[pid]]
+            return {"rule_id": rule_id, "org_id": org_id, **_snapshot(row),
+                    "projects_changed": changed}
+        finally:
+            db.rollback()
     db.commit()
     changed = [pid for pid in project_ids if _value(resolve(db, rule_id, pid)) != before[pid]]
     events_svc.record_user(
@@ -285,6 +298,33 @@ def set_org_toggle(db: Session, org_id: str, rule_id: str, changes: dict, *, act
     from app.services import rules_org  # rules_org imports this module → keep lazy
     rules_org.note_published(db, org_id)  # GRPH-1297: linked boxes measure "overdue" from here
     return {"rule_id": rule_id, "org_id": org_id, **_snapshot(row), "projects_changed": changed}
+
+
+def org_view(db: Session, org_id: str) -> dict:
+    """The org's own state per library rule, and each of its projects' effective value with
+    its source — one read, instead of one `effective` call per project. The org's `on` /
+    `params` are its own row's, or the platform default when it holds none."""
+    project_ids = list(db.scalars(select(Project.id).where(Project.org_id == org_id)
+                                  .order_by(Project.id)))
+    rows = {r.rule_id: r for r in db.scalars(select(RuleToggle).where(RuleToggle.org_id == org_id))}
+    per_project = {pid: {t["rule_id"]: t for t in effective(db, pid)} for pid in project_ids}
+    out = []
+    for rule in LIBRARY.values():
+        row = rows.get(rule.id)
+        own_on = row is not None and row.on is not None
+        own_params = row is not None and row.params is not None
+        out.append({
+            "rule_id": rule.id, "stage": rule.stage, "title": rule.title,
+            "on": {"value": row.on if own_on else rule.default_on,
+                   "source": "org" if own_on else "platform default"},
+            "params": {"value": copy.deepcopy(row.params) if own_params
+                       else copy.deepcopy(rule.default_params),
+                       "source": "org" if own_params else "platform default"},
+            "locked": bool(row is not None and row.locked),
+            "projects": [{"project_id": pid, "on": per_project[pid][rule.id]["on"],
+                          "params": per_project[pid][rule.id]["params"]}
+                         for pid in project_ids]})
+    return {"org_id": org_id, "library_loaded": library_loaded(), "rules": out}
 
 
 def _switched_off(db: Session, rule_id: str, project_ids: list[str], user: User) -> None:
