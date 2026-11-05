@@ -984,7 +984,7 @@ export function ApiKeysPanel() {
             )}
           >
             {label}
-            {id === "keys" && <span className="font-mono text-[10px] text-faint-2" data-testid="keys-count">{liveCount}</span>}
+            {id === "keys" && <span className="font-mono text-[10px] text-faint" data-testid="keys-count">{liveCount}</span>}
           </button>
         ))}
       </div>
