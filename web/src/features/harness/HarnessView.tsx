@@ -19,16 +19,17 @@ import type {
   HarnessSampling,
 } from "@/lib/types";
 
-type TabId = "performance" | "guidance" | "changes";
+type TabId = "performance" | "guidance" | "changes" | "capacity";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "performance", label: "Performance" },
   { id: "guidance", label: "Guidance" },
   { id: "changes", label: "Changes & probes" },
+  { id: "capacity", label: "Capacity" },
 ];
 
 /**
- * PRD-47 S12 — three tabs. Performance keeps the grid and probe panel and adds the effort
+ * PRD-47 S12 — three tabs, plus Capacity (PRD-62 D8). Performance keeps the grid and probe panel and adds the effort
  * curve. Guidance shows what was served: the routing table, grading rules, and raw
  * fleet_status. Changes & probes holds the recommendation cards and the probe panel.
  * Nothing on any tab applies anything — that is what the cards themselves say.
@@ -141,6 +142,11 @@ export function HarnessView() {
         {tab === "changes" && (
           <ChangesTab activeId={activeId} data={data} />
         )}
+        {tab === "capacity" && (
+          <div className="mx-auto max-w-6xl">
+            <CapacityPanel projectId={activeId} />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -175,7 +181,6 @@ function PerformanceTab({
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-3">
-      <CapacityPanel projectId={activeId} />
       {data.coverage && data.coverage.attempts > 0 && (
         <div
           data-testid="harness-coverage"

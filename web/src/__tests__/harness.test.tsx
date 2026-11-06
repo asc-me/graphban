@@ -445,15 +445,18 @@ describe("Harness page", () => {
 });
 
 describe("Harness tabs", () => {
-  it("renders three tabs and defaults to Performance", async () => {
+  it("renders four tabs, Capacity last, and defaults to Performance", async () => {
     show();
     await screen.findByTestId("harness-cell");
     const tabs = screen.getAllByTestId("harness-tab");
-    expect(tabs).toHaveLength(3);
+    expect(tabs).toHaveLength(4);
     expect(tabs[0]).toHaveAttribute("data-tab", "performance");
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");
     expect(tabs[1]).toHaveAttribute("data-tab", "guidance");
     expect(tabs[2]).toHaveAttribute("data-tab", "changes");
+    expect(tabs[3]).toHaveAttribute("data-tab", "capacity");
+    expect(screen.queryByTestId("harness-capacity")).toBeNull();
+    expect(screen.queryByTestId("harness-capacity-refused")).toBeNull();
   });
 
   it("shows the SERVED badge on Guidance when routing was served", async () => {
