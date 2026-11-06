@@ -83,6 +83,11 @@ class User(Base):
     # refresh token stops working immediately instead of living to its 14d expiry (AL-59).
     token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Quick-start UI progress (GRPH-P67 §6): {quickstart_finished_at, quickstart_dismissed_at,
+    # tour_completed_at, tour_skipped_stops, org_requested_at}. NULL = a new user who has not
+    # started. It is progress of the DIALOG only — a setup step's tick is read from server
+    # state (services/setup.py), never from this.
+    onboarding: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     memberships: Mapped[list[Membership]] = relationship(back_populates="user")
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="user")
@@ -150,6 +155,9 @@ class Project(Base):
     share_global_memory: Mapped[bool] = mapped_column(Boolean, default=True)
     auto_extract: Mapped[bool] = mapped_column(Boolean, default=True)
     mcp_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # The human decisions guided setup cannot read from state (GRPH-P67 §6): {workspace_confirmed_at,
+    # offline, server: {where, address}}. Written only by POST /projects/{id}/setup/confirm.
+    setup_decisions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # The credential this project uses for chat, overriding the deployment default (PRD-25).
     # S1 creates the column and never writes it: the resolver honours it so the ordering is
