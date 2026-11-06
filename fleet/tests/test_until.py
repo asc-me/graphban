@@ -761,7 +761,10 @@ def test_until_does_not_spawn_for_held_review(
         limits=Limits(max_workers=1),
     )
     assert roles == [], roles
-    assert result.reason == "idle"
+    # GRPH-1356: held review is still unsigned review; it polls, then fails, never idle.
+    assert result.reason == "review-unsigned"
+    assert result.ok is False
+    assert result.review == ["GRPH-9"]
     assert result.spawned == 0
 
 
