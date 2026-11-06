@@ -3834,6 +3834,8 @@ class DesignScreen(Base):
     tier_confirmed: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false(), nullable=False)
     tier_note: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # This screen's own brief (GRPH-1354); the only per-screen text a compiled prompt carries.
+    brief: Mapped[str] = mapped_column(Text, default="", server_default="")
     # A suggestion from the code graph; the compiler ignores it until `confirm_tier`.
     tier_proposal: Mapped[str] = mapped_column(String, default="", server_default="")
     tier_proposal_basis: Mapped[str] = mapped_column(String, default="", server_default="")

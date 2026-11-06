@@ -1383,8 +1383,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "put_set_constraints",
         "description": (
-            "Store a design set's candidate constraints, the PRD sections it gates and its "
-            "screens [{screen, routes}]. Does not accept them; re-pins a stale set."
+            "Store a design set's candidate constraints, gated PRD sections and screens "
+            "[{screen, routes, brief}]. Does not accept them; re-pins a stale set."
         ),
         "inputSchema": {
             "type": "object",
@@ -1414,8 +1414,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "confirm_tier",
         "description": (
-            "Confirm a screen's tier BACKED|HALF|UNBACKED with a note saying what backs it or "
-            "is missing. A code-graph proposal is not a confirmation; unconfirmed is not BACKED."
+            "Confirm a screen's tier with a note on what backs it or is missing. A graph "
+            "proposal is not a confirmation."
         ),
         "inputSchema": {
             "type": "object",
@@ -1432,8 +1432,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "compile_prompts",
         "description": (
-            "Compile candidate screen prompts (all screens or one); same inputs, same hash. "
-            "Refused, naming the screens, on an unconfirmed tier."
+            "Compile candidate screen prompts (all or one); same inputs, same hash. "
+            "Refused on an unconfirmed tier. The compiling key may relay an accept."
         ),
         "inputSchema": {
             "type": "object",
@@ -1444,17 +1444,18 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "accept_prompt",
         "description": (
-            "A person accepts the candidate prompt; an agent relays them in accepted_by. "
-            "Refused for the compiler."
+            "A person accepts; an agent relays in accepted_by. prompts "
+            "[{screen, prompt_hash}] accepts many; a stale hash refuses all."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "design_set_id": {"type": "string"},
                 "screen": {"type": "string"},
+                "prompts": {"type": "array"},
                 "accepted_by": {"type": "string", "description": "The person (agent relay)."},
             },
-            "required": ["design_set_id", "screen", "accepted_by"],
+            "required": ["design_set_id", "accepted_by"],
         },
     },
     {
@@ -4127,6 +4128,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         if name == "compile_prompts":
             return design_sets_svc.compile_prompts(
                 db, pid, sid, screen=args.get("screen"), actor=actor)
+        if name == "accept_prompt" and args.get("prompts"):
+            return design_sets_svc.accept_prompts(
+                db, pid, sid, list(args["prompts"]), actor, str(args.get("accepted_by") or ""))
         if name == "accept_prompt":
             return design_sets_svc.accept_prompt(
                 db, pid, sid, str(args["screen"]), actor, str(args.get("accepted_by") or ""))

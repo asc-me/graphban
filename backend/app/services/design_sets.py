@@ -143,7 +143,9 @@ def put_set_constraints(db: Session, project_id: str, set_id: str, body: str,
     if sections is not None:
         ds.sections = [str(s) for s in sections]
     for s in screens or []:
-        _screen(db, ds, str(s["screen"]), s.get("routes"))
+        row = _screen(db, ds, str(s["screen"]), s.get("routes"))
+        if "brief" in s:
+            row.brief = str(s.get("brief") or "")
     ds.status, ds.stale_reason, ds.stale_detail = "open", "", None
     # Re-pinning to a preamble that cites a superseded baseline does not clear staleness.
     _stale_cite(db, ds)
@@ -193,11 +195,11 @@ def _edit_sections(db: Session, ds: DesignSet, sections: list[str] | None) -> di
 def propose_tier(db: Session, project_id: str, routes: list[str]) -> tuple[str, str]:
     """(tier, basis) from the code graph. Anything that is not a present route node is UNBACKED,
     including a graph never pushed and a project with `sync_graph` off."""
+    if not routes:
+        return "", ""  # nothing to look up: no proposal, and no basis to explain one
     cfg = db.get(PlatformConfig, project_id)
     if cfg is not None and not cfg.sync_graph:
         return "UNBACKED", "sync_graph is off for this project"
-    if not routes:
-        return "UNBACKED", "the screen lists no routes"
     have = {p for p in db.scalars(select(CodeNode.path).where(
         CodeNode.project_id == project_id, CodeNode.path.in_(routes)))}
     if not have:
@@ -248,7 +250,7 @@ def acceptance_blockers(ds: DesignSet) -> list[str]:
 def screen_dict(s: DesignScreen) -> dict:
     return {"screen": s.screen, "routes": s.routes or [], "tier": s.tier,
             "tier_confirmed": s.tier_confirmed, "tier_note": s.tier_note,
-            "tier_proposal": s.tier_proposal, "tier_proposal_basis": s.tier_proposal_basis,
+            "brief": s.brief or "", "tier_proposal": s.tier_proposal, "tier_proposal_basis": s.tier_proposal_basis,
             "prompt_hash": s.prompt_hash, "canvas_hash": s.canvas_hash,
             "findings": s.findings or []}
 
@@ -544,8 +546,9 @@ def _compile_text(db: Session, ds: DesignSet, row: DesignScreen, prd, base) -> s
     if base is None:
         head.append("## Not acceptable\nThe PRD has no baseline; this prompt cannot be accepted.")
     head.append(f"## Tier\n{row.tier} - {row.tier_note}")
-    head.append(f"## Governing PRD\n{prd.id} {ds.prd_hash}\n{body}")
+    head.append(f"## Governing PRD\n{prd.key} {ds.prd_hash}\n{body}")
     head.append(f"## Set constraints\n{ds.constraints_body}")
+    head.append(f"## Screen brief\n{row.brief or '(none)'}")
     head.append("## Standing preamble\n" + (_chunk_text(pre) if pre is not None else "(none)"))
     head.append("## Corrections\n" + ("\n".join(f"[C{c.id}] {c.text}" for c in corrections)
                                       if corrections else "(none)"))
@@ -603,6 +606,60 @@ def compile_prompts(db: Session, project_id: str, set_id: str, screen: str | Non
     return {"design_set_id": ds.id, "prompts": out}
 
 
+def _not_compiler(cand: Document, person: str) -> None:
+    """The person deciding cannot be the actor that compiled the prompt. The compiling key may
+    relay a different person's decision (GRPH-1354)."""
+    if cand.created_by and _norm(cand.created_by) == _norm(person):
+        raise errors.Validation(
+            "the compiler cannot accept its own prompt",
+            hint="a person other than the actor that compiled it accepts it")
+
+
+def accept_prompts(db: Session, project_id: str, set_id: str, accepts: list[dict], actor: str,
+                   on_behalf_of: str = "") -> dict:
+    """Accept several screens' current candidate prompts in one call: [{screen, prompt_hash}].
+    One acceptance row per hash. Any hash that is not that screen's current candidate refuses
+    the whole call and writes nothing."""
+    ds = _get(db, project_id, set_id)
+    _writable(ds)
+    if not accepts:
+        raise errors.Validation("nothing to accept", hint="list [{screen, prompt_hash}]")
+    person, relayed = _person(db, actor, on_behalf_of)
+    base = prd_svc.baseline_of(db, ds.prd_id)
+    plan = []
+    seen = set()
+    for a in accepts:
+        screen, digest = str(a.get("screen") or ""), str(a.get("prompt_hash") or "")
+        if screen in seen:
+            raise errors.Validation(f"{screen!r} is listed twice")
+        seen.add(screen)
+        row = _screen_row(ds, screen)
+        cand = _latest_prompt(db, ds.id, screen)
+        if cand is None:
+            raise errors.Validation(f"{screen!r} has no compiled prompt",
+                                    hint="compile_prompts first")
+        if cand.content_hash != digest:
+            raise errors.Validation(
+                f"{screen!r}: {digest!r} is not its current candidate prompt",
+                hint=f"the current candidate is {cand.content_hash}")
+        _not_compiler(cand, person)
+        if base is None or content_hash(base.body) != cand.prd_hash:
+            raise errors.Validation(
+                f"{screen!r}: its PRD is not the current baseline",
+                hint="baseline the PRD, then compile_prompts again")
+        plan.append((row, cand))
+    out = []
+    for row, cand in plan:
+        if row.prompt_hash != cand.content_hash:
+            row.prompt_hash = cand.content_hash
+            row.canvas_hash = ""
+        db.add(DesignAcceptance(design_set_id=ds.id, kind="prompt", screen=row.screen,
+                                prompt_hash=cand.content_hash, person=person, relayed_by=relayed))
+        out.append({"screen": row.screen, "prompt_hash": cand.content_hash})
+    db.commit()
+    return {"design_set_id": ds.id, "accepted": out, "accepted_by": person, "relayed_by": relayed}
+
+
 def accept_prompt(db: Session, project_id: str, set_id: str, screen: str, actor: str,
                   on_behalf_of: str = "") -> dict:
     """A person accepts the screen's current candidate prompt. Not the design, and not an embed."""
@@ -613,10 +670,7 @@ def accept_prompt(db: Session, project_id: str, set_id: str, screen: str, actor:
     if cand is None:
         raise errors.Validation(f"{screen!r} has no compiled prompt", hint="compile_prompts first")
     person, relayed = _person(db, actor, on_behalf_of)
-    if _norm(cand.created_by) in (_norm(person), _norm(relayed)) and cand.created_by:
-        raise errors.Validation(
-            "the compiler cannot accept its own prompt",
-            hint="a person other than the actor that compiled it accepts it")
+    _not_compiler(cand, person)
     base = prd_svc.baseline_of(db, ds.prd_id)
     if base is None or content_hash(base.body) != cand.prd_hash:
         raise errors.Validation(
