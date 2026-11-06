@@ -358,7 +358,8 @@ export const api = {
   saveFleetProfile: (body: { project_id: string | null; defaults: string[];
                              weights: Partial<Record<string, number>>; excludes: string[];
                              budget_tokens?: number | null;
-                             mix?: Record<string, number> | null }) =>
+                             mix?: Record<string, number> | null;
+                             ladder?: string[] | null }) =>
     request<FleetProfile>("/fleet/profile", { method: "PUT", body: JSON.stringify(body) }),
   clearFleetProfile: (projectId?: string | null) =>
     request<{ cleared: boolean }>(`/fleet/profile${projectId ? `?project_id=${projectId}` : ""}`,
@@ -742,6 +743,11 @@ export const api = {
   harnessCapacity: (projectId: string) =>
     request<import("@/lib/types").HarnessCapacity>(
       `/harness/capacity?project_id=${encodeURIComponent(projectId)}`),
+  harnessLadder: (projectId: string) =>
+    request<import("@/lib/types").HarnessLadder>(
+      `/harness/ladder?project_id=${encodeURIComponent(projectId)}`),
+  harnessRouting: (itemId: string) =>
+    request<import("@/lib/types").HarnessRoutingReason>(`/harness/routing/${encodeURIComponent(itemId)}`),
   harnessRecommendations: (projectId: string, opts: { windowDays?: number; orgId?: string } = {}) => {
     const q = new URLSearchParams();
     if (opts.orgId) q.set("org_id", opts.orgId);

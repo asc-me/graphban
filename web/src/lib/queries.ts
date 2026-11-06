@@ -20,6 +20,7 @@ export const keys = {
   harnessGuidance: (projectId: string, windowDays?: number) =>
     ["harness-guidance", projectId, windowDays ?? null] as const,
   harnessCapacity: (projectId: string) => ["harness-capacity", projectId] as const,
+  harnessLadder: (projectId: string) => ["harness-ladder", projectId] as const,
   harnessCards: (projectId: string) => ["harness-cards", projectId] as const,
   harnessProbes: (projectId: string) => ["harness-probes", projectId] as const,
   lessons: (projectId: string, filters?: LessonFilters) =>
@@ -1192,6 +1193,45 @@ export function useHarnessCapacity(projectId?: string) {
     queryFn: () => api.harnessCapacity(projectId!),
     enabled: !!projectId,
     retry: false,
+  });
+}
+
+/** The fallback ladder in force for the caller: policy, their override, what resolves. */
+export function useHarnessLadder(projectId?: string) {
+  return useQuery({
+    queryKey: keys.harnessLadder(projectId ?? ""),
+    queryFn: () => api.harnessLadder(projectId!),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useHarnessRouting(itemId?: string) {
+  return useQuery({
+    queryKey: ["harness-routing", itemId ?? ""] as const,
+    queryFn: () => api.harnessRouting(itemId!),
+    enabled: !!itemId,
+    retry: false,
+  });
+}
+
+/** Write the caller's ladder through PUT /fleet/profile. The PUT replaces the whole profile, so
+ *  the rest of it is read fresh and sent back unchanged; `ladder: null` clears the override. */
+export function useSaveHarnessLadder(projectId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ladder: string[] | null) => {
+      const read = await api.fleetProfile(projectId);
+      const p = read.override ?? read.profile;
+      return api.saveFleetProfile({
+        project_id: projectId ?? null, defaults: p?.defaults ?? [], weights: p?.weights ?? {},
+        excludes: p?.excludes ?? [], budget_tokens: p?.budget_tokens ?? null, mix: p?.mix ?? null, ladder,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["harness-ladder", projectId] });
+      qc.invalidateQueries({ queryKey: ["fleet-profile"] });
+    },
   });
 }
 
