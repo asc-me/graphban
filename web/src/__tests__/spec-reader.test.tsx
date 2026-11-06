@@ -141,6 +141,16 @@ describe("PRD document", () => {
     expect(mocks.updatePrd.mock.calls[0][1]).toMatchObject({ status: "draft" });
   });
 
+  it("does not claim a baseline on an approved PRD that never froze one", async () => {
+    mocks.prd.mockResolvedValue(prd("approved"));
+    mocks.specPrd.mockResolvedValue(facts("approved", false));
+    show("/prds/GRPH-P9");
+    expect(await screen.findByTestId("no-baseline")).toBeInTheDocument();
+    expect(screen.queryByTestId("hash-baseline")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("approved-line")).not.toBeInTheDocument();
+    expect(screen.queryByText(/stays what search returns/)).not.toBeInTheDocument();
+  });
+
   it("saving a draft PRD writes that draft without touching status", async () => {
     mocks.prd.mockResolvedValue(prd("draft"));
     mocks.specPrd.mockResolvedValue(facts("draft", false));
