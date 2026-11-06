@@ -24,6 +24,7 @@ const base = (entitlements = [ent()]): HarnessCapacity => ({
   org_id: "o1", org: { name: "acme", entitlement_count: entitlements.length }, as_of: "2026-10-31T00:00:00Z",
   review_reserve: { vendors: [], empty: false, empty_for: [], only_unknown: false, only_unknown_for: [], warning: null },
   entitlements,
+  routing_decisions: { window_start: "", window_end: "", groups: [], reason: null },
   utilization: {
     week_start: "2026-10-17T00:00:00Z", week_end: "2026-10-24T00:00:00Z", share_used: null, share_is_lower_bound: false,
     tokens_used: 0, budget: null, entitlements_with_budget: 0, entitlements_without_budget: entitlements.length,
@@ -111,5 +112,56 @@ describe("Capacity tab", () => {
     capacity.mockResolvedValueOnce(base([ent({ token_budget: 100, projected_exhaustion: { at: "2026-11-24T00:00:00Z", reason: "" } })]));
     show();
     expect(await screen.findByTestId("capacity-row")).toHaveTextContent("runs out ~");
+  });
+
+  it("routing decisions show count, verbatim reasons and the no-decisions reason", async () => {
+    const d = base();
+    d.routing_decisions = { window_start: "", window_end: "", reason: "no claims routed in window", groups: [
+      { verdict: "held", label: "Held", count: 1, note: null, recent: [
+        { item_key: "GRPH-9", entitlement_id: "ent.a", reason: "reserved for review", at: "2026-10-31T00:00:00Z" }] },
+      { verdict: "deferred", label: "Deferred", count: null, recent: [], note: "not recorded: x" }] };
+    capacity.mockResolvedValueOnce(d);
+    show();
+    expect(await screen.findByTestId("capacity-routing-reason")).toHaveTextContent("no claims routed in window");
+    const [held, deferred] = screen.getAllByTestId("capacity-routing-group");
+    expect(within(held).getByTestId("capacity-routing-count")).toHaveTextContent("1");
+    expect(within(held).getByTestId("capacity-routing-row")).toHaveTextContent("“reserved for review”");
+    expect(within(deferred).getByTestId("capacity-routing-count")).toHaveTextContent("not recorded");
+  });
+
+  it("reserve shows the exact server warning, never the healthy line", async () => {
+    const d = base();
+    d.review_reserve.warning = "No review headroom for anthropic builds.";
+    capacity.mockResolvedValueOnce(d);
+    show();
+    expect(await screen.findByTestId("capacity-reserve-warning-text")).toHaveTextContent(/^No review headroom for anthropic builds\.$/);
+    expect(screen.getByTestId("capacity-reserve-warning")).toHaveTextContent("△ SERVER WARNING");
+    expect(screen.queryByTestId("capacity-reserve-healthy")).toBeNull();
+  });
+
+  it("reserve healthy line only when warning is null and both lists are empty", async () => {
+    capacity.mockResolvedValueOnce(base());
+    show();
+    expect(await screen.findByTestId("capacity-reserve-healthy")).toHaveTextContent("Review reserve held by a measured entitlement");
+  });
+
+  it("reserve marks only_unknown_for and empty_for vendors and withholds the healthy line", async () => {
+    const d = base();
+    d.review_reserve.only_unknown_for = ["openai"];
+    d.review_reserve.empty_for = ["google"];
+    capacity.mockResolvedValueOnce(d);
+    show();
+    expect(await screen.findByTestId("capacity-reserve-unknown")).toHaveTextContent("○ openai");
+    expect(screen.getByTestId("capacity-reserve-empty")).toHaveTextContent("◒ google");
+    expect(screen.queryByTestId("capacity-reserve-healthy")).toBeNull();
+  });
+
+  it("an unknown-only reserve is not the healthy state", async () => {
+    const d = base();
+    d.review_reserve.only_unknown_for = ["openai"];
+    capacity.mockResolvedValueOnce(d);
+    show();
+    expect(await screen.findByTestId("capacity-reserve-unknown")).toHaveTextContent("○ openai");
+    expect(screen.queryByTestId("capacity-reserve-healthy")).toBeNull();
   });
 });
