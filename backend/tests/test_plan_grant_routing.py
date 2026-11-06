@@ -65,3 +65,30 @@ def test_self_host_gate_routes_with_a_valid_grant(client, selfhost):
     finally:
         db.close()
     assert _gate(selfhost) is not None
+
+
+def _axis(org):
+    from app.db import SessionLocal
+    from app.services import routing
+
+    db = SessionLocal()
+    try:
+        return routing.axis(db, org["project"]["id"], [org["agent"]])[org["agent"]]
+    finally:
+        db.close()
+
+
+def test_self_host_axis_ignores_org_plan_without_a_grant(client, selfhost):
+    # The proposal's read-only axis agrees with the gate: no grant, no routing shown.
+    assert _axis(selfhost) is None
+
+
+def test_self_host_axis_reads_a_valid_grant(client, selfhost):
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        assert G.install(db, None, *_grant(selfhost["id"]), now=time.time())["ok"] is True
+    finally:
+        db.close()
+    assert _axis(selfhost) is not None

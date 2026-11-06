@@ -346,7 +346,7 @@ def axis(db: Session, project_id: str | None, agent_ids: list[str]) -> dict[str,
     use and why, or the review-reserve refusal. None = routing does not apply to that agent."""
     project = db.get(Project, project_id) if project_id else None
     org = db.get(Organization, project.org_id) if project is not None and project.org_id else None
-    if org is None or not quotas.plan_of(org).capacity_routing:
+    if not quotas.capacity_routing_on(db, org):
         return {a: None for a in agent_ids}
     by_ladder: dict[tuple, list[dict]] = {}
     out: dict[str, dict | None] = {}
