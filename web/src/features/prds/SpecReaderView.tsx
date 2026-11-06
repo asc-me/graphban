@@ -5,10 +5,10 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { useProjectCtx } from "@/features/ProjectContext";
-import { api, type SpecBodyState, type SpecDesignSet, type SpecScreen } from "@/lib/api";
+import { api, type SpecAlignment, type SpecBodyState, type SpecDesignSet, type SpecScreen } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { Markdown } from "@/lib/markdown";
-import { keys, useItems, useMe, useSpecDesignSet, useSpecPreamble } from "@/lib/queries";
+import { keys, useItems, useSpecDesignSet, useSpecPreamble } from "@/lib/queries";
 
 /**
  * The Spec reader (GRPH-1319 / GRPH-P66). One reader, three documents: a PRD (the editor in
@@ -246,7 +246,6 @@ export function SetConstraintsReaderView() {
   const screenQ = search.get("screen") ?? "";
   const qc = useQueryClient();
   const { activeId } = useProjectCtx();
-  const { data: me } = useMe();
   const { data: ds, error, isLoading } = useSpecDesignSet(setId);
   const [tab, setTab] = React.useState<DocTab>("preview");
   const [busy, setBusy] = React.useState<string | null>(null);
@@ -270,8 +269,6 @@ export function SetConstraintsReaderView() {
     }
   }
 
-  const person = me?.name || me?.email || "";
-
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="constraints-reader">
       <ReaderHeader kind="Set constraints">
@@ -279,24 +276,13 @@ export function SetConstraintsReaderView() {
           {ds.id} <span className="font-mono text-small text-faint">for {ds.prd_id}</span>
         </span>
         {ds.constraints_hash && <HashChip label="hash" hash={ds.constraints_hash} />}
-        <span className="font-mono text-[10.5px] uppercase tracking-wide text-fg-2" data-testid="constraints-acceptance">
-          {ds.constraints_accepted ? "accepted" : "not accepted"}
-        </span>
-        <Button variant="outline" size="sm" disabled title="A candidate body is accepted as written, not hand-edited" data-testid="constraints-edit">
+        <Button variant="outline" size="sm" disabled title="Set constraints are not hand-edited here" data-testid="constraints-edit">
           Edit
-        </Button>
-        <Button
-          size="sm"
-          data-testid="constraints-accept"
-          disabled={!!busy || ds.constraints_accepted || ds.body_state !== "stored" || !person}
-          onClick={() => run("accept", () => api.acceptSetConstraints(setId))}
-        >
-          {busy === "accept" ? "Accepting…" : person ? `Accept as ${person}` : "Accept (no person in this session)"}
         </Button>
       </ReaderHeader>
       <div className="flex flex-none items-center gap-3 border-b border-line px-5 py-2 text-small text-muted">
         <span data-testid="constraints-note">
-          A candidate body is accepted as written, not hand-edited. A later change to the constraints body returns the set to not accepted.
+          A spec is not accepted. It shows whether it aligns to its linked PRD.
         </span>
         <div className="ml-auto"><DocTabs tab={tab} onTab={setTab} /></div>
       </div>
@@ -304,6 +290,7 @@ export function SetConstraintsReaderView() {
       <div className="min-h-0 flex-1 overflow-y-auto p-5">
         {tab === "preview" ? (
           <div className="space-y-5">
+            <AlignmentPanel alignment={ds.alignment} />
             <BodyView state={ds.body_state} body={ds.body} absent="No set constraints have been written for this set." />
             <DesignSetScreens ds={ds} busy={busy} current={screenQ} onCompile={(screen) => run(`compile:${screen}`, () => api.compileScreen(setId, screen))} />
           </div>
@@ -320,6 +307,37 @@ export function SetConstraintsReaderView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+const yesNo = (b: boolean) => (b ? "yes" : "no");
+
+/** The set's alignment to its linked PRD, read from the payload. Never an accept gate. */
+export function AlignmentPanel({ alignment }: { alignment?: SpecAlignment | null }) {
+  if (!alignment) {
+    return (
+      <div className="rounded-[10px] border border-line-2 bg-surface-2 p-3 text-small text-muted" data-testid="alignment">
+        <span data-testid="alignment-unavailable">Alignment is not available yet.</span>{" "}
+        <span data-testid="alignment-approved">Not approved to build.</span>
+      </div>
+    );
+  }
+  const row = (label: string, id: string, value: React.ReactNode) => (
+    <div className="flex gap-2">
+      <span className="w-44 flex-none text-faint">{label}</span>
+      <span className="text-fg-2" data-testid={id}>{value}</span>
+    </div>
+  );
+  return (
+    <div className="space-y-1 rounded-[10px] border border-line-2 bg-surface-2 p-3 text-small" data-testid="alignment">
+      {row("Linked PRD", "alignment-prd", alignment.linked_prd ?? "none linked")}
+      {row("PRD passed its gates", "alignment-prd-passed", yesNo(alignment.prd_passed))}
+      {row("Gaps", "alignment-gaps", alignment.gaps.length === 0 ? "none" : (
+        <ul>{alignment.gaps.map((g) => <li key={g}>{g}</li>)}</ul>
+      ))}
+      {row("Functionally complete", "alignment-complete", yesNo(alignment.functionally_complete))}
+      {row("Approved to build", "alignment-approved", alignment.approved_to_build ? "Approved to build" : "Not approved to build")}
     </div>
   );
 }
