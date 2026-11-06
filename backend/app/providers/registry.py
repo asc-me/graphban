@@ -65,6 +65,10 @@ PROVIDERS: list[dict] = [
      "embeds": False,
      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
      "chat_model": "qwen-plus", "models": ["qwen-plus", "qwen-max", "qwen-turbo"],
+     # DashScope's qwen3.x reasons before answering unless told not to; the adapter
+     # discards the reasoning but it is still billed and slow (GRPH-1357). `extra_body`
+     # is merged into every chat request body for this provider.
+     "extra_body": {"enable_thinking": False},
      "embed_model": "", "auth": True},
     {"id": "kimi", "label": "Kimi (Moonshot)", "kind": "openai", "serves": "chat",
      "embeds": False,
