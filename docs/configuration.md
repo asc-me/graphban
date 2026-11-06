@@ -56,6 +56,7 @@ mail is simply not sent, so an invite can be "issued" and never arrive.
 | Var | Default | Notes |
 | --- | --- | --- |
 | `HOSTED_MODE` | `false` | Multi-tenant posture: org gates on, first-run bootstrap refused, share links accept only the token |
+| *(plan grant)* | *(none)* | GRPH-1343. Not a setting: a self-hosted box reads its capacity plan (`require_capacity_routing`) from a signed plan grant installed with `POST /api/platform/plan-grant`, never from `org.plan`. Verified against `TRUSTED_PLAN_GRANT_KEYS` in `services/plan_grant.py` (compiled into the release; empty until the control plane's key exists, so every grant is refused) at startup and on install only. The grant's `org_id` must be the cloud org the box is linked to (or the box's only org). Hosted keeps reading `org.plan`. Each worker holds its own verdict: a grant installed on one reaches the others at their next start |
 | `LOG_LEVEL` | `INFO` | |
 | `LOG_JSON` | `false` | Structured logs. On for anything with log search |
 | `REDIS_URL` | *(empty)* | Empty keeps rate-limit state in process, which is per-worker rather than per-deployment |

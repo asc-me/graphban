@@ -188,7 +188,7 @@ def gate(db: Session, item: Item, agent_id: str, *, now: datetime | None = None)
         return None
     project = db.get(Project, item.project_id)
     org = db.get(Organization, project.org_id) if project is not None and project.org_id else None
-    if org is None or not quotas.plan_of(org).capacity_routing:
+    if not quotas.capacity_routing_on(db, org):
         return None
     ranked = rank(db, org.id, now=now,
                   ladder=fleet_profiles.ladder_of(db, item.project_id, _owner(db, agent)))
