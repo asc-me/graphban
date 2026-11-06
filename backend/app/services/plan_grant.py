@@ -19,16 +19,19 @@ is linked, the only local org when there is exactly one.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
 from datetime import datetime, timezone
 
+import httpx
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import InstalledPlanGrant, Organization, RoutingDecision, RuleDecisionPull, User
 
 logger = logging.getLogger(__name__)
@@ -44,6 +47,14 @@ EXPIRED_REASON = "plan grant expired"
 #: In memory: the verdict of the installed grant, set by `load` / `install`.
 _state: dict = {"reason": "missing", "plan": None, "issued_at": None, "expires_at": None}
 _last_logged: str | None = None
+
+#: The last attempt to fetch a grant from the control plane (GRPH-1344). A failed fetch only ever
+#: writes here: the installed grant stays in force until its own `expires_at`.
+NOT_ATTACHED = "not attached"
+_FETCH_TIMEOUT = 15.0
+_RETRY_SECONDS = 3600  # while no valid grant is installed, try at least hourly
+_last_fetch: dict = {"at": None, "ok": None, "reason": NOT_ATTACHED}
+_last_fetch_logged: str | None = None
 
 
 def box_org_id(db: Session) -> str | None:
@@ -150,4 +161,72 @@ def current(db: Session, *, now: float | None = None) -> dict:
 def status() -> dict:
     ok = _state["reason"] is None
     return {"ok": ok, "reason": _state["reason"], "plan": _state["plan"],
-            "issued_at": _state["issued_at"], "expires_at": _state["expires_at"]}
+            "issued_at": _state["issued_at"], "expires_at": _state["expires_at"],
+            "last_fetch": dict(_last_fetch)}
+
+
+def _record_fetch(ok: bool, reason: str | None, now: float) -> None:
+    """Keep `last_fetch` and log once per state change, not once per tick."""
+    global _last_fetch_logged
+    _last_fetch.update(at=int(now), ok=ok, reason=reason)
+    key = "ok" if ok else str(reason)
+    if key != _last_fetch_logged:
+        _last_fetch_logged = key
+        logger.info("plan grant fetch: %s", "ok" if ok else f"failed ({reason})")
+
+
+def fetch_due(*, now: float | None = None) -> bool:
+    """Whether the timer should fetch now: less than half the installed grant's lifetime
+    remains, or (no valid grant) the last attempt was an hour ago or more."""
+    t = time.time() if now is None else now
+    if _state["reason"] is None:
+        lifetime = _state["expires_at"] - _state["issued_at"]
+        return _state["expires_at"] - t < lifetime / 2
+    at = _last_fetch["at"]
+    return at is None or t - at >= _RETRY_SECONDS
+
+
+def fetch_once(db: Session, *, now: float | None = None) -> dict:
+    """Ask the control plane for a grant with the box's link credential and install it through
+    `install`. Never raises and never clears the installed grant. An unlinked box (and a hosted
+    one, which reads `org.plan`) makes no request."""
+    from app.services import code_sync
+
+    t = time.time() if now is None else now
+    creds = None if settings.hosted_mode else code_sync.cloud_credentials(db)
+    if creds is None:
+        _record_fetch(False, NOT_ATTACHED, t)
+        return status()
+    url, key = creds
+    try:
+        resp = httpx.post(f"{url.rstrip('/')}/api/sync/plan-grant",
+                          headers={"X-API-Key": key}, timeout=_FETCH_TIMEOUT)
+        if resp.status_code == 401:
+            _record_fetch(False, "unauthorized", t)
+            return status()
+        resp.raise_for_status()
+        body = resp.json()
+        doc = base64.b64decode(body["grant_b64"], validate=True)
+        sig = base64.b64decode(body["signature_b64"], validate=True)
+    except httpx.HTTPStatusError as e:
+        _record_fetch(False, f"http_{e.response.status_code}", t)
+        return status()
+    except httpx.HTTPError:
+        _record_fetch(False, "unreachable", t)
+        return status()
+    except (ValueError, KeyError, TypeError):
+        _record_fetch(False, "bad_response", t)
+        return status()
+    v = install(db, None, doc, sig, now=t)
+    # A grant no newer than the one held is the control plane agreeing, not a failure.
+    ok = v["ok"] or v.get("reason") == "older_than_installed"
+    _record_fetch(ok, None if ok else v["reason"], t)
+    return status()
+
+
+def refresh_if_due(db: Session, *, now: float | None = None, startup: bool = False) -> bool:
+    """One timer tick: fetch when due (always at startup). Returns whether it fetched."""
+    if not startup and not fetch_due(now=now):
+        return False
+    fetch_once(db, now=now)
+    return True
