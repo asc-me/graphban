@@ -206,12 +206,17 @@ def test_minting_a_key_locks_the_project_it_numbers(org):
 
 
 @postgres_only
-def test_admission_locks_the_entitlement_it_counts(org):
+def test_admission_locks_the_entitlement_it_counts(org, monkeypatch):
     """`headroom.report` reads the in-flight count and then records a `spawn_start`. Without
     the lock, two starts on an `unknown` entitlement both read in_flight=0 and both are
     admitted — the burst PRD-62 S3 forbids (GRPH-1249)."""
+    from app.config import settings
     from app.models import Agent, Entitlement
     from app.services import headroom
+
+    # The capacity gate reads `org.plan` only on hosted; self-host needs a signed plan grant
+    # (GRPH-1343). This test is about the row lock, so it runs hosted.
+    monkeypatch.setattr(settings, "hosted_mode", True)
 
     s = SessionLocal()
     try:
