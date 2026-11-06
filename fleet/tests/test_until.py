@@ -761,8 +761,42 @@ def test_until_does_not_spawn_for_held_review(
         limits=Limits(max_workers=1),
     )
     assert roles == [], roles
-    assert result.reason == "idle"
+    # GRPH-1356: held review is still unsigned review; it polls, then fails, never idle.
+    assert result.reason == "review-unsigned"
+    assert result.ok is False
+    assert result.review == ["GRPH-9"]
     assert result.spawned == 0
+
+
+def test_held_review_with_a_waiting_item_is_not_idle_with_waits(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1356, the p68 incident shape: GRPH-9 sits in review with a hold that is not
+    lapsed and no live child of ours, and another PRD item waits only on that review. The
+    wait must not let the unsigned review read as `idle-with-waits` (exit 0).
+
+    Sabotage: move the `if rows:` exit below the `if waits:` exit and this fails."""
+    workspace = tmp_path / "ws"
+    roles: list[str] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "GRPH-R1"}],
+        waits=[{"id": "GRPH-W1", "tags": ["wait:merge"], "status": "blocked"}],
+        minted_roles=roles,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert roles == [], roles
+    assert result.reason == "review-unsigned", result.as_json()
+    assert result.ok is False
+    assert result.exit != 0
+    assert result.review == ["GRPH-9"]
+    assert result.waits == ["GRPH-W1"]
 
 
 def test_until_spawns_for_a_review_row_whose_holder_has_lapsed(

@@ -1050,6 +1050,13 @@ def _loop(
 
         empty += 1
         if empty >= empty_ticks:
+            # GRPH-1356: a row still in review is unsigned work, held or not. A hold with no
+            # live child of ours is a reviewer that may have exited between polls; after the
+            # polls above it is still not "nothing unsigned", so it must not read as idle.
+            if rows:
+                wave.reason = "review-unsigned"
+                return _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
+                               waits=waits, outside=outside)
             if waits:
                 wave.reason = "idle-with-waits"
                 return _finish(wave, "idle-with-waits", 0, minted, planner, waits=waits,
