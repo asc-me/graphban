@@ -346,8 +346,10 @@ def test_a_first_link_arriving_with_sign_off_is_stored_so_the_retry_passes(db, c
     db.refresh(item)
     assert item.pr_linked_at is not None, "sign_off's refusal did not keep the first link"
     _backdate(db, item, 61)
+    # CI answers at the reviewed commit while the cooldown runs (GRPH-1345: silence would not do).
     out = fleet_svc.sign_off(db, item_id=item.id, agent_id="reviewer-1",
-                             evidence=[PR], commit="b" * 40)
+                             evidence=[PR, dict(ATTESTATION, commit="b" * 40)],
+                             commit="b" * 40)
     assert out.status == "done"
 
 
@@ -416,3 +418,114 @@ def test_the_stamp_is_taken_from_the_incoming_rows(db):
     assert items_svc.pr_linked_at([PR], existing=earlier) == earlier
     assert items_svc.pr_linked_at([PR]) is not None
     assert items_svc.pr_linked_at([{"kind": "note", "detail": "no url"}]) is None
+
+
+# ---- silence after the cooldown is not a pass (GRPH-1345) ----------------------------------
+
+def test_done_is_refused_after_the_cooldown_when_head_has_no_suite_green(db, cooldown):
+    """Only `scans_clean` attested at the head; the cooldown has run out. Absence of an answer
+    must not read as clean."""
+    item = _item(db)
+    scans = {"kind": "attestation", "adapter": "github-actions", "commit": "e" * 40,
+             "run_ref": "gha-run-9",
+             "predicates": [{"name": "scans_clean", "passed": True, "detail": "ok"}]}
+    items_svc.update_item(db, item.id, evidence=[PR, scans, _reviewed_at("e" * 40)])
+    _backdate(db, item, 61)
+
+    with pytest.raises(items_svc.PRCINotGreen) as exc:
+        items_svc.update_item(db, item.id, status="done", head_commit="e" * 40)
+    assert "e" * 12 in str(exc.value)
+    assert "no CI run has reported suite_green" in str(exc.value)
+
+
+def test_done_after_cooldown_names_the_last_ci_run_when_head_is_unattested(db, cooldown):
+    item = _item(db)
+    items_svc.update_item(db, item.id, evidence=[PR, dict(ATTESTATION, run_ref="gha-run-3"),
+                                                 _reviewed_at("d" * 40)])
+    _backdate(db, item, 61)
+
+    with pytest.raises(items_svc.PRCINotGreen) as exc:
+        items_svc.update_item(db, item.id, status="done", head_commit="d" * 40)
+    message = str(exc.value)
+    assert "d" * 12 in message and "gha-run-3" in message, message
+
+
+def test_a_red_suite_at_the_head_refuses_without_waiting(db, cooldown):
+    """CI answered, and the answer is no: refused even once the cooldown is long over."""
+    item = _item(db)
+    red = dict(ATTESTATION, run_ref="gha-run-red",
+               predicates=[{"name": "suite_green", "passed": False}])
+    items_svc.update_item(db, item.id, evidence=[PR, red, _reviewed_at("a" * 40)])
+    _backdate(db, item, 3600)
+
+    with pytest.raises(items_svc.PRCINotGreen) as exc:
+        items_svc.update_item(db, item.id, status="done", head_commit="a" * 40)
+    assert "gha-run-red" in str(exc.value)
+    assert "did not pass suite_green" in str(exc.value)
+
+
+def test_a_red_suite_at_the_head_refuses_inside_the_cooldown_too(db, cooldown):
+    item = _item(db)
+    red = dict(ATTESTATION, predicates=[{"name": "suite_green", "passed": False}])
+    items_svc.update_item(db, item.id, evidence=[PR, red, _reviewed_at("a" * 40)])
+
+    with pytest.raises(items_svc.PRCINotGreen):
+        items_svc.update_item(db, item.id, status="done", head_commit="a" * 40)
+
+
+def test_owner_close_still_allows_done_after_the_cooldown_without_ci(db, cooldown):
+    item = _item(db)
+    close = {"kind": "attestation", "adapter": items_svc.OWNER_CLOSE_ADAPTER,
+             "commit": "f" * 40,
+             "predicates": [{"name": "on_base", "passed": True, "detail": "ok"},
+                            {"name": "owner_close", "passed": True, "detail": "ok"}]}
+    items_svc.update_item(db, item.id, evidence=[PR, close])
+    _backdate(db, item, 61)
+
+    assert items_svc.update_item(db, item.id, status="done",
+                                 head_commit="f" * 40).status == "done"
+
+
+# ---- the MCP boundary tells the agent what to do, not to wait (GRPH-1345) ------------------
+
+def _mcp_done(client, auth, monkeypatch, exc):
+    """Drive `update_item status=done` over MCP with the service refusing as given. The
+    service-level tests above prove WHEN each refusal fires; this pins how the boundary that
+    agents actually read translates it."""
+    proj = client.post("/api/projects", json={"name": "Cooldown"}, headers=auth).json()["id"]
+    key = client.post("/api/api-keys", json={"name": "cd", "project_id": proj},
+                      headers=auth).json()["plaintext"]
+
+    def call(tool, args):
+        return client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                  "params": {"name": tool, "arguments": args}},
+            headers={"X-API-Key": key},
+        ).json()["result"]
+
+    item = call("create_item", {"title": "linked PR"})["structuredContent"]["id"]
+
+    def refuse(*a, **kw):
+        raise exc
+
+    monkeypatch.setattr(items_svc, "update_item", refuse)
+    res = call("update_item", {"id": item, "status": "done"})
+    assert res.get("isError"), res
+    return res["structuredContent"]["error"]
+
+
+def test_a_ci_not_green_refusal_is_not_hinted_as_a_wait(client, auth, monkeypatch):
+    err = _mcp_done(client, auth, monkeypatch, items_svc.PRCINotGreen(
+        "GRPH-1 cannot move to done: CI ran the suite for its PR and it is red"))
+    assert err["code"] == "conflict"
+    hint = err["hint"].lower()
+    assert "wait for the cooldown" not in hint and "elapse" not in hint, hint
+    assert "do not retry" in hint and "suite_green" in hint, hint
+
+
+def test_a_plain_cooldown_refusal_still_says_wait(client, auth, monkeypatch):
+    """The control: the subclass handler must not swallow its parent."""
+    err = _mcp_done(client, auth, monkeypatch, items_svc.PRCooldown("still cooling down"))
+    assert err["code"] == "conflict"
+    assert "wait for the cooldown" in err["hint"], err

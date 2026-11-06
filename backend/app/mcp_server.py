@@ -4716,6 +4716,15 @@ async def mcp_endpoint(
                 409, str(e), rule_id=items_svc.ENGINE_EVIDENCE_RULE,
                 hint="run the FULL suite on the named engine and attach a test receipt whose "
                      "detail says so, e.g. 'Postgres full suite: N passed', then send review again"))
+        except items_svc.PRCINotGreen as e:
+            # Caught BEFORE its parent (GRPH-1345). CI is red at the PR's head, or the cooldown
+            # ran out with no `suite_green` there: neither clears by itself, so the PRCooldown
+            # hint ("wait and send it again") would send an agent into a retry loop that
+            # cannot succeed. Name the action instead.
+            return _fail("conflict", str(e),
+                               "do not retry — waiting will not change this. Fix the PR so its "
+                               "CI passes, or get CI to attest suite_green at the PR's head "
+                               "commit, then send it again")
         except items_svc.PRCooldown as e:
             # CONFLICT for the same reason, and the hint says WAIT rather than naming an
             # action (GRPH-567). It is the only refusal in this surface that resolves on its
