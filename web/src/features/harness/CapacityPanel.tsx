@@ -1,5 +1,7 @@
 import { useHarnessCapacity } from "@/lib/queries";
 import { consoleHref } from "@/lib/routes";
+import { ReviewReserve } from "./ReviewReserve";
+import { RoutingDecisions } from "./RoutingDecisions";
 import type { HarnessCapacityEntitlement, HarnessCapacityRunner } from "@/lib/types";
 
 /**
@@ -172,11 +174,6 @@ export function CapacityPanel({ projectId }: { projectId?: string }) {
         )}
       </div>
 
-      {data.review_reserve.warning && (
-        <p data-testid="capacity-reserve-warning" role="alert" className="text-body text-danger">
-          {data.review_reserve.warning}
-        </p>
-      )}
       {data.entitlements.length === 0 ? (
         <div data-testid="capacity-empty" className="text-body text-muted">
           <div className="font-mono text-small">○ NO ENTITLEMENTS DECLARED</div>
@@ -193,6 +190,8 @@ export function CapacityPanel({ projectId }: { projectId?: string }) {
           <tbody>{data.entitlements.map((e) => <Row key={e.id} e={e} />)}</tbody>
         </table>
       )}
+      <RoutingDecisions decisions={data.routing_decisions} />
+      <ReviewReserve reserve={data.review_reserve} />
     </section>
   );
 }

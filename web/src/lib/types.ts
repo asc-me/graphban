@@ -2933,6 +2933,30 @@ export interface HarnessCapacityRunner {
   worktree: string;
 }
 
+export interface HarnessRoutingDecisionRow {
+  item_key: string;
+  entitlement_id: string | null;
+  reason: string;
+  at: string;
+}
+
+export interface HarnessRoutingDecisionGroup {
+  verdict: string;
+  label: string;
+  /** null = the router never records this verdict; `note` says so. */
+  count: number | null;
+  recent: HarnessRoutingDecisionRow[];
+  note: string | null;
+}
+
+export interface HarnessRoutingDecisions {
+  window_start: string;
+  window_end: string;
+  groups: HarnessRoutingDecisionGroup[];
+  /** Why there are no decisions, when the server says. */
+  reason: string | null;
+}
+
 export interface HarnessCapacity {
   org_id: string;
   as_of: string;
@@ -2944,6 +2968,7 @@ export interface HarnessCapacity {
     only_unknown: boolean; only_unknown_for: string[]; warning: string | null;
   };
   entitlements: HarnessCapacityEntitlement[];
+  routing_decisions: HarnessRoutingDecisions;
   utilization: {
     week_start: string;
     week_end: string;

@@ -23,6 +23,7 @@ const base: HarnessCapacity = {
     week: { tokens: 0, reported: 0, unreported: 2, limit_hits: 0 },
     projected_exhaustion: { at: null, reason: "no token_budget stated" },
   }],
+  routing_decisions: { window_start: "", window_end: "", groups: [], reason: null },
   utilization: {
     week_start: "", week_end: "", share_used: null, share_is_lower_bound: false, tokens_used: 0, budget: null,
     entitlements_with_budget: 0, entitlements_without_budget: 1, unreported_spends: 0,
