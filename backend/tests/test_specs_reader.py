@@ -222,7 +222,7 @@ def test_library_conflict_carries_hashes_not_bodies(client, auth, db, pid, tmp_p
     assert row["content_hash"] == content_hash(BODY)
     assert out["conflict_ids"] == [prd.id]
     fact = row["conflict"]
-    assert set(fact) == {"ledger_hash", "file_hash", "file_name", "byte_length", "path"}
+    assert set(fact) == {"prd_id", "ledger_hash", "file_hash", "file_name", "byte_length", "path"}
     assert fact["ledger_hash"] != fact["file_hash"]
     assert fact["path"].endswith(mine.name)
     assert "FOLDER" not in str(fact) and "Tokens" not in str(fact)
@@ -242,3 +242,33 @@ def test_preamble_gate_takes_a_signed_in_person_and_refuses_an_agent_seat(db, pi
     with pytest.raises(errors.Validation):
         doc_svc.put_document(db, project_id=pid, kind="preamble", body="Be bold.",
                              prd_id=base.id, created_by="GRPH-A1")
+
+
+def test_library_and_sync_storage_show_the_rendered_key_after_a_retag(client, auth, db, pid, tmp_path):
+    """The tag is not a prefix of the frozen id: library and sync-storage use the rendered key."""
+    from app.services import projects as project_svc
+
+    prd = _prd(db, pid, baselined=True, title="Governed")
+    project_svc.retag_project(db, pid, "ZQ")
+    db.expire_all()
+    key = db.get(type(prd), prd.id).key
+    assert key.startswith("ZQ") and key != prd.id
+    assert client.put("/api/platform/sync-storage", params={"project_id": pid},
+                      json={"folder_path": str(tmp_path)}, headers=auth).status_code == 200
+    assert client.post("/api/platform/sync-storage/run", params={"project_id": pid},
+                       headers=auth).status_code == 200
+    mine = next(f for f in (tmp_path / pid / "PRDs").glob("*.md") if "Tokens" in f.read_text())
+    mine.write_text(mine.read_text().replace("Tokens", "FOLDER"))
+
+    out = client.get("/api/specs/library", params={"project_id": pid}, headers=auth).json()
+    row = next(p for p in out["prds"] if p["title"] == "Governed")
+    assert row["id"] == key and row["sync_state"] == "conflict"
+    assert out["conflict_ids"] == [key] and row["conflict"]["prd_id"] == key
+    assert client.get(f"/api/prds/{key}", headers=auth).json()["id"] == key
+    storage = client.get("/api/platform/sync-storage", params={"project_id": pid}, headers=auth)
+    st = storage.json()
+    assert key in [r["prd_id"] for r in st["rows"]]
+    assert st["report"]["conflicts"] == [key]
+    assert st["report"]["conflict_details"][0]["prd_id"] == key
+    ids = [p["id"] for p in out["prds"]] + out["conflict_ids"] + [r["prd_id"] for r in st["rows"]]
+    assert prd.id not in ids and prd.id not in st["report"]["conflicts"]

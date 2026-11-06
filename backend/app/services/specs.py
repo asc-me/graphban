@@ -162,7 +162,7 @@ def library(db: Session, project_id: str) -> dict:
     # Imported here: sync_storage is a reader of prds, and this module is too.
     from app.services import sync_storage
 
-    storage = sync_storage.status(db, project_id)
+    storage = sync_storage.frozen_status(db, project_id)
     sync_by = {r["prd_id"]: r for r in storage["rows"]}
     report = storage.get("report") or {}
     details = {
@@ -174,7 +174,7 @@ def library(db: Session, project_id: str) -> dict:
         base = prd_svc.baseline_of(db, prd.id)
         state = sync_by.get(prd.id, {}).get("sync_state", "unknown")
         prd_rows.append({
-            "id": prd.id,
+            "id": prd.key,
             "title": prd.title,
             "version": prd.version,
             "status": prd.status,
@@ -183,7 +183,8 @@ def library(db: Session, project_id: str) -> dict:
             "baseline_version": base.version if base is not None else None,
             "sync_state": state,
             # Only a real conflict carries file facts. A ledger-newer or unreadable row does not.
-            "conflict": details.get(prd.id) if state == "conflict" else None,
+            "conflict": ({**details[prd.id], "prd_id": prd.key}
+                         if state == "conflict" and prd.id in details else None),
         })
     pre = preamble_view(db, project_id)
     preamble = None if pre is None else {
