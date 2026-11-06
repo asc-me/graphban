@@ -981,8 +981,6 @@ export const api = {
       body: JSON.stringify({ project_id: projectId, body, cites_prd_id: citesPrdId }),
     }),
   specDesignSet: (setId: string) => request<SpecDesignSet>(`/specs/design-sets/${setId}`),
-  acceptSetConstraints: (setId: string) =>
-    request<SpecDesignSet>(`/specs/design-sets/${setId}/accept-constraints`, { method: "POST" }),
   compileScreen: (setId: string, screen?: string) =>
     request<SpecDesignSet>(`/specs/design-sets/${setId}/compile`, {
       method: "POST",
@@ -1457,6 +1455,15 @@ export interface SpecScreen {
   compile_refused: string[];
 }
 
+/** How a set aligns to its linked PRD. Absent on the payload = alignment is not available yet. */
+export interface SpecAlignment {
+  linked_prd: string | null;
+  prd_passed: boolean;
+  gaps: string[];
+  functionally_complete: boolean;
+  approved_to_build: boolean;
+}
+
 export interface SpecDesignSet {
   id: string;
   prd_id: string;
@@ -1464,6 +1471,7 @@ export interface SpecDesignSet {
   stale_reason: string;
   constraints_hash: string;
   constraints_accepted: boolean;
+  alignment?: SpecAlignment | null;
   preamble_version: number;
   body_state: SpecBodyState;
   body: string | null;

@@ -27,7 +27,6 @@ const mocks = vi.hoisted(() => ({
   specPreamble: vi.fn(),
   putPreamble: vi.fn(),
   specDesignSet: vi.fn(),
-  acceptSetConstraints: vi.fn(),
   compileScreen: vi.fn(),
   updatePrd: vi.fn(),
   me: vi.fn(async () => ({ id: "u1", name: "Dana Reyes", email: "dana@example.com" })),
@@ -260,21 +259,56 @@ describe("Preamble document", () => {
 });
 
 describe("Set constraints document", () => {
-  it("has no Edit, names the person on Accept, and shows compile refused before acceptance", async () => {
+  it("has no control that accepts, and says alignment is not available when the payload lacks it", async () => {
     mocks.specDesignSet.mockResolvedValue(set(false));
-    mocks.acceptSetConstraints.mockResolvedValue(set(true));
     show("/prds/constraints/DS-1");
     await screen.findByTestId("constraints-reader");
     expect(screen.getByTestId("constraints-edit")).toBeDisabled();
-    expect(screen.getByTestId("constraints-note")).toHaveTextContent("accepted as written, not hand-edited");
-    expect(screen.getByTestId("constraints-acceptance")).toHaveTextContent("not accepted");
+    expect(screen.queryByTestId("constraints-accept")).toBeNull();
+    expect(screen.queryByTestId("constraints-acceptance")).toBeNull();
+    expect(screen.queryByRole("button", { name: /accept/i })).toBeNull();
+    expect(screen.getByTestId("alignment-unavailable")).toBeInTheDocument();
+    expect(screen.getByTestId("alignment-approved")).toHaveTextContent("Not approved to build");
     expect(screen.getByTestId("screen-compile")).toHaveTextContent("compile refused: the set constraints are not accepted");
+  });
 
-    const accept = await screen.findByRole("button", { name: "Accept as Dana Reyes" });
-    await userEvent.setup().click(accept);
-    await waitFor(() => expect(mocks.acceptSetConstraints).toHaveBeenCalledWith("DS-1"));
-    expect(await screen.findByRole("button", { name: "Compile" })).toBeInTheDocument();
-    expect(screen.getByTestId("constraints-acceptance")).toHaveTextContent("accepted");
+  describe("alignment", () => {
+    const align = (over: Record<string, unknown>) => ({
+      ...set(false),
+      alignment: { linked_prd: "GRPH-P9", prd_passed: true, gaps: [], functionally_complete: true, approved_to_build: true, ...over },
+    });
+
+    it("a set with no linked PRD is not approved to build", async () => {
+      mocks.specDesignSet.mockResolvedValue(align({ linked_prd: null, prd_passed: false, approved_to_build: false }));
+      show("/prds/constraints/DS-1");
+      expect(await screen.findByTestId("alignment-prd")).toHaveTextContent("none linked");
+      expect(screen.getByTestId("alignment-approved")).toHaveTextContent("Not approved to build");
+    });
+
+    it("a set whose PRD has no baseline is not approved to build", async () => {
+      mocks.specDesignSet.mockResolvedValue(align({ prd_passed: false, approved_to_build: false }));
+      show("/prds/constraints/DS-1");
+      expect(await screen.findByTestId("alignment-prd")).toHaveTextContent("GRPH-P9");
+      expect(screen.getByTestId("alignment-prd-passed")).toHaveTextContent("no");
+      expect(screen.getByTestId("alignment-approved")).toHaveTextContent("Not approved to build");
+    });
+
+    it("a set with a gap shows the heading and is not approved to build", async () => {
+      mocks.specDesignSet.mockResolvedValue(align({ gaps: ["Empty states"], functionally_complete: false, approved_to_build: false }));
+      show("/prds/constraints/DS-1");
+      expect(await screen.findByTestId("alignment-gaps")).toHaveTextContent("Empty states");
+      expect(screen.getByTestId("alignment-complete")).toHaveTextContent("no");
+      expect(screen.getByTestId("alignment-approved")).toHaveTextContent("Not approved to build");
+    });
+
+    it("a functionally complete set under a baselined PRD is approved to build", async () => {
+      mocks.specDesignSet.mockResolvedValue(align({}));
+      show("/prds/constraints/DS-1");
+      expect(await screen.findByTestId("alignment-approved")).toHaveTextContent("Approved to build");
+      expect(screen.getByTestId("alignment-prd-passed")).toHaveTextContent("yes");
+      expect(screen.getByTestId("alignment-complete")).toHaveTextContent("yes");
+      expect(screen.getByTestId("alignment-gaps")).toHaveTextContent("none");
+    });
   });
 
   it("says a stale prompt stays stale until compiled again after acceptance", async () => {
