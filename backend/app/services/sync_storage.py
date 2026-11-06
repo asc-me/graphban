@@ -204,8 +204,30 @@ def _iso(dt) -> str | None:
 
 
 def status(db: Session, project_id: str) -> dict:
-    """The three facts, the row sync states, and a preview report. Writes nothing (beyond
-    creating the empty config row on first read)."""
+    """`frozen_status` with every PRD id shown as the rendered key (the project's current tag
+    plus the PRD number), the same key GET /api/prds/{id} returns. The frozen id is absent."""
+    out = frozen_status(db, project_id)
+    keys = {p.id: p.key for p in prd_svc.list_prds(db, project_id=project_id)}
+
+    def k(pid):
+        return keys.get(pid, pid) if pid else pid
+
+    out["rows"] = [{**r, "prd_id": k(r["prd_id"])} for r in out["rows"]]
+    rep = out["report"]
+    if rep is not None:
+        out["report"] = {
+            **rep,
+            "conflicts": [k(i) for i in rep["conflicts"]],
+            "conflict_details": [{**d, "prd_id": k(d["prd_id"])} for d in rep["conflict_details"]],
+            "read_failures": [{**f, "prd_id": k(f["prd_id"])} for f in rep["read_failures"]],
+        }
+    return out
+
+
+def frozen_status(db: Session, project_id: str) -> dict:
+    """The three facts, the row sync states, and a preview report, keyed on the frozen PRD id
+    (the join key for sync state). Writes nothing (beyond creating the empty config row on
+    first read)."""
     row = get_config(db)
     folder = path_fact(folder_path(row), configured=bool(row.folder_path))
     root = project_root(row, project_id)
