@@ -186,3 +186,26 @@ def test_an_unread_head_still_extends_the_lease(tmp_path: Path):
     keep(Wave(), [child], client, now=1)
     assert client.posts[0]["kind"] == "lease"
     assert "commit" not in client.posts[0]
+
+
+def test_a_bound_child_with_no_roster_reading_yet_is_still_kept(tmp_path: Path):
+    """GRPH-1349: the seat says the item is claimed before any roster lists the hold."""
+    client = _Roster()
+    child = _child(tmp_path, held=[])
+    child.assigned = {"item": "GRPH-7", "state": "claimed"}
+    keep(Wave(), [child], client, now=1)
+    assert [p["item_id"] for p in client.posts] == ["GRPH-7"]
+
+
+def test_a_refused_extension_under_a_live_child_is_logged_with_item_and_pid(tmp_path: Path):
+    class _Lapsed:
+        def post_observation(self, **payload):
+            return {"item_id": payload["item_id"], "kind": "lease", "extended": False}
+
+    child = _child(tmp_path)
+    wave = Wave()
+    keep(wave, [child], _Lapsed(), now=10)
+    keep(wave, [child], _Lapsed(), now=10 + FALLBACK_INTERVAL + 1)
+    assert wave.lease_lapsed_live == [
+        "GRPH-1: lease not extended for live child pid 4242 (GRPH-A1)"
+    ]
