@@ -301,6 +301,27 @@ def attempts(db: Session, item_id: str) -> list[dict]:
              "ended_reason": r.ended_reason} for r in rows]
 
 
+NEVER_ROUTED = "never routed by capacity"
+
+
+def routing_reason(db: Session, item: Item) -> dict:
+    """Why one item was routed where it was: its attempts in order, and the latest verdict with
+    `why` verbatim from the stored reason. An item with no rows says so. No per-rung skip trace
+    is recorded, so none is returned."""
+    rows = db.scalars(select(RoutingDecision).where(RoutingDecision.item_id == item.id)
+                      .order_by(RoutingDecision.id)).all()
+    out = {"item_key": item.key, "stage": item.status, "claimant": item.claimed_by,
+           "attempts": attempts(db, item.id), "latest": None, "reason": None, "at": None}
+    if not rows:
+        out["reason"] = NEVER_ROUTED
+        return out
+    last = rows[-1]
+    out["latest"] = {"verdict": verdict_of(last), "entitlement_id": last.entitlement_id,
+                     "why": last.reason}
+    out["at"] = _aware(last.created_at).isoformat()
+    return out
+
+
 def release_failed_claims(db: Session, entitlement_id: str, agent_id: str | None) -> list[str]:
     """The holder's failure report hands back what it claimed on that entitlement: the item
     returns to the queue and, its reservation having ended, routes again from the ledger."""
