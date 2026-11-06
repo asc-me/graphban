@@ -32,7 +32,7 @@ Silence is ask. A fluent inference is ask. Do not accept a new boundary, a new e
 
 ## Record an accept
 
-Record the decision with `answer_grill` once, with that decision alone. Fold it into the PRD with `update_prd(section=...)` only when the return says `body_absorbed: false`.
+Fold the decision into the PRD with `update_prd(section=...)` first. Then `answer_grill` once, with that decision alone.
 
 One call per decision. A reply that covers several dimensions is one answer, and the grader leaves the rest outstanding.
 
@@ -42,7 +42,7 @@ Read the return:
 
 - `graded: false` — stop. Say `ungraded_reason`. Do not send another answer.
 - `stalled: true` — stop. Tell the user. Three answers moved nothing.
-- `complete: true` — the grill finished and the body just froze.
+- `complete: true` — the grill finished and the body just froze. The fold had to happen before this call.
 - `body_absorbed: false` — the transcript is ahead of the spec. Fold the answers it names before you continue.
 
 Do not set `approved`. Finishing the grill does that.
@@ -51,6 +51,6 @@ Do not set `approved`. Finishing the grill does that.
 
 Show only the ask list. For each: the question, the recommendation, and one line on why the sources do not decide it.
 
-Record nothing from this list until the user answers. `answer_grill` with their words. Fold that section the same way, only when `body_absorbed` is false.
+Record nothing from this list until the user answers. `answer_grill` with their words. Fold that section the same way, before the next call.
 
 If they accept a recommendation, the recorded answer is their acceptance of that text. The recommendation alone is not a turn.
