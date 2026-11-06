@@ -993,6 +993,10 @@ def _loop(
             continue
 
         if live or holdings:
+            if unheld_review and live:
+                for line in _review_waits_on_live(wave, unheld_review, live):
+                    if line not in waits:
+                        waits.append(line)
             empty = 0
             sleep(poll)
             continue
@@ -1597,6 +1601,23 @@ def _lift(planner: Graphban, item_id: str) -> None:
             planner.call("update_item", id=item_id, blocker="")
     except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
         observe.emit("hold_unlifted", item=item_id, detail=str(exc))
+
+
+def _review_waits_on_live(wave: Wave, unheld: list, live: list) -> list[str]:
+    """Name what an unheld review row is waiting on: the live child blocking its spawn
+    (GRPH-1349). Logged once per row and child, so a ten-minute wait is one line."""
+    out: list[str] = []
+    for child in live:
+        item = ",".join(i for i in (child.held_items or []) if i) or "no item yet"
+        pid = getattr(getattr(child, "process", None), "pid", None)
+        for row in unheld:
+            line = f"{row['id']}: review waits on live child pid {pid} (item {item})"
+            out.append(line)
+            if line not in wave.review_waits:
+                wave.review_waits.append(line)
+                observe.emit("review_waits_on_live_child", review=str(row["id"]),
+                             pid=pid, item=item)
+    return out
 
 
 def _release_delegated(delegated: set[str], owners: dict[str, object], finished: list,
