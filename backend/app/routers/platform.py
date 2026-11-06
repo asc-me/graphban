@@ -1,3 +1,4 @@
+import base64
 import os
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,6 +27,7 @@ from app.services import items as items_svc
 from app.services import credential_retry
 from app.services import reindex
 from app.services import rule_pack as rule_pack_svc
+from app.services import plan_grant as plan_grant_svc
 from app.services import auto_update as auto_update_svc
 from app.services import instance_update
 from app.services import platform as platform_svc
@@ -671,3 +673,29 @@ def run_sync_storage(project_id: str = "core", db: Session = Depends(get_db),
     authz.require_writable(db, user.id, project_id)
     _require_self_hosted_box()
     return sync_storage_svc.run(db, project_id)
+
+
+class PlanGrantIn(BaseModel):
+    grant_b64: str
+    signature_b64: str
+
+
+@router.get("/plan-grant")
+def plan_grant_status(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The installed plan grant's verdict: `{ok, plan, issued_at, expires_at, reason}`."""
+    return plan_grant_svc.current(db)
+
+
+@router.post("/plan-grant")
+def install_plan_grant(body: PlanGrantIn, db: Session = Depends(get_db),
+                       user: User = Depends(get_current_user)):
+    """Install a signed plan grant on a self-hosted box and return the verdict. A person's
+    request only (an API key gets 401). Hosted reads `org.plan`, so a grant has no use there."""
+    if settings.hosted_mode:
+        raise HTTPException(422, "a hosted server reads org.plan; plan grants are for self-host")
+    try:
+        doc = base64.b64decode(body.grant_b64, validate=True)
+        sig = base64.b64decode(body.signature_b64, validate=True)
+    except ValueError:
+        raise HTTPException(422, "grant_b64 and signature_b64 must be base64") from None
+    return plan_grant_svc.install(db, user, doc, sig)

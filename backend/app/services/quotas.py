@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.errors import QuotaExceeded, RateLimited
-from app.services import ratelimit
+from app.services import plan_grant, ratelimit
 from app.models import (
     MemoryShard,
     OrgInvite,
@@ -157,14 +157,37 @@ def require_capacity_routing(db: Session, org_id: str | None) -> Organization:
     through. Raises `QuotaExceeded` (HTTP 402 / `quota_exceeded`) and returns the org.
     """
     org = db.get(Organization, org_id) if org_id else None
-    if org is not None and plan_of(org).capacity_routing:
+    if settings.hosted_mode:
+        if org is not None and plan_of(org).capacity_routing:
+            return org
+        paid = ", ".join(n for n, p in PLANS.items() if p.capacity_routing)
+        where = f"this org is on {org.plan or DEFAULT_PLAN!r}" if org else "this project has no org"
+        raise QuotaExceeded(
+            f"capacity routing needs one of: {paid}; {where}",
+            hint="upgrade the org's plan, or keep to in-runner failover, which needs no plan",
+        )
+    # Self-host (GRPH-1343): the plan comes from a verified signed grant, never org.plan.
+    grant = plan_grant.current(db)
+    if org is not None and grant["ok"] and PLANS.get(grant["plan"], PLANS[DEFAULT_PLAN]).capacity_routing:
         return org
-    paid = ", ".join(n for n, p in PLANS.items() if p.capacity_routing)
-    where = f"this org is on {org.plan or DEFAULT_PLAN!r}" if org else "this project has no org"
+    reason = grant["reason"] or f"the grant's plan {grant['plan']!r} has no capacity routing"
+    if org is None:
+        reason += "; this project has no org"
     raise QuotaExceeded(
-        f"capacity routing needs one of: {paid}; {where}",
-        hint="upgrade the org's plan, or keep to in-runner failover, which needs no plan",
+        f"capacity routing needs a valid plan grant on a self-hosted box: {reason}",
+        hint="attach this deployment to a cloud org on team or enterprise, or install a license; "
+             "in-runner failover needs no plan",
     )
+
+
+def capacity_routing_on(db: Session, org: Organization | None) -> bool:
+    """Whether capacity routing applies to `org`: hosted reads `org.plan`, self-host the grant."""
+    if org is None:
+        return False
+    if settings.hosted_mode:
+        return plan_of(org).capacity_routing
+    g = plan_grant.current(db)
+    return bool(g["ok"] and PLANS.get(g["plan"], PLANS[DEFAULT_PLAN]).capacity_routing)
 
 
 def require_org_rules(db: Session, org_id: str | None) -> Organization:
