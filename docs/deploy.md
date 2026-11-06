@@ -167,6 +167,16 @@ nothing rebuilds. To run in the foreground instead of systemd, same binary:
 `python3 ~/graphban-src/scripts/graphban_compose_host.py listen --repo
 ~/graphban-src --dir ~/agentledger --socket ~/.graphban-apply/apply.sock`.
 
+The helper follows the installed cut: before each Install it fetches tags in
+`--repo` and checks out the tag being installed (refusing, and logging why, if
+`--repo` has local changes), so that cut's own `deploy.sh` runs. If the helper
+script itself changed, it re-executes in place after starting the deploy;
+`status` reports its `helper_sha`.
+
+One-time note: a helper that predates this change cannot update itself. On such
+a box run `git -C ~/graphban-src fetch --tags && git -C ~/graphban-src checkout
+--detach <cut>`, then `systemctl --user restart graphban-compose-host`.
+
 In the compose project's `.env` (the server's, never rsynced):
 
 ```

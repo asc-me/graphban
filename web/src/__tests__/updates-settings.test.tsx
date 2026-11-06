@@ -282,6 +282,21 @@ describe("Updates Settings page", () => {
     await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
   });
 
+  it("says why there are no steps when update-progress is idle with a reason", async () => {
+    const user = userEvent.setup();
+    progressSpy.mockResolvedValue({
+      state: "idle", reason: "no install log on this box", tag: "", steps: [], current_line: "", error: "",
+    });
+    healthSpy.mockResolvedValue({ status: "ok", version: "2026.09.1", git_sha: "x" });
+    updateCheckSpy.mockResolvedValue(available());
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i }));
+    const status = await screen.findByRole("status");
+    await waitFor(() => expect(status).toHaveTextContent("Step progress is not available: no install log on this box"));
+    expect(screen.queryByRole("list", { name: /install steps/i })).toBeNull();
+  });
+
   it("a failed install shows the error line and the log location, and stops polling", async () => {
     const user = userEvent.setup();
     const reload = vi.spyOn(pageReload, "run").mockImplementation(() => {});

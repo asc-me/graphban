@@ -173,3 +173,91 @@ def test_start_marker_written_before_script(tmp_path):
     ch.start_apply(repo, tmp_path / "box", "2026.11.1", log_path=log, popen=popen)
     import re
     assert re.search(r"^=== apply 2026\.11\.1 \S+ \d+$", seen["log"], re.M)
+
+
+# ---- GRPH-1347: run the installed cut's deploy.sh; restart when the helper moved ----
+import subprocess  # noqa: E402
+
+
+def _git(cwd, *args):
+    subprocess.run(["git", "-C", str(cwd), "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                   check=True, capture_output=True)
+
+
+@pytest.fixture
+def tagged_repo(tmp_path):
+    origin = tmp_path / "origin"
+    (origin / "scripts").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(origin)], check=True)
+    for tag in ("2026.11.1", "2026.11.2"):
+        (origin / "scripts" / "deploy.sh").write_text(f"#!/bin/sh\necho {tag}\n")
+        (origin / "scripts" / "deploy.sh").chmod(0o755)
+        _git(origin, "add", "-A")
+        _git(origin, "commit", "-qm", tag)
+        _git(origin, "tag", tag)
+    repo = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(origin), str(repo)], check=True)
+    _git(repo, "checkout", "-q", "--detach", "2026.11.1")
+    return repo
+
+
+def _head(repo):
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
+                          text=True, check=True).stdout.strip()
+
+
+def _tag_sha(repo, tag):
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", f"{tag}^{{commit}}"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_apply_runs_the_installed_tags_deploy_sh(tagged_repo, tmp_path):
+    seen = []
+    log = tmp_path / "a" / "deploy.log"
+    got = ch.start_apply(tagged_repo, tmp_path / "box", "2026.11.2",
+                         popen=lambda cmd, **kw: seen.append(
+                             (cmd[0], pathlib.Path(cmd[0]).read_text())),
+                         log_path=log)
+    assert got["ok"] is True
+    assert "2026.11.2" in seen[0][1]
+    assert _head(tagged_repo) == _tag_sha(tagged_repo, "2026.11.2")
+
+
+def test_apply_refuses_a_dirty_repo(tagged_repo, tmp_path):
+    (tagged_repo / "scripts" / "deploy.sh").write_text("#!/bin/sh\necho mine\n")
+    calls = []
+    log = tmp_path / "a" / "deploy.log"
+    got = ch.start_apply(tagged_repo, tmp_path / "box", "2026.11.2",
+                         popen=lambda *a, **k: calls.append(1), log_path=log)
+    assert got["ok"] is False and "local changes" in got["error"]
+    assert not calls
+    assert "echo mine" in (tagged_repo / "scripts" / "deploy.sh").read_text()
+    assert "local changes" in log.read_text()
+
+
+def test_apply_refuses_a_missing_tag(tagged_repo, tmp_path):
+    calls = []
+    got = ch.start_apply(tagged_repo, tmp_path / "box", "2099.01.1",
+                         popen=lambda *a, **k: calls.append(1))
+    assert got["ok"] is False and "2099.01.1" in got["error"]
+    assert not calls
+
+
+def test_helper_reexecs_once_when_its_file_changed(tagged_repo, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ch, "STARTUP_SHA", "stale")
+    ch.start_apply(tagged_repo, tmp_path / "box", "2026.11.2",
+                   popen=lambda *a, **k: None, reexec=lambda: calls.append(1))
+    assert calls == [1]
+
+
+def test_helper_does_not_reexec_when_unchanged(tagged_repo, tmp_path):
+    calls = []
+    ch.start_apply(tagged_repo, tmp_path / "box", "2026.11.2",
+                   popen=lambda *a, **k: None, reexec=lambda: calls.append(1))
+    assert calls == []
+
+
+def test_status_carries_helper_sha(tmp_path):
+    got = ch.handle({"op": "status"}, repo=tmp_path, dest=tmp_path)
+    assert got["helper_sha"] == ch.STARTUP_SHA and got["helper_sha"]
