@@ -2912,6 +2912,12 @@ export interface HarnessCapacityEntitlement {
   state: "available" | "unknown" | "exhausted" | "broken" | "unreachable";
   vendor_text: string;
   since: string | null;
+  /** GRPH-1337: the runner or agent it is declared on (null when unknown), and a subscription's owner. */
+  runner: { label: string | null; owner: string | null };
+  /** GRPH-1337: trailing 7 UTC days, oldest first; a day with no spend report is null, never 0. */
+  daily_tokens: (number | null)[];
+  /** GRPH-1337: when `vendor_text` was recorded; null with no text. */
+  seen_at: string | null;
   reset_cadence: string | null;
   token_budget: number | null;
   week: { tokens: number; reported: number; unreported: number; limit_hits: number };
@@ -2930,6 +2936,7 @@ export interface HarnessCapacityRunner {
 export interface HarnessCapacity {
   org_id: string;
   as_of: string;
+  org: { name: string; entitlement_count: number };
   /** D7, per builder vendor: `vendors` can review and hold headroom; `empty_for` / `only_unknown_for`
    * name the builder vendors whose reserve (another eligible vendor) is empty or unknown-only. */
   review_reserve: {

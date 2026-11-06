@@ -1185,7 +1185,7 @@ export function useHarnessGuidance(projectId?: string, opts: { windowDays?: numb
 }
 
 /** PRD-62 S5: per-entitlement headroom and the org utilization rollup. A 402 (org off a
- *  capacity plan) is an error the panel hides on, so it does not retry. */
+ *  capacity plan) is an error the Capacity tab shows the server's message for, so it does not retry. */
 export function useHarnessCapacity(projectId?: string) {
   return useQuery({
     queryKey: keys.harnessCapacity(projectId ?? ""),

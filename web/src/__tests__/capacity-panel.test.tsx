@@ -12,12 +12,13 @@ vi.mock("@/lib/api", () => ({
 }));
 
 const base: HarnessCapacity = {
-  org_id: "o", as_of: "2026-10-31T00:00:00Z",
+  org_id: "o", org: { name: "acme", entitlement_count: 1 }, as_of: "2026-10-31T00:00:00Z",
   review_reserve: { vendors: ["anthropic", "openai"], empty: false, empty_for: [], only_unknown: false,
     only_unknown_for: [], warning: null },
   entitlements: [{
     id: "ent_1", vendor: "anthropic", kind: "subscription", plan_label: "Max", state: "unknown",
-    vendor_text: "", since: null, reset_cadence: null, token_budget: null,
+    vendor_text: "", since: null, runner: { label: null, owner: null },
+    daily_tokens: [null, null, null, null, null, null, null], seen_at: null, reset_cadence: null, token_budget: null,
     reported_by: null, declared_by: [],
     week: { tokens: 0, reported: 0, unreported: 2, limit_hits: 0 },
     projected_exhaustion: { at: null, reason: "no token_budget stated" },
@@ -94,13 +95,6 @@ describe("CapacityPanel", () => {
     expect(roll).not.toHaveTextContent("≥");
   });
 
-  it("renders nothing when the org is off a capacity plan", async () => {
-    capacity.mockRejectedValueOnce(new Error("402"));
-    const { container } = show();
-    await new Promise((r) => setTimeout(r, 20));
-    expect(container).toBeEmptyDOMElement();
-  });
-
   it("names the runner that reported a broken entitlement", async () => {
     capacity.mockResolvedValueOnce({
       ...base,
@@ -113,6 +107,6 @@ describe("CapacityPanel", () => {
     });
     show();
     const runner = await screen.findByTestId("capacity-runner");
-    expect(runner).toHaveTextContent("reported by mac-mini; declared by mac-mini, a2");
+    expect(runner).toHaveTextContent("reported by mac-mini · declared by mac-mini, a2");
   });
 });
