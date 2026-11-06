@@ -103,6 +103,39 @@ describe("Fallback ladder", () => {
     expect(screen.queryAllByTestId("ladder-restore")).toHaveLength(0);
   });
 
+  it("a policy-removed rung still in the saved profile is only a Can't add back row, and writes drop it", async () => {
+    // The server keeps the profile's rungs as stored and lists the policy-removed one in `refused`.
+    ladderRead.mockResolvedValue(ladder({
+      override: [rung("api_key"), rung("local")], effective: [rung("local")], refused: [rung("api_key")],
+    }));
+    wrap(<Ladder projectId="p" />);
+    const ov = await screen.findByTestId("ladder-override");
+    const rows = within(ov).getAllByTestId("ladder-override-rung").filter((r) => r.getAttribute("data-rung") === "api_key");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveAttribute("data-policy-removed", "true");
+    expect(within(rows[0]).getByText("Can't add back")).toBeInTheDocument();
+    expect(within(rows[0]).queryByRole("button")).toBeNull();
+    expect(within(ov).getAllByTestId("ladder-remove")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /Move api_key/ })).toBeNull();
+    // Restoring subscription sends the live rungs only — never the refused one.
+    await userEvent.setup().click(within(ov).getByTestId("ladder-restore"));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0][0].ladder).toEqual(["local", "subscription"]);
+  });
+
+  it("a rung listed only in refused is still Can't add back, with no control", async () => {
+    ladderRead.mockResolvedValue(ladder({
+      policy: [rung("subscription"), rung("local")], override: [rung("byok"), rung("local")],
+      effective: [rung("local")], refused: [rung("byok")],
+    }));
+    wrap(<Ladder projectId="p" />);
+    const ov = await screen.findByTestId("ladder-override");
+    const rows = within(ov).getAllByTestId("ladder-override-rung").filter((r) => r.getAttribute("data-rung") === "byok");
+    expect(rows).toHaveLength(1);
+    expect(within(rows[0]).getByText("Can't add back")).toBeInTheDocument();
+    expect(within(rows[0]).queryByRole("button")).toBeNull();
+  });
+
   it("Remove, Restore and Match policy send the expected PUT body", async () => {
     ladderRead.mockResolvedValue(ladder());
     wrap(<Ladder projectId="p" />);

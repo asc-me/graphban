@@ -30,11 +30,20 @@ export function Ladder({ projectId, name }: { projectId?: string; name?: string 
   const person = name?.trim() || "";
   const heading = person ? `${person}'s override` : "Your override";
   const claims = person ? `work ${person} claims` : "work you claim";
-  const live = data.override ? data.override.map((r) => r.rung) : data.effective.map((r) => r.rung);
   const allowed = data.policy.filter((r) => !r.removed);
   const byRung = new Map<string, HarnessLadderRung>(data.policy.map((r) => [r.rung, r]));
+  // A rung the policy removed — marked `removed`, or listed in `refused` because a saved profile
+  // still carries it — is never live in the override: `effective` drops it, and a write must not
+  // send it back. It is drawn only as a "Can't add back" row.
+  const policyRemoved = [
+    ...data.policy.filter((r) => r.removed),
+    ...(data.refused ?? []).filter((r) => !data.policy.some((p) => p.rung === r.rung && p.removed)),
+  ].filter((r, i, a) => a.findIndex((x) => x.rung === r.rung) === i);
+  const blocked = new Set(policyRemoved.map((r) => r.rung));
+  const live = (data.override ?? data.effective)
+    .map((r) => r.rung)
+    .filter((rung) => !blocked.has(rung) && byRung.has(rung));
   const userRemoved = data.override ? allowed.filter((r) => !live.includes(r.rung)) : [];
-  const policyRemoved = data.policy.filter((r) => r.removed);
   const write = (next: string[] | null) => save.mutate(next);
   const move = (i: number, d: number) => {
     const o = live.slice(); const j = i + d;
