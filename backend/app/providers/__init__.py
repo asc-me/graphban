@@ -108,7 +108,8 @@ def build_extractor(provider: str = "stub", *, base_url: str = "", api_key: str 
         meta = registry.get(provider) or {}
         resolved = model or meta.get("chat_model", "")
         return llm_meter.metered(
-            openai_compat.extractor(base_url or meta.get("base_url", ""), api_key, resolved),
+            openai_compat.extractor(base_url or meta.get("base_url", ""), api_key, resolved,
+                                    meta.get("extra_body")),
             provider=provider, model=resolved, project_id=project_id)
     from app.providers import llm_meter
 

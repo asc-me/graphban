@@ -256,8 +256,11 @@ class OpenAICompatToolSession:
 
 
 class OpenAICompatExtractor:
-    def __init__(self, base_url: str, api_key: str, model: str):
-        self._chat = OpenAICompatChat(base_url, api_key, model)
+    def __init__(self, base_url: str, api_key: str, model: str,
+                 extra_body: dict | None = None):
+        # The registry's per-provider body fields (e.g. qwen's thinking switch) apply
+        # to extraction too — it is a chat call underneath (GRPH-1357).
+        self._chat = OpenAICompatChat(base_url, api_key, model, extra_body)
 
     def extract(self, *, title: str, description: str) -> list[str]:
         system = (
@@ -273,5 +276,6 @@ def chat(base_url: str, api_key: str, model: str,
     return OpenAICompatChat(base_url, api_key, model, extra_body)
 
 
-def extractor(base_url: str, api_key: str, model: str) -> OpenAICompatExtractor:
-    return OpenAICompatExtractor(base_url, api_key, model)
+def extractor(base_url: str, api_key: str, model: str,
+              extra_body: dict | None = None) -> OpenAICompatExtractor:
+    return OpenAICompatExtractor(base_url, api_key, model, extra_body)

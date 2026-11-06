@@ -428,7 +428,7 @@ class _CaptureSSE:
 
 
 def test_qwen_provider_sends_enable_thinking_false_on_every_path(monkeypatch):
-    from app.providers import build_chat
+    from app.providers import build_chat, build_extractor
 
     sent: list[dict] = []
     monkeypatch.setattr(httpx, "stream", _CaptureSSE(sent))
@@ -443,13 +443,16 @@ def test_qwen_provider_sends_enable_thinking_false_on_every_path(monkeypatch):
     posted: list[dict] = []
     monkeypatch.setattr(httpx, "post", lambda *a, **k: posted.append(k["json"]) or _Resp())
 
+    # Every path goes through the REGISTRY-built qwen adapter, so the asserts prove the
+    # registry wiring rather than a hand-passed extra_body.
     qwen = build_chat("qwen", api_key="k", model="qwen-plus")
     assert qwen.chat(system="s", context="c", question="q") == "ok"  # streamed path
-    inner = openai_compat.chat("https://x/v1", "k", "m", {"enable_thinking": False})
-    inner._complete([{"role": "user", "content": "hi"}], [])  # non-streamed path
-    list(inner.tool_session(system="s", context="c", question="q").stream_turn([]))  # tool stream
-    assert sent[0]["enable_thinking"] is False
-    assert sent[1]["enable_thinking"] is False
+    qwen._complete([{"role": "user", "content": "hi"}], [])  # non-streamed tool turn
+    list(qwen.tool_session(system="s", context="c", question="q").stream_turn([]))  # tool stream
+    build_extractor("qwen", api_key="k", model="qwen-plus").extract(
+        title="t", description="d")  # extraction is a chat call too
+    assert len(sent) == 3
+    assert all(body["enable_thinking"] is False for body in sent)
     assert posted[0]["enable_thinking"] is False
 
 
@@ -472,9 +475,13 @@ def test_streamed_call_has_a_total_deadline(monkeypatch):
 
     class _Endless(_FakeSSEResponse):
         def iter_lines(self):
-            while True:
+            # Bounded so that WITHOUT the deadline the test fails cleanly (chat()
+            # returns "xxx..." as ok) instead of hanging CI: ~5s of a chunk every 0.1s,
+            # ten times the 0.5s budget, then a normal end of stream.
+            for _ in range(50):
                 time.sleep(0.1)
                 yield 'data: {"choices": [{"delta": {"content": "x"}}]}'
+            yield "data: [DONE]"
 
     monkeypatch.setattr(settings, "llm_timeout_seconds", 0.5)
     monkeypatch.setattr(httpx, "stream", lambda *a, **k: _Endless([]))
@@ -482,6 +489,6 @@ def test_streamed_call_has_a_total_deadline(monkeypatch):
     t0 = time.monotonic()
     with pytest.raises(Unavailable) as ei:
         chat.chat(system="s", context="c", question="q")
-    assert time.monotonic() - t0 < 3
+    assert time.monotonic() - t0 < 2
     assert ei.value.retryable is True
     assert "deadline" in str(ei.value)
