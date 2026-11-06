@@ -437,6 +437,7 @@ export function UpdatesPanel() {
   const [installed, setInstalled] = React.useState("");
   const [installTag, setInstallTag] = React.useState("");
   const [progress, setProgress] = React.useState<UpdateProgress | null>(null);
+  const [noSteps, setNoSteps] = React.useState("");
   const [nowMs, setNowMs] = React.useState(() => Date.now());
   React.useEffect(() => {
     if (!applying) return;
@@ -489,6 +490,7 @@ export function UpdatesPanel() {
     setApplyError("");
     setPhase("starting");
     setProgress(null);
+    setNoSteps("");
     setInstallTag(tag);
     try {
       await api.updateApply(tag);
@@ -522,10 +524,13 @@ export function UpdatesPanel() {
         // not started yet rather than showing (or failing on) its steps.
         if (got.tag === tag) {
           setProgress(got);
+          setNoSteps("");
           setNowMs(Date.now());
           if (got.state === "failed") failed = got;
         } else {
           setProgress(null);
+          setNoSteps(got.reason
+            || (got.tag ? `the install log is for ${got.tag}, not this install` : "the install log has no entry for this install yet"));
         }
       } catch {
         progressDown = true; // the API is being recreated; /health below says whether it is back
@@ -643,6 +648,11 @@ export function UpdatesPanel() {
           : autoInstalling && autoProgress
             ? <ProgressSteps progress={autoProgress} nowMs={nowMs} tag={auto?.last_auto_install_tag ?? ""} via={data?.via} />
             : null}
+        {applying && !progress && noSteps ? (
+          <p className="mt-2 text-[12px] text-muted" data-testid="no-step-progress">
+            Step progress is not available: {noSteps}.
+          </p>
+        ) : null}
         {installed ? (
           <p className="mt-2 text-[13px] font-semibold text-fg">
             Installed {installed}. Reloading this page to load the new release…

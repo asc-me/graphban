@@ -23,6 +23,7 @@ that log is where it says so.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -36,12 +37,55 @@ TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$")
 OPS = ("status", "apply")
 
 
+def file_sha(path: pathlib.Path) -> str:
+    """Short hash of a file; "" when unreadable. Used to notice the helper's own script moving."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+    except OSError:
+        return ""
+
+
+HELPER_PATH = pathlib.Path(__file__).resolve()
+STARTUP_SHA = file_sha(HELPER_PATH)
+
+
+def _git(repo: pathlib.Path, *args: str) -> tuple[int, str]:
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
+
+
+def checkout_tag(repo: pathlib.Path, tag: str) -> tuple[bool, str, str]:
+    """Move --repo to `tag` so the deploy.sh that runs is the cut's own.
+
+    Returns (ok, error, output). Never stashes or resets: a dirty tree refuses.
+    A --repo that is not a git clone is left alone (nothing to move).
+    """
+    if not (repo / ".git").exists():
+        return True, "", ""
+    code, out = _git(repo, "status", "--porcelain")
+    if code != 0:
+        return False, f"git status failed in --repo: {out}", out
+    if out:
+        return False, f"--repo has local changes: {out}", out
+    code, fout = _git(repo, "fetch", "--tags", "origin")
+    if code != 0:
+        return False, f"git fetch failed in --repo: {fout}", fout
+    code, _ = _git(repo, "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}")
+    if code != 0:
+        return False, f"tag {tag} does not exist in --repo after fetch", fout
+    code, cout = _git(repo, "checkout", "--detach", f"refs/tags/{tag}")
+    if code != 0:
+        return False, f"git checkout {tag} failed: {cout}", f"{fout}\n{cout}"
+    return True, "", f"{fout}\n{cout}".strip()
+
+
 def valid_tag(tag: str) -> bool:
     return bool(TAG_RE.fullmatch(tag or "")) and ".." not in tag
 
 
 def start_apply(repo: pathlib.Path, dest: pathlib.Path, tag: str, *,
-                popen=subprocess.Popen, log_path: pathlib.Path | None = None) -> dict:
+                popen=subprocess.Popen, log_path: pathlib.Path | None = None,
+                reexec=None) -> dict:
     """Ack immediately. deploy.sh recreates the API container; waiting on it
     would drop the Install request on the floor and look like a failed click.
 
@@ -53,9 +97,6 @@ def start_apply(repo: pathlib.Path, dest: pathlib.Path, tag: str, *,
     """
     if not valid_tag(tag):
         return {"ok": False, "error": "invalid tag"}
-    script = repo / "scripts" / "deploy.sh"
-    if not script.is_file():
-        return {"ok": False, "error": "deploy.sh missing in --repo"}
     dest.mkdir(parents=True, exist_ok=True)
     out = subprocess.DEVNULL
     log = None
@@ -67,6 +108,16 @@ def start_apply(repo: pathlib.Path, dest: pathlib.Path, tag: str, *,
             .encode("utf-8"))
         out = log
     try:
+        ok, err, text = checkout_tag(repo, tag)
+        if log is not None and text:
+            log.write((text + "\n").encode("utf-8"))
+        if not ok:
+            if log is not None:
+                log.write(f"refused: {err}\n".encode("utf-8"))
+            return {"ok": False, "error": err}
+        script = repo / "scripts" / "deploy.sh"
+        if not script.is_file():
+            return {"ok": False, "error": "deploy.sh missing in --repo"}
         popen(
             [str(script), "--local", "--dir", str(dest), tag],
             cwd=str(repo),
@@ -77,11 +128,15 @@ def start_apply(repo: pathlib.Path, dest: pathlib.Path, tag: str, *,
     finally:
         if log is not None:
             log.close()  # the child holds its own descriptor
+    # The checkout may have replaced this very file; run the new one from now on.
+    if reexec is not None and file_sha(HELPER_PATH) != STARTUP_SHA:
+        reexec()
     return {"ok": True, "started": True, "tag": tag}
 
 
 def handle(msg: dict, *, repo: pathlib.Path, dest: pathlib.Path,
-           apply=start_apply, log_path: pathlib.Path | None = None) -> dict:
+           apply=start_apply, log_path: pathlib.Path | None = None,
+           reexec=None) -> dict:
     op = msg.get("op")
     if op == "status":
         return {
@@ -89,9 +144,11 @@ def handle(msg: dict, *, repo: pathlib.Path, dest: pathlib.Path,
             "repo": str(repo),
             "dir": str(dest),
             "deploy": (repo / "scripts" / "deploy.sh").is_file(),
+            "helper_sha": STARTUP_SHA,
         }
     if op == "apply":
-        return apply(repo, dest, str(msg.get("tag") or ""), log_path=log_path)
+        kw = {"reexec": reexec} if reexec is not None else {}
+        return apply(repo, dest, str(msg.get("tag") or ""), log_path=log_path, **kw)
     return {"ok": False, "error": f"unknown op {op!r}"}
 
 
@@ -107,7 +164,12 @@ def _read_msg(conn: socket.socket, *, limit: int = 8192) -> dict:
     return json.loads(buf.decode("utf-8"))
 
 
-def listen(sock_path: pathlib.Path, repo: pathlib.Path, dest: pathlib.Path) -> int:
+def _execv_self() -> None:
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+
+
+def listen(sock_path: pathlib.Path, repo: pathlib.Path, dest: pathlib.Path, *,
+           execv=_execv_self) -> int:
     sock_path = sock_path.expanduser()
     repo = repo.expanduser().resolve()
     dest = dest.expanduser().resolve()
@@ -125,13 +187,20 @@ def listen(sock_path: pathlib.Path, repo: pathlib.Path, dest: pathlib.Path) -> i
     print(f"compose-host listening on {sock_path} repo={repo} dir={dest}", flush=True)
     while True:
         conn, _ = srv.accept()
+        restart: list[bool] = []
         with conn:
             try:
                 msg = _read_msg(conn)
-                out = handle(msg, repo=repo, dest=dest, log_path=log_path)
+                out = handle(msg, repo=repo, dest=dest, log_path=log_path,
+                             reexec=lambda: restart.append(True))
             except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
                 out = {"ok": False, "error": type(e).__name__}
             conn.sendall((json.dumps(out) + "\n").encode("utf-8"))
+        if restart:
+            # Reply first, then become the checked-out helper. The deploy child is in
+            # its own session and survives; the next listen() rebinds the socket.
+            print("compose-host script changed; re-executing", flush=True)
+            execv()
 
 
 def main(argv: list[str] | None = None) -> int:
