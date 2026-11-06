@@ -436,6 +436,7 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     cfg.set_main_option("script_location", str(_BACKEND / "alembic"))
     cfg.set_main_option("path_separator", "os")
     script = ScriptDirectory.from_config(cfg)
+    # 0184 (GRPH-1343, installed plan grants) on
     # 0183 (GRPH-1326, org rule suggestion dismissals) on
     # 0182 (installed rule packs) on
     # 0181 (GRPH-1320, sync storage config) on
