@@ -124,7 +124,7 @@ def test_accept_prompt_needs_a_person_who_is_not_the_compiler(db, pid, world):
     with pytest.raises(errors.Validation, match="no person"):
         ds_svc.accept_prompt(db, pid, sid, "home", "agent:GRPH-A2")
     with pytest.raises(errors.Validation, match="compiler"):
-        ds_svc.accept_prompt(db, pid, sid, "home", COMPILER, "dana")  # compiler relays
+        ds_svc.accept_prompt(db, pid, sid, "home", "agent:GRPH-A2", COMPILER)  # named = compiler
     ds_svc.accept_prompt(db, pid, sid, "home", "agent:GRPH-A2", "dana")
     from app.models import DesignAcceptance
 
@@ -145,7 +145,7 @@ def test_a_credential_is_a_relay_never_a_person(db, pid, world, be):
     with pytest.raises(errors.Validation, match="not a person"):
         ds_svc.accept_prompt(db, pid, sid, "home", "agent:GRPH-A2", KEY)
     with pytest.raises(errors.Validation, match="compiler"):
-        ds_svc.accept_prompt(db, pid, sid, "home", KEY, "GRPH-A9")
+        ds_svc.accept_prompt(db, pid, sid, "home", "agent:GRPH-A2", "GRPH-A9")
     out = ds_svc.accept_prompt(db, pid, sid, "home", KEY, "dana")
     assert (out["accepted_by"], out["relayed_by"]) == ("dana", KEY)
     with pytest.raises(errors.Validation, match="no person"):

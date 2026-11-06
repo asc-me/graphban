@@ -301,3 +301,54 @@ def test_cross_project_cite_is_refused_across_orgs_and_between_orgless_projects(
         return str(e.value).rsplit(":", 1)[0]
 
     assert stem(cross) == stem(missing) == stem(orgless)
+
+
+def _two_screens(db, pid):
+    prd = _prd(db, pid)
+    out = ds_svc.open_design(db, pid, prd.id)
+    ds_svc.put_set_constraints(db, pid, out["id"], "Shared constraints.", screens=[
+        {"screen": "home", "brief": "HOMEBRIEF"}, {"screen": "cart", "brief": "CARTBRIEF"}])
+    for s in ("home", "cart"):
+        ds_svc.confirm_tier(db, pid, out["id"], s, "UNBACKED", "none")
+    db.get(DesignSet, out["id"]).constraints_accepted = True
+    db.commit()
+    return prd, out["id"]
+
+
+def test_prompt_carries_only_its_own_brief_and_the_rendered_prd_key(db, pid):
+    prd, sid = _two_screens(db, pid)
+    got = {s["screen"]: s["brief"] for s in ds_svc.get_design_set(db, pid, sid)["screens"]}
+    assert got == {"home": "HOMEBRIEF", "cart": "CARTBRIEF"}
+    ds_svc.compile_prompts(db, pid, sid, actor="agent:C")
+    texts = {d.screen: "\n".join(c.text for c in d.chunks)
+             for d in db.scalars(select(Document).where(Document.kind == "design_prompt"))}
+    assert "HOMEBRIEF" in texts["home"] and "CARTBRIEF" not in texts["home"]
+    assert "Shared constraints." in texts["home"] and "Shared constraints." in texts["cart"]
+    assert f"{prd.key} " in texts["home"]
+
+
+def test_accept_prompts_is_all_or_nothing_and_compiler_may_relay(db, pid):
+    from app.models import DesignAcceptance
+
+    _, sid = _two_screens(db, pid)
+    out = ds_svc.compile_prompts(db, pid, sid, actor="agent:C")["prompts"]
+    hashes = {p["screen"]: p["prompt_hash"] for p in out}
+    bad = [{"screen": "home", "prompt_hash": hashes["home"]},
+           {"screen": "cart", "prompt_hash": "nope"}]
+    with pytest.raises(errors.Validation):
+        ds_svc.accept_prompts(db, pid, sid, bad, "agent:C", "dana")
+    assert db.scalars(select(DesignAcceptance)).first() is None
+    with pytest.raises(errors.Validation, match="compiler"):
+        ds_svc.accept_prompts(db, pid, sid, [{"screen": "home", "prompt_hash": hashes["home"]}],
+                              "agent:D", "agent:C")
+    good = [{"screen": k, "prompt_hash": v} for k, v in hashes.items()]
+    res = ds_svc.accept_prompts(db, pid, sid, good, "agent:C", "dana")
+    assert len(res["accepted"]) == 2
+    rows = list(db.scalars(select(DesignAcceptance)))
+    assert sorted(r.screen for r in rows) == ["cart", "home"] and {r.person for r in rows} == {"dana"}
+
+
+def test_screen_without_routes_has_empty_proposal(db, pid):
+    _, sid = _two_screens(db, pid)
+    for s in ds_svc.get_design_set(db, pid, sid)["screens"]:
+        assert s["tier_proposal"] == "" and s["tier_proposal_basis"] == ""
