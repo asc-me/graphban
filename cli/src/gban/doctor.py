@@ -249,7 +249,48 @@ def find_supervisor() -> str:
 SUPERVISOR_KEY_ENV = "GBFLEET_API_KEY"
 
 
-def resolve_supervisor_key(project: str, repo: Path | None = None) -> str:
+def supervisor_key_candidates(project: str, repo: Path | None = None) -> list[tuple[str, str]]:
+    """Every key we could hand the supervisor, as (source name, key), in preference order.
+
+    The names are for messages; the values never are (GRPH-1346).
+    """
+    found: list[tuple[str, str]] = []
+    env_key = (os.environ.get(config.API_KEY_ENV) or "").strip()
+    if env_key:
+        found.append((f"${config.API_KEY_ENV}", env_key))
+    stored = config.stored_supervisor_key(project)
+    if stored:
+        found.append(("the key `gban setup` stored for this project", stored))
+    for key in _harness_supervisor_keys(repo):
+        found.append(("a key `gban setup` wrote into a harness config", key))
+    unique: list[tuple[str, str]] = []
+    for name, key in found:
+        if key not in [k for _, k in unique]:
+            unique.append((name, key))
+    return unique
+
+
+def can_supervise(url: str, key: str, timeout: float = 5.0) -> bool | None:
+    """Whether the observations route accepts this key: False on 401/403, True on any other
+    answer, None when the server could not be asked. The server authorises before it reads the
+    body, so a `kind=probe` post with no item is refused only for the credential."""
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(
+        url.rstrip("/") + "/api/fleet/observations", data=b'{"kind": "probe"}',
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        method="POST")
+    try:
+        urllib.request.urlopen(req, timeout=timeout).close()
+    except urllib.error.HTTPError as exc:
+        return exc.code not in (401, 403)
+    except Exception:  # noqa: BLE001 — could not ask is not a verdict
+        return None
+    return True
+
+
+def resolve_supervisor_key(project: str, repo: Path | None = None, url: str = "") -> str:
     """The agent key we hand `child_environment` as `api_key`.
 
     Order (GRPH-782 remaining hole): `$GRAPHBAN_API_KEY`, then the project-scoped key
@@ -257,19 +298,44 @@ def resolve_supervisor_key(project: str, repo: Path | None = None) -> str:
     harness dest for this repository. `$GBFLEET_API_KEY` the caller set is preserved
     inside `child_environment`, so it is not resolved here.
 
+    With `url`, a candidate the observations route refuses is passed over for the next one
+    that it accepts (GRPH-1346): a key that can build but not supervise cost a whole wave its
+    base, lease and PR records. When none can, the first is returned and `until` refuses it
+    by name; `supervisor_key_verdict` says why. Without `url` the order alone decides.
+
     Never the login session. A refresh token is a different kind of credential.
     """
-    env_key = (os.environ.get(config.API_KEY_ENV) or "").strip()
-    if env_key:
-        return env_key
-    stored = config.stored_supervisor_key(project)
-    if stored:
-        return stored
-    return _harness_supervisor_key(repo)
+    candidates = supervisor_key_candidates(project, repo)
+    if not candidates:
+        return ""
+    if url:
+        for _, key in candidates:
+            if can_supervise(url, key) is not False:
+                return key
+    return candidates[0][1]
+
+
+def supervisor_key_verdict(project: str, url: str, repo: Path | None = None) -> str:
+    """Why no candidate key can supervise, naming sources and never values; "" when one can
+    or when the server could not be asked."""
+    candidates = supervisor_key_candidates(project, repo)
+    if not candidates or not url:
+        return ""
+    results = [(name, can_supervise(url, key)) for name, key in candidates]
+    if any(r is not False for _, r in results):
+        return ""
+    return ("no key can supervise (the server refused each for observations; recording needs "
+            "the planner role and a fleet wave or project scope): "
+            + "; ".join(name for name, _ in results))
 
 
 def _harness_supervisor_key(repo: Path | None) -> str:
-    """The key `gban setup` already wrote into a parent-harness dest.
+    keys = _harness_supervisor_keys(repo)
+    return keys[0] if keys else ""
+
+
+def _harness_supervisor_keys(repo: Path | None) -> list[str]:
+    """The keys `gban setup` already wrote into a parent-harness dest.
 
     Lazy-imports setup: that module imports this one, and a top-level cycle would
     make `gban doctor` fail to import on a machine that has never run setup.
@@ -285,7 +351,7 @@ def _harness_supervisor_key(repo: Path | None) -> str:
             key = (setup_mod.dest_key(dest, repo) or "").strip()
             if key.startswith(config.AGENT_KEY_PREFIX) and key not in seen:
                 seen.append(key)
-    return seen[0] if seen else ""
+    return seen
 
 
 def child_environment(api_key: str) -> dict:

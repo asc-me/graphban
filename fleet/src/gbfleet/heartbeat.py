@@ -97,5 +97,6 @@ def keep(wave, children, client, *, now: float | None = None) -> None:
             try:
                 client.post_observation(**payload)
             except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missed beat
+                wave.observations_refused += 1
                 wave.failures.append(f"{item_id}: lease not extended ({exc})")
         child.lease_kept_at = moment

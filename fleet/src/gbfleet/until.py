@@ -27,7 +27,7 @@ from . import worktree as wt_mod
 from . import observe
 from . import waits as wait_mod
 from . import watchdog as watchdog_mod
-from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreachable, ToolFailed
+from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ObservationRefused, ServerUnreachable, ToolFailed
 from .lock import hold
 from .seat import Seat
 from .tiers import TierTable
@@ -140,7 +140,8 @@ class Report:
 
     def as_json(self) -> dict:
         payload = {
-            "ok": self.ok,
+            # GRPH-1346. A wave whose records were refused is not clean, whatever the loop said.
+            "ok": self.ok and not (self.wave.observations_refused if self.wave else 0),
             "reason": self.reason,
             "exit": self.exit,
             "spawned": self.spawned,
@@ -206,6 +207,9 @@ class Report:
                                                     if self.wave else [])},
         }
         # GRPH-1247. Every exhausted entitlement with the vendor's own reset text, quoted.
+        # GRPH-1346. Always present: 0 means every record landed, not "not counted".
+        refused = self.wave.observations_refused if self.wave else 0
+        payload["supervision_unrecorded"] = refused
         payload["exhausted"] = (list(self.wave.exhausted.values()) if self.wave else [])
         if self.detail:
             payload["detail"] = self.detail
@@ -363,6 +367,7 @@ def run(
             persist()
             wave.entitlements = {a: list(ids) for a, ids in (entitlements or {}).items() if ids}
             identity = _identify(planner, repo, adapter, wave)
+            _preflight_observations(supervisor)
             result = _loop(
                 wave, children, occupied, persist,
                 repo, workspace, wave_name, api_key, server,
@@ -384,6 +389,8 @@ def run(
                 wave_base=chosen_base,
             )
             result.wave = wave
+            if wave.observations_refused:
+                result.ok = False
             minted = result.minted
             persist()
             return result
@@ -466,6 +473,30 @@ def _identify(planner: Graphban, repo: Path, adapter: str = "",
     if not agent_id:
         raise ConfigError("register_agent returned no agent_id")
     return payload
+
+
+def _preflight_observations(supervisor: Graphban) -> None:
+    """Refuse to start on a key the observations route refuses (GRPH-1346).
+
+    A wave on such a key still builds, reviews and merges; it just loses every base, lease
+    and PR record, one refusal at a time, and used to report `ok: true`. Checked once, before
+    a seat is minted, and named by the conditions the server states.
+    """
+    # `kind=probe` names no item. The server authorises the credential before it reads the
+    # body, so a key that cannot supervise answers 401/403, and a key that can answers a
+    # validation error or 200. Only the refusal is a verdict: any other answer, or none, is
+    # not this check's to fail on (an unreachable server is the other checks' business).
+    try:
+        supervisor.post_observation(kind="probe")
+    except ObservationRefused as exc:
+        if exc.status not in (401, 403):
+            return
+        raise ConfigError(
+            "the supervisor key cannot record observations, so this wave would lose every "
+            "base, lease and PR record. Recording needs the planner role among the key's "
+            "roles AND either a fleet wave or a project-scoped key; at least one is missing. "
+            f"Server said: {exc}"
+        ) from exc
 
 
 def _item_brief(client, item_id: str | None) -> dict | None:

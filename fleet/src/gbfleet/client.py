@@ -81,7 +81,14 @@ class ObservationRefused(RuntimeError):
     read as landed, `sign_off` would report the commit uncompared, and the wave log — the
     only place the refusal used to be visible — would say nothing. The caller records the
     reason on the wave and carries on. It does not raise out of the wave.
+
+    `status` is the HTTP status when the server answered, None when it never did — a 403 is
+    "this credential cannot supervise" and a dropped connection is not.
     """
+
+    def __init__(self, message: str = "", status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class ServerUnreachable(RuntimeError):
@@ -264,7 +271,8 @@ class Graphban:
         if reply.status_code >= 400:
             if strict:
                 raise ObservationRefused(
-                    f"{path}: HTTP {reply.status_code}: {reply.text[:300]}"
+                    f"{path}: HTTP {reply.status_code}: {reply.text[:300]}",
+                    status=reply.status_code,
                 )
             return None
         try:

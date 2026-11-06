@@ -75,6 +75,8 @@ def _clients(
     drop_delegated: bool = False,
     prds: dict | None = None,
     staff_every_row: bool | None = None,
+    observations_status: int = 200,
+    observation_posts: list | None = None,
 ):
     """Planner + supervisor clients sharing one mock Graphban.
 
@@ -93,6 +95,16 @@ def _clients(
     pinned_left = [pinned_ticks]
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/fleet/observations":
+            body = json.loads(request.content)
+            # GRPH-1346. The supervisor's receipts and the start-up probe land here.
+            if observation_posts is not None:
+                observation_posts.append(body)
+            if observations_status >= 400:
+                return httpx.Response(observations_status, text=(
+                    "this credential is not a supervisor key: recording a cut needs planner "
+                    "among its roles, and either a fleet wave or a project-scoped key"))
+            return httpx.Response(200, json={"recorded": True})
         ack = telemetry_ack(request)
         if ack is not None:
             return ack
@@ -263,6 +275,48 @@ def test_a_key_that_cannot_mint_is_refused_at_start(
     assert result.exit == 2
     assert result.ok is False
     assert "mint_enrolment" in result.detail
+
+
+def test_a_key_the_observations_route_refuses_is_refused_before_any_seat(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1346. Sabotage: remove `_preflight_observations` and this mints a seat."""
+    workspace = tmp_path / "ws"
+    calls: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=1, observations_status=403, calls=calls)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert result.reason == "config" and result.exit == 2 and result.ok is False
+    assert "planner" in result.detail and "project-scoped" in result.detail
+    assert "mint_enrolment" not in calls and "delegate" not in calls
+    assert result.spawned == 0
+
+
+def test_a_refused_observation_mid_run_is_counted_and_not_ok(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1346. Sabotage: drop the increment in `_observe` and the count stays 0."""
+    from gbfleet.supervisor import Wave, _observe
+
+    wave = Wave()
+
+    class Refusing:
+        def post_observation(self, **_):
+            raise until.ObservationRefused("HTTP 403", status=403)
+
+    _observe(wave, Refusing(), "GRPH-1", "base not recorded", kind="cut_from")
+    _observe(wave, Refusing(), "GRPH-1", "base not recorded", kind="cut_from")
+    assert wave.observations_refused == 2
+    report = Report(ok=True, reason="idle", exit=0, wave=wave)
+    out = report.as_json()
+    assert out["ok"] is False
+    assert out["supervision_unrecorded"] == 2
+    clean = Report(ok=True, reason="idle", exit=0, wave=Wave()).as_json()
+    assert clean["ok"] is True and clean["supervision_unrecorded"] == 0
 
 
 def test_a_scoped_wave_refuses_pre_minted_seats(

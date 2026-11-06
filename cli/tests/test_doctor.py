@@ -773,3 +773,20 @@ def test_doctor_fails_a_tracked_credential_even_when_gitignore_names_it(
     detail = " ".join(l["detail"] for l in lines if l["name"] == "gitignore")
     assert "git tracks" in detail and ".mcp.json" in detail
     assert "git rm --cached" in detail
+
+
+def test_resolve_prefers_a_key_that_can_supervise_and_says_why_none_can(home, monkeypatch):
+    """GRPH-1346. Sabotage: drop the `can_supervise` loop and the first key wins."""
+    monkeypatch.setenv(config.API_KEY_ENV, "gb_sk_NOPLANNER")
+    config.save_supervisor_key("core", "gb_sk_PLANNER")
+    verdicts = {"gb_sk_NOPLANNER": False, "gb_sk_PLANNER": True}
+    monkeypatch.setattr(doctor, "can_supervise", lambda url, key, timeout=5.0: verdicts[key])
+    assert doctor.resolve_supervisor_key("core", url="http://x") == "gb_sk_PLANNER"
+    assert doctor.resolve_supervisor_key("core") == "gb_sk_NOPLANNER"
+    assert doctor.supervisor_key_verdict("core", "http://x") == ""
+
+    verdicts["gb_sk_PLANNER"] = False
+    assert doctor.resolve_supervisor_key("core", url="http://x") == "gb_sk_NOPLANNER"
+    why = doctor.supervisor_key_verdict("core", "http://x")
+    assert "no key can supervise" in why and "GRAPHBAN_API_KEY" in why
+    assert "gb_sk_" not in why

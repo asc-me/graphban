@@ -325,7 +325,7 @@ def _cwd_project_mismatch(client, configured: str) -> str:
 def cmd_doctor(args) -> int:
     url = config.resolve(args.server, config.URL_ENV, "url")
     project = config.resolve(args.project, config.PROJECT_ENV, "project")
-    api_key = doctor_mod.resolve_supervisor_key(project)
+    api_key = doctor_mod.resolve_supervisor_key(project, url=url)
     lines, code = doctor_mod.run(url, project, api_key)
     _out({"lines": lines, "ok": code == 0}, doctor_mod.render(lines), args.as_json)
     return code
