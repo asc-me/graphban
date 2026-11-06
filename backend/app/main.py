@@ -229,10 +229,16 @@ async def lifespan(app: FastAPI):
     if is_leader and settings.auto_update_tick_seconds > 0:
         update_task = asyncio.create_task(_auto_update_loop())
 
+    # Plan grant fetch/refresh (GRPH-1344): leader-only, `0` disables. The first pass runs at
+    # once (the startup fetch); an unlinked box makes no call.
+    grant_task = None
+    if is_leader and settings.plan_grant_check_seconds > 0:
+        grant_task = asyncio.create_task(_plan_grant_loop())
+
     try:
         yield
     finally:
-        for task in (retry_task, export_task, judge_task, update_task):
+        for task in (retry_task, export_task, judge_task, update_task, grant_task):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -263,6 +269,31 @@ def _one_background_pass() -> int:
         return did
     finally:
         db.close()
+
+
+def _plan_grant_pass(startup: bool) -> None:
+    from app.services import plan_grant
+
+    db = SessionLocal()
+    try:
+        plan_grant.refresh_if_due(db, startup=startup)
+    finally:
+        db.close()
+
+
+async def _plan_grant_loop() -> None:
+    """Fetch the plan grant at startup, then re-check on a timer. Same properties as
+    `_credential_retry_loop`: broad `except` inside, own session per pass, cancel re-raised."""
+    startup = True
+    while True:
+        try:
+            await asyncio.to_thread(_plan_grant_pass, startup)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.warning("plan grant fetch pass failed", exc_info=True)
+        startup = False
+        await asyncio.sleep(settings.plan_grant_check_seconds)
 
 
 async def _credential_retry_loop() -> None:

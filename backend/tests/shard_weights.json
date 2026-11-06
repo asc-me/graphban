@@ -246,6 +246,7 @@
 "tests/test_phase4.py": 0.38,
 "tests/test_phase5.py": 0.76,
 "tests/test_plan_grant.py": 1.0,
+"tests/test_plan_grant_fetch.py": 0.5,
 "tests/test_plan_grant_routing.py": 0.5,
 "tests/test_platform_judge.py": 3.11,
 "tests/test_platform_plane.py": 1.03,

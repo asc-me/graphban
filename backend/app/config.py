@@ -265,6 +265,12 @@ class Settings(BaseSettings):
     sync_cloud_url: str = ""  # e.g. https://cloud.example.com
     sync_api_key: str = ""    # gb_sk_… with the 'sync' scope, minted org-side
 
+    # How often (seconds) a linked box checks whether its plan grant needs refreshing from the
+    # control plane (GRPH-1344). It fetches only when under half the grant's lifetime remains
+    # (hourly while none is valid). 0 disables the timer; the startup fetch is the timer's
+    # first pass, so it is off too.
+    plan_grant_check_seconds: int = 300
+
     # Drive sync: base directory the filesystem backend syncs into. Mount this at a
     # Google Drive Desktop folder to reach Drive with no OAuth.
     sync_dir: str = "/data/sync"
