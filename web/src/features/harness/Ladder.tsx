@@ -18,7 +18,7 @@ const btn = "rounded-md border border-control px-2 py-0.5 text-small hover:bg-su
 
 /**
  * The Capacity tab's fallback ladder: the project policy (read-only) beside the caller's own
- * override. A rung the policy removed is never offered back: it reads "Can't add back" with no
+ * override, headed with the person's name (`<name>'s override`). A rung the policy removed is never offered back: it reads "Can't add back" with no
  * control. A refusal on save is shown as the server said it, and nothing changes locally — the
  * rungs drawn are always the server's last answer.
  */
@@ -27,7 +27,9 @@ export function Ladder({ projectId, name }: { projectId?: string; name?: string 
   const save = useSaveHarnessLadder(projectId);
   if (isError || !data) return null;
 
-  const who = name || "my";
+  const person = name?.trim() || "";
+  const heading = person ? `${person}'s override` : "Your override";
+  const claims = person ? `work ${person} claims` : "work you claim";
   const live = data.override ? data.override.map((r) => r.rung) : data.effective.map((r) => r.rung);
   const allowed = data.policy.filter((r) => !r.removed);
   const byRung = new Map<string, HarnessLadderRung>(data.policy.map((r) => [r.rung, r]));
@@ -70,7 +72,7 @@ export function Ladder({ projectId, name }: { projectId?: string; name?: string 
         </div>
         <div data-testid="ladder-override">
           <div className="flex items-baseline justify-between">
-            <span className="text-small text-faint">{who}'s override · profile · work {name || "I"} claim{name ? "s" : ""}</span>
+            <span className="text-small text-faint"><span data-testid="ladder-override-heading">{heading}</span> · profile · {claims}</span>
             <button type="button" data-testid="ladder-match-policy" className={btn} disabled={save.isPending}
                     onClick={() => write(null)}>Match policy</button>
           </div>
@@ -93,7 +95,7 @@ export function Ladder({ projectId, name }: { projectId?: string; name?: string 
               <Num n="—" />
               <div className="flex-1">
                 <div className="font-mono text-small line-through">{r.label}</div>
-                <span className="font-mono text-meta text-muted">REMOVED BY {who === "my" ? "ME" : name}</span>
+                <span className="font-mono text-meta text-muted">REMOVED BY {person ? person.toUpperCase() : "YOU"}</span>
               </div>
               <button type="button" data-testid="ladder-restore" className={btn} disabled={save.isPending}
                       onClick={() => write([...live, r.rung])}>Restore</button>

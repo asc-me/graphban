@@ -1,4 +1,4 @@
-import { useHarnessCapacity } from "@/lib/queries";
+import { useHarnessCapacity, useMe } from "@/lib/queries";
 import { consoleHref } from "@/lib/routes";
 import { Ladder } from "./Ladder";
 import { RoutingReason } from "./RoutingReason";
@@ -124,6 +124,7 @@ function latestRoutedClaim(d: HarnessRoutingDecisions): string | null {
 
 export function CapacityPanel({ projectId }: { projectId?: string }) {
   const { data, error, isError } = useHarnessCapacity(projectId);
+  const { data: me } = useMe();
   if (isError) {
     const { message, hint } = serverRefusal(error);
     return (
@@ -201,7 +202,7 @@ export function CapacityPanel({ projectId }: { projectId?: string }) {
       )}
       <RoutingDecisions decisions={data.routing_decisions} />
       <ReviewReserve reserve={data.review_reserve} />
-      <Ladder projectId={projectId} />
+      <Ladder projectId={projectId} name={me?.name || me?.email || undefined} />
       <RoutingReason defaultItem={latestRoutedClaim(data.routing_decisions)} />
     </section>
   );

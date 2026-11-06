@@ -3,14 +3,17 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { CapacityPanel } from "@/features/harness/CapacityPanel";
 import { Ladder } from "@/features/harness/Ladder";
 import { RoutingReason } from "@/features/harness/RoutingReason";
-import type { HarnessLadder, HarnessLadderRung, HarnessRoutingReason } from "@/lib/types";
+import type { HarnessCapacity, HarnessLadder, HarnessLadderRung, HarnessRoutingReason } from "@/lib/types";
 
 const ladderRead = vi.fn();
 const profileRead = vi.fn();
 const save = vi.fn();
 const routing = vi.fn();
+const me = vi.fn();
+const capacity = vi.fn();
 vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
   api: {
@@ -18,6 +21,8 @@ vi.mock("@/lib/api", () => ({
     fleetProfile: (...a: unknown[]) => profileRead(...a),
     saveFleetProfile: (...a: unknown[]) => save(...a),
     harnessRouting: (...a: unknown[]) => routing(...a),
+    harnessCapacity: (...a: unknown[]) => capacity(...a),
+    me: () => me(),
   },
 }));
 
@@ -43,7 +48,49 @@ beforeEach(() => {
   save.mockResolvedValue({});
 });
 
+const emptyCapacity: HarnessCapacity = {
+  org_id: "o", org: { name: "acme", entitlement_count: 0 }, as_of: "2026-10-31T00:00:00Z",
+  review_reserve: { vendors: [], empty: true, empty_for: [], only_unknown: false, only_unknown_for: [], warning: null },
+  entitlements: [],
+  routing_decisions: { window_start: "", window_end: "", groups: [], reason: null },
+  utilization: {
+    week_start: "", week_end: "", share_used: null, share_is_lower_bound: false, tokens_used: 0, budget: null,
+    entitlements_with_budget: 0, entitlements_without_budget: 0, unreported_spends: 0,
+    waves_ended_by_capacity: { count: null, note: "not recorded" },
+    items_deferred_to_reset: { count: null, note: "not recorded" },
+  },
+};
+
 describe("Fallback ladder", () => {
+  it("heads the override with the person's name", async () => {
+    ladderRead.mockResolvedValue(ladder({ override: [rung("local")] }));
+    wrap(<Ladder projectId="p" name="Alex Cain" />);
+    const ov = await screen.findByTestId("ladder-override");
+    expect(within(ov).getByTestId("ladder-override-heading")).toHaveTextContent(/^Alex Cain's override$/);
+    expect(ov).toHaveTextContent("Alex Cain's override · profile · work Alex Cain claims");
+    expect(ov).toHaveTextContent("REMOVED BY ALEX CAIN");
+    expect(ov).not.toHaveTextContent("my's");
+  });
+
+  it("without a name the override heading reads as the viewer's own", async () => {
+    ladderRead.mockResolvedValue(ladder());
+    wrap(<Ladder projectId="q" />);
+    const anon = await screen.findByTestId("ladder-override");
+    expect(anon).toHaveTextContent("Your override · profile · work you claim");
+    expect(anon).not.toHaveTextContent("my's");
+  });
+
+  it("the Capacity tab passes the signed-in person's name to the ladder", async () => {
+    me.mockResolvedValue({ id: "u1", name: "Alex Cain", handle: "alex", email: "a@example.com", avatar: "", initials: "AC" });
+    capacity.mockResolvedValue(emptyCapacity);
+    ladderRead.mockResolvedValue(ladder());
+    routing.mockResolvedValue({ item_key: "", stage: "", claimant: null, attempts: [], latest: null, reason: "none", at: null });
+    wrap(<CapacityPanel projectId="p" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("ladder-override-heading")).toHaveTextContent("Alex Cain's override"));
+    expect(screen.getByTestId("ladder-override")).toHaveTextContent("work Alex Cain claims");
+  });
+
   it("marks policy-removed rungs REMOVED BY PROJECT POLICY, and offers no control to add them back", async () => {
     ladderRead.mockResolvedValue(ladder());
     wrap(<Ladder projectId="p" />);
