@@ -3031,7 +3031,23 @@ def grill_absorption(db: Session, prd_id: str) -> dict:
         return dt.replace(tzinfo=timezone.utc) if dt is not None and dt.tzinfo is None else dt
 
     edited = _aware(edited)
-    behind = [t for t in answers if edited is None or _aware(t.created_at) > edited]
+    # An answer whose words are already in the body is absorbed even when it was recorded
+    # after the body edit (the skill folds first, then records). Still staleness, not
+    # correctness: this is a verbatim-text match, whitespace and case folded.
+    def _norm(x):
+        return " ".join((x or "").split()).lower()
+
+    body_text = _norm(prd.body)
+
+    def _in_body(t):
+        text = _norm(getattr(t, "text", None))
+        return bool(text) and text in body_text
+
+    behind = [
+        t
+        for t in answers
+        if (edited is None or _aware(t.created_at) > edited) and not _in_body(t)
+    ]
     latest = max((_aware(t.created_at) for t in answers), default=None)
     return {
         "prd_id": prd.key,

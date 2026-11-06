@@ -149,3 +149,20 @@ def test_legacy_rows_without_a_body_timestamp_are_optimistic(db):
     _answer(db, prd, "we decided X")
 
     assert prd_svc.grill_absorption(db, prd.id)["absorbed"] is True
+
+
+def test_an_answer_already_written_in_the_body_is_absorbed(db):
+    prd = _prd(db, body="# Spec\n\n## Overview\n\nWe decided X.\n")
+    prd_svc.update_prd(db, prd.id, body="# Spec\n\n## Overview\n\nWe decided X, firmly.\n")
+    _answer(db, prd, "we decided x")
+
+    out = prd_svc.grill_absorption(db, prd.id)
+
+    assert out["absorbed"] is True
+
+
+def test_an_answer_not_in_the_body_stays_behind(db):
+    prd = _prd(db)
+    _answer(db, prd, "we decided something unwritten")
+
+    assert prd_svc.grill_absorption(db, prd.id)["absorbed"] is False
