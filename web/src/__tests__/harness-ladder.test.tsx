@@ -1,0 +1,195 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { CapacityPanel } from "@/features/harness/CapacityPanel";
+import { Ladder } from "@/features/harness/Ladder";
+import { RoutingReason } from "@/features/harness/RoutingReason";
+import type { HarnessCapacity, HarnessLadder, HarnessLadderRung, HarnessRoutingReason } from "@/lib/types";
+
+const ladderRead = vi.fn();
+const profileRead = vi.fn();
+const save = vi.fn();
+const routing = vi.fn();
+const me = vi.fn();
+const capacity = vi.fn();
+vi.mock("@/lib/api", () => ({
+  setActiveProjectId: vi.fn(),
+  api: {
+    harnessLadder: (...a: unknown[]) => ladderRead(...a),
+    fleetProfile: (...a: unknown[]) => profileRead(...a),
+    saveFleetProfile: (...a: unknown[]) => save(...a),
+    harnessRouting: (...a: unknown[]) => routing(...a),
+    harnessCapacity: (...a: unknown[]) => capacity(...a),
+    me: () => me(),
+  },
+}));
+
+const rung = (r: string, removed = false): HarnessLadderRung => ({ rung: r, label: r, description: `${r} desc`, removed });
+const ladder = (o: Partial<HarnessLadder> = {}): HarnessLadder => ({
+  project_id: "p",
+  policy: [rung("subscription"), rung("local"), rung("api_key", true)],
+  override: null,
+  effective: [rung("subscription"), rung("local")],
+  refused: [],
+  ...o,
+});
+const profile = { default: null, override: null, profile: { defaults: ["claude"], weights: {}, excludes: [], budget_tokens: null, mix: null } };
+
+function wrap(ui: React.ReactElement) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  profileRead.mockResolvedValue(profile);
+  save.mockResolvedValue({});
+});
+
+const emptyCapacity: HarnessCapacity = {
+  org_id: "o", org: { name: "acme", entitlement_count: 0 }, as_of: "2026-10-31T00:00:00Z",
+  review_reserve: { vendors: [], empty: true, empty_for: [], only_unknown: false, only_unknown_for: [], warning: null },
+  entitlements: [],
+  routing_decisions: { window_start: "", window_end: "", groups: [], reason: null },
+  utilization: {
+    week_start: "", week_end: "", share_used: null, share_is_lower_bound: false, tokens_used: 0, budget: null,
+    entitlements_with_budget: 0, entitlements_without_budget: 0, unreported_spends: 0,
+    waves_ended_by_capacity: { count: null, note: "not recorded" },
+    items_deferred_to_reset: { count: null, note: "not recorded" },
+  },
+};
+
+describe("Fallback ladder", () => {
+  it("heads the override with the person's name", async () => {
+    ladderRead.mockResolvedValue(ladder({ override: [rung("local")] }));
+    wrap(<Ladder projectId="p" name="Alex Cain" />);
+    const ov = await screen.findByTestId("ladder-override");
+    expect(within(ov).getByTestId("ladder-override-heading")).toHaveTextContent(/^Alex Cain's override$/);
+    expect(ov).toHaveTextContent("Alex Cain's override · profile · work Alex Cain claims");
+    expect(ov).toHaveTextContent("REMOVED BY ALEX CAIN");
+    expect(ov).not.toHaveTextContent("my's");
+  });
+
+  it("without a name the override heading reads as the viewer's own", async () => {
+    ladderRead.mockResolvedValue(ladder());
+    wrap(<Ladder projectId="q" />);
+    const anon = await screen.findByTestId("ladder-override");
+    expect(anon).toHaveTextContent("Your override · profile · work you claim");
+    expect(anon).not.toHaveTextContent("my's");
+  });
+
+  it("the Capacity tab passes the signed-in person's name to the ladder", async () => {
+    me.mockResolvedValue({ id: "u1", name: "Alex Cain", handle: "alex", email: "a@example.com", avatar: "", initials: "AC" });
+    capacity.mockResolvedValue(emptyCapacity);
+    ladderRead.mockResolvedValue(ladder());
+    routing.mockResolvedValue({ item_key: "", stage: "", claimant: null, attempts: [], latest: null, reason: "none", at: null });
+    wrap(<CapacityPanel projectId="p" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("ladder-override-heading")).toHaveTextContent("Alex Cain's override"));
+    expect(screen.getByTestId("ladder-override")).toHaveTextContent("work Alex Cain claims");
+  });
+
+  it("marks policy-removed rungs REMOVED BY PROJECT POLICY, and offers no control to add them back", async () => {
+    ladderRead.mockResolvedValue(ladder());
+    wrap(<Ladder projectId="p" />);
+    const pol = await screen.findByTestId("ladder-policy");
+    expect(within(pol).getByText("REMOVED BY PROJECT POLICY")).toBeInTheDocument();
+    const row = within(screen.getByTestId("ladder-override")).getAllByTestId("ladder-override-rung")
+      .find((r) => r.getAttribute("data-rung") === "api_key")!;
+    expect(within(row).getByText("Can't add back")).toBeInTheDocument();
+    expect(within(row).queryByRole("button")).toBeNull();
+    expect(screen.queryAllByTestId("ladder-restore")).toHaveLength(0);
+  });
+
+  it("a policy-removed rung still in the saved profile is only a Can't add back row, and writes drop it", async () => {
+    // The server keeps the profile's rungs as stored and lists the policy-removed one in `refused`.
+    ladderRead.mockResolvedValue(ladder({
+      override: [rung("api_key"), rung("local")], effective: [rung("local")], refused: [rung("api_key")],
+    }));
+    wrap(<Ladder projectId="p" />);
+    const ov = await screen.findByTestId("ladder-override");
+    const rows = within(ov).getAllByTestId("ladder-override-rung").filter((r) => r.getAttribute("data-rung") === "api_key");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveAttribute("data-policy-removed", "true");
+    expect(within(rows[0]).getByText("Can't add back")).toBeInTheDocument();
+    expect(within(rows[0]).queryByRole("button")).toBeNull();
+    expect(within(ov).getAllByTestId("ladder-remove")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /Move api_key/ })).toBeNull();
+    // Restoring subscription sends the live rungs only — never the refused one.
+    await userEvent.setup().click(within(ov).getByTestId("ladder-restore"));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0][0].ladder).toEqual(["local", "subscription"]);
+  });
+
+  it("a rung listed only in refused is still Can't add back, with no control", async () => {
+    ladderRead.mockResolvedValue(ladder({
+      policy: [rung("subscription"), rung("local")], override: [rung("byok"), rung("local")],
+      effective: [rung("local")], refused: [rung("byok")],
+    }));
+    wrap(<Ladder projectId="p" />);
+    const ov = await screen.findByTestId("ladder-override");
+    const rows = within(ov).getAllByTestId("ladder-override-rung").filter((r) => r.getAttribute("data-rung") === "byok");
+    expect(rows).toHaveLength(1);
+    expect(within(rows[0]).getByText("Can't add back")).toBeInTheDocument();
+    expect(within(rows[0]).queryByRole("button")).toBeNull();
+  });
+
+  it("Remove, Restore and Match policy send the expected PUT body", async () => {
+    ladderRead.mockResolvedValue(ladder());
+    wrap(<Ladder projectId="p" />);
+    const user = userEvent.setup();
+    await user.click((await screen.findAllByTestId("ladder-remove"))[0]);
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save).toHaveBeenLastCalledWith({
+      project_id: "p", defaults: ["claude"], weights: {}, excludes: [], budget_tokens: null, mix: null, ladder: ["local"],
+    });
+
+    ladderRead.mockResolvedValue(ladder({ override: [rung("local")] }));
+    wrap(<Ladder projectId="p" />);
+    const restore = await screen.findByTestId("ladder-restore");
+    await user.click(restore);
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+    expect(save.mock.calls[1][0].ladder).toEqual(["local", "subscription"]);
+
+    await user.click(screen.getAllByTestId("ladder-match-policy")[0]);
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(3));
+    expect(save.mock.calls[2][0].ladder).toBeNull();
+  });
+
+  it("shows a server refusal verbatim and leaves the ladder as it was", async () => {
+    ladderRead.mockResolvedValue(ladder());
+    save.mockRejectedValueOnce(new Error(JSON.stringify({ detail: "ladder must be a non-empty list of rungs" })));
+    wrap(<Ladder projectId="p" />);
+    await userEvent.setup().click((await screen.findAllByTestId("ladder-remove"))[0]);
+    expect(await screen.findByTestId("ladder-refusal")).toHaveTextContent("ladder must be a non-empty list of rungs");
+    expect(within(screen.getByTestId("ladder-override")).getAllByTestId("ladder-remove")).toHaveLength(2);
+  });
+});
+
+describe("Routing reason", () => {
+  it("shows the stored why verbatim and the skip trace only as a PLANNED tag", async () => {
+    const r: HarnessRoutingReason = {
+      item_key: "GRPH-1270", stage: "build", claimant: "alex", at: "2026-11-04T14:18:00Z", reason: null,
+      latest: { verdict: "claimed", entitlement_id: "ent.a", why: "ent.a has headroom, ranked first" },
+      attempts: [{ kind: "claim", entitlement_id: "ent.a", reason: "ent.a has headroom, ranked first", agent_id: null,
+        agent_vendor: null, agent_model: null, matched: true, reserved_until: null, ended_reason: null }],
+    };
+    routing.mockResolvedValue(r);
+    wrap(<RoutingReason defaultItem="GRPH-1270" />);
+    expect(await screen.findByTestId("routing-why")).toHaveTextContent("“ent.a has headroom, ranked first”");
+    expect(routing).toHaveBeenCalledWith("GRPH-1270");
+    expect(screen.getByTestId("routing-head")).toHaveTextContent("GRPH-1270 · build · claimed by alex");
+    expect(screen.getByTestId("routing-chosen")).toHaveTextContent("ent.a");
+    expect(screen.getByTestId("routing-planned")).toHaveTextContent("PLANNED · skip trace");
+    expect(screen.getAllByTestId("routing-attempt")).toHaveLength(1);
+  });
+
+  it("an item never routed shows the server's reason", async () => {
+    routing.mockResolvedValue({ item_key: "GRPH-1", stage: "next", claimant: null, attempts: [], latest: null,
+      reason: "never routed by capacity", at: null });
+    wrap(<RoutingReason defaultItem="GRPH-1" />);
+    expect(await screen.findByTestId("routing-never")).toHaveTextContent("never routed by capacity");
+  });
+});

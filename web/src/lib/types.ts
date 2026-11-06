@@ -2334,6 +2334,8 @@ export interface FleetProfile {
   budget_tokens?: number | null;
   /** GRPH-865: harness → share of recent launches. Null is winner-take-all. */
   mix?: Record<string, number> | null;
+  /** The rungs this profile keeps, in order. Null follows the project policy. */
+  ladder?: string[] | null;
   updated_at: string | null;
 }
 
@@ -3200,4 +3202,32 @@ export interface UnmappedRefusals {
 export interface RecommendedRules {
   suggestions: RuleSuggestion[];
   sources: SuggestionSource[];
+}
+
+// --- Capacity tab: fallback ladder and routing reason --------------------------------------
+
+export interface HarnessLadderRung { rung: string; label: string; description: string; removed: boolean }
+export interface HarnessLadder {
+  project_id: string;
+  /** Every rung; the ones the policy removed are marked `removed`. */
+  policy: HarnessLadderRung[];
+  /** The caller's own ladder, or null when they follow the policy. */
+  override: HarnessLadderRung[] | null;
+  effective: HarnessLadderRung[];
+  /** Profile rungs the policy removed ("Can't add back"). */
+  refused: HarnessLadderRung[];
+}
+
+export interface HarnessRoutingAttempt {
+  kind: string; entitlement_id: string | null; reason: string; agent_id: string | null;
+  agent_vendor: string | null; agent_model: string | null; matched: boolean | null;
+  reserved_until: string | null; ended_reason: string | null;
+}
+export interface HarnessRoutingReason {
+  item_key: string; stage: string; claimant: string | null;
+  attempts: HarnessRoutingAttempt[];
+  latest: { verdict: string | null; entitlement_id: string | null; why: string } | null;
+  /** Set when the item was never routed: the server's own words. */
+  reason: string | null;
+  at: string | null;
 }

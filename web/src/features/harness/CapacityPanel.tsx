@@ -1,8 +1,10 @@
-import { useHarnessCapacity } from "@/lib/queries";
+import { useHarnessCapacity, useMe } from "@/lib/queries";
 import { consoleHref } from "@/lib/routes";
+import { Ladder } from "./Ladder";
+import { RoutingReason } from "./RoutingReason";
 import { ReviewReserve } from "./ReviewReserve";
 import { RoutingDecisions } from "./RoutingDecisions";
-import type { HarnessCapacityEntitlement, HarnessCapacityRunner } from "@/lib/types";
+import type { HarnessRoutingDecisions, HarnessCapacityEntitlement, HarnessCapacityRunner } from "@/lib/types";
 
 /**
  * PRD-62 S5/D8 — the Capacity tab: header, org rollup, then one row per entitlement. Every
@@ -113,8 +115,16 @@ function Row({ e }: { e: HarnessCapacityEntitlement }) {
   );
 }
 
+/** The most recent claim the router made in the window, by time: the item the reason defaults to. */
+function latestRoutedClaim(d: HarnessRoutingDecisions): string | null {
+  const rows = d.groups.filter((g) => g.verdict === "claimed" || g.verdict === "next_rung").flatMap((g) => g.recent);
+  rows.sort((a, b) => b.at.localeCompare(a.at));
+  return rows[0]?.item_key ?? null;
+}
+
 export function CapacityPanel({ projectId }: { projectId?: string }) {
   const { data, error, isError } = useHarnessCapacity(projectId);
+  const { data: me } = useMe();
   if (isError) {
     const { message, hint } = serverRefusal(error);
     return (
@@ -192,6 +202,8 @@ export function CapacityPanel({ projectId }: { projectId?: string }) {
       )}
       <RoutingDecisions decisions={data.routing_decisions} />
       <ReviewReserve reserve={data.review_reserve} />
+      <Ladder projectId={projectId} name={me?.name || me?.email || undefined} />
+      <RoutingReason defaultItem={latestRoutedClaim(data.routing_decisions)} />
     </section>
   );
 }
