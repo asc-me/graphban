@@ -398,6 +398,13 @@ class Wave:
     #: not `failures`: the child delivered to review, or its lease lapsed and moved on, and
     #: the server would rightly refuse the release. One line per item.
     lease_moved: list[str] = field(default_factory=list)
+    #: A build lease the server refused to extend while the bound child's process was still
+    #: alive (GRPH-1349). One line per item, naming the pid — a lapse under a live child is
+    #: an event, not silence.
+    lease_lapsed_live: list[str] = field(default_factory=list)
+    #: `review` rows held up because a live child is running: one line per row, naming the
+    #: child's item (GRPH-1349).
+    review_waits: list[str] = field(default_factory=list)
     #: Branches pushed but NOT proposed as a PR, with why (GRPH-949): a change outside every
     #: declared touchpoint, or a base the trunk has moved past in a way that matters — a
     #: shared file, a merge conflict, or a behind-check that could not be asked (GRPH-1087).

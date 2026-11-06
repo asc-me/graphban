@@ -2257,3 +2257,23 @@ def test_staff_every_row_still_leaves_a_held_row_alone(
         limits=Limits(max_workers=1),
     )
     assert mints == [] and result.spawned == 0, result.as_json()
+
+
+def test_review_waiting_on_a_live_child_names_the_childs_item():
+    """GRPH-1349: the wait is an entry, not silence."""
+    from gbfleet.supervisor import Wave
+    from gbfleet.until import _review_waits_on_live
+
+    class _P:
+        pid = 777
+
+    class _C:
+        held_items = ["GRPH-1343"]
+        process = _P()
+
+    wave = Wave()
+    rows = [{"id": "GRPH-1342"}]
+    got = _review_waits_on_live(wave, rows, [_C()])
+    assert got == ["GRPH-1342: review waits on live child pid 777 (item GRPH-1343)"]
+    _review_waits_on_live(wave, rows, [_C()])
+    assert wave.review_waits == got

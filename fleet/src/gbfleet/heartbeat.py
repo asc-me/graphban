@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 
+from . import observe
 from . import worktree as wt_mod
 
 #: Until a roster has said. Same idea as gbagent's fallback: short enough that one
@@ -80,6 +81,12 @@ def keep(wave, children, client, *, now: float | None = None) -> None:
             continue
         held = [i for i in (getattr(child, "held_items", None) or []) if i]
         if not held:
+            # A bound child's item is known from its seat before any roster reading lists
+            # the hold (GRPH-1349); without this a child busy from the start is never kept.
+            got = getattr(child, "assigned", None)
+            if isinstance(got, dict) and got.get("state") == "claimed" and got.get("item"):
+                held = [str(got["item"])]
+        if not held:
             continue
         last = float(getattr(child, "lease_kept_at", 0.0) or 0.0)
         if last > 0 and (moment - last) < interval:
@@ -95,8 +102,22 @@ def keep(wave, children, client, *, now: float | None = None) -> None:
             if commit:
                 payload["commit"] = commit
             try:
-                client.post_observation(**payload)
+                reply = client.post_observation(**payload)
+                if isinstance(reply, dict) and reply.get("extended") is False:
+                    _note_lapsed_live(wave, child, item_id)
             except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missed beat
                 wave.observations_refused += 1
                 wave.failures.append(f"{item_id}: lease not extended ({exc})")
         child.lease_kept_at = moment
+
+
+def _note_lapsed_live(wave, child, item_id: str) -> None:
+    """The server would not extend a lease whose process is alive: say so once per item."""
+    lines = getattr(wave, "lease_lapsed_live", None)
+    if lines is None:
+        return
+    if any(line.startswith(f"{item_id}:") for line in lines):
+        return
+    pid = getattr(getattr(child, "process", None), "pid", None)
+    lines.append(f"{item_id}: lease not extended for live child pid {pid} ({child.agent_id})")
+    observe.emit("lease_lapsed_live_child", item=item_id, pid=pid, agent=child.agent_id)

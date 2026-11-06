@@ -1025,6 +1025,14 @@ class PRCooldown(Exception):
     """
 
 
+class PRCINotGreen(PRCooldown):
+    """The cooldown is over, or CI has already answered, and `suite_green` is not attested at
+    the PR's head (GRPH-1345). A PRCooldown so every caller that already refuses `done` on a
+    cooldown still refuses on this, but unlike its parent it does NOT clear itself: waiting
+    longer changes nothing. A boundary that hints "wait and retry" for PRCooldown must catch
+    this subclass first and name the action instead (see mcp_server)."""
+
+
 #: A link to a proposed change, as opposed to any other URL an item might carry.
 #:
 #: GitHub and GitLab spell it differently and both are matched; anything else is not a PR
@@ -1200,17 +1208,10 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
     if any(CI_PREDICATE in attested_predicates(merged, commit=c) for c in commits):
         return
     waited = (utcnow() - _aware(linked)).total_seconds()
-    if waited >= cooldown:
-        return
-    if item.pr_linked_at is None:
-        # Persisted by `record_refusal`'s commit below. Nothing else on the item has been
-        # written by either caller at this point, so this is the only field that lands.
-        item.pr_linked_at = linked
-    remaining = int(cooldown - waited)
-    target = commits[0][:12] if commits else None
     runs = [a for a in attestation_receipts(merged)
             if any(isinstance(q, dict) and q.get("name") == CI_PREDICATE
                    for q in a.get("predicates") or [])]
+    target = commits[0][:12] if commits else None
     if runs:
         last = runs[-1]
         ok = CI_PREDICATE in attested_predicates([last])
@@ -1220,6 +1221,43 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
                + ("passed there" if ok else f"did not pass {CI_PREDICATE}"))
     else:
         run = f"no CI run has reported {CI_PREDICATE} for it yet"
+    # CI ran the suite at the PR's head and it did not pass: that is an answer, not silence,
+    # so there is nothing to wait for (GRPH-1345).
+    failed_at_head = [a for a in runs
+                      if any(same_commit(str(a.get("commit") or ""), c) for c in commits)
+                      and CI_PREDICATE not in attested_predicates([a])]
+    if failed_at_head:
+        if item.pr_linked_at is None:
+            item.pr_linked_at = linked
+        bad = failed_at_head[-1]
+        failed = (f"{bad.get('adapter')} "
+                  + (f"run {bad['run_ref']} " if bad.get("run_ref") else "")
+                  + f"at {str(bad.get('commit'))[:12]} did not pass {CI_PREDICATE}")
+        record_refusal(db, item, predicate="pr_ci_not_green", detail=failed)
+        raise PRCINotGreen(
+            f"{item.key} cannot move to done: CI ran the suite for its PR and it is red — "
+            f"{failed}. Waiting will not change this; fix the PR and let CI attest "
+            f"{CI_PREDICATE} at its head")
+    if waited >= cooldown:
+        # The cooldown gave CI time to answer. Silence after it is not a pass.
+        if commits or not any(CI_PREDICATE in attested_predicates([a]) for a in runs):
+            if item.pr_linked_at is None:
+                item.pr_linked_at = linked
+            where = (f"commit {target}" if target
+                     else "any commit (none is named for its PR)")
+            record_refusal(db, item, predicate="pr_ci_not_green",
+                           detail=f"cooldown over, no {CI_PREDICATE} at {where}: {run}")
+            raise PRCINotGreen(
+                f"{item.key} cannot move to done: its PR was linked {int(waited)}s ago, the "
+                f"cooldown is over, and {CI_PREDICATE} is not attested for {where} — {run}. "
+                f"Waiting will not change this; CI must attest {CI_PREDICATE} at the PR's "
+                "head or merge commit")
+        return
+    if item.pr_linked_at is None:
+        # Persisted by `record_refusal`'s commit below. Nothing else on the item has been
+        # written by either caller at this point, so this is the only field that lands.
+        item.pr_linked_at = linked
+    remaining = int(cooldown - waited)
     waiting_on = (f"waiting on CI for commit {target}: {run}" if target
                   else f"no commit is named for its PR, so no {CI_PREDICATE} attestation can "
                        f"end the wait early ({run})")
