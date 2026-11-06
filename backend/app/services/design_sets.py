@@ -21,6 +21,7 @@ from app.models import (
     DesignSet, Document, PlatformConfig,
 )
 from app.services import prds as prd_svc
+from app.services import spec_alignment
 
 STATUSES = ("open", "accepted", "stale", "frozen")
 TIERS = ("BACKED", "HALF", "UNBACKED")
@@ -107,7 +108,7 @@ def open_design(db: Session, project_id: str, prd_id: str, created_by: str = "")
     return to_dict(db, ds)
 
 
-def put_preamble(db: Session, project_id: str, body: str, cites_prd_id: str,
+def put_preamble(db: Session, project_id: str, body: str, cites_prd_id: str | None,
                  created_by: str = "") -> dict:
     """Write the project's standing preamble; a new version stales the sets built on the old."""
     from app.services import documents as documents_svc
@@ -306,6 +307,7 @@ def to_dict(db: Session, ds: DesignSet) -> dict:
         "screens": [screen_dict(s) | _screen_canvas(db, ds, s)
                     | {"findings": _screen_findings(db, ds, s)} for s in ds.screens],
         "acceptance_blockers": acceptance_blockers(ds),
+        "alignment": spec_alignment.for_design_set(db, ds),
     }
     if ds.status == "stale":
         out["stale_reason"], out["stale_detail"] = ds.stale_reason, ds.stale_detail or {}
@@ -557,7 +559,7 @@ def _compile_text(db: Session, ds: DesignSet, row: DesignScreen, prd, base) -> s
 
 def compile_prompts(db: Session, project_id: str, set_id: str, screen: str | None = None,
                     actor: str = "") -> dict:
-    """Compile candidate `design_prompt` rows. A pure function of the PRD text, the accepted set
+    """Compile candidate `design_prompt` rows. A pure function of the PRD text, the set
     constraints, the preamble, each confirmed tier and the open corrections: the same inputs give
     the same prompt hash and no new row. Writes nothing when any screen in it is refused."""
     ds = _get(db, project_id, set_id)
@@ -565,15 +567,6 @@ def compile_prompts(db: Session, project_id: str, set_id: str, screen: str | Non
     rows = [_screen_row(ds, screen)] if screen is not None else list(ds.screens)
     if not rows:
         raise errors.Validation(f"{ds.id} has no screens", hint="put_set_constraints lists them")
-    unconfirmed = [r.screen for r in rows if not r.tier_confirmed]
-    if unconfirmed or not ds.constraints_accepted:
-        why = []
-        if unconfirmed:
-            why.append(f"tier not confirmed on: {', '.join(unconfirmed)}")
-        if not ds.constraints_accepted:
-            why.append("the set constraints are not accepted")
-        raise errors.Validation("; ".join(why), hint="confirm_tier names a tier; a prompt never "
-                                "claims BACKED for an unconfirmed one")
     if ds.status == "stale":
         # Recompiling is what re-pins a stale set to the current hashes.
         prd = prd_svc.get_prd(db, ds.prd_id)
@@ -600,6 +593,10 @@ def compile_prompts(db: Session, project_id: str, set_id: str, screen: str | Non
                 created_by=actor)
             documents_svc._chunk(latest, text)
             db.add(latest)
+        if row.prompt_hash != digest:
+            # Compiling pins the screen's prompt: nobody accepts it, so a canvas binds to it.
+            row.prompt_hash = digest
+            row.canvas_hash = ""
         out.append({"screen": row.screen, "prompt_hash": digest, "document_id": latest.id,
                     "version": latest.version, "new": new, "acceptable": base is not None})
     db.commit()
@@ -940,8 +937,7 @@ def file_finding(db: Session, project_id: str, set_id: str, screen: str, kind: s
     db.add(f)
     db.commit()
     recompiled = None
-    if (f.correction_id and cand is not None and ds.status != "stale"
-            and ds.constraints_accepted and row.tier_confirmed):
+    if f.correction_id and cand is not None and ds.status != "stale":
         # Only this screen recompiles, and only now that the correction is stored. The new
         # candidate keeps its compiler's name: the filer did not author the compile, and
         # stamping them would bar them from filing the next finding.
@@ -1075,7 +1071,7 @@ def accept_design(db: Session, project_id: str, set_id: str, actor: str,
                 for c in old.chunks:
                     c.governing = False
         doc.governing, doc.accepted, doc.status, doc.stale_reason = True, True, "active", ""
-        documents_svc.embed_document(doc)
+        documents_svc.embed_document(db, doc)
     reviews = list(db.scalars(select(Document).where(
         Document.set_id == ds.id, Document.kind == "design_review").order_by(Document.version)))
     for r in reviews:
@@ -1092,7 +1088,7 @@ def accept_design(db: Session, project_id: str, set_id: str, actor: str,
     documents_svc._chunk(review, record)
     db.add(review)
     db.flush()
-    documents_svc.embed_document(review)
+    documents_svc.embed_document(db, review)
     db.commit()
     return to_dict(db, ds) | {"accepted_by": person, "relayed_by": relayed,
                               "review_record_id": review.id}
