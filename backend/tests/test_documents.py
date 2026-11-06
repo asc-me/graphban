@@ -143,18 +143,20 @@ def test_set_constraints_never_searched(db, pid):
                             include_drafts=True)["results"] == []
 
 
-def test_prompt_is_embedded_only_at_acceptance(db, pid, monkeypatch):
+def test_prompt_is_embedded_only_when_approved_to_build(db, pid, monkeypatch):
     from app.config import settings
     import app.embeddings as emb
     prd = _baselined(db, pid)
     monkeypatch.setattr(settings, "embed_provider", "openai")
     monkeypatch.setattr(emb, "safe_embed", lambda t: _vec())
     d = Document(id=docs.new_id(), project_id=pid, kind="design_prompt", prd_id=prd.id,
-                 content_hash="sha256:x", accepted=False)
-    docs._chunk(d, "## H\nokapi")
-    assert docs.embed_document(d) == 0 and all(c.embedding is None for c in d.chunks)
-    d.accepted = True
-    assert docs.embed_document(d) == 1 and d.chunks[0].embedding == _vec()
+                 content_hash="sha256:x")
+    docs._chunk(d, "## Tokens\nokapi")  # Spacing is a gap
+    assert docs.embed_document(db, d) == 0 and all(c.embedding is None for c in d.chunks)
+    d2 = Document(id=docs.new_id(), project_id=pid, kind="design_prompt", prd_id=prd.id,
+                  content_hash="sha256:y")
+    docs._chunk(d2, "## Tokens\nokapi\n\n## Spacing\nfine")
+    assert docs.embed_document(db, d2) == 2 and d2.chunks[0].embedding == _vec()
 
 
 def test_search_does_not_write_an_unindexed_baseline(db, pid):
@@ -169,24 +171,36 @@ def test_search_does_not_write_an_unindexed_baseline(db, pid):
     assert list(db.scalars(select(DocumentChunk).where(DocumentChunk.prd_id == prd.id)))
 
 
-def test_unaccepted_prompt_and_canvas_never_indexed(db, pid):
+FULL = "## Tokens\nokapi\n\n## Spacing\nfine"
+
+
+def test_only_an_approved_to_build_document_is_searchable(db, pid):
     prd = _baselined(db, pid)
-    for kind, accepted in (("design_prompt", False), ("design_prompt", True), ("canvas", True)):
-        d = Document(id=docs.new_id(), project_id=pid, kind=kind, prd_id=prd.id,
-                     content_hash="sha256:x", accepted=accepted, screen=f"{kind}{accepted}")
-        docs._chunk(d, "## H\nokapi")
+    none = prd_svc.create_prd(db, title="Unbaselined", project_id=pid, body=BODY)
+    for kind, text, owner, screen in (
+            ("design_prompt", FULL, prd.id, "full"),         # every heading: approved
+            ("design_prompt", "## Tokens\nokapi", prd.id, "gap"),  # one heading missing
+            ("design_prompt", FULL, None, "nolink"),          # no linked PRD
+            ("design_prompt", FULL, none.id, "nobaseline"),   # linked PRD has no baseline
+            ("canvas", FULL, prd.id, "canvas")):
+        d = Document(id=docs.new_id(), project_id=pid, kind=kind, prd_id=owner,
+                     content_hash="sha256:x", accepted=True, screen=screen)
+        docs._chunk(d, text)
         db.add(d)
     db.commit()
     r = docs.search_docs(db, pid, "okapi", include_design=True)
-    assert [h["kind"] for h in r["results"]] == ["design_prompt"]
+    assert [h["kind"] for h in r["results"]] == ["design_prompt"] and r["results"][0]["status"] == "approved"
     assert docs.search_docs(db, pid, "okapi")["results"] == []
+    # the rest are drafts, listed on request and never as approved
+    drafts = docs.search_docs(db, pid, "okapi", include_drafts=True, include_design=True)
+    assert sorted(h["status"] for h in drafts["results"]) == ["approved", "draft", "draft", "draft"]
 
 
 def test_stale_chunks_carry_reason_only_with_include_design(db, pid):
     prd = _baselined(db, pid)
     d = Document(id=docs.new_id(), project_id=pid, kind="design_prompt", prd_id=prd.id,
                  content_hash="sha256:x", accepted=True, status="stale", stale_reason="preamble")
-    docs._chunk(d, "## H\nokapi")
+    docs._chunk(d, FULL)
     db.add(d)
     db.commit()
     assert docs.search_docs(db, pid, "okapi")["results"] == []

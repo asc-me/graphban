@@ -70,10 +70,9 @@ TOOL_TIERS: dict[str, str] = {
         "create_prd", "update_prd", "grill_prd", "answer_grill", "decompose_prd",
         "close_prd", "request_rebaseline", "submit_verdict",
         "put_document", "get_document", "search_docs",
-        "open_design", "put_preamble", "put_set_constraints", "accept_set_constraints",
+        "open_design", "put_preamble", "put_set_constraints",
         "confirm_tier", "get_design_set",
-        "compile_prompts", "accept_prompt", "put_canvas", "file_finding", "resolve_finding",
-        "accept_design",
+        "compile_prompts", "put_canvas", "file_finding", "resolve_finding",
     )},
 
     # ---- codegraph: WRITING the graph (+ scan produce/read) --------------------------------

@@ -6,8 +6,8 @@ Ledger rows for the non-PRD governing documents. A PRD stays a PRD: the index re
 | kind            | indexed by default                | written by                |
 | preamble        | never (stored, not embedded)      | a person (`put_document`) |
 | set_constraints | never (stored, not embedded)      | design-set operations     |
-| design_prompt   | only once accepted                | design-set operations     |
-| design_review   | only once accepted                | design-set operations     |
+| design_prompt   | only once approved to build       | design-set operations     |
+| design_review   | only once approved to build       | design-set operations     |
 | canvas          | never (blob only)                 | design-set operations     |
 
 Absence is never reported as clean: an empty default search says drafts were excluded.
@@ -25,12 +25,16 @@ from app import errors
 from app.hashing import content_hash
 from app.models import Document, DocumentChunk, Prd, Project
 from app.services import prds as prd_svc
+from app.services import spec_alignment
 
 KINDS = ("preamble", "set_constraints", "design_prompt", "design_review", "canvas")
 # Only these may be written through `put_document`; the rest belong to the design-set
 # operations, so a general ingest can never mint a governing prompt or review.
 PUT_KINDS = ("preamble",)
-ACCEPT_GATED = ("design_prompt", "design_review")
+# Nothing is accepted by a person any more (GRPH-1368). A non-PRD document is searchable only
+# when `spec_alignment` says its set (or it) is approved to build.
+ACCEPT_GATED: tuple[str, ...] = ()
+DESIGN_DOCS = ("design_prompt", "design_review")
 # Stored with chunks for `get_document`, but outside the searchable corpus and never embedded.
 NEVER_INDEXED = ("canvas", "preamble", "set_constraints")
 BLOB_STATUSES = ("none", "pending", "stored")
@@ -42,11 +46,11 @@ def new_id() -> str:
     return f"DOC-{uuid.uuid4().hex[:10]}"
 
 
-def indexed(doc: Document, *, include_design: bool = False) -> bool:
+def indexed(db: Session, doc: Document, *, include_design: bool = False) -> bool:
     """Whether search may return this row's chunks."""
     if doc.kind in NEVER_INDEXED or not doc.governing:
         return False
-    return doc.kind in ACCEPT_GATED and doc.accepted and include_design
+    return include_design and spec_alignment.approved(db, doc)
 
 
 def _split_long(text: str, limit: int) -> list[str]:
@@ -105,11 +109,12 @@ def _vector(text: str) -> list[float] | None:
     return safe_embed(text)
 
 
-def _embeddable(chunk: DocumentChunk, doc: Document | None) -> bool:
-    """Only governing text carries a vector: a PRD baseline, or an accepted prompt / review."""
+def _embeddable(db: Session, chunk: DocumentChunk, doc: Document | None) -> bool:
+    """Only governing text carries a vector: a PRD baseline, or a prompt / review whose
+    design set is approved to build."""
     if doc is None:
         return chunk.kind == "prd"
-    return doc.kind in ACCEPT_GATED and bool(doc.accepted)
+    return doc.kind in DESIGN_DOCS and spec_alignment.approved(db, doc)
 
 
 def _chunk(doc: Document, body: str) -> None:
@@ -122,11 +127,11 @@ def _chunk(doc: Document, body: str) -> None:
             extractor_version=EXTRACTOR_VERSION, governing=True, embedding=None))
 
 
-def embed_document(doc: Document) -> int:
-    """Embed an accepted design_prompt / design_review's chunks — the acceptance writer calls
-    this. Anything else is left without a vector. Returns the number of chunks embedded; the
-    caller commits."""
-    if doc.kind not in ACCEPT_GATED or not doc.accepted:
+def embed_document(db: Session, doc: Document) -> int:
+    """Embed a design_prompt / design_review's chunks once its set is approved to build.
+    Anything else is left without a vector. Returns the number of chunks embedded; the caller
+    commits."""
+    if doc.kind not in DESIGN_DOCS or not spec_alignment.approved(db, doc):
         return 0
     for c in doc.chunks:
         c.embedding = _vector(c.text)
@@ -184,7 +189,7 @@ def backfill_embeddings(db: Session) -> int:
     n = 0
     for c, doc in db.execute(select(DocumentChunk, Document).outerjoin(
             Document, DocumentChunk.document_id == Document.id)).all():
-        if _embeddable(c, doc):
+        if _embeddable(db, c, doc):
             c.embedding = _vector(c.text)
             n += 1
         else:
@@ -204,7 +209,7 @@ def _may_cite(db: Session, project_id: str, prd_project_id: str) -> bool:
 
 
 def put_document(
-    db: Session, *, project_id: str, kind: str, body: str, prd_id: str,
+    db: Session, *, project_id: str, kind: str, body: str, prd_id: str | None,
     title: str = "", created_by: str = "",
 ) -> dict:
     if kind not in KINDS:
@@ -222,24 +227,28 @@ def put_document(
             hint="call put_document with a human credential")
     if not (body or "").strip():
         raise errors.Validation("body is empty", hint="a preamble needs text")
-    prd = prd_svc.get_prd(db, prd_id)
-    if prd is None or not _may_cite(db, project_id, prd.project_id):
-        # One message for "no such PRD" and "a PRD you may not cite", so a refusal never tells
-        # the caller that a PRD id exists in another tenant.
-        raise errors.NotFound(f"prd not found in this project: {prd_id}")
-    base = prd_svc.baseline_of(db, prd.id)
-    if base is None:
-        # A precondition on the cited PRD, not a policy refusal: a Validation, so it stays
-        # out of the bare-409 ratchet (scripts/refusal_ratchet.py).
-        raise errors.Validation(
-            f"{prd.id} has no baseline", hint="the preamble cites the baseline body hash; "
-            "approve the visual-system PRD first")
+    prd = base = None
+    if prd_id:
+        prd = prd_svc.get_prd(db, prd_id)
+        if prd is None or not _may_cite(db, project_id, prd.project_id):
+            # One message for "no such PRD" and "a PRD you may not cite", so a refusal never
+            # tells the caller that a PRD id exists in another tenant.
+            raise errors.NotFound(f"prd not found in this project: {prd_id}")
+        base = prd_svc.baseline_of(db, prd.id)
+        if base is None:
+            # A precondition on the cited PRD, not a policy refusal: a Validation, so it stays
+            # out of the bare-409 ratchet (scripts/refusal_ratchet.py).
+            raise errors.Validation(
+                f"{prd.id} has no baseline", hint="the preamble cites the baseline body hash; "
+                "approve the visual-system PRD first")
+    # No PRD: stored, citing nothing, and never approved to build (spec_alignment).
+    cite_hash = content_hash(base.body) if base is not None else ""
     digest = content_hash(body)
     rows = list(db.scalars(select(Document).where(
         Document.project_id == project_id, Document.kind == kind,
         Document.set_id == "", Document.screen == "").order_by(Document.version)))
     current = next((r for r in reversed(rows) if r.governing), None)
-    if current and current.content_hash == digest and current.prd_hash == content_hash(base.body):
+    if current and current.content_hash == digest and current.prd_hash == cite_hash:
         return to_dict(current)  # same text, same citation: not a new version
     for r in rows:
         r.governing = False
@@ -247,7 +256,7 @@ def put_document(
             c.governing = False
     doc = Document(
         id=new_id(), project_id=project_id, kind=kind, title=title or "Preamble",
-        prd_id=prd.id, prd_hash=content_hash(base.body), version=(rows[-1].version + 1) if rows else 1,
+        prd_id=prd.id if prd else None, prd_hash=cite_hash, version=(rows[-1].version + 1) if rows else 1,
         status="active", content_hash=digest, governing=True, created_by=created_by)
     _chunk(doc, body)
     db.add(doc)
@@ -353,15 +362,15 @@ def get_document(db: Session, project_id: str, doc_id: str) -> dict:
     doc = db.get(Document, doc_id)
     if doc is None or doc.project_id != project_id:
         raise errors.NotFound(f"document not found: {doc_id}")
-    return to_dict(doc)
+    return to_dict(doc) | {"alignment": spec_alignment.for_document(db, doc)}
 
 
-def _doc_status(doc: Document, chunk: DocumentChunk) -> str:
+def _doc_status(doc: Document, chunk: DocumentChunk, approved: bool) -> str:
     if not chunk.governing:
         return "superseded"
     if doc.status == "stale":
         return "stale"
-    return "accepted" if (doc.accepted or doc.kind not in ACCEPT_GATED) else "draft"
+    return "approved" if approved else "draft"
 
 
 def search_docs(
@@ -411,6 +420,7 @@ def search_docs(
         select(DocumentChunk, Document)
         .outerjoin(Document, DocumentChunk.document_id == Document.id)
         .where(DocumentChunk.project_id == project_id)).all()
+    verdicts: dict[str, bool] = {}
     for c, doc in rows:
         if doc is None:  # PRD baseline chunk
             status = "baseline" if c.governing else "superseded"
@@ -420,7 +430,9 @@ def search_docs(
         else:
             if doc.kind in NEVER_INDEXED or (not doc.governing and not include_drafts):
                 continue
-            status = _doc_status(doc, c)
+            if doc.id not in verdicts:
+                verdicts[doc.id] = spec_alignment.approved(db, doc)
+            status = _doc_status(doc, c, verdicts[doc.id])
             if status in ("draft", "superseded"):
                 if not include_drafts:
                     continue
