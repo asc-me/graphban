@@ -220,6 +220,43 @@ def ladder_of(db: Session, project_id: str | None, user_id: str | None = None) -
     return mine or allowed
 
 
+RUNG_INFO: dict[str, dict[str, str]] = {
+    "subscription": {"label": "Subscription",
+                     "description": "A person's own plan, used while it has headroom."},
+    "api_key": {"label": "API key",
+                "description": "An org API key, used within its stated budget."},
+    "local": {"label": "Local",
+              "description": "A local model, used when the rungs above are spent."},
+}
+
+
+def _rung(name: str, *, removed: bool = False) -> dict:
+    info = RUNG_INFO[name]
+    return {"rung": name, "label": info["label"], "description": info["description"],
+            "removed": removed}
+
+
+def ladder_read(db: Session, project_id: str, user_id: str | None) -> dict:
+    """The Ladder page's read: the policy's rungs (plus the ones it removed, marked), the
+    caller's own ladder or null, what `ladder_of` resolves, and the profile rungs the policy
+    removed ("Can't add back"). `effective` IS `ladder_of`, not a second resolution."""
+    policy = policy_of(db, project_id) or {}
+    set_ = policy.get("ladder") if isinstance(policy, dict) else None
+    allowed = (list(set_) if isinstance(set_, list) and set_ and all(r in LADDER_RUNGS for r in set_)
+               else list(DEFAULT_LADDER))
+    profile = effective(db, user_id, project_id)
+    mine = (profile or {}).get("ladder") or None
+    effective_ = ladder_of(db, project_id, user_id)
+    return {
+        "project_id": project_id,
+        "policy": [_rung(r) for r in allowed]
+                  + [_rung(r, removed=True) for r in LADDER_RUNGS if r not in allowed],
+        "override": [_rung(r) for r in mine] if mine else None,
+        "effective": [_rung(r) for r in effective_],
+        "refused": [_rung(r, removed=True) for r in (mine or []) if r not in allowed],
+    }
+
+
 def _ceiling(value: Any) -> dict | None:
     """GRPH-948: the most items one `claim_cluster` may lease, per lane. A CEILING on the
     caller's `max_items`, never a floor. Null / empty keeps `DEFAULT_CLUSTER_CEILING`."""

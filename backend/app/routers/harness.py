@@ -17,6 +17,9 @@ from app.models import User
 from app.security import authz
 from app.security.deps import get_agent_key, get_current_user
 from app.services import events as events_svc
+from app.services import fleet_profiles as fleet_profiles_svc
+from app.services import items as items_svc
+from app.services import routing as routing_svc
 from app.services import harness as harness_svc
 from app.services import harness_rules
 from app.services import headroom as headroom_svc
@@ -63,6 +66,26 @@ def harness_capacity(project_id: str, db: Session = Depends(get_db),
     org_id = quotas.org_id_for_project(db, project_id)
     quotas.require_capacity_routing(db, org_id)
     return headroom_svc.capacity(db, org_id)
+
+
+@router.get("/ladder")
+def harness_ladder(project_id: str, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """The ladder in force for the caller: `policy` (rungs, removed ones marked), `override`
+    (their profile ladder or null), `effective` and `refused`. Writes: PUT /api/fleet/profile."""
+    authz.require_readable(db, user.id, project_id)
+    return fleet_profiles_svc.ladder_read(db, project_id, user.id)
+
+
+@router.get("/routing/{item_id}")
+def harness_routing(item_id: str, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    """Why one item was routed where it was: attempts in order and the latest verdict."""
+    item = items_svc.get_item(db, item_id)
+    if item is None:
+        raise HTTPException(404, "item not found")
+    authz.require_readable(db, user.id, item.project_id, "item")
+    return routing_svc.routing_reason(db, item)
 
 
 @router.get("/guidance")
