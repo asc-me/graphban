@@ -773,3 +773,45 @@ def test_doctor_fails_a_tracked_credential_even_when_gitignore_names_it(
     detail = " ".join(l["detail"] for l in lines if l["name"] == "gitignore")
     assert "git tracks" in detail and ".mcp.json" in detail
     assert "git rm --cached" in detail
+
+
+def test_resolve_prefers_a_key_that_can_supervise_and_says_why_none_can(home, monkeypatch):
+    """GRPH-1346. Sabotage: drop the `can_supervise` loop and the first key wins."""
+    monkeypatch.setenv(config.API_KEY_ENV, "gb_sk_NOPLANNER")
+    config.save_supervisor_key("core", "gb_sk_PLANNER")
+    verdicts = {"gb_sk_NOPLANNER": False, "gb_sk_PLANNER": True}
+    monkeypatch.setattr(doctor, "can_supervise", lambda url, key, timeout=5.0: verdicts[key])
+    assert doctor.resolve_supervisor_key("core", url="http://x") == "gb_sk_PLANNER"
+    assert doctor.resolve_supervisor_key("core") == "gb_sk_NOPLANNER"
+    assert doctor.supervisor_key_verdict("core", "http://x") == ""
+
+    verdicts["gb_sk_PLANNER"] = False
+    assert doctor.resolve_supervisor_key("core", url="http://x") == "gb_sk_NOPLANNER"
+    why = doctor.supervisor_key_verdict("core", "http://x")
+    assert "no key can supervise" in why and "GRAPHBAN_API_KEY" in why
+    assert "gb_sk_" not in why
+
+
+def test_can_supervise_posts_a_validating_probe_and_reads_only_403_and_404(monkeypatch):
+    """GRPH-1346 bounce. `{"kind": "probe"}` is 422 at the real route for every key, and
+    "not 403" read as "can supervise". The body now names an item no key resolves, so 404 is
+    the pass; 422 (the check did not run) is None, not True. The real route's answers to this
+    body are pinned in `backend/tests/test_fleet_observations.py`."""
+    import io
+    import urllib.error
+    import urllib.request
+
+    sent: list = []
+    answer = {"code": 404}
+
+    def fake_urlopen(req, timeout=None):
+        sent.append(json.loads(req.data))
+        raise urllib.error.HTTPError(req.full_url, answer["code"], "x", {}, io.BytesIO(b""))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert doctor.can_supervise("http://gb.invalid", "gb_sk_X") is True
+    assert sent[-1] == doctor.PROBE_BODY and sent[-1]["item_id"] and sent[-1]["kind"]
+    for code, want in ((403, False), (401, False), (422, None), (500, None)):
+        answer["code"] = code
+        assert doctor.can_supervise("http://gb.invalid", "gb_sk_X") is want, code
+    assert doctor.can_supervise("file:///etc/passwd", "gb_sk_X") is None

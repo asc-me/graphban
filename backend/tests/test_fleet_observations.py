@@ -821,3 +821,42 @@ def test_a_trunk_merge_is_a_note_and_moves_nothing(client, auth, db):
     assert any(n["detail"] == f"gbfleet: `gb/behind`: {why}" for n in _notes(client, hand, item))
     empty = _post(client, planner, item_id=item, kind="merged_trunk", branch="gb/behind")
     assert empty.status_code == 422, empty.text
+
+
+# ---- the start-up probe gbfleet and gban doctor send (GRPH-1346) ------------------------------
+
+
+def test_the_supervision_probe_is_403_for_a_refused_key_and_404_for_a_supervising_one(
+    client, auth, db,
+):
+    """The EXACT bodies `gbfleet until`'s preflight and `gban doctor.can_supervise` post.
+
+    The first attempt posted `{"kind": "probe"}`. `ObservationIn.item_id` is required, so
+    FastAPI answered 422 for every key before `record_observation` reached its credential
+    gate, and both callers read "not 403" as "can supervise". A mock that answered 403
+    whatever the body kept that green. This asks the real route. Sabotage: send
+    `{"kind": "probe"}` here and every assertion on 403 fails with 422.
+    """
+    cli_src = REPO / "cli" / "src"
+    if str(cli_src) not in sys.path:
+        sys.path.insert(0, str(cli_src))
+    from gban.doctor import PROBE_BODY
+    from gbfleet.client import OBSERVATION_PROBE
+
+    assert PROBE_BODY == OBSERVATION_PROBE
+    proj, hand, planner = _project(client, auth)
+    setup_key, _ = _setup_key(client, auth, proj)
+    worker_key = client.post(
+        "/api/fleet/keys", json={"project_id": proj, "role": "worker", "wave": "wave-1"},
+        headers=auth).json()["plaintext"]
+    unscoped = client.post(
+        "/api/api-keys", json={"name": "global", "tool_tiers": ["fleet", "prd"]},
+        headers=auth).json()["plaintext"]
+    for refused in (worker_key, unscoped):
+        got = _post(client, refused, **OBSERVATION_PROBE)
+        assert got.status_code == 403, got.text
+        assert "planner" in got.text
+    for able in (planner, setup_key, hand):
+        got = _post(client, able, **OBSERVATION_PROBE)
+        assert got.status_code == 404, got.text
+        assert "no such item" in got.text

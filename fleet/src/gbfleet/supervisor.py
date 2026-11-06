@@ -246,6 +246,10 @@ class Wave:
     spawned: list[Child] = field(default_factory=list)
     reaped: list[Reaped] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
+    #: Observation writes (base, lease, PR, salvage) the server refused or never answered
+    #: (GRPH-1346). Also in `failures`, one line each, but a count is what the summary can
+    #: key `ok` on: a wave whose every record was dropped must not read as clean.
+    observations_refused: int = 0
     #: Seats handed in but never redeemed, because the wave stopped, the machine was
     #: full, the server was unreachable, or `--max-children` was already spent. Not a
     #: seat that was merely past `--max-workers`: those run when a slot frees
@@ -2292,6 +2296,7 @@ def _observe(wave: Wave, client: Graphban | None, item_id: str, failure: str,
     try:
         client.post_observation(item_id=item_id, **payload)
     except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
+        wave.observations_refused += 1
         wave.failures.append(f"{item_id}: {failure} ({exc})")
 
 
