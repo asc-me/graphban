@@ -277,7 +277,7 @@ function SpecFactsBand({ status, facts, closed }: { status: PrdStatus; facts?: i
       {status === "draft" && (
         <span data-testid="draft-line">A draft is not the spec. Default search does not return it.</span>
       )}
-      {status === "approved" && (
+      {status === "approved" && facts?.baseline_hash && (
         <span data-testid="approved-line">Saving writes the next draft. This baseline stays what search returns.</span>
       )}
       {closed && <span data-testid="closed-line">A closed PRD takes no edits. Changes after the close become a new PRD.</span>}
