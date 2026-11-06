@@ -115,19 +115,9 @@ def _newest(db: Session) -> InstalledPlanGrant | None:
 def load(db: Session) -> dict:
     """Startup: re-verify the persisted grant and keep the verdict. Never raises on a bad grant."""
     row = _newest(db)
-    if row is None:
-        _state.update(reason="missing", plan=None, issued_at=None, expires_at=None)
-        _log_state("missing")
-        return status()
-    _set(verify(db, row.document, row.signature), db)
+    _set({"ok": False, "reason": "missing"} if row is None
+         else verify(db, row.document, row.signature), db)
     return status()
-
-
-def _log_state(reason: str) -> None:
-    global _last_logged
-    if _last_logged != reason:
-        _last_logged = reason
-        logger.info("plan grant: not in force (%s)", reason)
 
 
 def install(db: Session, user: User | None, doc: bytes, sig: bytes, *,

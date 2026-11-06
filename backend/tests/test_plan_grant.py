@@ -194,3 +194,22 @@ def test_api_key_gets_401_on_install(client, box):
     r = client.post("/api/platform/plan-grant", json=_body(*_grant(box["org"])),
                     headers={"X-API-Key": key["plaintext"]})
     assert r.status_code == 401
+
+
+def test_a_deleted_grant_reads_missing_at_next_start_and_ends_reservations(client, box):
+    from app.db import SessionLocal
+    from app.models import InstalledPlanGrant, Item, RoutingDecision
+
+    _install(client, box, *_grant(box["org"]))
+    db = SessionLocal()
+    try:
+        db.add(RoutingDecision(item_id=db.query(Item).first().id, kind="reservation", reason="r"))
+        db.query(InstalledPlanGrant).delete()
+        db.commit()
+        assert G.load(db)["reason"] == "missing"
+        live = db.query(RoutingDecision).filter(RoutingDecision.kind == "reservation",
+                                                RoutingDecision.ended_at.is_(None)).count()
+        assert live == 0
+    finally:
+        db.close()
+    assert _list(client, box).status_code == 402
