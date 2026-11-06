@@ -270,21 +270,35 @@ def supervisor_key_candidates(project: str, repo: Path | None = None) -> list[tu
     return unique
 
 
+# GRPH-1346: the same body as `gbfleet.client.OBSERVATION_PROBE`. It must validate: the
+# route's `item_id` is required, and a body without it is 422 before the credential check,
+# so every key would read as able. A real kind and an item no key resolves: 401/403 is the
+# refusal, 404 "no such item" is the pass, and nothing is written either way.
+PROBE_BODY = {"item_id": "__gbfleet_probe_no_such_item__", "kind": "cut_from"}
+
+
 def can_supervise(url: str, key: str, timeout: float = 5.0) -> bool | None:
-    """Whether the observations route accepts this key: False on 401/403, True on any other
-    answer, None when the server could not be asked. The server authorises before it reads the
-    body, so a `kind=probe` post with no item is refused only for the credential."""
+    """Whether the observations route accepts this key: False on 401/403, True on 404 (the
+    probe item does not exist, so the credential gate passed) or 2xx, None when the server
+    could not be asked or answered anything else — a check that did not run is not a pass."""
+    import json
     import urllib.error
     import urllib.request
 
+    if not url.startswith(("http://", "https://")):
+        # urlopen would read `file:` and friends too, and send the credential with it.
+        return None
     req = urllib.request.Request(
-        url.rstrip("/") + "/api/fleet/observations", data=b'{"kind": "probe"}',
+        url.rstrip("/") + "/api/fleet/observations", data=json.dumps(PROBE_BODY).encode(),
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         method="POST")
     try:
-        urllib.request.urlopen(req, timeout=timeout).close()
+        # bandit B310: the scheme is checked to be http(s) above.
+        urllib.request.urlopen(req, timeout=timeout).close()  # nosec B310
     except urllib.error.HTTPError as exc:
-        return exc.code not in (401, 403)
+        if exc.code in (401, 403):
+            return False
+        return True if exc.code == 404 else None
     except Exception:  # noqa: BLE001 — could not ask is not a verdict
         return None
     return True

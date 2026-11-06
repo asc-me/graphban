@@ -27,7 +27,7 @@ from . import worktree as wt_mod
 from . import observe
 from . import waits as wait_mod
 from . import watchdog as watchdog_mod
-from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ObservationRefused, ServerUnreachable, ToolFailed
+from .client import ALLOWED_TOOLS, Graphban, NotPermitted, OBSERVATION_PROBE, ObservationRefused, ServerUnreachable, ToolFailed
 from .lock import hold
 from .seat import Seat
 from .tiers import TierTable
@@ -482,20 +482,30 @@ def _preflight_observations(supervisor: Graphban) -> None:
     and PR record, one refusal at a time, and used to report `ok: true`. Checked once, before
     a seat is minted, and named by the conditions the server states.
     """
-    # `kind=probe` names no item. The server authorises the credential before it reads the
-    # body, so a key that cannot supervise answers 401/403, and a key that can answers a
-    # validation error or 200. Only the refusal is a verdict: any other answer, or none, is
-    # not this check's to fail on (an unreachable server is the other checks' business).
+    # The probe must be a body the route validates (GRPH-1346 bounce): `item_id` is required,
+    # and a body without it is 422 before the credential is ever checked. With a real kind and
+    # an item no key resolves, 401/403 is the refusal and 404 "no such item" is the pass.
+    # 2xx would be a pass too. Anything else means the check did not run, and a check that did
+    # not run must not read as passed: refuse, saying so. An unreachable server is the other
+    # checks' business, so a transport failure (no status) is left to them.
     try:
-        supervisor.post_observation(kind="probe")
+        supervisor.post_observation(**OBSERVATION_PROBE)
     except ObservationRefused as exc:
-        if exc.status not in (401, 403):
+        if exc.status == 404:
+            return
+        if exc.status in (401, 403):
+            raise ConfigError(
+                "the supervisor key cannot record observations, so this wave would lose every "
+                "base, lease and PR record. Recording needs the planner role among the key's "
+                "roles AND either a fleet wave or a project-scoped key; at least one is "
+                f"missing. Server said: {exc}"
+            ) from exc
+        if exc.status is None:
             return
         raise ConfigError(
-            "the supervisor key cannot record observations, so this wave would lose every "
-            "base, lease and PR record. Recording needs the planner role among the key's "
-            "roles AND either a fleet wave or a project-scoped key; at least one is missing. "
-            f"Server said: {exc}"
+            "could not tell whether the supervisor key can record observations: the "
+            f"observations route answered the start-up probe with HTTP {exc.status}, not "
+            f"403 or 404. Server said: {exc}"
         ) from exc
 
 

@@ -100,10 +100,20 @@ def _clients(
             # GRPH-1346. The supervisor's receipts and the start-up probe land here.
             if observation_posts is not None:
                 observation_posts.append(body)
+            # What the real route does, in its order: the body is validated BEFORE the
+            # credential is checked (`ObservationIn.item_id` and `kind` are required, so a
+            # body without them is 422 for every key), then the credential gate (403), then
+            # the item gate (404 "no such item" for an item no key resolves). A mock that
+            # answered 403 whatever the body let a 422-producing probe pass (the bounce).
+            if not isinstance(body.get("item_id"), str) or not isinstance(body.get("kind"), str):
+                return httpx.Response(422, json={"detail": [
+                    {"loc": ["body", "item_id"], "msg": "Field required"}]})
             if observations_status >= 400:
                 return httpx.Response(observations_status, text=(
                     "this credential is not a supervisor key: recording a cut needs planner "
                     "among its roles, and either a fleet wave or a project-scoped key"))
+            if body["item_id"] == "__gbfleet_probe_no_such_item__":
+                return httpx.Response(404, json={"detail": "no such item"})
             return httpx.Response(200, json={"recorded": True})
         ack = telemetry_ack(request)
         if ack is not None:
@@ -294,6 +304,48 @@ def test_a_key_the_observations_route_refuses_is_refused_before_any_seat(
     assert "planner" in result.detail and "project-scoped" in result.detail
     assert "mint_enrolment" not in calls and "delegate" not in calls
     assert result.spawned == 0
+
+
+def test_the_preflight_probe_is_a_body_the_route_validates_and_a_supervising_key_passes(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1346 bounce. The probe names a real kind and an item no key resolves, so a key
+    that can supervise reaches the item gate (404) and the wave starts. Sabotage: post
+    `{"kind": "probe"}` again and the mock answers 422, as the real route does."""
+    from gbfleet.client import OBSERVATION_PROBE
+
+    workspace = tmp_path / "ws"
+    posts: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=1, observation_posts=posts)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert posts and posts[0] == OBSERVATION_PROBE
+    assert result.reason != "config", result.detail
+    assert result.spawned >= 1
+
+
+def test_a_probe_the_route_cannot_validate_refuses_rather_than_reads_as_passed(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """GRPH-1346 bounce: a 422 is the check not running, and must not read as "can
+    supervise" — that is how the first attempt let a refused key start a wave."""
+    monkeypatch.setattr(until, "OBSERVATION_PROBE", {"kind": "probe"})
+    workspace = tmp_path / "ws"
+    calls: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=1, observations_status=403, calls=calls)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert result.reason == "config" and result.ok is False
+    assert "HTTP 422" in result.detail
+    assert "mint_enrolment" not in calls and result.spawned == 0
 
 
 def test_a_refused_observation_mid_run_is_counted_and_not_ok(

@@ -62,6 +62,13 @@ SURFACE_PATH = "/api/harness/surface"
 #: a path. The body is those facts; the server composes the note. Not a tool — widening
 #: `ALLOWED_TOOLS` for this is the thing PRD-22 §4 forbids.
 OBSERVATIONS_PATH = "/api/fleet/observations"
+# GRPH-1346: the start-up probe of that route. It must be a body the route VALIDATES, or
+# FastAPI answers 422 before `record_observation` reaches its credential check and the probe
+# reads every key as fine. A real kind and an item id no key can resolve: a key that cannot
+# supervise is 403 at the credential gate, a key that can is 404 "no such item" at the item
+# gate, and nothing is written either way. `gban.doctor.PROBE_BODY` is the same body.
+OBSERVATION_PROBE_ITEM = "__gbfleet_probe_no_such_item__"
+OBSERVATION_PROBE = {"item_id": OBSERVATION_PROBE_ITEM, "kind": "cut_from"}
 ALLOWED_PATHS: frozenset[str] = frozenset({ATTEMPTS_PATH, SURFACE_PATH, OBSERVATIONS_PATH})
 
 #: Short on purpose. This is a measurement posted beside real work; a supervisor waiting on it
