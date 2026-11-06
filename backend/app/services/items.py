@@ -17,6 +17,7 @@ from app.services import routing as routing_svc
 logger = logging.getLogger(__name__)
 
 STATUSES = ["backlog", "next", "in_progress", "review", "done", "blocked"]
+KINDS = ["feature", "fix", "chore"]  # plus "" = not recorded (GRPH-1358)
 FIDELITIES = ["low", "high"]  # low = specifiable now; high = needs a prototype (AL-68)
 DEFAULT_LEASE_SECONDS = 600  # a claim with no heartbeat within this window is reclaimable
 
@@ -82,6 +83,16 @@ def get_item(db: Session, item_id: str) -> Item | None:
     return db.get(Item, keys.resolve_item(db, item_id) or item_id)
 
 
+def check_kind(kind: str | None) -> str | None:
+    """None passes through (caller did not send it); "" is allowed (not recorded)."""
+    if kind is None:
+        return None
+    kind = str(kind).strip().lower()
+    if kind and kind not in KINDS:
+        raise ValueError(f"invalid kind: {kind!r}; allowed values: {', '.join(KINDS)} (or empty)")
+    return kind
+
+
 def create_item(
     db: Session,
     *,
@@ -97,6 +108,7 @@ def create_item(
     prd_id: str | None = None,
     prd_section: str = "",
     fidelity: str = "low",
+    kind: str | None = None,
     commit: bool = True,
     question: str | None = None,
     options: list[str] | None = None,
@@ -124,6 +136,11 @@ def create_item(
         )
     if fidelity not in FIDELITIES:
         raise ValueError(f"invalid fidelity: {fidelity}")
+    kind = check_kind(kind)
+    if kind is None:
+        # Never `feature` by guess: only a bug tag implies a kind; otherwise not recorded.
+        kind = "fix" if any(isinstance(t, str) and t.strip().lower() == "bug"
+                            for t in (tags or [])) else ""
     if db.get(Project, project_id) is None:
         raise ValueError(f"unknown project: {project_id!r}")
     effort_val = int(effort or 0)
@@ -149,6 +166,7 @@ def create_item(
         prd_linked_at=utcnow() if prd_id else None,
         prd_section=prd_section or "",
         fidelity=fidelity,
+        kind=kind,
     )
     if question or options:
         from app.services.waits import set_decision
@@ -1398,6 +1416,8 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
     if "status" in fields and fields["status"] is not None:
         if fields["status"] not in STATUSES:
             raise ValueError(f"invalid status: {fields['status']}")
+    if fields.get("kind") is not None:
+        fields["kind"] = check_kind(fields["kind"])
     if fields.get("fidelity") is not None and fields["fidelity"] not in FIDELITIES:
         raise ValueError(f"invalid fidelity: {fields['fidelity']}")
     if fields.get("effort") is not None:
@@ -1602,7 +1622,7 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
             item.prd_linked_at = utcnow()
     for key in ("title", "description", "status", "tags", "effort", "blocker", "pr", "date",
                 "head_commit",
-                "github_url", "assignee", "prd_id", "prd_section", "fidelity"):
+                "github_url", "assignee", "prd_id", "prd_section", "fidelity", "kind"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
     # GRPH-1031. `branch` is identity, not branding: a worker rewriting it under a live
@@ -2000,6 +2020,8 @@ def item_dict(item: Item) -> dict:
         "prd_id": item.prd_key,
         "prd_section": item.prd_section,
         "fidelity": item.fidelity,
+        # Reply-only (not in `_ITEM_SCHEMA`): "" = not recorded, which is not "not a feature".
+        "kind": item.kind or "",
         "evidence": item.evidence or [],
         # Authorship, distinct from the lease above (GRPH-379). It is the input the review
         # independence rule is decided on, and it was readable nowhere — so an agent could not

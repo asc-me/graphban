@@ -60,6 +60,7 @@ def create_item(
             touchpoints=body.touchpoints,
             prd_id=body.prd_id,
             prd_section=body.prd_section,
+            kind=body.kind,
             reporter=reporter,
             question=body.question,
             options=body.options,

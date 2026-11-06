@@ -167,7 +167,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "create_item",
-        "description": "Create a tracker item; returns it with id and project_id.",
+        "description": "Create an item; returns it.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -180,6 +180,7 @@ TOOLS: list[dict[str, Any]] = [
                 "status": {"type": "string", "enum": _STATUS_ENUM, "description": "Defaults to backlog."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
                              "description": "high = prototype first."},
+                "kind": {"type": "string"},
                 "prd_id": {"type": "string", "description": "The PRD this implements."},
                 "prd_section": {"type": "string", "description": "Its PRD section."},
                 "question": {"type": "string", "description": "Asks a human."},
@@ -190,7 +191,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "update_item",
-        "description": "Patch an item's fields or status; returns the updated item.",
+        "description": "Patch an item's fields or status; returns it.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -208,6 +209,7 @@ TOOLS: list[dict[str, Any]] = [
                 "blocker": {"type": "string", "description": "Empty string clears it."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
                              "description": "high = prototype first."},
+                "kind": {"type": "string"},
                 "prd_id": {"type": "string"},
                 "prd_section": {"type": "string"},
                 "evidence": {
@@ -2985,6 +2987,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             effort=args.get("effort", 0),
             status=args.get("status", "backlog"),
             fidelity=args.get("fidelity", "low"),
+            kind=args.get("kind"),
             project_id=pid,
             touchpoints=args.get("touchpoints"),
             prd_id=args.get("prd_id"),
@@ -3028,6 +3031,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             effort=args.get("effort"),
             blocker=args.get("blocker"),
             fidelity=args.get("fidelity"),
+            kind=args.get("kind"),
             touchpoints=args.get("touchpoints"),
             prd_id=args.get("prd_id"),
             prd_section=args.get("prd_section"),

@@ -581,6 +581,7 @@ class ItemCreate(BaseModel):
     project_id: str = "core"
     prd_id: str | None = None
     prd_section: str = ""
+    kind: str | None = None  # feature|fix|chore; omitted = default (GRPH-1358)
     question: str | None = None
     options: list[str] | None = None
 
@@ -611,6 +612,7 @@ class ItemUpdate(BaseModel):
     # The service whitelist already accepted `fidelity` — MCP could write it while the
     # web PATCH silently could not, so the loop this item closes had no confirm button.
     fidelity: str | None = None
+    kind: str | None = None  # feature|fix|chore, "" = not recorded (GRPH-1358)
     #: Where this item's work lands (GRPH-832). Accepted HERE and on no agent-facing route:
     #: this patch takes a bearer JWT, so declaring an item `deploy` — or clearing it back to
     #: `repo` — is a signed-in person's act and cannot be done by a credential a child holds.
@@ -658,6 +660,7 @@ class ItemOut(ORMModel):
     #: needs a value to bind to whether or not it has been touched.
     reach: str = "repo"
     fidelity: str = "low"
+    kind: str = ""  # GRPH-1358; "" = not recorded
     created_at: datetime
     updated_at: datetime
     #: When it last reached `done` (GRPH-1134); null while it is not done. The board's

@@ -649,6 +649,8 @@ export interface Item {
   prd_id: string | null;
   prd_section: string;
   fidelity: Fidelity;
+  /** feature / fix / chore; "" = not recorded (GRPH-1358). */
+  kind?: "feature" | "fix" | "chore" | "";
   /** Where this item's work lands (GRPH-832). `deploy` is refused to every spawned agent. */
   reach: Reach;
   created_at: string;

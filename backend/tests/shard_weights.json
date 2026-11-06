@@ -1,4 +1,5 @@
 {
+"tests/test_item_kind.py": 1.5,
 "tests/test_a_check_that_did_not_run.py": 2.02,
 "tests/test_a_review_hold_is_visible.py": 0.21,
 "tests/test_a_reviewer_is_not_idle.py": 4.92,
