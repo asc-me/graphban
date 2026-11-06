@@ -5,16 +5,35 @@ endpoint). Parameterized by base_url + api_key + model; plain httpx, no SDK depe
 from __future__ import annotations
 
 import json
+import time
 
 import httpx
 
+from app import errors
+
 from app.config import settings
-from app.providers.base import require_answer
+from app.providers.base import _tagged, require_answer
 from app.providers.toolcall import ToolCall, ToolResult, ToolSpec, ToolTurn
 
 
 def _timeout() -> httpx.Timeout:
     return httpx.Timeout(settings.llm_timeout_seconds, connect=5.0)
+
+
+def _check_deadline(deadline: float, *, endpoint: str, model: str) -> None:
+    """Enforce `llm_timeout_seconds` as a WALL-CLOCK budget across a whole streamed call.
+
+    httpx's timeout is per-read, so a stream that keeps sending tokens resets it on every
+    chunk and one call ran 365s while the span said ok. A partial answer is never returned
+    as ok: this raises the same retryable error a read timeout becomes, so the span records
+    ok=false and the failover/retry path runs."""
+    if time.monotonic() > deadline:
+        raise _tagged(errors.Unavailable(
+            f"{endpoint or 'openai-compat'} exceeded the {settings.llm_timeout_seconds}s total "
+            f"deadline for model {model!r}",
+            hint="the model is generating too slowly (reasoning on?); this one IS worth "
+                 "retrying, or raise LLM_TIMEOUT_SECONDS",
+        ), status=None, retryable=True)
 
 
 def _messages(system: str, context: str, question: str) -> list[dict]:
@@ -25,10 +44,14 @@ def _messages(system: str, context: str, question: str) -> list[dict]:
 
 
 class OpenAICompatChat:
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(self, base_url: str, api_key: str, model: str,
+                 extra_body: dict | None = None):
         self.base_url = (base_url or "").rstrip("/")
         self.api_key = api_key or ""
         self.model = model
+        #: Provider-specific request fields from the registry (e.g. DashScope's
+        #: `enable_thinking: false`), merged into every chat body.
+        self.extra_body = dict(extra_body or {})
 
     def _headers(self) -> dict:
         h = {"Content-Type": "application/json"}
@@ -63,6 +86,7 @@ class OpenAICompatChat:
     def stream(self, *, system: str, context: str, question: str,
                temperature: float | None = None):
         self.last_stream_complete = False
+        deadline = time.monotonic() + settings.llm_timeout_seconds
         # include_usage was already the tool-session convention (AL-179); the plain
         # stream is where most spend happens, and the tail chunk costs nothing extra.
         # A compat endpoint that rejects the field would surface here as a provider
@@ -73,11 +97,13 @@ class OpenAICompatChat:
             headers=self._headers(),
             json={"model": self.model, "messages": _messages(system, context, question),
                   "stream": True, "stream_options": {"include_usage": True},
-                  **({"temperature": temperature} if temperature is not None else {})},
+                  **({"temperature": temperature} if temperature is not None else {}),
+                  **self.extra_body},
             timeout=_timeout(),
         ) as r:
             r.raise_for_status()
             for line in r.iter_lines():
+                _check_deadline(deadline, endpoint=self.base_url, model=self.model)
                 if not line or not line.startswith("data:"):
                     continue
                 data = line[len("data:"):].strip()
@@ -112,7 +138,7 @@ class OpenAICompatChat:
         """Non-streaming completion advertising `tools` — the tool-call turn (AL-172).
         Buffered on purpose: OpenAI streams tool-call arguments as partial fragments,
         so parity with Anthropic is simpler off the stream."""
-        body: dict = {"model": self.model, "messages": messages}
+        body: dict = {"model": self.model, "messages": messages, **self.extra_body}
         if tools:
             body["tools"] = self._tool_defs(tools)
         r = httpx.post(f"{self.base_url}/chat/completions", headers=self._headers(),
@@ -123,7 +149,7 @@ class OpenAICompatChat:
     def _stream_body(self, messages: list[dict], tools: list[ToolSpec]) -> dict:
         # include_usage asks for a final usage-only chunk (AL-179 token metering while streaming).
         body: dict = {"model": self.model, "messages": messages, "stream": True,
-                      "stream_options": {"include_usage": True}}
+                      "stream_options": {"include_usage": True}, **self.extra_body}
         if tools:
             body["tools"] = self._tool_defs(tools)
         return body
@@ -165,12 +191,14 @@ class OpenAICompatToolSession:
         text_parts: list[str] = []
         frags: dict[int, dict] = {}  # index -> {id, name, args}
         usage, finish = None, None
+        deadline = time.monotonic() + settings.llm_timeout_seconds
         with httpx.stream("POST", f"{self._chat.base_url}/chat/completions",
                           headers=self._chat._headers(),
                           json=self._chat._stream_body(self.messages, tools),
                           timeout=_timeout()) as r:
             r.raise_for_status()
             for line in r.iter_lines():
+                _check_deadline(deadline, endpoint=self._chat.base_url, model=self._chat.model)
                 if not line or not line.startswith("data:"):
                     continue
                 data = line[len("data:"):].strip()
@@ -228,8 +256,11 @@ class OpenAICompatToolSession:
 
 
 class OpenAICompatExtractor:
-    def __init__(self, base_url: str, api_key: str, model: str):
-        self._chat = OpenAICompatChat(base_url, api_key, model)
+    def __init__(self, base_url: str, api_key: str, model: str,
+                 extra_body: dict | None = None):
+        # The registry's per-provider body fields (e.g. qwen's thinking switch) apply
+        # to extraction too — it is a chat call underneath (GRPH-1357).
+        self._chat = OpenAICompatChat(base_url, api_key, model, extra_body)
 
     def extract(self, *, title: str, description: str) -> list[str]:
         system = (
@@ -240,9 +271,11 @@ class OpenAICompatExtractor:
         return [ln.strip("-• ").strip() for ln in out.splitlines() if ln.strip()][:3]
 
 
-def chat(base_url: str, api_key: str, model: str) -> OpenAICompatChat:
-    return OpenAICompatChat(base_url, api_key, model)
+def chat(base_url: str, api_key: str, model: str,
+         extra_body: dict | None = None) -> OpenAICompatChat:
+    return OpenAICompatChat(base_url, api_key, model, extra_body)
 
 
-def extractor(base_url: str, api_key: str, model: str) -> OpenAICompatExtractor:
-    return OpenAICompatExtractor(base_url, api_key, model)
+def extractor(base_url: str, api_key: str, model: str,
+              extra_body: dict | None = None) -> OpenAICompatExtractor:
+    return OpenAICompatExtractor(base_url, api_key, model, extra_body)

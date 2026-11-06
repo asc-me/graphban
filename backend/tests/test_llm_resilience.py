@@ -414,3 +414,81 @@ def test_a_real_answer_still_passes_through_stripped(monkeypatch):
     ]))
     chat = openai_compat.OpenAICompatChat("https://gw.example/v1", "k", "m")
     assert chat.chat(system="s", context="c", question="q") == "fine"
+
+
+# ---- GRPH-1357: thinking off for DashScope, and a total wall-clock deadline ----
+class _CaptureSSE:
+    def __init__(self, sink):
+        self.sink = sink
+
+    def __call__(self, method, url, **kw):
+        self.sink.append(kw["json"])
+        return _FakeSSEResponse([
+            'data: {"choices": [{"delta": {"content": "ok"}}]}', "data: [DONE]"])
+
+
+def test_qwen_provider_sends_enable_thinking_false_on_every_path(monkeypatch):
+    from app.providers import build_chat, build_extractor
+
+    sent: list[dict] = []
+    monkeypatch.setattr(httpx, "stream", _CaptureSSE(sent))
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+    posted: list[dict] = []
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: posted.append(k["json"]) or _Resp())
+
+    # Every path goes through the REGISTRY-built qwen adapter, so the asserts prove the
+    # registry wiring rather than a hand-passed extra_body.
+    qwen = build_chat("qwen", api_key="k", model="qwen-plus")
+    assert qwen.chat(system="s", context="c", question="q") == "ok"  # streamed path
+    qwen._complete([{"role": "user", "content": "hi"}], [])  # non-streamed tool turn
+    list(qwen.tool_session(system="s", context="c", question="q").stream_turn([]))  # tool stream
+    build_extractor("qwen", api_key="k", model="qwen-plus").extract(
+        title="t", description="d")  # extraction is a chat call too
+    assert len(sent) == 3
+    assert all(body["enable_thinking"] is False for body in sent)
+    assert posted[0]["enable_thinking"] is False
+
+
+def test_generic_compat_provider_does_not_send_enable_thinking(monkeypatch):
+    from app.providers import build_chat
+
+    sent: list[dict] = []
+    monkeypatch.setattr(httpx, "stream", _CaptureSSE(sent))
+    build_chat("openai", api_key="k", model="m").chat(system="s", context="c", question="q")
+    assert "enable_thinking" not in sent[0]
+
+
+def test_streamed_call_has_a_total_deadline(monkeypatch):
+    """A stream that never stops sending chunks resets httpx's per-read timeout forever;
+    the wall-clock deadline must cut it off, retryable, instead of returning ok."""
+    import time
+
+    from app.config import settings
+    from app.errors import Unavailable
+
+    class _Endless(_FakeSSEResponse):
+        def iter_lines(self):
+            # Bounded so that WITHOUT the deadline the test fails cleanly (chat()
+            # returns "xxx..." as ok) instead of hanging CI: ~5s of a chunk every 0.1s,
+            # ten times the 0.5s budget, then a normal end of stream.
+            for _ in range(50):
+                time.sleep(0.1)
+                yield 'data: {"choices": [{"delta": {"content": "x"}}]}'
+            yield "data: [DONE]"
+
+    monkeypatch.setattr(settings, "llm_timeout_seconds", 0.5)
+    monkeypatch.setattr(httpx, "stream", lambda *a, **k: _Endless([]))
+    chat = openai_compat.OpenAICompatChat("https://gw.example/v1", "k", "m")
+    t0 = time.monotonic()
+    with pytest.raises(Unavailable) as ei:
+        chat.chat(system="s", context="c", question="q")
+    assert time.monotonic() - t0 < 2
+    assert ei.value.retryable is True
+    assert "deadline" in str(ei.value)
