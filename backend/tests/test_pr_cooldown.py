@@ -484,3 +484,48 @@ def test_owner_close_still_allows_done_after_the_cooldown_without_ci(db, cooldow
 
     assert items_svc.update_item(db, item.id, status="done",
                                  head_commit="f" * 40).status == "done"
+
+
+# ---- the MCP boundary tells the agent what to do, not to wait (GRPH-1345) ------------------
+
+def _mcp_done(client, auth, monkeypatch, exc):
+    """Drive `update_item status=done` over MCP with the service refusing as given. The
+    service-level tests above prove WHEN each refusal fires; this pins how the boundary that
+    agents actually read translates it."""
+    proj = client.post("/api/projects", json={"name": "Cooldown"}, headers=auth).json()["id"]
+    key = client.post("/api/api-keys", json={"name": "cd", "project_id": proj},
+                      headers=auth).json()["plaintext"]
+
+    def call(tool, args):
+        return client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                  "params": {"name": tool, "arguments": args}},
+            headers={"X-API-Key": key},
+        ).json()["result"]
+
+    item = call("create_item", {"title": "linked PR"})["structuredContent"]["id"]
+
+    def refuse(*a, **kw):
+        raise exc
+
+    monkeypatch.setattr(items_svc, "update_item", refuse)
+    res = call("update_item", {"id": item, "status": "done"})
+    assert res.get("isError"), res
+    return res["structuredContent"]["error"]
+
+
+def test_a_ci_not_green_refusal_is_not_hinted_as_a_wait(client, auth, monkeypatch):
+    err = _mcp_done(client, auth, monkeypatch, items_svc.PRCINotGreen(
+        "GRPH-1 cannot move to done: CI ran the suite for its PR and it is red"))
+    assert err["code"] == "conflict"
+    hint = err["hint"].lower()
+    assert "wait for the cooldown" not in hint and "elapse" not in hint, hint
+    assert "do not retry" in hint and "suite_green" in hint, hint
+
+
+def test_a_plain_cooldown_refusal_still_says_wait(client, auth, monkeypatch):
+    """The control: the subclass handler must not swallow its parent."""
+    err = _mcp_done(client, auth, monkeypatch, items_svc.PRCooldown("still cooling down"))
+    assert err["code"] == "conflict"
+    assert "wait for the cooldown" in err["hint"], err

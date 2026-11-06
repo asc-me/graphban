@@ -1027,8 +1027,10 @@ class PRCooldown(Exception):
 
 class PRCINotGreen(PRCooldown):
     """The cooldown is over, or CI has already answered, and `suite_green` is not attested at
-    the PR's head (GRPH-1345). A PRCooldown so the boundaries map it the same way, but unlike
-    its parent it does NOT clear itself: waiting longer changes nothing."""
+    the PR's head (GRPH-1345). A PRCooldown so every caller that already refuses `done` on a
+    cooldown still refuses on this, but unlike its parent it does NOT clear itself: waiting
+    longer changes nothing. A boundary that hints "wait and retry" for PRCooldown must catch
+    this subclass first and name the action instead (see mcp_server)."""
 
 
 #: A link to a proposed change, as opposed to any other URL an item might carry.
