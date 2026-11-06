@@ -24,7 +24,7 @@ only one of them means stop.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
@@ -1179,6 +1179,12 @@ def _start(
                     orphan = candidate
                     break
                 if orphan is not None:
+                    orphan = latest_head(
+                        repo, orphan,
+                        (items or {}).get(seat.item or (orphan.item_keys or ("",))[0]))
+                    if orphan.branch in taken:
+                        orphan = None
+                if orphan is not None:
                     slot = orphan.branch.rsplit("-", 1)[-1] or slot
                     agent_slot = f"{wave_name}-{slot}"
                     try:
@@ -1730,11 +1736,47 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
         wave.declared_unread[child.branch] = "; ".join(unread)
     if declared:
         missing = tp_mod.undeclared(measured, declared)
+        generated = [f for f in missing if f in GENERATED_FILES]
+        if generated:
+            # GRPH-1352: the repo's own generators rewrite these on any migration or test
+            # change. They are mechanical, so they warn and do not block the proposal.
+            observe.emit("generated_files_allowed", branch=child.branch,
+                         detail=", ".join(generated))
+        missing = [f for f in missing if f not in GENERATED_FILES]
         if missing:
             wave.undeclared[child.branch] = missing
+            # A wait naming the files, so the planner can widen the touchpoints.
+            observe.emit("wait", branch=child.branch, kind="proposal_held_undeclared",
+                         detail="held back from a PR: changed file(s) outside every "
+                                "declared touchpoint: " + ", ".join(missing[:8]))
     # Recomputed over every branch measured so far, so the last reap holds the whole wave's
     # answer — a pairwise check at each reap would miss the pair reaped either side of it.
     wave.collided = tp_mod.overlaps(wave.touched)
+
+
+#: Files the repo's generators rewrite on any migration or test change (GRPH-1352).
+GENERATED_FILES = frozenset({
+    "AGENTS.md", ".claude/agents/README.md", ".codex/agents/README.md",
+    ".cursor/agents/README.md", "backend/tests/shard_weights.json",
+})
+
+
+def latest_head(repo: Path, orphan, row: dict | None):
+    """The orphan, moved to the item's recorded branch when that branch contains it (GRPH-1352).
+
+    A later child may have built on the salvage and pushed; resuming the salvage itself
+    would redo its commits. Only a branch that carries the salvage commit replaces it.
+    """
+    branch = str((row or {}).get("branch") or "").strip()
+    if not branch or branch == orphan.branch or not orphan.commit:
+        return orphan
+    try:
+        wt_mod._ensure_local_branch(repo, branch)
+    except wt_mod.ResumeFailed:
+        return orphan
+    if wt_mod.is_ancestor(repo, orphan.commit, branch):
+        return replace(orphan, branch=branch)
+    return orphan
 
 
 def _restore_authored(child, client) -> str:
