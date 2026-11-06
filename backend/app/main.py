@@ -95,6 +95,17 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
+    # The installed plan grant (GRPH-1343): verified here once, then only its expiry is compared.
+    db = SessionLocal()
+    try:
+        from app.services import plan_grant
+
+        plan_grant.load(db)
+    except Exception:  # noqa: BLE001
+        logger.warning("installed plan grant load failed", exc_info=True)
+    finally:
+        db.close()
+
     # LLM span retention (GRPH-225), once before serving and never fatal: janitorial
     # work on telemetry does not justify taking the box down, and a boot that dies on
     # a DELETE is exactly the "unhandled error takes down every self-host install"

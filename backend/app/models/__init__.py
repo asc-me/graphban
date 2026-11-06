@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -3607,6 +3608,25 @@ class InstalledRulePack(Base):
     version: Mapped[str] = mapped_column(String)
     sha256: Mapped[str] = mapped_column(String(64))
     artifact: Mapped[bytes] = mapped_column(LargeBinary)
+    signature: Mapped[bytes] = mapped_column(LargeBinary)
+    installed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class InstalledPlanGrant(Base):
+    """A signed plan grant installed on a self-hosted box (GRPH-1343 / PRD-P62 D8). The newest
+    `issued_at` is in force. The document and signature are stored verbatim so startup
+    re-verifies the same bytes."""
+
+    __tablename__ = "installed_plan_grants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String)
+    deployment_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    plan: Mapped[str] = mapped_column(String)
+    issued_at: Mapped[int] = mapped_column(BigInteger)
+    expires_at: Mapped[int] = mapped_column(BigInteger)
+    document: Mapped[bytes] = mapped_column(LargeBinary)
     signature: Mapped[bytes] = mapped_column(LargeBinary)
     installed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
