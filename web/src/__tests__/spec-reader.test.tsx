@@ -27,7 +27,6 @@ const mocks = vi.hoisted(() => ({
   specPreamble: vi.fn(),
   putPreamble: vi.fn(),
   specDesignSet: vi.fn(),
-  acceptSetConstraints: vi.fn(),
   compileScreen: vi.fn(),
   updatePrd: vi.fn(),
   me: vi.fn(async () => ({ id: "u1", name: "Dana Reyes", email: "dana@example.com" })),
