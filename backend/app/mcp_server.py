@@ -2965,7 +2965,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                        "bootstrapping into it",
         }
     if name == "setup_project":
-        return setup_svc.checklist(db, pid)
+        return setup_svc.agent_view(db, pid)
     if name == "list_projects":
         return {"results": [
             {"id": p.id, "name": p.name, "tag": p.tag, "accent": p.accent,
