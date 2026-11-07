@@ -78,7 +78,8 @@ def test_preamble_edit_stales_the_set_and_its_prompts_stay_searchable(db, pid):
     base = _prd(db, pid, title="Visual system")
     ds_svc.put_preamble(db, pid, "Be calm.", base.id, created_by=KEY)
     out = ds_svc.open_design(db, pid, _prd(db, pid).id)
-    ds_svc.put_set_constraints(db, pid, out["id"], "Teal.", screens=[{"screen": "home"}])
+    ds_svc.put_set_constraints(db, pid, out["id"], "Teal Tokens; Spacing on a grid.",
+                               screens=[{"screen": "home"}])
     # A prompt row of an approved-to-build set: search with include_design returns it.
     prompt = Document(id="DOC-p1", project_id=pid, kind="design_prompt", set_id=out["id"],
                       screen="home", version=1, status="active", content_hash="h",

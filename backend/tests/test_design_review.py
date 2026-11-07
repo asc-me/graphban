@@ -44,7 +44,8 @@ def world(db, pid):
     prd = prd_svc.create_prd(db, title="Screens", project_id=pid, body=BODY)
     approve(db, prd)
     ds = ds_svc.open_design(db, pid, prd.id)
-    ds_svc.put_set_constraints(db, pid, ds["id"], "Teal only.", screens=[{"screen": "home"}])
+    ds_svc.put_set_constraints(db, pid, ds["id"], "Teal only. Tokens and Spacing as the PRD says.",
+                               screens=[{"screen": "home"}])
     ds_svc.confirm_tier(db, pid, ds["id"], "home", "BACKED", "route exists")
     row = db.get(DesignSet, ds["id"])
     row.constraints_accepted = True
@@ -104,13 +105,20 @@ def test_accept_set_constraints_is_a_person_but_compile_never_needed_it(db, pid)
     assert again["constraints_accepted"] is False
 
 
-def test_compile_with_no_prior_accept_and_candidates_are_not_indexed(db, pid, world):
+def test_compile_with_no_prior_accept_and_only_an_aligned_set_is_indexed(db, pid, world):
     _, sid = world
+    # constraints that miss a PRD heading: the compiled prompt (which quotes the PRD) is not
+    # searchable, because the quote is not the spec (GRPH-1368)
+    ds_svc.put_set_constraints(db, pid, sid, "Teal only.")
     db.get(DesignSet, sid).constraints_accepted = False
     db.commit()
     _compile(db, pid, sid)
     hits = docs.search_docs(db, pid, "teal", include_design=True)["results"]
     assert all(r["kind"] == "prd" for r in hits)
+    ds_svc.put_set_constraints(db, pid, sid, "Teal only. Tokens and Spacing as the PRD says.")
+    _compile(db, pid, sid)
+    hits = docs.search_docs(db, pid, "teal", include_design=True)["results"]
+    assert {r["kind"] for r in hits} == {"prd", "design_prompt"}
 
 
 def test_accept_prompt_needs_a_person_who_is_not_the_compiler(db, pid, world):

@@ -21,7 +21,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import DesignSet, Document
+from app.models import DesignCorrection, DesignSet, Document
 from app.services import prds as prd_svc
 
 _HEADING = re.compile(r"^##\s+(.*\S)\s*$", re.MULTILINE)
@@ -62,14 +62,25 @@ def _doc_text(doc: Document) -> str:
 
 
 def for_design_set(db: Session, ds: DesignSet) -> dict:
-    """Constraints body, screen briefs and the latest compiled prompt of each screen."""
+    """Constraints body, screen briefs, and what each compiled prompt adds of its own: the
+    standing preamble and the screen's open corrections.
+
+    A compiled prompt also quotes the whole governing PRD under `## Governing PRD`. That quote
+    is never matched: it carries every heading, so counting it would approve any set the moment
+    it compiled (bounce of 865c6cb2). The rest of a prompt is exactly these inputs, so they are
+    read at their source rather than cut back out of the chunked prompt."""
     bodies = [ds.constraints_body or ""] + [s.brief or "" for s in ds.screens]
-    for s in ds.screens:
-        latest = db.scalars(select(Document).where(
-            Document.set_id == ds.id, Document.kind == "design_prompt",
-            Document.screen == s.screen).order_by(Document.version.desc())).first()
-        if latest is not None:
-            bodies.append(_doc_text(latest))
+    compiled = {d.screen for d in db.scalars(select(Document).where(
+        Document.set_id == ds.id, Document.kind == "design_prompt"))}
+    if compiled:
+        pre = db.scalars(select(Document).where(
+            Document.project_id == ds.project_id, Document.kind == "preamble",
+            Document.set_id == "", Document.governing.is_(True))).first()
+        if pre is not None:
+            bodies.append(_doc_text(pre))
+        bodies += [c.text or "" for c in db.scalars(select(DesignCorrection).where(
+            DesignCorrection.design_set_id == ds.id, DesignCorrection.status == "open",
+            DesignCorrection.screen.in_(compiled)))]
     return assess(db, ds.prd_id, bodies)
 
 

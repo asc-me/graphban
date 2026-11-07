@@ -151,6 +151,8 @@ def put_set_constraints(db: Session, project_id: str, set_id: str, body: str,
     # Re-pinning to a preamble that cites a superseded baseline does not clear staleness.
     _stale_cite(db, ds)
     _unblock_removed(db, ds, set(old_sections) - set(ds.sections or []))
+    db.flush()
+    _index_prompts(db, ds)
     db.commit()
     return to_dict(db, ds)
 
@@ -597,10 +599,38 @@ def compile_prompts(db: Session, project_id: str, set_id: str, screen: str | Non
             # Compiling pins the screen's prompt: nobody accepts it, so a canvas binds to it.
             row.prompt_hash = digest
             row.canvas_hash = ""
+        # The newest compile governs its screen; whether search may return it is the set's
+        # alignment (documents.indexed), not a person's accept.
+        for old in _prompts(db, ds.id, row.screen):
+            if old.id != latest.id and old.governing:
+                old.governing = False
+                for c in old.chunks:
+                    c.governing = False
+        latest.governing = True
+        for c in latest.chunks:
+            c.governing = True
         out.append({"screen": row.screen, "prompt_hash": digest, "document_id": latest.id,
                     "version": latest.version, "new": new, "acceptable": base is not None})
+    db.flush()
+    _index_prompts(db, ds)
     db.commit()
     return {"design_set_id": ds.id, "prompts": out}
+
+
+def _index_prompts(db: Session, ds: DesignSet) -> None:
+    """Embed the set's governing prompts once it is approved to build, and drop their vectors
+    when it is not. Called whenever a compile or a constraints write can move the alignment."""
+    from app.services import documents as documents_svc
+
+    approved = spec_alignment.for_design_set(db, ds)["approved_to_build"]
+    for d in db.scalars(select(Document).where(
+            Document.set_id == ds.id, Document.kind == "design_prompt",
+            Document.governing.is_(True))):
+        if approved:
+            documents_svc.embed_document(db, d)
+        else:
+            for c in d.chunks:
+                c.embedding = None
 
 
 def _not_compiler(cand: Document, person: str) -> None:

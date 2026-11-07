@@ -59,10 +59,10 @@ def test_accepted_gate_cites_revision_and_goes_stale(db, pid, world, be):
 
 
 def test_an_aligned_set_on_a_baselined_prd_hands_off_with_no_accept(db, pid, world):
-    """GRPH-1368: nobody accepts the set; compiling makes it carry every PRD heading, and the
+    """GRPH-1368: nobody accepts the set; its constraints carry every PRD heading, and the
     PRD is baselined, so the gated section files unblocked and pins the hashes."""
     prd, sid = world
-    _gate(db, pid, sid, ["Tokens"])
+    ds_svc.put_set_constraints(db, pid, sid, "Tokens: teal. Spacing: 8pt.", sections=["Tokens"])
     row = db.get(DesignSet, sid)
     row.constraints_accepted = False
     db.commit()
