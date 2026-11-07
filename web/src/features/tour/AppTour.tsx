@@ -269,12 +269,12 @@ function TourRun({
         </h2>
         <div id="tour-body" className="flex flex-col gap-1.5">
           <p className="text-[13px] leading-normal text-fg-2 [text-wrap:pretty]">{stop.body}</p>
-          {isEmpty && <p className="text-[12.5px] text-muted" data-tour-empty>{stop.empty!.text}</p>}
+          {isEmpty && <p className="text-body text-muted" data-tour-empty>{stop.empty!.text}</p>}
         </div>
         <button
           type="button"
           onClick={readMore}
-          className="self-start rounded text-[12.5px] text-faint outline-none hover:text-fg-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+          className="self-start rounded text-body text-faint outline-none hover:text-fg-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
         >
           Read more →
         </button>
@@ -285,7 +285,7 @@ function TourRun({
             type="button"
             onClick={() => go(i - 1)}
             disabled={i === 0}
-            className="h-[30px] rounded-lg border border-control bg-transparent px-[11px] text-[12.5px] text-fg-2 outline-none hover:border-control-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:text-faint disabled:hover:border-control"
+            className="h-[30px] rounded-lg border border-control bg-transparent px-[11px] text-body text-fg-2 outline-none hover:border-control-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:text-faint disabled:hover:border-control"
           >
             Back
           </button>
@@ -293,7 +293,7 @@ function TourRun({
             ref={nextRef}
             type="button"
             onClick={next}
-            className="h-[30px] rounded-lg border border-accent bg-accent px-[13px] text-[12.5px] font-semibold text-bg outline-none hover:border-accent-hi hover:bg-accent-hi focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+            className="h-[30px] rounded-lg border border-accent bg-accent px-[13px] text-body font-semibold text-bg outline-none hover:border-accent-hi hover:bg-accent-hi focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
           >
             {last ? "Finish" : "Next"}
           </button>
