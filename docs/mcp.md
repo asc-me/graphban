@@ -484,7 +484,11 @@ what keeps completion reachable offline. **CI** (`scripts/attest_ci.py`, run as 
 the `ci` gate job) attests every item a green run's PR names, and needs no second agent — set
 `GRAPHBAN_URL` as a repository variable and `GRAPHBAN_GATE_KEY` as a secret to enable it.
 Without them it skips loudly rather than failing the build, and items must be signed off
-by hand. Fleet keys minted for the **worker** or
+by hand.
+A **failed** run is recorded too (GRPH-1410): a `suite_green` attestation with `passed: false`
+naming the failing jobs and first failing tests. `sign_off`/`done` then refuses with "CI failed
+at <sha>: …" and says to **bounce** with that failure as the reason, whereas "no CI run has
+reported suite_green" still means CI has not answered yet and is a wait. Fleet keys minted for the **worker** or
 **all-in-one** role carry `gate` for that reason; a planner key does not, because
 a worker's ceiling is `review` by design.
 

@@ -408,7 +408,8 @@ def test_the_attestation_step_is_not_unconditional():
     above and attest failing runs — which is the defect GRPH-551 was written against."""
     steps = _gate_steps()
     attest = next(s for s in steps
-                  if "attest_ci.py" in (s.get("run") or "") and "--mode head" not in s["run"])
+                  if "attest_ci.py" in (s.get("run") or "") and "--mode head" not in s["run"]
+                  and "--mode failed" not in s["run"])
 
     assert "if" not in attest, (
         "the attestation step is conditional; it must inherit the default, which is 'only "

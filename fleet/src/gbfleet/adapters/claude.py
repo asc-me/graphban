@@ -164,6 +164,12 @@ class ClaudeCode(Adapter):
                 # more reach than anybody granted it.
                 "--strict-mcp-config",
                 "--mcp-config", str(seat_file),
+                # GRPH-1402. `--strict-mcp-config` confines servers, not skills: every child
+                # carried the operator's ~156 user-level and plugin skills (35k chars) in its
+                # first request. Dropping the `user` settings source keeps the repo's own
+                # `.claude/skills/` (project) and drops those; auth is unaffected (OAuth
+                # credentials are not a settings source, unlike `--bare`).
+                "--setting-sources", "project,local",
                 *self.model_argv(model),
                 *self.tuning_argv(tuning or Tuning()),
                 # Headless means nobody is there to answer a permission prompt. PRD-22's
