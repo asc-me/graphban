@@ -672,6 +672,7 @@ def _loop(
     mint_deadline = time.monotonic() + mint_budget
     mint_left = mint_tries
     review_fails = 0
+    ci_stuck: list[dict] = []
     review_spawned: list = []  # GRPH-1374: children this loop spawned for review rows
     # GRPH-842. One gate for the whole run, not one per spawn: a child spawned seconds ago
     # is not in the kernel's numbers yet, and a fresh reading per seat cannot know that. Its
@@ -886,7 +887,11 @@ def _loop(
             if staff_all:
                 # GRPH-1273: every row visible to the key is this run's to staff.
                 rows, rows_outside = rows + rows_outside, []
-            reviews = [str(r["id"]) for r in rows]
+            # GRPH-1409: a row whose newest refusal is a post-cooldown `pr_ci_not_green` cannot
+            # be cleared by another reviewer, so it is taken out of what can spawn one.
+            ci_stuck = [r for r in rows if ci_unattestable(r)]
+            rows = [r for r in rows if not ci_unattestable(r)]
+            reviews = [str(r["id"]) for r in rows + ci_stuck]
             outside = [str(r["id"]) for r in rows_outside]
             waits = _wait_ids(planner)
         except NotPermitted as exc:
@@ -1166,6 +1171,12 @@ def _loop(
 
         empty += 1
         if empty >= empty_ticks:
+            if ci_stuck and not rows:
+                wave.reason = "review-ci-unattestable"
+                report = _finish(wave, "review-ci-unattestable", 1, minted, planner,
+                                 review=reviews, waits=waits, outside=outside)
+                report.detail = "; ".join(ci_stuck_detail(r) for r in ci_stuck)
+                return report
             # GRPH-1356: a row still in review is unsigned work, held or not. A hold with no
             # live child of ours is a reviewer that may have exited between polls; after the
             # polls above it is still not "nothing unsigned", so it must not read as idle.
@@ -2369,6 +2380,35 @@ def _is_config(exc: ToolFailed) -> bool:
     if "may not" in message or "not planner" in message:
         return True
     return False
+
+
+_REFUSED_AT_DONE = "refused at `done` ("
+
+
+def _latest_refusal(row: dict) -> str:
+    for ev in reversed(row.get("evidence") or []):
+        detail = str(ev.get("detail") or "") if isinstance(ev, dict) else ""
+        if detail.startswith(_REFUSED_AT_DONE):
+            return detail
+    return ""
+
+
+def ci_unattestable(row: dict) -> bool:
+    """GRPH-1409. The newest `done` refusal on this row is `pr_ci_not_green` after the cooldown.
+
+    Silence from CI past the cooldown does not change on its own, so another reviewer would
+    only be refused the same way. Only that wording counts: a CI run that FAILED is a bounce
+    a reviewer can make, so it keeps its reviewer.
+    """
+    detail = _latest_refusal(row)
+    return (detail.startswith(_REFUSED_AT_DONE + "pr_ci_not_green)")
+            and "cooldown over" in detail)
+
+
+def ci_stuck_detail(row: dict) -> str:
+    detail = _latest_refusal(row).split("): ", 1)[-1]
+    return (f"{row.get('id')}: sign_off refused pr_ci_not_green ({detail[:300]}); another "
+            "reviewer cannot clear it — needs a CI attestation or an owner close")
 
 
 def review_held(row: dict) -> bool:
