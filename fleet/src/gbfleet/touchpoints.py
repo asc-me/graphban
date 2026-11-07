@@ -20,7 +20,32 @@ from __future__ import annotations
 
 import subprocess
 
-from .worktree import Worktree, is_seat_relative
+from .worktree import Worktree, default_ref, is_seat_relative, remote_for
+
+
+def _own_base(tree: Worktree) -> str:
+    """The commit this branch's own work is counted from (GRPH-1376).
+
+    `tree.base` is where the branch was cut. Once the branch has merged the trunk, a diff
+    from there also holds every file the trunk changed in between, none of it this worker's.
+    The merge-base with the trunk ref is the newest commit the branch shares with trunk, so
+    diffing from it leaves trunk's own changes out. It is used only when it is a descendant
+    of `tree.base`, i.e. the branch really did take trunk commits; otherwise (no remote, no
+    trunk ref, trunk not merged) the cut point stands.
+    """
+    ref = default_ref(tree.repo, remote_for(tree.repo))
+    if not ref:
+        return tree.base
+    proc = subprocess.run(["git", "merge-base", ref, tree.branch],
+                          cwd=str(tree.repo), capture_output=True, text=True)
+    mb = proc.stdout.strip() if proc.returncode == 0 else ""
+    if not mb or mb == tree.base:
+        return tree.base
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", tree.base, mb],
+        cwd=str(tree.repo), capture_output=True, text=True,
+    )
+    return mb if ancestor.returncode == 0 else tree.base
 
 
 def measure(tree: Worktree) -> list[str]:
@@ -42,7 +67,7 @@ def measure(tree: Worktree) -> list[str]:
         )
 
     proc = subprocess.run(
-        ["git", "diff", "--name-only", f"{tree.base}..{tree.branch}"],
+        ["git", "diff", "--name-only", f"{_own_base(tree)}..{tree.branch}"],
         cwd=str(tree.repo),
         capture_output=True,
         text=True,
