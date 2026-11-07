@@ -2659,7 +2659,8 @@ def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, s
         # PR, not the supervisor's stdout, so a clean-but-behind branch that says so
         # only in the log is a branch whose staleness the reviewer never sees.
         body = body.rstrip() + "\n\n" + note + "\n"
-    got = propose_mod.propose(repo, branch, base, title=title, body=body)
+    got = propose_mod.propose(repo, branch, base, title=title, body=body,
+                              head=_branch_head(repo, branch) or "", items=items)
     wave.proposed[branch] = got
     if got.reason and not got.url:
         # Reported, never fatal: the work is committed and pushed by now, and a PR nobody
@@ -3058,6 +3059,7 @@ class Merger:
             scans=propose_mod.scans_clean_verdicts(item),
             siblings=propose_mod.pr_receipts(item),
         )
+        got = propose_mod.close_after_merge(self.repo, got)
         if got.ok and got.commit:
             got = self._record(wave, got)
         return got
