@@ -2351,3 +2351,33 @@ def test_review_waits_and_lapsed_live_reach_the_summary_json():
     got = Report(ok=True, reason="idle", exit=0, wave=wave).as_json()
     assert got["review_waits"] == wave.review_waits
     assert got["lease_lapsed_live"] == wave.lease_lapsed_live
+
+
+def test_review_wait_names_an_unclaimed_reviewer_the_gate_and_never_the_rows_own_child():
+    """GRPH-1387."""
+    from gbfleet.supervisor import Wave
+    from gbfleet.until import _review_waits_on_live
+
+    class _P:
+        pid = 49673
+
+    class _C:
+        def __init__(self, held):
+            self.held_items = held
+            self.process = _P()
+
+    rows = [{"id": "GRPH-1374"}]
+    reviewer = _C([])
+    wave = Wave()
+    got = _review_waits_on_live(wave, rows, [reviewer], review_spawned=[reviewer])
+    assert got == ["GRPH-1374: review waits on reviewer pid 49673 not yet claimed"]
+
+    other = _C(["GRPH-9"])
+    wave = Wave()
+    got = _review_waits_on_live(wave, rows, [other], gate="memory low")
+    assert got == ["GRPH-1374: review waits on memory low (live child pid 49673, item GRPH-9)"]
+
+    wave = Wave()
+    own = _C(["GRPH-1374"])
+    assert _review_waits_on_live(wave, rows, [own], gate="memory low") == []
+    assert _review_waits_on_live(wave, rows, [own], review_spawned=[own]) == []

@@ -1145,7 +1145,10 @@ def _loop(
 
         if live or holdings:
             if unheld_review and live:
-                for line in _review_waits_on_live(wave, unheld_review, live):
+                verdict = room.allow(len(live))
+                gate = None if verdict.allowed else str(verdict.reason)
+                for line in _review_waits_on_live(
+                        wave, unheld_review, live, review_spawned=review_spawned, gate=gate):
                     if line not in waits:
                         waits.append(line)
             empty = 0
@@ -1761,20 +1764,39 @@ def _lift(planner: Graphban, item_id: str) -> None:
         observe.emit("hold_unlifted", item=item_id, detail=str(exc))
 
 
-def _review_waits_on_live(wave: Wave, unheld: list, live: list) -> list[str]:
-    """Name what an unheld review row is waiting on: the live child blocking its spawn
-    (GRPH-1349). Logged once per row and child, so a ten-minute wait is one line."""
+def _review_waits_on_live(wave: Wave, unheld: list, live: list, *,
+                          review_spawned: list | tuple = (), gate: str | None = None) -> list[str]:
+    """Name what an unheld review row is waiting on (GRPH-1349, GRPH-1387). Logged once per
+    row and reason, so a ten-minute wait is one line.
+
+    A review spawn of ours that has not claimed yet is named as that ("reviewer pid N not yet
+    claimed"), never as a block by a live child. A child holding the row itself (its own
+    reviewer, or its finishing builder) is not what the row waits on. Any other live child
+    only blocks through the memory gate or child cap, so that is named when `gate` is set.
+    """
     out: list[str] = []
     for child in live:
-        item = ",".join(i for i in (child.held_items or []) if i) or "no item yet"
+        held = [i for i in (child.held_items or []) if i]
         pid = getattr(getattr(child, "process", None), "pid", None)
+        item = ",".join(held) or "no item yet"
+        unclaimed = child in review_spawned and not held
         for row in unheld:
-            line = f"{row['id']}: review waits on live child pid {pid} (item {item})"
+            rid = str(row["id"])
+            if rid in held:
+                continue
+            if unclaimed:
+                line = f"{rid}: review waits on reviewer pid {pid} not yet claimed"
+            elif gate:
+                line = f"{rid}: review waits on {gate} (live child pid {pid}, item {item})"
+            elif child in review_spawned:
+                continue
+            else:
+                line = f"{rid}: review waits on live child pid {pid} (item {item})"
             out.append(line)
             if line not in wave.review_waits:
                 wave.review_waits.append(line)
-                observe.emit("review_waits_on_live_child", review=str(row["id"]),
-                             pid=pid, item=item)
+                observe.emit("review_waits_on_live_child", review=rid,
+                             pid=pid, item=item, gate=gate or "")
     return out
 
 
