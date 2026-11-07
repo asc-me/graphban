@@ -71,7 +71,9 @@ def test_serialize_hands_members_out_in_order(db):
     assert got == [a.id, b.id, c.id]
 
 
-def test_override_refused_for_worker_allowed_for_planner_and_scoped(db):
+def test_override_refused_for_worker_allowed_for_planner_and_scoped(db, monkeypatch):
+    # Soft leases (GRPH-1389): only a hard area blocks a second drain, so make these hard.
+    monkeypatch.setattr(fleet_svc, "HARD_AREAS", ("src/zone", "web/zone"))
     a, b, c = _trio(db)
     d = _item(db, "other", "web/zone/*.tsx")
     e = _item(db, "other2", "web/zone/*.tsx")

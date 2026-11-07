@@ -63,11 +63,11 @@ def _reserve(db, areas, item_id, *, seconds=600):
 
 
 def test_a_reserved_cluster_names_its_holder(client, auth, db):
-    held = _item(client, auth, "held work", ["src/a.py"])
-    _reserve(db, ["src/a.py"], held)
+    held = _item(client, auth, "held work", ["backend/alembic/versions/a.py"])
+    _reserve(db, ["backend/alembic/versions/a.py"], held)
 
     got = collision_svc.clusters_for_project(db, "core")
-    mine = [c for c in got if "src/a.py" in (c.get("areas") or [])]
+    mine = [c for c in got if "backend/alembic/versions/a.py" in (c.get("areas") or [])]
 
     assert mine, "the item vanished from the pool entirely"
     assert mine[0]["held_by"] == [_agent(db)]
@@ -76,11 +76,11 @@ def test_a_reserved_cluster_names_its_holder(client, auth, db):
 def test_it_says_when_the_earliest_frees(client, auth, db):
     """"Wait" and "give up" are different instructions, and the supervisor cannot tell them
     apart without this."""
-    held = _item(client, auth, "held work", ["src/b.py"])
-    _reserve(db, ["src/b.py"], held, seconds=300)
+    held = _item(client, auth, "held work", ["backend/alembic/versions/b.py"])
+    _reserve(db, ["backend/alembic/versions/b.py"], held, seconds=300)
 
     got = collision_svc.clusters_for_project(db, "core")
-    mine = next(c for c in got if "src/b.py" in (c.get("areas") or []))
+    mine = next(c for c in got if "backend/alembic/versions/b.py" in (c.get("areas") or []))
 
     assert 0 < mine["free_in"] <= 300
 

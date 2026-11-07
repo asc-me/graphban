@@ -488,6 +488,9 @@ class Merged:
     release: str = ""
     #: Other open PRs of the item closed as "Superseded by #n" after this merge (GRPH-1219).
     closed: tuple[str, ...] = ()
+    #: Files a rebase onto the base could not reconcile (GRPH-1389). Non-empty means the item
+    #: is to be bounced, naming these, rather than left as a PR that can never run CI.
+    conflicts: tuple[str, ...] = ()
 
     @property
     def final(self) -> bool:
@@ -748,6 +751,108 @@ def same_commit(a: str, b: str) -> bool:
     if not all(c in "0123456789abcdef" for c in a + b):
         return False
     return a.startswith(b) or b.startswith(a)
+
+
+_VERSIONS = "backend/alembic/versions"
+_REV = re.compile(r"""^revision(?:\s*:\s*[^=]+)?\s*=\s*['"]([^'"]+)['"]""", re.M)
+_DOWN = re.compile(r"""^down_revision(?:\s*:\s*[^=]+)?\s*=\s*(.+)$""", re.M)
+
+
+def heads_of(files: dict[str, str]) -> list[str]:
+    """Alembic heads of {path: source}: revisions no other revision names as its parent."""
+    revs: set[str] = set()
+    parents: set[str] = set()
+    for src in files.values():
+        m = _REV.search(src)
+        if not m:
+            continue
+        revs.add(m.group(1))
+        d = _DOWN.search(src)
+        if d:
+            parents.update(re.findall(r"""['"]([^'"]+)['"]""", d.group(1)))
+    return sorted(revs - parents)
+
+
+def merged_alembic_heads(repo: Path, base: str, head: str) -> list[str] | None:
+    """Alembic heads of the tree merging `head` into `base` would produce; None when git
+    could not say (then the check is reported as unchecked, never as passed)."""
+    def git(*a: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *a], cwd=str(repo), capture_output=True, text=True)
+
+    if not Path(repo).is_dir():
+        return None
+    try:
+        tree = git("merge-tree", "--write-tree", base, head)
+        if tree.returncode != 0 or not tree.stdout.strip():
+            return None
+        tree_id = tree.stdout.strip().splitlines()[0]
+        names = git("ls-tree", "-r", "--name-only", tree_id, "--", _VERSIONS + "/")
+        if names.returncode != 0:
+            return None
+        files: dict[str, str] = {}
+        for name in names.stdout.split():
+            if not name.endswith(".py"):
+                continue
+            blob = git("show", f"{tree_id}:{name}")
+            if blob.returncode == 0:
+                files[name] = blob.stdout
+        return heads_of(files) if files else []
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def rebase_conflicts(repo: Path, base: str, head: str) -> list[str]:
+    """Files a merge of `head` onto `base` would conflict on (empty when none or unknown)."""
+    if not Path(repo).is_dir():
+        return []
+    try:
+        out = subprocess.run(["git", "merge-tree", "--write-tree", "--name-only", base, head],
+                             cwd=str(repo), capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode == 0:
+        return []
+    lines = out.stdout.splitlines()[1:]
+    names = []
+    for ln in lines:
+        if not ln.strip():
+            break
+        names.append(ln.strip())
+    return names
+
+
+def _update_branch(repo: Path, item_id: str, selector: str, url: str, base_ref: str, head: str,
+                   checked: list[str]) -> Merged:
+    """A PR behind its base is rebased and left for CI to run at the new head (GRPH-1389).
+
+    Merging waits for green at the NEW head: the next tick finds a head that moved with the
+    item's own files unchanged, and CI has not attested it yet. A rebase the forge cannot do
+    is a conflict, and the item is bounced naming the files instead of left as a PR that can
+    never run CI."""
+    base = f"origin/{base_ref}" if base_ref else "origin/HEAD"
+    try:
+        if Path(repo).is_dir():
+            subprocess.run(["git", "fetch", "origin", base_ref] if base_ref else ["git", "fetch"],
+                           cwd=str(repo), capture_output=True, text=True, timeout=120)
+        done = _gh(repo, "pr", "update-branch", selector, "--rebase", timeout=120.0)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      reason=f"gh could not run: {exc}")
+    if done.returncode != 0:
+        files = rebase_conflicts(repo, base, head)
+        tail = (done.stderr or done.stdout or "").strip().splitlines()
+        if files or any("conflict" in t.lower() for t in tail):
+            return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                          conflicts=tuple(files) or ("(files not reported)",),
+                          reason="rebase onto the base conflicts in "
+                                 + (", ".join(files) or "files the forge did not name"))
+        return Merged(item=item_id, selector=selector, url=url, skipped=True,
+                      checked=tuple(checked),
+                      reason=f"gh pr update-branch failed: {tail[-1][:200] if tail else done.returncode}")
+    return Merged(item=item_id, selector=selector, url=url, pending=True,
+                  checked=tuple(checked) + ("rebased",),
+                  reason="PR was behind its base and has been rebased; waiting for CI "
+                         "to attest the new head before merging")
 
 
 def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
@@ -1051,6 +1156,15 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
 
     mergeable = str(pr.get("mergeable") or "").upper()
     status = str(pr.get("mergeStateStatus") or "").upper()
+    base_ref = str(pr.get("baseRefName") or "").strip()
+    if status == "BEHIND":
+        return _update_branch(repo, item_id, selector, url, base_ref, head, checked)
+    if mergeable == "CONFLICTING" or status == "DIRTY":
+        files = rebase_conflicts(repo, f"origin/{base_ref}" if base_ref else "origin/HEAD", head)
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      conflicts=tuple(files) or ("(files not reported)",),
+                      reason="conflicts with the base in " + (", ".join(files) or
+                                                              "files the forge did not name"))
     if mergeable != "MERGEABLE" or status != "CLEAN":
         if status == "BLOCKED":
             # Branch protection wants something this process is not: an approval, a check
@@ -1062,6 +1176,14 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
                       reason=f"not mergeable yet: mergeable={mergeable or '?'}, "
                              f"mergeStateStatus={status or '?'}")
     checked.append("mergeable=CLEAN")
+
+    # Backstop: two migrations both merge cleanly and leave two heads, which git cannot see.
+    heads = merged_alembic_heads(repo, f"origin/{base_ref}" if base_ref else "origin/HEAD", head)
+    if heads is not None and len(heads) > 1:
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      reason=f"merging would leave {len(heads)} alembic heads "
+                             f"({', '.join(heads)}); refused — rebase and re-chain the migration")
+    checked.append("alembic-heads=1" if heads is not None else "alembic-heads=unchecked")
 
     # `--auto` is the honest verb for a supervisor: it says "merge when your requirements
     # are met", and `gh` merges immediately when a PR is already CLEAN. Squash, so the trunk
