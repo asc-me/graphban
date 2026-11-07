@@ -1,7 +1,7 @@
 """PRD-P10 §Linear integration adapter.
 
 Covers:
-- Status mapping (Linear state types → AgentLedger canonical statuses)
+- Status mapping (Linear state types → Graphban canonical statuses)
 - Webhook signature verification (HMAC-SHA256)
 - Integration lifecycle (link / status / unlink)
 - OAuth URL construction

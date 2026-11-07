@@ -1,7 +1,7 @@
 """Tracker linking and authority (PRD-10 / GRPH-186).
 
-Config to link an external tracker (Linear first, Jira in v3) to an AgentLedger
-project at org scope. When linked, the tracker is AUTHORITATIVE: AgentLedger
+Config to link an external tracker (Linear first, Jira in v3) to a Graphban
+project at org scope. When linked, the tracker is AUTHORITATIVE: Graphban
 mirrors read-heavy and writes back only canonical status transitions,
 comments/links, and the triage-board assignee.
 

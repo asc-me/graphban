@@ -1,6 +1,6 @@
 ---
 name: gb-verifier
-description: Use to verify an Graphban change is actually done — runs the full operating loop on both database engines plus the frontend checks and reports pass/fail. Does not edit source. Cheap model; good as a background agent after an implementer finishes.
+description: Use to verify a Graphban change is actually done — runs the full operating loop on both database engines plus the frontend checks and reports pass/fail. Does not edit source. Cheap model; good as a background agent after an implementer finishes.
 model: composer-2
 readonly: true
 is_background: true

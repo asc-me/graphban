@@ -5,7 +5,7 @@ Two independent boundaries:
 1. **Inference (BYOK):** the customer configures their own inference endpoint —
    a cloud provider via their key (Anthropic / any OpenAI-compatible) or fully
    local Ollama. Ticket content reaches only the customer's configured endpoint;
-   a strict local-only-inference posture is available. No AgentLedger-shared model.
+   a strict local-only-inference posture is available. No Graphban-shared model.
    This boundary is enforced by the existing provider configuration (EMBED_PROVIDER,
    CHAT_PROVIDER) and is not managed here.
 
@@ -90,7 +90,7 @@ def inference_boundary() -> dict:
     """Describe the inference boundary for the current deployment.
 
     BYOK: the customer configures their own inference endpoint. Ticket content
-    reaches only the customer's configured endpoint. No AgentLedger-shared model.
+    reaches only the customer's configured endpoint. No Graphban-shared model.
 
     Returns a dict describing the current posture.
     """

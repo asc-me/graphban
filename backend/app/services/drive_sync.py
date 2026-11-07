@@ -136,7 +136,7 @@ def extract_title(body: str) -> str:
 
 
 def render(prd) -> str:
-    """PRD → file content with an Graphban front-matter block."""
+    """PRD → file content with a Graphban front-matter block."""
     fm = (
         "---\n"
         f"graphban_id: {prd.id}\n"

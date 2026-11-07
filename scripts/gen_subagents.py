@@ -655,7 +655,7 @@ you answered and note the alternative.""",
     {
         "name": "gb-verifier",
         "description": (
-            "Use to verify an Graphban change is actually done — runs the full "
+            "Use to verify a Graphban change is actually done — runs the full "
             "operating loop on both database engines plus the frontend checks and "
             "reports pass/fail. Does not edit source. Cheap model; good as a "
             "background agent after an implementer finishes."
@@ -884,7 +884,7 @@ defeat intent.
 
 
 def render_cursor_rules(ledger_loop: str) -> str:
-    """`.cursor/rules/agentledger.mdc` — primes an editor agent on the ledger loop (GRPH-147).
+    """`.cursor/rules/graphban.mdc` — primes an editor agent on the ledger loop (GRPH-147).
 
     **`.mdc`, not `.md`.** Cursor's rules system ignores plain `.md` files in this directory
     entirely, so the wrong extension produces a file that looks installed, reviews fine, and
@@ -985,7 +985,7 @@ def render_files() -> dict[str, str]:
     ledger_loop = extract_section(agents_md, "Ledger loop")
     if not ledger_loop:
         raise SystemExit("could not extract '## Ledger loop' from AGENTS.md")
-    files[".cursor/rules/agentledger.mdc"] = render_cursor_rules(ledger_loop)
+    files[".cursor/rules/graphban.mdc"] = render_cursor_rules(ledger_loop)
 
     files.update(render_plugin_files())
     files.update(render_skills())

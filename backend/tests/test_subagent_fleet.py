@@ -286,7 +286,7 @@ def test_planner_and_orchestrator_map_brief_next_to_verbatim_paste():
 
 # ---- the Cursor rules file (GRPH-147) -----------------------------------------------------
 
-RULE = ".cursor/rules/agentledger.mdc"
+RULE = ".cursor/rules/graphban.mdc"
 
 
 def test_the_rule_is_mdc_because_cursor_ignores_md_here():
