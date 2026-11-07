@@ -1183,9 +1183,14 @@ def _start(
             # spawn used to cut a sibling from main and the builder rebuilt reviewed
             # work. Bound seats know the item; resume THAT branch, merged with the
             # wave base. Unbound seats still take salvage, then a fresh cut.
-            bounced = wt_mod.bounce_branch_of(
-                (items or {}).get(seat.item) if seat.item else None
-            )
+            row = (items or {}).get(seat.item) if seat.item else None
+            bounced = wt_mod.bounce_branch_of(row)
+            if not bounced:
+                # GRPH-1390: a committed or salvaged prior attempt is continued, never
+                # rebuilt from the base.
+                bounced = wt_mod.prior_branch_of(repo, row, base)
+                if bounced:
+                    observe.emit("continue_prior_branch", branch=bounced, item=seat.item)
             if bounced and bounced not in taken:
                 slot = bounced.rsplit("-", 1)[-1] or slot
                 agent_slot = f"{wave_name}-{slot}"
@@ -3066,11 +3071,37 @@ class Merger:
             release=release,
             scans=propose_mod.scans_clean_verdicts(item),
             siblings=propose_mod.pr_receipts(item),
+            # Lazy: only read when the PR has files outside this item's own touchpoints.
+            covering=lambda: self._covering(item_id, item),
         )
         got = propose_mod.close_after_merge(self.repo, got)
         if got.ok and got.commit:
             got = self._record(wave, got)
         return got
+
+    def _covering(self, item_id: str, item: dict) -> list[str]:
+        """Touchpoints of the OTHER done items on this item's branch whose sign-off names the
+        same commit (GRPH-1408). Their files may ride in the PR; anyone else's may not."""
+        branch = str(item.get("branch") or "")
+        reviewed = propose_mod.reviewed_commit(item)
+        if not branch or not reviewed:
+            return []
+        try:
+            payload = self.client.call("search_items", status="done", fields="full",
+                                       limit=10_000)
+        except (NotPermitted, ToolFailed, ServerUnreachable):
+            return []
+        rows = payload.get("results") if isinstance(payload, dict) else None
+        out: list[str] = []
+        for row in rows or []:
+            if not isinstance(row, dict) or row.get("id") == item_id:
+                continue
+            if str(row.get("branch") or "") != branch:
+                continue
+            if not propose_mod.same_commit(propose_mod.reviewed_commit(row), reviewed):
+                continue
+            out.extend(str(p) for p in (row.get("touchpoints") or []))
+        return out
 
     def _record(self, wave: Wave, got: "propose_mod.Merged") -> "propose_mod.Merged":
         """The receipt. `commit` is on the row so `deps._commits` reads the merge commit as
