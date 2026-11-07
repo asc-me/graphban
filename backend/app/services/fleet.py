@@ -3490,7 +3490,12 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # this path used to write the status directly, so a reviewer who linked a PR and
     # signed it off in the same minute — the defect the cooldown tests name — sailed
     # through. Same helper, same message.
-    items_svc.refuse_if_pr_cooling_down(db, item, evidence or [], commit=commit)
+    carried = items_svc.refuse_if_pr_cooling_down(db, item, evidence or [], commit=commit)
+    if carried:
+        # GRPH-1411: the gate let this through on a run attested on another item; the note
+        # naming that run is stored with the verdict.
+        carried = items_svc.normalize_evidence(carried)
+        fresh, merged = fresh + carried, merged + carried
     # THE CALL, again (GRPH-1007). `_predicate` reports honestly and `_predicate_admits` reads
     # it, but the gate those two serve lives in `update_item` — and this function writes the
     # status directly. So the refusal has to be made HERE, next to the cooldown refusal that

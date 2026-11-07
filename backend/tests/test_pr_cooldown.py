@@ -529,3 +529,91 @@ def test_a_plain_cooldown_refusal_still_says_wait(client, auth, monkeypatch):
     err = _mcp_done(client, auth, monkeypatch, items_svc.PRCooldown("still cooling down"))
     assert err["code"] == "conflict"
     assert "wait for the cooldown" in err["hint"], err
+
+
+# ---- a receipt on another item vouches for a commit in its range (GRPH-1411) ---------------
+
+HEAD_H = "e" * 40
+C1 = "f" * 40
+RUN = "https://github.com/asc-me/graphban/actions/runs/{}/attempts/{}"
+
+
+def _carrier(db, passed=True, run=(77, 1), item=None):
+    """Item A: a CI receipt at head H whose PR range is [C1, H] — the shape `attest_ci.py`
+    writes when a PR named only A but also carried C1."""
+    a = item or _item(db)
+    rec = dict(ATTESTATION, commit=HEAD_H, run_ref=RUN.format(*run), range=[C1, HEAD_H],
+               predicates=[{"name": "suite_green", "passed": passed, "detail": "x"}])
+    items_svc.update_item(db, a.id, evidence=[rec])
+    return a
+
+
+def _sign_off_b(db, commit=C1, evidence=()):
+    from app.services import fleet as fleet_svc
+
+    b = _item(db)
+    if evidence:
+        items_svc.update_item(db, b.id, evidence=list(evidence))
+    _in_review(db, b)
+    return fleet_svc.sign_off(db, item_id=b.id, agent_id="reviewer-1",
+                              evidence=[PR], commit=commit)
+
+
+def test_a_green_range_receipt_on_another_item_lets_sign_off_through(db, cooldown):
+    a = _carrier(db)
+
+    out = _sign_off_b(db)
+
+    assert out.status == "done"
+    # The acceptance is on the record, naming the run, its head and the carrying item.
+    notes = [e["detail"] for e in out.evidence
+             if e.get("kind") == "note" and "pr_ci_green carried" in e.get("detail", "")]
+    assert len(notes) == 1, out.evidence
+    assert RUN.format(77, 1) in notes[0]
+    assert HEAD_H[:12] in notes[0] and a.key in notes[0] and C1[:12] in notes[0]
+
+
+def test_a_red_range_receipt_on_another_item_refuses_and_names_the_run(db, cooldown):
+    a = _carrier(db, passed=False)
+
+    with pytest.raises(items_svc.PRCINotGreen) as exc:
+        _sign_off_b(db)
+    assert RUN.format(77, 1) in str(exc.value) and a.key in str(exc.value)
+    assert HEAD_H[:12] in str(exc.value)
+
+
+def test_a_commit_outside_every_range_is_still_refused(db, cooldown):
+    _carrier(db)
+
+    with pytest.raises(items_svc.PRCooldown):
+        _sign_off_b(db, commit="9" * 40)
+
+
+def test_the_items_own_red_run_is_not_overruled_by_a_green_one_elsewhere(db, cooldown):
+    """A red run at the item's own commit is its answer; a carried green does not cancel it."""
+    _carrier(db)
+    own_red = dict(ATTESTATION, commit=C1, run_ref=RUN.format(90, 1),
+                   predicates=[{"name": "suite_green", "passed": False, "detail": "boom"}])
+
+    with pytest.raises(items_svc.PRCINotGreen) as exc:
+        _sign_off_b(db, evidence=[own_red])
+    assert RUN.format(90, 1) in str(exc.value)
+
+
+def test_a_green_rerun_after_a_red_run_carries_the_commit(db, cooldown):
+    """Red then green on the same PR: the later attempt answers."""
+    a = _carrier(db, passed=False, run=(77, 1))
+    _carrier(db, passed=True, run=(77, 2), item=a)
+
+    assert _sign_off_b(db).status == "done"
+
+
+def test_a_later_red_run_elsewhere_blocks_an_earlier_green_one(db, cooldown):
+    """Green on one PR, then a later red run on another PR covering the same commit: the
+    latest answer is red, wherever it was attested."""
+    _carrier(db, passed=True, run=(77, 1))
+    _carrier(db, passed=False, run=(81, 1))
+
+    with pytest.raises(items_svc.PRCINotGreen) as exc:
+        _sign_off_b(db)
+    assert RUN.format(81, 1) in str(exc.value)
