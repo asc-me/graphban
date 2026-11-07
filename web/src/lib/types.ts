@@ -3279,3 +3279,6 @@ export interface HarnessRoutingReason {
   reason: string | null;
   at: string | null;
 }
+
+/** GRPH-1405: where the test suites run — the `build.test_scope` rule's `mode` param. */
+export type TestScopeMode = "agent_full" | "agent_and_pr" | "agent_targeted";

@@ -74,6 +74,17 @@
       "id": "staffing_scope",
       "level": "checked",
       "params": []
+    },
+    {
+      "id": "test_scope",
+      "level": "checked",
+      "params": [
+        {
+          "name": "mode",
+          "required": false,
+          "type": "str"
+        }
+      ]
     }
   ]
 }
