@@ -256,13 +256,15 @@ class _Forge:
 
     def __init__(self, *, state="OPEN", draft=True, head=REVIEWED, mergeable="MERGEABLE",
                  status="CLEAN", fork=False, has_pr=True, merge_ok=True, ready_ok=True,
-                 lands=True, url="https://github.com/o/r/pull/9", listed=None, base="main"):
+                 lands=True, url="https://github.com/o/r/pull/9", listed=None, base="main",
+                 files=()):
         self.pr = {"number": 9, "url": url, "state": state, "isDraft": draft,
                    "mergeable": mergeable, "mergeStateStatus": status, "headRefOid": head,
                    "headRefName": "gb/w-1", "baseRefName": base, "isCrossRepository": fork,
                    "mergeCommit": {"oid": MERGE_OID} if state == "MERGED" else None}
         self.has_pr, self.merge_ok, self.ready_ok, self.lands = has_pr, merge_ok, ready_ok, lands
         self.listed = list(listed or [])
+        self.files = list(files)
         self.calls: list[list[str]] = []
 
     def verbs(self) -> list[str]:
@@ -279,6 +281,8 @@ class _Forge:
                     and "/pull/" not in selector and not selector.lstrip("#").isdigit()):
                 return subprocess.CompletedProcess(argv, 1, "", "no pull requests found for branch")
             return subprocess.CompletedProcess(argv, 0, json.dumps(self.pr), "")
+        if verb == "pr diff":
+            return subprocess.CompletedProcess(argv, 0, "\n".join(self.files) + "\n", "")
         if verb == "pr list":
             return subprocess.CompletedProcess(argv, 0, json.dumps(self.listed), "")
         if verb == "pr ready":
