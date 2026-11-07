@@ -94,19 +94,25 @@ def test_mcp_reply_lists_what_was_removed(client, auth):
     assert out["touchpoints"] == ["a.py"]
 
 
+WIDE = "backend/alembic/versions/*"  # a hard area (fleet.HARD_AREAS)
+
+
 def test_claim_that_collided_only_on_a_removed_path_now_succeeds(db):
-    """Acceptance 3. The holder's `wide/*` refuses a second agent's claim on `wide/x.py`;
-    once the holder removes `wide/*`, the same claim goes through. A no-op removal keeps
-    both the touchpoint and its reservation, so the second claim is still refused."""
+    """Acceptance 3. The holder's `backend/alembic/versions/*` refuses a second agent's claim
+    on a file under it; once the holder removes that glob, the same claim goes through.
+
+    The held path is a HARD area on purpose. Since GRPH-1389 an ordinary overlap (`wide/*`)
+    is a soft lease that never refuses a claim, so only a hard area can set up the refusal
+    this test needs."""
     from app.models import Agent
 
     holder = _agent(db)
-    it = _item(db, ["a.py", "wide/*"], status="in_progress", claimed_by=holder)
-    fleet_svc.reserve_areas(db, agent_id=holder, item_id=it.id, areas=["a.py", "wide/*"],
+    it = _item(db, ["a.py", WIDE], status="in_progress", claimed_by=holder)
+    fleet_svc.reserve_areas(db, agent_id=holder, item_id=it.id, areas=["a.py", WIDE],
                             expires_at=items_svc.utcnow() + timedelta(seconds=600),
                             predicted=False)
     db.commit()
-    target = _item(db, ["wide/x.py"], status="next")
+    target = _item(db, [WIDE[:-1] + "x.py"], status="next")
     claimer = db.get(Agent, "CORE-A97") or Agent(id="CORE-A97", project_id="core", number=97,
                                                   label="claimer", active_role="worker")
     db.add(claimer)
@@ -124,10 +130,10 @@ def test_claim_that_collided_only_on_a_removed_path_now_succeeds(db):
         return got_ids, None
 
     before, refusal = drain()
-    assert target.id not in before, "the target must start out refused on wide/*"
-    assert refusal and "wide/*" in str(refusal), refusal
+    assert target.id not in before, "the target must start out refused on the hard glob"
+    assert refusal and WIDE in str(refusal), refusal
 
-    items_svc.update_item(db, it.id, submitted_by=holder, touchpoints_remove=["wide/*"])
+    items_svc.update_item(db, it.id, submitted_by=holder, touchpoints_remove=[WIDE])
 
     after, _ = drain()
-    assert target.id in after, "removing wide/* did not free the claim that collided on it"
+    assert target.id in after, "removing the glob did not free the claim that collided on it"
