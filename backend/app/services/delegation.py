@@ -865,10 +865,10 @@ def refuse_bound_collision(db: Session, *, agent: Agent, item: Item) -> None:
     areas, _ = collision_svc.touch_areas(db, item, item.project_id)
     taken = fleet_svc.active_reservations(db, item.project_id, now=_now())
     blocked = [r.area for r in taken if r.agent_id != agent.id]
-    if fleet_svc.areas_collide(areas, blocked):
+    if fleet_svc.hard_collide(areas, blocked):
         holders = sorted({r.agent_id for r in taken
                           if r.agent_id != agent.id
-                          and fleet_svc.areas_collide(areas, [r.area])})
+                          and fleet_svc.hard_collide(areas, [r.area])})
         raise DelegationRefused(
             f"{item.key}'s areas are reserved by {', '.join(holders)}; a bound seat "
             "would claim straight through that collision",

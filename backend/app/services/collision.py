@@ -338,7 +338,7 @@ def _with_reservations(db: Session, clusters: list[dict], project_id: str | None
         holders, soonest = set(), None
         blocking: list[dict] = []
         for row in taken:
-            overlap = fleet_svc.areas_collide(areas, [row.area])
+            overlap = fleet_svc.hard_collide(areas, [row.area])
             if not overlap:
                 continue
             holders.add(row.agent_id)
