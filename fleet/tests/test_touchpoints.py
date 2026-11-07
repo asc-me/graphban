@@ -116,6 +116,43 @@ def test_salvaged_work_is_included(git_repo: Path, tmp_path: Path):
     assert tp.measure(tree) == ["committed.py", "half-done.py"]
 
 
+# --- a branch that merged trunk (GRPH-1376) -----------------------------------------
+
+
+def _commit(cwd: Path, name: str, msg: str) -> None:
+    (cwd / name).write_text(name + "\n", encoding="utf-8")
+    _git(cwd, "add", "-A")
+    _git(cwd, "-c", "user.email=w@e.invalid", "-c", "user.name=W", "commit", "-qm", msg)
+
+
+def _merged_trunk(git_repo: Path, tmp_path: Path, extra: str = ""):
+    _git(git_repo, "remote", "add", "origin", str(git_repo))
+    _git(git_repo, "fetch", "-q", "origin")
+    _git(git_repo, "remote", "set-head", "origin", "main")
+    tree = create(git_repo, tmp_path / "w1", "wave", "1")
+    _commit(tree.path, "X.py", "mine")
+    if extra:
+        _commit(tree.path, extra, "also mine")
+    _commit(git_repo, "Y.py", "trunk moves")
+    _git(git_repo, "fetch", "-q", "origin")
+    _git(tree.path, "-c", "user.email=w@e.invalid", "-c", "user.name=W",
+         "merge", "-q", "--no-edit", "origin/main")
+    return tree
+
+
+def test_a_branch_that_merged_trunk_reports_only_its_own_files(git_repo: Path, tmp_path: Path):
+    tree = _merged_trunk(git_repo, tmp_path)
+    assert tp.measure(tree) == ["X.py"]
+
+
+def test_a_branch_that_merged_trunk_still_reports_its_own_extra_file(
+    git_repo: Path, tmp_path: Path
+):
+    tree = _merged_trunk(git_repo, tmp_path, extra="Z.py")
+    assert tp.measure(tree) == ["X.py", "Z.py"]
+    assert tp.undeclared(tp.measure(tree), ["X.py"]) == ["Z.py"]
+
+
 # --- what it must not do -------------------------------------------------------------
 
 
