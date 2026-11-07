@@ -432,7 +432,13 @@ and the receipt stays a `test` either way. The `build.engine_evidence` rule read
 migration item reaches review only with a receipt where `engine` is the rule's engine,
 `scope` is `full` and `failed` is `0` (a skip count never makes a run partial). A receipt
 with none of the fields falls back to its prose, e.g. `Postgres full suite: 6402 passed, 38
-skipped`. Two kinds are structured, and a
+skipped`. The project's `build.test_scope` mode (GRPH-1404) decides who may supply that run.
+In `agent_targeted`, a passing CI `suite_green` attestation at the item's current head (the
+`ci` job needs the Postgres job) also satisfies the rule, and before CI reports the refusal says
+the item is waiting for CI's Postgres run; an attestation at another commit, or a failing one,
+does not count. `agent_and_pr` keeps the local full receipt and requires CI at merge.
+`agent_full` still needs the local receipt to reach review, and at merge full local receipts on
+Postgres and SQLite stand in for a missing CI attestation (a failing CI still blocks). Two kinds are structured, and a
 receipt that claims one without the required fields is **demoted to `note`, never
 dropped** — the claim stays readable even when it doesn't validate:
 
