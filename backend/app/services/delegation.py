@@ -869,11 +869,13 @@ def refuse_bound_collision(db: Session, *, agent: Agent, item: Item) -> None:
         holders = sorted({r.agent_id for r in taken
                           if r.agent_id != agent.id
                           and fleet_svc.areas_collide(areas, [r.area])})
+        # Both sides of the collision, not only who holds it (GRPH-1399).
+        pairs = fleet_svc.describe_pairs(fleet_svc.colliding_pairs(areas, blocked))
         raise DelegationRefused(
-            f"{item.key}'s areas are reserved by {', '.join(holders)}; a bound seat "
-            "would claim straight through that collision",
+            f"{item.key}'s areas are reserved by {', '.join(holders)} ({pairs}); a bound "
+            "seat would claim straight through that collision",
             hint="delegate another item, or delegate without a seat and let the divvy decide",
-            detail={"held_by": ", ".join(holders)})
+            detail={"held_by": ", ".join(holders), "areas": pairs})
 
 
 def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,

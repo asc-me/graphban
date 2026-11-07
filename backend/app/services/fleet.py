@@ -4146,6 +4146,29 @@ def areas_collide(a: list[str], b: list[str]) -> list[str]:
     return out
 
 
+def colliding_pairs(a: list[str], b: list[str]) -> list[tuple[str, str]]:
+    """(mine, theirs) for each area of `a` that collides, with the first area of `b` it hits.
+
+    The same rule as `areas_collide`, kept as pairs so a refusal can name BOTH sides
+    (GRPH-1399): "reserved by GRPH-A14717" sends the operator hunting through twenty
+    touchpoints; "backend/tests/* vs backend/tests/test_graphban_release.py" is the answer.
+    """
+    out = []
+    for x in a:
+        for y in b:
+            if areas_collide([x], [y]):
+                out.append((x, y))
+                break
+    return out
+
+
+def describe_pairs(pairs: list[tuple[str, str]], *, cap: int = 3) -> str:
+    """"theirs vs mine, …" — the holder's area first, as the refusal reads "reserved by"."""
+    shown = [f"{theirs} vs {mine}" for mine, theirs in pairs[:cap]]
+    more = len(pairs) - len(shown)
+    return ", ".join(shown) + (f" and {more} more" if more > 0 else "")
+
+
 def reserve_areas(db: Session, *, agent_id: str, item_id: str, areas: list[str],
                   expires_at: datetime, predicted: bool) -> None:
     """THE one place an `AreaReservation` is constructed (PRD-20 §1.3, guarded by
@@ -4272,6 +4295,8 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     # Scoping here rather than skipping out-of-scope members below is also what keeps
     # `claim_item`'s refusal unreachable from this path: the two agree by construction.
     scope = items_svc.seat_scope(db, agent_id)
+    #: (mine, theirs) for the first collision of each refused cluster — the refusal names both.
+    collided: list[tuple[str, str]] = []
 
     for cluster in collision_svc.clusters_for_project(db, project_id,
                                                        lease_seconds=lease_seconds,
@@ -4281,6 +4306,8 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         blocked = [r.area for r in taken if r.agent_id != agent_id and r.item_id not in free]
         overlap = areas_collide(cluster.get("areas") or [], blocked)
         if overlap:
+            if len(collided) < 3:
+                collided.extend(colliding_pairs(cluster.get("areas") or [], blocked)[:1])
             continue
         ids = (cluster.get("items") or [])[:_capped(db, project_id, cluster, max_items)]
         claimed = [it for it in (items_svc.claim_item(db, i, agent_id, lease_seconds=lease_seconds)
@@ -4312,6 +4339,7 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         free_in = max(0, int((_aware(soonest) - now).total_seconds())) if soonest else None
         reason = ("all ready clusters collide with areas held by "
                   + ", ".join(held)
+                  + (f" ({describe_pairs(collided)})" if collided else "")
                   + (f" — the earliest frees in {free_in}s" if free_in is not None else ""))
     else:
         # Two states, and the difference decides what the caller does next: an unscoped agent
