@@ -31,6 +31,15 @@ export const AGENTS: { id: string; label: string; restart: string }[] = [
 /** The gban route is offered only for what the CLI package says it can configure (G9). */
 export const GBAN_AGENTS: readonly string[] = gbanAgents.agents;
 
+/**
+ * The gban route's commands, exported by the CLI package with `{server}` / `{project}` holes.
+ * cli/tests parses each with gban's own argparse, so these cannot drift from the CLI's flags.
+ */
+export function gbanCommands(server: string, projectId: string): string[] {
+  return gbanAgents.commands.map((c) => c.replaceAll("{server}", server).replaceAll("{project}", projectId));
+}
+const COMMAND_LABELS = ["Copy the install command", "Copy the login command", "Copy the setup command"];
+
 export type Route = "gban" | "key";
 export const ROUTE_LABEL: Record<Route, string> = { gban: "gban CLI", key: "pasted key" };
 
@@ -177,9 +186,9 @@ export function ConnectStep({
 
       {effective === "gban" ? (
         <div className="mt-3 space-y-2">
-          <CopyBlock text="uv tool install graphban-cli" label="Copy the install command" />
-          <CopyBlock text={`gban login --server ${server}`} label="Copy the login command" />
-          <CopyBlock text={`gban setup --project ${projectId}`} label="Copy the setup command" />
+          {gbanCommands(server, projectId).map((cmd, i) => (
+            <CopyBlock key={cmd} text={cmd} label={COMMAND_LABELS[i] ?? "Copy the command"} />
+          ))}
           <p className="text-[12px] text-muted">
             If you haven't already, run <code className="font-mono">gban setup</code>, then restart your agent.
           </p>

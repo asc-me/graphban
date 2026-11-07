@@ -56,6 +56,17 @@ FLEET_SERVER = "gbfleet"
 #: one edit that changes what the dialog offers.
 SETUP_AGENTS = ("claude", "grok")
 
+#: The commands the quick-start dialog's gban route shows, in order, with `{server}` and
+#: `{project}` filled in by the web app. Exported beside SETUP_AGENTS so the dialog never
+#: types its own copy; `cli/tests/test_setup.py` parses each with `gban.cli._parser()`, so a
+#: flag that moves (e.g. `--server` is a top-level option, not a `login` one) fails a test
+#: rather than a person's terminal.
+QUICKSTART_COMMANDS = (
+    "uv tool install graphban-cli",
+    "gban --server {server} login",
+    "gban --project {project} setup",
+)
+
 
 # ---- where the config goes ------------------------------------------------------------------
 

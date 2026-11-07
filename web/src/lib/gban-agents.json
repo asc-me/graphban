@@ -2,5 +2,10 @@
   "agents": [
     "claude",
     "grok"
+  ],
+  "commands": [
+    "uv tool install graphban-cli",
+    "gban --server {server} login",
+    "gban --project {project} setup"
   ]
 }

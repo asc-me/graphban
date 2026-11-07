@@ -367,7 +367,10 @@ describe("③ Connect your agent", () => {
     const user = userEvent.setup();
     await open(user);
     expect(screen.getByText("uv tool install graphban-cli")).toBeInTheDocument();
-    expect(screen.getByText(/gban setup --project core/)).toBeInTheDocument();
+    // Global options precede the subcommand: `gban login --server …` exits 2 under argparse.
+    expect(screen.getByText(/^gban --server \S+ login$/)).toBeInTheDocument();
+    expect(screen.getByText("gban --project core setup")).toBeInTheDocument();
+    expect(screen.queryByText(/gban (login|setup) --/)).not.toBeInTheDocument();
     expect(screen.getByText(/then restart your agent/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Next →" }));
     await screen.findByRole("heading", { name: "Give it a first job" });

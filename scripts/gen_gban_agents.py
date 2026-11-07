@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Write `web/src/lib/gban-agents.json` from the CLI's `gban.setup.SETUP_AGENTS` (GRPH-1362).
+"""Write `web/src/lib/gban-agents.json` from the CLI's `gban.setup.SETUP_AGENTS`
+and `QUICKSTART_COMMANDS` (GRPH-1362).
 
 The quick-start dialog offers the `gban setup` route only to agents the CLI can configure, so
 the list is exported from the CLI package and never copied into web/ by hand.
@@ -17,8 +18,9 @@ sys.path.insert(0, str(ROOT / "cli" / "src"))
 
 
 def render() -> str:
-    from gban.setup import SETUP_AGENTS
-    return json.dumps({"agents": list(SETUP_AGENTS)}, indent=2) + "\n"
+    from gban.setup import QUICKSTART_COMMANDS, SETUP_AGENTS
+    return json.dumps({"agents": list(SETUP_AGENTS), "commands": list(QUICKSTART_COMMANDS)},
+                      indent=2) + "\n"
 
 
 if __name__ == "__main__":
