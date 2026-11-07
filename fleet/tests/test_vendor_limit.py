@@ -158,3 +158,45 @@ def test_every_adapter_answers_the_question_and_the_default_is_silence():
 
     assert answers["claude"] == SAID
     assert [n for n, v in answers.items() if v] == ["claude"]
+
+
+# ---- 4. a limit is recognised only from a measured phrase (GRPH-1373) -------------------
+
+def test_the_error_quotes_the_whole_measured_line(scripts, tmp_path: Path, log_dir: Path):
+    """The measured line, reset clause included, is in the message verbatim.
+
+    Sabotage: have `account_limit` return only the matched phrase `session limit` and the
+    reset clause disappears from the message."""
+    child = _child_that(
+        scripts, tmp_path, log_dir,
+        f"import sys\nprint({SAID!r})\nsys.exit(1)\n",
+    )
+
+    with pytest.raises(VendorLimit) as exc:
+        await_registration(child, _no_roster, window=0.5, poll=0.05, sleep=lambda _: None)
+
+    assert SAID in str(exc.value)
+
+
+@pytest.mark.parametrize("name", sorted(n for n in ADAPTERS if n != "claude"))
+@pytest.mark.parametrize(
+    "line", [SAID, "Error: rate limit exceeded, retry later", "429 Too Many Requests: limit"]
+)
+def test_adapters_without_a_measured_line_stay_silent(name, line):
+    """Only a line that was measured, on a known stream, earns `account_limit`. every other adapter (Grok, Cursor
+    and any Codex adapter) has none, so Claude's line and a generic "rate limit" both come back empty on
+    either stream.
+
+    Sabotage: make any of them match the bare word "limit" and the generic line returns text."""
+    adapter = ADAPTERS[name]
+
+    assert adapter.account_limit(line, "") == ""
+    assert adapter.account_limit("", line) == ""
+
+
+def test_a_claude_crash_mentioning_limit_on_stderr_is_not_a_vendor_limit():
+    """"limit" without `session limit` is not Claude's measured phrase."""
+    crash = "Traceback ...\nOSError: [Errno 24] open file limit reached"
+
+    assert ADAPTERS["claude"].account_limit("", crash) == ""
+    assert ADAPTERS["claude"].account_limit(crash, "rate limit") == ""
