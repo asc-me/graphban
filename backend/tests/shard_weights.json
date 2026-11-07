@@ -180,6 +180,7 @@
 "tests/test_item_branch_handoff.py": 0.88,
 "tests/test_item_details_full_record.py": 0.42,
 "tests/test_item_done_at.py": 0.44,
+"tests/test_item_kind.py": 1.5,
 "tests/test_item_reach.py": 20.29,
 "tests/test_items.py": 0.42,
 "tests/test_items_list.py": 4.51,
