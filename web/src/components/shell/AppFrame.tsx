@@ -7,7 +7,8 @@ import { CreateFirstOrg } from "@/features/onboarding/CreateFirstOrg";
 import { CreateFirstProject } from "@/features/onboarding/CreateFirstProject";
 import { QuickStartDialog, useQuickStart } from "@/features/onboarding/QuickStartDialog";
 import type { QsStep } from "@/features/onboarding/quickStartProgress";
-import { useConfig, useMarkOnboarding, useOnboarding, useOrgs } from "@/lib/queries";
+import { AppTour } from "@/features/tour/AppTour";
+import { useCompleteTour, useConfig, useMarkOnboarding, useOnboarding, useOrgs } from "@/lib/queries";
 import { ORG_BASE, clearOrgStateForSelfHost } from "@/lib/routes";
 
 import { cn } from "@/lib/cn";
@@ -116,6 +117,17 @@ function FrameBody({ hosted }: { hosted: boolean }) {
   const [qsOpen, setQsOpen] = React.useState(false);
   const [qsStep, setQsStep] = React.useState<QsStep | undefined>(undefined);
   const autoOpened = React.useRef(false);
+  // ── App tour (GRPH-P67 §5) ── started from the quick start's Finish.
+  const [tourOpen, setTourOpen] = React.useState(false);
+  const { mutate: recordTour } = useCompleteTour();
+  const exitTour = React.useCallback(() => setTourOpen(false), []);
+  const finishTour = React.useCallback(
+    (skipped: string[]) => {
+      setTourOpen(false);
+      recordTour(skipped);
+    },
+    [recordTour],
+  );
   const qs = useQuickStart(finished || !onboardingQ.data ? "" : active?.id ?? "", hosted);
   React.useEffect(() => {
     if (shouldAutoOpen && !autoOpened.current) {
@@ -135,6 +147,8 @@ function FrameBody({ hosted }: { hosted: boolean }) {
       open={qsOpen}
       initialStep={qsStep}
       hosted={hosted}
+      // The tour needs the nav it points at, which only exists once there is a project.
+      onTakeTour={projects.length ? () => setTourOpen(true) : undefined}
       onFinishLater={() => {
         setQsOpen(false);
         if (!onboarding?.quickstart_dismissed_at && !finished) markOnboarding.mutate("quickstart_dismissed");
@@ -212,6 +226,7 @@ function FrameBody({ hosted }: { hosted: boolean }) {
         <DocsReader agentOpen={agentOpen} />
       </div>
       {quickStart}
+      <AppTour open={tourOpen} onExit={exitTour} onComplete={finishTour} />
     </>
   );
 }

@@ -91,7 +91,7 @@ export function TopBar({
         {keys && keys.length > 0 && <span className="text-muted-2">· {keys.length} keys</span>}
       </div>
 
-      <Button variant="agent" size="sm" onClick={onToggleAgent} aria-pressed={agentOpen}>
+      <Button variant="agent" size="sm" onClick={onToggleAgent} aria-pressed={agentOpen} data-tour="agent">
         <BrainIcon />
         Agent
       </Button>

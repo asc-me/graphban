@@ -7,6 +7,13 @@ import { useInputModality } from "@/lib/input-modality";
 
 import { GLOBAL_SHORTCUTS, docFor } from "./content";
 
+const OPEN_EVENT = "graphban:open-docs";
+
+/** Open the reader on the page you're on — the tour's "Read more" (GRPH-1363). */
+export function openDocsReader() {
+  window.dispatchEvent(new Event(OPEN_EVENT));
+}
+
 /** Inline, context-aware docs reader: a floating trigger + right slide-over whose
  *  content follows the page you're on. Mounted once inside the app shell. */
 export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
@@ -72,6 +79,12 @@ export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, rendered, liveModality]);
+
+  React.useEffect(() => {
+    const onOpen = () => openDocs(liveModality);
+    window.addEventListener(OPEN_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_EVENT, onOpen);
+  }, [liveModality]);
 
   function goRelated(to: string) {
     closeDocs(liveModality);

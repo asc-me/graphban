@@ -211,7 +211,11 @@ CEILING = 17775
 # shorter file_finding and resolve_finding descriptions. Its shape ({must_contain,
 # must_not_contain, member?}) lives in docs/mcp.md and the validation hint, not the manifest.
 # CEILING does not move. Headroom 1.
-MEASURED_TOKENS = 17771
+# 17771 -> 17765 (GRPH-1358): `kind` on create_item/update_item (an enum with no `type`, the
+# shape `scope` already uses), paid for by dropping create_item's prose that restated its own
+# fields (`status` "Defaults to backlog.", `prd_id`, `prd_section`). CEILING does not move.
+# Headroom 10.
+MEASURED_TOKENS = 17765
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.
