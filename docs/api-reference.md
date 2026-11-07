@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 341 of the 341. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 342 of the 342. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -42,6 +42,8 @@ Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
 | POST | `/api/auth/me/password` | JWT | Change the caller's password. Bumps `token_version`, so every previously issued token stops working, including the caller's, and returns a fresh pair so the caller stays signed in |
 | GET | `/api/auth/me` | JWT | Current user |
 | GET | `/api/auth/me/memberships` | JWT | Current user's project access |
+| GET | `/api/auth/me/onboarding` | JWT | `{onboarding}`: the caller's quick-start progress (`quickstart_finished_at`, `quickstart_dismissed_at`, …), readable before any project exists. `null` is a new user, which is what opens the quick-start dialog; existing users were backfilled as finished. UI progress only — no setup step reads it (GRPH-1361) |
+| PATCH | `/api/auth/me/onboarding` | JWT | `{mark: quickstart_finished\|quickstart_dismissed}` stamps `<mark>_at` and returns the merged document. Finish clears the top-bar chip; Finish later stops the dialog opening by itself. Any other mark or field is 422 (GRPH-1361) |
 | GET | `/api/auth/me/preferences` | JWT | This user's UI preference document (PRD-60 D1): `{saved, preferences}`. `saved: false` means the server has never held one — **not** the same answer as `saved: true` with `{}`, which means an empty document was written on purpose. The document comes back exactly as stored, with no server-side defaults filled in |
 | PUT | `/api/auth/me/preferences` | JWT | Replace the whole document; last write wins across devices. Keys: `nav.collapsed`, `plan.condensed`, `tracker.layout` (`board`\|`list`), `tracker.board.columns` (`{status: shown\|collapsed\|hidden}`, keyed by real item statuses), `views.{tracker,prds}.saved[]` (`{id,label,status,window,hide}`) and `views.{tracker,prds}.default`. An unknown key — at any depth — or a value outside its vocabulary is 422 naming the field. A key not sent stays absent rather than materialising as a default. **Migration contract for clients:** the server copy wins. If `saved` is false, upload your localStorage values once and then stop writing them locally; if it is true, upload nothing and read the server copy — which is what stops a second device flattening the first one's layout. Not reachable with an agent API key: these are a human's UI settings |
 

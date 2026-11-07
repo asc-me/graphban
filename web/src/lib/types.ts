@@ -75,6 +75,48 @@ export interface AppConfig {
   signup_mode: SignupMode;
 }
 
+/**
+ * The caller's quick-start progress (GRPH-P67 D6/D8). UI facts only — never evidence that a
+ * setup step happened. `null` is a new user who has not started; existing users were
+ * backfilled with `quickstart_finished_at`.
+ */
+export interface Onboarding {
+  quickstart_finished_at?: string;
+  quickstart_dismissed_at?: string;
+  tour_completed_at?: string;
+  tour_skipped_stops?: string[];
+  org_requested_at?: string;
+}
+
+export type OnboardingMark = "quickstart_finished" | "quickstart_dismissed";
+
+/** Three states, never two: `unknown` is a check that could not run, and is never shown ✓. */
+export type SetupStatus = "done" | "pending" | "unknown";
+
+/** One step of GET /api/projects/{id}/setup. Steps 0–4 are server state (GRPH-1360). */
+export interface SetupStep {
+  step: number;
+  name: string;
+  status: SetupStatus;
+  detail: string;
+  how: string;
+  /** Present when `status` is `unknown`: why the check could not run. */
+  reason?: string;
+}
+
+export interface ProjectSetup {
+  project_id: string;
+  /** "Stay offline" was chosen and recorded — a decision, not an unset default. */
+  offline: boolean;
+  steps: SetupStep[];
+  onboarding: Onboarding | null;
+}
+
+export type SetupConfirm =
+  | { decision: "workspace" }
+  | { decision: "offline" }
+  | { decision: "server"; where: "this_computer" | "dedicated_server"; address?: string };
+
 /** GET /api/platform/update-check (P32). `unknown` is not current. */
 export type UpdateCheckState = "current" | "available" | "unknown";
 export type ReleaseNotesState = "present" | "empty" | "unknown";

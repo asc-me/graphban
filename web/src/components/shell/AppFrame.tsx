@@ -5,7 +5,9 @@ import { ProjectProvider, useProjectCtx } from "@/features/ProjectContext";
 import { DocsReader } from "@/features/docs/DocsReader";
 import { CreateFirstOrg } from "@/features/onboarding/CreateFirstOrg";
 import { CreateFirstProject } from "@/features/onboarding/CreateFirstProject";
-import { useConfig, useOrgs } from "@/lib/queries";
+import { QuickStartDialog, useQuickStart } from "@/features/onboarding/QuickStartDialog";
+import type { QsStep } from "@/features/onboarding/quickStartProgress";
+import { useConfig, useMarkOnboarding, useOnboarding, useOrgs } from "@/lib/queries";
 import { ORG_BASE, clearOrgStateForSelfHost } from "@/lib/routes";
 
 import { cn } from "@/lib/cn";
@@ -102,12 +104,60 @@ function FrameBody({ hosted }: { hosted: boolean }) {
   const liveModality = useInputModality();
   const [agentMotion, setAgentMotion] = React.useState(liveModality);
 
-  if (loading) return <Loading />;
+  // ── Quick start (GRPH-P67 D6/D8) ──
+  // It opens by itself for a user whose onboarding is unset — a new user — never for one
+  // backfilled as finished, and never again once they chose Finish later. The chip stays
+  // until Finish; its count and reopen step come from server state.
+  const onboardingQ = useOnboarding();
+  const onboarding = onboardingQ.data?.onboarding ?? null;
+  const finished = !!onboarding?.quickstart_finished_at;
+  const shouldAutoOpen = !!onboardingQ.data && !finished && !onboarding?.quickstart_dismissed_at;
+  const markOnboarding = useMarkOnboarding();
+  const [qsOpen, setQsOpen] = React.useState(false);
+  const [qsStep, setQsStep] = React.useState<QsStep | undefined>(undefined);
+  const autoOpened = React.useRef(false);
+  const qs = useQuickStart(finished || !onboardingQ.data ? "" : active?.id ?? "", hosted);
+  React.useEffect(() => {
+    if (shouldAutoOpen && !autoOpened.current) {
+      autoOpened.current = true;
+      setQsOpen(true);
+    }
+  }, [shouldAutoOpen]);
+
+  if (loading || (projects.length === 0 && onboardingQ.isLoading)) return <Loading />;
 
   // The org plane is reachable without a project — indeed it is where you go to make one
   // — so the create-first-project gate applies only to the project plane.
   const onOrgPlane = hosted && pathname.startsWith(ORG_BASE);
-  if (projects.length === 0 && !onOrgPlane) return <CreateFirstProject />;
+
+  const quickStart = (
+    <QuickStartDialog
+      open={qsOpen}
+      initialStep={qsStep}
+      hosted={hosted}
+      onFinishLater={() => {
+        setQsOpen(false);
+        if (!onboarding?.quickstart_dismissed_at && !finished) markOnboarding.mutate("quickstart_dismissed");
+      }}
+      onFinish={async () => {
+        await markOnboarding.mutateAsync("quickstart_finished");
+        setQsOpen(false);
+      }}
+    />
+  );
+
+  // A new user meets the quick start, which creates the project in step ①. Closing it (or a
+  // user who finished without one) falls back to the plain create form underneath.
+  // The dialog sits at the same position in both branches, so creating the first project in
+  // step ① swaps what is behind it without remounting it mid-flow.
+  if (projects.length === 0 && !onOrgPlane) {
+    return (
+      <>
+        <CreateFirstProject />
+        {quickStart}
+      </>
+    );
+  }
 
   function toggleAgent() {
     setAgentMotion(liveModality);
@@ -115,40 +165,54 @@ function FrameBody({ hosted }: { hosted: boolean }) {
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <a
-        href="#main-content"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:border focus:border-line-hover focus:bg-surface-3 focus:px-3 focus:py-2 focus:text-[13px] focus:text-fg"
-      >
-        Skip to main content
-      </a>
-      <TopBar
-        agentOpen={agentOpen}
-        onToggleAgent={toggleAgent}
-        onOpenPalette={() => setPaletteOpen(true)}
-      />
-      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
-      <div className="flex min-h-0 flex-1">
-        <LeftNav hosted={hosted} />
-        <main id="main-content" className="relative flex min-w-0 flex-1 flex-col">
-          {/* The project bar belongs to the project plane. On the org plane there is no
-              active project in play, and showing one implies the page is scoped to it. */}
-          {hosted && active && !onOrgPlane && <ProjectBar />}
-          <div className="min-h-0 flex-1 overflow-auto">
-            {notFound ? <ProjectNotFound /> : <Outlet />}
-          </div>
-        </main>
-        <AgentSidebar
-          open={agentOpen}
-          onClose={() => {
-            setAgentMotion(liveModality);
-            setAgentOpen(false);
-          }}
-          modality={agentMotion}
+    <>
+      <div className="flex h-full flex-col">
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:border focus:border-line-hover focus:bg-surface-3 focus:px-3 focus:py-2 focus:text-[13px] focus:text-fg"
+        >
+          Skip to main content
+        </a>
+        <TopBar
+          agentOpen={agentOpen}
+          onToggleAgent={toggleAgent}
+          onOpenPalette={() => setPaletteOpen(true)}
+          setupChip={
+            onboardingQ.data && !finished
+              ? {
+                  ...qs.chip,
+                  onOpen: () => {
+                    setQsStep(qs.firstUnfinished);
+                    setQsOpen(true);
+                  },
+                }
+              : undefined
+          }
         />
+        <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+        <div className="flex min-h-0 flex-1">
+          <LeftNav hosted={hosted} />
+          <main id="main-content" className="relative flex min-w-0 flex-1 flex-col">
+            {/* The project bar belongs to the project plane. On the org plane there is no
+                active project in play, and showing one implies the page is scoped to it. */}
+            {hosted && active && !onOrgPlane && <ProjectBar />}
+            <div className="min-h-0 flex-1 overflow-auto">
+              {notFound ? <ProjectNotFound /> : <Outlet />}
+            </div>
+          </main>
+          <AgentSidebar
+            open={agentOpen}
+            onClose={() => {
+              setAgentMotion(liveModality);
+              setAgentOpen(false);
+            }}
+            modality={agentMotion}
+          />
+        </div>
+        <DocsReader agentOpen={agentOpen} />
       </div>
-      <DocsReader agentOpen={agentOpen} />
-    </div>
+      {quickStart}
+    </>
   );
 }
 

@@ -23,9 +23,30 @@ To run a team server on a Mac or a Linux box **without Docker**, see
 ## First run — create your account
 
 Open the web app and, on the sign-in screen, choose **Create an account**. Register with a
-name, handle, email, and password, then **Create your first project** — a workspace for your
-tracker, agent memory, requests, and PRDs. You can add more projects later from the switcher
-at the top of the left nav.
+name, handle, email, and password. A new account lands in the **Quick start** dialog:
+
+0. **Where is Graphban running?** *(self-host only)* — on the computer you code on, or on a
+   dedicated server (with its address). The dialog pre-selects an answer from the address you
+   opened it at and says so; you can change it. "Reachable from this browser" proves only that
+   the browser can reach the server, not your dev machine.
+1. **Project** — name a project (tag and accent are under Advanced), or confirm the one that
+   already exists, and tick **This is the workspace I want agents writing to**. That tick is
+   the same human confirmation `setup_project` asks agents to wait for.
+2. **Model** — stay **Offline** (the stub: chat is canned and nothing is graded; staying
+   offline is recorded as your decision), point at **Ollama**, or paste a **Claude** key.
+   Set `SECRET_ENCRYPTION_KEY` before pasting a key, or it is stored unencrypted.
+4. **First job** — a prompt to paste into your agent, and live counts of code nodes, memories
+   and items as it works. You don't have to wait for them.
+
+Step ③, connecting your agent, is not in the dialog yet (GRPH-1362). Until it is, follow
+[Talk to it as an agent](#talk-to-it-as-an-agent-mcp) below.
+
+A step shows ✓ only when the server can show it: clicking **Next** never ticks anything, and a
+check that could not run shows **?** with its reason. **Finish later** (or Esc) closes the
+dialog and leaves a **Finish setup n/N** chip in the top bar that reopens it on the first
+unfinished step. **Finish** is always available, lists anything still open, and clears the chip.
+Accounts that existed before the quick start shipped are treated as finished. Add more projects
+later from the switcher at the top of the left nav.
 
 Ports and credentials are configurable via `.env` — see [Configuration](configuration.md).
 

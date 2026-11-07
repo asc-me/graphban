@@ -1,7 +1,9 @@
 import uuid
+from typing import Literal
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -19,6 +21,7 @@ from app.services import orgs as orgs_svc
 from app.services import password_reset as reset_svc
 from app.services import preferences as preferences_svc
 from app.services import ratelimit
+from app.services import setup as setup_svc
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -224,6 +227,33 @@ def confirm_password_reset(body: PasswordResetConfirmIn, db: Session = Depends(g
 @router.get("/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)):
     return user
+
+
+class OnboardingMarkIn(BaseModel):
+    """One dialog progress mark (GRPH-P67 D8). Unknown fields are refused."""
+    model_config = ConfigDict(extra="forbid")
+    mark: Literal["quickstart_finished", "quickstart_dismissed"]
+
+
+@router.get("/me/onboarding")
+def my_onboarding(user: User = Depends(get_current_user)):
+    """The caller's quick-start progress, readable before any project exists.
+
+    `onboarding: null` is a new user who has not started (the dialog opens); existing users
+    were backfilled as finished (migration 0186). UI progress only, never setup evidence."""
+    return {"onboarding": user.onboarding}
+
+
+@router.patch("/me/onboarding")
+def mark_my_onboarding(body: OnboardingMarkIn, user: User = Depends(get_current_user),
+                       db: Session = Depends(get_db)):
+    """Stamp one mark: `quickstart_finished` (Finish; clears the top-bar chip) or
+    `quickstart_dismissed` (Finish later; the dialog stops opening by itself)."""
+    try:
+        doc = setup_svc.mark_onboarding(db, user, body.mark)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    return {"onboarding": doc}
 
 
 @router.get("/me/memberships")

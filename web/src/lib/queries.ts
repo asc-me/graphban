@@ -2,10 +2,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
+import type { OnboardingMark, SetupConfirm } from "./types";
 import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleToggleWrite, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
+  onboarding: ["onboarding"] as const,
+  setup: (projectId: string) => ["setup", projectId] as const,
   config: ["config"] as const,
   projects: ["projects"] as const,
   projectSummaries: ["projects", "summaries"] as const,
@@ -60,6 +63,43 @@ export const keys = {
 export function useConfig() {
   // Deploy flags rarely change within a session; cache hard so onboarding logic is stable.
   return useQuery({ queryKey: keys.config, queryFn: () => api.config(), staleTime: Infinity });
+}
+
+// ── Quick start (GRPH-P67) ────────────────────────────────────────────────
+/** The caller's dialog progress. `onboarding: null` opens the dialog (D6). */
+export function useOnboarding() {
+  return useQuery({ queryKey: keys.onboarding, queryFn: () => api.onboarding() });
+}
+
+export function useMarkOnboarding() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (mark: OnboardingMark) => api.markOnboarding(mark),
+    onSuccess: (res) => qc.setQueryData(keys.onboarding, res),
+  });
+}
+
+/**
+ * The setup checklist for one project. `pollMs` keeps it live while the dialog is watching
+ * counters tick (step ④); a failed read is surfaced as an error, never as a pending list.
+ */
+export function useProjectSetup(projectId: string, pollMs?: number) {
+  return useQuery({
+    queryKey: keys.setup(projectId),
+    queryFn: () => api.projectSetup(projectId),
+    enabled: !!projectId,
+    refetchInterval: pollMs || false,
+  });
+}
+
+export function useConfirmSetup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, body }: { projectId: string; body: SetupConfirm }) =>
+      api.confirmSetup(projectId, body),
+    // The response IS the refreshed checklist, so the rail redraws from server state.
+    onSuccess: (res, { projectId }) => qc.setQueryData(keys.setup(projectId), res),
+  });
 }
 
 export function useOrgs(enabled = true) {
