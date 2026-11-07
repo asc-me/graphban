@@ -65,8 +65,6 @@ def test_other_holder_refused_holder_and_planner_allowed(db):
 
 
 def test_reservation_on_removed_path_is_released(db):
-    from datetime import timedelta
-
     holder = _agent(db)
     it = _item(db, ["a.py", "wide/*"])
     fleet_svc.reserve_areas(db, agent_id=holder, item_id=it.id, areas=["a.py", "wide/*"],
@@ -76,6 +74,8 @@ def test_reservation_on_removed_path_is_released(db):
     items_svc.update_item(db, it.id, submitted_by=holder, touchpoints_remove=["wide/*"])
     areas = {r.area for r in fleet_svc.active_reservations(db) if r.item_id == it.id}
     assert areas == {"a.py"}
+    db.refresh(it)
+    assert it.touchpoints == ["a.py"], "the reservation went but the touchpoint stayed"
 
 
 def test_mcp_reply_lists_what_was_removed(client, auth):
@@ -92,3 +92,42 @@ def test_mcp_reply_lists_what_was_removed(client, auth):
     out = call("update_item", {"id": item["id"], "touchpoints_remove": ["backend/tests/*"]})
     assert out["touchpoints_removed"] == ["backend/tests/*"]
     assert out["touchpoints"] == ["a.py"]
+
+
+def test_claim_that_collided_only_on_a_removed_path_now_succeeds(db):
+    """Acceptance 3. The holder's `wide/*` refuses a second agent's claim on `wide/x.py`;
+    once the holder removes `wide/*`, the same claim goes through. A no-op removal keeps
+    both the touchpoint and its reservation, so the second claim is still refused."""
+    from app.models import Agent
+
+    holder = _agent(db)
+    it = _item(db, ["a.py", "wide/*"], status="in_progress", claimed_by=holder)
+    fleet_svc.reserve_areas(db, agent_id=holder, item_id=it.id, areas=["a.py", "wide/*"],
+                            expires_at=items_svc.utcnow() + timedelta(seconds=600),
+                            predicted=False)
+    db.commit()
+    target = _item(db, ["wide/x.py"], status="next")
+    claimer = db.get(Agent, "CORE-A97") or Agent(id="CORE-A97", project_id="core", number=97,
+                                                  label="claimer", active_role="worker")
+    db.add(claimer)
+    db.commit()
+
+    def drain():
+        # Other tests' items share the project: drain it rather than expect the target first.
+        got_ids: list[str] = []
+        for _ in range(50):
+            got = fleet_svc.claim_cluster(db, agent_id=claimer.id, project_id="core",
+                                          max_items=10)
+            if not got["claimed"]:
+                return got_ids, got
+            got_ids += [i["stored_id"] for i in got["items"]]
+        return got_ids, None
+
+    before, refusal = drain()
+    assert target.id not in before, "the target must start out refused on wide/*"
+    assert refusal and "wide/*" in str(refusal), refusal
+
+    items_svc.update_item(db, it.id, submitted_by=holder, touchpoints_remove=["wide/*"])
+
+    after, _ = drain()
+    assert target.id in after, "removing wide/* did not free the claim that collided on it"
