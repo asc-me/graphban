@@ -48,7 +48,7 @@ from .observe import NEVER_REGISTERED, ChildRecord
 from .seat import Seat, instruction_for
 from .spawn import (
     REGISTRATION_WINDOW, Child, Launch, LaunchFailed, Reason, VendorLimit,
-    await_registration, build_holdings,
+    await_registration, build_holdings, review_holdings,
     spawn, stop,
 )
 from .worktree import Reaped, Worktree
@@ -196,6 +196,8 @@ class Partition:
     #: version did — can only ever report nothing.
     held: dict[str, list[str]] = field(default_factory=dict)
     held_at_cutoff: dict[str, list[str]] | None = None
+    #: Review claims per agent at the last read (GRPH-1413). Separate from `held`.
+    reviewing: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def offline(self) -> bool:
@@ -521,6 +523,10 @@ def _roster(client: Graphban, partition: Partition) -> dict | None:
         partition.held_at_cutoff = None
 
     partition.held = holdings
+    partition.reviewing = {
+        a["id"]: [h.get("id") for h in review_holdings(a) if h.get("id")]
+        for a in (payload.get("agents") or []) if a.get("id")
+    }
     return payload
 
 
@@ -529,6 +535,8 @@ def _remember_holdings(children: Sequence[Child], partition: Partition) -> None:
     for child in children:
         if not child.agent_id:
             continue
+        # Current, not remembered: a reviewer that finished its row has claimed nothing now.
+        child.review_items = list(partition.reviewing.get(child.agent_id) or [])
         items = [i for i in (partition.held.get(child.agent_id) or []) if i]
         if items:
             child.held_items = list(items)
