@@ -65,6 +65,23 @@ class LibraryRule:
 #: rule id -> its declaration. The platform default layer.
 LIBRARY: dict[str, LibraryRule] = {}
 
+#: GRPH-1405: where the test suites run is a project decision. Mode -> (label, what it means).
+TEST_SCOPE_RULE = "build.test_scope"
+TEST_SCOPE_DEFAULT = "agent_and_pr"
+TEST_SCOPE_MODES: dict[str, tuple[str, str]] = {
+    "agent_full": ("The agent runs CI",
+                   "The builder runs the full suites; the PR's CI is not required."),
+    "agent_and_pr": ("The agent and the PR run CI",
+                     "The builder runs the full suites and the PR's CI runs them again."),
+    "agent_targeted": ("The agent runs partial CI, only what changed",
+                       "The builder runs the tests it wrote or changed, the module's existing "
+                       "tests and the sabotage check; the PR's CI runs the full suites."),
+}
+#: A string param that takes one of a closed set: rule id -> param -> allowed values.
+PARAM_CHOICES: dict[str, dict[str, tuple[str, ...]]] = {
+    TEST_SCOPE_RULE: {"mode": tuple(TEST_SCOPE_MODES)},
+}
+
 
 def register(rule: LibraryRule) -> None:
     """Add (or replace) a library rule. Called by the pack loader, and by tests."""
@@ -130,6 +147,15 @@ def resolve(db: Session, rule_id: str, project_id: str | None) -> dict:
                     _row(db, rule_id, org_id=org_id), org_id)
 
 
+def test_scope_mode(db: Session, project_id: str | None) -> str:
+    """The project's test-scope mode. A project that never set it — or a box whose pack does
+    not carry the rule — reads `agent_and_pr`, today's behaviour."""
+    if TEST_SCOPE_RULE not in LIBRARY:
+        return TEST_SCOPE_DEFAULT
+    mode = resolve(db, TEST_SCOPE_RULE, project_id)["params"]["value"].get("mode")
+    return mode if mode in TEST_SCOPE_MODES else TEST_SCOPE_DEFAULT
+
+
 def effective(db: Session, project_id: str | None) -> list[dict]:
     """Every library rule's effective toggle for a project, in library order."""
     org_id = _org_of(db, project_id)
@@ -179,6 +205,10 @@ def _check_params(rule: LibraryRule, params: dict) -> dict:
         want = type(rule.default_params[k])
         if not isinstance(v, want) or (want is int and isinstance(v, bool)):
             raise Validation(f"{rule.id} param {k!r} must be {want.__name__}")
+        choices = PARAM_CHOICES.get(rule.id, {}).get(k)
+        if choices is not None and v not in choices:
+            raise Validation(f"{rule.id} param {k!r} must be one of {', '.join(choices)}",
+                             hint=f"got {v!r}")
     return {**rule.default_params, **params}
 
 

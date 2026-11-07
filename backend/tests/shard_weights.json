@@ -329,6 +329,7 @@
 "tests/test_rule_reopen_on_red.py": 0.84,
 "tests/test_rule_sabotage_required.py": 3.25,
 "tests/test_rule_staff_every_row.py": 0.84,
+"tests/test_rule_test_scope.py": 0.84,
 "tests/test_rule_toggles.py": 2.43,
 "tests/test_rules_acceptance.py": 0.64,
 "tests/test_rules_decisions.py": 0.84,
