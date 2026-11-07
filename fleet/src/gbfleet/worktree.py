@@ -968,11 +968,19 @@ def attributed_commits(repo: Path | str, branch: str, base: str,
 
     Ids are read with the tags of `items`. A commit naming none has an empty list.
     `[]` when the history cannot be read, which callers treat as "nothing to say".
+
+    First parent only. gbfleet's `_merge_behind` merges the trunk INTO the branch (a
+    `--no-ff` merge made on the branch, so the branch is the first parent) and leaves the
+    cut sha where it was. Without `--first-parent`, `base..branch` walks into the trunk's
+    side of that merge, and the trunk's subjects name other items of the same project:
+    the branch read as carrying them, and its own item's tip was capped at the trunk's
+    commit. The merge commit itself is on the first-parent line and names nothing.
     """
     tags = {_tag(i) for i in items}
     if not base or not any(tags):
         return []
-    done = subprocess.run(["git", "log", "--reverse", "--format=%H%x09%s", f"{base}..{branch}"],
+    done = subprocess.run(["git", "log", "--first-parent", "--reverse", "--format=%H%x09%s",
+                           f"{base}..{branch}"],
                           cwd=str(repo), capture_output=True, text=True)
     if done.returncode != 0:
         return []
@@ -1004,10 +1012,16 @@ def first_item_run(repo: Path | str, branch: str, base: str,
     another id and not `item`. `later_items` are the ids attributed after that, in order. An
     empty `later_items` means the whole branch is one item's, and the caller pushes it as
     it is. Commits naming nothing ride with the run they sit in.
+
+    Only ids in `items` count, when `items` names any: the child's own items are the only
+    ones its commits can be for, and an id from elsewhere in a subject is prose.
     """
     rows = attributed_commits(repo, branch, base, items)
+    own = {i for i in items if i}
     owner, last, later = "", "", []
     for sha, ids in rows:
+        if own:
+            ids = [i for i in ids if i in own]
         if later:
             later += [i for i in ids if i not in later and i != owner]
             continue

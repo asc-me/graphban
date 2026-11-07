@@ -232,3 +232,55 @@ def test_attribution_reads_only_the_projects_own_ids():
     assert wt.named_items("GRPH-1: fix (GRPH-2) per PRD-39", {"GRPH"}) == ["GRPH-1", "GRPH-2"]
     assert wt.named_items("GRPH-P59 framing", {"GRPH"}) == []
     assert wt.named_items("XGRPH-1 is not one", {"GRPH"}) == []
+
+
+def _merged_main_branch(git_repo: Path, tmp_path: Path):
+    """The bounce reproduction: cut, an item commit, a gbfleet-style merge of main carrying
+    another item's commit, then a second commit for the same item."""
+    tree = wt.create(git_repo, tmp_path / "kid", wave="w", agent_id="A3")
+    _commit(tree.path, "a.py", f"{A}: fix")
+    main_sha = _commit(git_repo, "other.py", "Other fix (GRPH-1391) (#1400)")
+    merged = wt.merge_ref_into(git_repo, tree.branch, "main")
+    assert merged.ok, merged.reason
+    tip = _commit(tree.path, "a2.py", f"{A}: address bounce")
+    return tree, main_sha, tip
+
+
+def test_a_trunk_merge_does_not_read_as_another_items_commit(git_repo: Path, tmp_path: Path):
+    """`_merge_behind` merges main into the branch and leaves the cut sha. Main's commits
+    are not the branch's: they name no item of this child, and the run is the item's whole."""
+    tree, main_sha, tip = _merged_main_branch(git_repo, tmp_path)
+
+    owner, last, later = wt.first_item_run(git_repo, tree.branch, tree.base, [A])
+    assert (owner, last, later) == (A, tip, []), (owner, last, later)
+    assert wt.foreign_commits(git_repo, tree.branch, tree.base, A) == []
+    shas = [sha for sha, _ in wt.attributed_commits(git_repo, tree.branch, tree.base, [A])]
+    assert main_sha not in shas
+
+
+def test_a_rebuilt_item_after_a_trunk_merge_publishes_its_own_tip(
+        git_repo: Path, origin: Path, tmp_path: Path):
+    """A bounced item rebuilt in place on a branch that merged main: the push carries the
+    item's head, not main's commit under the item's name."""
+    tree, _main_sha, tip = _merged_main_branch(git_repo, tmp_path)
+    child = Child(adapter="fake", worktree=tree.path, branch=tree.branch, base=tree.base,
+                  seat_path=tmp_path / "seat.json", process=_Live(),
+                  started_at=time.monotonic(), log_dir=tmp_path / "logs",
+                  seat_id="seat-1", assigned={"item": A}, held_items=[A])
+    child.ever_held = [A]
+    ledger = _Ledger()
+    ledger.review = [A]
+    wave = Wave()
+
+    sup._publish_in_review(wave, [child], ledger)
+
+    assert _git(origin, "rev-parse", tree.branch) == tip, wave.failures
+    assert tree.branch not in wave.review_unreadable
+
+
+def test_ids_outside_the_childs_items_do_not_split_the_run(git_repo: Path, tmp_path: Path):
+    """A subject citing another item of the project is prose to this child, not a hand-off."""
+    tree = wt.create(git_repo, tmp_path / "kid", wave="w", agent_id="A4")
+    _commit(tree.path, "a.py", f"{A}: fix")
+    tip = _commit(tree.path, "a2.py", "follow GRPH-1391's shape")
+    assert wt.first_item_run(git_repo, tree.branch, tree.base, [A]) == (A, tip, [])
