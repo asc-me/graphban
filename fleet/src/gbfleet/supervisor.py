@@ -2960,7 +2960,8 @@ class Merger:
             release=release,
             scans=propose_mod.scans_clean_verdicts(item),
             siblings=propose_mod.pr_receipts(item),
-            covering=self._covering(item_id, item),
+            # Lazy: only read when the PR has files outside this item's own touchpoints.
+            covering=lambda: self._covering(item_id, item),
         )
         if got.ok and got.commit:
             got = self._record(wave, got)
