@@ -138,6 +138,65 @@ def existing_any(repo: Path, branch: str) -> dict:
     }
 
 
+def open_prs(repo: Path) -> list[dict]:
+    """Every open PR with what is needed to tell whose it is, or [] when it cannot be read."""
+    done = _gh(repo, "pr", "list", "--state", "open", "--limit", "200", "--json",
+               "number,url,headRefName,headRefOid,isDraft,title,body")
+    if done.returncode != 0:
+        return []
+    try:
+        rows = json.loads(done.stdout or "[]")
+    except ValueError:
+        return []
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def _pr_number(url: str) -> int:
+    tail = (url or "").rstrip("/").rsplit("/", 1)[-1]
+    return int(tail) if tail.isdigit() else 0
+
+
+def _carries_item(pr: dict, item: str) -> bool:
+    """Whether the PR is `item`'s: named in its title, or in an `Items:`/`Attests:` line of
+    its body. A passing mention elsewhere in a body is not ownership."""
+    if _names(str(pr.get("title") or ""), item):
+        return True
+    for line in str(pr.get("body") or "").splitlines():
+        if line.startswith(("Items:", "Attests:")) and _names(line, item):
+            return True
+    return False
+
+
+def close_item_prs(repo: Path, item: str, keeper_url: str, *, comment: str,
+                   older_drafts_only: bool = False) -> tuple[str, ...]:
+    """Close every other open `gb/*` PR of `item` with `comment` (GRPH-1396).
+
+    `older_drafts_only` is the newer-attempt case: only drafts opened before the keeper are
+    superseded. After a merge every other open PR of the item is, whatever its age. Best
+    effort: a PR that cannot be closed stays open and nothing raises.
+    """
+    keeper = _pr_number(keeper_url)
+    closed: list[str] = []
+    try:
+        rows = open_prs(repo)
+        for pr in rows:
+            url = str(pr.get("url") or "")
+            if not url or url == keeper_url or not _carries_item(pr, item):
+                continue
+            if not str(pr.get("headRefName") or "").startswith("gb/"):
+                continue
+            number = pr.get("number") or _pr_number(url)
+            if older_drafts_only and not (pr.get("isDraft") and keeper
+                                          and int(number or 0) < keeper):
+                continue
+            done = _gh(repo, "pr", "close", str(number), "--comment", comment)
+            if done.returncode == 0:
+                closed.append(f"#{number}")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return tuple(closed)
+
+
 def _reopen(repo: Path, number) -> bool:
     """Reopen a closed PR. True when gh accepted it."""
     if not number:
@@ -146,7 +205,8 @@ def _reopen(repo: Path, number) -> bool:
     return done.returncode == 0
 
 
-def propose(repo: Path, branch: str, base: str, *, title: str, body: str) -> Proposed:
+def propose(repo: Path, branch: str, base: str, *, title: str, body: str,
+            head: str = "", items: tuple[str, ...] | list[str] = ()) -> Proposed:
     """Open a draft PR for `branch` against `base`, or say why not.
 
     Never raises and never fails a wave. The work is committed and pushed by the time this
@@ -191,6 +251,16 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str) -> Pro
             if url:
                 return Proposed(branch=branch, url=url, skipped=True,
                                 reason="already proposed")
+        if head:
+            # GRPH-1396: another branch whose open PR already carries this commit (a salvage
+            # of a stopped child, a re-reap). A second PR for the same commit is the defect.
+            for pr in open_prs(repo):
+                if (pr.get("headRefName") != branch and pr.get("url")
+                        and same_commit(str(pr.get("headRefOid") or ""), head)):
+                    return Proposed(
+                        branch=branch, url=str(pr["url"]), skipped=True,
+                        reason=f"commit already carried by open PR #{pr.get('number')} "
+                               f"({pr.get('headRefName')}); not opening a second")
         done = _gh(repo, "pr", "create", "--draft", "--head", branch,
                    "--base", base.split("/", 1)[-1], "--title", title, "--body", body)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -201,6 +271,12 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str) -> Pro
                         reason=f"gh pr create failed: {tail[-1][:200] if tail else done.returncode}")
     url = next((line.strip() for line in (done.stdout or "").splitlines()
                 if line.strip().startswith("http")), "")
+    if url:
+        # GRPH-1396: this attempt replaces older drafts of the same item.
+        by = f"#{_pr_number(url)}" if _pr_number(url) else url
+        for item in items:
+            close_item_prs(repo, item, url, comment=f"Superseded by {by}",
+                           older_drafts_only=True)
     return Proposed(branch=branch, url=url, ok=bool(url),
                     reason="" if url else "gh reported success without a URL")
 
@@ -814,6 +890,16 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
     if got.ok and siblings:
         got = replace(got, closed=_close_superseded(repo, got, siblings))
     return replace(got, release=release_phrase(release))
+
+
+def close_after_merge(repo: Path, got: "Merged") -> "Merged":
+    """GRPH-1396: close every other open `gb/*` PR of the merged item, named by `got.url`,
+    whether or not an item receipt lists it. Best effort; returns `got` with `closed` extended."""
+    if not (got.ok and got.url):
+        return got
+    more = close_item_prs(repo, got.item, got.url,
+                          comment=f"Superseded by {_pr_ref(None, got.url)}")
+    return replace(got, closed=got.closed + tuple(m for m in more if m not in got.closed))
 
 
 def _close_superseded(repo: Path, got: Merged, siblings) -> tuple[str, ...]:
