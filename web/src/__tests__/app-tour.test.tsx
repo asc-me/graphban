@@ -41,6 +41,8 @@ vi.mock("@/lib/api", () => ({
   api: {
     projects: vi.fn(async () => [project]),
     counts: vi.fn(),
+    config: vi.fn(async () => ({ hosted_mode: false })),
+    onboarding: vi.fn(async () => ({ onboarding: null })),
     orgs: vi.fn(async () => [{ id: "org1", name: "Acme", plan: "pro", role: "owner" }]),
     adminWhoami: vi.fn(async () => ({ is_platform_admin: false })),
     apiKeys: vi.fn(async () => []),
@@ -116,7 +118,9 @@ describe("GRPH-1363 every stop resolves or is listed as skipped, per nav variant
     expect(resolved.map((s) => s.id)).toEqual(TOUR_STOPS.map((s) => s.id).filter((id) => !v.skipped.includes(id)));
 
     // And each resolved stop is shown — not only present — once the tour has navigated to it.
-    const hrefs = resolved.map((s) => [s.id, anchorHref(s.id) ?? v.path] as const);
+    // The org plug (GRPH-1364) never navigates; it must only be in the nav.
+    expect(resolved.at(-1)?.id).toBe("org");
+    const hrefs = resolved.filter((s) => !s.plug).map((s) => [s.id, anchorHref(s.id) ?? v.path] as const);
     for (const [id, href] of hrefs) {
       cleanup();
       wrap(<Chrome hosted={v.hosted} />, href);
@@ -172,9 +176,13 @@ describe("GRPH-1363 the tour engine", () => {
     for (let n = 1; n <= 7; n++) {
       await waitFor(() => expect(pos()).toBe(`${n} / 7`));
       titles.push(screen.getByRole("heading").textContent!);
-      fireEvent.click(screen.getByRole("button", { name: n === 7 ? "Finish" : "Next" }));
+      fireEvent.click(screen.getByRole("button", { name: "Next" }));
     }
     expect(titles).toEqual(["Dashboard", "Tracker", "Specs", "Agent sidebar", "Memory review", "Code graph", "Activity"]);
+    // Then the org plug: END OF TOUR, outside the count, with Not now / Finish tour.
+    await waitFor(() => expect(pos()).toBe("END OF TOUR"));
+    expect(screen.getByRole("heading")).toHaveTextContent("Organization");
+    fireEvent.click(screen.getByRole("button", { name: /Not now|Finish tour/ }));
     expect(onComplete).toHaveBeenCalledWith(["fleet"]);
   });
 
@@ -187,7 +195,9 @@ describe("GRPH-1363 the tour engine", () => {
       await waitFor(() => expect(pos()).toBe(`${n + 1} / 8`));
     }
     expect(screen.getByRole("heading")).toHaveTextContent("Activity");
-    fireEvent.click(screen.getByRole("button", { name: "Finish" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() => expect(pos()).toBe("END OF TOUR"));
+    fireEvent.click(screen.getByRole("button", { name: /Not now|Finish tour/ }));
     expect(onComplete).toHaveBeenCalledWith([]);
   });
 

@@ -79,7 +79,9 @@ class Limits:
     #: How long a child gets to register before it is presumed broken (S2). A limit the
     #: supervisor enforces because it can measure it, same as the two above — and the
     #: only one of the three whose default is short enough to matter in a test.
-    registration_window: float = REGISTRATION_WINDOW
+    #: None means "the launch's own window, else REGISTRATION_WINDOW" (GRPH-1400); a
+    #: number set here (`--registration-window`) overrides every adapter's default.
+    registration_window: float | None = None
     #: How long a child may read `offline` on the roster before the backstop stops it
     #: (GRPH-452). NOT the presence TTL, and the difference is the whole point: `offline`
     #: means "no heartbeat within the TTL", which a revoked child and a BUSY one produce
@@ -1093,9 +1095,19 @@ def start_one(
     await_registration(
         child,
         lambda: _roster(client, partition) or {},
-        window=limits.registration_window,
+        window=registration_window(limits, launch),
     )
     return child
+
+
+def registration_window(limits: Limits, launch: Launch) -> float:
+    """The window this child gets to register: the run's explicit limit, else what its
+    adapter asked for on the launch, else `REGISTRATION_WINDOW` (GRPH-1400)."""
+    if limits.registration_window is not None:
+        return limits.registration_window
+    if launch.registration_window is not None:
+        return launch.registration_window
+    return REGISTRATION_WINDOW
 
 
 def _start(

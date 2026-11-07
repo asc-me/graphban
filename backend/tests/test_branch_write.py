@@ -7,6 +7,7 @@ must not clear a pointer someone is holding.
 from __future__ import annotations
 
 import inspect
+from datetime import datetime, timezone
 
 import pytest
 
@@ -132,9 +133,12 @@ def test_rewriting_the_branch_in_review_is_refused(client, agent_key, db):
         {"id": item["id"], "branch": "gb/under-review", "agent_id": me["agent_id"]})
     stored = items_svc.get_item(db, item["id"])
     stored.status = "review"
+    # GRPH-1395: the guard protects a reviewer that HOLDS the item; without one it moves.
+    stored.review_claimed_by = me["agent_id"]
+    stored.review_claimed_at = datetime.now(timezone.utc)
     db.commit()
 
-    with pytest.raises(ValueError, match="in review"):
+    with pytest.raises(ValueError, match="`review`"):
         items_svc.update_item(db, item["id"], branch="gb/rewritten")
     db.refresh(stored)
     assert stored.branch == "gb/under-review"

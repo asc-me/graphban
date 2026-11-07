@@ -53,7 +53,7 @@ without stopping the other.
 | vendor | version seen | range | MCP config | prompt reaches the child by | seat inside the worktree? |
 |---|---|---|---|---|---|
 | `claude` | `2.1.233 (Claude Code)` | 2.0 – 3.0 | `--mcp-config <path>` | stdin | **no** — private temp file |
-| `gbagent` | `gbagent 0.18.13` | **exactly `0.18.13`** — a pin, not a range | `--mcp-config <path>` | `--instruction-file <path>` | **no** — private temp file |
+| `gbagent` | `gbagent 0.18.14` | **exactly `0.18.14`** — a pin, not a range | `--mcp-config <path>` | `--instruction-file <path>` | **no** — private temp file |
 | `cursor-agent` | `2026.04.17-787b533` | 2026.1 – 2027.1 | none; reads `.cursor/mcp.json` from the project dir | stdin | **yes** — forced |
 | `grok` | `grok 1.0.25 (f7e67d6988e2) [stable]` | 1.0 – 2.0 | project-scoped `<worktree>/.grok/config.toml` (**TOML**), needs `--trust` | `--prompt-file <path>` | yes — `.grok/config.toml`, see below |
 | `qwen-code` | `0.23.0` | 0.23 – 1.0 | `--mcp-config <path>` + `--allowed-mcp-server-names graphban`; the entry must be `httpUrl` | stdin | **no** — private temp file |
@@ -199,7 +199,7 @@ literal would refuse the next release the moment somebody bumped one file and no
 
 *Releasing bumps this table.* `verified_against` is the version the suite actually resolved,
 and for this row it is re-verified on every CI run rather than observed once on a laptop —
-`test_adapters.py` runs the real binary. When the package version changes, the `0.18.13` above
+`test_adapters.py` runs the real binary. When the package version changes, the `0.18.14` above
 changes with it, and a test says so rather than letting the matrix go quietly stale — which it
 has now done for 0.2.0 and again for 0.3.0. **Bumping `fleet/pyproject.toml` is not one edit,
 it is two**, and the second one is this table; the test is what stops the release shipping a
@@ -567,6 +567,34 @@ platforms with no query, which the doctor prints as UNKNOWN, not PASS). `gbfleet
 setup` names a non-`off` Grok profile when it writes Grok's config. What the fleet still
 does not do: a child that never registers posts no attempt record (PRD-38 D3, by design),
 so the ledger shows one agent fewer — the spawn reply's stderr tail is where the cause is.
+
+## The registration window (GRPH-1400)
+
+A child has a bounded time to call `register_agent` before the supervisor presumes it broken
+and kills it. The child event then records `exit_code: -9` and `stopped_because:
+never_registered`, the item's attempt reads `expired`, and the child's logs are usually
+empty because it was killed before it printed anything. That signature means "too slow to
+register", not "crashed".
+
+| Window | Source |
+| --- | --- |
+| `--registration-window SECONDS` on `until`, `up` or `mcp` | wins over everything |
+| `GBFLEET_REGISTRATION_WINDOW` | used when the flag is absent; a non-positive or unparseable value is ignored |
+| the adapter's own window | `claude` 240s |
+| `REGISTRATION_WINDOW` | 90s, every other adapter |
+
+Why `claude` gets more, measured on a loaded machine on 2026-11-07: a healthy child took
+**67s** from process start to `register_agent`.
+
+- ~15s of CLI startup. The operator's global skill listing (35k characters on that machine)
+  rides into every child; `--strict-mcp-config` confines MCP servers, not skills or hooks.
+- A 26s first model response.
+- A `ToolSearch` round trip, because Claude Code defers MCP tools by default.
+
+With several drains and the memory gate engaged, the slow tail crossed 90s and healthy
+children were killed with empty logs. The `claude` launch now sets `ENABLE_TOOL_SEARCH=false`,
+which removes the deferral: the seat's `graphban` and `context7` tools are in the first
+request, and the `deferred_tools_delta` attachment disappears from the child's transcript.
 
 ## Before the first run: `gbfleet doctor`
 
