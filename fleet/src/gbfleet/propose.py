@@ -543,7 +543,8 @@ def red_commits(item: dict) -> set[str]:
 
     The counterpart of `green_commits`: a red CI run at the vouched commit blocks the merge in
     every `build.test_scope` mode, so local receipts can stand in for a MISSING attestation but
-    never overrule a present failure."""
+    never overrule a present failure. A commit that ALSO has a passing `suite_green` (a rerun
+    at the same commit that went green) is not red: one green run was always enough."""
     out: set[str] = set()
     for e in item.get("evidence") or []:
         if not isinstance(e, dict) or e.get("kind") != "attestation":
@@ -555,7 +556,7 @@ def red_commits(item: dict) -> set[str]:
         if any(isinstance(p, dict) and str(p.get("name") or "") == CI_PREDICATE
                and not p.get("passed") for p in preds):
             out.add(commit)
-    return out
+    return out - green_commits(item)
 
 
 #: The engines a full local run must have covered for `agent_full` to stand in for CI.
@@ -1050,12 +1051,16 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
     # (GRPH-1032), the suite that matters is the one on `head`: the reviewed commit can
     # stay red forever while the follow-up commit is the one CI attested.
     vouched = head if "paths-unchanged" in checked else reviewed
-    if any(same_commit(vouched, r) for r in red):
-        # A failing run is CI's answer, in every mode; local receipts never overrule it.
-        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
-                      reason=f"CI attested {CI_PREDICATE} FAILED on {vouched[:12]}")
+    # Green first: CI reruns at the same commit (`attempts/N`), and one passing run there was
+    # always enough to merge. A flaky red attempt a later green rerun overturned must not hold
+    # the PR for ever — that was the regression this order fixes (GRPH-1415 bounce).
     if any(same_commit(vouched, g) for g in green):
         checked.append(f"ci={CI_PREDICATE}")
+    elif any(same_commit(vouched, r) for r in red):
+        # A failing run with no passing one is CI's answer, in every mode; local receipts
+        # never overrule it.
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      reason=f"CI attested {CI_PREDICATE} FAILED on {vouched[:12]}")
     elif local_full:
         # GRPH-1415: `agent_full` — the builder's full runs on both engines stand in for a
         # CI attestation that never came, as the server's done gate does.

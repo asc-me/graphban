@@ -492,6 +492,24 @@ def test_a_failing_ci_attestation_blocks_even_in_agent_full(gh):
     assert not got.ok and "FAILED" in got.reason
 
 
+def test_a_green_rerun_at_the_same_commit_overturns_a_red_attempt(gh):
+    """Bounce of GRPH-1415. Sabotage: check `red` before `green` — a flaky first attempt
+    followed by a green rerun at the same commit blocks the merge for ever, in every mode."""
+    for local_full in (False, True):
+        got = _merge_scope(_Forge(), gh, local_full=local_full,
+                           green={REVIEWED}, red={REVIEWED})
+
+        assert got.ok, got.reason
+        assert f"ci={propose_mod.CI_PREDICATE}" in got.checked
+
+
+def test_red_commits_drop_a_commit_a_rerun_turned_green():
+    item = {"evidence": [_att("github-actions", REVIEWED, ("suite_green", False)),
+                         _att("github-actions", REVIEWED, ("suite_green", True))]}
+
+    assert propose_mod.red_commits(item) == set()
+
+
 def test_without_local_full_a_missing_ci_attestation_still_blocks(gh):
     """`agent_and_pr` / `agent_targeted` (or receipts short of full) keep waiting for CI."""
     got = _merge_scope(_Forge(), gh, local_full=False)
