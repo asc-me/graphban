@@ -858,7 +858,8 @@ def _update_branch(repo: Path, item_id: str, selector: str, url: str, base_ref: 
 def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
           green: set[str], paths: list[str] | tuple[str, ...] | None = None,
           release: str = "", scans: list[ScanVerdict] | tuple[ScanVerdict, ...] = (),
-          siblings: list[str] | tuple[str, ...] = ()) -> Merged:
+          siblings: list[str] | tuple[str, ...] = (),
+          covering=()) -> Merged:
     """Finish one item's merge, or say exactly which precondition stopped it.
 
     `reviewed` is the commit the sign-off attestation names; `green` is every commit CI has
@@ -882,11 +883,19 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
     a hold naming every PR checked and its head (GRPH-1219). After a merge, any other
     sibling still open is closed as superseded — best effort, never a failed merge.
 
+    `covering` is the touchpoints of every OTHER item on this branch that is signed off at the
+    reviewed commit (GRPH-1408). A PR's changed files must all sit inside `paths` plus
+    `covering`; a file in neither is work nobody reviewed under this sign-off, and the merge is
+    refused naming it. Empty `paths` declares nothing to compare against, so it does not gate.
+    It may be a zero-argument callable: it is then called only when some changed file lies
+    outside `paths`, so the common merge does not pay for the lookup.
+
     Never raises and never fails a wave. Every path returns a `Merged` that says what it did,
     and names the release ref it used.
     """
     got = _merge(repo, item_id, selector, reviewed=reviewed, green=green, paths=paths,
-                 release=release, scans=scans, siblings=tuple(siblings or ()))
+                 release=release, scans=scans, siblings=tuple(siblings or ()),
+                 covering=covering if callable(covering) else tuple(covering or ()))
     if got.ok and siblings:
         got = replace(got, closed=_close_superseded(repo, got, siblings))
     return replace(got, release=release_phrase(release))
@@ -969,6 +978,7 @@ def _sibling_at(repo: Path, item_id: str, selector: str, url: str, head: str, re
 
 def _via_sibling(repo: Path, item_id: str, selector: str, pr: dict, *, reviewed: str,
                  green: set[str], paths, release: str, scans, siblings: tuple[str, ...],
+                 covering=(),
                  checked: list[str], miss: Merged | None = None) -> Merged:
     """Merge the item's sibling PR at `reviewed` in place of the selected `pr`, or hold
     naming every PR checked (`miss` instead, when given). The recursion gets no siblings,
@@ -982,14 +992,42 @@ def _via_sibling(repo: Path, item_id: str, selector: str, pr: dict, *, reviewed:
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                       reason=hold)
     got = _merge(repo, item_id, sibling, reviewed=reviewed, green=green, paths=paths,
+                 covering=covering,
                  release=release, scans=scans)
     why = (f"sibling={sibling} (selected {_pr_ref(pr, selector)} head {head[:12] or '?'} "
            "is not the reviewed commit)")
     return replace(got, checked=tuple(checked) + (why,) + got.checked)
 
 
+def _outside_files(repo: Path, selector: str, paths, covering) -> tuple[list[str], str]:
+    """`(files, error)`: the PR's changed files covered by neither `paths` nor `covering`.
+
+    No declared `paths` means nothing to compare against: `([], "")`, as `touchpoints.undeclared`.
+    A diff that cannot be read is an error, not a pass."""
+    from . import touchpoints as tp_mod
+
+    if not (paths or []):
+        return [], ""
+    try:
+        done = _gh(repo, "pr", "diff", selector, "--name-only")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [], f"could not read the PR's changed files: {exc}"
+    if done.returncode != 0:
+        tail = (done.stderr or done.stdout or "").strip().splitlines()
+        return [], f"could not read the PR's changed files: {tail[-1][:200] if tail else done.returncode}"
+    files = [f.strip() for f in (done.stdout or "").splitlines() if f.strip()]
+    own = [p for p in paths if isinstance(p, str) and p.strip()]
+    outside = tp_mod.undeclared(files, own)
+    if not outside:
+        return [], ""
+    others = covering() if callable(covering) else covering
+    declared = own + [p for p in (others or []) if isinstance(p, str) and p.strip()]
+    return tp_mod.undeclared(outside, declared), ""
+
+
 def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set[str],
-           paths, release: str, scans, siblings: tuple[str, ...] = ()) -> Merged:
+           paths, release: str, scans, siblings: tuple[str, ...] = (),
+           covering=()) -> Merged:
     checked: list[str] = []
     if not find():
         return Merged(item=item_id, selector=selector, skipped=True,
@@ -1022,7 +1060,7 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
             # reviewed commit is still the one to merge. Without one, the skip stands.
             return _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
                                 paths=paths, release=release, scans=scans,
-                                siblings=siblings, checked=checked, miss=not_open)
+                                siblings=siblings, covering=covering, checked=checked, miss=not_open)
         return not_open
     checked.append("open")
     if pr.get("isCrossRepository"):
@@ -1051,7 +1089,7 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
             # say which and why. The recursion gets no siblings, so it cannot loop.
             return _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
                                 paths=paths, release=release, scans=scans,
-                                siblings=siblings, checked=checked)
+                                siblings=siblings, covering=covering, checked=checked)
         else:
             return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                           reason=f"PR head {head[:12] or '?'} is not the reviewed commit "
@@ -1068,6 +1106,22 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                       reason=f"CI has not attested {CI_PREDICATE} on {vouched[:12]}")
     checked.append(f"ci={CI_PREDICATE}")
+
+    # GRPH-1408. The sign-off vouches for THIS item's files. A PR that also carries another
+    # item's unreviewed work (#1388 landed GRPH-1359 under GRPH-1399's sign-off) is not
+    # covered by it. Read from the forge's own diff, which is against the base's merge-base.
+    outside, why_out = _outside_files(repo, selector, paths, covering)
+    if why_out:
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      reason=why_out)
+    if outside:
+        shown = ", ".join(outside[:8]) + (f" (+{len(outside) - 8} more)" if len(outside) > 8 else "")
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      reason=f"PR changes {len(outside)} file(s) outside {item_id}'s touchpoints "
+                             f"and every other signed-off item's on this branch: {shown} — "
+                             "work nobody signed off; review it, not merge it")
+    if paths:
+        checked.append("files-within-touchpoints")
 
     # GRPH-P57 D6. Against `head`, not `reviewed`: the paths-unchanged pass above vouches
     # for the item's own files, and says nothing about what main brought in with it. A PR
