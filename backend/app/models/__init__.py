@@ -570,6 +570,11 @@ class Item(Base):
     #: which is enforced by which ROUTE carries the field rather than by a check: the REST
     #: patch takes a bearer JWT and no agent credential reaches it.
     reach: Mapped[str] = mapped_column(String, default="repo", server_default="repo")
+    #: What KIND of change this is: `feature`, `fix`, `chore`, or empty = NOT RECORDED
+    #: (GRPH-1358), so a release can say which of its changes are new features. Empty is not
+    #: "not a feature": rows that predate the column stay empty, because guessing would put a
+    #: confident wrong answer in the release notes. Values: `services/items.py:KINDS`.
+    kind: Mapped[str] = mapped_column(String, default="", server_default="")
     effort: Mapped[int] = mapped_column(Integer, default=0)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     blocker: Mapped[str] = mapped_column(String, default="")
