@@ -1258,11 +1258,19 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
         failed = (f"{bad.get('adapter')} "
                   + (f"run {bad['run_ref']} " if bad.get("run_ref") else "")
                   + f"at {str(bad.get('commit'))[:12]} did not pass {CI_PREDICATE}")
-        record_refusal(db, item, predicate="pr_ci_not_green", detail=failed)
+        # GRPH-1410: the failure CI named (jobs, first failing tests) rides on the refusal, so
+        # a reviewer has the bounce reason in hand rather than reading this as "CI pending".
+        why = "; ".join(str(q.get("detail")) for q in bad.get("predicates") or []
+                        if isinstance(q, dict) and q.get("name") == CI_PREDICATE
+                        and q.get("passed") is False and q.get("detail"))
+        record_refusal(db, item, predicate="pr_ci_not_green",
+                       detail=f"{failed}: {why}" if why else failed)
         raise PRCINotGreen(
-            f"{item.key} cannot move to done: CI ran the suite for its PR and it is red — "
-            f"{failed}. Waiting will not change this; fix the PR and let CI attest "
-            f"{CI_PREDICATE} at its head")
+            f"{item.key} cannot move to done: CI failed at {str(bad.get('commit'))[:12]}"
+            + (f": {why}" if why else "")
+            + f" — {failed}. This is a BOUNCE, not a wait: CI has answered and the answer is "
+            f"no, so bounce the item with this failure as the reason. Waiting will not change "
+            f"it; the PR needs a fix and a CI run that attests {CI_PREDICATE} at its head")
     if waited >= cooldown:
         # The cooldown gave CI time to answer. Silence after it is not a pass.
         if commits or not any(CI_PREDICATE in attested_predicates([a]) for a in runs):

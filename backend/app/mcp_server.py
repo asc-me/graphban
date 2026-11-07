@@ -4732,9 +4732,10 @@ async def mcp_endpoint(
             # hint ("wait and send it again") would send an agent into a retry loop that
             # cannot succeed. Name the action instead.
             return _fail("conflict", str(e),
-                               "do not retry — waiting will not change this. Fix the PR so its "
-                               "CI passes, or get CI to attest suite_green at the PR's head "
-                               "commit, then send it again")
+                               "do not retry — waiting will not change this. If the message says "
+                               "CI failed, bounce the item with that failure as the reason; if "
+                               "CI has not reported, get CI to attest suite_green at the PR's "
+                               "head commit, then send it again")
         except items_svc.PRCooldown as e:
             # CONFLICT for the same reason, and the hint says WAIT rather than naming an
             # action (GRPH-567). It is the only refusal in this surface that resolves on its

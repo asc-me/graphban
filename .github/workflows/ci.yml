@@ -475,6 +475,32 @@ jobs:
             --commit "$HEAD_SHA" \
             --branch "$HEAD_REF" \
             --text "$PR_TITLE $PR_BODY"
+      # GRPH-1410: a RED run is an answer, and it must be recorded as one. Without this a
+      # failing head and a head CI never reached read the same ("no CI run has reported"),
+      # and reviewers wait instead of bouncing. `failure()` keeps this unreachable on a
+      # green run, so it cannot mask the passing attestation below.
+      - name: Record that this run failed
+        if: failure()
+        env:
+          GRAPHBAN_URL: ${{ vars.GRAPHBAN_URL }}
+          GRAPHBAN_GATE_KEY: ${{ secrets.GRAPHBAN_GATE_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          gh run view "$RUN_ID" --log-failed > failed.log 2>/dev/null || : > failed.log
+          python3 scripts/attest_ci.py --mode failed \
+            --commit "$HEAD_SHA" \
+            --branch "$HEAD_REF" \
+            --run-url "$RUN_URL" \
+            --needs-json "$NEEDS_JSON" \
+            --log-file failed.log \
+            --text "$PR_TITLE $PR_BODY"
       - name: Attest the items this green run vouches for
         # EVERY value crosses into this step through `env`, never through `${{ }}` inside
         # `run`. Actions substitutes an expression into the script TEXT before any shell
