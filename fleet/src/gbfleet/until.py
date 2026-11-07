@@ -35,7 +35,9 @@ from . import matrix as matrix_mod
 from .spawn import Child, build_holdings
 from . import spend as spend_mod
 from . import touchpoints as tp_mod
-from .spawn import VendorLimit
+from .spawn import LaunchFailed, VendorLimit
+from . import entitlements as ent_mod
+from .adapters import AdapterError
 from .headroom import Headroom
 from .supervisor import (
     _declared_into,
@@ -218,6 +220,13 @@ class Report:
         refused = self.wave.observations_refused if self.wave else 0
         payload["supervision_unrecorded"] = refused
         payload["exhausted"] = (list(self.wave.exhausted.values()) if self.wave else [])
+        # GRPH-1372. Who the wave continued on, and who it did not. A wave that failed over
+        # reads as clean unless both are named: the server's reviewer-diversity gate can
+        # still fail later for a vendor that never got a child here.
+        launched = list(self.wave.vendors_launched) if self.wave else []
+        payload["vendors_launched"] = launched
+        payload["vendors_not_launched"] = [
+            v for v in (self.wave.vendors_tried if self.wave else []) if v not in launched]
         if self.detail:
             payload["detail"] = self.detail
         return payload
@@ -253,6 +262,7 @@ def run(
     merge: bool = False,
     base_branch: str | None = None,
     entitlements: dict[str, list[str]] | None = None,
+    records: "list[ent_mod.Entitlement] | None" = None,
     stall_after: float = watchdog_mod.STALL_AFTER_S,
     clock: Callable[[], float] = time.monotonic,
 ) -> Report:
@@ -373,6 +383,12 @@ def run(
 
             persist()
             wave.entitlements = {a: list(ids) for a, ids in (entitlements or {}).items() if ids}
+            # GRPH-1372. The accounts this machine can launch, read once. Only read: the
+            # exhausted mark lives on `wave`, and nothing this wave learns is written back.
+            try:
+                wave.records = list(ent_mod.load() if records is None else records)
+            except (ent_mod.EntitlementError, ValueError) as exc:
+                raise ConfigError(f"the entitlement registry could not be read: {exc}") from exc
             identity = _identify(planner, repo, adapter, wave)
             _preflight_observations(supervisor)
             result = _loop(
@@ -535,21 +551,59 @@ def _item_brief(client, item_id: str | None) -> dict | None:
 
 
 def _skip_exhausted(wave: Wave, check):
-    """Wrap an `installed` checker so adapters the vendor refused this wave resolve to nothing."""
+    """Wrap an `installed` checker so adapters the wave stopped walking resolve to nothing."""
     def wrapped(row):
-        entry = wave.exhausted.get(row.harness)
-        if entry:
-            return False, f"exhausted: {entry['said']}"[:160]
+        if row.harness in wave.vendor_out:
+            return False, f"exhausted: {wave.vendor_out[row.harness]}"[:160]
         return check(row)
     return wrapped
 
 
-def _mark_exhausted(wave: Wave, exc: VendorLimit, chosen: str) -> None:
-    # The harness the matrix chose is the name `_skip_exhausted` matches on.
+def _records_for(wave: Wave, adapter: str, matrix) -> list:
+    """The stored records an adapter can launch: vendor text naming the adapter or its row's vendor."""
+    names = {adapter}
+    if matrix is not None:
+        names |= {r.vendor for r in matrix.rows if r.harness == adapter}
+    return [r for r in wave.records if r.vendor in names]
+
+
+def _next_record(wave: Wave, adapter: str, matrix):
+    """(record, registered): the first record for `adapter` not yet exhausted this wave.
+
+    `registered` False means this machine holds no record for the adapter, and the launch is
+    the default login as it always was. True with no record means every one is spent.
+    """
+    held = _records_for(wave, adapter, matrix)
+    for rec in held:
+        if rec.name not in wave.exhausted:
+            return rec, True
+    return None, bool(held)
+
+
+def _mark_exhausted(wave: Wave, exc: VendorLimit, chosen: str, record=None) -> None:
     adapter = chosen or exc.adapter
-    wave.exhausted.setdefault(adapter, {
-        "adapter": adapter, "said": exc.said, "seen_at": int(time.time()),
+    key = record.name if record is not None else adapter
+    # The vendor's words exactly as printed. The reset clause is not parsed into a time.
+    wave.exhausted.setdefault(key, {
+        "entitlement": record.name if record is not None else "",
+        "adapter": adapter,
+        "vendor": record.vendor if record is not None else adapter,
+        "said": exc.said, "seen_at": int(time.time()),
     })
+
+
+def _selecting(factory, record):
+    """A factory whose refusal to select `record` is a launch failure, not a crash.
+
+    `select_entitlement` raises before any process exists. Surfacing it as `LaunchFailed`
+    lets `_start` reap the worktree and record the refusal; the default login is never used.
+    """
+    def wrapped(*args, **kwargs):
+        try:
+            return factory(*args, **kwargs)
+        except AdapterError as exc:
+            raise LaunchFailed(f"entitlement {record.name!r} refused at launch: {exc}") from exc
+    return wrapped
 
 
 def _capacity_detail(wave: Wave, last: str) -> str:
@@ -682,32 +736,69 @@ def _loop(
                 (res.winner.harness, res.winner.model))
 
     def failover(seat, seed, want, factory, chosen):
-        """GRPH-1247. Spawn; on a vendor limit, mark the adapter exhausted and take the next.
+        """GRPH-1247, GRPH-1372. Spawn; on a vendor limit, take the next record or vendor.
 
+        The retry is a new process on the SAME seat — the child never registered, so the
+        enrolment was not consumed and no second one is minted. The failed process and its
+        worktree are reaped by `_start`. The first limit on a vendor may try one other record
+        on it; the second stops the walk, the vendor is excluded and the matrix resolves again.
         Ends the wave with `capacity` (not `cap`, not `vendor_limit`) when nothing is left.
         """
         while True:
             mark = (len(wave.failures), len(wave.unredeemed), wave.unused_seats)
             exc: VendorLimit | None = None
             seat = replace(seat, entitlements=tuple(wave.entitlements.get(chosen[0], ())))
-            if chosen[0] in wave.exhausted:
-                said = wave.exhausted[chosen[0]]["said"]
+            record, registered = _next_record(wave, chosen[0], matrix)
+            if chosen[0] and chosen[0] not in wave.vendors_tried:
+                wave.vendors_tried.append(chosen[0])
+            if chosen[0] in wave.vendor_out or (registered and record is None):
+                said = wave.vendor_out.get(chosen[0]) or next(
+                    (e["said"] for e in wave.exhausted.values() if e["adapter"] == chosen[0]), "")
+                wave.vendor_out.setdefault(chosen[0], said)
                 exc = VendorLimit(f"adapter {chosen[0]!r} is exhausted this wave: {said}",
                                   adapter=chosen[0], said=said)
             else:
+                launching = factory
+                if record is not None and launch_for is None:
+                    raise ConfigError(
+                        f"entitlement {record.name!r} is registered for {chosen[0]!r}, and this "
+                        "wave has no adapter factory to select its handle; refusing rather "
+                        "than starting the default login")
+                if record is not None:
+                    # The record's handle is selected, or the launch is refused. A record
+                    # never launches as the default login.
+                    launching = _selecting(
+                        launch_for(chosen[0], chosen[1], entitlement=record), record)
                 try:
                     before = len(children)
                     _spawn_one(
-                        wave, children, occupied, persist, seat, factory,
+                        wave, children, occupied, persist, seat, launching,
                         repo, workspace, wave_name, supervisor, limits, planner, debug,
                         base=base, ledger=planner,
                     )
                     if seed and len(children) > before:
                         owners[seed] = children[-1]
+                    if chosen[0] and chosen[0] not in wave.vendors_launched:
+                        wave.vendors_launched.append(chosen[0])
                     return
                 except VendorLimit as caught:
                     exc = caught
-                    _mark_exhausted(wave, caught, chosen[0])
+                    _mark_exhausted(wave, caught, chosen[0], record)
+                    hits = wave.vendor_limits.get(chosen[0], 0) + 1
+                    wave.vendor_limits[chosen[0]] = hits
+                    left, _ = _next_record(wave, chosen[0], matrix)
+                    if hits >= 2 or left is None:
+                        # The second limit means it is still in force for a new process —
+                        # including when the second handle is the same login.
+                        wave.vendor_out[chosen[0]] = caught.said
+                    else:
+                        del wave.failures[mark[0]:]
+                        del wave.unredeemed[mark[1]:]
+                        wave.unused_seats = mark[2]
+                        observe.emit("failover", item=seed,
+                                     detail=f"{record.name if record else chosen[0]} exhausted; "
+                                            f"continuing on {left.name} ({chosen[0]})")
+                        continue
             nxt = next_candidate(seed, want)
             if nxt is None:
                 wave.reason = "capacity"

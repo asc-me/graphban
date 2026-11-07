@@ -50,6 +50,20 @@ def roomy_machine(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_reading_your_real_entitlements(tmp_path_factory, monkeypatch):
+    """No wave in the suite may launch on the developer's own registered accounts (GRPH-1372).
+
+    `until.run` reads the registry at wave start. Unpinned, a developer with records in
+    `~/.graphban/gbfleet-entitlements.json` would get a different wave from CI. A test that
+    wants records sets `GBFLEET_ENTITLEMENTS` itself or passes `records=`.
+    """
+    from gbfleet import entitlements
+
+    monkeypatch.setenv(entitlements.PATH_ENV,
+                       str(tmp_path_factory.mktemp("ents") / entitlements.FILENAME))
+
+
+@pytest.fixture(autouse=True)
 def no_sweeping_your_real_state(tmp_path_factory, monkeypatch):
     """No test may reap a worktree the developer's own supervisors recorded (GRPH-1011).
 
