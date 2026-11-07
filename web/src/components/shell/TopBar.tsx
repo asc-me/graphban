@@ -21,10 +21,13 @@ export function TopBar({
   agentOpen,
   onToggleAgent,
   onOpenPalette,
+  setupChip,
 }: {
   agentOpen: boolean;
   onToggleAgent: () => void;
   onOpenPalette: () => void;
+  /** `Finish setup n/N` (GRPH-P67 D8): shown until the quick start is finished. */
+  setupChip?: { done: number; total: number; onOpen: () => void };
 }) {
   const { user, logout } = useAuth();
   const { data: keys } = useApiKeys();
@@ -70,6 +73,17 @@ export function TopBar({
       </div>
 
       <div className="flex-1" />
+
+      {setupChip && (
+        <button
+          type="button"
+          onClick={setupChip.onOpen}
+          aria-label={`Finish setup, ${setupChip.done} of ${setupChip.total} steps done`}
+          className="flex items-center gap-1.5 rounded-lg border border-[rgba(198,242,78,0.35)] bg-[rgba(198,242,78,0.06)] px-2.5 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-accent outline-none transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus [@media(hover:hover)_and_(pointer:fine)]:hover:bg-[rgba(198,242,78,0.12)]"
+        >
+          Finish setup {setupChip.done}/{setupChip.total}
+        </button>
+      )}
 
       <div className="flex items-center gap-1.5 rounded-lg border border-[#1c2620] bg-[rgba(95,208,122,0.05)] px-2.5 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-st-done">
         <span className="blink h-1.5 w-1.5 rounded-full bg-st-done shadow-[0_0_8px_#5fd07a]" />

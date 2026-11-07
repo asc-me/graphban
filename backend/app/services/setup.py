@@ -136,3 +136,23 @@ def agent_view(db: Session, project_id: str) -> dict:
         "steps": steps,
         "note": "Resumable + idempotent — re-run any time; done steps reflect current state.",
     }
+
+
+# The dialog's own progress marks (GRPH-P67 D8). UI facts only: nothing here is evidence that a
+# setup step happened, and no checklist status reads it. Each mark stamps its `<mark>_at` once
+# per call; later items (the tour, Request an org) add their marks here, not a second writer.
+ONBOARDING_MARKS = ("quickstart_finished", "quickstart_dismissed")
+
+
+def mark_onboarding(db: Session, user, mark: str) -> dict:
+    """Stamp `<mark>_at` on the user's onboarding document and return the whole document.
+
+    Only the listed marks exist; anything else is refused here so every surface shares the
+    boundary. The document is merged, never replaced, so one mark cannot erase another."""
+    if mark not in ONBOARDING_MARKS:
+        raise ValueError(f"mark must be one of: {', '.join(ONBOARDING_MARKS)}")
+    doc = dict(user.onboarding or {})
+    doc[f"{mark}_at"] = datetime.now(timezone.utc).isoformat()
+    user.onboarding = doc  # reassign: a mutated JSON dict is not change-tracked
+    db.commit()
+    return doc

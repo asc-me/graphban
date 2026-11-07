@@ -1,5 +1,5 @@
 import type { HarnessRecommendations, HarnessReport, ShardClass } from "@/lib/types";
-import type { Credential, CredentialIn, FleetOverview, FleetPolicy, FleetPresence, FleetProfile, FleetProfileRead, FleetTierMap, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
+import type { Credential, CredentialIn, Onboarding, OnboardingMark, ProjectSetup, SetupConfirm, FleetOverview, FleetPolicy, FleetPresence, FleetProfile, FleetProfileRead, FleetTierMap, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
  * localStorage so a reload can silently re-auth. On a 401 the client attempts one
@@ -428,6 +428,14 @@ export const api = {
     request<{ keys_revoked: number; leases_released: number; reservations_released: number }>(
       "/fleet/end-wave", { method: "POST", body: JSON.stringify({ project_id: projectId, wave }) }),
   me: () => request<User>("/auth/me"),
+  // Quick-start progress (GRPH-P67 D6/D8). Readable before any project exists, so the
+  // dialog can decide to open for a brand-new user.
+  onboarding: () => request<{ onboarding: Onboarding | null }>("/auth/me/onboarding"),
+  markOnboarding: (mark: OnboardingMark) =>
+    request<{ onboarding: Onboarding }>("/auth/me/onboarding", {
+      method: "PATCH",
+      body: JSON.stringify({ mark }),
+    }),
   myMemberships: () =>
     request<{ project_id: string; project_name: string; accent: string; role: string; access: string }[]>(
       "/auth/me/memberships",
@@ -455,6 +463,15 @@ export const api = {
   // rendered under the old one keep resolving (PRD-13).
   retagProject: (id: string, tag: string) =>
     request<Project>(`/projects/${id}/retag`, { method: "POST", body: JSON.stringify({ tag }) }),
+  // The quick-start checklist (GRPH-1360). Every step mark the dialog draws comes from here.
+  projectSetup: (projectId: string) =>
+    request<ProjectSetup>(`/projects/${encodeURIComponent(projectId)}/setup`),
+  // The only human decisions setup stores: workspace confirm, stay offline, step ⓪'s answer.
+  confirmSetup: (projectId: string, body: SetupConfirm) =>
+    request<ProjectSetup>(`/projects/${encodeURIComponent(projectId)}/setup/confirm`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   tagCheck: (tag: string) =>
     request<{ tag: string; available: boolean; reason: string }>(
       `/projects/tag-check?tag=${encodeURIComponent(tag)}`,
