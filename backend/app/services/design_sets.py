@@ -1124,6 +1124,27 @@ def handoff(db: Session, ds: DesignSet | None, section: str) -> dict:
                         "The design revision is not accepted; the PRD section alone is not "
                         "sufficient to build from."}
     rev = _revision(db, ds) if ds.status == "accepted" else None
+    if rev is None and ds.status not in ("stale", "frozen"):
+        # GRPH-1368: nobody accepts a set any more. It is buildable when it aligns to a PRD
+        # that has passed its gates; the handoff pins the hashes it was aligned at.
+        align = spec_alignment.for_design_set(db, ds)
+        if align["approved_to_build"]:
+            lines = [f"## Design\n\nDesign set: {ds.id} (aligned to {align['linked_prd']})",
+                     f"PRD hash: {ds.prd_hash}", f"Preamble hash: {ds.preamble_hash}",
+                     f"Constraints hash: {ds.constraints_hash}", "", "Screens:"]
+            for sc in ds.screens:
+                lines.append(f"- {sc.screen} ({sc.tier}): prompt {sc.prompt_hash or 'none'}, "
+                             f"canvas {sc.canvas_hash or 'none'}")
+            return {"blocked": False, "blocker": "", "revision_id": "",
+                    "text": "\n".join(lines)}
+        gaps = ", ".join(align["gaps"]) or "none"
+        why = ("it links no PRD" if align["linked_prd"] is None
+               else f"{align['linked_prd']} has no baseline" if not align["prd_passed"]
+               else f"missing PRD headings: {gaps}")
+        return {"blocked": True,
+                "blocker": f"{_BLOCK_PREFIX}design set {ds.id} is not approved to build",
+                "text": f"## Design\n\nDesign set {ds.id} is `{ds.status}` and not approved to "
+                        f"build: {why}. The PRD section alone is not sufficient to build from."}
     if rev is None:
         return {"blocked": True, "blocker": f"{_BLOCK_PREFIX}design set {ds.id} is {ds.status}",
                 "text": f"## Design\n\nThe design revision is not accepted: design set {ds.id} "
