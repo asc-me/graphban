@@ -384,6 +384,7 @@
 "tests/test_toolcall.py": 0.06,
 "tests/test_touchpoint_intake.py": 0.31,
 "tests/test_touchpoint_remove.py": 1.5,
+"tests/test_touchpoint_validation.py": 0.84,
 "tests/test_touchpoints_union.py": 0.43,
 "tests/test_tracker_links.py": 0.99,
 "tests/test_transcript_ingest.py": 3.71,

@@ -50,6 +50,7 @@ from app.services import code_graph as code_svc
 from app.services import design_sets as design_sets_svc
 from app.services import documents as documents_svc
 from app.services import scans as scans_svc
+from app.services import touchpoint_check
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
 from app.services import gitops
@@ -3014,7 +3015,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             reporter={"name": "Agent", "handle": "mcp", "avatar": "#a78bfa"},
         )
         _idempotent_remember(db, args, "create_item", item.id)
-        return _item_dict(item)
+        out = _item_dict(item)
+        # GRPH-1393: a touchpoint matching nothing in the code graph is named, with the
+        # closest real path, instead of being accepted silently.
+        tw = touchpoint_check.warnings(db, item.project_id, args.get("touchpoints"))
+        if tw:
+            out["touchpoint_warnings"] = tw
+        return out
     if name == "update_item":
         _scoped_item(db, args["id"], allowed)
         if "reach" in args:
@@ -3083,6 +3090,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # signal that the narrowing did not happen. Computed against `before`, captured
             # before the write.
             out.update(items_svc.touchpoint_intake(before_tps, args["touchpoints"]))
+            tw = touchpoint_check.warnings(db, item.project_id, args["touchpoints"])
+            if tw:
+                out["touchpoint_warnings"] = tw
         return out
     if name == "search_items":
         rows = items_svc.search_items(
