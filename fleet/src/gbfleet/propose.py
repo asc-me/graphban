@@ -538,6 +538,48 @@ def green_commits(item: dict) -> set[str]:
     return out
 
 
+def red_commits(item: dict) -> set[str]:
+    """Every commit some attestation reports `suite_green` FAILED on (GRPH-1415).
+
+    The counterpart of `green_commits`: a red CI run at the vouched commit blocks the merge in
+    every `build.test_scope` mode, so local receipts can stand in for a MISSING attestation but
+    never overrule a present failure."""
+    out: set[str] = set()
+    for e in item.get("evidence") or []:
+        if not isinstance(e, dict) or e.get("kind") != "attestation":
+            continue
+        commit = str(e.get("commit") or "").strip()
+        preds = e.get("predicates") or []
+        if not commit or not isinstance(preds, list):
+            continue
+        if any(isinstance(p, dict) and str(p.get("name") or "") == CI_PREDICATE
+               and not p.get("passed") for p in preds):
+            out.add(commit)
+    return out
+
+
+#: The engines a full local run must have covered for `agent_full` to stand in for CI.
+LOCAL_ENGINES = ("postgres", "sqlite")
+
+
+def full_local_receipts(item: dict) -> bool:
+    """True when the item carries a passing `test` receipt with `scope=full` on EACH of
+    Postgres and SQLite (GRPH-1415). A partial run, a failing run, or one engine is not it."""
+    seen: set[str] = set()
+    for e in item.get("evidence") or []:
+        if not isinstance(e, dict) or e.get("kind") != "test":
+            continue
+        if str(e.get("scope") or "").lower() != "full":
+            continue
+        if int(e.get("failed") or 0) != 0 or int(e.get("passed") or 0) <= 0:
+            continue
+        engine = str(e.get("engine") or "").lower()
+        for name in LOCAL_ENGINES:
+            if name in engine:
+                seen.add(name)
+    return all(n in seen for n in LOCAL_ENGINES)
+
+
 @dataclass(frozen=True)
 class ScanVerdict:
     """One `scans_clean` predicate as the ledger recorded it: the commit its attestation
@@ -754,7 +796,8 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
           green: set[str], paths: list[str] | tuple[str, ...] | None = None,
           release: str = "", scans: list[ScanVerdict] | tuple[ScanVerdict, ...] = (),
           siblings: list[str] | tuple[str, ...] = (),
-          covering=()) -> Merged:
+          covering=(), local_full: bool = False,
+          red: set[str] | frozenset[str] = frozenset()) -> Merged:
     """Finish one item's merge, or say exactly which precondition stopped it.
 
     `reviewed` is the commit the sign-off attestation names; `green` is every commit CI has
@@ -785,12 +828,18 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
     It may be a zero-argument callable: it is then called only when some changed file lies
     outside `paths`, so the common merge does not pay for the lookup.
 
+    `local_full` is True only when the project's `build.test_scope` is `agent_full` AND the item
+    carries full local receipts on both engines (`full_local_receipts`) — the caller decides
+    both (GRPH-1415). Then a MISSING `suite_green` no longer blocks the merge. `red` is every
+    commit with a FAILING `suite_green`; one at the vouched commit blocks in every mode.
+
     Never raises and never fails a wave. Every path returns a `Merged` that says what it did,
     and names the release ref it used.
     """
     got = _merge(repo, item_id, selector, reviewed=reviewed, green=green, paths=paths,
                  release=release, scans=scans, siblings=tuple(siblings or ()),
-                 covering=covering if callable(covering) else tuple(covering or ()))
+                 covering=covering if callable(covering) else tuple(covering or ()),
+                 local_full=local_full, red=frozenset(red))
     if got.ok and siblings:
         got = replace(got, closed=_close_superseded(repo, got, siblings))
     return replace(got, release=release_phrase(release))
@@ -873,7 +922,8 @@ def _sibling_at(repo: Path, item_id: str, selector: str, url: str, head: str, re
 
 def _via_sibling(repo: Path, item_id: str, selector: str, pr: dict, *, reviewed: str,
                  green: set[str], paths, release: str, scans, siblings: tuple[str, ...],
-                 covering=(),
+                 covering=(), local_full: bool = False,
+                 red: frozenset[str] = frozenset(),
                  checked: list[str], miss: Merged | None = None) -> Merged:
     """Merge the item's sibling PR at `reviewed` in place of the selected `pr`, or hold
     naming every PR checked (`miss` instead, when given). The recursion gets no siblings,
@@ -887,7 +937,7 @@ def _via_sibling(repo: Path, item_id: str, selector: str, pr: dict, *, reviewed:
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                       reason=hold)
     got = _merge(repo, item_id, sibling, reviewed=reviewed, green=green, paths=paths,
-                 covering=covering,
+                 covering=covering, local_full=local_full, red=red,
                  release=release, scans=scans)
     why = (f"sibling={sibling} (selected {_pr_ref(pr, selector)} head {head[:12] or '?'} "
            "is not the reviewed commit)")
@@ -922,7 +972,8 @@ def _outside_files(repo: Path, selector: str, paths, covering) -> tuple[list[str
 
 def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set[str],
            paths, release: str, scans, siblings: tuple[str, ...] = (),
-           covering=()) -> Merged:
+           covering=(), local_full: bool = False,
+           red: frozenset[str] = frozenset()) -> Merged:
     checked: list[str] = []
     if not find():
         return Merged(item=item_id, selector=selector, skipped=True,
@@ -955,7 +1006,8 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
             # reviewed commit is still the one to merge. Without one, the skip stands.
             return _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
                                 paths=paths, release=release, scans=scans,
-                                siblings=siblings, covering=covering, checked=checked, miss=not_open)
+                                siblings=siblings, covering=covering, checked=checked, miss=not_open,
+                                local_full=local_full, red=red)
         return not_open
     checked.append("open")
     if pr.get("isCrossRepository"):
@@ -984,7 +1036,8 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
             # say which and why. The recursion gets no siblings, so it cannot loop.
             return _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
                                 paths=paths, release=release, scans=scans,
-                                siblings=siblings, covering=covering, checked=checked)
+                                siblings=siblings, covering=covering, checked=checked,
+                                local_full=local_full, red=red)
         else:
             return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                           reason=f"PR head {head[:12] or '?'} is not the reviewed commit "
@@ -997,10 +1050,19 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
     # (GRPH-1032), the suite that matters is the one on `head`: the reviewed commit can
     # stay red forever while the follow-up commit is the one CI attested.
     vouched = head if "paths-unchanged" in checked else reviewed
-    if not any(same_commit(vouched, g) for g in green):
+    if any(same_commit(vouched, r) for r in red):
+        # A failing run is CI's answer, in every mode; local receipts never overrule it.
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      reason=f"CI attested {CI_PREDICATE} FAILED on {vouched[:12]}")
+    if any(same_commit(vouched, g) for g in green):
+        checked.append(f"ci={CI_PREDICATE}")
+    elif local_full:
+        # GRPH-1415: `agent_full` — the builder's full runs on both engines stand in for a
+        # CI attestation that never came, as the server's done gate does.
+        checked.append("local-full-receipts(agent_full)")
+    else:
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                       reason=f"CI has not attested {CI_PREDICATE} on {vouched[:12]}")
-    checked.append(f"ci={CI_PREDICATE}")
 
     # GRPH-1408. The sign-off vouches for THIS item's files. A PR that also carries another
     # item's unreviewed work (#1388 landed GRPH-1359 under GRPH-1399's sign-off) is not
