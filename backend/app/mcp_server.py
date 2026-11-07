@@ -209,8 +209,8 @@ TOOLS: list[dict[str, Any]] = [
                 "description": {"type": "string", "description": _ITEM_BODY_DESC},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "touchpoints": {"type": "array", "items": {"type": "string"},
-                                "description": "Files/globs it affects. UNIONS — never removes "
-                                               "the rest. Empty is not a write."},
+                                "description": "Files/globs. UNIONS."},
+                "touchpoints_remove": {"type": "array", "items": {"type": "string"}},
                 "effort": {"type": "integer", "description": _EFFORT_DESC},
                 "blocker": {"type": "string", "description": "Empty string clears it."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
@@ -2490,6 +2490,12 @@ def _validate_args(name: str, args: dict[str, Any]) -> None:
                 )
 
 
+def _caller_is_planner(db, key, agent_id) -> bool:
+    """Whether this call carries the planner role (GRPH-1398). Unrestricted callers count."""
+    role, _ = fleet_svc.role_for_call(db, api_key=key, agent_id=agent_id)
+    return role in ("planner", "*")
+
+
 def _item_dict(item) -> dict:
     """The shared item fields, rendered by the service (GRPH-821): one renderer, every read.
     Kept as a name so the thirteen call sites here read the same as before."""
@@ -3018,8 +3024,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 hint="a human sets it on the item in the UI")
         # Captured BEFORE the write, because `union_touchpoints` mutates the stored list and
         # the reply has to say what the caller's list left behind (GRPH-985).
-        before_tps = list(getattr(_scoped_item(db, args["id"], allowed), "touchpoints", None) or []) \
-            if args.get("touchpoints") is not None else []
+        before_all_tps = list(getattr(_scoped_item(db, args["id"], allowed), "touchpoints", None) or [])
+        before_tps = before_all_tps if args.get("touchpoints") is not None else []
         item = items_svc.update_item(
             db,
             args["id"],
@@ -3039,6 +3045,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             fidelity=args.get("fidelity"),
             kind=args.get("kind"),
             touchpoints=args.get("touchpoints"),
+            touchpoints_remove=args.get("touchpoints_remove"),
+            remove_as_planner=_caller_is_planner(db, key, args.get("agent_id")),
             prd_id=args.get("prd_id"),
             prd_section=args.get("prd_section"),
             head_commit=args.get("head_commit"),
@@ -3049,6 +3057,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         if item is None:
             raise errors.NotFound(f"item not found: {args['id']}")
         out = _item_dict(item)
+        if args.get("touchpoints_remove"):
+            # GRPH-1398. Say what came off, so a no-match is visible rather than silent.
+            out["touchpoints_removed"] = [
+                q for q in dict.fromkeys(
+                    x.strip() for x in args["touchpoints_remove"] if isinstance(x, str))
+                if q and q not in (item.touchpoints or [])
+                and q in before_all_tps]
         if args.get("evidence") is not None:
             # GRPH-839. A refused receipt used to show only as an `evidence` array that did
             # not grow, and this tool is the one that moves an item to `review` — so the
