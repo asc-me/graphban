@@ -5,6 +5,8 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/cn";
 import { useInputModality } from "@/lib/input-modality";
 
+import { StartupPromptRows } from "@/features/onboarding/StartupPrompts";
+import { requestTour } from "@/features/tour/replay";
 import { GLOBAL_SHORTCUTS, docFor } from "./content";
 
 const OPEN_EVENT = "graphban:open-docs";
@@ -145,6 +147,16 @@ export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
                 <div className="text-small text-muted">Help for the page you’re on</div>
               </div>
               <button
+                type="button"
+                onClick={() => {
+                  closeDocs("pointer");
+                  requestTour();
+                }}
+                className="h-[30px] flex-none rounded-lg border border-control bg-surface px-2.5 text-body text-fg-2 transition-colors hover:border-control-hover hover:text-fg"
+              >
+                Take the tour
+              </button>
+              <button
                 onClick={() => closeDocs("pointer")}
                 className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg border border-control bg-surface text-muted transition-colors hover:border-control-hover hover:text-fg"
                 aria-label="Close"
@@ -155,6 +167,12 @@ export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
 
             {/* Body */}
             <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              <details className="mb-4 rounded-lg border border-line bg-surface-2 px-3 py-2">
+                <summary className="cursor-pointer text-body font-medium">Start-up prompts</summary>
+                <div className="mt-2">
+                  <StartupPromptRows />
+                </div>
+              </details>
               <h2 className="text-[16px] font-semibold tracking-tight">{doc.title}</h2>
               <p className="mb-4 mt-0.5 text-body text-muted">{doc.tagline}</p>
 

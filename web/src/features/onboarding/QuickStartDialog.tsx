@@ -20,10 +20,11 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { ConnectStep, ROUTE_LABEL, type Route } from "@/features/onboarding/ConnectStep";
+import { StartupPromptRows } from "@/features/onboarding/StartupPrompts";
 import { TagField, useTagField } from "@/features/onboarding/TagField";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { keys, useConfirmSetup, useCredentials, useProjectSetup } from "@/lib/queries";
+import { keys, useConfirmSetup, useCredentials, useOrgs, useProjectSetup } from "@/lib/queries";
 import type { Credential, SetupStatus } from "@/lib/types";
 
 import {
@@ -100,6 +101,10 @@ export function QuickStartDialog({
   onTakeTour?: () => void;
 }) {
   const { active, projects } = useProjectCtx();
+  // An invitee joined someone else's org (GRPH-1364): their Finish offers the link setup card
+  // and the start-up prompts. The owner of the org, and every self-host user, get the plain one.
+  const orgsQ = useOrgs(hosted);
+  const invitee = hosted && (orgsQ.data ?? []).some((o) => o.role !== "owner");
   const [createdId, setCreatedId] = React.useState("");
   const projectId = active?.id ?? createdId;
   const project = projects.find((p) => p.id === projectId) ?? active;
@@ -227,6 +232,7 @@ export function QuickStartDialog({
               route={route}
               onFinish={onFinish}
               onTakeTour={onTakeTour}
+              invitee={invitee}
             />
           )}
         </div>
@@ -1046,13 +1052,16 @@ function FinishScreen({
   route,
   onFinish,
   onTakeTour,
+  invitee = false,
 }: {
   steps: QsStep[];
   marks: Record<QsStep, StepMark>;
   route: Route;
   onFinish: () => Promise<void>;
   onTakeTour?: () => void;
+  invitee?: boolean;
 }) {
+  const [promptsOpen, setPromptsOpen] = React.useState(false);
   const open = steps.filter((s) => marks[s].status !== "done");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
@@ -1108,9 +1117,33 @@ function FinishScreen({
       {marks.connect?.status === "done" && marks.connect.evidence && (
         <p className="mt-2 text-[12px] text-muted">Agent connection: {marks.connect.evidence}</p>
       )}
+      {invitee && <LinkSetupCard />}
+      {invitee && promptsOpen && (
+        <div className="mt-3">
+          <StartupPromptRows />
+        </div>
+      )}
       <ErrorLine text={error} />
       <div className="mt-5 flex items-center justify-end gap-2 border-t border-line pt-4">
-        {onTakeTour ? (
+        {invitee ? (
+          <>
+            <Button variant="ghost" size="sm" type="button" disabled={busy} onClick={() => finish()}>
+              Done
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              aria-expanded={promptsOpen}
+              onClick={() => setPromptsOpen((v) => !v)}
+            >
+              Start-up prompts
+            </Button>
+            <Button variant="outline" size="sm" type="button" disabled={busy || !onTakeTour} onClick={() => finish(onTakeTour)}>
+              Take the tour
+            </Button>
+          </>
+        ) : onTakeTour ? (
           <>
             <Button variant="outline" size="sm" type="button" disabled={busy} onClick={() => finish()}>
               Skip for now
@@ -1126,5 +1159,27 @@ function FinishScreen({
         )}
       </div>
     </section>
+  );
+}
+
+/**
+ * The invitee's optional link setup (GRPH-1364): collapsed, and nothing here is required. It
+ * only builds the `graphban link` command from the org-issued key — the key is never sent
+ * anywhere by this card, and no prefix is assumed (`graphban link` decides what it accepts).
+ */
+function LinkSetupCard() {
+  const [key, setKey] = React.useState("");
+  const cmd = `graphban link --cloud-url ${window.location.origin} --api-key ${key.trim() || "<link key>"}`;
+  return (
+    <details className="mt-4 rounded-[10px] border border-line bg-surface-2 px-3 py-2" data-link-setup>
+      <summary className="cursor-pointer text-body font-medium">Link a self-host deployment (optional)</summary>
+      <div className="mt-2 flex flex-col gap-2">
+        <label className="flex flex-col gap-1 text-small text-muted">
+          Link key from your org
+          <Input value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" spellCheck={false} />
+        </label>
+        <CopyLine text={cmd} label="Copy the link command" />
+      </div>
+    </details>
   );
 }
