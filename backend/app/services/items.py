@@ -398,6 +398,9 @@ def normalize_evidence_report(raw) -> tuple[list[dict], list[dict]]:
                     # "not recorded" rather than a claim about either.
                     "branch": str(e.get("branch") or "").strip(),
                     "matched": str(e.get("matched") or "").strip(),
+                    # GRPH-1411: every commit the run covered (`git rev-list base..head`).
+                    # Empty for a push run, and for older receipts.
+                    "range": _normalize_range(e.get("range")),
                     "schema_version": schema_version,
                 })
                 if not detail:
@@ -689,6 +692,18 @@ def has_effective_sabotage(evidence) -> bool:
     if any(e.get("tests_failed") for e in sabotage_receipts(evidence)):
         return True
     return "sabotage_observed" in attested_predicates(evidence)
+
+
+def _normalize_range(value) -> list[str]:
+    """The commits a CI receipt covered: a list of hex strings, deduplicated, else []."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[str] = []
+    for c in value:
+        c = str(c or "").strip().lower()
+        if _COMMIT.match(c) and c not in out:
+            out.append(c)
+    return out
 
 
 def attestation_receipts(evidence) -> list[dict]:
@@ -1198,6 +1213,32 @@ def pr_commits(evidence, *named) -> list[str]:
     return out
 
 
+def _range_receipts(db, item, commits) -> list[dict]:
+    """CI receipts on OTHER items of this project whose `range` lists one of `commits`
+    (GRPH-1411). Each is a copy tagged `_carried_by` with the carrying item's key.
+
+    A PR run attests its head onto the items its text names, but vouches for every commit in
+    the PR; work merged inside another item's PR has no receipt of its own. The server has no
+    git, so the range CI recorded is the only way to tell that head H contains commit c.
+    """
+    wanted = [c for c in commits if c]
+    if not wanted:
+        return []
+    rows = db.execute(select(Item).where(Item.project_id == item.project_id,
+                                         Item.id != item.id)).scalars().all()
+    out: list[dict] = []
+    for other in rows:
+        for a in attestation_receipts(other.evidence):
+            if not any(isinstance(q, dict) and q.get("name") == CI_PREDICATE
+                       for q in a.get("predicates") or []):
+                continue
+            covered = list(a.get("range") or [])
+            if not any(same_commit(r, c) for r in covered for c in wanted):
+                continue
+            out.append({**a, "_carried_by": other.key})
+    return out
+
+
 def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
                               commit: str | None = None) -> None:
     """Raise PRCooldown when `done` is asked for too soon after a PR link (GRPH-567).
@@ -1232,6 +1273,10 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
     commits = pr_commits(merged, commit, item.head_commit)
     if any(CI_PREDICATE in attested_predicates(merged, commit=c) for c in commits):
         return
+    carried = _range_receipts(db, item, commits)
+    green_elsewhere = [a for a in carried if CI_PREDICATE in attested_predicates([a])]
+    if green_elsewhere:
+        return
     waited = (utcnow() - _aware(linked)).total_seconds()
     runs = [a for a in attestation_receipts(merged)
             if any(isinstance(q, dict) and q.get("name") == CI_PREDICATE
@@ -1251,13 +1296,16 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
     failed_at_head = [a for a in runs
                       if any(same_commit(str(a.get("commit") or ""), c) for c in commits)
                       and CI_PREDICATE not in attested_predicates([a])]
+    failed_at_head = failed_at_head or [a for a in carried
+                                        if CI_PREDICATE not in attested_predicates([a])]
     if failed_at_head:
         if item.pr_linked_at is None:
             item.pr_linked_at = linked
         bad = failed_at_head[-1]
         failed = (f"{bad.get('adapter')} "
                   + (f"run {bad['run_ref']} " if bad.get("run_ref") else "")
-                  + f"at {str(bad.get('commit'))[:12]} did not pass {CI_PREDICATE}")
+                  + f"at {str(bad.get('commit'))[:12]} did not pass {CI_PREDICATE}"
+                  + (f" (carried by {bad['_carried_by']})" if bad.get("_carried_by") else ""))
         record_refusal(db, item, predicate="pr_ci_not_green", detail=failed)
         raise PRCINotGreen(
             f"{item.key} cannot move to done: CI ran the suite for its PR and it is red — "

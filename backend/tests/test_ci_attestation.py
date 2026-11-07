@@ -596,3 +596,27 @@ def test_the_fields_are_stripped(client, gate_key, an_item):
 
     assert row["branch"] == "gb/grph-992"
     assert row["matched"] == "prose"
+
+
+# ---- the range a run covered (GRPH-1411) -----------------------------------------------
+
+def test_a_pr_run_receipt_carries_its_range_and_a_push_run_an_empty_one(monkeypatch):
+    class Done:
+        stdout = "b" * 40 + "\n" + "c" * 40 + "\n"
+
+    monkeypatch.setattr(attest_ci.subprocess, "run", lambda *a, **k: Done())
+    pr = attest_ci.attestation(commit="c" * 40, branch="x",
+                               commits=attest_ci.covered_commits("a" * 40, "c" * 40))
+    push = attest_ci.attestation(commit="c" * 40, branch="main",
+                                 commits=attest_ci.covered_commits("", "c" * 40))
+
+    assert pr["range"] == ["b" * 40, "c" * 40]
+    assert push["range"] == []
+
+
+def test_the_range_survives_normalization():
+    from app.services import items as items_svc
+
+    stored = items_svc.normalize_evidence(
+        [attest_ci.attestation(commit="c" * 40, branch="x", commits=["b" * 40, "zz"])])
+    assert stored[0]["range"] == ["b" * 40]

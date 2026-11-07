@@ -456,6 +456,8 @@ jobs:
       - name: Check out (the gate job has no source yet)
         if: always()
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # `git rev-list base..head` for the receipt's range (GRPH-1411)
       # BEFORE the attestation and unconditionally, which is the whole point (GRPH-555).
       # A failing run writes no receipt — but it must still move the head, or the last
       # PASSING attestation goes on opening the gate for code that has since broken. That is
@@ -494,11 +496,13 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           python3 scripts/attest_ci.py \
             --commit "$HEAD_SHA" \
+            --base "$BASE_SHA" \
             --branch "$HEAD_REF" \
             --run-url "$RUN_URL" \
             --text "$PR_TITLE $PR_BODY"

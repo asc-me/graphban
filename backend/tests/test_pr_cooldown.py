@@ -529,3 +529,54 @@ def test_a_plain_cooldown_refusal_still_says_wait(client, auth, monkeypatch):
     err = _mcp_done(client, auth, monkeypatch, items_svc.PRCooldown("still cooling down"))
     assert err["code"] == "conflict"
     assert "wait for the cooldown" in err["hint"], err
+
+
+# ---- a receipt on another item vouches for a commit in its range (GRPH-1411) ---------------
+
+HEAD_H = "e" * 40
+C1 = "f" * 40
+
+
+def _carrier(db, passed=True):
+    a = _item(db)
+    rec = dict(ATTESTATION, commit=HEAD_H, run_ref="gha-run-77", range=[C1, HEAD_H],
+               predicates=[{"name": "suite_green", "passed": passed, "detail": "x"}])
+    items_svc.update_item(db, a.id, evidence=[rec])
+    return a
+
+
+def test_a_green_range_receipt_on_another_item_lets_sign_off_through(db, cooldown):
+    from app.services import fleet as fleet_svc
+
+    a = _carrier(db)
+    b = _item(db)
+    _in_review(db, b)
+
+    out = fleet_svc.sign_off(db, item_id=b.id, agent_id="reviewer-1",
+                             evidence=[PR], commit=C1)
+    assert out.status == "done"
+    assert a.key and out.key != a.key
+
+
+def test_a_red_range_receipt_on_another_item_refuses_and_names_the_run(db, cooldown):
+    from app.services import fleet as fleet_svc
+
+    a = _carrier(db, passed=False)
+    b = _item(db)
+    _in_review(db, b)
+
+    with pytest.raises(items_svc.PRCINotGreen) as exc:
+        fleet_svc.sign_off(db, item_id=b.id, agent_id="reviewer-1", evidence=[PR], commit=C1)
+    assert "gha-run-77" in str(exc.value) and a.key in str(exc.value)
+
+
+def test_a_commit_outside_every_range_is_still_refused(db, cooldown):
+    from app.services import fleet as fleet_svc
+
+    _carrier(db)
+    b = _item(db)
+    _in_review(db, b)
+
+    with pytest.raises(items_svc.PRCooldown):
+        fleet_svc.sign_off(db, item_id=b.id, agent_id="reviewer-1",
+                           evidence=[PR], commit="9" * 40)
