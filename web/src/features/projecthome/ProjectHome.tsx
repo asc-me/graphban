@@ -1,3 +1,4 @@
+import { StartupPromptsWidget } from "@/features/onboarding/StartupPrompts";
 import {
   Activity,
   BarChart3,
@@ -168,6 +169,8 @@ export function ProjectHome() {
       ) : fresh ? (
         <>
           <AgentLoopInfo to={to} />
+
+          <StartupPromptsWidget />
           <PlannerEmpty
             title="Nothing to summarise yet"
             description="Every count that was read came back zero. That is an empty project, not a measured one — file the first item and the counts start."

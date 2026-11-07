@@ -172,3 +172,42 @@ def mark_onboarding(db: Session, user, mark: str, skipped_stops: list[str] | Non
     user.onboarding = doc  # reassign: a mutated JSON dict is not change-tracked
     db.commit()
     return doc
+
+
+# ── Request an org (GRPH-1364) ─────────────────────────────────────────────────────────
+ORG_REQUEST_NAME_MAX = 120
+ORG_REQUEST_EMAIL_MAX = 254
+ORG_REQUEST_NOTE_MAX = 2000
+
+
+class OrgRequestUnavailable(Exception):
+    """No operator address is configured, or the relay could not deliver."""
+
+
+def request_org(db: Session, user, name: str, email: str, note: str = "") -> dict:
+    """Relay a self-host user's org request to the operator, then stamp `org_requested_at`.
+
+    The date is stored only after the relay succeeded, so the card never claims a request
+    that nobody received. A repeat overwrites the date (there is no Declined/Expired state)."""
+    from app.config import settings
+    from app.services import email as email_svc
+
+    name, email, note = (name or "").strip(), (email or "").strip(), (note or "").strip()
+    if not name or len(name) > ORG_REQUEST_NAME_MAX:
+        raise ValueError(f"name is required, at most {ORG_REQUEST_NAME_MAX} characters")
+    if not email or len(email) > ORG_REQUEST_EMAIL_MAX or "@" not in email or any(c in email for c in " \r\n"):
+        raise ValueError("a valid contact email is required")
+    if len(note) > ORG_REQUEST_NOTE_MAX:
+        raise ValueError(f"note is at most {ORG_REQUEST_NOTE_MAX} characters")
+    to = settings.org_request_recipients
+    if not to:
+        raise OrgRequestUnavailable("this deployment has no operator address to send an org request to")
+    subject = f"Org request from {name}"
+    text = f"Name: {name}\nContact: {email}\nAccount: {user.email}\n\n{note or '(no note)'}\n"
+    if not all([email_svc.send_email(t, subject, text) for t in to]):
+        raise OrgRequestUnavailable("the request could not be delivered; try again later")
+    doc = dict(user.onboarding or {})
+    doc["org_requested_at"] = datetime.now(timezone.utc).isoformat()
+    user.onboarding = doc
+    db.commit()
+    return doc

@@ -1,0 +1,123 @@
+import * as React from "react";
+
+import { Input, Textarea } from "@/components/ui/input";
+import { useConfig, useOnboarding, useOrgs, useRequestOrg } from "@/lib/queries";
+import { settingsPath } from "@/lib/routes";
+
+/** "Request again" appears this long after the stored request date — and not before. */
+export const REQUEST_AGAIN_DAYS = 14;
+
+export type PlugKind = "hosted" | "request";
+
+/** The date the card prints, from the stored ISO stamp ("5 Nov"). */
+export function requestedOn(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
+export function canRequestAgain(iso: string, now = Date.now()): boolean {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) && now - t >= REQUEST_AGAIN_DAYS * 86_400_000;
+}
+
+const BTN =
+  "h-[30px] rounded-lg border px-[13px] text-body outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:opacity-50";
+const EQUAL = `${BTN} border-control bg-transparent text-fg-2 hover:border-control-hover`;
+
+/**
+ * The tour's closing card, anchored on Organization (GRPH-P67 §5, D2/D4/D10; design
+ * `Tour Stop.dc.html`, `stop: org`). Hosted users in an org get Invite a teammate and never
+ * Request an org; a self-host user can link to an org or request one. "Not now" is an equal
+ * button and nothing nags later. There is no Declined/Expired state: after the stored date
+ * is 14 days old, Request again overwrites it.
+ */
+export function OrgPlug({
+  onNotNow,
+  onNavigate,
+}: {
+  /** Finish the tour (recorded like any other Finish). */
+  onNotNow: () => void;
+  /** Finish the tour, then go here. */
+  onNavigate: (to: string) => void;
+}) {
+  const hosted = !!useConfig().data?.hosted_mode;
+  const orgs = useOrgs(hosted).data ?? [];
+  const requestedAt = useOnboarding().data?.onboarding?.org_requested_at;
+  const request = useRequestOrg();
+  const [form, setForm] = React.useState(false);
+  const [name, setName] = React.useState("");
+  const [email, setEmail] = React.useState("");
+  const [note, setNote] = React.useState("");
+
+  const kind: PlugKind = hosted && orgs.length ? "hosted" : "request";
+  const sent = !!requestedAt && !form;
+
+  async function send() {
+    try {
+      await request.mutateAsync({ name: name.trim(), email: email.trim(), note: note.trim() || undefined });
+      setForm(false);
+    } catch {
+      /* the error line below reads request.error */
+    }
+  }
+
+  let action: { label: string; run: () => void; disabled?: boolean } | null = null;
+  if (kind === "hosted") action = { label: "Invite a teammate →", run: () => onNavigate(settingsPath("members")) };
+  else if (form)
+    action = { label: "Send", run: send, disabled: !name.trim() || !email.trim().includes("@") || request.isPending };
+  else if (!requestedAt) action = { label: "Request an org", run: () => setForm(true) };
+  else if (canRequestAgain(requestedAt)) action = { label: "Request again", run: () => setForm(true) };
+
+  return (
+    <div className="flex flex-col gap-2.5" data-tour-plug={kind}>
+      <p className="text-[13px] leading-normal text-fg-2 [text-wrap:pretty]">
+        Working with a team? Link this <strong className="font-semibold text-fg">deployment</strong> to an org. Not now is
+        always an equal choice.
+      </p>
+      {form && (
+        <div className="flex flex-col gap-2">
+          <label className="flex flex-col gap-1 text-small text-muted">
+            Name
+            <Input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
+          </label>
+          <label className="flex flex-col gap-1 text-small text-muted">
+            Email
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+          </label>
+          <label className="flex flex-col gap-1 text-small text-muted">
+            Note (optional)
+            <Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
+          </label>
+        </div>
+      )}
+      {sent && (
+        <p className="text-body text-muted" data-tour-requested>
+          Requested on {requestedOn(requestedAt)}. We'll email an invite.
+        </p>
+      )}
+      {request.isError && (
+        <p role="alert" className="text-small text-st-blocked">
+          Could not send the request: {request.error instanceof Error ? request.error.message : "try again"}
+        </p>
+      )}
+      <div className={action ? "grid grid-cols-2 gap-2" : "grid grid-cols-1 gap-2"}>
+        {action && (
+          <button type="button" className={EQUAL} disabled={action.disabled} onClick={action.run}>
+            {action.label}
+          </button>
+        )}
+        <button type="button" className={EQUAL} onClick={form ? () => setForm(false) : onNotNow}>
+          {form ? "Cancel" : action ? "Not now" : "Finish tour"}
+        </button>
+      </div>
+      {kind === "request" && !form && (
+        <button
+          type="button"
+          onClick={() => onNavigate(settingsPath("deployment/sync"))}
+          className="self-start rounded text-body text-faint outline-none hover:text-fg-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+        >
+          Already have a link key? Link to an org → <span className="sr-only">Opens Settings, Cloud / Sync</span>
+        </button>
+      )}
+    </div>
+  );
+}
