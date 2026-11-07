@@ -6,7 +6,7 @@ import re
 
 from datetime import timedelta, timezone
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -583,6 +583,45 @@ def touchpoint_intake(existing, incoming) -> dict:
         "added": len([q for q in after if q not in before]),
         "retained": [q for q in before if q not in sent],
     }}
+
+
+def remove_touchpoints(db: Session, item: Item, remove, *, by: str | None,
+                       planner: bool = False) -> list[str]:
+    """Take paths off an item's touchpoints (GRPH-1398). Returns the paths actually removed.
+
+    `touchpoints` only ever unions, so a broad glob filed to unblock a PR stayed on the item
+    and made every later claim collide with unrelated work. Removal is its own, explicit
+    field so the safe default is unchanged: a plain write still cannot shrink the list.
+
+    Refused while the item is `in_progress` and held by ANOTHER agent (a planner may), so a
+    live claim's reservations cannot shrink under it. Recorded as a `note` receipt, and any
+    area reservation on a removed path is released. Does not commit.
+    """
+    if isinstance(remove, str):
+        remove = [remove]
+    wanted = [q.strip() for q in (remove or []) if isinstance(q, str) and q.strip()]
+    if not wanted:
+        return []
+    holder = item.claimed_by
+    if (item.status == "in_progress" and holder and not planner
+            and by and holder != by):
+        raise ValueError(
+            f"{item.key} is in_progress and held by {holder}; only the holder or a planner "
+            "may remove its touchpoints"
+        )
+    stored = list(item.touchpoints or [])
+    removed = [q for q in dict.fromkeys(wanted) if q in stored]
+    if not removed:
+        return []
+    item.touchpoints = [q for q in stored if q not in removed]
+    from app.models import AreaReservation
+    db.execute(delete(AreaReservation).where(
+        AreaReservation.item_id == item.id, AreaReservation.area.in_(removed)))
+    item.evidence = append_evidence(item.evidence, [{
+        "kind": "note",
+        "detail": f"touchpoints removed by {by or 'unknown'}: {', '.join(removed)}",
+    }])
+    return removed
 
 
 def union_touchpoints(existing, incoming) -> list[str]:
@@ -1690,6 +1729,11 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         incoming_tps = fields["touchpoints"]
         if incoming_tps:
             item.touchpoints = union_touchpoints(item.touchpoints, incoming_tps)
+    if fields.get("touchpoints_remove"):
+        # GRPH-1398. The one explicit way off the list; see `remove_touchpoints`.
+        fields["removed_touchpoints"] = remove_touchpoints(
+            db, item, fields["touchpoints_remove"], by=submitted_by,
+            planner=bool(fields.get("remove_as_planner")))
     if fields.get("evidence") is not None:
         # Appends. See `append_evidence` — a write here must never remove a receipt somebody
         # else left, because `sign_off` gates on the stored ones (GRPH-494).
@@ -1732,8 +1776,8 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         observations_svc.on_rules_passed(db, item, (ENGINE_EVIDENCE_RULE,))
     if fields.get("evidence"):
         observations_svc.on_evidence(db, item)
-    if (("touchpoints" in fields and fields["touchpoints"] is not None) or reopened) \
-            and item.touchpoints:
+    if (("touchpoints" in fields and fields["touchpoints"] is not None) or reopened
+            or fields.get("removed_touchpoints")) and item.touchpoints:
         from app.services.clustering import sync_code_links
         sync_code_links(db, item)
 
