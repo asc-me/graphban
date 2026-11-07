@@ -4146,17 +4146,18 @@ def areas_collide(a: list[str], b: list[str]) -> list[str]:
     return out
 
 
-def colliding_pairs(a: list[str], b: list[str]) -> list[tuple[str, str]]:
+def colliding_pairs(a: list[str], b: list[str], *, hard: bool = False) -> list[tuple[str, str]]:
     """(mine, theirs) for each area of `a` that collides, with the first area of `b` it hits.
 
     The same rule as `areas_collide`, kept as pairs so a refusal can name BOTH sides
     (GRPH-1399): "reserved by GRPH-A14717" sends the operator hunting through twenty
     touchpoints; "backend/tests/* vs backend/tests/test_graphban_release.py" is the answer.
+    `hard=True` keeps only the pairs that block a drain (`hard_collide`, GRPH-1389).
     """
     out = []
     for x in a:
         for y in b:
-            if areas_collide([x], [y]):
+            if (hard_collide if hard else areas_collide)([x], [y]):
                 out.append((x, y))
                 break
     return out
@@ -4167,6 +4168,31 @@ def describe_pairs(pairs: list[tuple[str, str]], *, cap: int = 3) -> str:
     shown = [f"{theirs} vs {mine}" for mine, theirs in pairs[:cap]]
     more = len(pairs) - len(shown)
     return ", ".join(shown) + (f" and {more} more" if more > 0 else "")
+
+
+#: Areas whose collisions git cannot see (GRPH-1389). Two new migrations both merge cleanly
+#: and leave two alembic heads, so a lease over these stays exclusive. Every other overlap
+#: is a SOFT lease: git reports a real conflict at merge time, so drains may overlap.
+HARD_AREAS: tuple[str, ...] = ("backend/alembic/versions",)
+
+
+def is_hard_area(area: str) -> bool:
+    """True when `area` is (or lies under) a hard-leased path. A trailing glob is ignored."""
+    n = _normalise_area(area)
+    while n.endswith("*") or n.endswith("/"):
+        n = n.rstrip("*").rstrip("/")
+    return any(n == h or n.startswith(h + "/") or h.startswith(n + "/") or h == n
+               for h in HARD_AREAS if n)
+
+
+def hard_collide(a: list[str], b: list[str]) -> list[str]:
+    """The overlaps in `areas_collide` that must stay exclusive: those touching a hard area.
+
+    Reservation checks use this; `areas_collide` still defines clustering, so items that
+    overlap stay one cluster for one agent, while two DRAINS no longer block each other on
+    files git can merge."""
+    return [x for x in areas_collide(a, b)
+            if is_hard_area(x) or any(is_hard_area(y) and areas_collide([x], [y]) for y in b)]
 
 
 def reserve_areas(db: Session, *, agent_id: str, item_id: str, areas: list[str],
@@ -4304,10 +4330,10 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         members = set(cluster.get("items") or [])
         free = set().union(*[o for o in overrides if members <= o]) if overrides else set()
         blocked = [r.area for r in taken if r.agent_id != agent_id and r.item_id not in free]
-        overlap = areas_collide(cluster.get("areas") or [], blocked)
+        overlap = hard_collide(cluster.get("areas") or [], blocked)
         if overlap:
             if len(collided) < 3:
-                collided.extend(colliding_pairs(cluster.get("areas") or [], blocked)[:1])
+                collided.extend(colliding_pairs(cluster.get("areas") or [], blocked, hard=True)[:1])
             continue
         ids = (cluster.get("items") or [])[:_capped(db, project_id, cluster, max_items)]
         claimed = [it for it in (items_svc.claim_item(db, i, agent_id, lease_seconds=lease_seconds)
