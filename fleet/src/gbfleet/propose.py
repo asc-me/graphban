@@ -72,6 +72,41 @@ def existing(repo: Path, branch: str) -> str:
         return ""
 
 
+#: A check-rollup entry that counts as passing. Anything else (pending, failed, cancelled)
+#: is not green, and a PR with no checks at all is not green either (GRPH-1391).
+_PASSING = {"SUCCESS", "SKIPPED", "NEUTRAL"}
+
+
+def ci_green(repo: Path, branch: str, head: str) -> bool:
+    """True when `branch` has a PR whose head is `head` and every check on it passed.
+
+    The full-suite receipt: CI already carries the SQLite and Postgres shards. Fails closed:
+    no `gh`, no PR, a different head, no checks, or any check not passing all answer False.
+    """
+    if not head or not find():
+        return False
+    try:
+        done = _gh(repo, "pr", "view", branch, "--json", "headRefOid,statusCheckRollup")
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if done.returncode != 0:
+        return False
+    try:
+        data = json.loads(done.stdout or "{}")
+    except ValueError:
+        return False
+    if str(data.get("headRefOid") or "") != head:
+        return False
+    rollup = data.get("statusCheckRollup") or []
+    if not rollup:
+        return False
+    for check in rollup:
+        verdict = str(check.get("conclusion") or check.get("state") or "").upper()
+        if verdict not in _PASSING:
+            return False
+    return True
+
+
 def existing_any(repo: Path, branch: str) -> dict:
     """The newest PR for this branch in any state, or {}.
 
