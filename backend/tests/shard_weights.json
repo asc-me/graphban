@@ -288,6 +288,7 @@
 "tests/test_public_share.py": 0.42,
 "tests/test_query_counts.py": 27.23,
 "tests/test_quotas.py": 0.26,
+"tests/test_reach_acceptance_lines.py": 0.5,
 "tests/test_rebaselining.py": 2.03,
 "tests/test_refusals.py": 14.62,
 "tests/test_reindex.py": 1.12,
