@@ -165,6 +165,16 @@ class Settings(BaseSettings):
     # a hosted deploy. Plan assignment and Stripe are on the control plane.
     platform_admin_emails: str = ""
 
+    # Where "Request an org" from a self-host deployment is relayed (GRPH-1364). Comma-separated;
+    # blank falls back to `platform_admin_emails`. With neither set the request is refused
+    # rather than recorded: a stored date for a message nobody received would read as sent.
+    org_request_to: str = ""
+
+    @property
+    def org_request_recipients(self) -> list[str]:
+        raw = self.org_request_to or self.platform_admin_emails
+        return [e.strip() for e in raw.split(",") if e.strip()]
+
     @property
     def platform_admin_email_set(self) -> set[str]:
         return {e.strip().lower() for e in self.platform_admin_emails.split(",") if e.strip()}

@@ -9,6 +9,7 @@ import paletteSrc from "../components/shell/CommandPalette.tsx?raw";
 import { CommandPalette } from "@/components/shell/CommandPalette";
 import { TOP_BAR_JUMP_PLACEHOLDER, TopBar } from "@/components/shell/TopBar";
 import { ProjectProvider } from "@/features/ProjectContext";
+import { onTourRequested } from "@/features/tour/replay";
 import { TrackerView } from "@/features/tracker/TrackerView";
 import type { Item, ItemDetail, PrdSummary } from "@/lib/types";
 
@@ -148,6 +149,22 @@ describe("command palette (GRPH-911)", () => {
     );
     expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
     expect(screen.getByText("Opened from the command palette.")).toBeInTheDocument();
+  });
+
+  it("Take the tour replays the app tour and closes the palette (GRPH-1364)", async () => {
+    const user = userEvent.setup();
+    const replay = vi.fn();
+    const off = onTourRequested(replay);
+    render(<PaletteHarness />);
+
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    const palette = await screen.findByRole("dialog", { name: "Command palette" });
+    await user.type(within(palette).getByLabelText("Command palette search"), "tour");
+    await user.click(await within(palette).findByText("Take the tour"));
+
+    expect(replay).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
+    off();
   });
 
   it("does not claim memory search in the top-bar placeholder", () => {

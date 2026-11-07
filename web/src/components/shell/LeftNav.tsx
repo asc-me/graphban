@@ -411,7 +411,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
 
           <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-2.5">
             {hosted ? (
-              <NavItem href={consoleHref(orgPath())} icon={<Building2 size={15} />} label="Organization" utility />
+              <NavItem href={consoleHref(orgPath())} icon={<Building2 size={15} />} label="Organization" utility tour="org" />
             ) : (
               <OrgRailItem projectId={activeId} onOpenDialog={(linked) => { setOrgDialogLinked(linked); setOrgDialogOpen(true); }} />
             )}
@@ -719,7 +719,7 @@ function OrgRailItem({ projectId, onOpenDialog }: { projectId: string; onOpenDia
   const isLinked = !!usableHttpUrl(status?.cloud_url);
   const { data: gitops } = useGitops(isLinked ? projectId : "");
   if (isLoading && !status) {
-    return <NavItem to={settingsPath("deployment/sync")} icon={<Building2 size={15} />} label="Organization" utility />;
+    return <NavItem to={settingsPath("deployment/sync")} icon={<Building2 size={15} />} label="Organization" utility tour="org" />;
   }
   const isMalformed = !isLinked && !!(status && status.cloud_url.trim());
   const state: OrgState = !isLinked
@@ -735,6 +735,7 @@ function OrgRailItem({ projectId, onOpenDialog }: { projectId: string; onOpenDia
       type="button"
       onClick={onClick}
       data-org-state={state}
+      data-tour="org"
       className="flex items-center gap-2.5 rounded-[9px] h-[31px] flex-none px-2.5 leading-[15px] text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
     >
       <Building2 size={15} className="flex-none" />
@@ -803,7 +804,7 @@ function NavItem({
   );
   if (href) {
     return (
-      <a href={href} className={cn(base, "text-muted hover:bg-surface-3 hover:text-fg-2")}>
+      <a href={href} data-tour={tour} className={cn(base, "text-muted hover:bg-surface-3 hover:text-fg-2")}>
         {icon}
         <span className="flex-1">{label}</span>
         {badge}
