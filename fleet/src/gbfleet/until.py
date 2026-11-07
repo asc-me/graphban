@@ -1425,6 +1425,8 @@ class _Repeats:
 _HEARTBEAT = 300.0
 
 _contention = _Repeats()
+#: The same, for clusters spawned into ALONGSIDE another drain's soft lease (GRPH-1389).
+_sharing = _Repeats()
 
 
 def _free_and_blocked(clusters: dict) -> tuple[list[dict], list[dict]]:
@@ -1466,6 +1468,30 @@ def _waiting(blocked: list[dict], *, repeat: int = 0) -> str:
             + _merged_on(blocked)
             + "".join(f"; {h}" for c in blocked for h in _held_files(c))
             + ". Not spawning into work that cannot be claimed")
+
+
+def _soft_key(free: list[dict]) -> str:
+    """What makes a soft-overlap report NEW: which clusters overlap whom."""
+    rows = sorted(f"{(c.get('items') or ['?'])[0]}<{o.get('by')}" for c in free
+                  for o in (c.get("soft_overlap") or []) if isinstance(o, dict))
+    return ",".join(rows)
+
+
+def _overlapping(free: list[dict]) -> str:
+    """A free cluster that overlaps another drain's SOFT lease (GRPH-1389), said once.
+
+    Soft is the default: git reports a real conflict at merge time, and a conflict there
+    bounces the item naming the files, so the drain spawns rather than idling. Said, so the
+    log shows two waves sharing a file on purpose rather than a lock that failed to hold.
+    """
+    shared = [c for c in free if c.get("soft_overlap")]
+    holders = sorted({str(o.get("by")) for c in shared for o in c["soft_overlap"]
+                      if isinstance(o, dict)})
+    pairs = [f"{o.get('reserved')} vs {o.get('area')}" for c in shared
+             for o in c["soft_overlap"] if isinstance(o, dict)][:3]
+    return (f"{len(shared)} cluster(s) overlap soft leases held by "
+            f"{', '.join(holders) or 'another agent'} ({', '.join(pairs)}). Spawning anyway: "
+            "git reports a real conflict at merge, and a conflict bounces the item")
 
 
 def _merged_on(blocked: list[dict]) -> str:
@@ -2217,6 +2243,11 @@ def _wanted_workers(
             _contention.clear()
         return 0
     _contention.clear()
+    if _soft_key(free):
+        if _sharing.changed(_soft_key(free)):
+            observe.emit("contention", detail=_overlapping(free))
+    else:
+        _sharing.clear()
     # SLOTS AND WORK ARE BOUNDED SEPARATELY (GRPH-1189). `collision_clusters` already leaves
     # out what the running children claimed, so `total` is work NO child has; subtracting
     # `live_n` from it counted every child twice, and each one hid a free cluster — a wave of

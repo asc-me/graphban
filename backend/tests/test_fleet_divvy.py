@@ -127,7 +127,7 @@ def test_two_workers_never_hold_overlapping_areas(client, key, db):
     assert not fleet.areas_collide(first["areas"], second["areas"])
 
 
-def test_a_reservation_holds_when_the_partition_moves_underneath_it(client, key, db):
+def test_a_reservation_holds_when_the_partition_moves_underneath_it(client, key, db, monkeypatch):
     """The reason reservations exist at all, and the case a snapshot cannot cover.
 
     `collision_clusters` partitions the READY pool. Once an item is claimed it leaves that
@@ -139,6 +139,8 @@ def test_a_reservation_holds_when_the_partition_moves_underneath_it(client, key,
     Sabotaging the reservation check leaves the test above green and fails this one, which is
     the whole reason it is written separately.
     """
+    # Soft leases (GRPH-1389): only a hard area blocks a second drain, so make these hard.
+    monkeypatch.setattr(fleet, "HARD_AREAS", ("backend/app/services/items.py",))
     a = _item(client, key, "A", ["backend/app/services/items.py"])
     b = _item(client, key, "B", ["web/src/features/tracker"])
     w1 = _worker(client, key, "w1")
@@ -162,9 +164,11 @@ def test_a_reservation_holds_when_the_partition_moves_underneath_it(client, key,
     assert w1["agent_id"] in out["reason"]
 
 
-def test_a_worker_with_nothing_non_colliding_is_told_so(client, key, db):
+def test_a_worker_with_nothing_non_colliding_is_told_so(client, key, db, monkeypatch):
     """The fourth worker. `claimed: false` with a reason is a real answer — handing it a
     colliding cluster to avoid an empty response is the failure this slice prevents."""
+    # Soft leases (GRPH-1389): only a hard area blocks a second drain, so make these hard.
+    monkeypatch.setattr(fleet, "HARD_AREAS", ("backend/app/services/items.py",))
     _item(client, key, "A", ["backend/app/services/items.py"])
     _item(client, key, "B", ["backend/app/services/items.py"])
     w1 = _worker(client, key, "w1")
@@ -209,7 +213,7 @@ def test_an_agents_own_reservation_does_not_block_it(client, key, db):
 
 # ---- reservation lifecycle ------------------------------------------------------------------
 
-def test_a_heartbeat_keeps_the_leftover_items_reserved(client, key, db):
+def test_a_heartbeat_keeps_the_leftover_items_reserved(client, key, db, monkeypatch):
     """P30 D5. THE LOAD-BEARING TEST.
 
     `claim_cluster(max_items=1)` still reserves the whole cluster's areas against
@@ -220,6 +224,8 @@ def test_a_heartbeat_keeps_the_leftover_items_reserved(client, key, db):
 
     Sabotage: heartbeat `claimed_at` only; this must fail.
     """
+    # Soft leases (GRPH-1389): only a hard area blocks a second drain, so make these hard.
+    monkeypatch.setattr(fleet, "HARD_AREAS", ("backend/app/services/items.py",))
     a = _item(client, key, "A", ["backend/app/services/items.py"])
     b = _item(client, key, "B", ["backend/app/services/items.py"])
     w1 = _worker(client, key, "w1")
