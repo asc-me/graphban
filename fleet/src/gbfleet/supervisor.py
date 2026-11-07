@@ -2229,13 +2229,25 @@ def _publish_in_review(wave: Wave, children: Sequence[Child],
                 if not pushed.skipped:
                     _note_once(wave, f"{child.branch}: {pushed.reason}")
             continue
+        capped, owner, later = _first_item_tip(repo, child.branch, child.base, child)
         try:
-            pushed = wt_mod.push_branch(repo, child.branch, child.base)
+            if capped:
+                pushed = wt_mod.push_commit(repo, capped, child.branch)
+            else:
+                pushed = wt_mod.push_branch(repo, child.branch, child.base)
         except Exception as exc:  # noqa: BLE001 — a failed publish is reported, never fatal
             _note_once(wave, f"{child.branch}: publish on review failed ({exc})")
             wave.review_unreadable[child.branch] = list(items)
             continue
         wave.published[child.branch] = pushed
+        if capped:
+            _note_once(wave, _capped_line(child.branch, owner, capped, later))
+            if pushed.ok and owner not in items:
+                # GRPH-1407. What is in review is a LATER item, and its commits are not on
+                # this ref — that is the point. Saying "published" would hand its reviewer
+                # the first item's diff. Its own branch is cut and proposed at reap.
+                wave.review_unreadable[child.branch] = list(items)
+                continue
         if pushed.ok:
             wave.published_in_review[child.branch] = head
             wave.review_unreadable.pop(child.branch, None)
@@ -2252,6 +2264,32 @@ def _publish_in_review(wave: Wave, children: Sequence[Child],
             wave.review_unreadable[child.branch] = list(items)
             if not pushed.skipped:
                 _note_once(wave, f"{child.branch}: {pushed.reason}")
+
+
+def _first_item_tip(repo: Path, branch: str, base: str,
+                    child: Child) -> tuple[str, str, list[str]]:
+    """`(sha, owner, later)` when `branch` carries more than one item's commits (GRPH-1407).
+
+    `sha` is the last commit of the leading run that belongs to `owner`. The shared branch
+    is the first item's: its `branch` field names it and its reviewer reads it. Pushing the
+    tip would put the next item's commits under that name — the p59h reviewer bounced
+    GRPH-1359 for exactly that. `("", "", [])` when the branch is one item's, or the
+    history cannot be read, and the branch is pushed as it is.
+    """
+    if not base:
+        return "", "", []
+    try:
+        owner, last, later = wt_mod.first_item_run(repo, branch, base, _branch_items(child))
+    except Exception:  # noqa: BLE001 — unreadable history pushes as before
+        return "", "", []
+    if not (owner and last and later):
+        return "", "", []
+    return last, owner, later
+
+
+def _capped_line(branch: str, owner: str, sha: str, later: list[str]) -> str:
+    return (f"{branch}: carries commits for {owner} and {', '.join(later)}; pushed only "
+            f"{owner}'s ({sha[:12]}), the rest go on a branch per item at reap")
 
 
 def _note_once(wave: Wave, line: str) -> None:
@@ -2305,11 +2343,19 @@ def _publish(wave: Wave, tree: Worktree, *, client: Graphban | None = None,
         except wt_mod.GitError as exc:
             wave.failures.append(f"{tree.branch}: not pushed ({exc})")
             return ""
+    capped, owner, later = ("", "", [])
+    if not divert_reason and child is not None:
+        capped, owner, later = _first_item_tip(tree.repo, tree.branch, tree.base, child)
     try:
-        pushed = wt_mod.push_branch(tree.repo, target, tree.base)
+        if capped:
+            pushed = wt_mod.push_commit(tree.repo, capped, target)
+        else:
+            pushed = wt_mod.push_branch(tree.repo, target, tree.base)
     except Exception as exc:  # noqa: BLE001 — a failed publish is reported, never fatal
         wave.failures.append(f"{target}: publish failed ({exc})")
         return ""
+    if capped:
+        wave.failures.append(_capped_line(target, owner, capped, later))
     wave.published[target] = pushed
     if not pushed.ok and not pushed.skipped:
         wave.failures.append(f"{target}: {pushed.reason}")
@@ -2347,9 +2393,31 @@ def _propose(wave: Wave, tree: Worktree, *, client: Graphban | None,
     After the push and never instead of it. A PR for a branch that is not on the remote is a
     PR for nothing, and the push is the step that can actually fail.
     """
-    propose_branch(wave, tree.repo, tree.branch,
-                   [i for i in ((child.held_items if child else []) or []) if i],
+    propose_branch(wave, tree.repo, tree.branch, _proposal_items(tree, child),
                    client=client, base_override=base_override)
+
+
+def _proposal_items(tree: Worktree, child: Child | None) -> list[str]:
+    """The items this branch is proposed for: every one a commit on it names (GRPH-1407).
+
+    `held_items` alone is the roster's LAST reading. A bound worker that built A, moved A to
+    review and then built B on the same branch holds only B at reap, and the branch was
+    proposed as B's: one PR titled for B carrying A's files. Every item the child ever held
+    and a commit names goes in, so `propose_branch` splits the branch one PR per item. An
+    item it held and never committed for stays out — `split_by_item` would refuse the whole
+    branch for it. With fewer than two named, the old reading stands, and the single-item
+    gate in `propose_branch` refuses a branch carrying another item's commits.
+    """
+    held = [i for i in ((child.held_items if child else []) or []) if i]
+    if child is None or not tree.base:
+        return held
+    known = _branch_items(child)
+    named: list[str] = []
+    for _sha, ids in wt_mod.attributed_commits(tree.repo, tree.branch, tree.base, known):
+        named += [i for i in ids if i in known and i not in named]
+    if len(named) > 1:
+        return [i for i in known if i in named]
+    return held
 
 
 def _branch_head(repo: Path, branch: str) -> str:
@@ -2502,7 +2570,36 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
     if len(items) > 1:
         _propose_per_item(wave, repo, branch, items, base, client=client)
         return
+    mixed = _carries_another_item(repo, branch, base, items)
+    if mixed:
+        # GRPH-1407. Proposed under one item's title, this was PR #1388: titled for
+        # GRPH-1399 and carrying GRPH-1359's files, merged as one.
+        wave.proposed[branch] = propose_mod.Proposed(branch=branch, skipped=True, reason=mixed)
+        wave.unproposed[branch] = mixed
+        wave.failures.append(f"{branch}: not proposed — {mixed}")
+        _record_withheld(wave, client, items, branch, mixed)
+        return
     _open_pr(wave, repo, branch, items, base, subj, client=client)
+
+
+def _carries_another_item(repo: Path, branch: str, base: str, items: list[str]) -> str:
+    """Why a one-item proposal of `branch` would carry another item's work, or "".
+
+    Names the proposed item, the other item(s), and the commits attributed to them, so
+    whoever splits it by hand knows which commit goes where.
+    """
+    if len(items) != 1 or not base:
+        return ""
+    item = items[0]
+    foreign = wt_mod.foreign_commits(repo, branch, base, item)
+    if not foreign:
+        return ""
+    others: list[str] = []
+    for _sha, ids in foreign:
+        others += [i for i in ids if i not in others]
+    shas = ", ".join(sha[:12] for sha, _ in foreign)
+    return (f"proposed for {item} but carries commits for {', '.join(others)} ({shas}); "
+            f"one PR per item, so {item}'s commits go on a branch of their own")
 
 
 def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, subj: str, *,
