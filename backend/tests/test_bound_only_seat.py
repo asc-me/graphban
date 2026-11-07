@@ -67,7 +67,7 @@ def db(_clean_database):
 def _item(client, key, title, touchpoints=None) -> str:
     return _ok(_mcp(client, key, "create_item", {
         "title": title, "status": "next",
-        "touchpoints": touchpoints or ["backend/app/services/x.py"]}))["id"]
+        "touchpoints": touchpoints or ["backend/alembic/versions/x.py"]}))["id"]
 
 
 def _agent(client, key, label, **kw) -> str:
@@ -491,9 +491,9 @@ def test_mint_bound_only_writes_nothing_when_the_areas_are_held(
         client, auth, key, proj, db):
     planner = _planner(client, auth, key, proj)
     holder = _agent(client, key, "holder")
-    _item(client, key, "held", ["backend/app/services/x.py"])
+    _item(client, key, "held", ["backend/alembic/versions/x.py"])
     assert fleet_svc.claim_cluster(db, agent_id=holder, project_id=proj)["claimed"]
-    second = _item(client, key, "colliding", ["backend/app/services/x.py"])
+    second = _item(client, key, "colliding", ["backend/alembic/versions/x.py"])
     before = len(db.scalars(select(Enrolment)).all())
     e = _err(_mcp(client, key, "mint_enrolment", {
         "agent_id": planner, "role": "worker", "bound_only": True, "item": second}))

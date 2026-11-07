@@ -2963,7 +2963,17 @@ class Merger:
         )
         if got.ok and got.commit:
             got = self._record(wave, got)
+        if got.conflicts:
+            self._bounce(wave, item_id, got)
         return got
+
+    def _bounce(self, wave: Wave, item_id: str, got: "propose_mod.Merged") -> None:
+        """A rebase conflict sends the item back naming the files (GRPH-1389)."""
+        try:
+            self.client.call("bounce", id=item_id, reason=got.reason)
+            self.watching.pop(item_id, None)
+        except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+            wave.failures.append(f"{item_id}: {got.reason} (could not bounce: {exc})")
 
     def _record(self, wave: Wave, got: "propose_mod.Merged") -> "propose_mod.Merged":
         """The receipt. `commit` is on the row so `deps._commits` reads the merge commit as

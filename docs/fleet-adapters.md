@@ -796,3 +796,20 @@ changes what every worker in the fleet is allowed to do.
 
 On 2026-09-05 a session delegated this item to a bound seat, and gbfleet resolved
 the cheap tier through the preference matrix with no --tier flag.
+
+## Soft leases and rebase-before-merge (GRPH-1389)
+
+Area leases are **soft by default**. `areas_collide` still groups overlapping items into one
+cluster, but a reservation blocks another drain only where git cannot see the collision:
+`backend/alembic/versions/*` (`HARD_AREAS` in `backend/app/services/fleet.py`). Two new
+migrations both merge cleanly and leave two heads, so those leases stay exclusive. Every
+other overlap may be claimed by two drains at once; git reports a real conflict at merge time.
+`collision_clusters` marks such a cluster with `soft_overlap` (who holds what) rather than
+`held_by`, and the drain logs a `contention` line saying it is spawning alongside that lease
+instead of "Not spawning". Refusals that do fire (`claim_cluster`, a bound seat) name only
+the hard pairs.
+
+With `--merge`, a PR that is `BEHIND` its base is rebased (`gh pr update-branch --rebase`)
+and left for CI to attest the new head before merging. A rebase conflict bounces the item
+naming the conflicting files. Before merging, the merged tree's alembic heads are counted
+and a result with more than one head is refused with a reason.

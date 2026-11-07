@@ -198,9 +198,11 @@ def test_an_expired_hold_is_not_listed(client, key, db, proj):
 
 # ---- why THIS cluster is held ------------------------------------------------------------
 
-def test_a_held_cluster_names_the_area_and_the_rule(client, key, db, proj):
+def test_a_held_cluster_names_the_area_and_the_rule(client, key, db, proj, monkeypatch):
     """The inference the operator got wrong, made readable. `because` (GRPH-810) says why a
     cluster's own members merged; this says why the whole cluster is unavailable."""
+    # Soft leases (GRPH-1389): only a hard area blocks a second drain, so make these hard.
+    monkeypatch.setattr(fleet_svc, "HARD_AREAS", ("platform-models",))
     from app.services import items as items_svc
 
     holder = _agent(client, key, "builder")
