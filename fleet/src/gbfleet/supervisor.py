@@ -3082,6 +3082,8 @@ class Merger:
         got = propose_mod.close_after_merge(self.repo, got)
         if got.ok and got.commit:
             got = self._record(wave, got)
+        if got.conflicts:
+            self._bounce(wave, item_id, got)
         return got
 
     def _test_scope(self) -> str:
@@ -3099,6 +3101,14 @@ class Merger:
                 mode = (value or {}).get("mode") if isinstance(value, dict) else None
                 return str(mode or "agent_and_pr")
         return "agent_and_pr"
+
+    def _bounce(self, wave: Wave, item_id: str, got: "propose_mod.Merged") -> None:
+        """A rebase conflict sends the item back naming the files (GRPH-1389)."""
+        try:
+            self.client.call("bounce", id=item_id, reason=got.reason)
+            self.watching.pop(item_id, None)
+        except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+            wave.failures.append(f"{item_id}: {got.reason} (could not bounce: {exc})")
 
     def _covering(self, item_id: str, item: dict) -> list[str]:
         """Touchpoints of the OTHER done items on this item's branch whose sign-off names the
