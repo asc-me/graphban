@@ -28,6 +28,15 @@ POINTER = (
 )
 
 
+
+#: Seconds a claude child gets to register (GRPH-1400). Measured on a loaded machine:
+#: 67s from process start to `register_agent` — ~15s CLI startup (the operator's global
+#: skill listing rides into every child), a 26s first model response, a ToolSearch hop —
+#: and the shared 90s default killed the slow tail of healthy children with empty logs
+#: and `never_registered`. 240s covers that tail with room; `--registration-window`
+#: still overrides it per run.
+REGISTRATION_WINDOW = 240.0
+
 class ClaudeCode(Adapter):
     name = "claude"
     binary = "claude"
@@ -168,4 +177,10 @@ class ClaudeCode(Adapter):
             config=seat.mcp_config(),
             instruction="",
             stdin_file=instruction_file,
+            # GRPH-1400. Claude Code defers MCP tools behind ToolSearch by default, so a
+            # fresh child spent a whole extra model round trip finding `register_agent`
+            # before it could call it. Off, the seat's two servers' tools are in the first
+            # request. Measured: the `deferred_tools_delta` attachment disappears.
+            env={"ENABLE_TOOL_SEARCH": "false"},
+            registration_window=REGISTRATION_WINDOW,
         )
