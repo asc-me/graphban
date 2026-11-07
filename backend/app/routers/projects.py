@@ -1,13 +1,13 @@
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import tagging
 from app.config import settings
 from app.db import get_db
-from app.errors import Refused
+from app.errors import NotFound, Refused, Validation
 from app.models import Membership, Project, User
 from app.schemas import (
     GitopsPatch, GitopsView, MemberOut, ProjectCreate, ProjectOut, ProjectRetagIn,
@@ -20,6 +20,7 @@ from app.services import events as events_svc
 from app.services import gitops
 from app.services import projects as projects_svc
 from app.services import quotas
+from app.services import setup as setup_svc
 from app.services import triage as triage_svc
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -172,6 +173,36 @@ def project_triage(project_id: str, db: Session = Depends(get_db),
     waiting"."""
     authz.require_readable(db, user.id, project_id)
     return triage_svc.feed(db, project_id)
+
+
+@router.get("/{project_id}/setup")
+def project_setup(project_id: str, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """The quick-start dialog's read (PRD-P67 §6): the setup checklist for steps ⓪–④, each
+    `done` / `pending` / `unknown` from server state, plus the caller's own `onboarding` UI
+    progress (null = never onboarded). `setup_project` (MCP) is a projection of the same
+    checklist."""
+    authz.require_readable(db, user.id, project_id)
+    try:
+        out = setup_svc.checklist(db, project_id, user_id=user.id)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    return {**out, "onboarding": user.onboarding}
+
+
+@router.post("/{project_id}/setup/confirm")
+def confirm_setup(project_id: str, body: dict = Body(...), db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """Store one human setup decision — P1 workspace confirm, "stay offline", or the step ⓪
+    answer — audited in `events`. Anything else is refused (422). Returns the checklist."""
+    authz.require_writable(db, user.id, project_id)
+    try:
+        out = setup_svc.confirm(db, project_id, user, body)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Validation as e:
+        raise HTTPException(422, str(e)) from e
+    return {**out, "onboarding": user.onboarding}
 
 
 def _load_project(db: Session, project_id: str) -> Project:

@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 339 of the 339. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 341 of the 341. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -58,6 +58,8 @@ Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
 | POST | `/api/projects/{id}/retag` | JWT (write) | Move the project's tag. One UPDATE + one tag-history row + one audit event; **no other row in the database changes**. Retired tags are never reusable |
 | PATCH | `/api/projects/{id}` | JWT | Update project config. **Not** the tag — changing that has to record tag history |
 | GET | `/api/projects/{id}/members` | JWT | List members (role/access) |
+| GET | `/api/projects/{id}/setup` | JWT | The quick-start dialog's setup checklist (PRD-P67 §6): steps ⓪–④ as `{id, step, name, status, detail, how, shared}`, `status` ∈ `done` / `pending` / `unknown` (with `reason`; a check that could not run is never `done`). `shared` steps (`project`, `code_graph`, `memories`, `items`) carry the same id and status as `setup_project` (MCP). Hosted omits step ⓪. Also returns the caller's `onboarding` (UI progress; `null` = never onboarded) |
+| POST | `/api/projects/{id}/setup/confirm` | JWT (write) | Store ONE human setup decision: `{decision: "project_confirmed"}` (per person), `{decision: "stay_offline"}`, or `{decision: "where", answer: "this_computer"\|"dedicated_server", server_address}` (address required for, and only for, a dedicated server; refused on hosted). Each is audited as a `setup_confirm` event. Anything else is **422** — UI progress is not stored here. Returns the refreshed checklist |
 | GET | `/api/projects/{id}/triage` | JWT | Unified triage inbox: untriaged requests (bug/feature/enhancement, with likely duplicate and suggested PRD), blocked items (decision question/options or `waiting_on`) and unanswered collision clusters (`id` keyed by member set, `risk` serialize\|blocked). Blockers sort first; `counts` per tab (all/bugs/requests/blockers/collisions). Snoozed and decided rows are absent. A failing source is named in `failed_sources` while the others still return |
 | GET | `/api/projects/{id}/gitops` | JWT | Live delivery contract (fetches the org when this box is linked). Unset is unmeasured, not `main` |
 | PATCH | `/api/projects/{id}/gitops` | JWT | Project overlay / local columns. Omit = no change; JSON `null` = clear. Linked self-host is **403** |

@@ -83,6 +83,12 @@ class User(Base):
     # refresh token stops working immediately instead of living to its 14d expiry (AL-59).
     token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Guided-setup UI progress (PRD-P67 §6 / GRPH-1360): `{quickstart_finished_at,
+    # quickstart_dismissed_at, tour_completed_at, tour_skipped_stops, org_requested_at}`.
+    # NULL is "never onboarded" and is what opens the quick-start dialog; migration 0186
+    # backfilled every pre-existing user as finished (G5). UI progress ONLY — never read as
+    # evidence that setup happened; a checklist step's status comes from server state.
+    onboarding: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     memberships: Mapped[list[Membership]] = relationship(back_populates="user")
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="user")
@@ -254,6 +260,11 @@ class Project(Base):
     # gitops column: a linked box can still set it locally, and the gitops contract is
     # untouched. Written only through services/projects.set_release_ref.
     release_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The human decisions the setup checklist stores (PRD-P67 §6 / GRPH-1360): who confirmed
+    # this is the workspace they want agents writing to (per person), "stay offline", and the
+    # step ⓪ answer. Written only through services/setup.confirm, each write audited in
+    # `events`. NULL is "nobody decided anything yet". Migration 0186.
+    setup_decisions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Hosted SaaS only (AL-74): the owning organization. NULL on self-host, where
     # the org layer is inert. In hosted mode authz additionally requires the caller
     # to belong to this org, so a project never leaks outside its tenant.

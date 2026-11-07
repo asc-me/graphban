@@ -2965,7 +2965,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                        "bootstrapping into it",
         }
     if name == "setup_project":
-        return setup_svc.checklist(db, pid)
+        # A projection of the checklist the web quick-start dialog reads (PRD-P67 §2): one
+        # owner, so a shared step cannot say one thing here and another in the app. The
+        # project confirmation is per person — the key's owner is that person.
+        return setup_svc.project_setup(db, pid, user_id=key.user_id)
     if name == "list_projects":
         return {"results": [
             {"id": p.id, "name": p.name, "tag": p.tag, "accent": p.accent,
