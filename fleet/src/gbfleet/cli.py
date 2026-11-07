@@ -480,6 +480,17 @@ def read_seats(source: str, server: str, api_key: str) -> list[Seat]:
     return seats
 
 
+def with_foreign_variables_stripped(launch, entitlement, records=None):
+    """Strip every OTHER stored record's API-key variable from what the child inherits."""
+    from . import entitlements as ent_mod
+
+    records = ent_mod.load() if records is None else records
+    foreign = ent_mod.foreign_variables(entitlement, records)
+    keep = set(launch.env)  # a variable the selection itself set is never stripped
+    unset = sorted({*launch.env_unset, *(v for v in foreign if v not in keep)})
+    return replace(launch, env_unset=tuple(unset))
+
+
 def make_adapter_factory(name: str, binary: str | None, model: str = "",
                          tuning: "Tuning | None" = None, entitlement=None):
     """Resolve the named vendor NOW, so a bad one refuses before any worktree exists.
@@ -503,6 +514,7 @@ def make_adapter_factory(name: str, binary: str | None, model: str = "",
         if entitlement is not None:
             # Selects the record's handle or refuses; never falls back to the default login.
             launch = found.adapter.select_entitlement(launch, entitlement)
+            launch = with_foreign_variables_stripped(launch, entitlement)
         return replace(launch, binary_version=found.version)
 
     return factory

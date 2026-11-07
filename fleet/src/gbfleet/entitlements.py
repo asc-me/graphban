@@ -117,6 +117,19 @@ def find(name: str, path: Path | None = None) -> Entitlement:
     raise EntitlementError(f"no entitlement named {name!r}")
 
 
+def foreign_variables(selected: Entitlement, records: list[Entitlement]) -> tuple[str, ...]:
+    """The API-key variable names held by records OTHER than `selected`.
+
+    A launch on `selected` strips these from the child's environment: a child started on
+    one record does not receive another record's key. The selected record's own variable is
+    never in the list, even when another record names the same one.
+    """
+    own = selected.handle if selected.kind == "api_key" else None
+    return tuple(sorted({r.handle for r in records
+                         if r.kind == "api_key" and r.name != selected.name
+                         and r.handle and r.handle != own}))
+
+
 def format_list(records: list[Entitlement]) -> str:
     """Name, vendor, kind and handle. Never the environment."""
     if not records:

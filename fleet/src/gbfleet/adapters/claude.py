@@ -107,8 +107,12 @@ class ClaudeCode(Adapter):
         from dataclasses import replace
         from ..adapters import EntitlementUnsupported
 
+        unset: tuple[str, ...] = ()
         if entitlement.kind == "subscription":
             env = {"CLAUDE_CONFIG_DIR": entitlement.handle}
+            # An inherited key outranks the login in `claude`; leaving it would start the
+            # key's account, not the one this record's config directory signed in.
+            unset = ("ANTHROPIC_API_KEY",)
         elif entitlement.kind == "api_key":
             # The variable NAMED by the handle is read at launch to hand to the child.
             value = os.environ.get(entitlement.handle)
@@ -119,7 +123,8 @@ class ClaudeCode(Adapter):
         else:
             raise EntitlementUnsupported(
                 f"adapter 'claude' has no handle to select for a {entitlement.kind} entitlement")
-        return replace(launch, env={**launch.env, **env})
+        return replace(launch, env={**launch.env, **env},
+                       env_unset=tuple(sorted({*launch.env_unset, *unset})))
 
     def launch(
         self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,

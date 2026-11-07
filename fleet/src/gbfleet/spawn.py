@@ -195,12 +195,23 @@ class Launch:
     #: on the machine, stdin is not. `grok` takes `--prompt-file` and needs neither.
     stdin_file: Path | None = None
     env: dict[str, str] = field(default_factory=dict)
+    #: Variables removed from the inherited environment before `env` is laid over it. A
+    #: launch on one stored entitlement must not hand the child another record's API-key
+    #: variable (GRPH-P72, "The launch selects the handle").
+    env_unset: tuple[str, ...] = ()
     #: Where this vendor was told to write a debug log, or None when it has no flag for
     #: one. `None` is a real answer and the supervisor reports it: `cursor-agent` and
     #: `gbagent` have no debug flag at all, and an operator who asked for `--debug` and
     #: silently got nothing from half the fleet has been misled about how much they can
     #: see (GRPH-579).
     debug_path: Path | None = None
+
+
+def inherited_environment(launch: Launch, base: dict[str, str] | None = None) -> dict[str, str]:
+    """The child's environment before the shim: this process's, minus `env_unset`, plus `env`."""
+    base = dict(os.environ) if base is None else base
+    drop = set(launch.env_unset)
+    return {**{k: v for k, v in base.items() if k not in drop}, **launch.env}
 
 
 @dataclass
@@ -361,7 +372,7 @@ def spawn(
 
     # The shim goes on LAST so nothing downstream can put the real binary back in front
     # (GRPH-818). One place, because a second env-building site is a second thing to forget.
-    env = shim_mod.environment({**os.environ, **launch.env}, shim_dir)
+    env = shim_mod.environment(inherited_environment(launch), shim_dir)
     started = time.monotonic()
     stdin = subprocess.DEVNULL
     if launch.stdin_file is not None:
