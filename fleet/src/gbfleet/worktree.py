@@ -1021,6 +1021,34 @@ def bounce_branch_of(row: dict | None) -> str:
     return str(row.get("branch") or "").strip()
 
 
+def prior_branch_of(repo: Path | str, row: dict | None, base: str) -> str:
+    """The item's recorded branch when a prior attempt left commits on it (GRPH-1390).
+
+    A child that committed a complete build and exited without moving the item to review
+    leaves no bounce and no `WIP: salvaged` subject, so neither `bounce_branch_of` nor
+    `choose_resume` sees it and the next delegation was cut from the base: the work was
+    rebuilt from scratch. A recorded branch that is ahead of `base` -- local or on the
+    remote -- is the head to continue from. Starting over is an explicit choice: a bounce
+    reason saying "start over" returns "". Nothing beyond the base, or no such branch,
+    returns "" (the first-spawn path).
+    """
+    if not row or str(row.get("status") or "") in ("done", "review"):
+        return ""
+    if "start over" in str(row.get("bounce_reason") or "").lower():
+        return ""
+    branch = str(row.get("branch") or "").strip()
+    if not branch or not base:
+        return ""
+    repo = Path(repo)
+    try:
+        _ensure_local_branch(repo, branch)
+    except ResumeFailed:
+        return ""
+    if commits_beyond_base(repo, branch, base) <= 0:
+        return ""
+    return branch
+
+
 def _ensure_local_branch(repo: Path, branch: str) -> None:
     """Make `branch` a local ref, fetching from the remote when that is where it lives."""
     if branch_exists(repo, branch):

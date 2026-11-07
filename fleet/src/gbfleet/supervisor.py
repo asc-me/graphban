@@ -1175,9 +1175,14 @@ def _start(
             # spawn used to cut a sibling from main and the builder rebuilt reviewed
             # work. Bound seats know the item; resume THAT branch, merged with the
             # wave base. Unbound seats still take salvage, then a fresh cut.
-            bounced = wt_mod.bounce_branch_of(
-                (items or {}).get(seat.item) if seat.item else None
-            )
+            row = (items or {}).get(seat.item) if seat.item else None
+            bounced = wt_mod.bounce_branch_of(row)
+            if not bounced:
+                # GRPH-1390: a committed or salvaged prior attempt is continued, never
+                # rebuilt from the base.
+                bounced = wt_mod.prior_branch_of(repo, row, base)
+                if bounced:
+                    observe.emit("continue_prior_branch", branch=bounced, item=seat.item)
             if bounced and bounced not in taken:
                 slot = bounced.rsplit("-", 1)[-1] or slot
                 agent_slot = f"{wave_name}-{slot}"
