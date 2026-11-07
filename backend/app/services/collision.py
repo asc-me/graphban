@@ -85,7 +85,7 @@ def _reasons(a: list[str], b: list[str]) -> list[dict]:
     for x in a or []:
         for y in b or []:
             rule = clustering.why_match(x, y)
-            if rule:
+            if rule and rule not in clustering.NON_COLLIDING:
                 out.append({"a": x, "b": y, "rule": rule})
                 if len(out) >= 3:
                     return out
