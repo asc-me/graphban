@@ -1105,8 +1105,6 @@ def _loop(
         # GRPH-965 and built it on the reviewer's branch while the child actually assigned to
         # that item produced nothing. The authority is the seat, not the prompt, so the gate is
         # server-side (`items.review_only_seat`) and this is only the mint that asks for it.
-        unheld_review = _ci_attested(
-            [r for r in rows if not review_held(r)], repo, ci_logged)
         # No memory gate on this branch, deliberately (GRPH-842): `not live` means nothing
         # is running, and the gate never refuses the first child — so a check here could
         # only ever cost a `vm_stat` per poll and answer yes. **If that guard goes, this
@@ -1118,6 +1116,16 @@ def _loop(
         # it has not claimed yet, so a second would stack reviewers on the same rows — and,
         # when anything is live, the memory gate and child cap like every other spawn.
         review_busy = any(c in review_spawned for c in live)
+        # GRPH-1392: CI is read only when this branch would spawn — one `gh pr view` per row,
+        # not paid on a poll where `need` or a live review spawn decides nothing spawns.
+        unheld_review = [r for r in rows if not review_held(r)]
+        ci_waiting: list[dict] = []
+        if unheld_review and need <= 0 and not review_busy:
+            unheld_review, ci_waiting, ci_blocked = _ci_attested(
+                unheld_review, repo, ci_logged, planner=planner, agent_id=agent_id)
+            if ci_blocked:
+                rows = [r for r in rows if r not in ci_blocked]
+                reviews = [str(r["id"]) for r in rows]
         # GRPH-1387: the gate's reason is kept so the wait below names it, read once per poll
         # and only when this branch would otherwise spawn.
         review_gate = None
@@ -1156,6 +1164,18 @@ def _loop(
                         gate=review_gate):
                     if line not in waits:
                         waits.append(line)
+            empty = 0
+            sleep(poll)
+            continue
+
+        if ci_waiting:
+            # GRPH-1392: CI is still running at these heads. That is a wait, not unsigned
+            # work: keep polling until it settles, then the branch above spawns (green) or
+            # blocks (red). CI finishes on its own, so this is bounded.
+            for row in ci_waiting:
+                line = f"{row.get('id')}: review waits on CI"
+                if line not in waits:
+                    waits.append(line)
             empty = 0
             sleep(poll)
             continue
@@ -2326,46 +2346,33 @@ def _is_config(exc: ToolFailed) -> bool:
 
 
 def ci_verdict(repo: Path, branch: str) -> tuple[str, str, str]:
-    """(state, head, failing_job) for `branch`'s PR (GRPH-1392).
+    """(state, head, failing_job) for `branch`'s PR (GRPH-1392): `propose.ci_rollup`.
 
-    state is `green`, `pending`, `red` or `unknown`. `unknown` (no gh, no PR, unreadable)
-    does not hold a reviewer: a repo without CI must not wedge its review queue.
+    `unknown` (no gh, no PR, no checks, unreadable) does not hold a reviewer: a repo without
+    CI must not wedge its review queue.
     """
     from . import propose
-    if not branch or not propose.find():
-        return "unknown", "", ""
-    try:
-        done = propose._gh(repo, "pr", "view", branch, "--json", "headRefOid,statusCheckRollup")
-        if done.returncode != 0:
-            return "unknown", "", ""
-        data = json.loads(done.stdout or "{}")
-    except Exception:  # noqa: BLE001 — a failed read is unknown, not red
-        return "unknown", "", ""
-    head = str(data.get("headRefOid") or "")
-    rollup = data.get("statusCheckRollup") or []
-    if not head:
-        return "unknown", "", ""
-    pending = False
-    for check in rollup:
-        verdict = str(check.get("conclusion") or check.get("state") or "").upper()
-        if verdict in propose._PASSING:
-            continue
-        if verdict in ("", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING"):
-            pending = True
-            continue
-        return "red", head, str(check.get("name") or check.get("context") or "unknown job")
-    return ("pending" if pending or not rollup else "green"), head, ""
+    return propose.ci_rollup(repo, branch)
 
 
-def _ci_attested(rows: list[dict], repo: Path, logged: set) -> list[dict]:
-    """The unheld review rows a reviewer may be spawned for (GRPH-1392).
+def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
+                 planner: Graphban | None = None,
+                 agent_id: str = "") -> tuple[list[dict], list[dict], list[dict]]:
+    """Split unheld review rows into (spawnable, waiting on CI, blocked on red CI) (GRPH-1392).
 
     A reviewer cannot `sign_off` until CI has attested the head, so a spawn against pending
-    CI is wasted. Pending rows are held back and logged once per head as `review_waits_on_ci`.
-    Red rows pass through with a `review_ci_red` event naming the failing job: the supervisor
-    may not bounce (PRD-22 §4), and the reviewer it spawns can.
+    CI is wasted: those rows are held back, logged once per head as `review_waits_on_ci`, and
+    returned second so the loop keeps polling for them instead of reading them as unsigned.
+
+    A red row is blocked with the failing job named (`review_ci_red`), and no reviewer is
+    spawned for it. The supervisor may not bounce (PRD-22 §4); the planner may write a
+    blocker, as the GRPH-950 hold does. If that write is refused the row stays spawnable, so
+    the reviewer — who can bounce — is still the fallback, never a wedged row. A blocked row
+    has left `review`, so the loop drops it rather than reading it as unsigned work.
     """
-    ready = []
+    ready: list[dict] = []
+    waiting: list[dict] = []
+    blocked: list[dict] = []
     for row in rows:
         item = str(row.get("id") or "")
         state, head, job = ci_verdict(repo, str(row.get("branch") or ""))
@@ -2375,6 +2382,7 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set) -> list[dict]:
                 logged.add(key)
                 observe.emit("review_waits_on_ci", item=item, commit=head,
                              detail=f"{item}: CI has not finished at {head[:12]}")
+            waiting.append(row)
             continue
         if state == "red":
             key = ("review_ci_red", item, head)
@@ -2382,8 +2390,32 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set) -> list[dict]:
                 logged.add(key)
                 observe.emit("review_ci_red", item=item, commit=head, job=job,
                              detail=f"{item}: CI failed at {head[:12]}: {job}")
+            if planner is not None and _block_ci_red(planner, item, head, job, agent_id):
+                blocked.append(row)
+                continue
         ready.append(row)
-    return ready
+    return ready, waiting, blocked
+
+
+def ci_red_blocker(head: str, job: str) -> str:
+    """The blocker written on a review row whose CI failed (GRPH-1392)."""
+    return (f"CI red at {head[:12]}: {job} failed. Fix it on the branch, then move the "
+            f"item back to next (gbfleet held review: a reviewer could not sign off).")
+
+
+def _block_ci_red(planner: Graphban, item: str, head: str, job: str, agent_id: str) -> bool:
+    """Block a review row on its failing CI job. False when the write was refused."""
+    args: dict = {"id": item, "status": "blocked", "blocker": ci_red_blocker(head, job)}
+    if agent_id:
+        args["agent_id"] = agent_id
+    try:
+        planner.call("update_item", **args)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("review_ci_red_unrecorded", item=item, detail=str(exc))
+        return False
+    observe.emit("review_ci_red_blocked", item=item, commit=head, job=job,
+                 detail=f"{item}: blocked on {job} at {head[:12]}")
+    return True
 
 
 def review_held(row: dict) -> bool:
