@@ -674,7 +674,6 @@ class ItemOut(ORMModel):
     decision: dict | None = None
     #: Hidden from triage until this time (GRPH-1137).
     snoozed_until: datetime | None = None
-
     @field_validator("decision", mode="before")
     @classmethod
     def _decision_public(cls, v):
@@ -687,6 +686,14 @@ class ItemOut(ORMModel):
     @classmethod
     def _tp_default(cls, v):
         return v or []
+
+
+class ItemWritten(ItemOut):
+    """What create/update return: the item, plus `touchpoint_warnings` (GRPH-1393) — touchpoints
+    matching nothing in the code graph, each with the closest existing path. A subclass so the
+    read and list shapes stay exactly as they were."""
+
+    touchpoint_warnings: list[dict] = []
 
 
 #: What the project list leaves out by default (GRPH-1228): the per-item fields that are large
