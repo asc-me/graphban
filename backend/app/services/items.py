@@ -1187,7 +1187,9 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
     at the PR's head or merge commit is the outcome the cooldown exists to give time for;
     refusing an already-merged, already-attested PR for ten minutes protected nothing. Bound
     to a COMMIT, never "any green receipt": a pass at an older head says nothing about the
-    code being completed. No commit named means no skip — the cooldown still clears itself.
+    code being completed. No commit named means no skip. Since GRPH-1345 the cooldown no
+    longer clears itself: once it has expired without a `suite_green` the refusal stands
+    until one arrives.
 
     **A first link that arrives WITH the verdict is stored before the refusal.** Before, the
     stamp was written only by a successful `update_item`, so a `done`/`sign_off` carrying the
