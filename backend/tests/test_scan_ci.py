@@ -373,6 +373,14 @@ def test_not_code_only_passes_with_touched_none(repo, fakes):
     assert not v.results
 
 
+@pytest.mark.parametrize("path", [".codex/agents/gb-verifier.toml", ".cursor/rules/graphban.mdc"])
+def test_generated_agent_instructions_touch_nothing(repo, fakes, path):
+    head = _pr(repo, {path: "prose\n"})
+    v = _eval(repo, head)
+    assert v.passed, v.detail
+    assert not v.results
+
+
 def test_an_unmapped_file_fails_as_never_run_naming_it(repo, fakes):
     """AC9 sabotage: let unmapped files touch nothing, and a new rust/ passes unscanned."""
     head = _pr(repo, {"rust/src/main.rs": "fn main() {}\n", "README.md": "x\n"})

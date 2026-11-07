@@ -82,6 +82,9 @@ MAPPED: tuple[tuple[str, str], ...] = (
 #: passing unscanned. Hardcoded beside `TOOLS`, for the same reason.
 NOT_CODE: tuple[str, ...] = (
     "*.md",  # outside docs/ — `docs/**` and AGENTS.md are matched by MAPPED first
+    # Editor-agent instructions generated from AGENTS.md by scripts/gen_subagents.py: prose in
+    # another wrapper, like the `.claude/agents/*.md` files `*.md` already covers.
+    ".codex/agents/*.toml", ".cursor/rules/*.mdc",
     ".gitignore", "*/.gitignore",
     ".gitattributes", "*/.gitattributes",
     ".editorconfig",
