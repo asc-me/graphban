@@ -69,7 +69,7 @@ def _agent(client, key, label, **kw) -> str:
 def _item(client, key, title="bind me", touchpoints=None, **kw) -> str:
     return _ok(_mcp(client, key, "create_item", {
         "title": title, "status": "next",
-        "touchpoints": touchpoints or ["backend/app/services/x.py"], **kw}))["id"]
+        "touchpoints": touchpoints or ["backend/alembic/versions/x.py"], **kw}))["id"]
 
 
 def _delegate(client, key, item_id, who, seat=True, tier="cheap", **kw):
@@ -145,10 +145,10 @@ def test_a_bound_seat_is_refused_when_the_areas_are_held(client, key, proj, db):
     """D13 / risk 1. The divvy's collision check, made at mint time, naming the holder."""
     planner = _agent(client, key, "planner")
     holder = _agent(client, key, "holder")
-    first = _item(client, key, "held", touchpoints=["backend/app/services/x.py"])
+    first = _item(client, key, "held", touchpoints=["backend/alembic/versions/x.py"])
     got = fleet_svc.claim_cluster(db, agent_id=holder, project_id=proj)
     assert got["claimed"], got
-    second = _item(client, key, "colliding", touchpoints=["backend/app/services/x.py"])
+    second = _item(client, key, "colliding", touchpoints=["backend/alembic/versions/x.py"])
     e = _err(_delegate(client, key, second, planner))
     assert e["code"] == "conflict" and holder in e["message"]
     db.expire_all()
@@ -162,7 +162,7 @@ def test_a_bound_seat_is_refused_when_the_areas_are_held(client, key, proj, db):
 def test_registering_on_a_bound_seat_claims_links_and_reserves_in_one_request(client, key, proj, db):
     """4 / D3, D5. Sabotage: skip the reservation loop and the collision test below fails."""
     planner = _agent(client, key, "planner")
-    item = _item(client, key, touchpoints=["backend/app/services/x.py", "web/src/a.tsx"])
+    item = _item(client, key, touchpoints=["backend/alembic/versions/x.py", "web/src/a.tsx"])
     out = _ok(_delegate(client, key, item, planner))
     reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", 
         "label": "child", "enrolment_code": out["enrolment_code"],
@@ -172,13 +172,13 @@ def test_registering_on_a_bound_seat_claims_links_and_reserves_in_one_request(cl
     stored = _stored(db, item)
     assert stored.status == "in_progress" and stored.claimed_by == child
     areas = {r.area for r in db.scalars(select(AreaReservation).where(AreaReservation.agent_id == child)).all()}
-    assert areas == {"backend/app/services/x.py", "web/src/a.tsx"}
+    assert areas == {"backend/alembic/versions/x.py", "web/src/a.tsx"}
     d = db.get(Delegation, out["delegation_id"]); db.refresh(d)
     assert d.agent_id == child and d.linked_by == "seat" and dsvc.state(d) == "claimed"
     assert d.declared_model == "qwen3.6:35b"
     # A second child cannot claim a cluster that collides with the reserved areas.
     other = _agent(client, key, "other")
-    colliding = _item(client, key, "collides", touchpoints=["backend/app/services/x.py"])
+    colliding = _item(client, key, "collides", touchpoints=["backend/alembic/versions/x.py"])
     got = fleet_svc.claim_cluster(db, agent_id=other, project_id=proj)
     assert not got["claimed"] and child in got["reason"], got
 
