@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="_ds/design-system-83ade3bd-4186-4c71-9857-a0fe2bc1a395/_ds_bundle.js"></script>
+<style>html,body{margin:0;background:#0a0b0d;}*{box-sizing:border-box}button{font:inherit;cursor:pointer}:focus{outline:none}button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid #c6f24e;outline-offset:2px}a{color:#c6f24e;text-decoration:none}a:hover{color:#d8ff74}</style>
+</helmet>
+<div style="display:flex;flex-direction:column;gap:14px;padding:28px 0 48px;min-height:100vh;background:#060708;color:#e6e9ec;font-family:'IBM Plex Sans',system-ui,sans-serif;">
+
+  <div style="padding:0 32px;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">FRAME 1 · /home — DASHBOARD</div>
+  <div data-screen-label="Dashboard" style="flex:0 0 auto;width:1440px;height:900px;margin:0 32px;display:grid;grid-template-columns:216px minmax(0,1fr);border:1px solid #1e242a;border-radius:12px;overflow:hidden;background:#0a0b0d;">
+    <aside style="display:flex;flex-direction:column;padding:14px 10px;border-right:1px solid #1e242a;background:#0f1317;">
+      <div style="display:flex;align-items:center;gap:9px;height:38px;padding:0 10px;border:1px solid #1e242a;border-radius:8px;background:#12171b;"><span style="width:8px;height:8px;border-radius:50%;background:#c6f24e;"></span><span style="flex:1;font-size:13px;font-weight:600;">GraphBan</span></div>
+      <div style="margin-top:14px;padding:6px 10px;border-radius:8px;background:#1b2127;font-size:13px;font-weight:500;">Dashboard</div>
+      <sc-for list="{{ nav }}" as="g" hint-placeholder-count="3">
+        <div style="margin:14px 10px 4px;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">{{ g.label }}</div>
+        <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="5"><div style="padding:5px 10px;font-size:13px;color:#8b949e;">{{ it }}</div></sc-for>
+      </sc-for>
+      <div style="flex:1;"></div>
+      <div style="display:flex;flex-direction:column;gap:1px;padding-top:8px;border-top:1px solid #1e242a;">
+        <sc-for list="{{ pinned }}" as="it" hint-placeholder-count="4"><div style="padding:5px 10px;font-size:13px;color:#8b949e;">{{ it }}</div></sc-for>
+      </div>
+    </aside>
+    <div style="display:flex;flex-direction:column;min-width:0;">
+      <header style="display:flex;align-items:center;gap:10px;height:48px;padding:0 16px 0 24px;border-bottom:1px solid #1e242a;">
+        <span style="font-size:13px;font-weight:500;color:#dfe3e7;">Dashboard</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#e0b34a;border:1px solid rgba(224,179,74,.35);border-radius:6px;padding:2px 7px;">GRPH-P67 — NOT WIRED</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#c9b8ff;border:1px solid rgba(201,184,255,.35);border-radius:6px;padding:2px 7px;">SPECULATIVE — NOT BACKED</span>
+      </header>
+      <main style="flex:1;min-height:0;overflow:auto;padding:24px 32px;">
+        <div style="max-width:860px;display:flex;flex-direction:column;gap:16px;">
+
+          <sc-if value="{{ showCard }}" hint-placeholder-val="{{ true }}">
+            <section aria-labelledby="ss-title" style="display:flex;flex-direction:column;border:1px solid #2a333a;border-radius:12px;background:#12171b;">
+              <div style="display:flex;align-items:flex-start;gap:12px;padding:14px 16px 12px;">
+                <div style="flex:1;display:flex;flex-direction:column;gap:3px;">
+                  <span id="ss-title" style="font-size:14.5px;font-weight:600;">Setup status</span>
+                  <span style="font-size:12.5px;color:#8b949e;">Unproven steps stay here until they're proven.</span>
+                </div>
+                <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+                  <button onClick="{{ dismiss }}" aria-describedby="ss-dismiss-why" style="height:28px;padding:0 10px;border-radius:8px;border:1px solid #2a333a;background:transparent;color:#8b949e;font-size:12px;" style-hover="color:#e6e9ec;border-color:#626c75;">Dismiss</button>
+                  <span id="ss-dismiss-why" style="font-size:11px;color:#7f8891;">Hides this card. Settings → Machines keeps the list.</span>
+                </div>
+              </div>
+
+              <sc-if value="{{ proven }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;align-items:baseline;gap:9px;padding:12px 16px;border-top:1px solid #1e242a;font-size:13px;">
+                  <span style="color:#dfe3e7;font-weight:500;">{{ provenText }}</span>
+                  <span style="flex:1;"></span>
+                  <span style="font-size:12px;color:#8b949e;">{{ otherProblems }}</span>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ unproven }}" hint-placeholder-val="{{ true }}">
+                <div style="display:flex;flex-direction:column;border-top:1px solid #1e242a;">
+                  <div style="display:flex;align-items:baseline;gap:9px;padding:12px 16px 8px;font-size:13px;">
+                    <span style="font-family:'IBM Plex Mono',monospace;color:#8b949e;">◌</span>
+                    <span style="font-weight:500;">Agent connection unverified</span>
+                    <span style="font-size:12px;color:#8b949e;">No machine has a clean report yet.</span>
+                  </div>
+                  <sc-for list="{{ cardMachines }}" as="m" hint-placeholder-count="3">
+                    <div style="display:flex;flex-direction:column;gap:8px;margin:0 16px 0 34px;padding:10px 0;border-top:1px solid #1e242a;">
+                      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#e6e9ec;">{{ m.label }}</span>
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:{{ m.c }};">{{ m.glyph }}</span>
+                        <span style="font-size:12.5px;color:{{ m.c }};">{{ m.text }}</span>
+                      </div>
+                      <sc-if value="{{ m.hasFail }}" hint-placeholder-val="{{ false }}">
+                        <code style="padding:7px 10px;border-radius:8px;background:#0a0b0d;border:1px solid #1e242a;font-family:'IBM Plex Mono',monospace;font-size:11.5px;line-height:1.5;color:#dfe3e7;white-space:pre-wrap;"><span style="color:#ff6b6b;">FAIL</span>  {{ m.failLine }}</code>
+                      </sc-if>
+                      <sc-if value="{{ m.problem }}" hint-placeholder-val="{{ true }}">
+                        <div style="display:flex;flex-direction:column;gap:6px;">
+                          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">NEXT · RUN ON {{ m.labelUpper }}</span>
+                          <sc-for list="{{ m.cmds }}" as="c" hint-placeholder-count="1">
+                            <div style="display:flex;align-items:center;gap:8px;max-width:520px;height:34px;padding:0 5px 0 12px;border-radius:8px;border:1px solid #1e242a;background:#0f1317;">
+                              <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#7f8891;">$</span>
+                              <code style="flex:1;min-width:0;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#dfe3e7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ c.text }}</code>
+                              <button onClick="{{ c.copy }}" style="height:26px;padding:0 9px;border-radius:6px;border:1px solid #2a333a;background:#12171b;color:{{ c.copyC }};font-family:'IBM Plex Mono',monospace;font-size:10.5px;" style-hover="border-color:#626c75;">{{ c.copyLabel }}</button>
+                            </div>
+                          </sc-for>
+                        </div>
+                      </sc-if>
+                    </div>
+                  </sc-for>
+                  <div style="display:flex;align-items:center;gap:10px;padding:10px 16px 14px 34px;border-top:1px solid #1e242a;">
+                    <button style="height:30px;padding:0 12px;border-radius:8px;border:1px solid #626c75;background:#1b2127;color:#e6e9ec;font-size:12.5px;font-weight:500;" style-hover="border-color:#c6f24e;">Verify with a key instead</button>
+                    <span style="font-size:12px;color:#8b949e;">Opens the paste-a-key check.</span>
+                  </div>
+                </div>
+              </sc-if>
+            </section>
+          </sc-if>
+
+          <section style="display:flex;flex-direction:column;gap:10px;padding:14px 16px;border:1px solid #1e242a;border-radius:12px;">
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">FIRST JOB</span>
+            <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;">
+              <sc-for list="{{ counters }}" as="k" hint-placeholder-count="3">
+                <div style="display:flex;flex-direction:column;gap:3px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:22px;font-weight:500;">{{ k.n }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">{{ k.label }}</span><sc-if value="{{ k.hasSub }}" hint-placeholder-val="{{ false }}"><span style="font-size:11.5px;color:#8b949e;">{{ k.sub }}</span></sc-if></div>
+              </sc-for>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div style="padding:16px 32px 0;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">FRAME 2 · SETTINGS → MACHINES</div>
+  <div data-screen-label="Settings → Machines" style="flex:0 0 auto;width:1440px;height:640px;margin:0 32px;display:grid;grid-template-columns:216px minmax(0,1fr);border:1px solid #1e242a;border-radius:12px;overflow:hidden;background:#0a0b0d;">
+    <aside style="display:flex;flex-direction:column;padding:14px 10px;border-right:1px solid #1e242a;background:#0f1317;">
+      <div style="display:flex;align-items:center;gap:9px;height:38px;padding:0 10px;border:1px solid #1e242a;border-radius:8px;background:#12171b;"><span style="width:8px;height:8px;border-radius:50%;background:#c6f24e;"></span><span style="flex:1;font-size:13px;font-weight:600;">GraphBan</span></div>
+      <div style="margin-top:14px;padding:6px 10px;font-size:13px;font-weight:500;color:#8b949e;">Dashboard</div>
+      <div style="flex:1;"></div>
+      <div style="display:flex;flex-direction:column;gap:1px;padding-top:8px;border-top:1px solid #1e242a;">
+        <sc-for list="{{ pinnedS }}" as="it" hint-placeholder-count="4"><div style="padding:5px 10px;border-radius:8px;font-size:13px;background:{{ it.bg }};color:{{ it.c }};">{{ it.name }}</div></sc-for>
+      </div>
+    </aside>
+    <div style="display:flex;flex-direction:column;min-width:0;">
+      <header style="display:flex;align-items:center;gap:10px;height:48px;padding:0 16px 0 24px;border-bottom:1px solid #1e242a;">
+        <span style="font-size:13px;color:#8b949e;">Settings</span><span style="color:#7f8891;">/</span><span style="font-size:13px;font-weight:500;color:#dfe3e7;">Machines</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#e0b34a;border:1px solid rgba(224,179,74,.35);border-radius:6px;padding:2px 7px;">GRPH-P67 — NOT WIRED</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#c9b8ff;border:1px solid rgba(201,184,255,.35);border-radius:6px;padding:2px 7px;">SPECULATIVE — NOT BACKED</span>
+      </header>
+      <div style="flex:1;min-height:0;display:grid;grid-template-columns:180px minmax(0,1fr);">
+        <nav aria-label="Settings" style="display:flex;flex-direction:column;gap:2px;padding:20px 10px;border-right:1px solid #1e242a;">
+          <sc-for list="{{ settingsNav }}" as="s" hint-placeholder-count="5"><div style="padding:6px 10px;border-radius:8px;font-size:13px;background:{{ s.bg }};color:{{ s.c }};">{{ s.name }}</div></sc-for>
+        </nav>
+        <main style="min-width:0;overflow:auto;padding:24px 28px;display:flex;flex-direction:column;gap:14px;">
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <span style="font-size:20px;font-weight:600;">Machines</span>
+            <span style="font-size:12.5px;color:#8b949e;">A machine is its id in ~/.config/gban. Matching labels never merge.</span>
+          </div>
+          <div role="table" style="display:grid;grid-template-columns:minmax(150px,1.3fr) minmax(100px,.9fr) 92px 92px minmax(120px,1fr) 112px 150px 80px;border:1px solid #1e242a;border-radius:12px;overflow:hidden;font-size:12.5px;">
+            <sc-for list="{{ heads }}" as="h" hint-placeholder-count="8"><span role="columnheader" style="padding:9px 12px;background:#0f1317;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">{{ h }}</span></sc-for>
+            <sc-for list="{{ table }}" as="r" hint-placeholder-count="3">
+              <span role="cell" style="padding:7px 8px;border-top:1px solid #1e242a;display:flex;align-items:center;"><input aria-label="Machine label" value="{{ r.label }}" onInput="{{ r.setLabel }}" spellcheck="false" style="width:100%;height:30px;padding:0 8px;border-radius:8px;border:1px solid #2a333a;background:#0f1317;color:#e6e9ec;font-family:'IBM Plex Mono',monospace;font-size:12px;" style-hover="border-color:#626c75;"></span>
+              <span role="cell" style="padding:12px;border-top:1px solid #1e242a;color:{{ r.osC }};">{{ r.os }}</span>
+              <span role="cell" style="padding:12px;border-top:1px solid #1e242a;font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:{{ r.gbC }};">{{ r.gban }}</span>
+              <span role="cell" style="padding:12px;border-top:1px solid #1e242a;font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:{{ r.gfC }};">{{ r.gbfleet }}</span>
+              <span role="cell" style="padding:12px;border-top:1px solid #1e242a;color:{{ r.hC }};">{{ r.harnesses }}</span>
+              <span role="cell" style="padding:12px;border-top:1px solid #1e242a;font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:{{ r.lastC }};">{{ r.last }}</span>
+              <span role="cell" style="padding:12px;border-top:1px solid #1e242a;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <span style="display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.6px;color:{{ r.pillC }};"><span>{{ r.pillGlyph }}</span>{{ r.pill }}</span>
+              </span>
+              <span role="cell" style="padding:7px 10px;border-top:1px solid #1e242a;display:flex;align-items:center;justify-content:flex-end;"><button onClick="{{ r.remove }}" style="height:28px;padding:0 10px;border-radius:8px;border:1px solid #2a333a;background:transparent;color:#8b949e;font-size:12px;" style-hover="color:#ff6b6b;border-color:rgba(255,107,107,.5);">Remove</button></span>
+            </sc-for>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>
+
+  <div style="padding:16px 32px 0;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">INSET · TERMINAL ON build-box</div>
+  <div data-screen-label="Terminal echo" style="flex:0 0 auto;width:720px;margin:0 32px;padding:14px 16px;border:1px solid #1e242a;border-radius:12px;background:#0a0b0d;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.7;color:#dfe3e7;">
+    <div><span style="color:#7f8891;">$</span> gban setup</div>
+    <div style="color:#7f8891;">…</div>
+    <div><span style="display:inline-block;width:72px;color:#8b949e;">UNKNOWN</span><span style="display:inline-block;width:64px;color:#8b949e;">report</span>could not report to http://ubuntu-srv:8080: connection refused</div>
+  </div>
+  <div style="padding:0 32px;font-size:12.5px;color:#8b949e;">The card keeps build-box at ○ never reported. A failed report is not a report.</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1504,&quot;height&quot;:900},&quot;alexState&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;never_reported&quot;,&quot;reported&quot;,&quot;clean&quot;],&quot;default&quot;:&quot;never_reported&quot;,&quot;tsType&quot;:&quot;'never_reported' | 'reported' | 'clean'&quot;,&quot;section&quot;:&quot;Machines&quot;},&quot;ubuntu&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;fail&quot;,&quot;report_failed&quot;],&quot;default&quot;:&quot;fail&quot;,&quot;tsType&quot;:&quot;'fail' | 'report_failed'&quot;,&quot;section&quot;:&quot;Machines&quot;},&quot;whereAnswer&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;this_computer&quot;,&quot;dedicated_server&quot;],&quot;default&quot;:&quot;this_computer&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;dismissed&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  state = { dismissed: null, removed: {}, labels: {}, copied: null };
+  copy(k, t) { try { navigator.clipboard && navigator.clipboard.writeText(t); } catch (e) {} clearTimeout(this._t); this.setState({ copied: k }); this._t = setTimeout(() => this.setState({ copied: null }), 1500); }
+  componentWillUnmount() { clearTimeout(this._t); }
+  componentDidUpdate(pp) { if (pp.dismissed !== this.props.dismissed && this.state.dismissed !== null) this.setState({ dismissed: null }); }
+  renderVals() {
+    const S = this.state, P = this.props;
+    const alexState = P.alexState ?? (P.alexPass ? "reported" : "never_reported"), alexPass = alexState !== "never_reported", alexClean = alexState === "clean", ubuntuFailed = (P.ubuntu ?? "fail") === "report_failed";
+    const server = (P.whereAnswer ?? "this_computer") === "dedicated_server";
+    const dismissed = S.dismissed ?? !!P.dismissed;
+    const cp = (k, text) => ({ text, copyLabel: S.copied === k ? "Copied" : "Copy", copyC: S.copied === k ? "#c6f24e" : "#dfe3e7", copy: () => this.copy(k, text) });
+    const M = [
+      alexClean ? { id: "alex-mbp", os: "macOS 26.1", gban: "2026.11.2", gbfleet: "2026.11.2", harnesses: "Claude Code, Grok", state: "reported", last: "13:42" }
+      : { id: "alex-mbp", os: "macOS 26.1", gban: "2026.11.2", gbfleet: "2026.11.2", harnesses: "Claude Code, Grok",
+        state: alexPass ? "reported" : "never_reported", last: alexPass ? "14:02" : null },
+      { id: "ubuntu-srv", os: "Ubuntu 24.04", gban: "2026.11.1", gbfleet: null, harnesses: null,
+        state: ubuntuFailed ? "report_failed" : "reported_fail", last: "13:40" },
+      { id: "build-box", os: null, gban: null, gbfleet: null, harnesses: null, state: "never_reported", last: null },
+    ].filter((m) => !S.removed[m.id]).map((m) => m.state === "never_reported" ? { ...m, os: null, gban: null, gbfleet: null, harnesses: null } : m);
+    const label = (m) => S.labels[m.id] ?? m.id;
+    const cmds = (id) => { const c = [cp("doc-" + id, "gban doctor")]; if (server) c.push(cp("curl-" + id, "curl -s http://ubuntu-srv:8080/health")); return c; };
+    const row = (m) => {
+      const L = label(m), base = { label: L, labelUpper: L.toUpperCase(), hasFail: false, failLine: "", problem: true, cmds: cmds(m.id) };
+      if (m.state === "reported") return { ...base, glyph: "✓", c: "#5fd07a", text: alexClean && m.id === "alex-mbp" ? "reported clean · 13:42" : "reported 14:02 · all PASS (7 lines)", problem: false, cmds: [] };
+      if (m.state === "reported_fail") return { ...base, glyph: "✕", c: "#ff6b6b", text: "reported with failures · 13:40 · 1 FAIL", hasFail: true, failLine: "config grok — could not write ~/.grok/config.toml: permission denied" };
+      if (m.state === "report_failed") return { ...base, glyph: "!", c: "#e0b34a", text: "report failed: could not report to http://ubuntu-srv:8080: connection refused" };
+      return { ...base, glyph: "◌", c: "#8b949e", text: "never reported" };
+    };
+    const probs = M.filter((m) => m.state !== "reported").length;
+    const dash = "—";
+    const pill = (m) => ({ reported: ["✓", "CLEAN", "#5fd07a"], reported_fail: ["×", "REPORTED · 1 FAIL", "#ff6b6b"], report_failed: ["×", "FAILED", "#ff6b6b"], never_reported: ["○", "NEVER REPORTED", "#8b949e"] }[m.state]);
+    return {
+      nav: [
+        { label: "PLAN", items: ["Tracker", "Triage", "Requests", "Specs", "Roadmap"] },
+        { label: "BUILD", items: ["Code graph", "Stack", "Links", "Fleet.v2", "Fleet.v1", "Outposts"] },
+        { label: "OBSERVE", items: ["Activity", "Live", "Memory", "Memory triage", "Lessons", "Harness"] },
+      ],
+      pinned: ["Organization", "Usage", "Feedback Kit", "Settings"],
+      pinnedS: ["Organization", "Usage", "Feedback Kit", "Settings"].map((name) => ({ name, bg: name === "Settings" ? "#1b2127" : "transparent", c: name === "Settings" ? "#e6e9ec" : "#8b949e" })),
+      settingsNav: ["Project", "AI providers", "API keys", "Cloud / Sync", "Machines"].map((name) => ({ name, bg: name === "Machines" ? "#1b2127" : "transparent", c: name === "Machines" ? "#e6e9ec" : "#8b949e" })),
+      provenText: alexClean ? "✓ Agent connection verified — alex-mbp reported clean" : "Agent connection ✓ via alex-mbp",
+      showCard: !dismissed, dismiss: () => this.setState({ dismissed: true }),
+      proven: alexPass && !S.removed["alex-mbp"], unproven: !(alexPass && !S.removed["alex-mbp"]),
+      otherProblems: probs ? `${probs} other machine${probs > 1 ? "s" : ""} need attention — see Settings → Machines.` : "",
+      cardMachines: M.map(row),
+      counters: [["412", "CODE NODES", ""], ["18", "MEMORIES", "candidates — you publish them"], ["9", "ITEMS", ""]].map(([n, label, sub]) => ({ n, label, sub, hasSub: !!sub })),
+      heads: ["LABEL", "OS", "GBAN", "GBFLEET", "HARNESSES", "LAST REPORT", "STATE", ""],
+      table: M.map((m) => {
+        const [pg, p, pc] = pill(m);
+        const lastSeen = m.state === "report_failed";
+        return {
+          label: label(m), setLabel: (e) => { const v = e.target.value; this.setState((s) => ({ labels: { ...s.labels, [m.id]: v } })); },
+          os: m.os || dash, osC: m.os ? "#dfe3e7" : "#7f8891",
+          gban: m.gban || dash, gbC: m.gban ? "#dfe3e7" : "#7f8891",
+          gbfleet: m.gbfleet || dash, gfC: m.gbfleet ? "#dfe3e7" : "#7f8891",
+          harnesses: m.harnesses || dash, hC: m.harnesses ? "#dfe3e7" : "#7f8891",
+          last: lastSeen ? "LAST SEEN 5 Nov 13:40" : (m.last ? "5 Nov " + m.last : dash), lastC: lastSeen || !m.last ? "#7f8891" : "#dfe3e7",
+          pill: p, pillGlyph: pg, pillC: pc,
+          remove: () => this.setState((s) => ({ removed: { ...s.removed, [m.id]: true } })),
+        };
+      }),
+    };
+  }
+}
+</script>
+</body>
+</html>

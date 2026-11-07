@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="_ds/design-system-83ade3bd-4186-4c71-9857-a0fe2bc1a395/_ds_bundle.js"></script>
+<style>html,body{margin:0;background:#0a0b0d;}*{box-sizing:border-box}button{font:inherit;cursor:pointer}:focus{outline:none}:focus-visible{outline:2px solid #c6f24e;outline-offset:2px}input::placeholder{color:#7f8891}a{color:#c6f24e;text-decoration:none}a:hover{color:#d8ff74}</style>
+</helmet>
+<div style="position:relative;display:grid;grid-template-columns:216px minmax(0,1fr);height:100vh;min-height:720px;background:#0a0b0d;color:#e6e9ec;font-family:'IBM Plex Sans',system-ui,sans-serif;overflow:hidden;">
+
+  <aside aria-hidden="{{ appHidden }}" style="display:flex;flex-direction:column;padding:14px 10px;border-right:1px solid #1e242a;background:#0f1317;min-height:0;overflow:hidden;">
+    <div style="display:flex;align-items:center;gap:9px;height:38px;padding:0 10px;border:1px solid #1e242a;border-radius:8px;background:#12171b;">
+      <span style="width:8px;height:8px;border-radius:50%;background:#c6f24e;"></span>
+      <span style="flex:1;font-size:13px;font-weight:600;">GraphBan</span>
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#7f8891" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6l3-3 3 3M5 10l3 3 3-3"></path></svg>
+    </div>
+    <div style="margin-top:14px;padding:6px 10px;border-radius:8px;background:#1b2127;font-size:13px;font-weight:500;color:#e6e9ec;">Dashboard</div>
+    <div style="flex:1;min-height:0;overflow-y:auto;padding-bottom:12px;">
+    <sc-for list="{{ nav }}" as="g" hint-placeholder-count="3">
+      <div style="margin:14px 10px 4px;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">{{ g.label }}</div>
+      <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="5">
+        <div style="padding:5px 10px;border-radius:8px;font-size:13px;color:#8b949e;">{{ it }}</div>
+      </sc-for>
+    </sc-for>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:1px;padding-top:8px;border-top:1px solid #1e242a;">
+      <sc-for list="{{ pinned }}" as="it" hint-placeholder-count="4">
+        <div style="padding:5px 10px;border-radius:8px;font-size:13px;color:#8b949e;">{{ it }}</div>
+      </sc-for>
+    </div>
+  </aside>
+
+  <div aria-hidden="{{ appHidden }}" style="display:flex;flex-direction:column;min-width:0;min-height:0;">
+    <header style="display:flex;align-items:center;gap:12px;height:48px;padding:0 16px 0 24px;border-bottom:1px solid #1e242a;">
+      <span style="font-size:13px;color:#dfe3e7;font-weight:500;">Dashboard</span>
+      <span style="flex:1;"></span>
+      <sc-if value="{{ showChip }}" hint-placeholder-val="{{ true }}">
+        <button onClick="{{ reopen }}" style="display:flex;align-items:center;gap:7px;height:28px;padding:0 11px;border-radius:8px;border:1px solid #626c75;background:#12171b;color:#c6f24e;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.4px;" style-hover="border-color:#c6f24e;color:#d8ff74;">Finish setup {{ chipCount }}</button>
+      </sc-if>
+      <button aria-label="Toggle agent sidebar" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid #2a333a;background:transparent;color:#8b949e;" style-hover="color:#e6e9ec;border-color:#626c75;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><path d="M15 3v18"></path></svg>
+      </button>
+    </header>
+    <main style="flex:1;min-height:0;padding:28px 32px;">
+      <div style="font-size:20px;font-weight:600;">Dashboard</div>
+      <div style="margin-top:20px;max-width:880px;height:220px;display:flex;align-items:center;justify-content:center;border:1px dashed #2a333a;border-radius:12px;font-size:13px;color:#7f8891;">Empty until setup finishes.</div>
+    </main>
+  </div>
+
+  <sc-if value="{{ open }}" hint-placeholder-val="{{ true }}">
+    <div style="position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;padding:32px;background:rgba(10,11,13,.6);">
+      <div ref="{{ dlgRef }}" role="dialog" aria-modal="true" aria-labelledby="qs-title" tabindex="-1" style="outline:none;width:560px;max-width:100%;max-height:100%;display:flex;flex-direction:column;border:1px solid #2a333a;border-radius:16px;background:#12171b;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 12px 32px rgba(0,0,0,.45),0 32px 80px rgba(0,0,0,.4);">
+
+        <div style="display:flex;align-items:center;gap:8px;padding:14px 14px 0 24px;">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">QUICK START</span>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#e0b34a;border:1px solid rgba(224,179,74,.35);border-radius:6px;padding:2px 7px;">GRPH-P67 — NOT WIRED</span>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#c9b8ff;border:1px solid rgba(201,184,255,.35);border-radius:6px;padding:2px 7px;">{{ tier }}</span>
+          <span style="flex:1;"></span>
+          <button onClick="{{ finishLater }}" aria-label="Close — same as Finish later" style="width:30px;height:30px;display:flex;align-items:center;justify-content:center;border:0;border-radius:8px;background:transparent;color:#8b949e;" style-hover="background:#1b2127;color:#e6e9ec;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+          </button>
+        </div>
+
+        <ol aria-label="Setup steps" style="list-style:none;margin:12px 0 0;padding:0 24px 14px;display:flex;gap:6px;border-bottom:1px solid #1e242a;">
+          <sc-for list="{{ rail }}" as="r" hint-placeholder-count="5">
+            <li aria-current="{{ r.current }}" title="{{ r.title }}" style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;padding-top:8px;border-top:2px solid {{ r.bar }};">
+              <span style="display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:{{ r.numC }};"><span>{{ r.num }}</span><span style="color:{{ r.glyphC }};">{{ r.glyph }}</span><span style="color:{{ r.glyphC }};">{{ r.statusLabel }}</span></span>
+              <span style="font-size:12px;line-height:1.3;color:{{ r.labelC }};font-weight:{{ r.weight }};text-wrap:pretty;">{{ r.label }}</span>
+            </li>
+          </sc-for>
+        </ol>
+
+        <div style="flex:1;min-height:0;overflow-y:auto;padding:22px 24px 18px;display:flex;flex-direction:column;gap:16px;">
+          <sc-if value="{{ hasUnknown }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;flex-direction:column;gap:4px;margin-top:-8px;">
+              <sc-for list="{{ unknownRows }}" as="u" hint-placeholder-count="1">
+                <div style="display:flex;gap:8px;font-size:12px;color:#8b949e;"><span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#7f8891;">{{ u.num }} ? UNKNOWN</span><span>{{ u.reason }}</span></div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ isModel }}" hint-placeholder-val="{{ false }}">
+            <sc-if value="{{ isOwner }}" hint-placeholder-val="{{ true }}">
+              <h2 id="qs-title" style="margin:0;font-size:18px;font-weight:600;letter-spacing:-.1px;">Pick a model</h2>
+              <div role="radiogroup" aria-labelledby="qs-title" onKeyDown="{{ modelKey }}" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;">
+                <sc-for list="{{ modelCards }}" as="m" hint-placeholder-count="3">
+                  <div role="radio" aria-checked="{{ m.checked }}" tabindex="{{ m.tab }}" data-m="{{ m.id }}" onClick="{{ pickModel }}" onKeyDown="{{ modelSpace }}" style="display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;border:1px solid {{ m.border }};background:{{ m.bg }};cursor:pointer;">
+                    <span style="display:flex;align-items:center;gap:8px;">
+                      <span style="flex:0 0 auto;width:16px;height:16px;border-radius:50%;border:1.5px solid {{ m.ring }};display:flex;align-items:center;justify-content:center;"><span style="width:8px;height:8px;border-radius:50%;background:#c6f24e;opacity:{{ m.dot }};"></span></span>
+                      <span style="font-size:14px;font-weight:600;">{{ m.title }}</span>
+                    </span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#7f8891;">{{ m.sub }}</span>
+                    <span style="font-size:12px;line-height:1.4;color:#8b949e;text-wrap:pretty;">{{ m.desc }}</span>
+                  </div>
+                </sc-for>
+              </div>
+
+              <sc-if value="{{ isOllama }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;flex-direction:column;gap:7px;">
+                  <label for="qs-ollama" style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">OLLAMA URL</label>
+                  <div style="display:flex;gap:8px;">
+                    <input id="qs-ollama" value="{{ ollamaUrl }}" onInput="{{ setOllama }}" spellcheck="false" style="flex:1;min-width:0;height:36px;padding:0 11px;border-radius:8px;border:1px solid #626c75;background:#0f1317;color:#e6e9ec;font-family:'IBM Plex Mono',monospace;font-size:12.5px;">
+                    <button onClick="{{ doProbe }}" style="flex:0 0 auto;height:36px;padding:0 14px;border-radius:8px;border:1px solid #626c75;background:#1b2127;color:#e6e9ec;font-size:13px;font-weight:500;" style-hover="border-color:#c6f24e;">Probe</button>
+                  </div>
+                  <div style="display:flex;align-items:baseline;gap:7px;font-size:12.5px;"><span style="font-family:'IBM Plex Mono',monospace;color:{{ probe.c }};">{{ probe.glyph }}</span><span style="color:{{ probe.tc }};">{{ probe.text }}</span></div>
+                  <sc-if value="{{ probeFound }}" hint-placeholder-val="{{ false }}">
+                    <div style="display:flex;flex-wrap:wrap;gap:6px;">
+                      <sc-for list="{{ models }}" as="mm" hint-placeholder-count="4">
+                        <span style="height:24px;display:flex;align-items:center;padding:0 8px;border-radius:6px;border:1px solid #2a333a;background:#0f1317;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#dfe3e7;">{{ mm }}</span>
+                      </sc-for>
+                    </div>
+                  </sc-if>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ isClaude }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;flex-direction:column;gap:7px;">
+                  <label for="qs-key" style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">ANTHROPIC API KEY</label>
+                  <div style="display:flex;gap:8px;">
+                    <input id="qs-key" type="password" value="{{ claudeKey }}" onInput="{{ setKey }}" placeholder="sk-ant-…" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;height:36px;padding:0 11px;border-radius:8px;border:1px solid #626c75;background:#0f1317;color:#e6e9ec;font-family:'IBM Plex Mono',monospace;font-size:12.5px;">
+                    <button onClick="{{ doTest }}" disabled="{{ testDisabled }}" style="flex:0 0 auto;height:36px;padding:0 14px;border-radius:8px;border:1px solid #626c75;background:#1b2127;color:{{ testC }};font-size:13px;font-weight:500;" style-hover="border-color:#c6f24e;">Test call</button>
+                  </div>
+                  <sc-if value="{{ keyWarn }}" hint-placeholder-val="{{ true }}">
+                    <div role="note" style="display:flex;gap:8px;align-items:flex-start;padding:8px 11px;border-radius:8px;border:1px solid rgba(224,179,74,.35);background:rgba(224,179,74,.06);font-size:12.5px;line-height:1.45;color:#e0b34a;">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto;margin-top:2px;"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>
+                      <span>This box stores provider keys unencrypted. Set SECRET_ENCRYPTION_KEY first.</span>
+                    </div>
+                  </sc-if>
+                  <div style="display:flex;align-items:baseline;gap:7px;font-size:12.5px;"><span style="font-family:'IBM Plex Mono',monospace;color:{{ test.c }};">{{ test.glyph }}</span><span style="color:{{ test.tc }};">{{ test.text }}</span></div>
+                </div>
+              </sc-if>
+            </sc-if>
+            <sc-if value="{{ isInvitee }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;gap:12px;align-items:flex-start;">
+                <span style="flex:0 0 auto;margin-top:3px;font-family:'IBM Plex Mono',monospace;font-size:14px;color:#5fd07a;">✓</span>
+                <div style="display:flex;flex-direction:column;gap:6px;min-width:0;">
+                  <h2 id="qs-title" style="margin:0;font-size:18px;font-weight:600;letter-spacing:-.1px;">This project uses Cloud · Claude, set by Alex</h2>
+                  <sc-if value="{{ canEditProviders }}" hint-placeholder-val="{{ false }}">
+                    <a href="#" style="font-size:12.5px;">Change in Settings → AI providers</a>
+                  </sc-if>
+                </div>
+              </div>
+            </sc-if>
+          </sc-if>
+
+          <sc-if value="{{ isWhere }}" hint-placeholder-val="{{ true }}">
+            <h2 id="qs-title" style="margin:0;font-size:18px;font-weight:600;letter-spacing:-.1px;">Where is Graphban running?</h2>
+            <div role="radiogroup" aria-labelledby="qs-title" onKeyDown="{{ radioKey }}" style="display:flex;flex-direction:column;gap:8px;">
+              <div role="radio" aria-checked="{{ w1.checked }}" tabindex="{{ w1.tab }}" data-v="this_computer" onClick="{{ pickWhere }}" onKeyDown="{{ radioSpace }}" style="display:flex;gap:12px;padding:12px 14px;border-radius:12px;border:1px solid {{ w1.border }};background:{{ w1.bg }};cursor:pointer;">
+                <span style="flex:0 0 auto;margin-top:2px;width:16px;height:16px;border-radius:50%;border:1.5px solid {{ w1.ring }};display:flex;align-items:center;justify-content:center;"><span style="width:8px;height:8px;border-radius:50%;background:#c6f24e;opacity:{{ w1.dot }};"></span></span>
+                <span style="display:flex;flex-direction:column;gap:3px;min-width:0;">
+                  <span style="font-size:14px;font-weight:600;">On this computer</span>
+                  <span style="font-size:12.5px;color:#8b949e;">the one I code on</span>
+                  <sc-if value="{{ w1.pre }}" hint-placeholder-val="{{ false }}"><span style="margin-top:3px;font-size:12px;color:#7f8891;">Pre-selected: you opened Graphban on localhost.</span></sc-if>
+                </span>
+              </div>
+              <div role="radio" aria-checked="{{ w2.checked }}" tabindex="{{ w2.tab }}" data-v="dedicated_server" onClick="{{ pickWhere }}" onKeyDown="{{ radioSpace }}" style="display:flex;gap:12px;padding:12px 14px;border-radius:12px;border:1px solid {{ w2.border }};background:{{ w2.bg }};cursor:pointer;">
+                <span style="flex:0 0 auto;margin-top:2px;width:16px;height:16px;border-radius:50%;border:1.5px solid {{ w2.ring }};display:flex;align-items:center;justify-content:center;"><span style="width:8px;height:8px;border-radius:50%;background:#c6f24e;opacity:{{ w2.dot }};"></span></span>
+                <span style="display:flex;flex-direction:column;gap:3px;min-width:0;">
+                  <span style="font-size:14px;font-weight:600;">On a dedicated server</span>
+                  <span style="font-size:12.5px;color:#8b949e;">I code on other machines</span>
+                  <sc-if value="{{ w2.pre }}" hint-placeholder-val="{{ false }}"><span style="margin-top:3px;font-size:12px;color:#7f8891;">Pre-selected: you opened Graphban at ubuntu-srv:8080.</span></sc-if>
+                </span>
+              </div>
+            </div>
+            <sc-if value="{{ isServer }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;flex-direction:column;gap:7px;margin:-4px 0 0 42px;">
+                <label for="qs-addr" style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">SERVER ADDRESS</label>
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><input id="qs-addr" value="{{ addr }}" onInput="{{ setAddr }}" placeholder="http://host:8080" spellcheck="false" style="flex:1 1 220px;min-width:0;height:36px;padding:0 11px;border-radius:8px;border:1px solid #626c75;background:#0f1317;color:#e6e9ec;font-family:'IBM Plex Mono',monospace;font-size:12.5px;">
+                <div style="flex:0 1 auto;display:flex;align-items:baseline;gap:7px;font-size:12.5px;"><span style="font-family:'IBM Plex Mono',monospace;color:{{ reach.c }};">{{ reach.glyph }}</span><span style="color:{{ reach.tc }};">{{ reach.text }}</span></div></div>
+                <div style="font-size:12px;line-height:1.45;color:#8b949e;text-wrap:pretty;">That proves the browser can reach it, not your dev machine. Step ③ gives you a curl to run there.</div>
+              </div>
+            </sc-if>
+            <div style="font-size:12.5px;color:#8b949e;">Your answer sets the commands and checks in later steps. You can change it any time.</div>
+          </sc-if>
+
+          <sc-if value="{{ isProject }}" hint-placeholder-val="{{ false }}">
+            <sc-if value="{{ isOwner }}" hint-placeholder-val="{{ true }}">
+              <h2 id="qs-title" style="margin:0;font-size:18px;font-weight:600;letter-spacing:-.1px;">Create your project</h2>
+              <div style="display:flex;flex-direction:column;gap:7px;">
+                <label for="qs-name" style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">PROJECT NAME</label>
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <input id="qs-name" value="{{ name }}" onInput="{{ setName }}" style="flex:1;min-width:0;height:36px;padding:0 11px;border-radius:8px;border:1px solid #626c75;background:#0f1317;color:#e6e9ec;font-size:13.5px;">
+                  <span title="Derived tag" style="flex:0 0 auto;height:26px;display:flex;align-items:center;padding:0 9px;border-radius:6px;border:1px solid {{ accentB }};color:{{ accent }};font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;letter-spacing:.6px;">{{ tag }}</span>
+                </div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:7px;">
+                <label for="qs-repo" style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">REPOSITORY <span style="color:#7f8891;letter-spacing:.3px;">· OPTIONAL</span></label>
+                <input id="qs-repo" value="{{ repo }}" onInput="{{ setRepo }}" spellcheck="false" style="height:36px;padding:0 11px;border-radius:8px;border:1px solid #626c75;background:#0f1317;color:#e6e9ec;font-family:'IBM Plex Mono',monospace;font-size:12.5px;">
+                <div style="font-size:12px;color:#8b949e;">Lets gban setup find this project from the repo.</div>
+              </div>
+            </sc-if>
+            <sc-if value="{{ isInvitee }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;gap:12px;align-items:flex-start;">
+                <span style="flex:0 0 auto;margin-top:3px;font-family:'IBM Plex Mono',monospace;font-size:14px;color:#5fd07a;">✓</span>
+                <div style="display:flex;flex-direction:column;gap:5px;min-width:0;">
+                  <h2 id="qs-title" style="margin:0;font-size:18px;font-weight:600;letter-spacing:-.1px;">You joined Core Platform</h2>
+                  <div style="display:flex;flex-wrap:wrap;gap:6px 12px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8b949e;"><span>org acme</span><span>CORE</span><span>https://cloud.agentldgr.dev</span></div>
+                </div>
+              </div>
+            </sc-if>
+
+            <div style="display:flex;flex-direction:column;gap:8px;padding:12px 14px;border:1px solid #2a333a;border-radius:12px;background:#0f1317;">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#c6f24e;">YOUR STEP</span>
+              <div style="display:flex;gap:11px;align-items:flex-start;">
+                <button role="checkbox" aria-checked="{{ confirmedStr }}" aria-labelledby="qs-confirm" onClick="{{ toggleConfirm }}" style="flex:0 0 auto;margin-top:1px;width:18px;height:18px;padding:0;display:flex;align-items:center;justify-content:center;border-radius:5px;border:1.5px solid {{ cbBorder }};background:{{ cbBg }};">
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="#0a0b0d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="opacity:{{ cbTick }};"><path d="M3.5 8.5l3 3 6-7"></path></svg>
+                </button>
+                <span style="display:flex;flex-direction:column;gap:3px;">
+                  <span id="qs-confirm" onClick="{{ toggleConfirm }}" style="font-size:13.5px;font-weight:500;cursor:pointer;">This is the workspace I want agents writing to</span>
+                  <span style="font-size:12px;color:#8b949e;">Writing into the wrong project pollutes another one.</span>
+                </span>
+              </div>
+            </div>
+
+            <sc-if value="{{ showPosture }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;flex-direction:column;border:1px solid rgba(224,179,74,.3);border-radius:12px;background:rgba(224,179,74,.05);">
+                <button onClick="{{ togglePosture }}" aria-expanded="{{ postureExpStr }}" style="display:flex;align-items:center;gap:9px;padding:10px 14px;border:0;background:transparent;color:#e0b34a;text-align:left;font-size:12.5px;">
+                  <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto;transform:{{ postureChev }};"><path d="M6 3l5 5-5 5"></path></svg>
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;">IS THIS BOX SAFE TO EXPOSE?</span>
+                  <span style="flex:1;color:#e0b34a;">{{ postureLine }}</span>
+                </button>
+                <sc-if value="{{ postureExp }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-direction:column;gap:12px;padding:2px 14px 14px;">
+                    <sc-for list="{{ postureRows }}" as="p" hint-placeholder-count="4">
+                      <div style="display:flex;flex-direction:column;gap:6px;">
+                        <div style="font-size:12.5px;line-height:1.45;color:#dfe3e7;text-wrap:pretty;"><span style="font-weight:600;color:#e0b34a;">{{ p.lead }}</span> — {{ p.why }}</div>
+                        <div style="display:flex;align-items:center;gap:8px;padding:0 4px 0 11px;height:34px;border-radius:8px;border:1px solid #1e242a;background:#0f1317;">
+                          <code style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#dfe3e7;">{{ p.env }}</code>
+                          <button onClick="{{ p.copy }}" style="height:26px;padding:0 9px;border-radius:6px;border:1px solid #2a333a;background:#12171b;color:{{ p.copyC }};font-family:'IBM Plex Mono',monospace;font-size:10.5px;" style-hover="border-color:#626c75;">{{ p.copyLabel }}</button>
+                        </div>
+                      </div>
+                    </sc-for>
+                    <div style="font-size:12px;color:#8b949e;">Warnings only. Next stays enabled.</div>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-if>
+          </sc-if>
+
+          <sc-if value="{{ isConnect }}" hint-placeholder-val="{{ false }}">
+            <h2 id="qs-title" style="margin:0;font-size:18px;font-weight:600;letter-spacing:-.1px;">Connect your agent</h2>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <label for="qs-agent" style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">AGENT</label>
+              <select id="qs-agent" value="{{ agent }}" onChange="{{ setAgent }}" style="height:34px;min-width:200px;padding:0 10px;border-radius:8px;border:1px solid #626c75;background:#0f1317;color:#e6e9ec;font-family:'IBM Plex Sans',sans-serif;font-size:13px;">
+                <sc-for list="{{ agents }}" as="ag" hint-placeholder-count="7"><option value="{{ ag }}">{{ ag }}</option></sc-for>
+              </select>
+            </div>
+
+            <div role="radiogroup" aria-label="Route" onKeyDown="{{ routeKey }}" style="display:flex;flex-direction:column;gap:8px;">
+              <sc-for list="{{ routeCards }}" as="rc" hint-placeholder-count="2">
+                <div role="radio" aria-checked="{{ rc.checked }}" aria-disabled="{{ rc.disabledStr }}" tabindex="{{ rc.tab }}" data-r="{{ rc.id }}" onClick="{{ pickRoute }}" onKeyDown="{{ routeSpace }}" style="display:flex;gap:12px;padding:11px 14px;border-radius:12px;border:1px solid {{ rc.border }};background:{{ rc.bg }};cursor:{{ rc.cursor }};opacity:{{ rc.op }};">
+                  <span style="flex:0 0 auto;margin-top:2px;width:16px;height:16px;border-radius:50%;border:1.5px solid {{ rc.ring }};display:flex;align-items:center;justify-content:center;"><span style="width:8px;height:8px;border-radius:50%;background:#c6f24e;opacity:{{ rc.dot }};"></span></span>
+                  <span style="display:flex;flex-direction:column;gap:3px;min-width:0;">
+                    <span style="font-size:14px;font-weight:600;">{{ rc.title }}</span>
+                    <span style="font-size:12.5px;color:#8b949e;">{{ rc.sub }}</span>
+                    <sc-if value="{{ rc.hasReason }}" hint-placeholder-val="{{ false }}"><span style="margin-top:2px;font-size:12px;color:#8b949e;">{{ rc.reason }}</span></sc-if>
+                  </span>
+                </div>
+              </sc-for>
+            </div>
+
+            <sc-if value="{{ isCli }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex;flex-direction:column;gap:12px;">
+                <sc-for list="{{ cliA }}" as="c" hint-placeholder-count="2">
+                  <div style="display:flex;flex-direction:column;gap:6px;">
+                    <sc-if value="{{ c.hasLabel }}" hint-placeholder-val="{{ false }}"><div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:{{ c.labelC }};">{{ c.label }}</span><span style="font-size:12px;color:#8b949e;">{{ c.reason }}</span></div></sc-if>
+                    <div style="display:flex;align-items:flex-start;gap:8px;padding:7px 5px 7px 12px;border-radius:8px;border:1px solid #1e242a;background:#0f1317;">
+                      <span style="padding-top:3px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#7f8891;">$</span>
+                      <code style="flex:1;min-width:0;padding-top:3px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.5;color:#dfe3e7;white-space:pre-wrap;word-break:break-all;">{{ c.text }}</code>
+                      <button onClick="{{ c.copy }}" style="flex:0 0 auto;height:26px;padding:0 9px;border-radius:6px;border:1px solid #2a333a;background:#12171b;color:{{ c.copyC }};font-family:'IBM Plex Mono',monospace;font-size:10.5px;" style-hover="border-color:#626c75;">{{ c.copyLabel }}</button>
+                    </div>
+                  </div>
+                </sc-for>
+                <div style="display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-radius:8px;border:1px solid #1e242a;">
+                  <div style="font-size:12.5px;line-height:1.45;color:#8b949e;text-wrap:pretty;">No password prompt? <code style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#dfe3e7;">gban login --pair</code> prints a code you approve here.</div>
+                  <div style="display:flex;gap:8px;">
+                    <input aria-label="Pair code" value="{{ pairCode }}" onInput="{{ setPair }}" spellcheck="false" style="width:150px;height:32px;padding:0 10px;border-radius:8px;border:1px solid #626c75;background:#0f1317;color:#e6e9ec;font-family:'IBM Plex Mono',monospace;font-size:12.5px;letter-spacing:.8px;">
+                    <button onClick="{{ approvePair }}" disabled="{{ pairApproved }}" style="height:32px;padding:0 13px;border-radius:8px;border:1px solid #626c75;background:#1b2127;color:#e6e9ec;font-size:12.5px;font-weight:500;" style-hover="border-color:#c6f24e;">Approve</button>
+                  </div>
+                  <div style="display:flex;align-items:baseline;gap:7px;font-size:12px;"><span style="font-family:'IBM Plex Mono',monospace;color:{{ pairSt.c }};">{{ pairSt.glyph }}</span><span style="color:{{ pairSt.tc }};">{{ pairSt.text }}</span></div>
+                </div>
+                <sc-for list="{{ cliB }}" as="c" hint-placeholder-count="1">
+                  <div style="display:flex;align-items:flex-start;gap:8px;padding:7px 5px 7px 12px;border-radius:8px;border:1px solid #1e242a;background:#0f1317;">
+                    <span style="padding-top:3px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#7f8891;">$</span>
+                    <code style="flex:1;min-width:0;padding-top:3px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.5;color:#dfe3e7;white-space:pre-wrap;word-break:break-all;">{{ c.text }}</code>
+                    <button onClick="{{ c.copy }}" style="flex:0 0 auto;height:26px;padding:0 9px;border-radius:6px;border:1px solid #2a333a;background:#12171b;color:{{ c.copyC }};font-family:'IBM Plex Mono',monospace;font-size:10.5px;" style-hover="border-color:#626c75;">{{ c.copyLabel }}</button>
+                  </div>
+                </sc-for>
+                <div style="display:flex;align-items:baseline;gap:7px;font-size:12.5px;"><span style="font-family:'IBM Plex Mono',monospace;color:#8b949e;">◌</span><span style="color:#8b949e;">If you haven't already, run gban setup, then restart your agent.</span></div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ isPaste }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;flex-direction:column;gap:12px;">
+                <sc-if value="{{ unminted }}" hint-placeholder-val="{{ true }}">
+                  <div style="display:flex;flex-direction:column;gap:8px;">
+                    <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#c6f24e;">YOUR STEP</span><span style="font-size:12px;color:#8b949e;">A key is a credential. Minting one is your call.</span></div>
+                    <button onClick="{{ mint }}" style="align-self:flex-start;height:34px;padding:0 14px;border-radius:8px;border:1px solid #626c75;background:#1b2127;color:#e6e9ec;font-size:13px;font-weight:500;" style-hover="border-color:#c6f24e;">Mint key</button>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ minted }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-direction:column;gap:6px;">
+                    <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#e0b34a;">SHOWN ONCE</span><span style="font-size:12px;color:#8b949e;">Graphban won't show this key again.</span><span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#7f8891;">{{ keyName }}</span></div>
+                    <div style="display:flex;align-items:center;gap:8px;height:38px;padding:0 5px 0 12px;border-radius:8px;border:1px solid #2a333a;background:#0f1317;">
+                      <code style="flex:1;min-width:0;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#e6e9ec;letter-spacing:.3px;">gb_sk_ab12••••••••••••••••••••••••</code>
+                      <button onClick="{{ copyKey }}" style="height:26px;padding:0 9px;border-radius:6px;border:1px solid #2a333a;background:#12171b;color:{{ keyCopyC }};font-family:'IBM Plex Mono',monospace;font-size:10.5px;" style-hover="border-color:#626c75;">{{ keyCopyLabel }}</button>
+                    </div>
+                  </div>
+                  <div style="display:flex;flex-direction:column;gap:6px;">
+                    <div style="display:flex;gap:8px;align-items:baseline;"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">{{ harness.label }}</span></div>
+                    <div style="display:flex;align-items:flex-start;gap:8px;padding:7px 5px 7px 12px;border-radius:8px;border:1px solid #1e242a;background:#0f1317;">
+                      <sc-if value="{{ harness.prompt }}" hint-placeholder-val="{{ true }}"><span style="padding-top:3px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#7f8891;">$</span></sc-if>
+                      <code style="flex:1;min-width:0;padding-top:3px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.5;color:#dfe3e7;white-space:pre-wrap;word-break:break-all;">{{ harness.text }}</code>
+                      <button onClick="{{ harness.copy }}" style="flex:0 0 auto;height:26px;padding:0 9px;border-radius:6px;border:1px solid #2a333a;background:#12171b;color:{{ harness.copyC }};font-family:'IBM Plex Mono',monospace;font-size:10.5px;" style-hover="border-color:#626c75;">{{ harness.copyLabel }}</button>
+                    </div>
+                    <sc-if value="{{ harness.hasNote }}" hint-placeholder-val="{{ false }}"><div style="font-size:12px;color:#8b949e;">{{ harness.note }}</div></sc-if>
+                  </div>
+                  <div role="status" aria-live="polite" style="display:flex;flex-direction:column;gap:3px;">
+                    <div style="display:flex;align-items:baseline;gap:7px;font-size:12.5px;"><span style="font-family:'IBM Plex Mono',monospace;color:{{ pasteSt.c }};">{{ pasteSt.glyph }}</span><span style="color:{{ pasteSt.tc }};">{{ pasteSt.text }}</span></div>
+                    <sc-if value="{{ pasteSt.hasSub }}" hint-placeholder-val="{{ true }}"><div style="margin-left:19px;font-size:12px;color:#8b949e;">{{ pasteSt.sub }}</div></sc-if>
+                  </div>
+                  <sc-if value="{{ late }}" hint-placeholder-val="{{ false }}">
+                    <div style="display:flex;flex-direction:column;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid #1e242a;">
+                      <div style="font-size:12.5px;line-height:1.45;color:#dfe3e7;text-wrap:pretty;"><span style="font-weight:600;">Restarted your agent?</span> <span style="color:#8b949e;">{{ agent }} reads its MCP config at start. A session opened before you added Graphban won't see it.</span></div>
+                      <sc-if value="{{ isServer }}" hint-placeholder-val="{{ false }}">
+                        <div style="display:flex;flex-direction:column;gap:6px;">
+                          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">RUN THIS FROM YOUR DEV MACHINE</span>
+                          <div style="display:flex;align-items:flex-start;gap:8px;padding:7px 5px 7px 12px;border-radius:8px;border:1px solid #1e242a;background:#0f1317;">
+                            <span style="padding-top:3px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#7f8891;">$</span>
+                            <code style="flex:1;min-width:0;padding-top:3px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.5;color:#dfe3e7;">{{ curlText }}</code>
+                            <button onClick="{{ copyCurl }}" style="flex:0 0 auto;height:26px;padding:0 9px;border-radius:6px;border:1px solid #2a333a;background:#12171b;color:{{ curlCopyC }};font-family:'IBM Plex Mono',monospace;font-size:10.5px;" style-hover="border-color:#626c75;">{{ curlCopyLabel }}</button>
+                          </div>
+                        </div>
+                      </sc-if>
+                    </div>
+                  </sc-if>
+                </sc-if>
+              </div>
+            </sc-if>
+          </sc-if>
+
+          <sc-if value="{{ isFirst }}" hint-placeholder-val="{{ false }}">
+            <h2 id="qs-title" style="margin:0;font-size:18px;font-weight:600;letter-spacing:-.1px;">Give it a first job</h2>
+            <div style="display:flex;flex-direction:column;gap:6px;">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">PASTE INTO {{ agentUpper }}</span>
+              <div style="display:flex;align-items:flex-start;gap:8px;padding:9px 5px 9px 12px;border-radius:8px;border:1px solid #1e242a;background:#0f1317;">
+                <span style="padding-top:2px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#7f8891;">›</span>
+                <code style="flex:1;min-width:0;padding-top:2px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.55;color:#dfe3e7;white-space:pre-wrap;text-wrap:pretty;">{{ jobPrompt }}</code>
+                <button onClick="{{ copyJob }}" style="flex:0 0 auto;height:26px;padding:0 9px;border-radius:6px;border:1px solid #2a333a;background:#12171b;color:{{ jobCopyC }};font-family:'IBM Plex Mono',monospace;font-size:10.5px;" style-hover="border-color:#626c75;">{{ jobCopyLabel }}</button>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px;">
+              <div role="status" aria-live="polite" style="display:flex;align-items:baseline;gap:7px;font-size:12.5px;"><span style="font-family:'IBM Plex Mono',monospace;color:{{ jobSt.c }};">{{ jobSt.glyph }}</span><span style="color:{{ jobSt.tc }};">{{ jobSt.text }}</span></div>
+              <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;">
+                <sc-for list="{{ counters }}" as="k" hint-placeholder-count="3">
+                  <div style="display:flex;flex-direction:column;gap:4px;padding:12px 14px;border-radius:12px;border:1px solid #2a333a;background:#0f1317;">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:24px;font-weight:500;line-height:1.1;color:{{ k.c }};font-variant-numeric:tabular-nums;">{{ k.n }}</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">{{ k.label }}</span>
+                    <sc-if value="{{ k.hasSub }}" hint-placeholder-val="{{ false }}"><span style="font-size:11.5px;line-height:1.35;color:#8b949e;">{{ k.sub }}</span></sc-if>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="font-size:12.5px;color:#8b949e;">You don't have to wait. Take the tour now; the counters stay on the dashboard.</div>
+            </div>
+            <sc-if value="{{ isOwner }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex;gap:9px;align-items:flex-start;padding:9px 12px;border-radius:8px;border:1px solid #1e242a;font-size:12.5px;line-height:1.45;color:#8b949e;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto;margin-top:2px;"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5"></path><path d="M12 8h.01"></path></svg>
+                <span>Reviews need a second agent. Add a reviewer later via delegation, or allow labelled self-review in Settings → Project.</span>
+              </div>
+            </sc-if>
+          </sc-if>
+
+          <sc-if value="{{ isFinish }}" hint-placeholder-val="{{ false }}">
+            <h2 id="qs-title" style="margin:0;font-size:18px;font-weight:600;letter-spacing:-.1px;">You're set up</h2>
+            <sc-if value="{{ hasProof }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;align-items:baseline;gap:8px;font-size:13px;"><span style="font-family:'IBM Plex Mono',monospace;color:#5fd07a;">✓</span><span style="color:#dfe3e7;">{{ proofText }}</span></div>
+            </sc-if>
+            <sc-if value="{{ hasOpen }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex;flex-direction:column;gap:8px;">
+                <div style="display:flex;flex-direction:column;gap:5px;">
+                  <sc-for list="{{ openItems }}" as="o" hint-placeholder-count="1">
+                    <div style="display:flex;align-items:baseline;gap:8px;font-size:13px;"><span style="font-family:'IBM Plex Mono',monospace;color:{{ o.c }};">{{ o.glyph }}</span><span style="color:#dfe3e7;">{{ o.text }}</span></div>
+                  </sc-for>
+                </div>
+                <div style="font-size:12.5px;color:#8b949e;">This stays on your dashboard until it's proven.</div>
+              </div>
+            </sc-if>
+            <sc-if value="{{ noneOpen }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;align-items:baseline;gap:8px;font-size:13px;"><span style="font-family:'IBM Plex Mono',monospace;color:#5fd07a;">✓</span><span style="color:#dfe3e7;">Every step has evidence behind it.</span></div>
+            </sc-if>
+
+            <sc-if value="{{ isInvitee }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;flex-direction:column;border:1px solid #2a333a;border-radius:12px;background:#0f1317;">
+                <button onClick="{{ toggleLink }}" aria-expanded="{{ linkOpenStr }}" style="display:flex;align-items:center;gap:10px;padding:12px 14px;border:0;background:transparent;color:#e6e9ec;text-align:left;font-size:13px;">
+                  <span style="flex:1;display:flex;flex-direction:column;gap:2px;"><span style="font-weight:500;">Run Graphban locally too?</span><span style="font-size:12.5px;color:#8b949e;">Link it so your code graph syncs.</span></span>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8b949e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto;transform:{{ linkChev }};"><path d="m6 9 6 6 6-6"></path></svg>
+                </button>
+                <sc-if value="{{ linkOpen }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-direction:column;gap:10px;padding:0 14px 14px;">
+                    <div style="display:flex;flex-direction:column;gap:6px;">
+                      <label for="qs-linkkey" style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">ORG LINK KEY · ACME</label>
+                      <input id="qs-linkkey" value="{{ linkKey }}" onInput="{{ setLinkKey }}" placeholder="gb_sk_…" spellcheck="false" autocomplete="off" style="height:34px;padding:0 11px;border-radius:8px;border:1px solid #626c75;background:#12171b;color:#e6e9ec;font-family:'IBM Plex Mono',monospace;font-size:12.5px;">
+                    </div>
+                    <div style="display:flex;align-items:flex-start;gap:8px;padding:7px 5px 7px 12px;border-radius:8px;border:1px solid #1e242a;background:#12171b;">
+                      <span style="padding-top:3px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#7f8891;">$</span>
+                      <code style="flex:1;min-width:0;padding-top:3px;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.5;color:#dfe3e7;white-space:pre-wrap;word-break:break-all;">{{ linkCmd }}</code>
+                      <button onClick="{{ copyLink }}" style="flex:0 0 auto;height:26px;padding:0 9px;border-radius:6px;border:1px solid #2a333a;background:#0f1317;color:{{ linkCopyC }};font-family:'IBM Plex Mono',monospace;font-size:10.5px;" style-hover="border-color:#626c75;">{{ linkCopyLabel }}</button>
+                    </div>
+                    <div style="font-size:12px;color:#8b949e;">Optional. Nothing here waits on it.</div>
+                  </div>
+                </sc-if>
+              </div>
+
+              <div style="display:flex;flex-direction:column;gap:10px;">
+                <span style="font-size:13.5px;font-weight:600;">What next?</span>
+                <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;">
+                  <button onClick="{{ takeTour }}" style="height:38px;border-radius:8px;border:1px solid #626c75;background:#1b2127;color:#e6e9ec;font-size:13px;font-weight:500;" style-hover="border-color:#c6f24e;">Take the tour</button>
+                  <button onClick="{{ togglePrompts }}" aria-expanded="{{ promptsOpenStr }}" style="height:38px;display:flex;align-items:center;justify-content:center;gap:7px;border-radius:8px;border:1px solid {{ promptsB }};background:#1b2127;color:#e6e9ec;font-size:13px;font-weight:500;" style-hover="border-color:#c6f24e;">Start-up prompts <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="transform:{{ promptsChev }};"><path d="m6 9 6 6 6-6"></path></svg></button>
+                </div>
+                <sc-if value="{{ promptsOpen }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-direction:column;border:1px solid #1e242a;border-radius:8px;">
+                    <sc-for list="{{ startPrompts }}" as="sp" hint-placeholder-count="4">
+                      <div style="display:flex;align-items:center;gap:10px;padding:8px 6px 8px 12px;border-top:1px solid {{ sp.topB }};">
+                        <span style="flex:1;min-width:0;font-size:13px;color:#dfe3e7;">{{ sp.label }}</span>
+                        <span style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;">
+                          <sc-for list="{{ sp.skills }}" as="sk" hint-placeholder-count="1"><span style="height:22px;display:flex;align-items:center;padding:0 7px;border-radius:6px;border:1px solid #2a333a;background:#0f1317;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#c6f24e;">{{ sk }}</span></sc-for>
+                        </span>
+                        <button onClick="{{ sp.copy }}" aria-label="{{ sp.aria }}" style="flex:0 0 auto;height:26px;padding:0 9px;border-radius:6px;border:1px solid #2a333a;background:#12171b;color:{{ sp.copyC }};font-family:'IBM Plex Mono',monospace;font-size:10.5px;" style-hover="border-color:#626c75;">{{ sp.copyLabel }}</button>
+                      </div>
+                    </sc-for>
+                  </div>
+                  <div style="font-size:12px;color:#8b949e;">Also in Help, and as a card on your dashboard.</div>
+                </sc-if>
+              </div>
+            </sc-if>
+          </sc-if>
+
+          <sc-if value="{{ isStub }}" hint-placeholder-val="{{ false }}">
+            <h2 id="qs-title" style="margin:0;font-size:18px;font-weight:600;">{{ stubTitle }}</h2>
+            <div style="display:flex;flex-direction:column;gap:8px;padding:16px;border:1px dashed #2a333a;border-radius:12px;">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">NOT DRAWN</span>
+              <span style="font-size:12.5px;color:#8b949e;">This step's screen prompt hasn't been sent yet.</span>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ hasAdv }}" hint-placeholder-val="{{ true }}">
+            <div style="display:flex;flex-direction:column;gap:12px;padding-top:4px;border-top:1px solid #1e242a;">
+              <button onClick="{{ toggleAdv }}" aria-expanded="{{ advStr }}" style="align-self:flex-start;display:flex;align-items:center;gap:6px;margin-top:10px;padding:2px 0;border:0;background:transparent;color:#8b949e;font-size:12.5px;" style-hover="color:#dfe3e7;">Advanced <span style="display:inline-block;transform:{{ advChev }};">▸</span></button>
+              <sc-if value="{{ advOpen }}" hint-placeholder-val="{{ false }}">
+
+                <sc-if value="{{ isWhere }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-direction:column;gap:8px;">
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                      <span style="font-size:12.5px;font-weight:600;">What changes</span>
+                      
+                    </div>
+                    <div role="table" style="display:grid;grid-template-columns:118px minmax(0,1fr) minmax(0,1fr);border:1px solid #1e242a;border-radius:8px;overflow:hidden;font-size:12px;">
+                      <span role="columnheader" style="padding:7px 10px;background:#0f1317;"></span>
+                      <span role="columnheader" style="padding:7px 10px;background:#0f1317;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.6px;color:{{ colA }};">THIS COMPUTER</span>
+                      <span role="columnheader" style="padding:7px 10px;background:#0f1317;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.6px;color:{{ colB }};">DEDICATED SERVER</span>
+                      <sc-for list="{{ changes }}" as="c" hint-placeholder-count="5">
+                        <span role="rowheader" style="padding:8px 10px;border-top:1px solid #1e242a;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#7f8891;">{{ c.k }}</span>
+                        <span role="cell" style="padding:8px 10px;border-top:1px solid #1e242a;line-height:1.4;color:{{ colAText }};text-wrap:pretty;">{{ c.a }}</span>
+                        <span role="cell" style="padding:8px 10px;border-top:1px solid #1e242a;line-height:1.4;color:{{ colBText }};text-wrap:pretty;">{{ c.b }}</span>
+                      </sc-for>
+                    </div>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ isFirst }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-direction:column;gap:14px;">
+                    <sc-for list="{{ firstHints }}" as="h" hint-placeholder-count="2">
+                      <div style="font-size:12.5px;line-height:1.45;color:#dfe3e7;text-wrap:pretty;"><span style="font-weight:600;">{{ h.lead }}</span> <span style="color:#8b949e;">{{ h.text }}</span></div>
+                    </sc-for>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ isConnect }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-direction:column;gap:14px;">
+                    <sc-for list="{{ connectHints }}" as="h" hint-placeholder-count="6">
+                      <div style="font-size:12.5px;line-height:1.45;color:#dfe3e7;text-wrap:pretty;"><span style="font-weight:600;">{{ h.lead }}</span> <span style="color:#8b949e;">{{ h.text }}</span></div>
+                    </sc-for>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ isModel }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-direction:column;gap:14px;">
+                    <div style="font-size:12.5px;line-height:1.45;color:#dfe3e7;text-wrap:pretty;"><span style="font-weight:600;">Embeddings are fixed at deploy time.</span> <span style="color:#8b949e;">The embedding model comes from server config, not this step. Changing it later means re-embedding memory.</span></div>
+                    <div style="font-size:12.5px;line-height:1.45;color:#dfe3e7;text-wrap:pretty;"><span style="font-weight:600;">System One decider for memory judging.</span> <span style="color:#8b949e;">Memory candidates are judged by a separate fast decider. Its model is set in server config.</span></div>
+                    <sc-if value="{{ isInvitee }}" hint-placeholder-val="{{ false }}">
+                      <div style="font-size:12.5px;line-height:1.45;color:#dfe3e7;text-wrap:pretty;"><span style="font-weight:600;">BYOK or a paid hosted model.</span> <span style="color:#8b949e;">On https://cloud.agentldgr.dev a project runs on its own provider key or a paid hosted model. The project owner picks.</span></div>
+                    </sc-if>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ isProject }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-direction:column;gap:14px;">
+                    <sc-if value="{{ isOwner }}" hint-placeholder-val="{{ true }}">
+                      <div style="display:flex;flex-direction:column;gap:8px;">
+                        <div style="font-size:12.5px;line-height:1.45;color:#dfe3e7;"><span style="font-weight:600;">Tag and accent.</span> <span style="color:#8b949e;">The tag prefixes every item id. It's derived from the name until you edit it.</span></div>
+                        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                          <input aria-label="Tag" value="{{ tag }}" onInput="{{ setTag }}" maxlength="6" spellcheck="false" style="width:88px;height:32px;padding:0 10px;border-radius:8px;border:1px solid #626c75;background:#0f1317;color:#e6e9ec;font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.6px;">
+                          <div role="radiogroup" aria-label="Accent" style="display:flex;gap:8px;">
+                            <sc-for list="{{ swatches }}" as="s" hint-placeholder-count="6">
+                              <button role="radio" aria-checked="{{ s.on }}" aria-label="{{ s.hex }}" onClick="{{ s.pick }}" style="width:22px;height:22px;padding:0;border-radius:50%;border:2px solid {{ s.ring }};background:{{ s.hex }};box-shadow:0 0 0 2px #12171b inset;"></button>
+                            </sc-for>
+                          </div>
+                        </div>
+                      </div>
+                      <div style="font-size:12.5px;line-height:1.45;color:#dfe3e7;text-wrap:pretty;"><span style="font-weight:600;">Why the repository matters.</span> <span style="color:#8b949e;">gban setup reads the git remote in your checkout and matches it here. Without it, each machine asks which project to use.</span></div>
+                    </sc-if>
+                    <div style="font-size:12.5px;line-height:1.45;color:#dfe3e7;text-wrap:pretty;"><span style="font-weight:600;">More projects.</span> <span style="color:#8b949e;">This dialog sets up one. Switch or add projects later from the switcher at the top of the rail.</span></div>
+                  </div>
+                </sc-if>
+
+              </sc-if>
+            </div>
+          </sc-if>
+        </div>
+
+        <footer style="display:flex;align-items:center;gap:8px;padding:12px 16px 12px 14px;border-top:1px solid #1e242a;">
+          <sc-if value="{{ isFinish }}" hint-placeholder-val="{{ false }}">
+            <button onClick="{{ skipTour }}" style="height:34px;padding:0 12px;border:0;border-radius:8px;background:transparent;color:#8b949e;font-size:13px;" style-hover="background:#1b2127;color:#e6e9ec;">Skip for now</button>
+            <span style="flex:1;"></span>
+            <sc-if value="{{ isOwner }}" hint-placeholder-val="{{ true }}">
+              <button onClick="{{ takeTour }}" style="height:34px;padding:0 14px;border-radius:8px;border:1px solid #c6f24e;background:#c6f24e;color:#0a0b0d;font-size:13px;font-weight:600;" style-hover="background:#d8ff74;border-color:#d8ff74;">Take the 2-minute tour</button>
+            </sc-if>
+          </sc-if>
+          <sc-if value="{{ notFinish }}" hint-placeholder-val="{{ true }}">
+          <button onClick="{{ finishLater }}" style="height:34px;padding:0 12px;border:0;border-radius:8px;background:transparent;color:#8b949e;font-size:13px;" style-hover="background:#1b2127;color:#e6e9ec;">Finish later</button>
+          <span style="flex:1;"></span>
+          <sc-if value="{{ nextBlocked }}" hint-placeholder-val="{{ false }}">
+            <span id="qs-next-why" style="font-size:12px;color:#8b949e;text-align:right;">Tick the confirmation first.</span>
+          </sc-if>
+          <button onClick="{{ back }}" disabled="{{ backDisabled }}" style="height:34px;padding:0 12px;border-radius:8px;border:1px solid #2a333a;background:transparent;color:{{ backC }};font-size:13px;" style-hover="border-color:#626c75;">← Back</button>
+          <button onClick="{{ next }}" disabled="{{ nextBlocked }}" aria-describedby="{{ nextDesc }}" style="height:34px;padding:0 14px;border-radius:8px;border:1px solid {{ nextB }};background:{{ nextBg }};color:{{ nextC }};font-size:13px;font-weight:600;cursor:{{ nextCursor }};" style-hover="{{ nextHover }}">{{ nextLabel }}</button>
+          </sc-if>
+        </footer>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;screen&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;where&quot;,&quot;project&quot;,&quot;model&quot;,&quot;connect&quot;,&quot;first_job&quot;,&quot;finish&quot;],&quot;default&quot;:&quot;where&quot;,&quot;tsType&quot;:&quot;'where' | 'project' | 'model' | 'connect' | 'first_job' | 'finish'&quot;},&quot;origin&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;localhost&quot;,&quot;ubuntu-srv&quot;],&quot;default&quot;:&quot;localhost&quot;,&quot;tsType&quot;:&quot;'localhost' | 'ubuntu-srv'&quot;,&quot;section&quot;:&quot;Where is it running&quot;},&quot;role&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;owner&quot;,&quot;invitee&quot;],&quot;default&quot;:&quot;owner&quot;,&quot;tsType&quot;:&quot;'owner' | 'invitee'&quot;,&quot;section&quot;:&quot;Self-host owner / hosted invitee&quot;},&quot;whereAnswer&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;this_computer&quot;,&quot;dedicated_server&quot;],&quot;default&quot;:&quot;this_computer&quot;,&quot;tsType&quot;:&quot;'this_computer' | 'dedicated_server'&quot;,&quot;section&quot;:&quot;Self-host owner / hosted invitee&quot;},&quot;modelChoice&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;offline&quot;,&quot;ollama&quot;,&quot;claude&quot;],&quot;default&quot;:&quot;offline&quot;,&quot;tsType&quot;:&quot;'offline' | 'ollama' | 'claude'&quot;,&quot;section&quot;:&quot;Model&quot;},&quot;probe&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;idle&quot;,&quot;found&quot;],&quot;default&quot;:&quot;idle&quot;,&quot;tsType&quot;:&quot;'idle' | 'found'&quot;,&quot;section&quot;:&quot;Model&quot;},&quot;encryptionKeySet&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Model&quot;},&quot;canEditProviders&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Model&quot;},&quot;agent&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Claude Code&quot;,&quot;Grok&quot;,&quot;Cursor&quot;,&quot;Codex&quot;,&quot;opencode&quot;,&quot;OpenClaw&quot;,&quot;Hermes&quot;],&quot;default&quot;:&quot;Claude Code&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Connect&quot;},&quot;route&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;cli&quot;,&quot;paste&quot;],&quot;default&quot;:&quot;cli&quot;,&quot;tsType&quot;:&quot;'cli' | 'paste'&quot;,&quot;section&quot;:&quot;Connect&quot;},&quot;pasteState&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;unminted&quot;,&quot;waiting&quot;,&quot;waiting_2m&quot;,&quot;connected&quot;],&quot;default&quot;:&quot;unminted&quot;,&quot;tsType&quot;:&quot;'unminted' | 'waiting' | 'waiting_2m' | 'connected'&quot;,&quot;section&quot;:&quot;Connect&quot;},&quot;pair&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;idle&quot;,&quot;approved&quot;],&quot;default&quot;:&quot;idle&quot;,&quot;tsType&quot;:&quot;'idle' | 'approved'&quot;,&quot;section&quot;:&quot;Connect&quot;},&quot;counters&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;zero&quot;,&quot;counting&quot;,&quot;done&quot;],&quot;default&quot;:&quot;zero&quot;,&quot;tsType&quot;:&quot;'zero' | 'counting' | 'done'&quot;,&quot;section&quot;:&quot;First job&quot;},&quot;connectProof&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;first_call&quot;,&quot;machine_report&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;'none' | 'first_call' | 'machine_report'&quot;,&quot;section&quot;:&quot;Connect&quot;},&quot;linkOpen&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Finish&quot;},&quot;promptsOpen&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Finish&quot;},&quot;tier&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;SPECULATIVE — NOT BACKED&quot;,&quot;PARTLY BACKED&quot;],&quot;default&quot;:&quot;SPECULATIVE — NOT BACKED&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  dlgRef = React.createRef();
+  state = this.init(this.props);
+
+  init(p) {
+    const screen = p.screen ?? "where";
+    const origin = p.origin ?? "localhost";
+    const role = screen === "where" ? "owner" : (p.role ?? "owner");
+    const fromOrigin = origin === "ubuntu-srv" ? "dedicated_server" : "this_computer";
+    const where = screen !== "where" ? (p.whereAnswer ?? fromOrigin) : fromOrigin;
+    const past = screen !== "where", afterProject = ["model", "connect", "first_job", "finish"].includes(screen);
+    const isFin = screen === "finish", pendOne = (p.pending ?? "one") === "one";
+    const counters = isFin ? "done" : (p.counters ?? "zero");
+    const route = p.route ?? "cli", pasteState = p.pasteState ?? "unminted";
+    return {
+      open: true, finished: false, step: screen, where,
+      addr: where === "dedicated_server" ? "http://ubuntu-srv:8080" : "",
+      done: { where: past && role === "owner", project: afterProject, model: ["connect", "first_job", "finish"].includes(screen) || (screen === "model" && role === "invitee"),
+        connect: pasteState === "connected" || (p.connectProof ?? "none") !== "none", first_job: (screen === "first_job" || isFin) && counters === "done" },
+      counters, tick: 0, finished: isFin, linkOpen: !!p.linkOpen, promptsOpen: !!p.promptsOpen, linkKey: "",
+      unknown: {},
+      confirmed: afterProject,
+      agent: p.agent ?? "Claude Code", route, paste: pasteState, pair: p.pair ?? "idle", pairCode: "K7QM-2XPA", name: "Core Platform", repo: "git@github.com:acme/core-platform.git",
+      tag: null, accent: "#c6f24e", adv: false, postureOpen: null, copied: null,
+      model: p.modelChoice ?? "offline", probe: p.probe ?? "idle", ollamaUrl: "http://host.docker.internal:11434", claudeKey: "", test: null,
+      _key: this.keyOf(p),
+    };
+  }
+  keyOf(p) { return [p.screen ?? "where", p.origin ?? "localhost", p.role, p.whereAnswer, p.modelChoice, p.probe, p.encryptionKeySet, p.agent, p.route, p.pasteState, p.pair, p.counters, p.connectProof, p.linkOpen, p.promptsOpen].join("|"); }
+  syncTicker() {
+    const on = this.state.counters === "counting" && this.state.step === "first_job";
+    if (on && !this._tk) this._tk = setInterval(() => this.setState((s) => ({ tick: Math.min(s.tick + 1, 34) })), 220);
+    if (!on && this._tk) { clearInterval(this._tk); this._tk = null; }
+  }
+  componentDidUpdate(pp) {
+    this.syncTicker();
+    const k = this.keyOf(this.props);
+    if (k !== this.state._key) this.setState(this.init(this.props), () => this.focusDialog());
+  }
+  componentDidMount() {
+    this._onKey = (e) => {
+      if (!this.state.open || !this.dlgRef.current) return;
+      if (e.key === "Escape") { e.preventDefault(); this.finishLater(); return; }
+      if (e.key !== "Tab") return;
+      const f = [...this.dlgRef.current.querySelectorAll('button:not([disabled]),input,[tabindex="0"]')].filter((el) => el.offsetParent !== null);
+      if (!f.length) return;
+      const a = document.activeElement, first = f[0], last = f[f.length - 1];
+      if (!this.dlgRef.current.contains(a)) { e.preventDefault(); first.focus(); }
+      else if (e.shiftKey && a === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && a === last) { e.preventDefault(); first.focus(); }
+    };
+    window.addEventListener("keydown", this._onKey);
+    this.focusDialog();
+    this.syncTicker();
+  }
+  componentWillUnmount() { window.removeEventListener("keydown", this._onKey); clearTimeout(this._ct); clearTimeout(this._lt); clearTimeout(this._pt); clearInterval(this._tk); }
+  focusDialog() { setTimeout(() => this.dlgRef.current && this.dlgRef.current.focus({ preventScroll: true }), 30); }
+
+  role() { return (this.props.screen ?? "where") === "where" ? "owner" : (this.props.role ?? "owner"); }
+  steps() { const all = ["where", "project", "model", "connect", "first_job"]; return this.role() === "owner" ? all : all.slice(1); }
+  go(step) { this.setState({ step, adv: false }, () => this.focusDialog()); }
+  finishLater() { this.setState({ open: false }); }
+  reopen() {
+    const s = this.steps(), first = s.find((k) => !this.state.done[k]) || s[s.length - 1];
+    this.setState({ open: true, step: first, adv: false }, () => this.focusDialog());
+  }
+  copy(key, text) {
+    try { navigator.clipboard && navigator.clipboard.writeText(text); } catch (e) {}
+    clearTimeout(this._ct);
+    this.setState({ copied: key });
+    this._ct = setTimeout(() => this.setState({ copied: null }), 1500);
+  }
+
+  renderVals() {
+    const S = this.state, role = this.role(), steps = this.steps();
+    const origin = this.props.origin ?? "localhost";
+    const originUrl = origin === "ubuntu-srv" ? "http://ubuntu-srv:8080" : "http://localhost:8080";
+    const preWhere = origin === "ubuntu-srv" ? "dedicated_server" : "this_computer";
+    const idx = Math.max(0, steps.indexOf(S.step)), isLast = idx === steps.length - 1;
+    const DEF = { where: ["⓪", "Where"], project: ["①", "Project"], model: ["②", "Model"], connect: ["③", "Connect your agent"], first_job: ["④", "First job"] };
+
+    const rail = steps.map((k, i) => {
+      const st = S.done[k] ? "done" : S.unknown[k] ? "unknown" : "pending", cur = k === S.step;
+      const g = { done: ["✓", "#5fd07a", "DONE"], pending: ["◌", "#8b949e", "PENDING"], unknown: ["?", "#7f8891", "UNKNOWN"] }[st];
+      return { num: DEF[k][0], label: DEF[k][1], glyph: g[0], glyphC: g[1], statusLabel: g[2], current: cur ? "step" : "false",
+        title: `${DEF[k][1]} — ${g[2].toLowerCase()}`, bar: cur ? "#c6f24e" : "#2a333a", numC: cur ? "#c6f24e" : "#7f8891",
+        labelC: cur ? "#e6e9ec" : "#8b949e", weight: cur ? 600 : 400 };
+    });
+    const counted = ["project", "model", "connect", "first_job"];
+    const chipCount = `${counted.filter((k) => S.done[k]).length}/4`;
+
+    const isServer = S.where === "dedicated_server";
+    const card = (v) => { const on = S.where === v; return { checked: String(on), tab: on ? "0" : "-1", border: on ? "#c6f24e" : "#2a333a", bg: on ? "rgba(198,242,78,.05)" : "#0f1317", ring: on ? "#c6f24e" : "#626c75", dot: on ? 1 : 0, pre: preWhere === v }; };
+    const setWhere = (v, focus) => this.setState({ where: v, addr: v === "dedicated_server" && !S.addr && origin === "ubuntu-srv" ? originUrl : S.addr }, () => {
+      if (focus && this.dlgRef.current) { const el = this.dlgRef.current.querySelector(`[data-v="${v}"]`); el && el.focus(); }
+    });
+    const a = (S.addr || "").trim().replace(/\/+$/, "");
+    const reach = !a ? { glyph: "?", c: "#7f8891", tc: "#8b949e", text: "Unknown — no address yet." }
+      : a === originUrl && origin === "ubuntu-srv" ? { glyph: "✓", c: "#5fd07a", tc: "#dfe3e7", text: "reachable from this browser" }
+      : { glyph: "?", c: "#7f8891", tc: "#8b949e", text: "Unknown — not checked. This page loaded from " + originUrl + ", not this address." };
+
+    const autoTag = (S.name || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 4) || "—";
+    const tag = S.tag ?? autoTag;
+    const hexA = (h, al) => { const n = parseInt(h.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${al})`; };
+
+    const P = { jwt_secret_ok: false, signup_invite_only: false, encryption_key_set: !!this.props.encryptionKeySet, base_url_matches: true, strong_secret_enforced: false };
+    const MC = [
+      ["offline", "Offline", "stub", "Runs as is. Chat is canned and nothing gets graded."],
+      ["ollama", "Local", "Ollama", "A model server on your network."],
+      ["claude", "Cloud", "Claude", "Your Anthropic API key."],
+    ];
+    const modelCards = MC.map(([id, title, sub, desc]) => { const on = S.model === id; return { id, title, sub, desc, checked: String(on), tab: on ? "0" : "-1", border: on ? "#c6f24e" : "#2a333a", bg: on ? "rgba(198,242,78,.05)" : "#0f1317", ring: on ? "#c6f24e" : "#626c75", dot: on ? 1 : 0 }; });
+    const clearModel = () => { const done = { ...S.done }, unknown = { ...S.unknown }; if (role === "owner") { done.model = false; delete unknown.model; } return { done, unknown }; };
+    this._clearModel = clearModel;
+    const setModel = (id, focus) => this.setState(id === S.model ? {} : { model: id, ...clearModel() }, () => { if (focus && this.dlgRef.current) { const el = this.dlgRef.current.querySelector(`[data-m="${id}"]`); el && el.focus(); } });
+    const probe = S.probe === "found" ? { glyph: "✓", c: "#5fd07a", tc: "#dfe3e7", text: "Found 4 models" }
+      : S.probe === "probing" ? { glyph: "◌", c: "#8b949e", tc: "#8b949e", text: "Probing…" }
+      : { glyph: "◌", c: "#8b949e", tc: "#8b949e", text: "Pending — not probed yet." };
+    const hasKey = !!S.claudeKey.trim();
+    const test = S.test === "not_wired" ? { glyph: "?", c: "#7f8891", tc: "#8b949e", text: "Unknown — Test call has no endpoint yet, so the key is unchecked." }
+      : hasKey ? { glyph: "◌", c: "#8b949e", tc: "#8b949e", text: "Pending — not tested." }
+      : { glyph: "◌", c: "#8b949e", tc: "#8b949e", text: "Pending — no key yet." };
+    const unknownRows = steps.filter((k) => !S.done[k] && S.unknown[k]).map((k) => ({ num: DEF[k][0], reason: S.unknown[k] }));
+    const ROWS = [
+      ["jwt_secret_ok", "JWT_SECRET is the placeholder", "anyone with it can forge a session.", "JWT_SECRET=$(openssl rand -hex 32)"],
+      ["signup_invite_only", "Sign-up is open", "You're the only user this box needs.", "SIGNUP_MODE=invite_only"],
+      ["encryption_key_set", "SECRET_ENCRYPTION_KEY is unset", "stored provider keys are plaintext.", "SECRET_ENCRYPTION_KEY=$(openssl rand -hex 32)"],
+      ["strong_secret_enforced", "Weak secrets are allowed", "the server starts even on a placeholder JWT_SECRET.", "REQUIRE_STRONG_SECRET=true"],
+    ].filter((r) => P[r[0]] === false);
+    const postureRows = ROWS.map(([k, lead, why, env]) => ({ lead, why, env, copyLabel: S.copied === k ? "Copied" : "Copy", copyC: S.copied === k ? "#c6f24e" : "#dfe3e7", copy: () => this.copy(k, env) }));
+    const postureExp = S.postureOpen ?? isServer;
+
+    const isWhere = S.step === "where", isProject = S.step === "project";
+    const isModel = S.step === "model", isConnect = S.step === "connect";
+    const isFirst = S.step === "first_job", isFinish = S.step === "finish";
+    const isStub = !isWhere && !isProject && !isModel && !isConnect && !isFirst && !isFinish;
+    const proof = this.props.connectProof ?? "none";
+    const proofText = proof === "first_call" ? "Agent connected — first call 13:42 from alex-mbp"
+      : proof === "machine_report" ? "Agent connected — alex-mbp reported clean 13:42"
+      : S.done.connect ? "Agent connected — first call 14:02 from gb_sk_ab12" : "";
+    const openItems = steps.filter((k) => !S.done[k]).map((k) => {
+      if (S.unknown[k]) return { glyph: "?", c: "#7f8891", text: `${DEF[k][1]} — ${S.unknown[k]}` };
+      if (k === "connect") return { glyph: "◌", c: "#8b949e", text: ((S.agent === "Claude Code" || S.agent === "Grok") ? S.route : "paste") === "cli" ? "Agent connection unverified — gban setup route" : "Agent connection unverified — no first call yet" };
+      return { glyph: "◌", c: "#8b949e", text: `${DEF[k][1]} — pending` };
+    });
+    const linkCmd = `graphban link --cloud-url https://cloud.agentldgr.dev --api-key ${S.linkKey.trim() || "gb_sk_…"}`;
+    const SP = [["orient", ["/graphban-orient"]], ["claim next", ["/graphban-work"]], ["review", ["/graphban-review"]], ["draft + grill a PRD", ["/graphban-prd", "/graphban-grill"]]];
+    const cp = (k, text) => ({ copyLabel: S.copied === k ? "Copied" : "Copy", copyC: S.copied === k ? "#c6f24e" : "#dfe3e7", copy: () => this.copy(k, text) });
+    const startPrompts = SP.map(([label, skills], i) => ({ label, skills, topB: i ? "#1e242a" : "transparent", aria: `Copy ${skills.join(" and ")}`, ...cp("sp" + i, skills.join("\n")) }));
+    const closeAll = () => this.setState({ open: false, finished: true });
+    const tail = "describe the code, load the durable facts from AGENTS.md/CLAUDE.md/docs as memory candidates, and propose a first handful of items.";
+    const jobPrompt = role === "invitee"
+      ? `First ask setup_project for the code-graph dry-run estimate and show it to me. Then run it for this repository and work through it: ${tail}`
+      : `Run setup_project for this repository and work through it: ${tail}`;
+    const f = S.counters === "done" ? 1 : S.counters === "counting" ? Math.min(0.92, 0.08 + S.tick * 0.025) : 0;
+    const CT = [["CODE NODES", 412, ""], ["MEMORIES", 18, "candidates — you publish them"], ["ITEMS", 9, ""]];
+    const counters = CT.map(([label, t, sub]) => { const n = Math.round(t * f); return { label, n: String(n), sub, hasSub: !!sub, c: n ? "#e6e9ec" : "#7f8891" }; });
+    const jobSt = S.counters === "done" ? { glyph: "✓", c: "#5fd07a", tc: "#dfe3e7", text: "First job finished." }
+      : S.counters === "counting" ? { glyph: "◌", c: "#8b949e", tc: "#dfe3e7", text: "Your agent is working. Counts are live." }
+      : { glyph: "◌", c: "#8b949e", tc: "#8b949e", text: "Pending — nothing counted yet." };
+    const firstHints = [
+      ["Local-first code graph (no hosted quota).", "gban builds the code graph on the machine that has the checkout. Local indexing doesn't count against a hosted quota."],
+      ["Memory trust level (review / auto / trusted).", "Sets how memory candidates get published: review (you publish each one), auto, or trusted. It starts at review."],
+    ].map(([lead, text]) => ({ lead, text }));
+
+    const srv = (S.addr || "").trim().replace(/\/+$/, "") || "http://ubuntu-srv:8080";
+    const base = role === "invitee" ? "https://cloud.agentldgr.dev" : isServer ? srv : "http://localhost:8080";
+    const host = base.replace(/^https?:\/\//, "");
+    const AGENTS = ["Claude Code", "Grok", "Cursor", "Codex", "opencode", "OpenClaw", "Hermes"];
+    const supported = S.agent === "Claude Code" || S.agent === "Grok";
+    const route = supported ? S.route : "paste";
+    const cmd = (k, text, extra) => ({ text, hasLabel: false, label: "", labelC: "#7f8891", reason: "", ...cp(k, text), ...(extra || {}) });
+    const cliA = [];
+    if (isServer && role === "owner") cliA.push(cmd("curl", `curl -s ${srv}/health`, { hasLabel: true, label: "RUN THIS FROM YOUR DEV MACHINE" }));
+    cliA.push(cmd("install", "uv tool install graphban-cli graphban-fleet"));
+    cliA.push(cmd("login", `gban login --server ${base}`, { hasLabel: true, label: "YOUR STEP", labelC: "#c6f24e", reason: "Signing in is yours — it can't be done for you." }));
+    const cliB = [cmd("setup", "cd ~/code/core-platform && gban setup")];
+    const routeCards = [
+      ["cli", "Recommended — the gban CLI", "Sets up everything.", !supported, "gban setup writes Claude Code and Grok today."],
+      ["paste", "Just paste a key", "2 minutes, no delegation.", false, ""],
+    ].map(([id, title, sub, dis, reason]) => { const on = route === id; return { id, title, sub, reason, hasReason: dis, disabledStr: String(dis), checked: String(on), tab: on ? "0" : "-1",
+      border: on ? "#c6f24e" : "#2a333a", bg: on ? "rgba(198,242,78,.05)" : "#0f1317", ring: on ? "#c6f24e" : "#626c75", dot: on ? 1 : 0, cursor: dis ? "not-allowed" : "pointer", op: dis ? 0.55 : 1 }; });
+    const setRoute = (id, focus) => { if (id === "cli" && !supported) return; this.setState({ route: id }, () => { if (focus && this.dlgRef.current) { const el = this.dlgRef.current.querySelector(`[data-r="${id}"]`); el && el.focus(); } }); };
+    const KEY = "gb_sk_ab12…";
+    const H = {
+      "Claude Code": { label: "ADD TO CLAUDE CODE", prompt: true, text: `claude mcp add --transport http --scope user graphban ${base}/api/mcp --header "X-API-Key: ${KEY}"` },
+      Cursor: { label: "PASTE INTO ~/.cursor/mcp.json", prompt: false, text: `{\n  "mcpServers": {\n    "graphban": {\n      "url": "${base}/api/mcp",\n      "headers": { "X-API-Key": "${KEY}" }\n    }\n  }\n}` },
+    }[S.agent] || { label: "ENDPOINT AND HEADER", prompt: false, text: `${base}/api/mcp\nX-API-Key: ${KEY}`, note: `No config snippet recorded for ${S.agent} yet. Add these to its MCP settings by hand.` };
+    const harness = { ...H, hasNote: !!H.note, note: H.note || "", ...cp("harness", H.text) };
+    const pasteSt = S.paste === "connected" ? { glyph: "✓", c: "#5fd07a", tc: "#dfe3e7", text: "First call at 14:02 from gb_sk_ab12", hasSub: false, sub: "" }
+      : { glyph: "◌", c: "#8b949e", tc: "#dfe3e7", text: "Waiting for your agent's first call…", hasSub: true, sub: `Restart ${S.agent}, then ask it “what's in my backlog?”` };
+    const pairSt = S.pair === "approved" ? { glyph: "✓", c: "#5fd07a", tc: "#dfe3e7", text: `Approved ${S.pairCode}. The terminal finishes signing in on its own.` }
+      : { glyph: "◌", c: "#8b949e", tc: "#8b949e", text: "Pending — no code approved." };
+    const connectHints = [
+      ["Key scope.", "A pasted key acts as you, on this project only. Revoke it any time in Settings → API keys."],
+      ["Tool tiers (visibility, not permission).", "Tiers decide which tools an agent sees listed. They don't grant or deny anything; the key's scope does."],
+      ["More machines.", "Run the same commands on each machine. Each one reports under its own label."],
+      ["Cursor and GUI apps.", "GUI apps read a JSON config file, not a CLI command. Restart the app after editing it."],
+      ["Delegation and fleets.", "gban setup also installs gbfleet, so your agent can hand work to other runners. A pasted key can't delegate."],
+      ["Sandboxed harnesses.", `If the harness blocks network calls, allow ${host} or the first call never arrives.`],
+    ].map(([lead, text]) => ({ lead, text }));
+    const nextBlocked = isProject && !S.confirmed;
+
+    const changes = [
+      { k: "Commands in ③", a: "Use localhost.", b: "Use the entered server address, with \"run this curl from your dev machine to check\"." },
+      { k: "Safety check (①)", a: "Quiet; loopback-only boxes aren't exposed, and any warnings collapse into one line.", b: "Active; JWT_SECRET, SIGNUP_MODE=invite_only, SECRET_ENCRYPTION_KEY and REQUIRE_STRONG_SECRET become main-path warnings, and TRUSTED_HOPS/HTTPS go under Advanced." },
+      { k: "Ollama URL (②)", a: "http://host.docker.internal:11434 under compose, localhost natively.", b: "Asks where Ollama runs (on the server, or elsewhere on the network)." },
+      { k: "Machines (③)", a: "One machine, this one; the \"more machines\" hint stays in Advanced.", b: "Multi-machine by design; the \"run this on each dev machine\" copy moves to the main path." },
+      { k: "Code-graph pass (④)", a: "Runs locally, no notes.", b: "The agent runs on the dev machine and talks to the server over the network, and the prompt says so." },
+    ];
+    const SW = ["#c6f24e", "#a78bfa", "#7ca2ff", "#e0b34a", "#5fd07a", "#ff8f8f"];
+
+    return {
+      dlgRef: this.dlgRef, tier: this.props.tier ?? "SPECULATIVE — NOT BACKED",
+      nav: [
+        { label: "PLAN", items: ["Tracker", "Triage", "Requests", "Specs", "Roadmap"] },
+        { label: "BUILD", items: ["Code graph", "Stack", "Links", "Fleet.v2", "Fleet.v1", "Outposts"] },
+        { label: "OBSERVE", items: ["Activity", "Live", "Memory", "Memory triage", "Lessons", "Harness"] },
+      ],
+      pinned: ["Organization", "Usage", "Feedback Kit", "Settings"],
+      open: S.open, appHidden: String(S.open), showChip: !S.finished, chipCount, reopen: () => this.reopen(),
+      finishLater: () => this.finishLater(), rail,
+      isConnect, agents: AGENTS, agent: S.agent, setAgent: (e) => this.setState({ agent: e.target.value }),
+      routeCards, isCli: route === "cli", isPaste: route === "paste",
+      pickRoute: (e) => setRoute(e.currentTarget.getAttribute("data-r")),
+      routeSpace: (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); setRoute(e.currentTarget.getAttribute("data-r")); } },
+      routeKey: (e) => { if (["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight"].includes(e.key)) { e.preventDefault(); setRoute(route === "cli" ? "paste" : "cli", true); } },
+      cliA, cliB, pairCode: S.pairCode, setPair: (e) => this.setState({ pairCode: e.target.value.toUpperCase(), pair: "idle" }),
+      approvePair: () => S.pairCode.trim() && this.setState({ pair: "approved" }), pairApproved: S.pair === "approved", pairSt,
+      unminted: S.paste === "unminted", minted: S.paste !== "unminted",
+      mint: () => { this.setState({ paste: "waiting" }); clearTimeout(this._lt); this._lt = setTimeout(() => this.state.paste === "waiting" && this.setState({ paste: "waiting_2m" }), 120000); },
+      keyName: `quick start · ${S.agent.toLowerCase()}`, ...(() => { const c = cp("key", "gb_sk_ab12"); return { keyCopyLabel: c.copyLabel, keyCopyC: c.copyC, copyKey: c.copy }; })(),
+      harness, pasteSt, late: S.paste === "waiting_2m",
+      ...(() => { const c = cp("curl2", `curl -s ${srv}/health`); return { curlCopyLabel: c.copyLabel, curlCopyC: c.copyC, copyCurl: c.copy }; })(),
+      connectHints, curlText: `curl -s ${srv}/health`,
+      isFinish, notFinish: !isFinish, openItems, hasOpen: openItems.length > 0, noneOpen: openItems.length === 0,
+      hasProof: !!proofText, proofText,
+      linkOpen: S.linkOpen, linkOpenStr: String(S.linkOpen), linkChev: S.linkOpen ? "rotate(180deg)" : "none", toggleLink: () => this.setState({ linkOpen: !S.linkOpen }),
+      linkKey: S.linkKey, setLinkKey: (e) => this.setState({ linkKey: e.target.value }), linkCmd,
+      ...(() => { const c = cp("link", linkCmd); return { linkCopyLabel: c.copyLabel, linkCopyC: c.copyC, copyLink: c.copy }; })(),
+      promptsOpen: S.promptsOpen, promptsOpenStr: String(S.promptsOpen), promptsChev: S.promptsOpen ? "rotate(180deg)" : "none", promptsB: S.promptsOpen ? "#c6f24e" : "#626c75",
+      togglePrompts: () => this.setState({ promptsOpen: !S.promptsOpen }), startPrompts,
+      takeTour: closeAll, skipTour: closeAll,
+      isFirst, jobPrompt, agentUpper: S.agent.toUpperCase(), counters, jobSt, firstHints,
+      ...(() => { const c = cp("job", jobPrompt); return { jobCopyLabel: c.copyLabel, jobCopyC: c.copyC, copyJob: c.copy }; })(),
+      isModel, modelCards, isOllama: S.model === "ollama", isClaude: S.model === "claude",
+      pickModel: (e) => setModel(e.currentTarget.getAttribute("data-m")),
+      modelSpace: (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); setModel(e.currentTarget.getAttribute("data-m")); } },
+      modelKey: (e) => { const d = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key]; if (!d) return; e.preventDefault(); const i = MC.findIndex((m) => m[0] === S.model); setModel(MC[(i + d + 3) % 3][0], true); },
+      ollamaUrl: S.ollamaUrl, setOllama: (e) => this.setState({ ollamaUrl: e.target.value, probe: "idle", ...clearModel() }),
+      doProbe: () => { this.setState({ probe: "probing", ...clearModel() }); clearTimeout(this._pt); this._pt = setTimeout(() => this.setState({ probe: "found" }), 700); },
+      probe, probeFound: S.probe === "found", models: ["qwen3.6:35b", "llama3.3:70b", "bge-m3", "nomic-embed-text"],
+      claudeKey: S.claudeKey, setKey: (e) => this.setState({ claudeKey: e.target.value, test: null, ...clearModel() }),
+      doTest: () => this.setState({ test: "not_wired" }), testDisabled: !hasKey, testC: hasKey ? "#e6e9ec" : "#7f8891",
+      test, keyWarn: !P.encryption_key_set, canEditProviders: !!this.props.canEditProviders,
+      hasUnknown: unknownRows.length > 0, unknownRows,
+      isWhere, isProject, isStub, stubTitle: DEF[S.step] ? DEF[S.step][1] : "",
+      w1: card("this_computer"), w2: card("dedicated_server"), isServer, originUrl,
+      pickWhere: (e) => setWhere(e.currentTarget.getAttribute("data-v")),
+      radioSpace: (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); setWhere(e.currentTarget.getAttribute("data-v")); } },
+      radioKey: (e) => { if (["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight"].includes(e.key)) { e.preventDefault(); setWhere(S.where === "this_computer" ? "dedicated_server" : "this_computer", true); } },
+      addr: S.addr, setAddr: (e) => this.setState({ addr: e.target.value }), reach,
+      isOwner: role === "owner", isInvitee: role === "invitee",
+      name: S.name, setName: (e) => this.setState({ name: e.target.value }),
+      repo: S.repo, setRepo: (e) => this.setState({ repo: e.target.value }),
+      tag, setTag: (e) => this.setState({ tag: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "") }),
+      accent: S.accent, accentB: hexA(S.accent, 0.45),
+      swatches: SW.map((hex) => ({ hex, on: String(hex === S.accent), ring: hex === S.accent ? "#e6e9ec" : "transparent", pick: () => this.setState({ accent: hex }) })),
+      confirmedStr: String(S.confirmed), toggleConfirm: () => this.setState({ confirmed: !S.confirmed }),
+      cbBorder: S.confirmed ? "#c6f24e" : "#626c75", cbBg: S.confirmed ? "#c6f24e" : "transparent", cbTick: S.confirmed ? 1 : 0,
+      showPosture: role === "owner" && ROWS.length > 0, postureRows, postureExp, postureExpStr: String(postureExp),
+      postureChev: postureExp ? "rotate(90deg)" : "none",
+      postureLine: isServer ? `${ROWS.length} settings need changing before this box faces a network.` : `${ROWS.length} settings are on defaults — fine for a laptop`,
+      togglePosture: () => this.setState({ postureOpen: !postureExp }),
+      hasAdv: !isStub && !isFinish, advOpen: S.adv, advStr: String(S.adv), advChev: S.adv ? "rotate(90deg)" : "none", toggleAdv: () => this.setState({ adv: !S.adv }),
+      changes, colA: S.where === "this_computer" ? "#c6f24e" : "#7f8891", colB: isServer ? "#c6f24e" : "#7f8891",
+      colAText: S.where === "this_computer" ? "#dfe3e7" : "#8b949e", colBText: isServer ? "#dfe3e7" : "#8b949e",
+      nextBlocked, nextDesc: nextBlocked ? "qs-next-why" : "", nextLabel: isLast ? "Finish" : "Next →",
+      nextB: nextBlocked ? "#2a333a" : "#c6f24e", nextBg: nextBlocked ? "#1b2127" : "#c6f24e", nextC: nextBlocked ? "#7f8891" : "#0a0b0d",
+      nextCursor: nextBlocked ? "not-allowed" : "pointer", nextHover: nextBlocked ? "" : "background:#d8ff74;border-color:#d8ff74;",
+      backDisabled: idx === 0, backC: idx === 0 ? "#7f8891" : "#dfe3e7",
+      back: () => idx > 0 && this.go(steps[idx - 1]),
+      next: () => {
+        if (nextBlocked) return;
+        if (isLast) { this.setState({ finished: true }, () => this.go("finish")); return; }
+        const done = { ...S.done }, unknown = { ...S.unknown };
+        if (isWhere || isProject) done[S.step] = true;
+        if (isModel && role === "owner") {
+          delete unknown.model; done.model = false;
+          if (S.model === "offline" || (S.model === "ollama" && S.probe === "found")) done.model = true;
+          else if (S.model === "ollama") unknown.model = "Ollama not probed — no model confirmed.";
+          else if (hasKey) unknown.model = "Claude key not tested — Test call isn't wired.";
+        }
+        this.setState({ done, unknown }, () => this.go(steps[idx + 1]));
+      },
+    };
+  }
+}
+</script>
+</body>
+</html>

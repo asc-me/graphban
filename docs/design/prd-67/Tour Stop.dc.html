@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="_ds/design-system-83ade3bd-4186-4c71-9857-a0fe2bc1a395/_ds_bundle.js"></script>
+<style>html,body{margin:0;background:#0a0b0d;}*{box-sizing:border-box}button{font:inherit;cursor:pointer}:focus{outline:none}button:focus-visible,a:focus-visible{outline:2px solid #c6f24e;outline-offset:2px}a{color:#c6f24e;text-decoration:none}a:hover{color:#d8ff74}</style>
+</helmet>
+<div style="display:flex;flex-direction:column;min-height:100vh;background:#0a0b0d;color:#e6e9ec;font-family:'IBM Plex Sans',system-ui,sans-serif;">
+
+  <div ref="{{ frameRef }}" data-screen-label="Tour stop" style="position:relative;flex:0 0 auto;height:900px;display:grid;grid-template-columns:216px minmax(0,1fr);overflow:hidden;border-bottom:1px solid #1e242a;">
+    <aside style="display:flex;flex-direction:column;padding:14px 10px;border-right:1px solid #1e242a;background:#0f1317;min-height:0;">
+      <div style="display:flex;align-items:center;gap:9px;height:38px;padding:0 10px;border:1px solid #1e242a;border-radius:8px;background:#12171b;">
+        <span style="width:8px;height:8px;border-radius:50%;background:#c6f24e;"></span>
+        <span style="flex:1;font-size:13px;font-weight:600;">GraphBan</span>
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#7f8891" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6l3-3 3 3M5 10l3 3 3-3"></path></svg>
+      </div>
+      <div data-anchor="Dashboard" style="margin-top:14px;padding:6px 10px;border-radius:8px;font-size:13px;font-weight:500;color:#8b949e;">Dashboard</div>
+      <div style="flex:1;min-height:0;overflow:hidden;">
+        <sc-for list="{{ nav }}" as="g" hint-placeholder-count="3">
+          <div style="margin:14px 10px 4px;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">{{ g.label }}</div>
+          <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="5">
+            <div data-anchor="{{ it.name }}" style="padding:5px 10px;border-radius:8px;font-size:13px;background:{{ it.bg }};color:{{ it.c }};">{{ it.name }}</div>
+          </sc-for>
+        </sc-for>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:1px;padding-top:8px;border-top:1px solid #1e242a;">
+        <sc-for list="{{ pinned }}" as="it" hint-placeholder-count="4">
+          <div data-anchor="{{ it }}" style="padding:5px 10px;border-radius:8px;font-size:13px;color:#8b949e;">{{ it }}</div>
+        </sc-for>
+      </div>
+    </aside>
+
+    <div style="display:flex;flex-direction:column;min-width:0;min-height:0;">
+      <header style="display:flex;align-items:center;gap:10px;height:48px;padding:0 16px 0 24px;border-bottom:1px solid #1e242a;">
+        <span style="font-size:13px;color:#dfe3e7;font-weight:500;">Tracker</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#e0b34a;border:1px solid rgba(224,179,74,.35);border-radius:6px;padding:2px 7px;">GRPH-P67 — NOT WIRED</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:#c9b8ff;border:1px solid rgba(201,184,255,.35);border-radius:6px;padding:2px 7px;">SPECULATIVE — NOT BACKED</span>
+        <span style="flex:1;"></span>
+        <button data-anchor="Agent sidebar" aria-label="Toggle agent sidebar" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid #2a333a;background:transparent;color:#8b949e;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><path d="M15 3v18"></path></svg>
+        </button>
+      </header>
+      <main style="flex:1;min-height:0;padding:24px 32px;display:flex;flex-direction:column;gap:16px;">
+        <div style="display:flex;align-items:baseline;gap:12px;">
+          <span style="font-size:20px;font-weight:600;">Tracker</span>
+          <span style="flex:0 0 auto;white-space:nowrap;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8b949e;">CORE · {{ itemCount }} items</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;">
+          <sc-for list="{{ states }}" as="s" hint-placeholder-count="6">
+            <span style="display:flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:8px;border:1px solid #1e242a;background:#0f1317;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.5px;color:#8b949e;"><span style="width:6px;height:6px;border-radius:50%;background:{{ s.c }};"></span>{{ s.label }}<span style="color:#7f8891;">{{ s.n }}</span></span>
+          </sc-for>
+        </div>
+        <sc-if value="{{ populated }}" hint-placeholder-val="{{ true }}">
+          <div style="display:flex;flex-direction:column;max-width:980px;border:1px solid #1e242a;border-radius:12px;overflow:hidden;">
+            <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:#0f1317;border-bottom:1px solid #1e242a;">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">BACKLOG · 9</span>
+              <span style="flex:1;"></span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.5px;color:#7f8891;border:1px solid #2a333a;border-radius:5px;padding:1px 6px;">STAND-IN ROWS — SEED HAS A COUNT, NOT TITLES</span>
+            </div>
+            <sc-for list="{{ rows }}" as="r" hint-placeholder-count="9">
+              <div style="display:flex;align-items:center;gap:14px;height:42px;padding:0 14px;border-top:1px solid {{ r.topB }};">
+                <span style="width:58px;font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#8b949e;">{{ r.id }}</span>
+                <span style="height:8px;width:{{ r.w }};border-radius:4px;background:#1b2127;"></span>
+                <span style="flex:1;"></span>
+                <span style="display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.6px;color:#8b949e;"><span style="width:6px;height:6px;border-radius:50%;background:#8b949e;"></span>BACKLOG</span>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+        <sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}">
+          <div style="max-width:980px;height:260px;display:flex;align-items:center;justify-content:center;border:1px dashed #2a333a;border-radius:12px;font-size:13px;color:#7f8891;">No items yet.</div>
+        </sc-if>
+      </main>
+    </div>
+
+    <sc-if value="{{ touring }}" hint-placeholder-val="{{ true }}">
+      <div aria-hidden="true" style="position:absolute;z-index:20;top:{{ spot.top }};left:{{ spot.left }};width:{{ spot.w }};height:{{ spot.h }};border-radius:12px;box-shadow:0 0 0 2px rgba(198,242,78,.55),0 0 0 9999px rgba(10,11,13,.6);pointer-events:none;transition:{{ spotT }};"></div>
+      <div style="position:absolute;inset:0;z-index:19;"></div>
+      <div ref="{{ popRef }}" role="dialog" aria-modal="true" aria-labelledby="tour-title" aria-describedby="tour-body" style="position:absolute;z-index:21;top:{{ pop.top }};left:{{ pop.left }};width:{{ popW }};display:flex;flex-direction:column;gap:10px;padding:14px 16px 12px;border:1px solid #2a333a;border-radius:12px;background:#1b2127;box-shadow:0 12px 32px rgba(0,0,0,.45),0 2px 6px rgba(0,0,0,.3);transition:{{ popT }};">
+        <span aria-hidden="true" style="position:absolute;top:{{ arrow.top }};left:{{ arrow.left }};width:12px;height:12px;background:#1b2127;border-left:1px solid #2a333a;border-bottom:1px solid #2a333a;transform:{{ arrow.rot }};"></span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">{{ stop.pos }}</span>
+        <span id="tour-title" style="font-size:15px;font-weight:600;">{{ stop.title }}</span>
+        <sc-if value="{{ notPlug }}" hint-placeholder-val="{{ true }}">
+        <div id="tour-body" style="display:flex;flex-direction:column;gap:6px;">
+          <span style="font-size:13px;line-height:1.5;color:#dfe3e7;text-wrap:pretty;">{{ stop.body }}</span>
+          <sc-if value="{{ emptyLine }}" hint-placeholder-val="{{ false }}"><span style="font-size:12.5px;color:#8b949e;">Your agent's first items will appear here.</span></sc-if>
+          <a href="#" style="align-self:flex-start;font-size:12.5px;color:#7f8891;" style-hover="color:#dfe3e7;">Read more →</a>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:2px;">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#7f8891;">Esc to exit</span>
+          <span style="flex:1;"></span>
+          <button onClick="{{ back }}" disabled="{{ backDisabled }}" style="height:30px;padding:0 11px;border-radius:8px;border:1px solid #2a333a;background:transparent;color:{{ backC }};font-size:12.5px;" style-hover="border-color:#626c75;">Back</button>
+          <button ref="{{ nextRef }}" onClick="{{ next }}" style="height:30px;padding:0 13px;border-radius:8px;border:1px solid #c6f24e;background:#c6f24e;color:#0a0b0d;font-size:12.5px;font-weight:600;" style-hover="background:#d8ff74;border-color:#d8ff74;">{{ nextLabel }}</button>
+        </div>
+        </sc-if>
+        <sc-if value="{{ isPlug }}" hint-placeholder-val="{{ false }}">
+          <span id="tour-body" style="font-size:13.5px;line-height:1.55;color:#dfe3e7;text-wrap:pretty;">Working with a team? Link this deployment to an org and you get shared house rules, memory that carries across projects, one roster of everyone's agents, and capacity routing across your team's entitlements. Your code graph stays local-first.</span>
+
+          <sc-if value="{{ plugForm }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid #2a333a;border-radius:8px;background:#12171b;">
+              <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;">
+                <label style="display:flex;flex-direction:column;gap:5px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">NAME</span><input value="{{ reqName }}" onInput="{{ setReqName }}" style="height:32px;padding:0 10px;border-radius:8px;border:1px solid #626c75;background:#0f1317;color:#e6e9ec;font-size:13px;"></label>
+                <label style="display:flex;flex-direction:column;gap:5px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">EMAIL</span><input type="email" value="{{ reqEmail }}" onInput="{{ setReqEmail }}" style="height:32px;padding:0 10px;border-radius:8px;border:1px solid #626c75;background:#0f1317;color:#e6e9ec;font-size:13px;"></label>
+              </div>
+              <label style="display:flex;flex-direction:column;gap:5px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">NOTE · OPTIONAL</span><textarea value="{{ reqNote }}" onInput="{{ setReqNote }}" rows="2" style="resize:none;padding:8px 10px;border-radius:8px;border:1px solid #626c75;background:#0f1317;color:#e6e9ec;font-family:'IBM Plex Sans',sans-serif;font-size:13px;line-height:1.4;"></textarea></label>
+              <sc-if value="{{ sendBlocked }}" hint-placeholder-val="{{ true }}"><span style="font-size:12px;color:#8b949e;">Add an email so the invite has somewhere to go.</span></sc-if>
+            </div>
+          </sc-if>
+          <sc-if value="{{ plugSent }}" hint-placeholder-val="{{ false }}">
+            <div role="status" style="display:flex;align-items:baseline;gap:7px;font-size:12.5px;"><span style="font-family:'IBM Plex Mono',monospace;color:#8b949e;">◌</span><span style="color:#dfe3e7;">{{ sentText }}</span></div>
+          </sc-if>
+
+          <div style="display:grid;grid-template-columns:{{ plugCols }};gap:8px;margin-top:2px;">
+            <sc-if value="{{ hasPlugAction }}" hint-placeholder-val="{{ true }}">
+              <button ref="{{ nextRef }}" onClick="{{ plugAction }}" disabled="{{ plugActionDisabled }}" style="height:34px;padding:0 12px;border-radius:8px;border:1px solid #626c75;background:#12171b;color:{{ plugActionC }};font-size:13px;font-weight:500;" style-hover="border-color:#c6f24e;">{{ plugActionLabel }}</button>
+            </sc-if>
+            <button onClick="{{ exitTour }}" style="height:34px;padding:0 12px;border-radius:8px;border:1px solid #626c75;background:#12171b;color:#e6e9ec;font-size:13px;font-weight:500;" style-hover="border-color:#c6f24e;">{{ notNowLabel }}</button>
+          </div>
+          <sc-if value="{{ hasPlugHint }}" hint-placeholder-val="{{ true }}"><span style="font-size:12px;color:#7f8891;">{{ plugHint }}</span></sc-if>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#7f8891;">Esc to exit</span>
+            <span style="flex:1;"></span>
+            <button onClick="{{ back }}" style="height:28px;padding:0 10px;border-radius:8px;border:1px solid #2a333a;background:transparent;color:#dfe3e7;font-size:12px;" style-hover="border-color:#626c75;">Back</button>
+          </div>
+        </sc-if>
+      </div>
+    </sc-if>
+    <sc-if value="{{ exited }}" hint-placeholder-val="{{ false }}">
+      <button onClick="{{ restart }}" style="position:absolute;right:16px;bottom:16px;z-index:5;height:30px;padding:0 12px;border-radius:8px;border:1px solid #626c75;background:#12171b;color:#dfe3e7;font-family:'IBM Plex Mono',monospace;font-size:11px;">{{ exitedLabel }} · restart</button>
+    </sc-if>
+  </div>
+
+  <section aria-label="Tour stops" style="padding:24px 32px 40px;display:flex;flex-direction:column;gap:12px;">
+    <div style="display:flex;align-items:baseline;gap:12px;">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.7px;color:#7f8891;">{{ stripHead }}</span>
+      
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));gap:10px;">
+      <sc-for list="{{ strip }}" as="t" hint-placeholder-count="8">
+        <button onClick="{{ t.go }}" aria-current="{{ t.current }}" style="display:flex;flex-direction:column;gap:8px;padding:10px;border-radius:12px;border:1px {{ t.borderStyle }} {{ t.border }};background:#0f1317;color:#e6e9ec;text-align:left;" style-hover="border-color:#626c75;">
+          <span style="position:relative;display:block;height:62px;border-radius:8px;border:1px solid #1e242a;background:#0a0b0d;overflow:hidden;">
+            <span style="position:absolute;left:0;top:0;bottom:0;width:22%;background:#0f1317;border-right:1px solid #1e242a;"></span>
+            <span style="position:absolute;left:22%;right:0;top:0;height:9px;border-bottom:1px solid #1e242a;"></span>
+            <span style="position:absolute;top:{{ t.my }};left:{{ t.mx }};width:{{ t.mw }};height:7px;border-radius:3px;background:{{ t.mark }};"></span>
+          </span>
+          <span style="display:flex;align-items:center;gap:6px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7f8891;">{{ t.n }}</span><span style="font-size:12.5px;font-weight:600;">{{ t.title }}</span></span>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#7f8891;">{{ t.anchor }}</span>
+          <span style="font-size:11.5px;line-height:1.4;color:#8b949e;text-wrap:pretty;">{{ t.body }}</span>
+          <sc-if value="{{ t.skipNote }}" hint-placeholder-val="{{ false }}">
+            <span style="display:flex;flex-direction:column;gap:3px;padding-top:6px;border-top:1px dashed #2a333a;">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.6px;color:#8b949e;">SKIPPED · no Fleet entry in this nav</span>
+            </span>
+          </sc-if>
+        </button>
+      </sc-for>
+    </div>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;view&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;populated&quot;,&quot;empty&quot;],&quot;default&quot;:&quot;populated&quot;,&quot;tsType&quot;:&quot;'populated' | 'empty'&quot;},&quot;stop&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[2,7,&quot;org&quot;],&quot;default&quot;:2,&quot;tsType&quot;:&quot;2 | 7 | 'org'&quot;},&quot;orgVariant&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;self_link&quot;,&quot;self_request&quot;,&quot;request_form&quot;,&quot;request_sent&quot;,&quot;request_15d&quot;,&quot;hosted&quot;],&quot;default&quot;:&quot;self_link&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Org plug&quot;},&quot;fleetInNav&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;reducedMotion&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;}}">class Component extends DCLogic {
+  frameRef = React.createRef(); popRef = React.createRef(); nextRef = React.createRef();
+  STOPS = [
+    ["Dashboard", "Dashboard", "rail › Dashboard", "Setup progress and the first-job counters stay here until each one is proven.", 14, 4, 15],
+    ["Tracker", "Tracker", "rail › Tracker", "One linear stream, six states, no boards. Agents claim from the top, and the files an item names — its touchpoints — keep parallel agents from colliding.", 26, 4, 13],
+    ["Specs", "Specs", "rail › Specs", "Versioned specs. Draft, grill, approve, then decompose into tracked items.", 33, 4, 11],
+    ["Agent sidebar", "Agent sidebar", "top bar › agent toggle", "Ask about the page you're on. It calls the same tools your agent does.", 1, 88, 8],
+    ["Memory review", "Memory triage", "rail › Memory triage", "Candidates your agent proposed. Nothing is published until you publish it.", 74, 4, 15],
+    ["Code graph", "Code graph", "rail › Code graph", "Modules, files and symbols from your checkout. Agents read it before they touch code.", 44, 4, 15],
+    ["Fleet", "Fleet.v2", "rail › Fleet.v2", "Who works here and what they spawn as.", 56, 4, 12],
+    ["Activity", "Activity", "rail › Activity", "Every accepted change, attributed to a person or an agent.", 64, 4, 12],
+    ["Org plug", "Organization", "rail › Organization", "Working with a team? Link this deployment to an org. Not now is always an equal choice.", 84, 4, 16],
+  ];
+  idxOf(p) { const i = p.stop === "org" ? 8 : (Number(p.stop) || 2) - 1; return i === 6 && p.fleetInNav === false ? 7 : i; }
+  phaseOf(p) { return { request_form: "form", request_sent: "sent", request_15d: "sent15" }[p.orgVariant] || "idle"; }
+  state = { i: this.idxOf(this.props), exited: false, spot: null, popH: 0, phase: this.phaseOf(this.props), reqName: "Alex", reqEmail: "", reqNote: "" };
+  componentDidMount() {
+    this._key = (e) => { if (e.key === "Escape" && !this.state.exited) { e.preventDefault(); this.setState({ exited: true }); } };
+    window.addEventListener("keydown", this._key);
+    this._rs = () => this.measure();
+    window.addEventListener("resize", this._rs);
+    this.remeasure(); this.focusNext();
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => this.measure());
+  }
+  componentWillUnmount() { clearTimeout(this._mt); window.removeEventListener("keydown", this._key); window.removeEventListener("resize", this._rs); }
+  componentDidUpdate(pp) {
+    if (pp.orgVariant !== this.props.orgVariant) this.setState({ phase: this.phaseOf(this.props) });
+    if (pp.stop !== this.props.stop || pp.fleetInNav !== this.props.fleetInNav) this.goTo(this.idxOf(this.props));
+    else if (!this.state.exited) this.measure();
+  }
+  focusNext() { setTimeout(() => { const b = this.nextRef.current; b && b.focus({ preventScroll: true }); }, 30); }
+  measure() {
+    const f = this.frameRef.current; if (!f) return;
+    const el = f.querySelector(`[data-anchor="${this.STOPS[this.state.i][1]}"]`); if (!el) return;
+    const F = f.getBoundingClientRect(), r = el.getBoundingClientRect();
+    const spot = { top: Math.round(r.top - F.top - 4), left: Math.round(r.left - F.left - 8), w: Math.round(r.width + 16), h: Math.round(r.height + 8), fw: Math.round(F.width), fh: Math.round(F.height) };
+    const o = this.state.spot, ph = this.popRef.current ? this.popRef.current.offsetHeight : 0;
+    if (!o || o.top !== spot.top || o.left !== spot.left || o.w !== spot.w || o.h !== spot.h || o.fw !== spot.fw) this.setState({ spot });
+    if (ph && Math.abs(ph - this.state.popH) > 1) this.setState({ popH: ph });
+  }
+  fleetSkipped() { return this.props.fleetInNav === false; }
+  goTo(i, dir) { if (i === 6 && this.fleetSkipped()) i = dir === -1 ? 5 : 7; this.setState({ i, exited: false }, () => { this.remeasure(); this.focusNext(); }); }
+  remeasure() { this.measure(); requestAnimationFrame(() => { this.measure(); requestAnimationFrame(() => this.measure()); }); clearTimeout(this._mt); this._mt = setTimeout(() => this.measure(), 150); }
+  renderVals() {
+    const S = this.state, st = this.STOPS[S.i];
+    const reduce = !!this.props.reducedMotion || (typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches);
+    const E = "cubic-bezier(.2,.8,.2,1)";
+    const populated = (this.props.view ?? "populated") === "populated";
+    const sp = S.spot || { top: 0, left: 0, w: 0, h: 0, fw: 1440, fh: 900 };
+    const isPlug = S.i === 8, PW = isPlug ? 400 : 320, PH = S.popH || 260;
+    const below = sp.left + sp.w + 14 + PW > sp.fw - 12;
+    let pop, arrow;
+    if (below) {
+      const left = Math.max(12, sp.left + sp.w - PW), top = sp.top + sp.h + 12;
+      pop = { top: top + "px", left: left + "px" };
+      arrow = { top: "-7px", left: Math.min(PW - 24, sp.left + sp.w / 2 - left - 6) + "px", rot: "rotate(135deg)" };
+    } else {
+      const top = Math.max(12, Math.min(sp.top + sp.h / 2 - 48, sp.fh - PH - 12)), left = sp.left + sp.w + 14;
+      pop = { top: top + "px", left: left + "px" };
+      arrow = { top: Math.max(12, sp.top + sp.h / 2 - top - 6) + "px", left: "-7px", rot: "rotate(45deg)" };
+    }
+    const fleetIn = !this.fleetSkipped(), n = fleetIn ? 8 : 7;
+    const stripHead = `TOUR · ${n} STOPS + ORG PLUG`;
+    const posOf = (i) => (!fleetIn && i > 6 ? i : i + 1);
+    const variant = this.props.orgVariant ?? "self_link";
+    const kind = variant === "hosted" ? "hosted" : variant === "self_link" ? "link" : "request";
+    const ph = S.phase, exitTour = () => this.setState({ exited: true });
+    const hasEmail = !!S.reqEmail.trim();
+    let plug;
+    if (kind === "link") plug = { label: "Link to an org →", act: exitTour, hint: "Opens Settings → Cloud / Sync." };
+    else if (kind === "hosted") plug = { label: "Invite a teammate →", act: exitTour, hint: "Opens Members → Invite." };
+    else if (ph === "idle") plug = { label: "Request an org", act: () => this.setState({ phase: "form" }), hint: "" };
+    else if (ph === "form") plug = { label: "Send", act: () => hasEmail && this.setState({ phase: "sent" }), hint: "", disabled: !hasEmail };
+    else if (ph === "sent15") plug = { label: "Request again", act: () => this.setState({ phase: "form" }), hint: "" };
+    else plug = null;
+    const plugVals = {
+      isPlug, notPlug: !isPlug, popW: PW + "px",
+      plugForm: kind === "request" && ph === "form", plugSent: kind === "request" && (ph === "sent" || ph === "sent15"),
+      sentText: ph === "sent15" ? "Requested on 21 Oct. We'll email an invite." : "Requested on 5 Nov. We'll email an invite.",
+      reqName: S.reqName, setReqName: (e) => this.setState({ reqName: e.target.value }),
+      reqEmail: S.reqEmail, setReqEmail: (e) => this.setState({ reqEmail: e.target.value }),
+      reqNote: S.reqNote, setReqNote: (e) => this.setState({ reqNote: e.target.value }),
+      sendBlocked: kind === "request" && ph === "form" && !hasEmail,
+      hasPlugAction: !!plug, plugAction: plug ? plug.act : exitTour, plugActionLabel: plug ? plug.label : "",
+      plugActionDisabled: !!(plug && plug.disabled), plugActionC: plug && plug.disabled ? "#7f8891" : "#e6e9ec",
+      plugCols: plug ? "minmax(0,1fr) minmax(0,1fr)" : "minmax(0,1fr)",
+      notNowLabel: plug ? "Not now" : "Finish tour", exitTour,
+      hasPlugHint: !!(plug && plug.hint), plugHint: plug ? plug.hint : "",
+    };
+    const SC = [["BACKLOG", "#8b949e"], ["NEXT", "#7ca2ff"], ["IN PROGRESS", "#c6f24e"], ["REVIEW", "#e0b34a"], ["DONE", "#5fd07a"], ["BLOCKED", "#ff6b6b"]];
+    const W = ["46%", "38%", "52%", "31%", "44%", "36%", "49%", "28%", "41%"];
+    return {
+      frameRef: this.frameRef, popRef: this.popRef, nextRef: this.nextRef,
+      nav: [
+        { label: "PLAN", items: ["Tracker", "Triage", "Requests", "Specs", "Roadmap"] },
+        { label: "BUILD", items: ["Code graph", "Stack", "Links", "Fleet.v2", "Fleet.v1", "Outposts"] },
+        { label: "OBSERVE", items: ["Activity", "Live", "Memory", "Memory triage", "Lessons", "Harness"] },
+      ].map((g) => ({ label: g.label, items: g.items.filter((name) => fleetIn || name !== "Fleet.v2").map((name) => ({ name, bg: name === "Tracker" ? "#1b2127" : "transparent", c: name === "Tracker" ? "#e6e9ec" : "#8b949e" })) })),
+      pinned: ["Organization", "Usage", "Feedback Kit", "Settings"],
+      populated, empty: !populated, itemCount: populated ? "9" : "0",
+      states: SC.map(([label, c], i) => ({ label, c, n: populated && i === 0 ? "9" : "0" })),
+      rows: populated ? W.map((w, i) => ({ id: `CORE-${i + 1}`, w, topB: i ? "#1e242a" : "transparent" })) : [],
+      touring: !S.exited && !!S.spot, exited: S.exited, exitedLabel: "Tour exited", restart: () => this.goTo(S.i),
+      spot: { top: sp.top + "px", left: sp.left + "px", w: sp.w + "px", h: sp.h + "px" },
+      spotT: reduce ? "none" : `top 280ms ${E}, left 280ms ${E}, width 280ms ${E}, height 280ms ${E}`,
+      popT: reduce ? "none" : `top 280ms ${E}, left 280ms ${E}`,
+      pop, arrow,
+      ...plugVals, stripHead,
+      stop: { pos: isPlug ? "END OF TOUR" : `${posOf(S.i)} / ${n}`, title: isPlug ? "Organization" : st[0], body: st[3] },
+      emptyLine: !populated && st[0] === "Tracker",
+      back: () => S.i > 0 && this.goTo(S.i - 1, -1), backDisabled: S.i === 0, backC: S.i === 0 ? "#7f8891" : "#dfe3e7",
+      next: () => this.goTo(S.i + 1, 1), nextLabel: "Next",
+      strip: this.STOPS.map(([title, , anchor, body, y, x, w], i) => {
+        const cur = i === S.i, skip = title === "Fleet" && !fleetIn;
+        return { n: i >= 8 || skip ? "—" : String(posOf(i)), title, anchor, body, current: cur ? "step" : "false", skipNote: skip,
+          border: cur ? "#c6f24e" : "#2a333a", borderStyle: skip ? "dashed" : "solid",
+          my: y + "%", mx: x + "%", mw: w + "%", mark: cur ? "#c6f24e" : "#626c75", go: () => !skip && this.goTo(i) };
+      }),
+    };
+  }
+}</script>
+</body>
+</html>
