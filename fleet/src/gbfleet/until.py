@@ -1130,8 +1130,9 @@ def _loop(
             empty = 0
             if review_fails >= REVIEWER_FAILS:
                 wave.reason = "review-unsigned"
-                return _finish(wave, "review-unsigned", 1, minted, planner,
-                               review=reviews, waits=waits, outside=outside)
+                return _name_ci_stuck(
+                    _finish(wave, "review-unsigned", 1, minted, planner,
+                            review=reviews, waits=waits, outside=outside), ci_stuck)
             seat, minted_one = _take_seat(
                 pool, planner, agent_id, wave_name, server, api_key,
                 mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
@@ -1166,8 +1167,9 @@ def _loop(
         unheld = [r for r in rows if not review_held(r)]
         if unheld:
             wave.reason = "review-unsigned"
-            return _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
-                           waits=waits, outside=outside)
+            return _name_ci_stuck(
+                _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
+                        waits=waits, outside=outside), ci_stuck)
 
         empty += 1
         if empty >= empty_ticks:
@@ -1182,8 +1184,9 @@ def _loop(
             # polls above it is still not "nothing unsigned", so it must not read as idle.
             if rows:
                 wave.reason = "review-unsigned"
-                return _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
-                               waits=waits, outside=outside)
+                return _name_ci_stuck(
+                    _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
+                            waits=waits, outside=outside), ci_stuck)
             if waits:
                 wave.reason = "idle-with-waits"
                 return _finish(wave, "idle-with-waits", 0, minted, planner, waits=waits,
@@ -2385,9 +2388,26 @@ def _is_config(exc: ToolFailed) -> bool:
 _REFUSED_AT_DONE = "refused at `done` ("
 
 
+def _attests_suite(ev: dict) -> bool:
+    """An attestation row that carries a `suite_green` predicate, passed or failed."""
+    if ev.get("kind") != "attestation":
+        return False
+    return any(isinstance(p, dict) and p.get("name") == "suite_green"
+               for p in ev.get("predicates") or [])
+
+
 def _latest_refusal(row: dict) -> str:
+    """The newest `done` refusal, or "" when CI has attested `suite_green` since it.
+
+    A passing attestation lets the next sign_off through; a failing one is a red run a
+    reviewer can bounce on. Either way the refusal no longer describes the row's gate.
+    """
     for ev in reversed(row.get("evidence") or []):
-        detail = str(ev.get("detail") or "") if isinstance(ev, dict) else ""
+        if not isinstance(ev, dict):
+            continue
+        if _attests_suite(ev):
+            return ""
+        detail = str(ev.get("detail") or "")
         if detail.startswith(_REFUSED_AT_DONE):
             return detail
     return ""
@@ -2403,6 +2423,14 @@ def ci_unattestable(row: dict) -> bool:
     detail = _latest_refusal(row)
     return (detail.startswith(_REFUSED_AT_DONE + "pr_ci_not_green)")
             and "cooldown over" in detail)
+
+
+def _name_ci_stuck(report: Report, ci_stuck: list[dict]) -> Report:
+    """GRPH-1409: a `review-unsigned` exit also names the rows no reviewer was spawned for."""
+    if ci_stuck:
+        stuck = "; ".join(ci_stuck_detail(r) for r in ci_stuck)
+        report.detail = f"{report.detail}; {stuck}" if report.detail else stuck
+    return report
 
 
 def ci_stuck_detail(row: dict) -> str:

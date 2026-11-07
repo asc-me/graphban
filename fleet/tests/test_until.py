@@ -2491,3 +2491,28 @@ def test_ci_failure_refusal_still_gets_a_reviewer(
     # A newer, different refusal supersedes it.
     other = {"kind": "note", "detail": "refused at `done` (adversarial): nope"}
     assert ci_unattestable({"evidence": [_CI_STUCK, other]}) is False
+
+
+def test_a_suite_green_attestation_after_the_refusal_clears_the_stuck_row():
+    """GRPH-1409 bounce: CI attesting after the refusal lets a reviewer sign it off again."""
+    from gbfleet.until import ci_unattestable
+    green = {"kind": "attestation", "commit": "5f4e0ecc",
+             "predicates": [{"name": "suite_green", "passed": True}]}
+    assert ci_unattestable({"evidence": [_CI_STUCK, green]}) is False
+    # A red attestation is a bounce a reviewer can make, so it also needs a reviewer.
+    red = {"kind": "attestation", "predicates": [{"name": "suite_green", "passed": False}]}
+    assert ci_unattestable({"evidence": [_CI_STUCK, red]}) is False
+    # An attestation OLDER than the refusal does not clear it.
+    assert ci_unattestable({"evidence": [green, _CI_STUCK]}) is True
+    # A scans-only attestation says nothing about suite_green.
+    scans = {"kind": "attestation", "predicates": [{"name": "scans_clean", "passed": True}]}
+    assert ci_unattestable({"evidence": [_CI_STUCK, scans]}) is True
+
+
+def test_a_review_unsigned_exit_names_the_ci_stuck_rows_beside_it():
+    """GRPH-1409 bounce: in the mixed case the stuck rows are still named in the detail."""
+    from gbfleet.until import Report, _name_ci_stuck
+    row = {"id": "GRPH-9", "evidence": [_CI_STUCK]}
+    report = _name_ci_stuck(Report(ok=False, reason="review-unsigned", exit=1), [row])
+    assert "GRPH-9" in report.detail and "owner close" in report.detail
+    assert _name_ci_stuck(Report(ok=False, reason="review-unsigned", exit=1), []).detail == ""
