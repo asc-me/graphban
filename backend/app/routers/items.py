@@ -63,6 +63,7 @@ def create_item(
             reporter=reporter,
             question=body.question,
             options=body.options,
+            kind=body.kind,
         )
     except items_svc.MissingAttestation as e:
         raise HTTPException(409, str(e))
