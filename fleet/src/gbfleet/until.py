@@ -672,6 +672,7 @@ def _loop(
     mint_deadline = time.monotonic() + mint_budget
     mint_left = mint_tries
     review_fails = 0
+    ci_logged: set[tuple[str, str, str]] = set()  # GRPH-1392: events already logged
     review_spawned: list = []  # GRPH-1374: children this loop spawned for review rows
     # GRPH-842. One gate for the whole run, not one per spawn: a child spawned seconds ago
     # is not in the kernel's numbers yet, and a fresh reading per seat cannot know that. Its
@@ -1104,7 +1105,8 @@ def _loop(
         # GRPH-965 and built it on the reviewer's branch while the child actually assigned to
         # that item produced nothing. The authority is the seat, not the prompt, so the gate is
         # server-side (`items.review_only_seat`) and this is only the mint that asks for it.
-        unheld_review = [r for r in rows if not review_held(r)]
+        unheld_review = _ci_attested(
+            [r for r in rows if not review_held(r)], repo, ci_logged)
         # No memory gate on this branch, deliberately (GRPH-842): `not live` means nothing
         # is running, and the gate never refuses the first child — so a check here could
         # only ever cost a `vm_stat` per poll and answer yes. **If that guard goes, this
@@ -2321,6 +2323,67 @@ def _is_config(exc: ToolFailed) -> bool:
     if "may not" in message or "not planner" in message:
         return True
     return False
+
+
+def ci_verdict(repo: Path, branch: str) -> tuple[str, str, str]:
+    """(state, head, failing_job) for `branch`'s PR (GRPH-1392).
+
+    state is `green`, `pending`, `red` or `unknown`. `unknown` (no gh, no PR, unreadable)
+    does not hold a reviewer: a repo without CI must not wedge its review queue.
+    """
+    from . import propose
+    if not branch or not propose.find():
+        return "unknown", "", ""
+    try:
+        done = propose._gh(repo, "pr", "view", branch, "--json", "headRefOid,statusCheckRollup")
+        if done.returncode != 0:
+            return "unknown", "", ""
+        data = json.loads(done.stdout or "{}")
+    except Exception:  # noqa: BLE001 — a failed read is unknown, not red
+        return "unknown", "", ""
+    head = str(data.get("headRefOid") or "")
+    rollup = data.get("statusCheckRollup") or []
+    if not head:
+        return "unknown", "", ""
+    pending = False
+    for check in rollup:
+        verdict = str(check.get("conclusion") or check.get("state") or "").upper()
+        if verdict in propose._PASSING:
+            continue
+        if verdict in ("", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING"):
+            pending = True
+            continue
+        return "red", head, str(check.get("name") or check.get("context") or "unknown job")
+    return ("pending" if pending or not rollup else "green"), head, ""
+
+
+def _ci_attested(rows: list[dict], repo: Path, logged: set) -> list[dict]:
+    """The unheld review rows a reviewer may be spawned for (GRPH-1392).
+
+    A reviewer cannot `sign_off` until CI has attested the head, so a spawn against pending
+    CI is wasted. Pending rows are held back and logged once per head as `review_waits_on_ci`.
+    Red rows pass through with a `review_ci_red` event naming the failing job: the supervisor
+    may not bounce (PRD-22 §4), and the reviewer it spawns can.
+    """
+    ready = []
+    for row in rows:
+        item = str(row.get("id") or "")
+        state, head, job = ci_verdict(repo, str(row.get("branch") or ""))
+        if state == "pending":
+            key = ("review_waits_on_ci", item, head)
+            if key not in logged:
+                logged.add(key)
+                observe.emit("review_waits_on_ci", item=item, commit=head,
+                             detail=f"{item}: CI has not finished at {head[:12]}")
+            continue
+        if state == "red":
+            key = ("review_ci_red", item, head)
+            if key not in logged:
+                logged.add(key)
+                observe.emit("review_ci_red", item=item, commit=head, job=job,
+                             detail=f"{item}: CI failed at {head[:12]}: {job}")
+        ready.append(row)
+    return ready
 
 
 def review_held(row: dict) -> bool:
