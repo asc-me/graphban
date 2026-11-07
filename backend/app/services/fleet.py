@@ -1282,11 +1282,7 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     "put_canvas": ("planner", "worker"),
     "file_finding": ("planner", "worker"),
     "resolve_finding": ("planner", "worker"),
-    "accept_prompt": ("planner",),
-    "accept_design": ("planner",),
-    # GRPH-1304. Accepting the constraints hash is a person's decision, relayed like
-    # accept_prompt. Putting the candidate stays open to whoever builds the set.
-    "accept_set_constraints": ("planner",),
+    # GRPH-1368: no accept tool remains; a set aligns to its PRD (spec_alignment).
     "update_prd": ("planner",),
     "decompose_prd": ("planner",),
     "grill_prd": ("planner",),

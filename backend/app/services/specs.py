@@ -113,10 +113,6 @@ def design_set_view(db: Session, project_id: str, set_id: str) -> dict:
     screens = []
     for s in ds.screens:
         why = []
-        if not s.tier_confirmed:
-            why.append("tier not confirmed")
-        if not ds.constraints_accepted:
-            why.append("the set constraints are not accepted")
         if ds.status == "frozen":
             why.append("the set is frozen: its PRD is closed")
         screens.append({"screen": s.screen, "tier": s.tier, "tier_confirmed": s.tier_confirmed,
