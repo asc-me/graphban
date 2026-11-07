@@ -9,19 +9,19 @@
  */
 import type { Credential, ProjectSetup, SetupStatus, SetupStep } from "@/lib/types";
 
-/** Step ③ (Connect your agent) slots in between `model` and `first_job` with GRPH-1362. */
-export type QsStep = "where" | "project" | "model" | "first_job";
+export type QsStep = "where" | "project" | "model" | "connect" | "first_job";
 
 export const STEP_META: Record<QsStep, { num: string; label: string }> = {
   where: { num: "⓪", label: "Where" },
   project: { num: "①", label: "Project" },
   model: { num: "②", label: "Model" },
+  connect: { num: "③", label: "Connect" },
   first_job: { num: "④", label: "First job" },
 };
 
 /** Hosted skips ⓪: the answer is always "someone else's server". */
 export function stepsFor(hosted: boolean): QsStep[] {
-  return hosted ? ["project", "model", "first_job"] : ["where", "project", "model", "first_job"];
+  return hosted ? ["project", "model", "connect", "first_job"] : ["where", "project", "model", "connect", "first_job"];
 }
 
 /** The steps the top-bar chip counts: the numbered ones, ⓪ excluded (as drawn). */
@@ -33,6 +33,8 @@ export interface StepMark {
   status: SetupStatus;
   /** Why a step is `unknown`. */
   reason?: string;
+  /** What proved a ✓ step, when the server said (③'s first call). */
+  evidence?: string;
 }
 
 export interface MarkInputs {
@@ -71,6 +73,7 @@ export function deriveMarks(i: MarkInputs): Record<QsStep, StepMark> {
       where: { status: "pending" },
       project: { status: "pending" },
       model: { status: "pending" },
+      connect: { status: "pending" },
       first_job: { status: "pending" },
     };
   }
@@ -79,7 +82,7 @@ export function deriveMarks(i: MarkInputs): Record<QsStep, StepMark> {
       ? `Could not read setup: ${errText(i.setupError)}`
       : "Setup has not been read yet.";
     const unknown: StepMark = { status: "unknown", reason };
-    return { where: unknown, project: unknown, model: unknown, first_job: unknown };
+    return { where: unknown, project: unknown, model: unknown, connect: unknown, first_job: unknown };
   }
   const by = new Map(i.setup.steps.map((s) => [s.step, s]));
   const missing = (n: number) => `The server did not report step ${n}.`;
@@ -114,10 +117,19 @@ export function deriveMarks(i: MarkInputs): Record<QsStep, StepMark> {
       ? { status: "done" }
       : { status: "pending" };
 
+  // ③ is the server's step 5: ✓ only on a recorded first call. Opening ④, pressing Next or
+  // reaching Finish never reaches this line (design finding 1).
+  const connectStep = by.get(5);
+  const connect: StepMark = {
+    ...fromServer(connectStep, missing(5)),
+    ...(connectStep?.status === "done" ? { evidence: connectStep.detail } : {}),
+  };
+
   return {
     where: fromServer(by.get(0), missing(0)),
     project: fromServer(by.get(1), missing(1)),
     model,
+    connect,
     first_job,
   };
 }
@@ -168,4 +180,11 @@ export function storedWhere(step: SetupStep | undefined): "this_computer" | "ded
 
 export function normalizeAddress(a: string): string {
   return a.trim().replace(/\/+$/, "");
+}
+
+/** The address ⓪ stored for a dedicated server ("" for this computer or unanswered). */
+export function storedAddress(step: SetupStep | undefined): string {
+  if (!step || step.status !== "done") return "";
+  const m = /^dedicated_server at (.+)$/.exec(step.detail);
+  return m ? m[1] : "";
 }

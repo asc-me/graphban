@@ -57,7 +57,7 @@ Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
 | GET | `/api/projects/tag-suggestion` | JWT | A free tag derived from a project name (`?name=`). Prefills the creation form |
 | GET | `/api/projects/tag-check` | JWT | `{tag, available, reason}` for live form feedback (`?tag=`) |
 | GET | `/api/projects/{id}/counts` | JWT | The badge numbers the shell renders, a few integers instead of the four full lists |
-| GET | `/api/projects/{id}/setup` | JWT | The quick-start checklist, steps ⓪–④ as `{step, status, detail, how}` with `status` done\|pending\|unknown (a check that could not run is `unknown` with a `reason`, never `done`), plus `offline` and the caller's `onboarding`. Ticks are server state; `onboarding` is dialog progress only (GRPH-1360) |
+| GET | `/api/projects/{id}/setup` | JWT | The quick-start checklist, steps ⓪–④ plus step 5 (③ Connect your agent: ✓ only when a live `quickstart`-origin key for the project has `last_used`, with `proof: first_call`; `setup_project` still shows ①–④ only), each as `{step, status, detail, how}` with `status` done\|pending\|unknown (a check that could not run is `unknown` with a `reason`, never `done`), plus `offline` and the caller's `onboarding`. Ticks are server state; `onboarding` is dialog progress only (GRPH-1360) |
 | POST | `/api/projects/{id}/setup/confirm` | JWT (write) | Stores one human decision: `{decision: workspace}`, `{decision: offline}` or `{decision: server, where: this_computer\|dedicated_server, address}`. Anything else is 422. Each is audited as a `setup_confirm` event (GRPH-1360) |
 | POST | `/api/projects/{id}/retag` | JWT (write) | Move the project's tag. One UPDATE + one tag-history row + one audit event; **no other row in the database changes**. Retired tags are never reusable |
 | PATCH | `/api/projects/{id}` | JWT | Update project config. **Not** the tag — changing that has to record tag history |
@@ -654,7 +654,7 @@ Two response fields carry a distinction the UI depends on:
 | Method | Path | Auth |
 | --- | --- | --- |
 | GET | `/api/api-keys` | JWT |
-| POST | `/api/api-keys` | JWT (plaintext returned once). Optional `origin`: `web`, `gban_setup`, `gban_swamp_setup` or `fleet` (anything else is 422); omitted stores NULL (unknown), and the key is returned with `origin` on every read |
+| POST | `/api/api-keys` | JWT (plaintext returned once). Optional `origin`: `web`, `gban_setup`, `gban_swamp_setup`, `fleet` or `quickstart` (anything else is 422); omitted stores NULL (unknown), and the key is returned with `origin` on every read |
 | POST | `/api/api-keys/{id}/rotate` | JWT — body `{expires_in_days}`; mints an identical replacement (name, scopes, roles, tool_tiers, posture, project, origin) and revokes the old row in ONE transaction; plaintext returned once. 404 for another user's or a missing row; 409 for a revoked row, a `sync` row, a fleet-wave row, or a `gban_setup` / `gban_swamp_setup` row (rerun the command instead) |
 | DELETE | `/api/api-keys/{id}` | JWT — **revokes**; the row stays, marked `revoked`, and authenticates no one |
 

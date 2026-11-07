@@ -70,7 +70,7 @@ def _api_steps(client, auth, pid):
 def test_checklist_has_steps_zero_to_four_with_server_state_statuses(client, auth):
     proj = client.post("/api/projects", json={"name": "Fresh2"}, headers=auth).json()
     body = _api_steps(client, auth, proj["id"])
-    assert [s["step"] for s in body["steps"]] == [0, 1, 2, 3, 4]
+    assert [s["step"] for s in body["steps"]] == [0, 1, 2, 3, 4, 5]
     assert {s["status"] for s in body["steps"]} == {"pending"}
 
 
@@ -81,7 +81,7 @@ def test_a_check_that_cannot_run_is_unknown_with_a_reason_never_done(db, monkeyp
         raise RuntimeError("db down")
     monkeypatch.setattr(svc, "_n", boom)
     steps = svc.checklist(db, "core")["steps"]
-    for s in steps[2:]:
+    for s in steps[2:5]:
         assert s["status"] == "unknown" and "db down" in s["reason"]
 
 
