@@ -27,6 +27,7 @@ credentials stay in the source file.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -38,6 +39,8 @@ DEFAULT_SOURCE = "~/.claude.json"
 #: the child's OWN credential; copying the operator's would hand a child a key with different
 #: reach and make `independent()` meaningless — two agents, one credential.
 RESERVED = frozenset({"graphban", "gbfleet"})
+
+log = logging.getLogger("gbfleet.mcpshare")
 
 #: The project's grant, relative to the repository root. Committed, names only.
 PROJECT_FILE = ".gbfleet/servers"
@@ -110,7 +113,7 @@ def project_path(repo: Path | str) -> Path:
     return Path(repo) / PROJECT_FILE
 
 
-def project_names(repo: Path | str) -> list[str]:
+def project_entries(repo: Path | str) -> list[str]:
     """The names the project commits, in file order. `#` comments and blank lines ignored.
 
     A file that does not exist is "this project listed no build servers" and gives `[]`. A
@@ -132,10 +135,39 @@ def project_names(repo: Path | str) -> list[str]:
     return names
 
 
+def project_names(repo: Path | str) -> list[str]:
+    """The bare names, with any optional `?` marker removed."""
+    return [n[:-1].strip() if n.endswith("?") else n for n in project_entries(repo)]
+
+
+def split_optional(names: list[str]) -> tuple[list[str], list[str]]:
+    """(required, optional) from project-file names. A trailing `?` marks a nice-to-have
+    (`browser?`): skipped, with a log line, when the source lacks it. Unmarked is required
+    and still refuses."""
+    required, optional = [], []
+    for n in names:
+        if n.endswith("?"):
+            optional.append(n[:-1].strip())
+        else:
+            required.append(n)
+    return required, optional
+
+
 def grants(flag_names: list[str], repo: Path | str, source: str = "") -> dict[str, dict]:
     """`--mcp-server` UNION the project file. Two `select` calls, not one concatenated list, so
     each refusal names the list it came from."""
-    return {
-        **select(flag_names, source),
-        **select(project_names(repo), source, label=str(project_path(repo))),
-    }
+    required, optional = split_optional(project_entries(repo))
+    label = str(project_path(repo))
+    got = {**select(flag_names, source), **select(required, source, label=label)}
+    if optional:
+        # Validate names (patterns/reserved still refuse) before deciding what is present.
+        have = available(source)
+        for name in optional:
+            if any(c in name for c in "*?[") or name in RESERVED:
+                select([name], source, label=label)  # raises the usual refusal
+            if name in have:
+                got.setdefault(name, have[name])
+            else:
+                log.warning("optional MCP server %r (%s) not in %s; skipped",
+                            name, label, source_path(source))
+    return got
