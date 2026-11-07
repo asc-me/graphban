@@ -1115,7 +1115,7 @@ def _loop(
         # whole build (GRPH-1342). What still blocks is a live REVIEW spawn of this branch —
         # it has not claimed yet, so a second would stack reviewers on the same rows — and,
         # when anything is live, the memory gate and child cap like every other spawn.
-        review_busy = any(c in review_spawned for c in live)
+        review_busy = _review_busy(live, review_spawned)
         # GRPH-1387: the gate's reason is kept so the wait below names it, read once per poll
         # and only when this branch would otherwise spawn.
         review_gate = None
@@ -1801,6 +1801,18 @@ def _review_waits_on_live(wave: Wave, unheld: list, live: list, *,
         if gate and not named:
             _say(rid, f"{rid}: review waits on the memory gate ({gate})", None, "")
     return out
+
+
+def _review_busy(live: list, review_spawned: list | tuple) -> bool:
+    """A review spawn of ours that has not claimed yet blocks another (GRPH-1374): it has
+    not said which rows it is taking, so a second would stack reviewers on the same rows.
+
+    One that HAS claimed does not (GRPH-1413). It holds its rows, `review_held` keeps them
+    out of the next spawn's reach, and the rows nobody holds should not wait the 15-30
+    minutes its review takes. The memory gate and child cap still apply to every spawn.
+    """
+    return any(c in review_spawned and not [i for i in (getattr(c, "held_items", None) or []) if i]
+               for c in live)
 
 
 def _child_touches(child, item_id: str) -> bool:
