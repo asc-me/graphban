@@ -109,9 +109,9 @@ def test_constraints_accept_names_the_session_person_and_unblocks_compile(client
 
     view = client.get(f"/api/specs/design-sets/{sid}", headers=auth).json()
     assert view["constraints_accepted"] is False and view["body"] == "Teal only."
-    assert view["screens"][0]["compile_refused"] == ["the set constraints are not accepted"]
+    assert view["screens"][0]["compile_refused"] == []  # GRPH-1368: no accept before compile
     assert view["screens"][0]["prompt"] == "none"
-    assert client.post(f"/api/specs/design-sets/{sid}/compile", json={}, headers=auth).status_code == 422
+    assert client.post(f"/api/specs/design-sets/{sid}/compile", json={}, headers=auth).status_code == 200
 
     r = client.post(f"/api/specs/design-sets/{sid}/accept-constraints", headers=auth)
     assert r.status_code == 200, r.text
