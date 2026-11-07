@@ -209,8 +209,8 @@ TOOLS: list[dict[str, Any]] = [
                 "description": {"type": "string", "description": _ITEM_BODY_DESC},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "touchpoints": {"type": "array", "items": {"type": "string"},
-                                "description": "Files/globs. UNIONS."},
-                "touchpoints_remove": {"type": "array", "items": {"type": "string"}},
+                                "description": "Files/globs it affects. UNIONS — never removes "
+                                               "the rest. Empty is not a write."},
                 "effort": {"type": "integer", "description": _EFFORT_DESC},
                 "blocker": {"type": "string", "description": "Empty string clears it."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
@@ -2265,10 +2265,15 @@ _FLEET_ONLY_ARGS = {
     # GRPH-1031. Planner/supervisor retarget after a bounce. Fleet-only for the reason
     # every entry here is: the ceiling is measured on the base manifest, and a worker
     # must not be told it can rewrite identity. Empty is not a write.
-    "update_item": {"branch": {
-        "type": "string",
-        "description": "Planner/supervisor: retarget. Empty is not a write.",
-    }},
+    "update_item": {
+        "branch": {
+            "type": "string",
+            "description": "Planner/supervisor: retarget. Empty is not a write.",
+        },
+        # GRPH-1398. The fleet tier is where touchpoints are written and narrowed, and the core
+        # manifest has no headroom. The dispatcher accepts it whether or not it was advertised.
+        "touchpoints_remove": {"type": "array", "items": {"type": "string"}},
+    },
     # GRPH-1061. A tests scan's counts. Fleet-only for the reason every entry here is: the
     # ceiling had no room for it, and `record_scan` is a worker tool (fleet.py gates it to
     # the worker role). The REST ingest (`POST /platform/stack/scans`) takes the same field.
