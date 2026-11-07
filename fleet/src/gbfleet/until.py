@@ -1792,7 +1792,7 @@ def _review_waits_on_live(wave: Wave, unheld: list, live: list, *,
         for child in live:
             if child not in review_spawned or _child_touches(child, rid):
                 continue
-            if [i for i in (child.held_items or []) if i]:
+            if _has_claimed(child):
                 continue
             pid = getattr(getattr(child, "process", None), "pid", None)
             _say(rid, f"{rid}: review waits on reviewer pid {pid} not yet claimed",
@@ -1811,8 +1811,14 @@ def _review_busy(live: list, review_spawned: list | tuple) -> bool:
     out of the next spawn's reach, and the rows nobody holds should not wait the 15-30
     minutes its review takes. The memory gate and child cap still apply to every spawn.
     """
-    return any(c in review_spawned and not [i for i in (getattr(c, "held_items", None) or []) if i]
-               for c in live)
+    return any(c in review_spawned and not _has_claimed(c) for c in live)
+
+
+def _has_claimed(child) -> bool:
+    """A reviewer's claims are `review_items`; `held_items` is build leases only, which a
+    review-only seat never has (GRPH-1413 bounce). A builder's `held_items` still counts."""
+    return any(i for i in (list(getattr(child, "review_items", None) or [])
+                           + list(getattr(child, "held_items", None) or [])))
 
 
 def _child_touches(child, item_id: str) -> bool:
