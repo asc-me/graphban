@@ -1425,6 +1425,8 @@ class _Repeats:
 _HEARTBEAT = 300.0
 
 _contention = _Repeats()
+#: The soft-overlap line, deduplicated on its own text (it carries no countdown).
+_soft_overlap = _Repeats()
 
 
 def _free_and_blocked(clusters: dict) -> tuple[list[dict], list[dict]]:
@@ -1466,6 +1468,21 @@ def _waiting(blocked: list[dict], *, repeat: int = 0) -> str:
             + _merged_on(blocked)
             + "".join(f"; {h}" for c in blocked for h in _held_files(c))
             + ". Not spawning into work that cannot be claimed")
+
+
+def _overlapping(free: list[dict]) -> str:
+    """The soft-lease line (GRPH-1389): free clusters that overlap another agent's lease.
+
+    The overlap no longer blocks, because git reports a real conflict at merge time and a
+    conflict there bounces the item naming the files. The line says so, so an operator
+    does not read two agents on neighbouring files as a collision the fleet missed."""
+    soft = [c for c in free if c.get("soft_with")]
+    if not soft:
+        return ""
+    with_ = sorted({h for c in soft for h in (c.get("soft_with") or [])})
+    return (f"{len(soft)} cluster(s) overlap soft leases held by {', '.join(with_)}. "
+            "Spawning anyway: git reports a real conflict at merge, and a conflict bounces "
+            "the item naming the files")
 
 
 def _merged_on(blocked: list[dict]) -> str:
@@ -2217,6 +2234,9 @@ def _wanted_workers(
             _contention.clear()
         return 0
     _contention.clear()
+    overlap = _overlapping(free)
+    if overlap and _soft_overlap.changed(overlap):
+        observe.emit("contention", detail=overlap)
     # SLOTS AND WORK ARE BOUNDED SEPARATELY (GRPH-1189). `collision_clusters` already leaves
     # out what the running children claimed, so `total` is work NO child has; subtracting
     # `live_n` from it counted every child twice, and each one hid a free cluster — a wave of

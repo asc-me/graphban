@@ -4169,6 +4169,42 @@ def describe_pairs(pairs: list[tuple[str, str]], *, cap: int = 3) -> str:
     return ", ".join(shown) + (f" and {more} more" if more > 0 else "")
 
 
+#: Areas whose collisions git cannot see (GRPH-1389). Two new migrations both merge cleanly
+#: and leave two alembic heads, so a lease over these stays exclusive. Every other overlap
+#: is a SOFT lease: git reports a real conflict at merge time, so drains may overlap.
+HARD_AREAS: tuple[str, ...] = ("backend/alembic/versions",)
+
+
+def is_hard_area(area: str) -> bool:
+    """True when `area` is (or lies under) a hard-leased path. A trailing glob is ignored."""
+    n = _normalise_area(area)
+    while n.endswith("*") or n.endswith("/"):
+        n = n.rstrip("*").rstrip("/")
+    return any(n == h or n.startswith(h + "/") or h.startswith(n + "/") or h == n
+               for h in HARD_AREAS if n)
+
+
+def hard_collide(a: list[str], b: list[str]) -> list[str]:
+    """The overlaps in `areas_collide` that must stay exclusive: those touching a hard area.
+
+    Reservation checks use this; `areas_collide` still defines clustering, so items that
+    overlap stay one cluster for one agent, while two DRAINS no longer block each other on
+    files git can merge."""
+    return [x for x in areas_collide(a, b)
+            if is_hard_area(x) or any(is_hard_area(y) and areas_collide([x], [y]) for y in b)]
+
+
+def hard_pairs(a: list[str], b: list[str]) -> list[tuple[str, str]]:
+    """`colliding_pairs` restricted to the overlaps `hard_collide` keeps exclusive."""
+    out = []
+    for x in a:
+        for y in b:
+            if hard_collide([x], [y]):
+                out.append((x, y))
+                break
+    return out
+
+
 def reserve_areas(db: Session, *, agent_id: str, item_id: str, areas: list[str],
                   expires_at: datetime, predicted: bool) -> None:
     """THE one place an `AreaReservation` is constructed (PRD-20 §1.3, guarded by
@@ -4304,10 +4340,10 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         members = set(cluster.get("items") or [])
         free = set().union(*[o for o in overrides if members <= o]) if overrides else set()
         blocked = [r.area for r in taken if r.agent_id != agent_id and r.item_id not in free]
-        overlap = areas_collide(cluster.get("areas") or [], blocked)
+        overlap = hard_collide(cluster.get("areas") or [], blocked)
         if overlap:
             if len(collided) < 3:
-                collided.extend(colliding_pairs(cluster.get("areas") or [], blocked)[:1])
+                collided.extend(hard_pairs(cluster.get("areas") or [], blocked)[:1])
             continue
         ids = (cluster.get("items") or [])[:_capped(db, project_id, cluster, max_items)]
         claimed = [it for it in (items_svc.claim_item(db, i, agent_id, lease_seconds=lease_seconds)

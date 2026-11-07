@@ -267,32 +267,35 @@ def test_THE_CALL_a_held_test_glob_leaves_a_named_test_file_claimable_and_delega
 
 
 def test_an_exact_test_file_collision_still_blocks_and_names_both_areas(db, held_tests):
+    """Under soft leases (GRPH-1389) only a hard area still blocks, so this holds a migration."""
     from app.services import delegation as dsvc
     from app.services import fleet as fleet_svc
 
     t = held_tests
-    t.hold(["backend/tests/test_b.py"])
-    second = t.want(["backend/tests/test_b.py"])
+    t.hold(["backend/alembic/versions/0200_b.py"])
+    second = t.want(["backend/alembic/versions/0200_b.py"])
     with pytest.raises(dsvc.DelegationRefused) as e:
         dsvc.refuse_bound_collision(db, agent=t.agents["planner"], item=second)
     assert "TG-A1" in str(e.value)
-    assert "backend/tests/test_b.py vs backend/tests/test_b.py" in str(e.value)
+    assert "backend/alembic/versions/0200_b.py vs backend/alembic/versions/0200_b.py" in str(e.value)
     got = fleet_svc.claim_cluster(db, agent_id=t.agents["other"].id, project_id=t.pid)
     assert not got["claimed"]
-    assert "backend/tests/test_b.py vs backend/tests/test_b.py" in got["reason"], got["reason"]
+    assert "backend/alembic/versions/0200_b.py vs backend/alembic/versions/0200_b.py" in got["reason"], got["reason"]
 
 
 def test_a_glob_refusal_names_the_holders_glob_and_the_file_it_covers(db, held_tests):
-    """The 2026-11-07 refusal said only `reserved by GRPH-A14717`. It names the pair now."""
+    """The 2026-11-07 refusal said only `reserved by GRPH-A14717`. It names the pair now.
+
+    Held over the alembic hard area, since an ordinary glob is a soft lease (GRPH-1389)."""
     from app.services import delegation as dsvc
     from app.services import fleet as fleet_svc
 
     t = held_tests
-    t.hold(["backend/tests/*"])
-    second = t.want(["backend/tests/conftest.py"])
+    t.hold(["backend/alembic/versions/*"])
+    second = t.want(["backend/alembic/versions/0200_b.py"])
     with pytest.raises(dsvc.DelegationRefused) as e:
         dsvc.refuse_bound_collision(db, agent=t.agents["planner"], item=second)
-    assert "reserved by TG-A1 (backend/tests/* vs backend/tests/conftest.py)" in str(e.value)
-    assert e.value.detail["areas"] == "backend/tests/* vs backend/tests/conftest.py"
+    assert "reserved by TG-A1 (backend/alembic/versions/* vs backend/alembic/versions/0200_b.py)" in str(e.value)
+    assert e.value.detail["areas"] == "backend/alembic/versions/* vs backend/alembic/versions/0200_b.py"
     got = fleet_svc.claim_cluster(db, agent_id=t.agents["other"].id, project_id=t.pid)
-    assert "backend/tests/* vs backend/tests/conftest.py" in got["reason"], got["reason"]
+    assert "backend/alembic/versions/* vs backend/alembic/versions/0200_b.py" in got["reason"], got["reason"]

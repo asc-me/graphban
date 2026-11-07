@@ -337,9 +337,14 @@ def _with_reservations(db: Session, clusters: list[dict], project_id: str | None
         areas = list(cluster.get("areas") or [])
         holders, soonest = set(), None
         blocking: list[dict] = []
+        soft: set[str] = set()
         for row in taken:
-            overlap = fleet_svc.areas_collide(areas, [row.area])
+            overlap = fleet_svc.hard_collide(areas, [row.area])
             if not overlap:
+                # A SOFT overlap (GRPH-1389): claimable, because git reports a real conflict
+                # at merge. Named so the supervisor can say it is overlapping, not waiting.
+                if row.agent_id and fleet_svc.areas_collide(areas, [row.area]):
+                    soft.add(row.agent_id)
                 continue
             holders.add(row.agent_id)
             if len(blocking) < 3:
@@ -363,6 +368,9 @@ def _with_reservations(db: Session, clusters: list[dict], project_id: str | None
             cluster["free_in"] = (max(0, int((soonest - now).total_seconds()))
                                   if soonest is not None else None)
             cluster["held_because"] = list(cluster.get("held_because") or []) + blocking
+        soft -= holders
+        if soft:
+            cluster["soft_with"] = sorted(soft)
     return clusters
 
 
