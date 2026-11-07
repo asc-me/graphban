@@ -143,6 +143,10 @@ class _BounceLedger:
 
         self.item_id = item_id
         self.item = _done_item(item_id)
+        # gbfleet opened this item's PR, so the Merger holds its merge (the server only
+        # bounces a `done` item that carries this receipt).
+        self.item["evidence"].append({"kind": "url", "url": "https://github.com/o/r/pull/9",
+                                      "detail": f"draft PR opened by gbfleet for {self.item['branch']}"})
         self.bounce_raises = bounce_raises
         self.bounces: list[dict] = []
 
@@ -156,12 +160,14 @@ class _BounceLedger:
         if tool == "bounce":
             if self.bounce_raises is not None:
                 raise self.bounce_raises
-            # The server's rule (fleet._require_bounceable): `review`, or `done` with no
-            # merge receipt. Anything else is refused, as the real service refuses it.
-            merged = any(str(e.get("detail") or "").startswith("merged by gbfleet")
-                         for e in self.item.get("evidence") or [])
+            # The server's rule (fleet._require_bounceable): `review`, or `done` with a
+            # gbfleet PR receipt and no merge receipt. Anything else is refused, as the real
+            # service refuses it.
+            details = [str(e.get("detail") or "") for e in self.item.get("evidence") or []]
+            merged = any(d.startswith("merged by gbfleet") for d in details)
+            proposed = any(d.startswith("draft PR opened by gbfleet") for d in details)
             if not (self.item["status"] == "review"
-                    or (self.item["status"] == "done" and not merged)):
+                    or (self.item["status"] == "done" and proposed and not merged)):
                 from gbfleet.client import ToolFailed
                 raise ToolFailed("bounce", "conflict",
                                  f"{kw['id']} is {self.item['status']}, not awaiting review")

@@ -3566,6 +3566,24 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
 #: (supervisor.Merger._record). Its presence means the merge happened.
 MERGE_RECEIPT_PREFIX = "merged by gbfleet"
 
+#: The `detail` prefix of the `pr_opened` receipt (`_observation_receipt`). Its presence
+#: means gbfleet proposed this item's PR, so the Merger is the one holding its merge.
+PR_RECEIPT_PREFIX = "draft PR opened by gbfleet"
+
+
+def merger_holds(item: Item) -> bool:
+    """Did gbfleet open this item's PR? (GRPH-1389)
+
+    Only then is a `done` item waiting on the Merger. A `done` item with no such receipt was
+    merged by hand, or before the Merger existed, or in a project that does not use it, and
+    nothing about it is pending.
+    """
+    return any(
+        isinstance(e, dict) and e.get("kind") == "url"
+        and str(e.get("url") or "").strip()
+        and str(e.get("detail") or "").startswith(PR_RECEIPT_PREFIX)
+        for e in item.evidence or [])
+
 
 def merge_landed(item: Item) -> bool:
     """Has this item's merge been recorded? (GRPH-1389)
@@ -3585,7 +3603,7 @@ def merge_landed(item: Item) -> bool:
 
 
 def _require_bounceable(item: Item) -> None:
-    """`review`, or `done` with no merge landed (GRPH-1389).
+    """`review`, or `done` with a gbfleet PR and no merge landed (GRPH-1389).
 
     A signed-off item whose PR hits a rebase conflict at merge time cannot land, and CI
     cannot run on it. The Merger only watches `done` items. If bounce refused `done`, every
@@ -3597,6 +3615,12 @@ def _require_bounceable(item: Item) -> None:
             raise NotInReview(
                 f"{item.key} is done and its merge has landed, so there is nothing to bounce — "
                 "file a new item for follow-up work")
+        if not merger_holds(item):
+            # Shipped work merged by hand carries no merge receipt either. Without a gbfleet
+            # PR receipt nothing says a merge is pending, so a bounce would reopen it.
+            raise NotInReview(
+                f"{item.key} is done and gbfleet opened no PR for it, so no merge is pending "
+                "and there is nothing to bounce — file a new item for follow-up work")
         return
     _require_in_review(item, "bounce")
 

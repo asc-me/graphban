@@ -128,9 +128,14 @@ def _done(db, client, auth, *, evidence=None):
     row.status = "done"
     row.built_by = "CORE-A71"
     row.reviewed_by = "CORE-A72"
-    row.evidence = evidence or []
+    row.evidence = [_PR_OPENED] if evidence is None else evidence
     db.commit()
     return item_id
+
+
+#: What `_observation_receipt` writes for `pr_opened`: the Merger holds this item's merge.
+_PR_OPENED = {"kind": "url", "detail": "draft PR opened by gbfleet for gb/core-7",
+              "url": "https://github.com/o/r/pull/9"}
 
 
 def test_a_done_item_whose_merge_has_not_landed_can_be_bounced(client, auth, db):
@@ -149,12 +154,35 @@ def test_a_done_item_whose_merge_has_not_landed_can_be_bounced(client, auth, db)
 
 
 def test_a_done_item_whose_merge_landed_is_not_bounced(client, auth, db):
-    item_id = _done(db, client, auth, evidence=[{
+    item_id = _done(db, client, auth, evidence=[_PR_OPENED, {
         "kind": "url", "detail": "merged by gbfleet: squash of #9 landed as abcdef123456",
         "url": "https://github.com/o/r/pull/9", "commit": "abcdef1234567890"}])
 
     with pytest.raises(fleet_svc.NotInReview, match="merge has landed"):
         fleet_svc.bounce(db, item_id=item_id, agent_id="CORE-A73", reason="too late")
+
+
+def test_a_done_item_gbfleet_opened_no_pr_for_is_not_bounced(client, auth, db):
+    """Work merged by hand (or before the Merger, or where it is not used) has no merge receipt
+    either. Without a gbfleet PR receipt no merge is pending, so a bounce must not reopen it.
+    Sabotage: drop the `merger_holds` check and this bounces shipped work to `next`."""
+    from app.models import Item
+
+    item_id = _done(db, client, auth, evidence=[
+        {"kind": "test", "detail": "suite green", "passed": 10, "failed": 0}])
+
+    with pytest.raises(fleet_svc.NotInReview, match="opened no PR"):
+        fleet_svc.bounce(db, item_id=item_id, agent_id="CORE-A73", reason="reopen it")
+    db.expire_all()
+    assert db.get(Item, item_id).status == "done"
+
+
+def test_a_pr_receipt_without_a_url_does_not_count(client, auth, db):
+    item_id = _done(db, client, auth, evidence=[
+        {"kind": "url", "detail": "draft PR opened by gbfleet for gb/core-7", "url": ""}])
+
+    with pytest.raises(fleet_svc.NotInReview, match="opened no PR"):
+        fleet_svc.bounce(db, item_id=item_id, agent_id="CORE-A73", reason="reopen it")
 
 
 def test_work_in_progress_is_still_not_bounceable(client, auth, db):
