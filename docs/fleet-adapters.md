@@ -596,6 +596,18 @@ children were killed with empty logs. The `claude` launch now sets `ENABLE_TOOL_
 which removes the deferral: the seat's `graphban` and `context7` tools are in the first
 request, and the `deferred_tools_delta` attachment disappears from the child's transcript.
 
+### Skill listing trim (GRPH-1402)
+
+Every claude child's first request carried the operator's whole skill listing (~156
+skills, 35k characters). The launch now passes `--setting-sources project,local`: the
+repository's own `.claude/skills/` (`graphban-work`, `graphban-review`, ...) stay, the
+operator's user-level and plugin skills go. Not `--disable-slash-commands` (drops the
+repo's skills too) and not `--bare` (drops OAuth subscription auth); auth is unaffected.
+
+Measured 2026-11-07, `claude --print` listing its skills, same machine, one run each:
+about 12s before, about 8s after (user-level skills gone, repo skills present). That is
+time to first response, not a full time-to-register.
+
 ## Before the first run: `gbfleet doctor`
 
 Every trap in this document is one an operator meets on their first run, and several are
