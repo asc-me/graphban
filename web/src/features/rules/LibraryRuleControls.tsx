@@ -25,10 +25,22 @@ import {
   useSetRuleToggle,
 } from "@/lib/queries";
 import { relTime } from "@/lib/relTime";
-import type { RuleFlowRule, RuleParamValue, RuleToggleSource, RuleToggleWrite } from "@/lib/types";
+import type { RuleFlowRule, RuleParamValue, RuleToggleSource, RuleToggleWrite, TestScopeMode } from "@/lib/types";
 
 import { toggleSourceLabel } from "./levels";
 import { useOrgName } from "./RuleEditors";
+
+/** GRPH-1405: the test-scope rule's one choice. Mirrors `rule_toggles.TEST_SCOPE_MODES`. */
+export const TEST_SCOPE_RULE = "build.test_scope";
+export const TEST_SCOPE_MODES: { value: TestScopeMode; label: string; explain: string }[] = [
+  { value: "agent_full", label: "The agent runs CI", explain: "The builder runs the full suites; the PR's CI is not required." },
+  { value: "agent_and_pr", label: "The agent and the PR run CI", explain: "The builder runs the full suites and the PR's CI runs them again." },
+  {
+    value: "agent_targeted",
+    label: "The agent runs partial CI, only what changed",
+    explain: "The builder runs the tests it changed, the module's tests and the sabotage check; the PR's CI runs the full suites.",
+  },
+];
 
 const MONO = "font-mono";
 const note = "text-[11.5px] leading-snug text-muted";
@@ -165,6 +177,25 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
               <span key={k} className={cn(MONO, "text-[12px] text-fg-2")}>
                 {k} = {String(v)}
               </span>
+            ) : rule.id === TEST_SCOPE_RULE && k === "mode" ? (
+              <div key={k} role="radiogroup" aria-label="Where the test suites run" className="flex flex-col gap-1.5" data-testid="rules-test-scope">
+                {TEST_SCOPE_MODES.map((m) => (
+                  <label key={m.value} className="flex items-start gap-2 text-[12px] text-fg-2">
+                    <input
+                      type="radio"
+                      name={`${rule.id}-mode`}
+                      value={m.value}
+                      aria-label={m.label}
+                      checked={(draftParams[k] ?? String(v)) === m.value}
+                      onChange={() => setDraftParams({ ...draftParams, [k]: m.value })}
+                    />
+                    <span>
+                      <span className="text-fg">{m.label}</span>
+                      <span className="block text-muted-2">{m.explain}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
             ) : typeof v === "boolean" ? (
               <label key={k} className={cn(MONO, "flex items-center gap-2 text-[12px] text-fg-2")}>
                 <input

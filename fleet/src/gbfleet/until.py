@@ -1115,7 +1115,7 @@ def _loop(
         # whole build (GRPH-1342). What still blocks is a live REVIEW spawn of this branch —
         # it has not claimed yet, so a second would stack reviewers on the same rows — and,
         # when anything is live, the memory gate and child cap like every other spawn.
-        review_busy = any(c in review_spawned for c in live)
+        review_busy = _review_busy(live, review_spawned)
         # GRPH-1387: the gate's reason is kept so the wait below names it, read once per poll
         # and only when this branch would otherwise spawn.
         review_gate = None
@@ -1792,7 +1792,7 @@ def _review_waits_on_live(wave: Wave, unheld: list, live: list, *,
         for child in live:
             if child not in review_spawned or _child_touches(child, rid):
                 continue
-            if [i for i in (child.held_items or []) if i]:
+            if _has_claimed(child):
                 continue
             pid = getattr(getattr(child, "process", None), "pid", None)
             _say(rid, f"{rid}: review waits on reviewer pid {pid} not yet claimed",
@@ -1801,6 +1801,24 @@ def _review_waits_on_live(wave: Wave, unheld: list, live: list, *,
         if gate and not named:
             _say(rid, f"{rid}: review waits on the memory gate ({gate})", None, "")
     return out
+
+
+def _review_busy(live: list, review_spawned: list | tuple) -> bool:
+    """A review spawn of ours that has not claimed yet blocks another (GRPH-1374): it has
+    not said which rows it is taking, so a second would stack reviewers on the same rows.
+
+    One that HAS claimed does not (GRPH-1413). It holds its rows, `review_held` keeps them
+    out of the next spawn's reach, and the rows nobody holds should not wait the 15-30
+    minutes its review takes. The memory gate and child cap still apply to every spawn.
+    """
+    return any(c in review_spawned and not _has_claimed(c) for c in live)
+
+
+def _has_claimed(child) -> bool:
+    """A reviewer's claims are `review_items`; `held_items` is build leases only, which a
+    review-only seat never has (GRPH-1413 bounce). A builder's `held_items` still counts."""
+    return any(i for i in (list(getattr(child, "review_items", None) or [])
+                           + list(getattr(child, "held_items", None) or [])))
 
 
 def _child_touches(child, item_id: str) -> bool:
@@ -1917,6 +1935,30 @@ def _touchpoints_of(details: dict) -> list[str]:
     return [str(t) for t in (details.get("touchpoints") or []) if str(t).strip()]
 
 
+def _offer_merged_for_review(planner: Graphban, item_id: str, details: dict, base: str) -> bool:
+    """Move a git-merged, unsigned item to `review` so the drain staffs a reviewer (GRPH-1408).
+
+    The work is already in `base`, so there is nothing to build — only a review to do,
+    against what the base carries. True when the server accepted the move. A refusal is
+    reported and False returned, and the caller holds the item as before: a hold is the
+    honest fallback, never a silent drop.
+    """
+    branch = str(details.get("branch") or "").strip()
+    where = f" (branch {branch})" if branch else ""
+    note = (f"gbfleet: already in {base}{where} but unsigned — offered for review against the "
+            f"merge in {base}, not rebuilt (GRPH-1408)")
+    try:
+        planner.call("update_item", id=item_id, status="review",
+                     evidence=[{"kind": "note", "detail": note}])
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("review_offer_refused", item=item_id,
+                     detail=f"{item_id} is git-merged and unsigned; moving it to review was "
+                            f"refused: {exc}")
+        return False
+    observe.emit("review_offered", item=item_id, detail=note)
+    return True
+
+
 def _holds_sentence(item_id: str, areas: list[str]) -> str:
     """"SA-576 holds CueQueue.tsx, styles/queue.css" (GRPH-951) — the files, named."""
     if not areas:
@@ -1990,6 +2032,12 @@ def _delegate_next(
                 occupiers[item_id] = _touchpoints_of(got)
             elif status in ("next", "backlog") and _already_in_base(got, repo, base):
                 occupiers[item_id] = _touchpoints_of(got)
+                # GRPH-1408: merged but unsigned is unreviewed work in the base. Holding it
+                # forever left GRPH-1359 waiting on a reviewer started by hand. Moved to
+                # `review`, it is a review row, and the drain staffs a reviewer for it.
+                if _offer_merged_for_review(planner, item_id, got, base):
+                    delegated.add(item_id)
+                    continue
                 observe.emit(
                     "delegate_held", item=item_id,
                     detail=f"already in {base} (unsigned, git-merged); "

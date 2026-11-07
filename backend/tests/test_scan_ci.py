@@ -373,6 +373,14 @@ def test_not_code_only_passes_with_touched_none(repo, fakes):
     assert not v.results
 
 
+def test_gbfleet_servers_alone_is_not_code_and_not_never_run(repo, fakes):
+    head = _pr(repo, {".gbfleet/servers": "context7\nbrowser?\n"})
+    v = _eval(repo, head)
+    assert v.passed, v.detail
+    assert "never-run" not in v.detail
+    assert not v.results
+
+
 @pytest.mark.parametrize("path", [".codex/agents/gb-verifier.toml", ".cursor/rules/graphban.mdc"])
 def test_generated_agent_instructions_touch_nothing(repo, fakes, path):
     head = _pr(repo, {path: "prose\n"})

@@ -88,6 +88,7 @@ NOT_CODE: tuple[str, ...] = (
     ".gitignore", "*/.gitignore",
     ".gitattributes", "*/.gitattributes",
     ".editorconfig",
+    ".gbfleet/servers",  # MCP server names for gbfleet drains, not code
     "LICENSE", "LICENSE.*", "COPYING", "NOTICE",
 )
 

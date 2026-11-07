@@ -1731,10 +1731,12 @@ def test_report_collided_carries_the_actual_overlap():
 class _SeedPlanner:
     """Enough of Graphban.call for `_delegate_next` (GRPH-886)."""
 
-    def __init__(self, clusters, details):
+    def __init__(self, clusters, details, *, refuse_update: bool = False):
         self.clusters = clusters
         self.details = details
         self.delegated: list[str] = []
+        self.updates: list[dict] = []
+        self.refuse_update = refuse_update
 
     def call(self, tool, **kw):
         if tool == "collision_clusters":
@@ -1746,6 +1748,12 @@ class _SeedPlanner:
         if tool == "delegate":
             self.delegated.append(kw["id"])
             return {"enrolment_code": "WORKER-X"}
+        if tool == "update_item":
+            if self.refuse_update:
+                from gbfleet.client import ToolFailed
+                raise ToolFailed("update_item", "error", "refused for the test")
+            self.updates.append(dict(kw))
+            return {"id": kw["id"], "status": kw.get("status")}
         raise AssertionError(tool)
 
 
@@ -1799,7 +1807,55 @@ def test_a_git_merged_member_occupies_the_glob(tmp_path: Path, monkeypatch):
         )
         assert seed is None
         assert planner.delegated == []
-        assert "READY" not in seen and "MERGED" not in seen
+        assert "READY" not in seen
+
+
+def _merged_and_ready(monkeypatch):
+    from gbfleet import worktree as wt
+
+    monkeypatch.setattr(wt, "reaches", lambda repo, base, ref: ref == "gb/merged")
+    brief = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by": []}
+    return {
+        "MERGED": {"id": "MERGED", "status": "next", "branch": "gb/merged",
+                   "pr": "https://github.com/o/r/pull/1", "brief": brief, "evidence": []},
+        "READY": {"id": "READY", "status": "next", "branch": "gb/ready",
+                  "brief": brief, "evidence": []},
+    }
+
+
+def test_a_git_merged_unsigned_item_is_offered_for_review(tmp_path: Path, monkeypatch):
+    """GRPH-1408. An item merged into the base but unsigned is moved to `review`, so the
+    drain's review staffing spawns a reviewer for it, rather than being held forever (as
+    GRPH-1359 was after #1388). It still occupies its files for this tick.
+
+    Sabotage: hold it without the update_item move. This fails: no review move recorded.
+    """
+    from gbfleet.until import _delegate_next
+
+    planner = _SeedPlanner([{"items": ["MERGED", "READY"]}], _merged_and_ready(monkeypatch))
+    seen: set[str] = set()
+    seed, _code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", seen, None, repo=tmp_path, base="origin/main",
+    )
+    assert seed is None and planner.delegated == []
+    assert [(u["id"], u["status"]) for u in planner.updates] == [("MERGED", "review")]
+    assert "origin/main" in planner.updates[0]["evidence"][0]["detail"]
+    assert "MERGED" in seen
+
+
+def test_a_refused_review_offer_falls_back_to_the_hold(tmp_path: Path, monkeypatch):
+    """GRPH-1408. When the server refuses the move, the item is held exactly as before and
+    not marked delegated, so a later tick tries again."""
+    from gbfleet.until import _delegate_next
+
+    planner = _SeedPlanner([{"items": ["MERGED", "READY"]}], _merged_and_ready(monkeypatch),
+                           refuse_update=True)
+    seen: set[str] = set()
+    seed, _code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", seen, None, repo=tmp_path, base="origin/main",
+    )
+    assert seed is None and planner.delegated == [] and planner.updates == []
+    assert "MERGED" not in seen
 
 
 def test_a_blocked_items0_is_not_the_seed(tmp_path: Path):

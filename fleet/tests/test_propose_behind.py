@@ -96,7 +96,7 @@ def opened(monkeypatch):
 
     got: list[str] = []
 
-    def fake(repo, branch, base, *, title, body):
+    def fake(repo, branch, base, *, title, body, **_kw):
         got.append(body)
         return propose_mod.Proposed(branch=branch, url="https://example.test/pull/1", ok=True)
 
