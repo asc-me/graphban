@@ -568,6 +568,34 @@ setup` names a non-`off` Grok profile when it writes Grok's config. What the fle
 does not do: a child that never registers posts no attempt record (PRD-38 D3, by design),
 so the ledger shows one agent fewer — the spawn reply's stderr tail is where the cause is.
 
+## The registration window (GRPH-1400)
+
+A child has a bounded time to call `register_agent` before the supervisor presumes it broken
+and kills it. The child event then records `exit_code: -9` and `stopped_because:
+never_registered`, the item's attempt reads `expired`, and the child's logs are usually
+empty because it was killed before it printed anything. That signature means "too slow to
+register", not "crashed".
+
+| Window | Source |
+| --- | --- |
+| `--registration-window SECONDS` on `until`, `up` or `mcp` | wins over everything |
+| `GBFLEET_REGISTRATION_WINDOW` | used when the flag is absent; a non-positive or unparseable value is ignored |
+| the adapter's own window | `claude` 240s |
+| `REGISTRATION_WINDOW` | 90s, every other adapter |
+
+Why `claude` gets more, measured on a loaded machine on 2026-11-07: a healthy child took
+**67s** from process start to `register_agent`.
+
+- ~15s of CLI startup. The operator's global skill listing (35k characters on that machine)
+  rides into every child; `--strict-mcp-config` confines MCP servers, not skills or hooks.
+- A 26s first model response.
+- A `ToolSearch` round trip, because Claude Code defers MCP tools by default.
+
+With several drains and the memory gate engaged, the slow tail crossed 90s and healthy
+children were killed with empty logs. The `claude` launch now sets `ENABLE_TOOL_SEARCH=false`,
+which removes the deferral: the seat's `graphban` and `context7` tools are in the first
+request, and the `deferred_tools_delta` attachment disappears from the child's transcript.
+
 ## Before the first run: `gbfleet doctor`
 
 Every trap in this document is one an operator meets on their first run, and several are

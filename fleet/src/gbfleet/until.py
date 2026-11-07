@@ -35,7 +35,9 @@ from . import matrix as matrix_mod
 from .spawn import Child, build_holdings
 from . import spend as spend_mod
 from . import touchpoints as tp_mod
-from .spawn import VendorLimit
+from .spawn import LaunchFailed, VendorLimit
+from . import entitlements as ent_mod
+from .adapters import AdapterError
 from .headroom import Headroom
 from .supervisor import (
     _declared_into,
@@ -218,6 +220,13 @@ class Report:
         refused = self.wave.observations_refused if self.wave else 0
         payload["supervision_unrecorded"] = refused
         payload["exhausted"] = (list(self.wave.exhausted.values()) if self.wave else [])
+        # GRPH-1372. Who the wave continued on, and who it did not. A wave that failed over
+        # reads as clean unless both are named: the server's reviewer-diversity gate can
+        # still fail later for a vendor that never got a child here.
+        launched = list(self.wave.vendors_launched) if self.wave else []
+        payload["vendors_launched"] = launched
+        payload["vendors_not_launched"] = [
+            v for v in (self.wave.vendors_tried if self.wave else []) if v not in launched]
         if self.detail:
             payload["detail"] = self.detail
         return payload
@@ -253,6 +262,7 @@ def run(
     merge: bool = False,
     base_branch: str | None = None,
     entitlements: dict[str, list[str]] | None = None,
+    records: "list[ent_mod.Entitlement] | None" = None,
     stall_after: float = watchdog_mod.STALL_AFTER_S,
     clock: Callable[[], float] = time.monotonic,
 ) -> Report:
@@ -373,6 +383,12 @@ def run(
 
             persist()
             wave.entitlements = {a: list(ids) for a, ids in (entitlements or {}).items() if ids}
+            # GRPH-1372. The accounts this machine can launch, read once. Only read: the
+            # exhausted mark lives on `wave`, and nothing this wave learns is written back.
+            try:
+                wave.records = list(ent_mod.load() if records is None else records)
+            except (ent_mod.EntitlementError, ValueError) as exc:
+                raise ConfigError(f"the entitlement registry could not be read: {exc}") from exc
             identity = _identify(planner, repo, adapter, wave)
             _preflight_observations(supervisor)
             result = _loop(
@@ -535,21 +551,59 @@ def _item_brief(client, item_id: str | None) -> dict | None:
 
 
 def _skip_exhausted(wave: Wave, check):
-    """Wrap an `installed` checker so adapters the vendor refused this wave resolve to nothing."""
+    """Wrap an `installed` checker so adapters the wave stopped walking resolve to nothing."""
     def wrapped(row):
-        entry = wave.exhausted.get(row.harness)
-        if entry:
-            return False, f"exhausted: {entry['said']}"[:160]
+        if row.harness in wave.vendor_out:
+            return False, f"exhausted: {wave.vendor_out[row.harness]}"[:160]
         return check(row)
     return wrapped
 
 
-def _mark_exhausted(wave: Wave, exc: VendorLimit, chosen: str) -> None:
-    # The harness the matrix chose is the name `_skip_exhausted` matches on.
+def _records_for(wave: Wave, adapter: str, matrix) -> list:
+    """The stored records an adapter can launch: vendor text naming the adapter or its row's vendor."""
+    names = {adapter}
+    if matrix is not None:
+        names |= {r.vendor for r in matrix.rows if r.harness == adapter}
+    return [r for r in wave.records if r.vendor in names]
+
+
+def _next_record(wave: Wave, adapter: str, matrix):
+    """(record, registered): the first record for `adapter` not yet exhausted this wave.
+
+    `registered` False means this machine holds no record for the adapter, and the launch is
+    the default login as it always was. True with no record means every one is spent.
+    """
+    held = _records_for(wave, adapter, matrix)
+    for rec in held:
+        if rec.name not in wave.exhausted:
+            return rec, True
+    return None, bool(held)
+
+
+def _mark_exhausted(wave: Wave, exc: VendorLimit, chosen: str, record=None) -> None:
     adapter = chosen or exc.adapter
-    wave.exhausted.setdefault(adapter, {
-        "adapter": adapter, "said": exc.said, "seen_at": int(time.time()),
+    key = record.name if record is not None else adapter
+    # The vendor's words exactly as printed. The reset clause is not parsed into a time.
+    wave.exhausted.setdefault(key, {
+        "entitlement": record.name if record is not None else "",
+        "adapter": adapter,
+        "vendor": record.vendor if record is not None else adapter,
+        "said": exc.said, "seen_at": int(time.time()),
     })
+
+
+def _selecting(factory, record):
+    """A factory whose refusal to select `record` is a launch failure, not a crash.
+
+    `select_entitlement` raises before any process exists. Surfacing it as `LaunchFailed`
+    lets `_start` reap the worktree and record the refusal; the default login is never used.
+    """
+    def wrapped(*args, **kwargs):
+        try:
+            return factory(*args, **kwargs)
+        except AdapterError as exc:
+            raise LaunchFailed(f"entitlement {record.name!r} refused at launch: {exc}") from exc
+    return wrapped
 
 
 def _capacity_detail(wave: Wave, last: str) -> str:
@@ -682,32 +736,69 @@ def _loop(
                 (res.winner.harness, res.winner.model))
 
     def failover(seat, seed, want, factory, chosen):
-        """GRPH-1247. Spawn; on a vendor limit, mark the adapter exhausted and take the next.
+        """GRPH-1247, GRPH-1372. Spawn; on a vendor limit, take the next record or vendor.
 
+        The retry is a new process on the SAME seat — the child never registered, so the
+        enrolment was not consumed and no second one is minted. The failed process and its
+        worktree are reaped by `_start`. The first limit on a vendor may try one other record
+        on it; the second stops the walk, the vendor is excluded and the matrix resolves again.
         Ends the wave with `capacity` (not `cap`, not `vendor_limit`) when nothing is left.
         """
         while True:
             mark = (len(wave.failures), len(wave.unredeemed), wave.unused_seats)
             exc: VendorLimit | None = None
             seat = replace(seat, entitlements=tuple(wave.entitlements.get(chosen[0], ())))
-            if chosen[0] in wave.exhausted:
-                said = wave.exhausted[chosen[0]]["said"]
+            record, registered = _next_record(wave, chosen[0], matrix)
+            if chosen[0] and chosen[0] not in wave.vendors_tried:
+                wave.vendors_tried.append(chosen[0])
+            if chosen[0] in wave.vendor_out or (registered and record is None):
+                said = wave.vendor_out.get(chosen[0]) or next(
+                    (e["said"] for e in wave.exhausted.values() if e["adapter"] == chosen[0]), "")
+                wave.vendor_out.setdefault(chosen[0], said)
                 exc = VendorLimit(f"adapter {chosen[0]!r} is exhausted this wave: {said}",
                                   adapter=chosen[0], said=said)
             else:
+                launching = factory
+                if record is not None and launch_for is None:
+                    raise ConfigError(
+                        f"entitlement {record.name!r} is registered for {chosen[0]!r}, and this "
+                        "wave has no adapter factory to select its handle; refusing rather "
+                        "than starting the default login")
+                if record is not None:
+                    # The record's handle is selected, or the launch is refused. A record
+                    # never launches as the default login.
+                    launching = _selecting(
+                        launch_for(chosen[0], chosen[1], entitlement=record), record)
                 try:
                     before = len(children)
                     _spawn_one(
-                        wave, children, occupied, persist, seat, factory,
+                        wave, children, occupied, persist, seat, launching,
                         repo, workspace, wave_name, supervisor, limits, planner, debug,
                         base=base, ledger=planner,
                     )
                     if seed and len(children) > before:
                         owners[seed] = children[-1]
+                    if chosen[0] and chosen[0] not in wave.vendors_launched:
+                        wave.vendors_launched.append(chosen[0])
                     return
                 except VendorLimit as caught:
                     exc = caught
-                    _mark_exhausted(wave, caught, chosen[0])
+                    _mark_exhausted(wave, caught, chosen[0], record)
+                    hits = wave.vendor_limits.get(chosen[0], 0) + 1
+                    wave.vendor_limits[chosen[0]] = hits
+                    left, _ = _next_record(wave, chosen[0], matrix)
+                    if hits >= 2 or left is None:
+                        # The second limit means it is still in force for a new process —
+                        # including when the second handle is the same login.
+                        wave.vendor_out[chosen[0]] = caught.said
+                    else:
+                        del wave.failures[mark[0]:]
+                        del wave.unredeemed[mark[1]:]
+                        wave.unused_seats = mark[2]
+                        observe.emit("failover", item=seed,
+                                     detail=f"{record.name if record else chosen[0]} exhausted; "
+                                            f"continuing on {left.name} ({chosen[0]})")
+                        continue
             nxt = next_candidate(seed, want)
             if nxt is None:
                 wave.reason = "capacity"
@@ -1025,8 +1116,12 @@ def _loop(
         # it has not claimed yet, so a second would stack reviewers on the same rows — and,
         # when anything is live, the memory gate and child cap like every other spawn.
         review_busy = any(c in review_spawned for c in live)
-        if (unheld_review and need <= 0 and not review_busy
-                and not (live and _no_room(wave, room, len(live)))):
+        # GRPH-1387: the gate's reason is kept so the wait below names it, read once per poll
+        # and only when this branch would otherwise spawn.
+        review_gate = None
+        if unheld_review and need <= 0 and not review_busy and live:
+            review_gate = _room_refusal(wave, room, len(live))
+        if unheld_review and need <= 0 and not review_busy and review_gate is None:
             empty = 0
             if review_fails >= REVIEWER_FAILS:
                 wave.reason = "review-unsigned"
@@ -1054,7 +1149,9 @@ def _loop(
 
         if live or holdings:
             if unheld_review and live:
-                for line in _review_waits_on_live(wave, unheld_review, live):
+                for line in _review_waits_on_live(
+                        wave, unheld_review, live, review_spawned=review_spawned,
+                        gate=review_gate):
                     if line not in waits:
                         waits.append(line)
             empty = 0
@@ -1670,21 +1767,50 @@ def _lift(planner: Graphban, item_id: str) -> None:
         observe.emit("hold_unlifted", item=item_id, detail=str(exc))
 
 
-def _review_waits_on_live(wave: Wave, unheld: list, live: list) -> list[str]:
-    """Name what an unheld review row is waiting on: the live child blocking its spawn
-    (GRPH-1349). Logged once per row and child, so a ten-minute wait is one line."""
+def _review_waits_on_live(wave: Wave, unheld: list, live: list, *,
+                          review_spawned: list | tuple = (), gate: str | None = None) -> list[str]:
+    """Name what an unheld review row is waiting on (GRPH-1349, GRPH-1387). Logged once per
+    row and reason, so a ten-minute wait is one line.
+
+    Since GRPH-1374 a live builder does not hold a review spawn, so only two things do, and
+    only those are named: a review spawn of ours that has not claimed yet ("reviewer pid N
+    not yet claimed"), and the memory gate (`gate`, its reason). A child that is reviewing
+    the row, or that built it and is still finishing, is never what the row waits on.
+    """
     out: list[str] = []
-    for child in live:
-        item = ",".join(i for i in (child.held_items or []) if i) or "no item yet"
-        pid = getattr(getattr(child, "process", None), "pid", None)
-        for row in unheld:
-            line = f"{row['id']}: review waits on live child pid {pid} (item {item})"
-            out.append(line)
-            if line not in wave.review_waits:
-                wave.review_waits.append(line)
-                observe.emit("review_waits_on_live_child", review=str(row["id"]),
-                             pid=pid, item=item)
+
+    def _say(rid: str, line: str, pid, item: str) -> None:
+        out.append(line)
+        if line not in wave.review_waits:
+            wave.review_waits.append(line)
+            observe.emit("review_waits_on_live_child", review=rid,
+                         pid=pid, item=item, gate=gate or "")
+
+    for row in unheld:
+        rid = str(row["id"])
+        named = False
+        for child in live:
+            if child not in review_spawned or _child_touches(child, rid):
+                continue
+            if [i for i in (child.held_items or []) if i]:
+                continue
+            pid = getattr(getattr(child, "process", None), "pid", None)
+            _say(rid, f"{rid}: review waits on reviewer pid {pid} not yet claimed",
+                 pid, "no item yet")
+            named = True
+        if gate and not named:
+            _say(rid, f"{rid}: review waits on the memory gate ({gate})", None, "")
     return out
+
+
+def _child_touches(child, item_id: str) -> bool:
+    """Whether `child` holds, held, or was bound to `item_id`: its reviewer or its builder."""
+    seen = list(getattr(child, "held_items", None) or [])
+    seen += list(getattr(child, "ever_held", None) or [])
+    got = getattr(child, "assigned", None)
+    if isinstance(got, dict) and got.get("item"):
+        seen.append(got["item"])
+    return item_id in {str(i) for i in seen if i}
 
 
 def _release_delegated(delegated: set[str], owners: dict[str, object], finished: list,
@@ -1977,9 +2103,14 @@ def _no_room(wave: Wave, room: Headroom, live_n: int) -> bool:
     Reported once per change, not once per poll. The condition is re-read every second for
     as long as it lasts, and a line a second would bury the wave's own record in it.
     """
+    return _room_refusal(wave, room, live_n) is not None
+
+
+def _room_refusal(wave: Wave, room: Headroom, live_n: int) -> str | None:
+    """`_no_room` with the gate's reason: None when there is room, else why not (GRPH-1387)."""
     verdict = room.allow(live_n)
     if verdict.allowed:
-        return False
+        return None
     if not wave.gated or wave.gated[-1] != verdict.reason:
         if len(wave.gated) < GATED_MAX:
             wave.gated.append(verdict.reason)
@@ -1987,7 +2118,7 @@ def _no_room(wave: Wave, room: Headroom, live_n: int) -> bool:
             "memory_gated", running=live_n, available=verdict.available,
             fits=verdict.fits, detail=verdict.reason,
         )
-    return True
+    return str(verdict.reason or "memory gate refused")
 
 
 def _cap_children(wave, limits, item: str | None = None) -> None:

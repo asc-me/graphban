@@ -202,6 +202,9 @@ def test_a_refused_extension_under_a_live_child_is_logged_with_item_and_pid(tmp_
         def post_observation(self, **payload):
             return {"item_id": payload["item_id"], "kind": "lease", "extended": False}
 
+        def call(self, tool, **_args):
+            return {"status": "in_progress"}
+
     child = _child(tmp_path)
     wave = Wave()
     keep(wave, [child], _Lapsed(), now=10)
@@ -209,3 +212,18 @@ def test_a_refused_extension_under_a_live_child_is_logged_with_item_and_pid(tmp_
     assert wave.lease_lapsed_live == [
         "GRPH-1: lease not extended for live child pid 4242 (GRPH-A1)"
     ]
+
+
+def test_a_refused_extension_after_the_item_left_in_progress_is_not_a_lapse(tmp_path: Path):
+    """GRPH-1387. Sabotage: restore the unconditional `_note_lapsed_live` and this fails."""
+    for status in ("review", "done", "next"):
+        class _HandedOff:
+            def post_observation(self, **payload):
+                return {"item_id": payload["item_id"], "kind": "lease", "extended": False}
+
+            def call(self, tool, **_args):
+                return {"status": status}
+
+        wave = Wave()
+        keep(wave, [_child(tmp_path)], _HandedOff(), now=10)
+        assert wave.lease_lapsed_live == [], status

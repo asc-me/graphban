@@ -926,6 +926,78 @@ describe("Updates panel layout pass (design audit)", () => {
     expect(screen.getAllByRole("listitem").map((l) => l.textContent)).toEqual(["one", "two"]);
   });
 
+  // GRPH-1359: the shape graphban_release.py now writes.
+  const TAGGED = [
+    "CalVer cut.", "",
+    "**Highlights**",
+    "* fleet 0.18.12 released (#1359)",
+    "* cli 0.9.0 released (#1360)",
+    "* Feature: #1347 Attached box fetches its own notes (GRPH-1344)", "",
+    "**Since 2026.11.9**",
+    "- #1359 [fleet 0.18.12] Bump graphban-fleet to 0.18.12",
+    "- #1360 [cli 0.9.0] Ship gban",
+    "- #1347 [feature] Attached box fetches its own notes (GRPH-1344)",
+    "- #1348 Fix the summary pill (GRPH-1345)", "",
+    "**Verify**", "Run it.", "",
+  ].join("\n");
+
+  // The real 2026.11.9 notes: published before tags existed.
+  const UNTAGGED_2026_11_9 = [
+    "**Since 2026.11.8**",
+    "- #1355 Pin the measured Claude limit phrase (GRPH-1373)",
+    "- #1359 Bump graphban-fleet to 0.18.12",
+    "- #1356 App tour: use the text-body role (GRPH-1363)", "",
+    "**Verify**", "Run it.", "",
+  ].join("\n");
+
+  const pills = (el: Element) => Array.from(el.querySelectorAll(".u-pill")).map((e) => e.textContent);
+
+  it("expanded: package releases and features are their own pills, styled apart from PR and ticket", async () => {
+    withNotes(TAGGED);
+    renderPage();
+    await screen.findByText("This release");
+    const rows = screen.getAllByTestId("release-call");
+    const row = (pr: string) => rows.find((r) => r.getAttribute("data-pr") === pr)!;
+    expect(pills(row("#1359"))).toEqual(["#1359", "fleet 0.18.12"]);
+    expect(row("#1359").querySelector(".u-call-title")!.textContent).toBe("Bump graphban-fleet to 0.18.12");
+    expect(pills(row("#1360"))).toEqual(["#1360", "cli 0.9.0"]);
+    expect(pills(row("#1347"))).toEqual(["#1347", "feature", "GRPH-1344"]);
+    expect(row("#1347").querySelector(".u-call-title")!.textContent).toBe("Attached box fetches its own notes");
+    expect(pills(row("#1348"))).toEqual(["#1348", "GRPH-1345"]);
+    const release = row("#1359").querySelector("[data-tag=release]")!;
+    const feature = row("#1347").querySelector("[data-tag=feature]")!;
+    expect(release.className).not.toEqual(feature.className);
+    for (const el of [release, feature]) {
+      expect(el).not.toHaveClass("text-muted");
+      expect(el).not.toHaveClass("text-accent");
+    }
+  });
+
+  it("THE CALL: collapsed summary shows fleet X, cli Y and the feature count next to N changes", async () => {
+    withNotes(TAGGED);
+    renderPage();
+    await screen.findByText("This release");
+    const marks = screen.getAllByTestId("highlight-pill");
+    expect(marks.map((m) => m.textContent)).toEqual(["fleet 0.18.12", "cli 0.9.0", "1 feature"]);
+    expect(marks.map((m) => m.getAttribute("data-tag"))).toEqual(["release", "release", "feature"]);
+    for (const m of marks) expect(m.closest("summary")).not.toBeNull();
+    // Highlights are `* ` lines, so they are not counted as changes.
+    expect(screen.getByTestId("changes-pill")).toHaveTextContent("4 changes");
+    expect(screen.getByTestId("changes-pill").closest("details")).not.toHaveAttribute("open");
+  });
+
+  it("the untagged 2026.11.9 notes render as before: no tag pills, no empty highlight pills", async () => {
+    withNotes(UNTAGGED_2026_11_9);
+    renderPage();
+    await screen.findByText("This release");
+    expect(screen.queryAllByTestId("highlight-pill")).toHaveLength(0);
+    expect(document.querySelectorAll("[data-tag]")).toHaveLength(0);
+    const rows = screen.getAllByTestId("release-call");
+    expect(rows.map(pills)).toEqual([["#1355", "GRPH-1373"], ["#1359"], ["#1356", "GRPH-1363"]]);
+    expect(rows[1].querySelector(".u-call-title")!.textContent).toBe("Bump graphban-fleet to 0.18.12");
+    expect(screen.getByTestId("changes-pill")).toHaveTextContent("3 changes");
+  });
+
   it("a view change fades the old card content out for 220ms before the new content mounts", async () => {
     const mm = vi.fn((q: string) => ({
       matches: false, media: q, onchange: null,

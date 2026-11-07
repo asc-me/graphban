@@ -256,9 +256,15 @@ You've hit your session limit · resets 12:20pm (America/New_York)
 So the wave blamed the adapter, sent the operator to the vendor CLI, and ended on `cap`, which
 means *you hit your own `--max-children`* and invites raising it.
 
-`until` now ends with `reason: "vendor_limit"` and quotes what the vendor said, including the
-reset time, and stops rather than spending the rest of its children on a wall it has already
-hit (GRPH-829). Both streams are read, and both are printed when it really is a crash — a tail
+`until` no longer ends there (GRPH-1247, GRPH-1372). The entitlement it launched — a record
+from `gbfleet entitlement`, or the adapter's default login when none is registered — is marked
+exhausted in the supervisor's memory, and the same seat is started again as a new process: on
+one other record for that vendor, then, on the vendor's second limit, on the next vendor the
+matrix resolves (ending at local `gbagent` when the profile allows it). Nothing left ends the
+wave `reason: "capacity"` — not `cap`, and no longer `vendor_limit` — with every exhausted
+record, the vendor's words verbatim including the reset time, and `vendors_launched` /
+`vendors_not_launched` in the JSON. The mark is never written to disk, so the next wave may
+spend up to two failed spawns on a vendor relearning it. Both streams are read, and both are printed when it really is a crash — a tail
 of the wrong stream is indistinguishable from a child that said nothing at all. Only `claude`
 carries a measured string today; the base adapter matches nothing on purpose, because a
 matcher that fired on the word "limit" would relabel real crashes as billing problems.

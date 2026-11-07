@@ -89,6 +89,18 @@ _MERGE_HELP = (
     "deps bypass the scope. Default off (GRPH-846, GRPH-880)")
 
 
+
+def _env_window() -> float | None:
+    """`GBFLEET_REGISTRATION_WINDOW` as seconds, or None to use the adapter's own window
+    (GRPH-1400). A value that is not a positive number is ignored rather than fatal: a bad
+    environment variable should not stop a drain from starting."""
+    raw = os.environ.get("GBFLEET_REGISTRATION_WINDOW", "").strip()
+    try:
+        value = float(raw) if raw else None
+    except ValueError:
+        return None
+    return value if value and value > 0 else None
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gbfleet",
@@ -148,6 +160,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     run.add_argument("--max-children", type=int, default=8)
     run.add_argument("--child-wall-clock", type=float, default=3600.0)
+    run.add_argument("--registration-window", type=float, default=_env_window(),
+        help="seconds a child gets to register before it is killed as never_registered (default: the adapter's own window, 240s for claude, else 90s; env GBFLEET_REGISTRATION_WINDOW)")
     run.add_argument("--workspace", default=None, help="where worktrees go")
     run.add_argument(
         "--debug",
@@ -246,6 +260,8 @@ def build_parser() -> argparse.ArgumentParser:
     stdio.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     stdio.add_argument("--child-wall-clock", type=float, default=3600.0,
         help="per-child wall-clock cap in seconds (default 3600). A spawn can override per-child via child_wall_clock=...")
+    stdio.add_argument("--registration-window", type=float, default=_env_window(),
+        help="seconds a child gets to register before it is killed as never_registered (default: the adapter's own window, 240s for claude, else 90s; env GBFLEET_REGISTRATION_WINDOW)")
     stdio.add_argument(
         "--tier", action="append", default=[], metavar="NAME=ADAPTER[:MODEL]",
         help="what a tier means on this machine, e.g. cheap=gbagent:qwen3.6:35b-a3b-coding-mtp-det "
@@ -376,6 +392,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     until.add_argument("--max-children", type=int, default=8)
     until.add_argument("--child-wall-clock", type=float, default=3600.0)
+    until.add_argument("--registration-window", type=float, default=_env_window(),
+        help="seconds a child gets to register before it is killed as never_registered (default: the adapter's own window, 240s for claude, else 90s; env GBFLEET_REGISTRATION_WINDOW)")
     until.add_argument("--workspace", default=None, help="where worktrees go")
     until.add_argument("--debug", action="store_true")
     until.add_argument(
@@ -812,6 +830,7 @@ def _until(args) -> int:
                 max_children=args.max_children,
                 child_wall_clock=args.child_wall_clock,
                 quiet_after=args.quiet_after,
+                registration_window=args.registration_window,
             ),
             workspace=Path(args.workspace) if args.workspace else None,
             debug=args.debug,
@@ -820,7 +839,8 @@ def _until(args) -> int:
             budget=args.budget or None,
             shared=_shared_servers(args),
             tiers=tiers,
-            launch_for=lambda name, model="": make_adapter_factory(name, None, model),
+            launch_for=lambda name, model="", entitlement=None: make_adapter_factory(
+                name, None, model, entitlement=entitlement),
             matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
             merge=bool(args.merge),
             base_branch=args.base,
@@ -895,7 +915,8 @@ def _serve_stdio(args) -> int:
                 client=client,
                 launch_for=lambda name, model="", tuning=None: make_adapter_factory(name, None, model, tuning),
                 lock=acquired,
-                limits=Limits(max_workers=args.max_workers, child_wall_clock=args.child_wall_clock),
+                limits=Limits(max_workers=args.max_workers, child_wall_clock=args.child_wall_clock,
+                          registration_window=args.registration_window),
                 tiers=tiers,
                 matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
                 shared=_shared_servers(args),
@@ -968,7 +989,8 @@ def _serve_attached(root: Path, workspace: Path, client: Graphban,
         client=client,
         launch_for=lambda name, model="", tuning=None: make_adapter_factory(name, None, model, tuning),
         lock=None,
-        limits=Limits(max_workers=args.max_workers, child_wall_clock=args.child_wall_clock),
+        limits=Limits(max_workers=args.max_workers, child_wall_clock=args.child_wall_clock,
+                          registration_window=args.registration_window),
         tiers=tiers,
         matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
         shared=_shared_servers(args),
@@ -1342,6 +1364,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_children=args.max_children,
                 child_wall_clock=args.child_wall_clock,
                 quiet_after=args.quiet_after,
+                registration_window=args.registration_window,
             ),
             workspace=Path(args.workspace) if args.workspace else None,
             debug=args.debug,

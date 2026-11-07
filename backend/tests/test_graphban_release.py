@@ -316,3 +316,129 @@ def test_runbook_names_the_rule_and_where_it_lives():
     assert RULE in text
     assert rel.RULES_FILE.as_posix() in text
     assert "evaluate_tree" in text
+
+
+# ---- highlighted notes: fleet / cli releases and features (GRPH-1359) -------------------
+
+def _land(src: pathlib.Path, subject: str, edits: dict[str, str]) -> None:
+    for path, text in edits.items():
+        p = src / path
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+    _git(src, "add", "-A")
+    _git(src, "commit", "-q", "-m", subject)
+
+
+def history(tmp_path: pathlib.Path) -> pathlib.Path:
+    """A tagged cut, then a fleet bump, a cli bump, a feature, a fix and a cli dep-only edit."""
+    src = make_repo(tmp_path)
+    _git(src, "tag", "-a", VER, "-m", VER)
+    _land(src, "Bump graphban-fleet (#1359)", {
+        # Title says nothing about the version on purpose: it is read from the diff.
+        "fleet/pyproject.toml": '[project]\nname = "graphban-fleet"\nversion = "0.18.12"\n'})
+    _land(src, "Ship gban (#1360)", {
+        "cli/pyproject.toml": '[project]\nname = "graphban-cli"\nversion = "0.9.0"\n'})
+    _land(src, "Attached box fetches its own notes (GRPH-1344) (#1347)", {"a.txt": "a\n"})
+    _land(src, "Fix the summary pill (GRPH-1345) (#1348)", {"b.txt": "b\n"})
+    _land(src, "cli: pin click (#1361)", {
+        "cli/pyproject.toml": ('[project]\nname = "graphban-cli"\nversion = "0.9.0"\n'
+                               'dependencies = ["click==8.1"]\n')})
+    return src
+
+
+KINDS = {"GRPH-1344": "feature", "GRPH-1345": "fix"}
+
+
+def test_THE_CALL_since_lines_are_tagged_and_highlights_lead(tmp_path, capsys):
+    src = history(tmp_path)
+    asked: list[list[str]] = []
+
+    def kinds(ids):
+        asked.append(list(ids))
+        return {i: KINDS.get(i, "") for i in ids}
+
+    body, prev, _ = rel.collect_notes(src, "2026.10.4", "HEAD", "abc1234", kinds=kinds)
+    assert prev == VER
+    assert asked == [["GRPH-1344", "GRPH-1345"]]
+    since = body[body.index(f"**Since {VER}**"):].split("\n\n")[0].splitlines()[1:]
+    assert since == [
+        "- #1359 [fleet 0.18.12] Bump graphban-fleet",
+        "- #1360 [cli 0.9.0] Ship gban",
+        "- #1347 [feature] Attached box fetches its own notes (GRPH-1344)",
+        "- #1348 Fix the summary pill (GRPH-1345)",
+        "- #1361 cli: pin click",
+    ]
+    hl = body[body.index("**Highlights**"):body.index(f"**Since {VER}**")]
+    assert hl.strip().splitlines() == [
+        "**Highlights**",
+        "* fleet 0.18.12 released (#1359)",
+        "* cli 0.9.0 released (#1360)",
+        "* Feature: #1347 Attached box fetches its own notes (GRPH-1344)",
+    ]
+    # Highlights are not `- ` lines, so "N changes" on any panel still counts five.
+    assert sum(1 for line in body.splitlines() if line.startswith("- ")) == 5
+    assert "could not classify" not in capsys.readouterr().err
+
+
+def test_no_highlights_block_when_nothing_is_a_release_or_feature(tmp_path):
+    src = make_repo(tmp_path)
+    _git(src, "tag", "-a", VER, "-m", VER)
+    _land(src, "Fix the summary pill (GRPH-1345) (#1348)", {"b.txt": "b\n"})
+    body, _, _ = rel.collect_notes(src, "2026.10.4", "HEAD", "abc1234",
+                                   kinds=lambda ids: {i: "fix" for i in ids})
+    assert "**Highlights**" not in body
+    assert "- #1348 Fix the summary pill (GRPH-1345)" in body
+
+
+def test_unreadable_kinds_still_produce_notes_and_the_command_says_why(tmp_path, capsys):
+    src = history(tmp_path)
+
+    def down(ids):
+        raise rel.KindsUnreadable("http://box:8080 unreachable for GRPH-1344: refused")
+
+    body, _, changes = rel.collect_notes(src, "2026.10.4", "HEAD", "abc1234", kinds=down)
+    err = capsys.readouterr().err
+    assert "could not classify features" in err
+    assert "http://box:8080 unreachable for GRPH-1344: refused" in err
+    assert changes is not None and len(changes) == 5
+    assert "[feature]" not in body
+    # Package releases come from git, not the server, so they are still marked.
+    assert "- #1359 [fleet 0.18.12] Bump graphban-fleet" in body
+    assert "**Highlights**" in body
+
+
+def test_the_notes_command_names_a_missing_server_config(tmp_path, capsys, monkeypatch):
+    src = history(tmp_path)
+    monkeypatch.delenv("GRAPHBAN_URL", raising=False)
+    monkeypatch.delenv("GRAPHBAN_API_KEY", raising=False)
+    monkeypatch.setenv("GRAPHBAN_HOME", str(tmp_path / "no-home"))
+    assert rel.cmd_notes(src, "2026.10.4", ref="HEAD", fetch=False) == 0
+    out = capsys.readouterr()
+    assert "**Since 2026.10.3**" in out.out
+    assert "could not classify features — no Graphban URL" in out.err
+
+
+def test_server_kinds_reads_item_kind_and_treats_404_as_no_kind(monkeypatch):
+    import io
+    import urllib.error
+
+    seen: list[tuple[str, str]] = []
+
+    def fake_open(req, timeout=0):
+        seen.append((req.full_url, req.get_header("X-api-key")))
+        if req.full_url.endswith("GRPH-9"):
+            raise urllib.error.HTTPError(req.full_url, 404, "nf", {}, io.BytesIO(b""))
+        return io.BytesIO(json.dumps({"id": "GRPH-1", "kind": "feature"}).encode())
+
+    monkeypatch.setattr(rel.urllib.request, "urlopen", fake_open)
+    got = rel.server_kinds(["GRPH-1", "GRPH-9"], config=lambda: ("http://box:8080/api", "k"))
+    assert got == {"GRPH-1": "feature", "GRPH-9": ""}
+    assert seen == [("http://box:8080/api/items/GRPH-1", "k"),
+                    ("http://box:8080/api/items/GRPH-9", "k")]
+
+    def refused(req, timeout=0):
+        raise urllib.error.HTTPError(req.full_url, 401, "no", {}, io.BytesIO(b""))
+
+    monkeypatch.setattr(rel.urllib.request, "urlopen", refused)
+    with pytest.raises(rel.KindsUnreadable, match="401"):
+        rel.server_kinds(["GRPH-1"], config=lambda: ("http://box:8080", "k"))

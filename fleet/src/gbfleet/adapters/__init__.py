@@ -287,8 +287,11 @@ class Adapter:
         """Return `launch` with this entitlement's handle selected, or refuse.
 
         The default refuses: an adapter with no way to select a handle must not start the
-        default login in its place.
+        default login in its place. A `local` record has no handle, so there is nothing to
+        select and nothing to fall back from (GRPH-1372).
         """
+        if entitlement.kind == "local":
+            return launch
         raise EntitlementUnsupported(
             f"adapter {self.name!r} cannot select the handle of entitlement "
             f"{entitlement.name!r}; refusing rather than using the default login"

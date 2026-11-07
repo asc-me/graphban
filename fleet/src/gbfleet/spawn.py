@@ -199,6 +199,12 @@ class Launch:
     #: launch on one stored entitlement must not hand the child another record's API-key
     #: variable (GRPH-P72, "The launch selects the handle").
     env_unset: tuple[str, ...] = ()
+    #: Seconds this vendor's child gets to register, or None for `REGISTRATION_WINDOW`.
+    #: Per launch because startup cost is per vendor (GRPH-1400): a claude child measured
+    #: 67s to `register_agent` on a loaded machine, and the 90s default SIGKILLed the slow
+    #: tail of healthy children with empty logs. An explicit `Limits.registration_window`
+    #: still wins over this.
+    registration_window: float | None = None
     #: Where this vendor was told to write a debug log, or None when it has no flag for
     #: one. `None` is a real answer and the supervisor reports it: `cursor-agent` and
     #: `gbagent` have no debug flag at all, and an operator who asked for `--debug` and

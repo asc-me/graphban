@@ -13,16 +13,26 @@ that tag — compose via the host helper, native via `graphban_host.py upgrade`.
 
 Does not merge to main, does not apply to a box (Install is the operator gate),
 and does not stamp fleet (that distribution stays 0.1.0 until it has its own cut).
+
+The notes tag each change (GRPH-1359): `[fleet X]` / `[cli X]` when its commit moved that
+package's `version =` line, `[feature]` when its GRPH item has `kind == "feature"`. Kinds are
+read from the Graphban server gban already uses — `GRAPHBAN_URL` or `url` in
+`~/.graphban/gban.json`, and `GRAPHBAN_API_KEY`. Unreadable kinds still publish; the command
+says it could not classify features, and why.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
 import json
+import os
 import pathlib
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 
 CALVER_RE = re.compile(r"^(\d{4})\.(\d{2})\.(\d+)$")
 PLACEHOLDERS = frozenset({"", "unknown", "0.1.0"})
@@ -288,6 +298,31 @@ def parse_change_note(subject: str, body: str) -> tuple[str, str] | None:
     return pr, title
 
 
+def list_landings(repo: pathlib.Path, previous: str, until: str, *,
+                  git_run=None) -> list[tuple[str, str, str]] | None:
+    """`list_changes` with each landing's commit: (sha, pr_number, title), oldest first."""
+    run = git_run or git
+    proc = run(
+        repo, "log", "--first-parent", "--reverse",
+        f"--format=%H{_FIELD_SEP}%s{_FIELD_SEP}%b{_RECORD_SEP}",
+        f"{previous}..{until}",
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    out: list[tuple[str, str, str]] = []
+    for rec in (proc.stdout or "").split(_RECORD_SEP):
+        rec = rec.strip("\n")
+        if not rec.strip():
+            continue
+        sha, _, rest = rec.partition(_FIELD_SEP)
+        subject, _, body = rest.partition(_FIELD_SEP)
+        note = parse_change_note(subject, body)
+        if note is not None:
+            out.append((sha.strip(), *note))
+    return out
+
+
 def list_changes(repo: pathlib.Path, previous: str, until: str, *,
                  git_run=None) -> list[tuple[str, str]] | None:
     """First-parent commits in `previous..until`, oldest first.
@@ -300,29 +335,138 @@ def list_changes(repo: pathlib.Path, previous: str, until: str, *,
 
     None means the log could not run (missing tag, etc.) — not an empty cut.
     """
-    run = git_run or git
-    proc = run(
-        repo, "log", "--first-parent", "--reverse",
-        f"--format=%s{_FIELD_SEP}%b{_RECORD_SEP}",
-        f"{previous}..{until}",
-        check=False,
-    )
-    if proc.returncode != 0:
+    landings = list_landings(repo, previous, until, git_run=git_run)
+    if landings is None:
         return None
+    return [(pr, title) for _sha, pr, title in landings]
+
+
+#: The packages whose own version line makes a landing a release of that package (GRPH-1359).
+PACKAGE_PYPROJECTS = {"fleet": FLEET_PYPROJECT, "cli": pathlib.Path("cli/pyproject.toml")}
+_ADDED_VERSION_RE = re.compile(r'^\+version\s*=\s*"([^"]+)"', re.M)
+#: An item id in a change title. `-P` ids are PRDs, which have no kind, so digits only.
+_ITEM_ID_RE = re.compile(r"\b(GRPH-\d+)\b")
+
+
+def package_releases(repo: pathlib.Path, sha: str, *, git_run=None) -> list[tuple[str, str]]:
+    """[(package, new_version)] this commit cut, read from its diff against its first parent.
+
+    The version comes from the `+version = "…"` line, never the title: a PR titled "Bump fleet
+    to 0.18.12" that set 0.18.13 shipped 0.18.13. A diff that touches the file but not that
+    line (a dependency bump) is not a release.
+    """
+    run = git_run or git
     out: list[tuple[str, str]] = []
-    for rec in (proc.stdout or "").split(_RECORD_SEP):
-        rec = rec.strip("\n")
-        if not rec.strip():
+    for name, path in PACKAGE_PYPROJECTS.items():
+        proc = run(repo, "diff", "-U0", f"{sha}^1", sha, "--", path.as_posix(), check=False)
+        if proc.returncode != 0:
             continue
-        subject, _, body = rec.partition(_FIELD_SEP)
-        note = parse_change_note(subject, body)
-        if note is not None:
-            out.append(note)
+        m = _ADDED_VERSION_RE.search(proc.stdout or "")
+        if m:
+            out.append((name, m.group(1)))
     return out
 
 
-def changes_section(previous: str | None,
-                    changes: list[tuple[str, str]] | None) -> str:
+def item_ids(title: str) -> list[str]:
+    return list(dict.fromkeys(_ITEM_ID_RE.findall(title or "")))
+
+
+class KindsUnreadable(Exception):
+    """The server's item kinds could not be read; the message says why."""
+
+
+def server_config() -> tuple[str, str]:
+    """(url, key) as gban resolves them: environment first, then `~/.graphban/gban.json`."""
+    url = (os.environ.get("GRAPHBAN_URL") or "").strip()
+    if not url:
+        home = pathlib.Path(os.environ.get("GRAPHBAN_HOME") or (pathlib.Path.home() / ".graphban"))
+        try:
+            url = str(json.loads((home / "gban.json").read_text(encoding="utf-8")).get("url") or "")
+        except (OSError, ValueError, AttributeError):
+            url = ""
+    return url.strip().rstrip("/"), (os.environ.get("GRAPHBAN_API_KEY") or "").strip()
+
+
+def server_kinds(ids: list[str], *, config=server_config, timeout: float = 10) -> dict[str, str]:
+    """{item_id: kind} from `GET /api/items/{id}`. Raises KindsUnreadable, never guesses.
+
+    An item the server does not have (404) is recorded as no kind: the ledger answered. Any
+    other failure means the server did not answer, and is the caller's to report.
+    """
+    url, key = config()
+    if not url:
+        raise KindsUnreadable("no Graphban URL (set GRAPHBAN_URL or `gban login`)")
+    if not key:
+        raise KindsUnreadable("no GRAPHBAN_API_KEY to read items with")
+    base = url[:-4] if url.endswith("/api") else url
+    kinds: dict[str, str] = {}
+    for item in ids:
+        req = urllib.request.Request(f"{base}/api/items/{urllib.parse.quote(item)}",
+                                     headers={"X-API-Key": key, "Accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                body = json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                kinds[item] = ""
+                continue
+            raise KindsUnreadable(f"{base} answered {e.code} for {item}") from e
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise KindsUnreadable(f"{base} unreachable for {item}: {e}") from e
+        kinds[item] = str(body.get("kind") or "") if isinstance(body, dict) else ""
+    return kinds
+
+
+def tag_changes(repo: pathlib.Path, landings: list[tuple[str, str, str]], *,
+                git_run=None, kinds=server_kinds) -> tuple[list[tuple[str, str, str]], str | None]:
+    """([(pr, title, tag)], why_features_unread). tag is "" for an ordinary change.
+
+    `why` is None when every feature mark is known. Otherwise the notes carry the package
+    tags only, and `why` is what the command prints — never a silent absence of `[feature]`.
+    """
+    wanted = list(dict.fromkeys(i for _s, _p, t in landings for i in item_ids(t)))
+    known: dict[str, str] = {}
+    why: str | None = None
+    if wanted:
+        try:
+            known = kinds(wanted)
+        except KindsUnreadable as e:
+            why = str(e)
+    out: list[tuple[str, str, str]] = []
+    for sha, pr, title in landings:
+        marks = [f"{name} {ver}" for name, ver in package_releases(repo, sha, git_run=git_run)]
+        if any(known.get(i) == "feature" for i in item_ids(title)):
+            marks.append("feature")
+        out.append((pr, title, "] [".join(marks)))
+    return out, why
+
+
+def highlights_section(changes) -> str:
+    """The `**Highlights**` block: package releases, then features. "" when there are none.
+
+    `* ` bullets, not `- `: the panel counts a release's changes by its `- ` lines, and a box
+    still running the previous panel would count each highlight a second time.
+    """
+    releases: list[str] = []
+    features: list[str] = []
+    for change in changes or []:
+        if len(change) < 3 or not change[2]:
+            continue
+        pr, title, tag = change[0], change[1], change[2]
+        ref = f"#{pr} " if pr else ""
+        for mark in tag.split("] ["):
+            if mark == "feature":
+                features.append(f"* Feature: {ref}{title}")
+            else:
+                name, _, ver = mark.partition(" ")
+                releases.append(f"* {name} {ver} released ({ref.strip() or title})")
+    if not releases and not features:
+        return ""
+    return "\n".join(["**Highlights**", *releases, *features]) + "\n"
+
+
+def changes_section(previous: str | None, changes: list[tuple] | None) -> str:
+    """The "Since" list. A change is (pr, title) or (pr, title, tag); a tag follows the PR."""
     if previous is None:
         return (
             "**Since last release**\n"
@@ -340,12 +484,13 @@ def changes_section(previous: str | None,
             f"Nothing landed on first-parent between `{previous}` and this cut.\n"
         )
     lines = [f"**Since {previous}**"]
-    for pr, title in changes:
-        if pr:
-            lines.append(f"- #{pr} {title}")
-        else:
-            lines.append(f"- {title}")
-    return "\n".join(lines) + "\n"
+    for change in changes:
+        pr, title = change[0], change[1]
+        tag = change[2] if len(change) > 2 else ""
+        head = " ".join(x for x in (f"#{pr}" if pr else "", f"[{tag}]" if tag else "") if x)
+        lines.append(f"- {head} {title}" if head else f"- {title}")
+    highlights = highlights_section(changes)
+    return (highlights + "\n" if highlights else "") + "\n".join(lines) + "\n"
 
 
 def notes_for(version: str, sha: str, *, previous: str | None = None,
@@ -368,8 +513,13 @@ def notes_for(version: str, sha: str, *, previous: str | None = None,
 
 
 def collect_notes(repo: pathlib.Path, version: str, until: str, sha_short: str, *,
-                  git_run=None) -> tuple[str, str | None, list[tuple[str, str]] | None]:
-    """Notes body plus the previous tag / change list used to build it."""
+                  git_run=None, kinds=server_kinds,
+                  ) -> tuple[str, str | None, list[tuple] | None]:
+    """Notes body plus the previous tag / change list used to build it.
+
+    When features could not be classified the reason goes to stderr here, so both `notes` and
+    `publish` say it: the notes still publish, but not as if no change were a feature.
+    """
     run = git_run or git
     tags = existing_tags(repo, git_run=run)
     prev = previous_tag(version, tags)
@@ -384,7 +534,13 @@ def collect_notes(repo: pathlib.Path, version: str, until: str, sha_short: str, 
         if fetched.returncode != 0:
             body = notes_for(version, sha_short, previous=prev, changes=None)
             return body, prev, None
-    changes = list_changes(repo, prev, until, git_run=run)
+    landings = list_landings(repo, prev, until, git_run=run)
+    changes: list[tuple] | None = None
+    if landings is not None:
+        changes, why = tag_changes(repo, landings, git_run=run, kinds=kinds)
+        if why:
+            print(f"release: could not classify features — {why}. The notes carry no "
+                  "[feature] marks; fleet/cli releases are still tagged.", file=sys.stderr)
     body = notes_for(version, sha_short, previous=prev, changes=changes)
     return body, prev, changes
 
