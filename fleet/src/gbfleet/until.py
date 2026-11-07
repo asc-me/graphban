@@ -1116,8 +1116,12 @@ def _loop(
         # it has not claimed yet, so a second would stack reviewers on the same rows — and,
         # when anything is live, the memory gate and child cap like every other spawn.
         review_busy = any(c in review_spawned for c in live)
-        if (unheld_review and need <= 0 and not review_busy
-                and not (live and _no_room(wave, room, len(live)))):
+        # GRPH-1387: the gate's reason is kept so the wait below names it, read once per poll
+        # and only when this branch would otherwise spawn.
+        review_gate = None
+        if unheld_review and need <= 0 and not review_busy and live:
+            review_gate = _room_refusal(wave, room, len(live))
+        if unheld_review and need <= 0 and not review_busy and review_gate is None:
             empty = 0
             if review_fails >= REVIEWER_FAILS:
                 wave.reason = "review-unsigned"
@@ -1145,7 +1149,9 @@ def _loop(
 
         if live or holdings:
             if unheld_review and live:
-                for line in _review_waits_on_live(wave, unheld_review, live):
+                for line in _review_waits_on_live(
+                        wave, unheld_review, live, review_spawned=review_spawned,
+                        gate=review_gate):
                     if line not in waits:
                         waits.append(line)
             empty = 0
@@ -1761,21 +1767,50 @@ def _lift(planner: Graphban, item_id: str) -> None:
         observe.emit("hold_unlifted", item=item_id, detail=str(exc))
 
 
-def _review_waits_on_live(wave: Wave, unheld: list, live: list) -> list[str]:
-    """Name what an unheld review row is waiting on: the live child blocking its spawn
-    (GRPH-1349). Logged once per row and child, so a ten-minute wait is one line."""
+def _review_waits_on_live(wave: Wave, unheld: list, live: list, *,
+                          review_spawned: list | tuple = (), gate: str | None = None) -> list[str]:
+    """Name what an unheld review row is waiting on (GRPH-1349, GRPH-1387). Logged once per
+    row and reason, so a ten-minute wait is one line.
+
+    Since GRPH-1374 a live builder does not hold a review spawn, so only two things do, and
+    only those are named: a review spawn of ours that has not claimed yet ("reviewer pid N
+    not yet claimed"), and the memory gate (`gate`, its reason). A child that is reviewing
+    the row, or that built it and is still finishing, is never what the row waits on.
+    """
     out: list[str] = []
-    for child in live:
-        item = ",".join(i for i in (child.held_items or []) if i) or "no item yet"
-        pid = getattr(getattr(child, "process", None), "pid", None)
-        for row in unheld:
-            line = f"{row['id']}: review waits on live child pid {pid} (item {item})"
-            out.append(line)
-            if line not in wave.review_waits:
-                wave.review_waits.append(line)
-                observe.emit("review_waits_on_live_child", review=str(row["id"]),
-                             pid=pid, item=item)
+
+    def _say(rid: str, line: str, pid, item: str) -> None:
+        out.append(line)
+        if line not in wave.review_waits:
+            wave.review_waits.append(line)
+            observe.emit("review_waits_on_live_child", review=rid,
+                         pid=pid, item=item, gate=gate or "")
+
+    for row in unheld:
+        rid = str(row["id"])
+        named = False
+        for child in live:
+            if child not in review_spawned or _child_touches(child, rid):
+                continue
+            if [i for i in (child.held_items or []) if i]:
+                continue
+            pid = getattr(getattr(child, "process", None), "pid", None)
+            _say(rid, f"{rid}: review waits on reviewer pid {pid} not yet claimed",
+                 pid, "no item yet")
+            named = True
+        if gate and not named:
+            _say(rid, f"{rid}: review waits on the memory gate ({gate})", None, "")
     return out
+
+
+def _child_touches(child, item_id: str) -> bool:
+    """Whether `child` holds, held, or was bound to `item_id`: its reviewer or its builder."""
+    seen = list(getattr(child, "held_items", None) or [])
+    seen += list(getattr(child, "ever_held", None) or [])
+    got = getattr(child, "assigned", None)
+    if isinstance(got, dict) and got.get("item"):
+        seen.append(got["item"])
+    return item_id in {str(i) for i in seen if i}
 
 
 def _release_delegated(delegated: set[str], owners: dict[str, object], finished: list,
@@ -2068,9 +2103,14 @@ def _no_room(wave: Wave, room: Headroom, live_n: int) -> bool:
     Reported once per change, not once per poll. The condition is re-read every second for
     as long as it lasts, and a line a second would bury the wave's own record in it.
     """
+    return _room_refusal(wave, room, live_n) is not None
+
+
+def _room_refusal(wave: Wave, room: Headroom, live_n: int) -> str | None:
+    """`_no_room` with the gate's reason: None when there is room, else why not (GRPH-1387)."""
     verdict = room.allow(live_n)
     if verdict.allowed:
-        return False
+        return None
     if not wave.gated or wave.gated[-1] != verdict.reason:
         if len(wave.gated) < GATED_MAX:
             wave.gated.append(verdict.reason)
@@ -2078,7 +2118,7 @@ def _no_room(wave: Wave, room: Headroom, live_n: int) -> bool:
             "memory_gated", running=live_n, available=verdict.available,
             fits=verdict.fits, detail=verdict.reason,
         )
-    return True
+    return str(verdict.reason or "memory gate refused")
 
 
 def _cap_children(wave, limits, item: str | None = None) -> None:
