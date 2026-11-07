@@ -1917,6 +1917,30 @@ def _touchpoints_of(details: dict) -> list[str]:
     return [str(t) for t in (details.get("touchpoints") or []) if str(t).strip()]
 
 
+def _offer_merged_for_review(planner: Graphban, item_id: str, details: dict, base: str) -> bool:
+    """Move a git-merged, unsigned item to `review` so the drain staffs a reviewer (GRPH-1408).
+
+    The work is already in `base`, so there is nothing to build — only a review to do,
+    against what the base carries. True when the server accepted the move. A refusal is
+    reported and False returned, and the caller holds the item as before: a hold is the
+    honest fallback, never a silent drop.
+    """
+    branch = str(details.get("branch") or "").strip()
+    where = f" (branch {branch})" if branch else ""
+    note = (f"gbfleet: already in {base}{where} but unsigned — offered for review against the "
+            f"merge in {base}, not rebuilt (GRPH-1408)")
+    try:
+        planner.call("update_item", id=item_id, status="review",
+                     evidence=[{"kind": "note", "detail": note}])
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("review_offer_refused", item=item_id,
+                     detail=f"{item_id} is git-merged and unsigned; moving it to review was "
+                            f"refused: {exc}")
+        return False
+    observe.emit("review_offered", item=item_id, detail=note)
+    return True
+
+
 def _holds_sentence(item_id: str, areas: list[str]) -> str:
     """"SA-576 holds CueQueue.tsx, styles/queue.css" (GRPH-951) — the files, named."""
     if not areas:
@@ -1990,6 +2014,12 @@ def _delegate_next(
                 occupiers[item_id] = _touchpoints_of(got)
             elif status in ("next", "backlog") and _already_in_base(got, repo, base):
                 occupiers[item_id] = _touchpoints_of(got)
+                # GRPH-1408: merged but unsigned is unreviewed work in the base. Holding it
+                # forever left GRPH-1359 waiting on a reviewer started by hand. Moved to
+                # `review`, it is a review row, and the drain staffs a reviewer for it.
+                if _offer_merged_for_review(planner, item_id, got, base):
+                    delegated.add(item_id)
+                    continue
                 observe.emit(
                     "delegate_held", item=item_id,
                     detail=f"already in {base} (unsigned, git-merged); "

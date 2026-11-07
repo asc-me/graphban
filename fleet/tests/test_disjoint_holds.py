@@ -20,8 +20,14 @@ class _Planner:
         self.clusters = clusters
         self.details = details
         self.delegated: list[str] = []
+        self.offered: list[str] = []
 
     def call(self, tool, **kw):
+        if tool == "update_item":
+            # GRPH-1408: a merged-but-unsigned member is offered for review, not rebuilt.
+            assert kw["status"] == "review"
+            self.offered.append(kw["id"])
+            return {"id": kw["id"], "status": "review"}
         if tool == "collision_clusters":
             return {"clusters": self.clusters}
         if tool == "get_item_details":
@@ -73,6 +79,8 @@ def test_a_merged_member_holds_only_its_own_files(tmp_path: Path, monkeypatch):
     )
     assert seed == "SIB"
     assert planner.delegated == ["SIB"]
+    # Offered for review (GRPH-1408), yet still holding only its own files.
+    assert planner.offered == ["MERGED"]
 
 
 def test_a_sibling_that_shares_a_file_stays_held(tmp_path: Path, monkeypatch):
@@ -91,6 +99,8 @@ def test_a_sibling_that_shares_a_file_stays_held(tmp_path: Path, monkeypatch):
     )
     assert seed is None
     assert planner.delegated == []
+    # The occupier goes to review (GRPH-1408); the sibling sharing its file stays held.
+    assert planner.offered == ["MERGED"]
 
 
 def test_a_review_member_holds_only_its_own_files(tmp_path: Path):
