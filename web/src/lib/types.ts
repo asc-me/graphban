@@ -104,6 +104,8 @@ export interface SetupStep {
   how: string;
   /** Present when `status` is `unknown`: why the check could not run. */
   reason?: string;
+  /** Step 5 (③ Connect) only, when done: what proved it. */
+  proof?: "first_call";
 }
 
 export interface ProjectSetup {
@@ -1143,7 +1145,7 @@ export interface ApiKey {
   origin?: ApiKeyOrigin | null;
 }
 
-export type ApiKeyOrigin = "web" | "gban_setup" | "gban_swamp_setup" | "fleet";
+export type ApiKeyOrigin = "web" | "gban_setup" | "gban_swamp_setup" | "fleet" | "quickstart";
 
 export interface ApiKeyCreated extends ApiKey {
   plaintext: string;

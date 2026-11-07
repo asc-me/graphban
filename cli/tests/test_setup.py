@@ -1208,3 +1208,15 @@ def test_setup_refuses_to_write_a_key_that_would_not_be_ignored(tmp_path, wired,
     assert code == 1
     assert not (repo / ".mcp.json").exists(), "wrote a key git would commit"
     assert any("would not be gitignored" in l["detail"] for l in lines)
+
+
+def test_web_agent_list_is_generated_from_setup_agents():
+    """The quick-start picker's gban-route list (GRPH-1362 / G9) is exported, not copied."""
+    import importlib.util
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location("gen_gban_agents", root / "scripts" / "gen_gban_agents.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.OUT.read_text() == mod.render(), "run scripts/gen_gban_agents.py"

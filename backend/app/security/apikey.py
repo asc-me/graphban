@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import threading
+import time
 import uuid
 from datetime import timedelta, timezone
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.models import ApiKey, utcnow
@@ -107,6 +110,32 @@ def verify_api_key(db: Session, raw: str) -> ApiKey | None:
         expires_at = row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=timezone.utc)
         if expires_at <= utcnow():
             return None
-    row.last_used = utcnow()
-    db.commit()
+    _touch_last_used(db, row)
     return row
+
+
+# `last_used` is the first-call proof for quick-start step ③ (GRPH-1362, G13), so it has two
+# rules: the FIRST authenticated call stamps it immediately (a person is watching for it), and
+# every later stamp is throttled to once a minute per key from this in-process cache. Both
+# writes go through their own short session, never the request's transaction: the old
+# `db.commit()` here committed whatever the caller had pending and put a write on every call.
+LAST_USED_THROTTLE_SECONDS = 60
+_last_stamped: dict[str, float] = {}
+_stamp_lock = threading.Lock()
+
+
+def _touch_last_used(db: Session, row: ApiKey) -> None:
+    now = time.monotonic()
+    first = row.last_used is None
+    with _stamp_lock:
+        prev = _last_stamped.get(row.id)
+        if not first and prev is not None and now - prev < LAST_USED_THROTTLE_SECONDS:
+            return
+        _last_stamped[row.id] = now
+    try:
+        with Session(bind=db.get_bind()) as side:
+            side.execute(update(ApiKey).where(ApiKey.id == row.id).values(last_used=utcnow()))
+            side.commit()
+    except Exception:  # noqa: BLE001 — a failed stamp must never fail the call it describes
+        with _stamp_lock:
+            _last_stamped.pop(row.id, None)

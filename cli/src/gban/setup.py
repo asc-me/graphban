@@ -49,6 +49,13 @@ TIERS = ["fleet", "prd"]
 LEDGER_SERVER = "graphban"
 FLEET_SERVER = "gbfleet"
 
+#: The agents `gban setup` writes a harness config for (see `destinations`). The web
+#: quick-start's agent picker offers the gban route to exactly these and switches the rest to
+#: paste-a-key (GRPH-P67 G9). `scripts/gen_gban_agents.py` exports this to the web bundle;
+#: `cli/tests/test_setup.py` fails when that file drifts, so adding a harness here is the
+#: one edit that changes what the dialog offers.
+SETUP_AGENTS = ("claude", "grok")
+
 
 # ---- where the config goes ------------------------------------------------------------------
 

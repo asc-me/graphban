@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import CodeNode, Item, MemoryShard, Project
+from app.models import ApiKey, CodeNode, Item, MemoryShard, Project, utcnow
 
 # Sources are EXTENSIBLE — editor conventions (.cursor/rules, Grok Build GROK.md, Codex
 # AGENTS.md) plug in later (AL-133 D2).
@@ -115,7 +115,40 @@ def checklist(db: Session, project_id: str) -> dict:
                     "capped) — never bulk-create a flood.",
                     lambda: _n(db, Item, project_id), "item(s)", sources=_ITEM_SOURCES),
     ]
+    steps.append(_connect_step(db, project_id))
     return {"project_id": project_id, "offline": bool(d.get("offline")), "steps": steps}
+
+
+CONNECT_STEP = 5  # quick-start ③; numbered last so ①–④ keep the ids agents already read
+
+
+def _connect_step(db: Session, project_id: str) -> dict:
+    """Quick-start ③: ✓ only when a key the dialog minted for this project has made an
+    authenticated call (`api_keys.last_used`, GRPH-1362). A revoked or expired key proves
+    nothing now, so it is not evidence. Opening a later screen never reaches here. A machine
+    report is the second proof and joins with GRPH-1367."""
+    base = {"step": CONNECT_STEP, "name": "Connect your agent",
+            "how": "Install the harness config (gban setup, or paste a key) and restart the agent; "
+                   "the first call it makes is the proof."}
+    try:
+        keys = db.scalars(select(ApiKey).where(
+            ApiKey.project_id == project_id, ApiKey.origin == "quickstart",
+            ApiKey.revoked.is_(False), ApiKey.last_used.is_not(None)
+        ).execution_options(populate_existing=True)).all()  # a row this session loaded earlier may be stale
+        live = []
+        for k in keys:
+            exp = k.expires_at
+            if exp is not None and (exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)) <= utcnow():
+                continue
+            live.append(k)
+    except Exception as e:  # noqa: BLE001
+        return {**base, "status": "unknown", "detail": f"could not check: {type(e).__name__}",
+                "reason": str(e)[:200]}
+    if not live:
+        return {**base, "status": "pending", "detail": "No first call seen yet."}
+    k = max(live, key=lambda r: r.last_used)
+    return {**base, "status": "done", "proof": "first_call", "key_name": k.name,
+            "detail": f"First call from key '{k.name}' at {k.last_used.isoformat()}."}
 
 
 def _n(db: Session, model, project_id: str) -> int:
@@ -126,7 +159,7 @@ def agent_view(db: Session, project_id: str) -> dict:
     """`setup_project`'s answer: a projection of `checklist` — steps ①–④ with the same id and
     status, plus the `empty`/`complete` flags agents already read."""
     full = checklist(db, project_id)
-    steps = [s for s in full["steps"] if s["step"] >= 1]
+    steps = [s for s in full["steps"] if 1 <= s["step"] <= 4]
     counts_ = [s for s in steps if s["step"] >= 2]
     empty = all(s["status"] == "pending" for s in counts_)
     return {
