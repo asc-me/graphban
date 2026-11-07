@@ -332,6 +332,7 @@
 "tests/test_shell_counts.py": 1.38,
 "tests/test_slice_pull.py": 0.65,
 "tests/test_spa_served_by_api.py": 0.38,
+"tests/test_spec_alignment.py": 1.5,
 "tests/test_spike_toolcall.py": 0.05,
 "tests/test_stack_app_record.py": 1.72,
 "tests/test_stack_scan_api.py": 0.57,
