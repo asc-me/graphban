@@ -154,6 +154,59 @@ def attestation(*, commit: str, branch: str, run_url: str = "",
                    })
 
 
+#: A pytest short-summary line naming a failing test, e.g. `FAILED tests/x.py::test_y - msg`.
+FAILED_TEST = re.compile(r"^(?:FAILED|ERROR)\s+(\S+::\S+)", re.MULTILINE)
+MAX_TESTS = 5
+
+
+def failing_jobs(needs_json: str) -> list[str]:
+    """Names of the gate's `needs` jobs whose result was neither success nor skipped.
+
+    `needs_json` is `toJSON(needs)` from Actions: `{"job": {"result": "failure", ...}}`.
+    Unparseable input yields no names rather than raising, so a malformed value cannot stop
+    the failure from being recorded at all.
+    """
+    try:
+        needs = json.loads(needs_json or "{}")
+    except ValueError:
+        return []
+    if not isinstance(needs, dict):
+        return []
+    return sorted(n for n, v in needs.items()
+                  if isinstance(v, dict) and v.get("result") not in ("success", "skipped"))
+
+
+def failing_tests(log: str, limit: int = MAX_TESTS) -> list[str]:
+    """The first few distinct failing test ids found in a CI log."""
+    out: list[str] = []
+    for t in FAILED_TEST.findall(log or ""):
+        if t not in out:
+            out.append(t)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def failed_attestation(*, commit: str, branch: str, jobs: list[str], tests: list[str],
+                       run_url: str = "", matched: str = "", run_attempt: str = "") -> dict:
+    """The receipt for a run that FAILED (GRPH-1410): `suite_green` with `passed: false`.
+
+    Without it a red run and a run that never reported look the same to a reviewer — both
+    read "no CI run has reported" — and the reviewer waits instead of bouncing. Naming the
+    failing jobs and first failing tests gives the bounce its reason.
+    """
+    parts = []
+    if jobs:
+        parts.append("failing jobs: " + ", ".join(jobs))
+    if tests:
+        parts.append("first failing tests: " + ", ".join(tests))
+    detail = (f"CI failed on {branch or 'an unnamed ref'} at {commit[:12]}"
+              + (" — " + "; ".join(parts) if parts else ""))
+    return receipt(commit=commit, branch=branch, run_url=run_url, matched=matched,
+                   run_attempt=run_attempt,
+                   predicate={"name": "suite_green", "passed": False, "detail": detail})
+
+
 def run_ref(run_url: str, run_attempt: str = "") -> str:
     """The run AND the attempt, e.g. `…/actions/runs/<id>/attempts/<n>` (GRPH-1113).
 
@@ -258,9 +311,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--run-url", default="")
     ap.add_argument("--run-attempt", default=os.environ.get("GITHUB_RUN_ATTEMPT", ""),
                     help="github.run_attempt; defaults to $GITHUB_RUN_ATTEMPT (GRPH-1113)")
-    ap.add_argument("--mode", choices=("attest", "head"), default="attest",
+    ap.add_argument("--mode", choices=("attest", "head", "failed"), default="attest",
                     help="`head` records the observed commit and runs even when CI failed; "
-                         "`attest` writes the receipt and must not.")
+                         "`attest` writes the receipt and must not; `failed` writes a "
+                         "`suite_green` receipt with passed=false and runs ONLY when CI failed.")
+    ap.add_argument("--needs-json", default="",
+                    help="toJSON(needs) of the gate job; names the failing jobs (mode failed)")
+    ap.add_argument("--log-file", default="",
+                    help="a CI log to scan for the first failing test ids (mode failed)")
     args = ap.parse_args(argv)
 
     url = os.environ.get("GRAPHBAN_URL", "").strip()
@@ -281,8 +339,21 @@ def main(argv: list[str] | None = None) -> int:
         print("no Graphban item key in the branch or PR text — nothing to attest")
         return 0
 
-    receipt = attestation(commit=args.commit, branch=args.branch, run_url=args.run_url,
-                          run_attempt=args.run_attempt, matched=matched_by(args.text))
+    if args.mode == "failed":
+        log = ""
+        if args.log_file:
+            try:
+                with open(args.log_file, encoding="utf-8", errors="replace") as fh:
+                    log = fh.read()
+            except OSError:
+                log = ""
+        receipt = failed_attestation(
+            commit=args.commit, branch=args.branch, jobs=failing_jobs(args.needs_json),
+            tests=failing_tests(log), run_url=args.run_url, run_attempt=args.run_attempt,
+            matched=matched_by(args.text))
+    else:
+        receipt = attestation(commit=args.commit, branch=args.branch, run_url=args.run_url,
+                              run_attempt=args.run_attempt, matched=matched_by(args.text))
     failures = []
     #: Ids this key was refused. Held rather than reported immediately, because whether they
     #: are FOREIGN or evidence of a broken key is decided by whether anything else worked.
@@ -295,7 +366,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{item_key}: head is now {args.commit[:12]}")
             else:
                 post(url, key, item_key, receipt)
-                print(f"attested {item_key} at {args.commit[:12]}")
+                print(f"{'recorded FAILED CI for' if args.mode == 'failed' else 'attested'} "
+                      f"{item_key} at {args.commit[:12]}")
             wrote += 1
         except ItemMissing as e:
             # Loud skip, same family as a missing secret. Must be caught BEFORE
