@@ -4,7 +4,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from gbfleet.supervisor import Wave, _note_touchpoints, latest_head
+from gbfleet.supervisor import Wave, _note_touchpoints, is_generated, latest_head
 from gbfleet.worktree import Orphan
 
 _CFG = ["-c", "user.email=a@b.c", "-c", "user.name=t"]
@@ -72,3 +72,28 @@ def test_generated_files_do_not_block_a_proposal_but_other_files_do():
     wave.touched["gb/w-2"] = ["fleet/src/x.py", "AGENTS.md", "web/src/App.tsx"]
     _note_touchpoints(wave, _Child("gb/w-2", ["GRPH-1"]), None)
     assert wave.undeclared == {"gb/w-2": ["web/src/App.tsx"]}
+
+
+def test_gen_subagents_outputs_are_proposed_with_a_log_event(monkeypatch):
+    from gbfleet import observe
+    events = []
+    monkeypatch.setattr(observe, "emit", lambda kind, **kw: events.append((kind, kw)))
+    wave = Wave()
+    wave.declared["GRPH-1"] = ["fleet/src"]
+    wave.touched["gb/w-1"] = ["fleet/src/x.py", "AGENTS.md", ".claude/agents/gb-verifier.md",
+                              ".codex/agents/gb-verifier.toml", ".cursor/rules/graphban.mdc"]
+    _note_touchpoints(wave, _Child("gb/w-1", ["GRPH-1"]), None)
+    assert wave.undeclared == {}
+    assert any(k == "generated_files_allowed" for k, _ in events)
+
+
+def test_generated_set_covers_everything_gen_subagents_writes():
+    """Sabotage: revert to the 5-entry list and this fails."""
+    import importlib.util
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location("gen_subagents", root / "scripts" / "gen_subagents.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    missed = [f for f in mod.render_files() if not is_generated(f)]
+    assert missed == []
+    assert not is_generated("web/src/App.tsx")

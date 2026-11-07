@@ -583,6 +583,9 @@ class ItemCreate(BaseModel):
     prd_section: str = ""
     question: str | None = None
     options: list[str] | None = None
+    #: `feature` / `fix` / `chore` (GRPH-1358). Unset takes the service default — `fix` for a
+    #: `bug`-tagged item, otherwise "" (not recorded).
+    kind: str | None = None
 
 
 class WaitAnswerIn(BaseModel):
@@ -611,6 +614,7 @@ class ItemUpdate(BaseModel):
     # The service whitelist already accepted `fidelity` — MCP could write it while the
     # web PATCH silently could not, so the loop this item closes had no confirm button.
     fidelity: str | None = None
+    kind: str | None = None  # GRPH-1358; validated against items.KINDS in the service
     #: Where this item's work lands (GRPH-832). Accepted HERE and on no agent-facing route:
     #: this patch takes a bearer JWT, so declaring an item `deploy` — or clearing it back to
     #: `repo` — is a signed-in person's act and cannot be done by a credential a child holds.
@@ -658,6 +662,9 @@ class ItemOut(ORMModel):
     #: needs a value to bind to whether or not it has been touched.
     reach: str = "repo"
     fidelity: str = "low"
+    #: `feature` / `fix` / `chore`, or "" = not recorded (GRPH-1358). Read per item by the
+    #: release script; an empty value means nobody said, not "not a feature".
+    kind: str = ""
     created_at: datetime
     updated_at: datetime
     #: When it last reached `done` (GRPH-1134); null while it is not done. The board's

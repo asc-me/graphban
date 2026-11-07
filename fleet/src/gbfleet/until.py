@@ -147,6 +147,13 @@ class Report:
             "spawned": self.spawned,
             "minted": self.minted,
             "waits": list(self.waits),
+            # GRPH-1374. Only when non-empty: they lived on the Wave and reached no summary, so
+            # a review row held up by a live child, or a lease that lapsed under a live child,
+            # was visible only in a log.
+            **({"review_waits": list(self.wave.review_waits)}
+               if self.wave and self.wave.review_waits else {}),
+            **({"lease_lapsed_live": list(self.wave.lease_lapsed_live)}
+               if self.wave and self.wave.lease_lapsed_live else {}),
             "review": list(self.review),
             # GRPH-1188: with `--prd`, items in review that belong to another PRD or to none.
             # Informational only — this run neither spawns for them nor fails on them, since
@@ -611,6 +618,7 @@ def _loop(
     mint_deadline = time.monotonic() + mint_budget
     mint_left = mint_tries
     review_fails = 0
+    review_spawned: list = []  # GRPH-1374: children this loop spawned for review rows
     # GRPH-842. One gate for the whole run, not one per spawn: a child spawned seconds ago
     # is not in the kernel's numbers yet, and a fresh reading per seat cannot know that. Its
     # charges expire, so an hour-long loop does not slowly refuse everything.
@@ -1010,7 +1018,15 @@ def _loop(
         # is running, and the gate never refuses the first child — so a check here could
         # only ever cost a `vm_stat` per poll and answer yes. **If that guard goes, this
         # needs `_no_room` like the worker branch above.**
-        if unheld_review and need <= 0 and not live:
+        #
+        # GRPH-1374. A live BUILDER no longer blocks it: a reviewer for item B has nothing to do
+        # with the child building item A, and waiting on that child held a review row for the
+        # whole build (GRPH-1342). What still blocks is a live REVIEW spawn of this branch —
+        # it has not claimed yet, so a second would stack reviewers on the same rows — and,
+        # when anything is live, the memory gate and child cap like every other spawn.
+        review_busy = any(c in review_spawned for c in live)
+        if (unheld_review and need <= 0 and not review_busy
+                and not (live and _no_room(wave, room, len(live)))):
             empty = 0
             if review_fails >= REVIEWER_FAILS:
                 wave.reason = "review-unsigned"
@@ -1028,7 +1044,10 @@ def _loop(
                 seat = replace(seat, declare=matrix_mod.declaration(adapter, "", None, matrix))
             _cap_children(wave, limits)
             before = len(wave.spawned)
+            kids = len(children)
             failover(seat, "", "", launch_factory, (adapter, ""))
+            if len(children) > kids:
+                review_spawned.append(children[-1])
             if len(wave.spawned) == before:
                 review_fails += 1
             continue

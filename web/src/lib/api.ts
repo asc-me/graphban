@@ -436,6 +436,12 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ mark }),
     }),
+  /** The app tour's Finish (GRPH-1363), with the stops this nav had no anchor for. */
+  completeTour: (skippedStops: string[]) =>
+    request<{ onboarding: Onboarding }>("/auth/me/onboarding", {
+      method: "PATCH",
+      body: JSON.stringify({ mark: "tour_completed", skipped_stops: skippedStops }),
+    }),
   myMemberships: () =>
     request<{ project_id: string; project_name: string; accent: string; role: string; access: string }[]>(
       "/auth/me/memberships",

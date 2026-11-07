@@ -1,6 +1,7 @@
 """P30 D1 — `gbfleet until` is a planner loop, not a thicker supervisor."""
 from __future__ import annotations
 
+import time
 import json
 from pathlib import Path
 
@@ -2311,3 +2312,42 @@ def test_review_waiting_on_a_live_child_names_the_childs_item():
     assert got == ["GRPH-1342: review waits on live child pid 777 (item GRPH-1343)"]
     _review_waits_on_live(wave, rows, [_C()])
     assert wave.review_waits == got
+
+
+def test_a_live_builder_does_not_block_a_review_spawn_for_another_item(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1374: a child building item A is live; an unheld review row for B still gets a
+    reviewer within the run. Sabotage: restore `not live` on the review branch and no
+    review-only seat is ever minted."""
+    workspace = tmp_path / "ws"
+    minted: list = []
+    stamps: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=1, on_mint=lambda role: stamps.append(time.monotonic()),
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1", "review_claimed_by": ""}],
+        minted_args=minted,
+    )
+    run(
+        git_repo, _factory(scripts, "works_then_waits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1, max_children=4),
+    )
+    assert [a.get("review_only") for a in minted[:2]] == [False, True], minted
+    # The builder lives 1.5s; the reviewer must be minted while it is still running.
+    assert stamps[1] - stamps[0] < 1.0, stamps
+
+
+def test_review_waits_and_lapsed_live_reach_the_summary_json():
+    """GRPH-1374: both lists are in the JSON when non-empty and absent when empty."""
+    from gbfleet.supervisor import Wave
+    from gbfleet.until import Report
+
+    wave = Wave()
+    assert "review_waits" not in Report(ok=True, reason="idle", exit=0, wave=wave).as_json()
+    wave.review_waits.append("GRPH-1342: review waits on live child pid 7 (item GRPH-1343)")
+    wave.lease_lapsed_live.append("GRPH-1343: lease lapsed under live pid 7")
+    got = Report(ok=True, reason="idle", exit=0, wave=wave).as_json()
+    assert got["review_waits"] == wave.review_waits
+    assert got["lease_lapsed_live"] == wave.lease_lapsed_live

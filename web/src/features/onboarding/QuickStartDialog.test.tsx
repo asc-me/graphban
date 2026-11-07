@@ -294,7 +294,9 @@ describe("the chip and Finish", () => {
     expect(within(open).getByText(/Model — pending/)).toBeInTheDocument();
     expect(within(open).getByText(/First job — pending/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Done" }));
+    // With a project the frame offers the app tour (GRPH-1363); skipping it still finishes.
+    expect(screen.getByRole("button", { name: "Take the 2-minute tour" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Skip for now" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(srv.marks).toContain("quickstart_finished");
     await waitFor(() => expect(screen.queryByRole("button", { name: /Finish setup/ })).not.toBeInTheDocument());

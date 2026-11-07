@@ -4057,6 +4057,9 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 project_id=prd.project_id, status="backlog",
                 tags=["prd", "prototype"] if pr["fidelity"] == "high" else ["prd"],
                 fidelity=pr["fidelity"],
+                # A PRD task is new capability (GRPH-1358). Said here, not inferred from
+                # `prd_id`: bugs are filed under PRDs too, and those must not read as features.
+                kind="feature",
                 prd_id=prd.id, prd_section=pr["section"],
                 reporter={"name": "Spec", "handle": "prd", "avatar": "#c9b8ff"},
             )

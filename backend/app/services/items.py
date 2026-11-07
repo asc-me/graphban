@@ -18,6 +18,23 @@ logger = logging.getLogger(__name__)
 
 STATUSES = ["backlog", "next", "in_progress", "review", "done", "blocked"]
 FIDELITIES = ["low", "high"]  # low = specifiable now; high = needs a prototype (AL-68)
+#: What kind of change an item is (GRPH-1358). Empty string = not recorded, which is a third
+#: answer and not a synonym for any of these: an old row must not read as "not a feature".
+KINDS = ["feature", "fix", "chore"]
+
+
+def _check_kind(kind: str) -> None:
+    if kind not in KINDS and kind != "":
+        raise ValueError(
+            f"invalid kind: {kind!r} — one of {', '.join(KINDS)}, or empty for not recorded")
+
+
+def _default_kind(tags) -> str:
+    """The kind an item gets when its creator does not say: `fix` for a `bug`-tagged item,
+    otherwise empty (not recorded). Never `feature` — that is only ever declared."""
+    if any(isinstance(t, str) and t.strip().lower() == "bug" for t in (tags or [])):
+        return "fix"
+    return ""
 DEFAULT_LEASE_SECONDS = 600  # a claim with no heartbeat within this window is reclaimable
 
 
@@ -100,8 +117,11 @@ def create_item(
     commit: bool = True,
     question: str | None = None,
     options: list[str] | None = None,
+    kind: str | None = None,
 ) -> Item:
     """Create a tracked item.
+
+    `kind` unset (None) takes `_default_kind(tags)`; an explicit `""` records "not recorded".
 
     `question`/`options` file it as a structured decision wait (`waits.set_decision`).
 
@@ -124,6 +144,8 @@ def create_item(
         )
     if fidelity not in FIDELITIES:
         raise ValueError(f"invalid fidelity: {fidelity}")
+    kind = _default_kind(tags) if kind is None else kind
+    _check_kind(kind)
     if db.get(Project, project_id) is None:
         raise ValueError(f"unknown project: {project_id!r}")
     effort_val = int(effort or 0)
@@ -149,6 +171,7 @@ def create_item(
         prd_linked_at=utcnow() if prd_id else None,
         prd_section=prd_section or "",
         fidelity=fidelity,
+        kind=kind,
     )
     if question or options:
         from app.services.waits import set_decision
@@ -1187,7 +1210,9 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
     at the PR's head or merge commit is the outcome the cooldown exists to give time for;
     refusing an already-merged, already-attested PR for ten minutes protected nothing. Bound
     to a COMMIT, never "any green receipt": a pass at an older head says nothing about the
-    code being completed. No commit named means no skip — the cooldown still clears itself.
+    code being completed. No commit named means no skip. Since GRPH-1345 the cooldown no
+    longer clears itself: once it has expired without a `suite_green` the refusal stands
+    until one arrives.
 
     **A first link that arrives WITH the verdict is stored before the refusal.** Before, the
     stamp was written only by a successful `update_item`, so a `done`/`sign_off` carrying the
@@ -1400,6 +1425,8 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
             raise ValueError(f"invalid status: {fields['status']}")
     if fields.get("fidelity") is not None and fields["fidelity"] not in FIDELITIES:
         raise ValueError(f"invalid fidelity: {fields['fidelity']}")
+    if fields.get("kind") is not None:
+        _check_kind(fields["kind"])
     if fields.get("effort") is not None:
         effort_update = int(fields["effort"])
         if effort_update < 0:
@@ -1602,7 +1629,7 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
             item.prd_linked_at = utcnow()
     for key in ("title", "description", "status", "tags", "effort", "blocker", "pr", "date",
                 "head_commit",
-                "github_url", "assignee", "prd_id", "prd_section", "fidelity"):
+                "github_url", "assignee", "prd_id", "prd_section", "fidelity", "kind"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
     # GRPH-1031. `branch` is identity, not branding: a worker rewriting it under a live
@@ -2000,6 +2027,9 @@ def item_dict(item: Item) -> dict:
         "prd_id": item.prd_key,
         "prd_section": item.prd_section,
         "fidelity": item.fidelity,
+        # GRPH-1358. Always present: "" is the honest "not recorded", which a release must be
+        # able to tell apart from a field that was never sent. Reply-only, like `claimed_at`.
+        "kind": item.kind or "",
         "evidence": item.evidence or [],
         # Authorship, distinct from the lease above (GRPH-379). It is the input the review
         # independence rule is decided on, and it was readable nowhere — so an agent could not
