@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -137,7 +138,8 @@ def matched_by(*texts: str) -> str:
 
 
 def attestation(*, commit: str, branch: str, run_url: str = "",
-                matched: str = "", run_attempt: str = "") -> dict:
+                matched: str = "", run_attempt: str = "",
+                commits: list[str] | None = None) -> dict:
     """The receipt. One predicate, because CI checks exactly one thing: the suite passed.
 
     Naming it `suite_green` rather than something broader matters — the gate records WHICH
@@ -146,7 +148,7 @@ def attestation(*, commit: str, branch: str, run_url: str = "",
     accepting less than it appears to.
     """
     return receipt(commit=commit, branch=branch, run_url=run_url, matched=matched,
-                   run_attempt=run_attempt,
+                   run_attempt=run_attempt, commits=commits,
                    predicate={
                        "name": "suite_green",
                        "passed": True,
@@ -188,7 +190,8 @@ def failing_tests(log: str, limit: int = MAX_TESTS) -> list[str]:
 
 
 def failed_attestation(*, commit: str, branch: str, jobs: list[str], tests: list[str],
-                       run_url: str = "", matched: str = "", run_attempt: str = "") -> dict:
+                       run_url: str = "", matched: str = "", run_attempt: str = "",
+                       commits: list[str] | None = None) -> dict:
     """The receipt for a run that FAILED (GRPH-1410): `suite_green` with `passed: false`.
 
     Without it a red run and a run that never reported look the same to a reviewer — both
@@ -203,7 +206,7 @@ def failed_attestation(*, commit: str, branch: str, jobs: list[str], tests: list
     detail = (f"CI failed on {branch or 'an unnamed ref'} at {commit[:12]}"
               + (" — " + "; ".join(parts) if parts else ""))
     return receipt(commit=commit, branch=branch, run_url=run_url, matched=matched,
-                   run_attempt=run_attempt,
+                   run_attempt=run_attempt, commits=commits,
                    predicate={"name": "suite_green", "passed": False, "detail": detail})
 
 
@@ -223,7 +226,8 @@ def run_ref(run_url: str, run_attempt: str = "") -> str:
 
 
 def receipt(*, commit: str, branch: str, run_url: str = "", matched: str = "",
-            predicate: dict, run_attempt: str = "") -> dict:
+            predicate: dict, run_attempt: str = "",
+            commits: list[str] | None = None) -> dict:
     """One attestation carrying exactly ONE predicate (GRPH-1110).
 
     One, never several, because `valid_attestations` admits a receipt only when every
@@ -245,6 +249,10 @@ def receipt(*, commit: str, branch: str, run_url: str = "", matched: str = "",
         # receipt, so a reader weighing an attestation does not have to reconstruct it.
         "matched": matched,
         "run_ref": run_ref(run_url, run_attempt),
+        # GRPH-1411: every commit the run covered. A PR run vouches for all of them, but the
+        # receipt lands only on the items the PR names; this lets the gate find it from an
+        # item whose commit rode in another item's PR. Empty for a push run.
+        "range": list(commits or []),
         "predicates": [predicate],
     }
 
@@ -303,6 +311,18 @@ def call_tool(url: str, key: str, name: str, arguments: dict, *,
         raise RuntimeError(f"{item_key}: graphban refused the write: {detail}")
 
 
+def covered_commits(base: str, head: str) -> list[str]:
+    """`git rev-list base..head`, or [] when no base is given or git cannot answer."""
+    if not base:
+        return []
+    try:
+        out = subprocess.run(["git", "rev-list", f"{base}..{head}"], capture_output=True,
+                             text=True, check=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--commit", required=True)
@@ -311,6 +331,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--run-url", default="")
     ap.add_argument("--run-attempt", default=os.environ.get("GITHUB_RUN_ATTEMPT", ""),
                     help="github.run_attempt; defaults to $GITHUB_RUN_ATTEMPT (GRPH-1113)")
+    ap.add_argument("--base", default="",
+                    help="PR base sha; the receipt records `git rev-list base..commit` "
+                         "(GRPH-1411). Omit on a push run.")
     ap.add_argument("--mode", choices=("attest", "head", "failed"), default="attest",
                     help="`head` records the observed commit and runs even when CI failed; "
                          "`attest` writes the receipt and must not; `failed` writes a "
@@ -339,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
         print("no Graphban item key in the branch or PR text — nothing to attest")
         return 0
 
+    commits = covered_commits(args.base, args.commit)
     if args.mode == "failed":
         log = ""
         if args.log_file:
@@ -350,10 +374,11 @@ def main(argv: list[str] | None = None) -> int:
         receipt = failed_attestation(
             commit=args.commit, branch=args.branch, jobs=failing_jobs(args.needs_json),
             tests=failing_tests(log), run_url=args.run_url, run_attempt=args.run_attempt,
-            matched=matched_by(args.text))
+            matched=matched_by(args.text), commits=commits)
     else:
         receipt = attestation(commit=args.commit, branch=args.branch, run_url=args.run_url,
-                              run_attempt=args.run_attempt, matched=matched_by(args.text))
+                              run_attempt=args.run_attempt, matched=matched_by(args.text),
+                              commits=commits)
     failures = []
     #: Ids this key was refused. Held rather than reported immediately, because whether they
     #: are FOREIGN or evidence of a broken key is decided by whether anything else worked.
