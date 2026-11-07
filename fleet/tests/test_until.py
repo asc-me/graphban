@@ -2294,8 +2294,9 @@ def test_staff_every_row_still_leaves_a_held_row_alone(
     assert mints == [] and result.spawned == 0, result.as_json()
 
 
-def test_review_waiting_on_a_live_child_names_the_childs_item():
-    """GRPH-1349: the wait is an entry, not silence."""
+def test_review_waiting_on_the_gate_is_an_entry_logged_once():
+    """GRPH-1349: the wait is an entry, not silence. GRPH-1387: a live builder of another
+    item does not block a review spawn (GRPH-1374), so only the gate is named, not the child."""
     from gbfleet.supervisor import Wave
     from gbfleet.until import _review_waits_on_live
 
@@ -2308,9 +2309,10 @@ def test_review_waiting_on_a_live_child_names_the_childs_item():
 
     wave = Wave()
     rows = [{"id": "GRPH-1342"}]
-    got = _review_waits_on_live(wave, rows, [_C()])
-    assert got == ["GRPH-1342: review waits on live child pid 777 (item GRPH-1343)"]
-    _review_waits_on_live(wave, rows, [_C()])
+    assert _review_waits_on_live(wave, rows, [_C()]) == []
+    got = _review_waits_on_live(wave, rows, [_C()], gate="no room for another child")
+    assert got == ["GRPH-1342: review waits on the memory gate (no room for another child)"]
+    _review_waits_on_live(wave, rows, [_C()], gate="no room for another child")
     assert wave.review_waits == got
 
 
@@ -2362,22 +2364,33 @@ def test_review_wait_names_an_unclaimed_reviewer_the_gate_and_never_the_rows_own
         pid = 49673
 
     class _C:
-        def __init__(self, held):
-            self.held_items = held
+        def __init__(self, held, ever=(), assigned=None):
+            self.held_items = list(held)
+            self.ever_held = list(ever)
+            self.assigned = assigned
             self.process = _P()
 
     rows = [{"id": "GRPH-1374"}]
+
+    # Our own review spawn, not yet claimed: named as that, never as a block by a live child.
     reviewer = _C([])
-    wave = Wave()
-    got = _review_waits_on_live(wave, rows, [reviewer], review_spawned=[reviewer])
+    got = _review_waits_on_live(Wave(), rows, [reviewer], review_spawned=[reviewer])
     assert got == ["GRPH-1374: review waits on reviewer pid 49673 not yet claimed"]
 
+    # The memory gate refused: the gate is named, not the unrelated live child.
     other = _C(["GRPH-9"])
-    wave = Wave()
-    got = _review_waits_on_live(wave, rows, [other], gate="memory low")
-    assert got == ["GRPH-1374: review waits on memory low (live child pid 49673, item GRPH-9)"]
+    got = _review_waits_on_live(Wave(), rows, [other], gate="memory low")
+    assert got == ["GRPH-1374: review waits on the memory gate (memory low)"]
 
-    wave = Wave()
-    own = _C(["GRPH-1374"])
-    assert _review_waits_on_live(wave, rows, [own], gate="memory low") == []
-    assert _review_waits_on_live(wave, rows, [own], review_spawned=[own]) == []
+    # The row's own reviewer (holding it) and its finishing builder (held it, or was bound
+    # to it, now holding nothing) are never what the row waits on.
+    own_reviewer = _C(["GRPH-1374"])
+    assert _review_waits_on_live(Wave(), rows, [own_reviewer],
+                                 review_spawned=[own_reviewer]) == []
+    builder = _C([], ever=["GRPH-1374"])
+    assert _review_waits_on_live(Wave(), rows, [builder]) == []
+    bound = _C([], assigned={"state": "claimed", "item": "GRPH-1374"})
+    assert _review_waits_on_live(Wave(), rows, [bound], review_spawned=[bound]) == []
+    for line in _review_waits_on_live(Wave(), rows, [builder, own_reviewer],
+                                      gate="memory low"):
+        assert "pid" not in line
