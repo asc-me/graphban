@@ -672,6 +672,7 @@ def _loop(
     mint_deadline = time.monotonic() + mint_budget
     mint_left = mint_tries
     review_fails = 0
+    ci_stuck: list[dict] = []
     review_spawned: list = []  # GRPH-1374: children this loop spawned for review rows
     # GRPH-842. One gate for the whole run, not one per spawn: a child spawned seconds ago
     # is not in the kernel's numbers yet, and a fresh reading per seat cannot know that. Its
@@ -886,7 +887,11 @@ def _loop(
             if staff_all:
                 # GRPH-1273: every row visible to the key is this run's to staff.
                 rows, rows_outside = rows + rows_outside, []
-            reviews = [str(r["id"]) for r in rows]
+            # GRPH-1409: a row whose newest refusal is a post-cooldown `pr_ci_not_green` cannot
+            # be cleared by another reviewer, so it is taken out of what can spawn one.
+            ci_stuck = [r for r in rows if ci_unattestable(r)]
+            rows = [r for r in rows if not ci_unattestable(r)]
+            reviews = [str(r["id"]) for r in rows + ci_stuck]
             outside = [str(r["id"]) for r in rows_outside]
             waits = _wait_ids(planner)
         except NotPermitted as exc:
@@ -967,7 +972,8 @@ def _loop(
             flags: dict = {}
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
                                               request, prd, repo, base, held=held,
-                                              merger=merger, bound_out=flags)
+                                              merger=merger, bound_out=flags,
+                                              live=live, owners=owners)
             if seed is None and flags.get("pinned_until"):
                 # GRPH-1332. A bounced item is reserved for its live author: a wait, not
                 # idle. The pin ends with its expiry or the author going offline, so this is
@@ -1125,8 +1131,9 @@ def _loop(
             empty = 0
             if review_fails >= REVIEWER_FAILS:
                 wave.reason = "review-unsigned"
-                return _finish(wave, "review-unsigned", 1, minted, planner,
-                               review=reviews, waits=waits, outside=outside)
+                return _name_ci_stuck(
+                    _finish(wave, "review-unsigned", 1, minted, planner,
+                            review=reviews, waits=waits, outside=outside), ci_stuck)
             seat, minted_one = _take_seat(
                 pool, planner, agent_id, wave_name, server, api_key,
                 mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
@@ -1161,18 +1168,26 @@ def _loop(
         unheld = [r for r in rows if not review_held(r)]
         if unheld:
             wave.reason = "review-unsigned"
-            return _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
-                           waits=waits, outside=outside)
+            return _name_ci_stuck(
+                _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
+                        waits=waits, outside=outside), ci_stuck)
 
         empty += 1
         if empty >= empty_ticks:
+            if ci_stuck and not rows:
+                wave.reason = "review-ci-unattestable"
+                report = _finish(wave, "review-ci-unattestable", 1, minted, planner,
+                                 review=reviews, waits=waits, outside=outside)
+                report.detail = "; ".join(ci_stuck_detail(r) for r in ci_stuck)
+                return report
             # GRPH-1356: a row still in review is unsigned work, held or not. A hold with no
             # live child of ours is a reviewer that may have exited between polls; after the
             # polls above it is still not "nothing unsigned", so it must not read as idle.
             if rows:
                 wave.reason = "review-unsigned"
-                return _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
-                               waits=waits, outside=outside)
+                return _name_ci_stuck(
+                    _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
+                            waits=waits, outside=outside), ci_stuck)
             if waits:
                 wave.reason = "idle-with-waits"
                 return _finish(wave, "idle-with-waits", 0, minted, planner, waits=waits,
@@ -1966,6 +1981,27 @@ def _holds_sentence(item_id: str, areas: list[str]) -> str:
     return f"{item_id} holds {', '.join(areas)}"
 
 
+def _live_builder(item_id: str, details: dict, live: list | None,
+                  owners: dict[str, object] | None) -> object | None:
+    """GRPH-1414. A running child of this loop that is already building `item_id`, else None.
+
+    A child busy in a long tool call (a test run) does not heartbeat; the server lease lapses
+    and re-offers the item. The child is still alive and still on it, so a second delegation
+    would put two builders on one item. Matched three ways: the child this loop handed the
+    item to, a child whose roster reading holds or held it, a child on the item's branch.
+    """
+    branch = str(details.get("branch") or "")
+    owner = (owners or {}).get(item_id)
+    for child in live or []:
+        if not getattr(child, "running", False):
+            continue
+        if child is owner or _child_touches(child, item_id):
+            return child
+        if branch and getattr(child, "branch", None) == branch:
+            return child
+    return None
+
+
 def _delegate_next(
     planner: Graphban,
     agent_id: str,
@@ -1978,6 +2014,8 @@ def _delegate_next(
     held: dict[str, list[str]] | None = None,
     merger: Merger | None = None,
     bound_out: dict | None = None,
+    live: list | None = None,
+    owners: dict[str, object] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Write the delegation for the seed of the next free cluster, before its seat is minted.
 
@@ -2063,6 +2101,12 @@ def _delegate_next(
                 continue
             details = details_for[candidate]
             if not _seed_ready(details):
+                continue
+            # GRPH-1414. Not marked delegated: when that child exits the item is offered again.
+            if (builder := _live_builder(candidate, details, live, owners)) is not None:
+                observe.emit("redelegate_skipped_live_child", item=candidate,
+                             detail=f"{candidate}: child {getattr(builder, 'branch', '?')} is still "
+                                    "running on it; not delegated again")
                 continue
             # GRPH-798. A child branches from `base`, so an item whose finished dependency is not
             # THERE would be built without it. SKIPPED, not fatal: the rest of the wave is still
@@ -2369,6 +2413,60 @@ def _is_config(exc: ToolFailed) -> bool:
     if "may not" in message or "not planner" in message:
         return True
     return False
+
+
+_REFUSED_AT_DONE = "refused at `done` ("
+
+
+def _attests_suite(ev: dict) -> bool:
+    """An attestation row that carries a `suite_green` predicate, passed or failed."""
+    if ev.get("kind") != "attestation":
+        return False
+    return any(isinstance(p, dict) and p.get("name") == "suite_green"
+               for p in ev.get("predicates") or [])
+
+
+def _latest_refusal(row: dict) -> str:
+    """The newest `done` refusal, or "" when CI has attested `suite_green` since it.
+
+    A passing attestation lets the next sign_off through; a failing one is a red run a
+    reviewer can bounce on. Either way the refusal no longer describes the row's gate.
+    """
+    for ev in reversed(row.get("evidence") or []):
+        if not isinstance(ev, dict):
+            continue
+        if _attests_suite(ev):
+            return ""
+        detail = str(ev.get("detail") or "")
+        if detail.startswith(_REFUSED_AT_DONE):
+            return detail
+    return ""
+
+
+def ci_unattestable(row: dict) -> bool:
+    """GRPH-1409. The newest `done` refusal on this row is `pr_ci_not_green` after the cooldown.
+
+    Silence from CI past the cooldown does not change on its own, so another reviewer would
+    only be refused the same way. Only that wording counts: a CI run that FAILED is a bounce
+    a reviewer can make, so it keeps its reviewer.
+    """
+    detail = _latest_refusal(row)
+    return (detail.startswith(_REFUSED_AT_DONE + "pr_ci_not_green)")
+            and "cooldown over" in detail)
+
+
+def _name_ci_stuck(report: Report, ci_stuck: list[dict]) -> Report:
+    """GRPH-1409: a `review-unsigned` exit also names the rows no reviewer was spawned for."""
+    if ci_stuck:
+        stuck = "; ".join(ci_stuck_detail(r) for r in ci_stuck)
+        report.detail = f"{report.detail}; {stuck}" if report.detail else stuck
+    return report
+
+
+def ci_stuck_detail(row: dict) -> str:
+    detail = _latest_refusal(row).split("): ", 1)[-1]
+    return (f"{row.get('id')}: sign_off refused pr_ci_not_green ({detail[:300]}); another "
+            "reviewer cannot clear it — needs a CI attestation or an owner close")
 
 
 def review_held(row: dict) -> bool:

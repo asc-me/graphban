@@ -2568,7 +2568,9 @@ def _refuse_proposal(wave: Wave, branch: str) -> str:
     missing = wave.undeclared.get(branch) or []
     if missing:
         shown = ", ".join(missing[:5]) + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else "")
-        reasons.append(f"changed file(s) outside every declared touchpoint: {shown}")
+        reasons.append(f"changed file(s) outside every declared touchpoint: {shown} "
+                       "(declare them with update_item(touchpoints=[...]) and a note; "
+                       "`gbfleet check-touchpoints` runs this gate before the child exits)")
     stale = wave.stale.get(branch)
     if stale and branch not in wave.behind_clean:
         block = wave.behind_block.get(branch)

@@ -311,6 +311,40 @@ def call_tool(url: str, key: str, name: str, arguments: dict, *,
         raise RuntimeError(f"{item_key}: graphban refused the write: {detail}")
 
 
+def _search_items(url: str, key: str, **arguments) -> list[dict]:
+    """`search_items` rows, or [] when the server cannot be asked."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "search_items", "arguments": arguments}}).encode()
+    req = urllib.request.Request(
+        url.rstrip("/") + "/api/mcp", data=body,
+        headers={"Content-Type": "application/json", "X-API-Key": key})
+    try:
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            payload = json.loads(resp.read().decode())
+        rows = ((payload.get("result") or {}).get("structuredContent") or {}).get("results")
+    except (OSError, ValueError):
+        return []
+    return [r for r in rows or [] if isinstance(r, dict)]
+
+
+def items_on_branch(url: str, key: str, branch: str, search=_search_items) -> list[str]:
+    """Keys of items whose recorded `branch` is this run's head branch (GRPH-1409).
+
+    Two items can share one branch and one PR, and a PR title names only one of them. The
+    other then had no run that could ever attest it. Best effort: an unreachable server
+    adds nothing, and the PR text still decides.
+    """
+    if not branch:
+        return []
+    found: list[str] = []
+    for status in ("in_progress", "review", "done"):
+        for row in search(url, key, status=status, fields="full", limit=10_000):
+            k = str(row.get("id") or "")
+            if row.get("branch") == branch and k and k not in found:
+                found.append(k)
+    return found
+
+
 def covered_commits(base: str, head: str) -> list[str]:
     """`git rev-list base..head`, or [] when no base is given or git cannot answer."""
     if not base:
@@ -358,6 +392,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     keys = item_keys(args.text, args.branch)
+    # GRPH-1409: an `Attests:` line is a human's exact answer; without one, the items whose
+    # recorded branch this is are attested too, and each one that the text did not name is
+    # printed so it is never attested silently.
+    if declared(args.text, args.branch) is None:
+        for extra in items_on_branch(url, key, args.branch):
+            if extra not in keys:
+                print(f"{extra}: recorded branch is {args.branch}, not named in the PR text; "
+                      "attesting it too")
+                keys.append(extra)
     if not keys:
         print("no Graphban item key in the branch or PR text — nothing to attest")
         return 0
