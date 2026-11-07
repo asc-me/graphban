@@ -320,6 +320,7 @@
 "tests/test_routing.py": 7.9,
 "tests/test_rule_decision_sync.py": 0.84,
 "tests/test_rule_distinct_vendor.py": 0.84,
+"tests/test_engine_evidence_ci.py": 0.9,
 "tests/test_rule_engine_evidence.py": 0.84,
 "tests/test_rule_gap_blocks_sign_off.py": 0.84,
 "tests/test_rule_human_clause.py": 0.84,
