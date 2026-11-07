@@ -32,7 +32,10 @@ def test_marks_merge_rather_than_replace(client, auth):
 
 
 def test_unknown_marks_and_fields_are_refused(client, auth):
-    for body in ({"mark": "tour_completed"}, {"mark": "quickstart_finished", "extra": 1}, {}):
+    for body in ({"mark": "tour_bogus"}, {"mark": "quickstart_finished", "extra": 1}, {},
+                 {"mark": "quickstart_finished", "skipped_stops": []},
+                 {"mark": "tour_completed", "skipped_stops": ["x" * 41]},
+                 {"mark": "tour_completed", "skipped_stops": ["fleet"] * 21}):
         r = client.patch("/api/auth/me/onboarding", json=body, headers=auth)
         assert r.status_code == 422, (body, r.text)
     assert _onboarding(client, auth) is None
@@ -48,10 +51,25 @@ def test_the_service_refuses_an_unknown_mark():
 
     user = SimpleNamespace(onboarding=None)
     with pytest.raises(ValueError):
-        setup_svc.mark_onboarding(None, user, "tour_completed")
+        setup_svc.mark_onboarding(None, user, "tour_bogus")
     assert user.onboarding is None
 
 
 def test_onboarding_needs_a_signed_in_user(client):
     assert client.get("/api/auth/me/onboarding").status_code == 401
     assert client.patch("/api/auth/me/onboarding", json={"mark": "quickstart_finished"}).status_code == 401
+
+
+def test_tour_completed_records_the_skipped_stops(client, auth):
+    """GRPH-1363: the tour's Finish stamps `tour_completed_at` and stores what this nav skipped,
+    merged into the document rather than replacing the quick start's marks."""
+    client.patch("/api/auth/me/onboarding", json={"mark": "quickstart_finished"}, headers=auth)
+    r = client.patch("/api/auth/me/onboarding",
+                     json={"mark": "tour_completed", "skipped_stops": ["fleet"]}, headers=auth)
+    assert r.status_code == 200, r.text
+    doc = _onboarding(client, auth)
+    assert doc["tour_completed_at"] and doc["quickstart_finished_at"]
+    assert doc["tour_skipped_stops"] == ["fleet"]
+    # A later tour with every stop played records an empty list, not the stale one.
+    client.patch("/api/auth/me/onboarding", json={"mark": "tour_completed"}, headers=auth)
+    assert _onboarding(client, auth)["tour_skipped_stops"] == []

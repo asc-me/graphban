@@ -290,7 +290,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
         >
           <ProjectEntry variant="tile" orgName={org?.name} hosted={hosted} onOpenChange={onMenu} tipProps={tipProps({ label: "Switch project" })} />
           {dashboardPath && (
-            <RailLink to={dashboardPath} end label="Dashboard" icon={<LayoutGrid size={16} />} tipProps={tipProps({ label: "Dashboard" })} />
+            <RailLink to={dashboardPath} end tour="dashboard" label="Dashboard" icon={<LayoutGrid size={16} />} tipProps={tipProps({ label: "Dashboard" })} />
           )}
           {sections.map((s) =>
             s.key === current ? (
@@ -300,6 +300,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
                   <RailLink
                     key={p.view}
                     to={viewPath(p.view)}
+                    tour={p.view}
                     label={p.label}
                     icon={React.cloneElement(p.icon as React.ReactElement<{ size?: number }>, { size: 16 })}
                     current={p.view === view}
@@ -363,7 +364,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
 
           <nav aria-label="Project" className="mt-4 flex flex-col gap-0.5">
             {dashboardPath && (
-              <NavItem to={dashboardPath} label="Dashboard" end dashboard />
+              <NavItem to={dashboardPath} label="Dashboard" end dashboard tour="dashboard" />
             )}
             {sections.map((s) => {
               const isOpen = open === s.key;
@@ -394,6 +395,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
                         <NavItem
                           key={p.view}
                           to={viewPath(p.view)}
+                          tour={p.view}
                           icon={p.icon}
                           label={p.label}
                           count={meta(p)}
@@ -503,9 +505,11 @@ function CurrentBar({ className }: { className?: string }) {
 }
 
 function RailLink({
-  to, href, end, current, label, icon, tipProps,
+  to, href, end, current, tour, label, icon, tipProps,
 }: {
   to?: string;
+  /** The app tour's anchor (GRPH-1363): the view segment, or `dashboard`. */
+  tour?: string;
   href?: string;
   end?: boolean;
   /** Overrides NavLink's own match — a page is current only inside its section. */
@@ -525,6 +529,7 @@ function RailLink({
     <NavLink
       to={to!}
       end={end}
+      data-tour={tour}
       aria-label={label}
       {...tipProps}
       className={({ isActive }) =>
@@ -766,8 +771,11 @@ function NavItem({
   end,
   dashboard,
   utility,
+  tour,
 }: {
   to?: string;
+  /** The app tour's anchor (GRPH-1363): the view segment, or `dashboard`. */
+  tour?: string;
   /** Console origin. Those screens are not routes in this app. */
   href?: string;
   icon?: React.ReactNode;
@@ -806,6 +814,7 @@ function NavItem({
     <NavLink
       to={to!}
       end={end}
+      data-tour={tour}
       className={({ isActive }) =>
         cn(
           base,

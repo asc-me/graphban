@@ -232,7 +232,9 @@ def me(user: User = Depends(get_current_user)):
 class OnboardingMarkIn(BaseModel):
     """One dialog progress mark (GRPH-P67 D8). Unknown fields are refused."""
     model_config = ConfigDict(extra="forbid")
-    mark: Literal["quickstart_finished", "quickstart_dismissed"]
+    mark: Literal["quickstart_finished", "quickstart_dismissed", "tour_completed"]
+    # With `tour_completed` only (GRPH-1363): the stops this user's nav skipped.
+    skipped_stops: list[str] | None = None
 
 
 @router.get("/me/onboarding")
@@ -248,9 +250,10 @@ def my_onboarding(user: User = Depends(get_current_user)):
 def mark_my_onboarding(body: OnboardingMarkIn, user: User = Depends(get_current_user),
                        db: Session = Depends(get_db)):
     """Stamp one mark: `quickstart_finished` (Finish; clears the top-bar chip) or
-    `quickstart_dismissed` (Finish later; the dialog stops opening by itself)."""
+    `quickstart_dismissed` (Finish later; the dialog stops opening by itself), or
+    `tour_completed` (the app tour's Finish, with `skipped_stops`)."""
     try:
-        doc = setup_svc.mark_onboarding(db, user, body.mark)
+        doc = setup_svc.mark_onboarding(db, user, body.mark, body.skipped_stops)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     return {"onboarding": doc}
