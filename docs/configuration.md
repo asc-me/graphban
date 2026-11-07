@@ -82,7 +82,7 @@ integration surface is unreachable.
 
 Two independent boundaries govern how tracker data is handled:
 
-**Inference (BYOK):** the customer configures their own inference endpoint via `EMBED_PROVIDER` and `CHAT_PROVIDER` (see AI providers below). Ticket content reaches only the customer's configured endpoint. A strict local-only-inference posture (`stub` or `ollama` for both) is available. No AgentLedger-shared model.
+**Inference (BYOK):** the customer configures their own inference endpoint via `EMBED_PROVIDER` and `CHAT_PROVIDER` (see AI providers below). Ticket content reaches only the customer's configured endpoint. A strict local-only-inference posture (`stub` or `ollama` for both) is available. No Graphban-shared model.
 
 **At-rest storage:** controlled per tracker link via the `storage_tier` field. Default is `bodies_in_hub` — the hub stores mirrored ticket bodies (titles, descriptions, comments) so cloud-side features (triage board, server-side agent reasoning, collision clustering) are full-featured. Set `metadata_only` for regulated buyers: the hub stores only IDs/state/assignee/labels/timestamps and keeps bodies on the local spoke. Under `metadata_only`, hub-side collision clustering is **unavailable** (a third answer, not labels-as-cluster).
 
