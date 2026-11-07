@@ -28,6 +28,7 @@ import { relTime } from "@/lib/relTime";
 import type { RuleFlowRule, RuleParamValue, RuleToggleSource, RuleToggleWrite, TestScopeMode } from "@/lib/types";
 
 import { toggleSourceLabel } from "./levels";
+import { useOrgName } from "./RuleEditors";
 
 /** GRPH-1405: the test-scope rule's one choice. Mirrors `rule_toggles.TEST_SCOPE_MODES`. */
 export const TEST_SCOPE_RULE = "build.test_scope";
@@ -40,7 +41,6 @@ export const TEST_SCOPE_MODES: { value: TestScopeMode; label: string; explain: s
     explain: "The builder runs the tests it changed, the module's tests and the sabotage check; the PR's CI runs the full suites.",
   },
 ];
-import { useOrgName } from "./RuleEditors";
 
 const MONO = "font-mono";
 const note = "text-[11.5px] leading-snug text-muted";
