@@ -1,6 +1,9 @@
 import re
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -20,6 +23,7 @@ from app.services import events as events_svc
 from app.services import gitops
 from app.services import projects as projects_svc
 from app.services import quotas
+from app.services import setup as setup_svc
 from app.services import triage as triage_svc
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -160,6 +164,37 @@ def project_counts(project_id: str, db: Session = Depends(get_db),
     the sidebar's badges ride along as `projects.BADGE_FIELDS` (GRPH-1132)."""
     authz.require_readable(db, user.id, project_id)
     return projects_svc.shell_counts(db, project_id)
+
+
+class SetupConfirmIn(BaseModel):
+    """The only three human decisions guided setup stores; unknown fields are refused."""
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["workspace", "offline", "server"]
+    where: Literal["this_computer", "dedicated_server"] | None = None
+    address: str = ""
+
+
+@router.get("/{project_id}/setup")
+def project_setup(project_id: str, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """The quick-start checklist (steps ⓪–④) plus the caller's UI progress. Ticks are server state."""
+    authz.require_readable(db, user.id, project_id)
+    return {**setup_svc.checklist(db, project_id), "onboarding": user.onboarding}
+
+
+@router.post("/{project_id}/setup/confirm")
+def project_setup_confirm(project_id: str, body: SetupConfirmIn, db: Session = Depends(get_db),
+                          user: User = Depends(get_current_user)):
+    authz.require_writable(db, user.id, project_id)
+    try:
+        setup_svc.confirm(db, project_id, body.decision, where=body.where, address=body.address)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    events_svc.record_user(db, user, action="setup_confirm", target_type="project",
+                           target_id=project_id, project_id=project_id,
+                           meta={"decision": body.decision, "where": body.where,
+                                 "address": body.address if body.where == "dedicated_server" else ""})
+    return {**setup_svc.checklist(db, project_id), "onboarding": user.onboarding}
 
 
 @router.get("/{project_id}/triage")

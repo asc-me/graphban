@@ -160,8 +160,8 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "First-run bootstrap: returns an ordered, resumable checklist to take a fresh project "
             "from empty to useful — confirm the project, build the code graph, load memories, "
-            "propose work items. Read-only guidance; each step reports done/pending from current "
-            "state, so re-run it any time. Call this when get_context flags an empty project."
+            "propose work items. Read-only guidance; each step reports done/pending/unknown from "
+            "current state, so re-run any time. Call when get_context flags an empty project."
         ),
         "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
     },
@@ -2965,7 +2965,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                        "bootstrapping into it",
         }
     if name == "setup_project":
-        return setup_svc.checklist(db, pid)
+        return setup_svc.agent_view(db, pid)
     if name == "list_projects":
         return {"results": [
             {"id": p.id, "name": p.name, "tag": p.tag, "accent": p.accent,
