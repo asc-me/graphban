@@ -1,5 +1,5 @@
 import type { HarnessRecommendations, HarnessReport, ShardClass } from "@/lib/types";
-import type { Credential, CredentialIn, Onboarding, OnboardingMark, ProjectSetup, SetupConfirm, FleetOverview, FleetPolicy, FleetPresence, FleetProfile, FleetProfileRead, FleetTierMap, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
+import type { InstancePosture, Credential, CredentialIn, Onboarding, OnboardingMark, ProjectSetup, SetupConfirm, FleetOverview, FleetPolicy, FleetPresence, FleetProfile, FleetProfileRead, FleetTierMap, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
  * localStorage so a reload can silently re-auth. On a 401 the client attempts one
@@ -466,6 +466,8 @@ export const api = {
   // The quick-start checklist (GRPH-1360). Every step mark the dialog draws comes from here.
   projectSetup: (projectId: string) =>
     request<ProjectSetup>(`/projects/${encodeURIComponent(projectId)}/setup`),
+  // Admin-only; a 403 means "not yours to see", so callers treat an error as hidden.
+  instancePosture: () => request<InstancePosture>("/setup/instance"),
   // The only human decisions setup stores: workspace confirm, stay offline, step ⓪'s answer.
   confirmSetup: (projectId: string, body: SetupConfirm) =>
     request<ProjectSetup>(`/projects/${encodeURIComponent(projectId)}/setup/confirm`, {

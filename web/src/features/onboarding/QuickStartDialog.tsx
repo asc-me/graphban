@@ -20,9 +20,10 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { TagField, useTagField } from "@/features/onboarding/TagField";
+import { postureView, type PostureWarning } from "@/features/onboarding/posture";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { keys, useConfirmSetup, useCredentials, useProjectSetup } from "@/lib/queries";
+import { keys, useConfirmSetup, useCredentials, useInstancePosture, useProjectSetup } from "@/lib/queries";
 import type { Credential, SetupStatus } from "@/lib/types";
 
 import {
@@ -160,6 +161,8 @@ export function QuickStartDialog({
               projectTag={project?.tag ?? ""}
               confirmed={qs.marks.project.status === "done"}
               pendingWhere={pendingWhere}
+              where={pendingWhere?.where ?? storedWhere(qs.setup?.steps.find((s) => s.step === 0))}
+              repoUrl={project?.repo_url ?? ""}
               onCreated={(id) => {
                 setCreatedId(id);
                 setPendingWhere(null);
@@ -586,6 +589,8 @@ function ProjectStep({
   projectTag,
   confirmed,
   pendingWhere,
+  where,
+  repoUrl,
   onCreated,
   onDone,
   onBack,
@@ -597,6 +602,8 @@ function ProjectStep({
   projectTag: string;
   confirmed: boolean;
   pendingWhere: { where: Where; address: string } | null;
+  where: Where | null;
+  repoUrl: string;
   onCreated: (id: string) => void;
   onDone: () => void;
   onBack: () => void;
@@ -609,6 +616,10 @@ function ProjectStep({
   const [name, setName] = React.useState("");
   const [accent, setAccent] = React.useState(ACCENTS[0]);
   const [ticked, setTicked] = React.useState(confirmed);
+  const [repo, setRepo] = React.useState(repoUrl);
+  const posture = useInstancePosture();
+  // An unreadable posture (403, offline) is hidden, never drawn as "all clear".
+  const view = postureView(posture.isSuccess ? posture.data : null, where);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const tagField = useTagField(name);
@@ -643,6 +654,10 @@ function ProjectStep({
           projectId: id,
           body: { decision: "server", where: pendingWhere.where, address: pendingWhere.address },
         });
+      }
+      if (repo.trim() !== repoUrl.trim()) {
+        await api.updateProject(id, { repo_url: repo.trim() });
+        await qc.invalidateQueries({ queryKey: keys.projects });
       }
       if (creating) await qc.invalidateQueries({ queryKey: keys.projects });
       onDone();
@@ -702,8 +717,52 @@ function ProjectStep({
         </label>
       </div>
       <ErrorLine text={error} />
+      {view && (view.main.length > 0 || view.collapsed) && (
+        <div role="status" className="mt-4 rounded-[10px] border border-line-2 p-3 text-[12px]">
+          <p className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">Is this box safe to expose?</p>
+          {view.collapsed ? (
+            <p className="text-muted">{view.collapsed} Details are under Advanced.</p>
+          ) : (
+            <ul className="space-y-2">
+              {view.main.map((w) => (
+                <li key={w.id}>
+                  <p className="text-muted">{w.text}</p>
+                  <CopyLine text={w.env} label={`Copy ${w.id} fix`} />
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-1.5 text-faint">Warnings only; nothing here blocks you.</p>
+        </div>
+      )}
 
       <Advanced>
+        <div>
+          <label htmlFor="qs-repo" className="mb-1.5 block font-mono text-[10px] uppercase tracking-wide text-faint">
+            Repository
+          </label>
+          <Input
+            id="qs-repo"
+            value={repo}
+            onChange={(e) => setRepo(e.target.value)}
+            placeholder="https://github.com/acme/app"
+            aria-describedby="qs-repo-why"
+          />
+          <p id="qs-repo-why" className="mt-1 text-[11.5px] text-faint">
+            <code>gban setup</code> uses this to find the project from a checkout's git remote.
+          </p>
+        </div>
+        {view?.collapsed && view.advanced.map((w: PostureWarning) => (
+          <div key={w.id}>
+            <p>{w.text}</p>
+            <CopyLine text={w.env} label={`Copy ${w.id} fix`} />
+          </div>
+        ))}
+        {view?.proxyHint && (
+          <Hint lead="Behind a proxy or HTTPS?">
+            Set <code>TRUSTED_HOPS</code> to the number of proxies in front of this box, and serve it over HTTPS.
+          </Hint>
+        )}
         {creating && (
           <>
             <TagField tag={tagField.tag} setTag={tagField.setTag} status={tagField.status} />

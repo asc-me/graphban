@@ -537,6 +537,7 @@ class ProjectOut(ORMModel):
     allow_self_review: bool = False
     # The release branch, set on this box (PRD-P57 S2). Null is unmeasured, never `main`.
     release_ref: str | None = None
+    repo_url: str | None = None
 
 
 class ProjectSummaryOut(BaseModel):
@@ -1289,6 +1290,8 @@ class ProjectUpdate(BaseModel):
     # Unlike the fields above, an explicit null here CLEARS (back to unmeasured); omit the
     # key for no change. Validated in services/projects.normalize_release_ref.
     release_ref: str | None = None
+    # Null or blank clears; stored normalized (services/projects.normalize_repo_url).
+    repo_url: str | None = None
 
     @field_validator("memory_write_mode")
     @classmethod

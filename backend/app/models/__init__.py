@@ -158,6 +158,10 @@ class Project(Base):
     # The human decisions guided setup cannot read from state (GRPH-P67 §6): {workspace_confirmed_at,
     # offline, server: {where, address}}. Written only by POST /projects/{id}/setup/confirm.
     setup_decisions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The repository this project belongs to, normalized (`github.com/acme/app`; services/projects.
+    # normalize_repo_url). `gban setup` matches a checkout's git remote against it before it falls
+    # back to the name match. NULL = never set — not "no repository".
+    repo_url: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # The credential this project uses for chat, overriding the deployment default (PRD-25).
     # S1 creates the column and never writes it: the resolver honours it so the ordering is

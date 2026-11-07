@@ -29,6 +29,8 @@ export interface Project {
   auto_extract: boolean;
   mcp_enabled: boolean;
   embed_model: string;
+  /** Normalized repository (`github.com/acme/app`); null = never set (GRPH-1365). */
+  repo_url?: string | null;
   // Memory auto-triage toggles (AL-227).
   memory_auto_reject: boolean;
   memory_write_mode: string;
@@ -102,6 +104,16 @@ export interface SetupStep {
   how: string;
   /** Present when `status` is `unknown`: why the check could not run. */
   reason?: string;
+}
+
+/** GET /setup/instance — booleans only; the server never sends a secret's value. */
+export interface InstancePosture {
+  jwt_secret_set: boolean;
+  jwt_secret_strong: boolean;
+  signup_open: boolean;
+  secret_encryption_key_set: boolean;
+  app_base_url_set: boolean;
+  request_on_loopback: boolean;
 }
 
 export interface ProjectSetup {
