@@ -9,13 +9,14 @@ from app import errors
 from app.db import get_db
 from app.models import User
 from app.schemas import (
-    ItemCreate, ItemOut, ItemUpdate, OwnerCloseIn, ReorderIn, SnoozeIn, WaitAnswerIn,
+    ItemCreate, ItemOut, ItemUpdate, ItemWritten, OwnerCloseIn, ReorderIn, SnoozeIn, WaitAnswerIn,
     item_list_row,
 )
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import collision as collision_svc
 from app.services import items as items_svc
+from app.services import touchpoint_check
 from app.services import waits as waits_svc
 
 router = APIRouter(prefix="/items", tags=["items"])
@@ -38,7 +39,14 @@ def list_items(
     return [item_list_row(r) for r in rows]
 
 
-@router.post("", response_model=ItemOut, status_code=201)
+def _with_warnings(db: Session, item, touchpoints) -> ItemWritten:
+    """The item as `ItemOut`, plus `touchpoint_warnings` for the paths just written (GRPH-1393)."""
+    out = ItemWritten.model_validate(item)
+    out.touchpoint_warnings = touchpoint_check.warnings(db, item.project_id, touchpoints)
+    return out
+
+
+@router.post("", response_model=ItemWritten, status_code=201)
 def create_item(
     body: ItemCreate,
     db: Session = Depends(get_db),
@@ -49,7 +57,7 @@ def create_item(
     authz.require_writable(db, user.id, pid)
     reporter = {"name": user.name, "handle": user.handle, "avatar": user.avatar}
     try:
-        return items_svc.create_item(
+        created = items_svc.create_item(
             db,
             title=body.title,
             description=body.description,
@@ -65,6 +73,7 @@ def create_item(
             options=body.options,
             kind=body.kind,
         )
+        return _with_warnings(db, created, body.touchpoints)
     except items_svc.MissingAttestation as e:
         raise HTTPException(409, str(e))
     except ValueError as e:
@@ -182,7 +191,7 @@ def get_item(item_id: str, db: Session = Depends(get_db), user: User = Depends(g
     return item
 
 
-@router.patch("/{item_id}", response_model=ItemOut)
+@router.patch("/{item_id}", response_model=ItemWritten)
 def update_item(
     item_id: str,
     body: ItemUpdate,
@@ -227,6 +236,8 @@ def update_item(
         raise HTTPException(422, str(e))
     if item is None:
         raise HTTPException(404, "item not found")
+    if changes.get("touchpoints"):
+        return _with_warnings(db, item, changes["touchpoints"])
     return item
 
 

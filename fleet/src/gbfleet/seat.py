@@ -260,7 +260,9 @@ DECLARE = (
     "EVERY file you changed — tests, migrations and generated files included, not only the "
     "source the item named. The supervisor compares your branch against the item's declared "
     "touchpoints and does not open a pull request for a branch that changed an undeclared "
-    "file.\n"
+    "file. Run `gbfleet check-touchpoints --item <id> --declared <the item's touchpoints>` "
+    "first: it names the files the gate would refuse and prints the `update_item` call that "
+    "declares them.\n"
 )
 
 
