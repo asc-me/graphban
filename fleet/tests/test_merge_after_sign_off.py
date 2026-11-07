@@ -27,7 +27,7 @@ from gbfleet.client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreacha
 from gbfleet.supervisor import MERGE_RECHECK_S, Merger, Wave
 from gbfleet.until import PLANNER_TOOLS, run
 
-from tests.test_propose import MERGE_OID, REVIEWED, _Forge, _att
+from tests.test_propose import MERGE_OID, REVIEWED, _Forge, _att, gh  # noqa: F401
 from tests.test_supervisor import KEY, _factory
 from tests.test_until import _error, _mcp
 
@@ -862,3 +862,36 @@ def test_every_merge_line_names_the_release_ref(capsys):
     assert f"MERGE PENDING SA-2: auto-merge enabled [{off}]" in out
     assert f"MERGE SKIPPED SA-3: branch protection blocks it [{on}]" in out
     assert f"MERGE HELD SA-4: CI has not attested scans_clean on abc (checked: open) [{on}]" in out
+
+
+# ---- GRPH-1408: the PR's files must sit inside what the sign-off vouches for ----------------
+
+A_FILES = ["backend/app/services/collision.py", "backend/tests/test_collision.py"]
+B_FILES = ["scripts/graphban_release.py", "web/src/features/settings/UpdatesPanel.tsx"]
+
+
+def _merge_files(gh, files, *, covering=()):
+    gh(_Forge(draft=False, files=files))
+    return propose_mod.merge(REPO, "GRPH-A", "gb/w-1", reviewed=REVIEWED, green={REVIEWED},
+                             paths=A_FILES, covering=covering)
+
+
+def test_a_pr_carrying_another_items_files_is_refused_naming_them(gh):
+    """Item A signed off; B's commit rides the same branch, unsigned.
+
+    Sabotage: drop `_outside_files` from `_merge` and this merges."""
+    got = _merge_files(gh, A_FILES + B_FILES)
+
+    assert not got.ok and not got.commit
+    assert "scripts/graphban_release.py" in got.reason
+    assert "UpdatesPanel.tsx" in got.reason
+
+
+def test_the_same_pr_merges_when_the_other_item_is_signed_off_at_that_head(gh):
+    got = _merge_files(gh, A_FILES + B_FILES, covering=B_FILES)
+
+    assert got.ok and got.commit == MERGE_OID, got.reason
+
+
+def test_a_pr_inside_the_items_touchpoints_merges(gh):
+    assert _merge_files(gh, A_FILES).ok
