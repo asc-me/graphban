@@ -6,13 +6,15 @@ supervisor client stays `{fleet_status, propose_allocation}`. Minting lives on t
 planner client. Mixing those into `ALLOWED_TOOLS` is the widening G5 forbids.
 
 Idle is not "the last child exited." Idle is: no ready non-colliding work, no unsigned
-`review`, and no live worker still holding a lease. Typed human waits (D11) are not
-ready work; a wave that has only those left is `idle-with-waits`. A wave that exits 0
-with leftover `review` is a failed run (`review-unsigned`).
+`review`, and no live worker still holding a lease. A running child that holds nothing
+is not that lease. Typed human waits (D11) are not ready work; a wave that has only
+those left is `idle-with-waits`. A wave that exits 0 with leftover `review` is a failed
+run (`review-unsigned`).
 """
 
 from __future__ import annotations
 
+import os
 import re
 
 import json
@@ -32,7 +34,7 @@ from .lock import hold
 from .seat import Seat
 from .tiers import TierTable
 from . import matrix as matrix_mod
-from .spawn import Child, build_holdings
+from .spawn import Child, Reason, build_holdings, stop
 from . import spend as spend_mod
 from . import touchpoints as tp_mod
 from .spawn import LaunchFailed, VendorLimit
@@ -696,6 +698,13 @@ def _loop(
     # the SAME ref. An explicit `--base` still refuses at startup when the remote does not
     # have it — that refusal now happens in `resolve_wave_base`, before the lock.
     base = wave_base.ref if wave_base is not None else ""
+
+    def _leave(reason: str, code: int, **kw) -> Report:
+        # GRPH-1401. The process is exiting, so a child that registered and holds
+        # nothing must not be left for the next cycle to adopt. A child that holds
+        # an item stays; its lease is the work.
+        _stop_children_holding_nothing(wave, children, supervisor, planner, base)
+        return _finish(wave, reason, code, minted, planner, **kw)
     # GRPH-846, GRPH-880. Built whether or not `merge` was asked for, and inert when it was not:
     # `enabled` is the flag, read once here, so the loop below has one call site and no
     # branch on it — the branch is inside, where a test can see it stay closed. `prd_id`
@@ -875,7 +884,11 @@ def _loop(
         live = [c for c in children if c.running]
         wd = watchdog_mod.current
         wd.check(bool(live))
-        holdings = _any_holdings(supervisor)
+        # GRPH-1401. A running process is not a lease. `busy` is a non-stale build
+        # lease, or a live child that currently holds an item. The unreachable
+        # branch below still treats any live process as "not empty": a missed read
+        # must not look like a clear backlog.
+        busy = _idle_blocked(supervisor, live)
         try:
             # GRPH-1188: with `--prd`, only this PRD's review rows can trigger a spawn or fail
             # the run. The reviewer seat minted below is PRD-scoped and cannot claim any other
@@ -896,7 +909,7 @@ def _loop(
         except ServerUnreachable as exc:
             # Unknown is not empty: leftover review must not look like idle.
             wd.retry("review/waits", exc)
-            if live or holdings:
+            if live or busy:
                 sleep(poll)
                 continue
             raise CapError(
@@ -1125,8 +1138,8 @@ def _loop(
             empty = 0
             if review_fails >= REVIEWER_FAILS:
                 wave.reason = "review-unsigned"
-                return _finish(wave, "review-unsigned", 1, minted, planner,
-                               review=reviews, waits=waits, outside=outside)
+                return _leave("review-unsigned", 1, review=reviews, waits=waits,
+                              outside=outside)
             seat, minted_one = _take_seat(
                 pool, planner, agent_id, wave_name, server, api_key,
                 mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
@@ -1147,7 +1160,7 @@ def _loop(
                 review_fails += 1
             continue
 
-        if live or holdings:
+        if busy:
             if unheld_review and live:
                 for line in _review_waits_on_live(
                         wave, unheld_review, live, review_spawned=review_spawned,
@@ -1158,11 +1171,15 @@ def _loop(
             sleep(poll)
             continue
 
-        unheld = [r for r in rows if not review_held(r)]
-        if unheld:
-            wave.reason = "review-unsigned"
-            return _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
-                           waits=waits, outside=outside)
+        # Nothing running: an unheld review row is unsigned now. A live child that
+        # holds nothing still gets the empty_ticks window, so the reviewer spawned
+        # on the previous poll is not killed before it can claim.
+        if not live:
+            unheld = [r for r in rows if not review_held(r)]
+            if unheld:
+                wave.reason = "review-unsigned"
+                return _leave("review-unsigned", 1, review=reviews, waits=waits,
+                              outside=outside)
 
         empty += 1
         if empty >= empty_ticks:
@@ -1171,14 +1188,14 @@ def _loop(
             # polls above it is still not "nothing unsigned", so it must not read as idle.
             if rows:
                 wave.reason = "review-unsigned"
-                return _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
-                               waits=waits, outside=outside)
+                return _leave("review-unsigned", 1, review=reviews, waits=waits,
+                              outside=outside)
             if waits:
                 wave.reason = "idle-with-waits"
-                return _finish(wave, "idle-with-waits", 0, minted, planner, waits=waits,
-                               review=reviews, outside=outside)
+                return _leave("idle-with-waits", 0, waits=waits, review=reviews,
+                              outside=outside)
             wave.reason = "idle"
-            return _finish(wave, "idle", 0, minted, planner, review=reviews, outside=outside)
+            return _leave("idle", 0, review=reviews, outside=outside)
         sleep(poll)
 
 
@@ -2392,6 +2409,99 @@ def _split_by_prd(rows: list[dict], prd: str | None) -> tuple[list[dict], list[d
 def _wait_ids(planner: Graphban) -> list[str]:
     """Raises on a failed read. An empty list means looked and found none."""
     return wait_mod.ids(planner)
+
+
+def _fresh_holdings(agent: dict) -> list[dict]:
+    """Holdings that are still a current claim. A stale phase is a dead lease."""
+    out = []
+    for holding in agent.get("holdings") or []:
+        if not isinstance(holding, dict) or not holding.get("id"):
+            continue
+        if holding.get("phase") == "stale":
+            continue
+        out.append(holding)
+    return out
+
+
+def _agent_for_child(child: Child, agents: list[dict]) -> dict | None:
+    agent_id = getattr(child, "agent_id", None)
+    if agent_id:
+        for agent in agents:
+            if agent.get("id") == agent_id:
+                return agent
+    tree = str(getattr(child, "worktree", "") or "")
+    if not tree:
+        return None
+    try:
+        wanted = os.path.realpath(tree)
+    except OSError:
+        wanted = tree
+    for agent in agents:
+        got = str(agent.get("worktree") or "")
+        if not got:
+            continue
+        try:
+            spelled = os.path.realpath(got)
+        except OSError:
+            spelled = got
+        if spelled == wanted:
+            return agent
+    return None
+
+
+def _child_currently_holds(child: Child, agents: list[dict]) -> bool:
+    """True when this live child's roster row has a non-stale holding.
+
+    Review claims count here and nowhere that salvages or releases: this only
+    decides whether the process is in the middle of something. An empty list
+    is a child that registered and claimed nothing (GRPH-1401).
+    """
+    agent = _agent_for_child(child, agents)
+    return bool(agent and _fresh_holdings(agent))
+
+
+def _roster_agents(supervisor: Graphban) -> list[dict]:
+    try:
+        roster = supervisor.call("fleet_status") or {}
+    except ServerUnreachable as exc:
+        watchdog_mod.current.retry("fleet_status", exc)
+        return []
+    return [a for a in (roster.get("agents") or []) if isinstance(a, dict)]
+
+
+def _idle_blocked(supervisor: Graphban, live: list) -> bool:
+    """Whether this poll still has a lease to wait on.
+
+    A non-stale build lease anywhere on the roster is one (``_any_holdings``,
+    GRPH-1001). A live child of this wave that currently holds an item is the
+    other, and a review claim counts: the process is the work, which is the
+    half ``_any_holdings`` deliberately does not answer. A running child whose
+    holdings are empty is neither.
+    """
+    agents = _roster_agents(supervisor)
+    for agent in agents:
+        if any((h or {}).get("phase") != "stale" for h in build_holdings(agent)):
+            return True
+    return any(_child_currently_holds(child, agents) for child in live)
+
+
+def _stop_children_holding_nothing(
+    wave: Wave, children: list[Child], supervisor: Graphban, planner: Graphban, base: str,
+) -> None:
+    """Stop a child that is still running with nothing held, and reap its tree.
+
+    Leaving it running is how the next cycle adopts a process that holds nothing
+    and then never goes idle (GRPH-1401). A child that holds an item stays.
+    """
+    agents = _roster_agents(supervisor)
+    quitting = [c for c in children if c.running and not _child_currently_holds(c, agents)]
+    for child in quitting:
+        stop(child, Reason.SHUTDOWN)
+    gone = [c for c in quitting if not c.running]
+    if not gone:
+        return
+    _report_exits(gone, supervisor, wave)
+    _reap_all(wave, gone, client=planner, base_branch=base)
 
 
 def _any_holdings(supervisor: Graphban) -> bool:
