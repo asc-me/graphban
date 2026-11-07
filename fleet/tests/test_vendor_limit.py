@@ -41,7 +41,15 @@ SAID = "You've hit your session limit · resets 12:20pm (America/New_York)"
 
 def _child_that(scripts, tmp_path: Path, log_dir: Path, body: str, adapter="claude"):
     script = tmp_path / "vendor.py"
-    script.write_text(body, encoding="utf-8")
+    # The real vendor CLI writes UTF-8 on every platform. A Python child writing to a file
+    # uses the locale encoding (cp1252 on Windows), which turns the measured `·` into a byte
+    # the UTF-8 log reader replaces with U+FFFD. Pin the child's streams to what it stands in for.
+    prelude = (
+        "import sys\n"
+        "sys.stdout.reconfigure(encoding='utf-8')\n"
+        "sys.stderr.reconfigure(encoding='utf-8')\n"
+    )
+    script.write_text(prelude + body, encoding="utf-8")
     launch = Launch(
         adapter=adapter,
         argv=[str(scripts["python"]), str(script)],
