@@ -8,6 +8,7 @@ import { CreateFirstProject } from "@/features/onboarding/CreateFirstProject";
 import { QuickStartDialog, useQuickStart } from "@/features/onboarding/QuickStartDialog";
 import type { QsStep } from "@/features/onboarding/quickStartProgress";
 import { AppTour } from "@/features/tour/AppTour";
+import { onTourRequested } from "@/features/tour/replay";
 import { useCompleteTour, useConfig, useMarkOnboarding, useOnboarding, useOrgs } from "@/lib/queries";
 import { ORG_BASE, clearOrgStateForSelfHost } from "@/lib/routes";
 
@@ -127,6 +128,13 @@ function FrameBody({ hosted }: { hosted: boolean }) {
       recordTour(skipped);
     },
     [recordTour],
+  );
+  // Replay (GRPH-1364): Help ▸ Take the tour and the palette's "Take the tour". The tour
+  // points at the nav, which only exists once there is a project.
+  const hasProject = projects.length > 0;
+  React.useEffect(
+    () => (hasProject ? onTourRequested(() => { setPaletteOpen(false); setTourOpen(true); }) : undefined),
+    [hasProject],
   );
   const qs = useQuickStart(finished || !onboardingQ.data ? "" : active?.id ?? "", hosted);
   React.useEffect(() => {

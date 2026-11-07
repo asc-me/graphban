@@ -20,6 +20,7 @@ import { useNavigate } from "react-router-dom";
 
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
+import { requestTour } from "@/features/tour/replay";
 import { PALETTE_ITEM_PARAM } from "@/lib/palette-nav";
 import { projectPath, settingsPath } from "@/lib/routes";
 import { useConfig, useItems, usePrds } from "@/lib/queries";
@@ -64,14 +65,16 @@ function matchesQuery(text: string, query: string): boolean {
 type GotoRow = { kind: "goto"; id: string; label: string; path: string; icon: React.ReactNode };
 type ItemRow = { kind: "item"; id: string; label: string; title: string };
 type PrdRow = { kind: "prd"; id: string; label: string; title: string };
-type PaletteRow = GotoRow | ItemRow | PrdRow;
+type TourRow = { kind: "tour"; id: string; label: string };
+type PaletteRow = GotoRow | ItemRow | PrdRow | TourRow;
 
 function buildRows(
   query: string,
   items: Item[],
   prds: PrdSummary[],
   resolvePath: (flat: string) => string,
-): { goto: GotoRow[]; items: ItemRow[]; prds: PrdRow[] } {
+  hasProject: boolean,
+): { goto: GotoRow[]; help: TourRow[]; items: ItemRow[]; prds: PrdRow[] } {
   const q = query.trim();
   const goto = DESTINATIONS.filter((d) => !q || matchesQuery(d.label, q)).map((d) => ({
     kind: "goto" as const,
@@ -96,7 +99,11 @@ function buildRows(
       label: p.id,
       title: p.title,
     }));
-  return { goto, items: itemRows, prds: prdRows };
+  // Replay (GRPH-1364). Only with a project: the tour points at the nav it renders.
+  const help = hasProject && (!q || matchesQuery("Take the tour", q))
+    ? [{ kind: "tour" as const, id: "help:tour", label: "Take the tour" }]
+    : [];
+  return { goto, help, items: itemRows, prds: prdRows };
 }
 
 export function CommandPalette({
@@ -123,8 +130,8 @@ export function CommandPalette({
     [hosted, active?.tag],
   );
 
-  const groups = buildRows(query, items, prds, resolvePath);
-  const flat = [...groups.goto, ...groups.items, ...groups.prds];
+  const groups = buildRows(query, items, prds, resolvePath, !!activeId);
+  const flat: PaletteRow[] = [...groups.goto, ...groups.help, ...groups.items, ...groups.prds];
 
   React.useEffect(() => {
     if (!open) {
@@ -163,6 +170,10 @@ export function CommandPalette({
 
   function activate(row: PaletteRow) {
     close();
+    if (row.kind === "tour") {
+      requestTour();
+      return;
+    }
     if (row.kind === "goto") {
       navigate(row.path);
       return;
@@ -253,6 +264,25 @@ export function CommandPalette({
             </PaletteGroup>
           )}
 
+          {groups.help.length > 0 && (
+            <PaletteGroup label="Help">
+              {groups.help.map((row, i) => {
+                const index = groups.goto.length + i;
+                return (
+                  <PaletteOption
+                    key={row.id}
+                    dataIndex={index}
+                    active={activeIndex === index}
+                    onMouseEnter={() => setActiveIndex(index)}
+                    onClick={() => activate(row)}
+                  >
+                    <span>{row.label}</span>
+                  </PaletteOption>
+                );
+              })}
+            </PaletteGroup>
+          )}
+
           <PaletteGroup label="Items">
             {itemsLoading ? (
               <PaletteMessage>Loading items…</PaletteMessage>
@@ -262,7 +292,7 @@ export function CommandPalette({
               <PaletteMessage>{`No items match "${trimmed}"`}</PaletteMessage>
             ) : (
               groups.items.map((row, i) => {
-                const index = groups.goto.length + i;
+                const index = groups.goto.length + groups.help.length + i;
                 return (
                   <PaletteOption
                     key={row.id}
@@ -288,7 +318,7 @@ export function CommandPalette({
               <PaletteMessage>{`No PRDs match "${trimmed}"`}</PaletteMessage>
             ) : (
               groups.prds.map((row, i) => {
-                const index = groups.goto.length + groups.items.length + i;
+                const index = groups.goto.length + groups.help.length + groups.items.length + i;
                 return (
                   <PaletteOption
                     key={row.id}
