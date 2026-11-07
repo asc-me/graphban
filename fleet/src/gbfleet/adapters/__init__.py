@@ -71,6 +71,14 @@ class TuningUnsupported(AdapterError):
     """
 
 
+class EntitlementUnsupported(AdapterError):
+    """This adapter cannot select the handle of a stored entitlement.
+
+    Refused rather than falling back to the default login: a second record that starts the
+    same login the first one used is not a failover.
+    """
+
+
 class ModelUnsupported(AdapterError):
     """A model this vendor says it does not have.
 
@@ -274,6 +282,17 @@ class Adapter:
         the answer to "what now" is a clock rather than a shrug.
         """
         return ""
+
+    def select_entitlement(self, launch: Launch, entitlement) -> Launch:
+        """Return `launch` with this entitlement's handle selected, or refuse.
+
+        The default refuses: an adapter with no way to select a handle must not start the
+        default login in its place.
+        """
+        raise EntitlementUnsupported(
+            f"adapter {self.name!r} cannot select the handle of entitlement "
+            f"{entitlement.name!r}; refusing rather than using the default login"
+        )
 
     def spawn_blocked(self, binary: Path) -> str:
         """Why a spawn on this adapter would fail right now, or "" when nothing says it will.

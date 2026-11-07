@@ -7,6 +7,8 @@ directory, never anywhere git could see it.
 
 from __future__ import annotations
 
+import os
+
 import tempfile
 from pathlib import Path
 
@@ -100,6 +102,24 @@ class ClaudeCode(Adapter):
         swallow something it should not.
         """
         return ["--debug-file", str(path)]
+
+    def select_entitlement(self, launch: Launch, entitlement) -> Launch:
+        from dataclasses import replace
+        from ..adapters import EntitlementUnsupported
+
+        if entitlement.kind == "subscription":
+            env = {"CLAUDE_CONFIG_DIR": entitlement.handle}
+        elif entitlement.kind == "api_key":
+            # The variable NAMED by the handle is read at launch to hand to the child.
+            value = os.environ.get(entitlement.handle)
+            if value is None:
+                raise EntitlementUnsupported(
+                    f"entitlement {entitlement.name!r}: ${entitlement.handle} is not set")
+            env = {"ANTHROPIC_API_KEY": value}
+        else:
+            raise EntitlementUnsupported(
+                f"adapter 'claude' has no handle to select for a {entitlement.kind} entitlement")
+        return replace(launch, env={**launch.env, **env})
 
     def launch(
         self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,

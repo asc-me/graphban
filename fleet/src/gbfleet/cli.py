@@ -425,6 +425,26 @@ def build_parser() -> argparse.ArgumentParser:
     td.add_argument("--keep-clone", action="store_true",
                     help="do everything except delete the clone itself")
 
+    ent = sub.add_parser(
+        "entitlement",
+        help="register the accounts this machine can launch (add, list, remove)",
+        description=(
+            "A local file outside any worktree: name, vendor, kind and launch handle per record,\n"
+            "and no secret field. For api_key the handle is an environment-variable NAME."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ent_do = ent.add_subparsers(dest="act", metavar="ACT")
+    ent_add = ent_do.add_parser("add", help="add a record")
+    ent_add.add_argument("--json", default="", help="the record as a JSON object (overrides flags)")
+    ent_add.add_argument("--name", default="")
+    ent_add.add_argument("--vendor", default="")
+    ent_add.add_argument("--kind", default="")
+    ent_add.add_argument("--handle", default="")
+    ent_do.add_parser("list", help="print name, vendor, kind and handle")
+    ent_rm = ent_do.add_parser("remove", help="delete one record, leaving the others")
+    ent_rm.add_argument("name")
+
     sub.add_parser(
         "gc",
         help="reap the child worktrees of repositories whose supervisor is gone",
@@ -461,7 +481,7 @@ def read_seats(source: str, server: str, api_key: str) -> list[Seat]:
 
 
 def make_adapter_factory(name: str, binary: str | None, model: str = "",
-                         tuning: "Tuning | None" = None):
+                         tuning: "Tuning | None" = None, entitlement=None):
     """Resolve the named vendor NOW, so a bad one refuses before any worktree exists.
 
     The version check happens here rather than after launch, because a mismatch that
@@ -480,6 +500,9 @@ def make_adapter_factory(name: str, binary: str | None, model: str = "",
             seat, tree, instruction_file, found.binary, model, tuning,
             debug_file=debug_file,
         )
+        if entitlement is not None:
+            # Selects the record's handle or refuses; never falls back to the default login.
+            launch = found.adapter.select_entitlement(launch, entitlement)
         return replace(launch, binary_version=found.version)
 
     return factory
@@ -1168,6 +1191,28 @@ def _gc() -> int:
     return 0
 
 
+def _entitlement(args) -> int:
+    from . import entitlements as ent_mod
+
+    try:
+        if args.act == "add":
+            payload = (json.loads(args.json) if args.json else
+                       {"name": args.name, "vendor": args.vendor, "kind": args.kind,
+                        "handle": args.handle})
+            ent_mod.add(ent_mod.parse(payload))
+        elif args.act == "list":
+            print(ent_mod.format_list(ent_mod.load()))
+        elif args.act == "remove":
+            ent_mod.remove(args.name)
+        else:
+            print("gbfleet entitlement: choose add, list or remove.", file=sys.stderr)
+            return 2
+    except (ent_mod.EntitlementError, json.JSONDecodeError) as exc:
+        print(f"gbfleet entitlement: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1205,6 +1250,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "gc":
         return _gc()
+
+    if args.command == "entitlement":
+        return _entitlement(args)
 
     if args.command == "teardown":
         return _teardown(args)
