@@ -132,9 +132,10 @@ def test_rewriting_the_branch_in_review_is_refused(client, agent_key, db):
         {"id": item["id"], "branch": "gb/under-review", "agent_id": me["agent_id"]})
     stored = items_svc.get_item(db, item["id"])
     stored.status = "review"
+    stored.review_claimed_by = "GRPH-A-reviewer"
     db.commit()
 
-    with pytest.raises(ValueError, match="in review"):
+    with pytest.raises(ValueError, match="review on `gb/under-review`"):
         items_svc.update_item(db, item["id"], branch="gb/rewritten")
     db.refresh(stored)
     assert stored.branch == "gb/under-review"

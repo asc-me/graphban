@@ -1641,11 +1641,15 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         incoming = str(fields["branch"]).strip()
         if incoming:
             held = (item.branch or "").strip()
-            if item.status == "review" and held and incoming != held:
+            # `item.status` was already overwritten above, so a move INTO review would
+            # read as "in review" here (GRPH-1395). Ask the status before this write, and
+            # refuse only while a reviewer actually holds the item.
+            if (prev_status == "review" and item.review_claimed_by and held
+                    and incoming != held):
                 raise ValueError(
-                    f"{item.key} is in review on `{held}`; rewriting the branch would "
-                    "leave the reviewer with nothing to read. Bounce it first, or leave "
-                    "the pointer alone"
+                    f"{item.key} is {prev_status} on `{held}` and a reviewer holds it; "
+                    "rewriting the branch would leave the reviewer with nothing to read. "
+                    "Bounce it first, or leave the pointer alone"
                 )
             item.branch = incoming
     # THE AUTHORSHIP STAMP (GRPH-848). `built_by` was written in one place — the claim — so
