@@ -262,6 +262,19 @@ describe("Dashboard (PRD-47 S3)", () => {
     await screen.findByText("Items", { selector: "span" });
     expect(screen.queryByText("Put agents on the backlog")).not.toBeInTheDocument();
   });
+
+  it("dismisses the start-up prompts and the agent-loop card independently", async () => {
+    renderDashboard();
+    await screen.findByText("Put agents on the backlog");
+    expect(screen.getByRole("heading", { name: "Start-up prompts" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss start-up prompts" }));
+    expect(screen.queryByRole("heading", { name: "Start-up prompts" })).not.toBeInTheDocument();
+    expect(screen.getByText("Put agents on the backlog")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Put agents on the backlog")).not.toBeInTheDocument();
+  });
 });
 
 describe("an empty project is not a measured one", () => {

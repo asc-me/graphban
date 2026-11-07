@@ -19,6 +19,12 @@ export type TourStop = {
    * when the count read succeeded and said 0: an absent count is not an empty view.
    */
   empty?: { count: keyof ShellCounts; text: string };
+  /**
+   * The closing org plug (GRPH-1364): not a numbered stop — it reads "END OF TOUR", stays out
+   * of the `n / N` count, never navigates (hosted Organization is a console link), and its
+   * popover holds the plug's actions instead of Back / Next.
+   */
+  plug?: true;
 };
 
 export const TOUR_STOPS: TourStop[] = [
@@ -64,6 +70,12 @@ export const TOUR_STOPS: TourStop[] = [
     id: "activity",
     title: "Activity",
     body: "Every accepted change, attributed to a person or an agent.",
+  },
+  {
+    id: "org",
+    title: "Organization",
+    body: "Working with a team? Link this deployment to an org. Not now is always an equal choice.",
+    plug: true,
   },
 ];
 

@@ -259,6 +259,27 @@ def mark_my_onboarding(body: OnboardingMarkIn, user: User = Depends(get_current_
     return {"onboarding": doc}
 
 
+class OrgRequestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    email: str
+    note: str = ""
+
+
+@router.post("/me/org-request")
+def request_my_org(body: OrgRequestIn, user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """Request an org (GRPH-1364): relay to the operator, then store `org_requested_at`.
+    A repeat overwrites the date. 503 when nothing could be sent — nothing is stored then."""
+    try:
+        doc = setup_svc.request_org(db, user, body.name, body.email, body.note)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    except setup_svc.OrgRequestUnavailable as e:
+        raise HTTPException(503, str(e)) from e
+    return {"onboarding": doc}
+
+
 @router.get("/me/memberships")
 def my_memberships(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     rows = db.scalars(select(Membership).where(Membership.user_id == user.id)).all()

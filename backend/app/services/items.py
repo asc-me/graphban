@@ -1641,12 +1641,22 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         incoming = str(fields["branch"]).strip()
         if incoming:
             held = (item.branch or "").strip()
-            if item.status == "review" and held and incoming != held:
-                raise ValueError(
-                    f"{item.key} is in review on `{held}`; rewriting the branch would "
-                    "leave the reviewer with nothing to read. Bounce it first, or leave "
-                    "the pointer alone"
-                )
+            # GRPH-1395. Read the status the item had BEFORE this call: the loop above has
+            # already written `status`, so `update_item(status=review, branch=…)` on an
+            # `in_progress` item used to be refused as "in review". And refuse only while a
+            # reviewer actually HOLDS it — the reviewer is who the pointer protects. With no
+            # live hold there is nobody to bounce and nobody reading, so a planner routing
+            # finished work to review must be able to name the branch it lives on.
+            if held and incoming != held and prev_status == "review":
+                from app.services import fleet as fleet_svc
+                reviewer = fleet_svc.review_claim_holder(item)
+                if reviewer:
+                    raise ValueError(
+                        f"{item.key} is `{prev_status}` on `{held}` and reviewer "
+                        f"{reviewer} holds it; rewriting the branch would leave the "
+                        "reviewer with nothing to read. Bounce it first, or leave the "
+                        "pointer alone"
+                    )
             item.branch = incoming
     # THE AUTHORSHIP STAMP (GRPH-848). `built_by` was written in one place — the claim — so
     # an item built inline and sent to review here carried no author at all, and
