@@ -1431,7 +1431,8 @@ def watch_tick(
         persist()
 
 
-def _release_held_items(wave: Wave, child: Child, client: Graphban | None) -> None:
+def _release_held_items(wave: Wave, child: Child, client: Graphban | None,
+                        skip: set[str] = frozenset()) -> None:
     """Release items the child held so `choose_resume` can pick up the salvage branch (GRPH-850).
 
     A child that dies (wall_clock / reap / stop) leaves its items `in_progress` / `claimed_by`
@@ -1454,6 +1455,8 @@ def _release_held_items(wave: Wave, child: Child, client: Graphban | None) -> No
     if not agent_id:
         return
     for item_id in child.held_items:
+        if item_id in skip:
+            continue
         # GRPH-949: read the lease BEFORE releasing it. `held_items` is what the roster said
         # at registration; by reap the child may have handed the item to review, or the
         # lease lapsed and a sibling claimed it. Releasing someone else's lease is refused by
@@ -1475,6 +1478,45 @@ def _release_held_items(wave: Wave, child: Child, client: Graphban | None) -> No
                 wave.failures.append(f"{child.branch}: release_item {item_id} failed ({exc})")
         except (NotPermitted, ServerUnreachable) as exc:
             wave.failures.append(f"{child.branch}: release_item {item_id} failed ({exc})")
+
+
+def _exit_to_review(wave: Wave, child: Child, tree: Worktree,
+                    client: Graphban | None) -> set[str]:
+    """Move a finished child's items to review when its branch is committed and CI-green (GRPH-1391).
+
+    A child that ran out of wall clock rerunning the full suites exited with a complete build
+    and the item `in_progress`; releasing it sent the item back to `next` to be rebuilt. The
+    green CI run on the pushed head (it carries the Postgres shards) is the receipt instead.
+    Returns the items moved. Red, absent or stale CI, no commits, or no `update_item` leaves
+    the item to the release as before. Never fatal.
+    """
+    moved: set[str] = set()
+    if not client or not child.held_items or not child.agent_id:
+        return moved
+    if "update_item" not in client.allowed:
+        return moved
+    try:
+        repo = tree.repo
+        if not wt_mod.commits_beyond_base(repo, child.branch, child.base):
+            return moved
+        head = _branch_head(repo, child.branch)
+        if not propose_mod.ci_green(repo, child.branch, head):
+            return moved
+    except Exception as exc:  # noqa: BLE001 — unreadable CI is "not green", never fatal
+        _note_once(wave, f"{child.branch}: CI state unreadable ({exc})")
+        return moved
+    for item_id in child.held_items:
+        if _lease_holder(client, item_id) != child.agent_id:
+            continue
+        try:
+            client.call("update_item", id=item_id, status="review", agent_id=child.agent_id,
+                        evidence=[{"kind": "note", "detail":
+                                   f"gbfleet: child exited with {child.branch} committed, "
+                                   f"pushed and CI green at {head[:12]}; moved to review"}])
+            moved.add(item_id)
+        except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+            wave.failures.append(f"{child.branch}: move {item_id} to review failed ({exc})")
+    return moved
 
 
 def _lease_holder(client: Graphban, item_id: str) -> str | None:
@@ -1536,7 +1578,8 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
         # salvage branch. Without this, the row stays `in_progress` / `claimed_by=<dead>`
         # and a fresh spawn cuts from main, losing the work just salvaged. mcp/`up` pass
         # SPAWN_READS (includes release_item); until passes the planner client.
-        _release_held_items(wave, child, client)
+        _release_held_items(wave, child, client,
+                            skip=_exit_to_review(wave, child, tree, client))
         # Measured AFTER the salvage, deliberately, exactly as `_reap_all` does: measuring
         # first would miss the work that was most at risk of being lost.
         try:
