@@ -68,6 +68,12 @@ fresh.
 
 ## A guided tour
 
+The quick start's Finish offers **Take the 2-minute tour**: coach marks on the real nav
+(Dashboard, Tracker, Specs, the Agent sidebar, Memory review, Code graph, Fleet, Activity) that
+open each view as they go. A stop whose nav entry isn't shown is skipped, and a stop on an
+empty view says so instead of showing sample data. Esc leaves it at any point. The longer
+walk-through below covers the same ground at your own pace.
+
 1. **Dashboard** (`/home`, where `/` lands on self-host) — project health. The **Tracker**
    is under Plan. Board is the default layout; List is the other. → [Tracker](tracker.md)
 2. **Agent sidebar** (right, toggle with **Agent**) — semantic **Memory** search and a

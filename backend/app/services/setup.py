@@ -141,18 +141,34 @@ def agent_view(db: Session, project_id: str) -> dict:
 # The dialog's own progress marks (GRPH-P67 D8). UI facts only: nothing here is evidence that a
 # setup step happened, and no checklist status reads it. Each mark stamps its `<mark>_at` once
 # per call; later items (the tour, Request an org) add their marks here, not a second writer.
-ONBOARDING_MARKS = ("quickstart_finished", "quickstart_dismissed")
+ONBOARDING_MARKS = ("quickstart_finished", "quickstart_dismissed", "tour_completed")
+
+# The tour records which stops this user's nav had no anchor for (GRPH-1363). Ids are the
+# `data-tour` values; the bounds only keep a client from storing an arbitrary blob.
+TOUR_SKIPPED_MAX = 20
+TOUR_STOP_ID_MAX = 40
 
 
-def mark_onboarding(db: Session, user, mark: str) -> dict:
+def mark_onboarding(db: Session, user, mark: str, skipped_stops: list[str] | None = None) -> dict:
     """Stamp `<mark>_at` on the user's onboarding document and return the whole document.
 
     Only the listed marks exist; anything else is refused here so every surface shares the
-    boundary. The document is merged, never replaced, so one mark cannot erase another."""
+    boundary. The document is merged, never replaced, so one mark cannot erase another.
+    `tour_completed` also stores `tour_skipped_stops` (empty when every stop played); no
+    other mark takes it."""
     if mark not in ONBOARDING_MARKS:
         raise ValueError(f"mark must be one of: {', '.join(ONBOARDING_MARKS)}")
+    if skipped_stops is not None and mark != "tour_completed":
+        raise ValueError("skipped_stops goes with the tour_completed mark only")
+    if skipped_stops is not None and (
+        len(skipped_stops) > TOUR_SKIPPED_MAX
+        or any(not isinstance(s, str) or not s or len(s) > TOUR_STOP_ID_MAX for s in skipped_stops)
+    ):
+        raise ValueError(f"skipped_stops is at most {TOUR_SKIPPED_MAX} stop ids of 1-{TOUR_STOP_ID_MAX} characters")
     doc = dict(user.onboarding or {})
     doc[f"{mark}_at"] = datetime.now(timezone.utc).isoformat()
+    if mark == "tour_completed":
+        doc["tour_skipped_stops"] = list(skipped_stops or [])
     user.onboarding = doc  # reassign: a mutated JSON dict is not change-tracked
     db.commit()
     return doc
