@@ -19,7 +19,7 @@ BIG = "x" * 5000
 LEAN_FIELDS = {
     "id", "project_id", "title", "status", "tags", "touchpoints", "effort", "sort_order",
     "blocker", "date", "reporter", "pr", "github_url", "assignee", "claimed_by", "prd_id",
-    "prd_section", "reach", "fidelity", "created_at", "updated_at", "done_at", "decision",
+    "prd_section", "reach", "fidelity", "kind", "created_at", "updated_at", "done_at", "decision",
     "snoozed_until", "has_attestation",
 }
 

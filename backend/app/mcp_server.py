@@ -112,6 +112,7 @@ logger = logging.getLogger("graphban.mcp")
 
 _STATUS_ENUM = items_svc.STATUSES
 _FIDELITY_ENUM = items_svc.FIDELITIES
+_KIND_ENUM = items_svc.KINDS
 _LINK_TYPE_ENUM = links_svc.LINK_TYPES
 _REQUEST_TYPE_ENUM = req_svc.REQUEST_TYPES
 #: GRPH-893. The acceptance convention `sign_off`'s gate parses (`fleet._ACCEPTANCE_HEADINGS`),
@@ -177,11 +178,17 @@ TOOLS: list[dict[str, Any]] = [
                 "touchpoints": {"type": "array", "items": {"type": "string"},
                                 "description": "Files/globs it affects, e.g. backend/app/routers/*."},
                 "effort": {"type": "integer", "description": _EFFORT_DESC},
-                "status": {"type": "string", "enum": _STATUS_ENUM, "description": "Defaults to backlog."},
+                # Unsent = backlog, the enum's first value; the prose saying so went to pay
+                # for `kind` below (GRPH-1358).
+                "status": {"type": "string", "enum": _STATUS_ENUM},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
                              "description": "high = prototype first."},
-                "prd_id": {"type": "string", "description": "The PRD this implements."},
-                "prd_section": {"type": "string", "description": "Its PRD section."},
+                # GRPH-1358. Unsent = `fix` if tagged bug, else not recorded. No `type`, as
+                # `scope` below: the enum already says string. Paid for by dropping the two
+                # prd_* descriptions that restated their own names (update_item never had them).
+                "kind": {"enum": _KIND_ENUM},
+                "prd_id": {"type": "string"},
+                "prd_section": {"type": "string"},
                 "question": {"type": "string", "description": "Asks a human."},
                 "options": {"type": "array", "items": {"type": "string"}},
             },
@@ -208,6 +215,7 @@ TOOLS: list[dict[str, Any]] = [
                 "blocker": {"type": "string", "description": "Empty string clears it."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
                              "description": "high = prototype first."},
+                "kind": {"enum": _KIND_ENUM},
                 "prd_id": {"type": "string"},
                 "prd_section": {"type": "string"},
                 "evidence": {
@@ -2985,6 +2993,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             effort=args.get("effort", 0),
             status=args.get("status", "backlog"),
             fidelity=args.get("fidelity", "low"),
+            kind=args.get("kind"),
             project_id=pid,
             touchpoints=args.get("touchpoints"),
             prd_id=args.get("prd_id"),
@@ -3028,6 +3037,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             effort=args.get("effort"),
             blocker=args.get("blocker"),
             fidelity=args.get("fidelity"),
+            kind=args.get("kind"),
             touchpoints=args.get("touchpoints"),
             prd_id=args.get("prd_id"),
             prd_section=args.get("prd_section"),
