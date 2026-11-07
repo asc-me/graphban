@@ -83,7 +83,7 @@ describe("GRPH-1364 start-up prompts widget", () => {
   it("stays until dismissed, and stays dismissed", () => {
     render(<StartupPromptsWidget />);
     expect(screen.getByRole("heading", { name: "Start-up prompts" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss start-up prompts" }));
     expect(screen.queryByRole("heading", { name: "Start-up prompts" })).toBeNull();
     cleanup();
     render(<StartupPromptsWidget />);

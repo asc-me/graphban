@@ -72,7 +72,7 @@ export function StartupPromptsWidget() {
         <h2 id="startup-prompts-h" className="flex-1 text-lead font-semibold">
           Start-up prompts
         </h2>
-        <Button variant="ghost" size="sm" type="button" onClick={dismiss}>
+        <Button variant="ghost" size="sm" type="button" aria-label="Dismiss start-up prompts" onClick={dismiss}>
           Dismiss
         </Button>
       </div>

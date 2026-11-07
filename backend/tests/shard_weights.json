@@ -237,6 +237,7 @@
 "tests/test_org_eligibility.py": 0.22,
 "tests/test_org_gating.py": 1.09,
 "tests/test_org_isolation.py": 0.15,
+"tests/test_org_request.py": 0.3,
 "tests/test_org_overview.py": 0.9,
 "tests/test_orgs.py": 1.5,
 "tests/test_owner_close.py": 1.43,
