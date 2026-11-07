@@ -967,7 +967,8 @@ def _loop(
             flags: dict = {}
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
                                               request, prd, repo, base, held=held,
-                                              merger=merger, bound_out=flags)
+                                              merger=merger, bound_out=flags,
+                                              live=live, owners=owners)
             if seed is None and flags.get("pinned_until"):
                 # GRPH-1332. A bounced item is reserved for its live author: a wait, not
                 # idle. The pin ends with its expiry or the author going offline, so this is
@@ -1966,6 +1967,27 @@ def _holds_sentence(item_id: str, areas: list[str]) -> str:
     return f"{item_id} holds {', '.join(areas)}"
 
 
+def _live_builder(item_id: str, details: dict, live: list | None,
+                  owners: dict[str, object] | None) -> object | None:
+    """GRPH-1414. A running child of this loop that is already building `item_id`, else None.
+
+    A child busy in a long tool call (a test run) does not heartbeat; the server lease lapses
+    and re-offers the item. The child is still alive and still on it, so a second delegation
+    would put two builders on one item. Matched three ways: the child this loop handed the
+    item to, a child whose roster reading holds or held it, a child on the item's branch.
+    """
+    branch = str(details.get("branch") or "")
+    owner = (owners or {}).get(item_id)
+    for child in live or []:
+        if not getattr(child, "running", False):
+            continue
+        if child is owner or _child_touches(child, item_id):
+            return child
+        if branch and getattr(child, "branch", None) == branch:
+            return child
+    return None
+
+
 def _delegate_next(
     planner: Graphban,
     agent_id: str,
@@ -1978,6 +2000,8 @@ def _delegate_next(
     held: dict[str, list[str]] | None = None,
     merger: Merger | None = None,
     bound_out: dict | None = None,
+    live: list | None = None,
+    owners: dict[str, object] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Write the delegation for the seed of the next free cluster, before its seat is minted.
 
@@ -2063,6 +2087,12 @@ def _delegate_next(
                 continue
             details = details_for[candidate]
             if not _seed_ready(details):
+                continue
+            # GRPH-1414. Not marked delegated: when that child exits the item is offered again.
+            if (builder := _live_builder(candidate, details, live, owners)) is not None:
+                observe.emit("redelegate_skipped_live_child", item=candidate,
+                             detail=f"{candidate}: child {getattr(builder, 'branch', '?')} is still "
+                                    "running on it; not delegated again")
                 continue
             # GRPH-798. A child branches from `base`, so an item whose finished dependency is not
             # THERE would be built without it. SKIPPED, not fatal: the rest of the wave is still
