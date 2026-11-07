@@ -3557,6 +3557,45 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     return item
 
 
+#: The `detail` prefix of the receipt the gbfleet Merger writes when a squash lands
+#: (supervisor.Merger._record). Its presence means the merge happened.
+MERGE_RECEIPT_PREFIX = "merged by gbfleet"
+
+
+def merge_landed(item: Item) -> bool:
+    """Has this item's merge been recorded? (GRPH-1389)
+
+    Two receipts say so: the gbfleet Merger's `url` row carrying the merge commit, and an
+    owner's `owner.close` attestation for work they merged by hand. Anything else is a
+    `done` item whose PR has not landed. Its merge can still fail on a rebase conflict.
+    """
+    for e in item.evidence or []:
+        if not isinstance(e, dict):
+            continue
+        if (e.get("kind") == "url" and str(e.get("commit") or "").strip()
+                and str(e.get("detail") or "").startswith(MERGE_RECEIPT_PREFIX)):
+            return True
+    return any(a.get("adapter") == items_svc.OWNER_CLOSE_ADAPTER
+               for a in items_svc.valid_attestations(item.evidence or []))
+
+
+def _require_bounceable(item: Item) -> None:
+    """`review`, or `done` with no merge landed (GRPH-1389).
+
+    A signed-off item whose PR hits a rebase conflict at merge time cannot land, and CI
+    cannot run on it. The Merger only watches `done` items. If bounce refused `done`, every
+    conflict would leave a PR stuck with no way back to its author. A merged item is past
+    any verdict, so it stays refused.
+    """
+    if item.status == "done":
+        if merge_landed(item):
+            raise NotInReview(
+                f"{item.key} is done and its merge has landed, so there is nothing to bounce — "
+                "file a new item for follow-up work")
+        return
+    _require_in_review(item, "bounce")
+
+
 def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
            lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item:
     """Send an item back to `next`, pinned to its AUTHOR for one lease period (D-f).
@@ -3571,7 +3610,10 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     item = db.get(Item, item_id)
     if item is None:
         raise ValueError(f"item not found: {item_id}")
-    _require_in_review(item, "bounce")
+    _require_bounceable(item)
+    # A `done` item comes back because its merge failed, not because review rejected it.
+    # The sign-off stands as a verdict, so no review verdict or attempt outcome is recorded.
+    unmerged = item.status == "done"
     if not (reason or "").strip():
         # A bounce without a reason is a rejection the author cannot act on, and it costs
         # them a full cycle to discover that.
@@ -3597,8 +3639,9 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     item.bounce_reason = reason.strip()
     from app.services import delegation as delegation_svc
     from app.services import harness as harness_svc
-    delegation_svc.on_outcome(db, item, "bounced")
-    harness_svc.record_review_verdict(db, item, agent_id, "bounced")
+    if not unmerged:
+        delegation_svc.on_outcome(db, item, "bounced")
+        harness_svc.record_review_verdict(db, item, agent_id, "bounced")
     item.blocker = ""
     db.commit()
     db.refresh(item)

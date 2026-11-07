@@ -156,6 +156,15 @@ class _BounceLedger:
         if tool == "bounce":
             if self.bounce_raises is not None:
                 raise self.bounce_raises
+            # The server's rule (fleet._require_bounceable): `review`, or `done` with no
+            # merge receipt. Anything else is refused, as the real service refuses it.
+            merged = any(str(e.get("detail") or "").startswith("merged by gbfleet")
+                         for e in self.item.get("evidence") or [])
+            if not (self.item["status"] == "review"
+                    or (self.item["status"] == "done" and not merged)):
+                from gbfleet.client import ToolFailed
+                raise ToolFailed("bounce", "conflict",
+                                 f"{kw['id']} is {self.item['status']}, not awaiting review")
             self.bounces.append(kw)
             self.item["status"] = "next"
             return {"id": kw["id"], "status": "next"}

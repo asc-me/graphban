@@ -116,3 +116,53 @@ def test_a_cluster_over_a_migration_lease_names_its_holder(client, auth, db):
 
     assert mine["held_by"] == [holder]
     assert "soft_overlap" not in mine
+
+
+# ---- a signed-off item whose merge hits a rebase conflict can go back (GRPH-1389) ---------------
+
+def _done(db, client, auth, *, evidence=None):
+    from app.models import Item
+
+    item_id = _item(client, auth, "signed off, PR behind its base", ["backend/app/x.py"])
+    row = db.get(Item, item_id)
+    row.status = "done"
+    row.built_by = "CORE-A71"
+    row.reviewed_by = "CORE-A72"
+    row.evidence = evidence or []
+    db.commit()
+    return item_id
+
+
+def test_a_done_item_whose_merge_has_not_landed_can_be_bounced(client, auth, db):
+    """The Merger only watches `done` items. A rebase conflict there must be able to send the
+    item back. Sabotage: make `_require_bounceable` call `_require_in_review` for `done` too
+    and this fails with NotInReview."""
+    item_id = _done(db, client, auth)
+
+    item = fleet_svc.bounce(db, item_id=item_id, agent_id="CORE-A73",
+                            reason="rebase conflict in backend/app/x.py")
+
+    assert item.status == "next"
+    assert item.bounce_reason == "rebase conflict in backend/app/x.py"
+    assert item.bounce_pinned_to == "CORE-A71", "the author keeps the worktree"
+    assert item.reviewed_by is None
+
+
+def test_a_done_item_whose_merge_landed_is_not_bounced(client, auth, db):
+    item_id = _done(db, client, auth, evidence=[{
+        "kind": "url", "detail": "merged by gbfleet: squash of #9 landed as abcdef123456",
+        "url": "https://github.com/o/r/pull/9", "commit": "abcdef1234567890"}])
+
+    with pytest.raises(fleet_svc.NotInReview, match="merge has landed"):
+        fleet_svc.bounce(db, item_id=item_id, agent_id="CORE-A73", reason="too late")
+
+
+def test_work_in_progress_is_still_not_bounceable(client, auth, db):
+    from app.models import Item
+
+    item_id = _item(client, auth, "still building", ["backend/app/y.py"])
+    db.get(Item, item_id).status = "in_progress"
+    db.commit()
+
+    with pytest.raises(fleet_svc.NotInReview, match="not awaiting review"):
+        fleet_svc.bounce(db, item_id=item_id, agent_id="CORE-A73", reason="no")
