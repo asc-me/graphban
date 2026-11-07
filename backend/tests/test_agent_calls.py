@@ -433,7 +433,7 @@ def test_the_producers_say_it():
     repo = pathlib.Path(__file__).resolve().parents[2]
     agents = (repo / "AGENTS.md").read_text(encoding="utf-8")
     assert "status=" in agents and "files=" in agents, "AGENTS.md step 2 must tell agents to report"
-    rule = (repo / ".cursor" / "rules" / "agentledger.mdc").read_text(encoding="utf-8")
+    rule = (repo / ".cursor" / "rules" / "graphban.mdc").read_text(encoding="utf-8")
     assert "status=" in rule, "the generated Cursor rule must carry the clause — run scripts/gen_subagents.py"
     fleet = (repo / "web" / "src" / "features" / "fleet" / "FleetView.tsx").read_text(encoding="utf-8")
     assert "status=" in fleet, "the Fleet mint prompt must carry the clause"

@@ -567,8 +567,8 @@ an edit there would be undone by the next recompute.
 
 ## Tracker links (hosted only, PRD-10 / GRPH-186)
 
-A link between an external tracker (Linear first) and an AgentLedger project, scoped to the
-org. When linked, the tracker is authoritative: AgentLedger mirrors read-heavy and writes
+A link between an external tracker (Linear first) and a Graphban project, scoped to the
+org. When linked, the tracker is authoritative: Graphban mirrors read-heavy and writes
 back only canonical status transitions, comments/links, and the triage-board assignee.
 
 | Method | Path | Purpose |

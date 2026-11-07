@@ -4,7 +4,7 @@
 **Status:** approved — grill complete 2026-09-03; answers absorbed into D15–D22 and §9. Successor to PRD-33 §8 ("Not this PRD"). v1.0.
 **Depends on:** PRD-33 (the Live board, `services/live.py`, `/live`) · PRD-17 (Agent, presence, `touch`) · PRD-19 (session → agent, `mcp_session_id`) · AL-43 (the audit ledger, `Event`)
 **Complemented by:** Activity (audit ledger) · Fleet view (provisioning) · Code graph presence (spatial)
-**Touches:** `backend/app/mcp_server.py` (dispatcher audit point, `heartbeat` handler) · `backend/app/services/live.py` · `backend/app/services/fleet.py` (`touch`) · `backend/app/services/agent_calls.py` (new) · `backend/app/routers/live.py` · `backend/app/models/__init__.py` (`AgentCall` new, `Agent` +3 columns) · `backend/alembic/versions/0102_*` · `web/src/features/live/LiveView.tsx` · `web/src/lib/api.ts` · `web/src/lib/queries.ts` · `web/src/lib/types.ts` · `AGENTS.md` · `.cursor/rules/agentledger.mdc` · `fleet/src/gbagent/coord.py`
+**Touches:** `backend/app/mcp_server.py` (dispatcher audit point, `heartbeat` handler) · `backend/app/services/live.py` · `backend/app/services/fleet.py` (`touch`) · `backend/app/services/agent_calls.py` (new) · `backend/app/routers/live.py` · `backend/app/models/__init__.py` (`AgentCall` new, `Agent` +3 columns) · `backend/alembic/versions/0102_*` · `web/src/features/live/LiveView.tsx` · `web/src/lib/api.ts` · `web/src/lib/queries.ts` · `web/src/lib/types.ts` · `AGENTS.md` · `.cursor/rules/graphban.mdc` · `fleet/src/gbagent/coord.py`
 
 ---
 
@@ -115,7 +115,7 @@ These are closed. Implementation of a slice must not quietly reverse one.
 | D9 | Poll on the fleet clock, same as PRD-33 D7. The open feed refetches on the board's interval. | No second cadence. No SSE. |
 | D10 | Retention by age: `AGENT_CALL_RETENTION_DAYS` (default 7). Swept **on the write path, amortised** (every Nth insert), because `main.py` has no scheduler and this PRD does not add one. | Bounded table. A quiet instance sweeps rarely and has little to sweep. Sweep failure never fails the call. |
 | D11 | Silence states are named. Calls: `never` (no rows in retention) · `quiet` (with `silence_seconds`). Status: `unreported` · `reported` · `stale` (older than `presence_ttl_seconds`). | An empty feed is `{state: "never"}`, not `[]`. A `reported` status shows its age. |
-| D12 | Producers land with the field: `AGENTS.md` step 2, `.cursor/rules/agentledger.mdc`, `gbagent`'s timer heartbeat, and the Fleet view mint prompt all say what to put in `status`. One sentence each. | The feed has something to show on day one. The prompt does not grow a paragraph. |
+| D12 | Producers land with the field: `AGENTS.md` step 2, `.cursor/rules/graphban.mdc`, `gbagent`'s timer heartbeat, and the Fleet view mint prompt all say what to put in `status`. One sentence each. | The feed has something to show on day one. The prompt does not grow a paragraph. |
 | D13 | Failed calls are rows with `ok: false` and `error_code`. The dispatcher writes the row on the error path too, from the same helper. | A retry loop is visible as one. Refusals stop being the only audited failure. |
 | D14 | Both engines. `agent_calls` is plain columns plus a JSON `files`; no vector, no Postgres-only type. Tests run on SQLite and Postgres where the write and the sweep hit SQL. | Same rule as every other PRD since GRPH-352. |
 | D15 | No ghost rows. Calls with no resolvable agent get no per-agent feed. They are counted **per credential** and shown on the owning user group as "N calls on credential *key* not attributable to an agent". | An agent at `never` beside a non-zero group count is the signal. The board names the key, never guesses the agent. |
@@ -231,7 +231,7 @@ A heartbeat with neither field is presence-only and is not a feed row either. Th
 **Producers (D12).**
 
 - `AGENTS.md` operating loop step 2: "Heartbeat while you work, and say what you are doing: `heartbeat(id, agent_id, status='running the backend suite', files=['backend/tests/test_live.py'])`. One line. It is how the Live page knows what you are doing."
-- `.cursor/rules/agentledger.mdc`: the same sentence (it is generated from `AGENTS.md`; regenerate, do not hand-edit).
+- `.cursor/rules/graphban.mdc`: the same sentence (it is generated from `AGENTS.md`; regenerate, do not hand-edit).
 - `fleet/src/gbagent/coord.py`: the timer heartbeat sends `status` from the loop's current phase (the loop already knows whether it is claiming, editing, testing, or handing to review) and `files` from the paths it last wrote.
 - Fleet view mint prompt: the pasted prompt already says heartbeat; add the `status` clause.
 

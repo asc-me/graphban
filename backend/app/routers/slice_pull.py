@@ -1,6 +1,6 @@
 """Per-dev slice pull REST (PRD-P10 / GRPH-190).
 
-Spoke-initiated: the local (OSS) AgentLedger instance authenticates to the hub
+Spoke-initiated: the local (OSS) Graphban instance authenticates to the hub
 and pulls ONLY that dev's slice — tickets assigned to them. The spoke grounds
 each in the local checkout and runs the in-app assistant.
 """

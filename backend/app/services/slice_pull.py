@@ -1,6 +1,6 @@
 """Per-dev slice pull (PRD-P10 / GRPH-190).
 
-The local (OSS) AgentLedger instance authenticates to the hub and pulls ONLY
+The local (OSS) Graphban instance authenticates to the hub and pulls ONLY
 that dev's slice — tickets assigned to them. The spoke grounds each in the
 local checkout (code-map, memory, embeddings), runs the in-app assistant, and
 pushes status/comments back through the hub.

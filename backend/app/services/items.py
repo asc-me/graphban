@@ -208,7 +208,7 @@ def _normalize_predicates(raw) -> list[dict]:
     """Coerce an attestation's predicate list to `[{name, passed, detail}]`.
 
     **Structure is validated; vocabulary is not.** An adapter must stay free to check more
-    than Graphban knows about, or every adapter improvement becomes a breaking change to the
+    tha Graphban knows about, or every adapter improvement becomes a breaking change to the
     core. So an unrecognised predicate name is recorded, not rejected.
 
     `passed` must be a real bool. This is the fiddly part and it is load-bearing: a JSON

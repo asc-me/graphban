@@ -12,7 +12,7 @@ Tracker → hub mirror: idempotent and echo-safe. The engine owns three concerns
    edits. Description is READ-from-tracker only — never written back.
 
 3. **Conflict policy** — tracker wins on any field it owns (title, description,
-   status, assignee, labels). AgentLedger-only fields (local links, provenance,
+   status, assignee, labels). Graphban-only fields (local links, provenance,
    memory) are never overwritten. Field mapping is explicitly lossy and configurable
    per TrackerLink.
 """

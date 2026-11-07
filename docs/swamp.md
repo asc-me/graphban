@@ -95,7 +95,7 @@ Once per clone. Do **not** `swamp repo init --force` on a tree that already has 
 
 ```bash
 git clone git@github.com:asc-me/graphban-swamp.git ../graphban-swamp   # sibling, not this tree
-cd /path/to/agentledger
+cd /path/to/graphban
 swamp repo init --tool none                    # skip if .swamp.yaml already exists
 swamp extension source add ../graphban-swamp   # or an absolute path
 swamp vault create local_encryption secrets    # skip if vault "secrets" exists

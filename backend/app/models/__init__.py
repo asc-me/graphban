@@ -2303,7 +2303,7 @@ class TrackerMirror(Base):
     The hub stores the latest snapshot of each mirrored issue. Reconcile diffs
     incoming Linear state against this to detect external edits. Tracker-owned
     fields (title, description, status, assignee) apply on the hub immediately;
-    AgentLedger-only fields (local links, provenance, memory) are never overwritten.
+    Graphban-only fields (local links, provenance, memory) are never overwritten.
     """
 
     __tablename__ = "tracker_mirror"
@@ -3208,10 +3208,10 @@ class LlmCallSpan(Base):
 
 
 class TrackerLink(Base):
-    """A link between an external tracker (Linear, later Jira) and an AgentLedger
+    """A link between an external tracker (Linear, later Jira) and a Graphban
     project, scoped to the org (PRD-10 / GRPH-186).
 
-    When linked, the tracker is AUTHORITATIVE: AgentLedger mirrors read-heavy and
+    When linked, the tracker is AUTHORITATIVE: Graphban mirrors read-heavy and
     writes back only canonical status transitions, comments/links, and the
     triage-board assignee. The authority flag and field-mapping config live per link.
 
@@ -3231,12 +3231,12 @@ class TrackerLink(Base):
     tracker_team_id: Mapped[str] = mapped_column(String)
     # Display name cached from the tracker (e.g. "Platform Eng").
     tracker_team_name: Mapped[str] = mapped_column(String, default="")
-    # When true, the tracker is authoritative — AgentLedger mirrors read-heavy and
+    # When true, the tracker is authoritative — Graphban mirrors read-heavy and
     # writes back only the constrained set (status, comments/links, assignee).
     authority: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default=true(), nullable=False
     )
-    # Per-link field mapping: which tracker fields map to which AgentLedger fields.
+    # Per-link field mapping: which tracker fields map to which Graphban fields.
     # Explicitly lossy and configurable. Empty dict = defaults.
     field_mapping: Mapped[dict] = mapped_column(JSON, default=dict)
     # Whether write-backs post a Linear comment attributing the acting human.

@@ -2,7 +2,7 @@
 
 OAuth + GraphQL client for Linear: read issues (assignee, state, team, labels,
 updatedAt), subscribe to webhooks, and write back the constrained set (status,
-comments, assignee). Canonical status mapping: Linear workflow states → AgentLedger
+comments, assignee). Canonical status mapping: Linear workflow states → Graphban
 backlog/in_progress/review/done. Rate-limit aware; token stored per-org encrypted.
 
 The tracker is AUTHORITATIVE. This adapter reads heavily and writes back only the
@@ -33,7 +33,7 @@ LINEAR_API_URL = "https://api.linear.app/graphql"
 LINEAR_AUTH_URL = "https://linear.app/oauth/approve"
 LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token"  # nosec B105 — an endpoint URL
 
-# Canonical status mapping: Linear workflow state type → AgentLedger status.
+# Canonical status mapping: Linear workflow state type → Graphban status.
 # Linear states have a `type` field: backlog, unstarted, started, completed, canceled, triage.
 # Map: backlog→backlog, unstarted→backlog, started→in_progress, completed→done,
 # canceled→done, triage→backlog.
@@ -46,10 +46,10 @@ LINEAR_STATE_TYPE_TO_STATUS: dict[str, str] = {
     "canceled": "done",
 }
 
-# Valid AgentLedger statuses for write-back.
+# Valid Graphban statuses for write-back.
 VALID_STATUSES = {"backlog", "in_progress", "review", "done"}
 
-# Reverse map: AgentLedger status → Linear state type preference order.
+# Reverse map: Graphban status → Linear state type preference order.
 # "review" has no direct Linear equivalent; map to "started" (in-progress) as the
 # closest semantic match — a ticket in review is still being worked.
 STATUS_TO_LINEAR_STATE_TYPE: dict[str, str] = {
@@ -516,7 +516,7 @@ def update_issue_status(
     target_status: str,
     team_id: str,
 ) -> dict:
-    """Update an issue's status. Maps AgentLedger status → Linear workflow state.
+    """Update an issue's status. Maps Graphban status → Linear workflow state.
     Returns the updated issue data."""
     if target_status not in VALID_STATUSES:
         raise LinearError(f"Invalid status: {target_status}")
