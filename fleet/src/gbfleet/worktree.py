@@ -932,6 +932,113 @@ def item_branch(branch: str, item: str) -> str:
     return f"{branch}{ITEM_BRANCH_SEP}{item}"
 
 
+# ---- which item a commit belongs to (GRPH-1407) -----------------------------------------------
+#
+# A bound worker builds its item, moves it to review, and keeps going. When it claimed and built
+# a second item, that commit landed on the first item's branch: the first item's reviewer read a
+# foreign commit and bounced, and the PR opened for the second item carried both. The worker's
+# own commit subjects are the only attribution there is, so these read them.
+
+_ITEM_ID = re.compile(r"(?<![A-Za-z0-9_-])([A-Z][A-Z0-9]{0,9})-(\d+)(?![A-Za-z0-9_])")
+
+
+def _tag(item: str) -> str:
+    head, sep, tail = (item or "").rpartition("-")
+    return head if sep and tail.isdigit() else ""
+
+
+def named_items(subject: str, tags) -> list[str]:
+    """Item ids in `subject` whose project tag is one of `tags`, in order, once each.
+
+    Only the project's own tag counts. `PRD-39` or a ticket from another tracker in a
+    subject is prose, not an attribution.
+    """
+    wanted = {t for t in tags if t}
+    out: list[str] = []
+    for match in _ITEM_ID.finditer(subject or ""):
+        ident = f"{match.group(1)}-{match.group(2)}"
+        if match.group(1) in wanted and ident not in out:
+            out.append(ident)
+    return out
+
+
+def attributed_commits(repo: Path | str, branch: str, base: str,
+                       items) -> list[tuple[str, list[str]]]:
+    """`[(sha, [ids named])]` for every commit on `branch` beyond `base`, oldest first.
+
+    Ids are read with the tags of `items`. A commit naming none has an empty list.
+    `[]` when the history cannot be read, which callers treat as "nothing to say".
+    """
+    tags = {_tag(i) for i in items}
+    if not base or not any(tags):
+        return []
+    done = subprocess.run(["git", "log", "--reverse", "--format=%H%x09%s", f"{base}..{branch}"],
+                          cwd=str(repo), capture_output=True, text=True)
+    if done.returncode != 0:
+        return []
+    rows: list[tuple[str, list[str]]] = []
+    for line in (done.stdout or "").splitlines():
+        sha, _, subject = line.partition("\t")
+        if sha:
+            rows.append((sha, named_items(subject, tags)))
+    return rows
+
+
+def foreign_commits(repo: Path | str, branch: str, base: str,
+                    item: str) -> list[tuple[str, list[str]]]:
+    """Commits on `branch` attributed to an item that is not `item` (GRPH-1407).
+
+    Attributed means the subject names another id of the same project and does not name
+    `item`. A commit naming nothing is not foreign: it is the case `split_by_item` refuses
+    when several items are in play, and on a one-item branch it is that item's.
+    """
+    return [(sha, ids) for sha, ids in attributed_commits(repo, branch, base, [item])
+            if ids and item not in ids]
+
+
+def first_item_run(repo: Path | str, branch: str, base: str,
+                   items) -> tuple[str, str, list[str]]:
+    """`(item, last_sha, later_items)`: the leading run of `branch` that belongs to ONE item.
+
+    `item` is the first id a commit names; the run ends before the first commit that names
+    another id and not `item`. `later_items` are the ids attributed after that, in order. An
+    empty `later_items` means the whole branch is one item's, and the caller pushes it as
+    it is. Commits naming nothing ride with the run they sit in.
+    """
+    rows = attributed_commits(repo, branch, base, items)
+    owner, last, later = "", "", []
+    for sha, ids in rows:
+        if later:
+            later += [i for i in ids if i not in later and i != owner]
+            continue
+        if not ids or (owner and owner in ids):
+            last = sha
+            continue
+        if not owner:
+            owner, last = ids[0], sha
+            continue
+        later += [i for i in ids if i not in later]
+    return owner, last, later
+
+
+def push_commit(repo: Path | str, sha: str, branch: str) -> Pushed:
+    """Put `sha` on the remote as `branch`, leaving the local branch where it is (GRPH-1407).
+
+    The shared branch a worker kept committing on stops at its first item's work: the next
+    item's commits are not pushed under the first item's name, where its reviewer reads.
+    """
+    remote = remote_for(repo)
+    if not remote:
+        return Pushed(branch=branch, skipped=True,
+                      reason="this repository has no remote (or several and no `origin`), so "
+                             "the branch stays local and the reviewer cannot read it")
+    try:
+        _git(repo, "push", "-q", remote, f"{sha}:refs/heads/{branch}")
+    except GitError as exc:
+        return Pushed(branch=branch, remote=remote, reason=f"push refused: {str(exc)[:200]}")
+    return Pushed(branch=branch, remote=remote, ok=True)
+
+
 def reap_held(wt: Worktree, adapter: str, items: list[str] | tuple[str, ...] = ()) -> Reaped:
     """`reap`, writing one salvage commit per held item and never one naming several (GRPH-948).
 
