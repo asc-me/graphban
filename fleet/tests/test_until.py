@@ -2450,3 +2450,69 @@ def test_review_wait_names_an_unclaimed_reviewer_the_gate_and_never_the_rows_own
     for line in _review_waits_on_live(Wave(), rows, [builder, own_reviewer],
                                       gate="memory low"):
         assert "pid" not in line
+
+
+_CI_STUCK = {"kind": "note", "detail": "refused at `done` (pr_ci_not_green): cooldown over, "
+             "no suite_green at commit 5f4e0ecc: run x"}
+
+
+def test_a_row_refused_pr_ci_not_green_past_cooldown_gets_no_reviewer(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1409: another reviewer cannot clear it, so none is spawned and the run says why."""
+    workspace = tmp_path / "ws"
+    roles: list[str] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "", "evidence": [_CI_STUCK]}],
+        minted_roles=roles,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert roles == []
+    assert result.reason == "review-ci-unattestable"
+    assert "GRPH-9" in result.detail and "5f4e0ecc" in result.detail
+    assert "CI attestation or an owner close" in result.detail
+
+
+def test_ci_failure_refusal_still_gets_a_reviewer(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """A red run is a bounce a reviewer can make, so only the silent-CI refusal is skipped."""
+    from gbfleet.until import ci_unattestable
+    red = {"kind": "note", "detail": "refused at `done` (pr_ci_not_green): x did not pass"}
+    assert ci_unattestable({"evidence": [red]}) is False
+    assert ci_unattestable({"evidence": [_CI_STUCK]}) is True
+    # A newer, different refusal supersedes it.
+    other = {"kind": "note", "detail": "refused at `done` (adversarial): nope"}
+    assert ci_unattestable({"evidence": [_CI_STUCK, other]}) is False
+
+
+def test_a_suite_green_attestation_after_the_refusal_clears_the_stuck_row():
+    """GRPH-1409 bounce: CI attesting after the refusal lets a reviewer sign it off again."""
+    from gbfleet.until import ci_unattestable
+    green = {"kind": "attestation", "commit": "5f4e0ecc",
+             "predicates": [{"name": "suite_green", "passed": True}]}
+    assert ci_unattestable({"evidence": [_CI_STUCK, green]}) is False
+    # A red attestation is a bounce a reviewer can make, so it also needs a reviewer.
+    red = {"kind": "attestation", "predicates": [{"name": "suite_green", "passed": False}]}
+    assert ci_unattestable({"evidence": [_CI_STUCK, red]}) is False
+    # An attestation OLDER than the refusal does not clear it.
+    assert ci_unattestable({"evidence": [green, _CI_STUCK]}) is True
+    # A scans-only attestation says nothing about suite_green.
+    scans = {"kind": "attestation", "predicates": [{"name": "scans_clean", "passed": True}]}
+    assert ci_unattestable({"evidence": [_CI_STUCK, scans]}) is True
+
+
+def test_a_review_unsigned_exit_names_the_ci_stuck_rows_beside_it():
+    """GRPH-1409 bounce: in the mixed case the stuck rows are still named in the detail."""
+    from gbfleet.until import Report, _name_ci_stuck
+    row = {"id": "GRPH-9", "evidence": [_CI_STUCK]}
+    report = _name_ci_stuck(Report(ok=False, reason="review-unsigned", exit=1), [row])
+    assert "GRPH-9" in report.detail and "owner close" in report.detail
+    assert _name_ci_stuck(Report(ok=False, reason="review-unsigned", exit=1), []).detail == ""
