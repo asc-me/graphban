@@ -1736,13 +1736,13 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
         wave.declared_unread[child.branch] = "; ".join(unread)
     if declared:
         missing = tp_mod.undeclared(measured, declared)
-        generated = [f for f in missing if f in GENERATED_FILES]
+        generated = [f for f in missing if is_generated(f)]
         if generated:
             # GRPH-1352: the repo's own generators rewrite these on any migration or test
             # change. They are mechanical, so they warn and do not block the proposal.
             observe.emit("generated_files_allowed", branch=child.branch,
                          detail=", ".join(generated))
-        missing = [f for f in missing if f not in GENERATED_FILES]
+        missing = [f for f in missing if not is_generated(f)]
         if missing:
             wave.undeclared[child.branch] = missing
             # A wait naming the files, so the planner can widen the touchpoints.
@@ -1754,11 +1754,21 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
     wave.collided = tp_mod.overlaps(wave.touched)
 
 
-#: Files the repo's generators rewrite on any migration or test change (GRPH-1352).
-GENERATED_FILES = frozenset({
-    "AGENTS.md", ".claude/agents/README.md", ".codex/agents/README.md",
-    ".cursor/agents/README.md", "backend/tests/shard_weights.json",
+#: Files the repo's generators rewrite on any migration, test or AGENTS.md change (GRPH-1352,
+#: GRPH-1375). Matched by prefix/name, not listed one by one: `scripts/gen_subagents.py` writes
+#: ~58 files and a hand list drifted to 5. A test compares this against the generator's own
+#: output, so a new generated path fails there rather than holding a PR back silently.
+GENERATED_EXACT = frozenset({
+    "AGENTS.md", "backend/tests/shard_weights.json", ".cursor/rules/graphban.mdc",
 })
+GENERATED_PREFIXES = (
+    ".claude/agents/", ".codex/agents/", ".cursor/agents/", ".cursor/plugins/graphban/",
+    ".claude/skills/", ".agents/skills/",
+)
+
+
+def is_generated(path: str) -> bool:
+    return path in GENERATED_EXACT or path.startswith(GENERATED_PREFIXES)
 
 
 def latest_head(repo: Path, orphan, row: dict | None):
