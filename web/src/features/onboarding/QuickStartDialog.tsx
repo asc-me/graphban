@@ -1,6 +1,6 @@
 /**
  * The quick-start dialog (GRPH-P67 §4, GRPH-1361): steps ⓪ Where, ① Project, ② Model,
- * ④ First job, then Finish. Step ③ (Connect your agent) arrives with GRPH-1362.
+ * ③ Connect, ④ First job, then Finish (③ is GRPH-1362).
  *
  * **Every mark on the rail is server state.** Next stores a human decision through
  * `POST …/setup/confirm` (or creates the project) and the rail redraws from what the server
@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
+import { ConnectStep, ROUTE_LABEL, type Route } from "@/features/onboarding/ConnectStep";
 import { TagField, useTagField } from "@/features/onboarding/TagField";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -35,6 +36,7 @@ import {
   normalizeAddress,
   servingChat,
   stepsFor,
+  storedAddress,
   storedWhere,
   type QsStep,
   type StepMark,
@@ -103,7 +105,7 @@ export function QuickStartDialog({
   const project = projects.find((p) => p.id === projectId) ?? active;
 
   const [screen, setScreen] = React.useState<Screen>(initialStep ?? stepsFor(hosted)[0]);
-  const qs = useQuickStart(projectId, hosted, open && screen === "first_job" ? 3000 : undefined);
+  const qs = useQuickStart(projectId, hosted, open && (screen === "first_job" || screen === "connect") ? 3000 : undefined);
   const steps = qs.steps;
 
   // Re-opening lands where the caller asked (the chip: first unfinished), every time.
@@ -115,6 +117,10 @@ export function QuickStartDialog({
   // Step ⓪'s answer, held until a project exists to store it on (a brand-new user answers
   // ⓪ before ① creates the project). It is NOT a mark: the rail stays ◌ until stored.
   const [pendingWhere, setPendingWhere] = React.useState<{ where: Where; address: string } | null>(null);
+
+  const [agent, setAgent] = React.useState("claude");
+  const [route, setRoute] = React.useState<Route>("gban");
+  const whereStep = qs.setup?.steps.find((s) => s.step === 0);
 
   const idx = screen === "finish" ? steps.length : steps.indexOf(screen);
   const isLast = idx === steps.length - 1;
@@ -181,6 +187,27 @@ export function QuickStartDialog({
               onFinishLater={onFinishLater}
             />
           )}
+          {screen === "connect" && (
+            <ConnectStep
+              projectId={projectId}
+              address={storedAddress(whereStep) || (pendingWhere?.where === "dedicated_server" ? pendingWhere.address : "")}
+              dedicated={(storedWhere(whereStep) ?? pendingWhere?.where) === "dedicated_server"}
+              mark={qs.marks.connect}
+              agent={agent}
+              onAgent={setAgent}
+              route={route}
+              onRoute={setRoute}
+            >
+              <Advanced>
+                <Hint lead="Key scope.">This key is pinned to this project. Mint a global key under Settings → Keys.</Hint>
+                <Hint lead="Tool tiers.">The key sees the core tools; add tiers (fleet, prd) when you set up delegation.</Hint>
+                <Hint lead="More machines.">Repeat this step on each machine; every key proves its own first call.</Hint>
+                <Hint lead="Cursor / GUI apps.">GUI apps don't inherit shell environment variables; put the key in the app's own config.</Hint>
+                <Hint lead="Delegation and sandboxes.">Run gban setup on the machine that hosts the supervisor; sandboxed agents need the server reachable from inside the sandbox.</Hint>
+              </Advanced>
+              <Footer onFinishLater={onFinishLater} onBack={back} next={advance} />
+            </ConnectStep>
+          )}
           {screen === "first_job" && (
             <FirstJobStep
               hosted={hosted}
@@ -197,6 +224,7 @@ export function QuickStartDialog({
             <FinishScreen
               steps={steps}
               marks={qs.marks}
+              route={route}
               onFinish={onFinish}
               onTakeTour={onTakeTour}
             />
@@ -1015,11 +1043,13 @@ function FirstJobStep({
 function FinishScreen({
   steps,
   marks,
+  route,
   onFinish,
   onTakeTour,
 }: {
   steps: QsStep[];
   marks: Record<QsStep, StepMark>;
+  route: Route;
   onFinish: () => Promise<void>;
   onTakeTour?: () => void;
 }) {
@@ -1056,7 +1086,9 @@ function FinishScreen({
                   <span className={cn("mr-1.5 font-mono", g.cls)} aria-hidden>
                     {g.g}
                   </span>
-                  {STEP_META[s].label} — {m.status === "unknown" ? m.reason : "pending"}
+                  {s === "connect" && m.status === "pending"
+                    ? `Agent connection unverified — ${ROUTE_LABEL[route]}`
+                    : `${STEP_META[s].label} — ${m.status === "unknown" ? m.reason : "pending"}`}
                 </li>
               );
             })}
@@ -1072,6 +1104,9 @@ function FinishScreen({
           </span>
           Every step has evidence behind it.
         </p>
+      )}
+      {marks.connect?.status === "done" && marks.connect.evidence && (
+        <p className="mt-2 text-[12px] text-muted">Agent connection: {marks.connect.evidence}</p>
       )}
       <ErrorLine text={error} />
       <div className="mt-5 flex items-center justify-end gap-2 border-t border-line pt-4">

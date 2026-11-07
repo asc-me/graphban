@@ -169,14 +169,21 @@ export function McpInstall({
   apiKey,
   keyPrefix,
   keyScope,
+  clientId,
+  baseUrl,
 }: {
   apiKey: string;
   keyPrefix?: string;
   keyScope?: KeyScope;
+  /** The caller already has a harness picker (quick-start ③): use it, hide ours. */
+  clientId?: string;
+  /** Server address when it is not this page's origin (quick-start ⓪'s dedicated server). */
+  baseUrl?: string;
 }) {
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const origin = baseUrl || (typeof window !== "undefined" ? window.location.origin : "");
   const url = `${origin}/api/mcp`;
-  const [sel, setSel] = React.useState("claude");
+  const [pickedSel, setSel] = React.useState("claude");
+  const sel = clientId && CLIENTS.some((c) => c.id === clientId) ? clientId : pickedSel;
   const [form, setForm] = React.useState<FormKind>("command");
   const [copied, setCopied] = React.useState(false);
   const client = CLIENTS.find((c) => c.id === sel)!;
@@ -195,7 +202,7 @@ export function McpInstall({
         Connect an agent · MCP{keyPrefix ? ` · ${keyPrefix}…` : ""}
       </div>
       <div className="mb-2 flex flex-wrap gap-1.5">
-        {CLIENTS.map((c) => (
+        {!clientId && CLIENTS.map((c) => (
           <button
             key={c.id}
             onClick={() => {

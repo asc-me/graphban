@@ -991,7 +991,7 @@ class ApiKeyCreate(BaseModel):
     # not a degraded state. Never widens what the key may CALL — only what it is told about.
     tool_tiers: list[str] = []
     # Which surface is minting (GRPH-1310). Optional; NULL = unknown.
-    origin: Literal["web", "gban_setup", "gban_swamp_setup", "fleet"] | None = None
+    origin: Literal["web", "gban_setup", "gban_swamp_setup", "fleet", "quickstart"] | None = None
 
     @field_validator("tool_tiers")
     @classmethod

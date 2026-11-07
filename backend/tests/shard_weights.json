@@ -59,6 +59,7 @@
 "tests/test_compose_host.py": 0.56,
 "tests/test_concurrent_runs.py": 0.18,
 "tests/test_configuration_doc.py": 0.08,
+"tests/test_connect_step.py": 0.6,
 "tests/test_content_hash.py": 0.19,
 "tests/test_coverage_reports_rendered_keys.py": 0.32,
 "tests/test_credential_identity.py": 0.79,

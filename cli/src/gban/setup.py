@@ -49,6 +49,24 @@ TIERS = ["fleet", "prd"]
 LEDGER_SERVER = "graphban"
 FLEET_SERVER = "gbfleet"
 
+#: The agents `gban setup` writes a harness config for (see `destinations`). The web
+#: quick-start's agent picker offers the gban route to exactly these and switches the rest to
+#: paste-a-key (GRPH-P67 G9). `scripts/gen_gban_agents.py` exports this to the web bundle;
+#: `cli/tests/test_setup.py` fails when that file drifts, so adding a harness here is the
+#: one edit that changes what the dialog offers.
+SETUP_AGENTS = ("claude", "grok")
+
+#: The commands the quick-start dialog's gban route shows, in order, with `{server}` and
+#: `{project}` filled in by the web app. Exported beside SETUP_AGENTS so the dialog never
+#: types its own copy; `cli/tests/test_setup.py` parses each with `gban.cli._parser()`, so a
+#: flag that moves (e.g. `--server` is a top-level option, not a `login` one) fails a test
+#: rather than a person's terminal.
+QUICKSTART_COMMANDS = (
+    "uv tool install graphban-cli",
+    "gban --server {server} login",
+    "gban --project {project} setup",
+)
+
 
 # ---- where the config goes ------------------------------------------------------------------
 
