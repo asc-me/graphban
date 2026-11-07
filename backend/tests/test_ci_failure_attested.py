@@ -115,3 +115,18 @@ def test_no_attestation_at_all_still_reads_as_not_reported(db, cooldown):
     assert "no CI run has reported suite_green" in msg
     assert "CI failed at" not in msg
     assert "BOUNCE" not in msg
+
+
+# ---- GRPH-1409: an item sharing the PR's branch is attested too -----------------------
+
+def test_items_recorded_on_the_head_branch_are_found_even_when_the_pr_names_another():
+    rows = {"review": [{"id": "GRPH-1359", "branch": "gb/p59h-1"},
+                       {"id": "GRPH-5", "branch": "gb/other"}],
+            "done": [{"id": "GRPH-1399", "branch": "gb/p59h-1"}]}
+
+    def search(url, key, status, **_):
+        return rows.get(status, [])
+
+    assert attest_ci.items_on_branch("u", "k", "gb/p59h-1", search=search) == [
+        "GRPH-1359", "GRPH-1399"]
+    assert attest_ci.items_on_branch("u", "k", "", search=search) == []
