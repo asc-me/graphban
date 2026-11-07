@@ -7,7 +7,6 @@ Revision ID: 0186
 Revises: 0185
 """
 
-import json
 from datetime import datetime, timezone
 from typing import Sequence, Union
 
@@ -23,8 +22,15 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.add_column("users", sa.Column("onboarding", sa.JSON(), nullable=True))
     op.add_column("projects", sa.Column("setup_decisions", sa.JSON(), nullable=True))
-    done = json.dumps({"quickstart_finished_at": datetime.now(timezone.utc).isoformat()})
-    op.get_bind().execute(sa.text("UPDATE users SET onboarding = CAST(:v AS JSON)"), {"v": done})
+    backfill(op.get_bind())
+
+
+def backfill(conn) -> None:
+    """Every user who exists now is not new: mark the quick start finished (GRPH-P67 G5).
+    A typed JSON column, so the value binds as JSON on Postgres and SQLite alike."""
+    users = sa.table("users", sa.column("onboarding", sa.JSON()))
+    done = {"quickstart_finished_at": datetime.now(timezone.utc).isoformat()}
+    conn.execute(sa.update(users).where(users.c.onboarding.is_(None)).values(onboarding=done))
 
 
 def downgrade() -> None:

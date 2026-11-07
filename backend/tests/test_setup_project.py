@@ -1,4 +1,5 @@
 """AL-133: setup_project first-run bootstrap checklist + empty-project detection."""
+import pytest
 
 
 def _key(client, auth, project_id, scopes=None):
@@ -50,9 +51,6 @@ def test_setup_project_is_read_only_and_in_a_read_key_manifest(client, auth):
     assert "setup_project" in {t["name"] for t in tools}  # visible to a read-only key
 
 
-import pytest
-
-
 @pytest.fixture
 def db(client):  # `client` first: it creates the schema and seeds the demo project
     from app.db import SessionLocal
@@ -87,32 +85,47 @@ def test_a_check_that_cannot_run_is_unknown_with_a_reason_never_done(db, monkeyp
         assert s["status"] == "unknown" and "db down" in s["reason"]
 
 
-def test_ratchet_shared_steps_agree_on_dialog_and_setup_project(client, auth):
-    proj = client.post("/api/projects", json={"name": "Ratchet"}, headers=auth).json()
-    pid = proj["id"]
+def _assert_shared_steps_agree(client, auth, key, pid):
+    """The ratchet: every step on BOTH the dialog's checklist and `setup_project` carries the
+    same id, name and status. Steps only one surface shows (⓪) are not compared."""
+    dialog = {s["step"]: (s["name"], s["status"]) for s in _api_steps(client, auth, pid)["steps"]}
+    agent = {s["step"]: (s["name"], s["status"]) for s in _sc(client, key, "setup_project")["steps"]}
+    shared = set(dialog) & set(agent)
+    assert shared == {1, 2, 3, 4}, f"shared steps changed: {sorted(shared)}"
+    diff = {k: (dialog[k], agent[k]) for k in shared if dialog[k] != agent[k]}
+    assert not diff, f"dialog and setup_project disagree: {diff}"
+    return dialog
+
+
+def _ratchet_project(client, auth, name):
+    pid = client.post("/api/projects", json={"name": name}, headers=auth).json()["id"]
     key = _key(client, auth, pid)
     _sc(client, key, "describe_code", {"nodes": [{"path": "x.py", "summary": "x"}]})
     client.post(f"/api/projects/{pid}/setup/confirm", json={"decision": "workspace"}, headers=auth)
-    dialog = {s["step"]: s["status"] for s in _api_steps(client, auth, pid)["steps"]}
-    agent = {s["step"]: s["status"] for s in _sc(client, key, "setup_project")["steps"]}
-    assert agent and set(agent) == {1, 2, 3, 4}
-    assert all(dialog[k] == v for k, v in agent.items())
-    assert dialog[1] == "done" and dialog[2] == "done"
+    return pid, key
 
 
-def test_ratchet_fails_when_a_shared_step_disagrees(db, monkeypatch):
-    """Sabotage: the agent projection reports a different status for one shared step."""
+def test_ratchet_shared_steps_agree_on_dialog_and_setup_project(client, auth):
+    pid, key = _ratchet_project(client, auth, "Ratchet")
+    dialog = _assert_shared_steps_agree(client, auth, key, pid)
+    # a mix of done and pending, so agreement is not the trivial all-pending case
+    assert dialog[1][1] == "done" and dialog[2][1] == "done" and dialog[3][1] == "pending"
+
+
+def test_ratchet_fails_when_a_shared_step_disagrees(client, auth, monkeypatch):
+    """Sabotage: `setup_project` reports a different status for one shared step; the ratchet
+    above must catch it through the real MCP surface."""
     from app.services import setup as svc
+    pid, key = _ratchet_project(client, auth, "Sabotage")
     real = svc.agent_view
 
-    def lying(db_, pid):
-        out = real(db_, pid)
-        out["steps"][0] = {**out["steps"][0], "status": "done"}
+    def lying(db_, project_id):
+        out = real(db_, project_id)
+        out["steps"][2] = {**out["steps"][2], "status": "done"}  # step ③ claims done
         return out
     monkeypatch.setattr(svc, "agent_view", lying)
-    dialog = {s["step"]: s["status"] for s in svc.checklist(db, "core")["steps"]}
-    agent = {s["step"]: s["status"] for s in svc.agent_view(db, "core")["steps"]}
-    assert any(dialog[k] != v for k, v in agent.items())
+    with pytest.raises(AssertionError, match="disagree"):
+        _assert_shared_steps_agree(client, auth, key, pid)
 
 
 def test_confirm_stores_only_the_three_decisions_and_audits_each(client, auth):
@@ -151,3 +164,43 @@ def test_new_user_onboarding_is_unset(db):
     db.add(u)
     db.commit()
     assert db.get(User, "u-new").onboarding is None
+
+
+# ---- migration 0186 ----------------------------------------------------------------
+
+def test_migration_backfills_existing_users_as_finished():
+    import importlib.util
+    import pathlib
+
+    from alembic.operations import Operations
+    from alembic.runtime.migration import MigrationContext
+    from sqlalchemy import create_engine, inspect, text
+
+    path = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0186_setup_onboarding.py"
+    spec = importlib.util.spec_from_file_location("migration_0186", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    engine = create_engine("sqlite://")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE users (id VARCHAR PRIMARY KEY)"))
+        conn.execute(text("CREATE TABLE projects (id VARCHAR PRIMARY KEY)"))
+        conn.execute(text("INSERT INTO users VALUES ('u1'), ('u2')"))
+
+    def run(fn):
+        with engine.begin() as conn:
+            with Operations.context(MigrationContext.configure(conn)):
+                fn()
+
+    run(mod.upgrade)
+    import json
+    with engine.begin() as conn:
+        rows = dict(conn.execute(text("SELECT id, onboarding FROM users")).all())
+        assert set(rows) == {"u1", "u2"}
+        for v in rows.values():
+            assert json.loads(v)["quickstart_finished_at"]
+        conn.execute(text("INSERT INTO users (id) VALUES ('u3')"))  # created after: unset
+        assert conn.execute(text("SELECT onboarding FROM users WHERE id='u3'")).scalar() is None
+
+    run(mod.downgrade)
+    assert "onboarding" not in {c["name"] for c in inspect(engine).get_columns("users")}
