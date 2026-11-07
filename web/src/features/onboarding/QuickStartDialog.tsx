@@ -1046,7 +1046,7 @@ function FirstJobStep({
 
 // ── Finish ─────────────────────────────────────────────────────────────────────────────
 
-function FinishScreen({
+export function FinishScreen({
   steps,
   marks,
   route,

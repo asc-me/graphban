@@ -69,7 +69,7 @@ export function StartupPromptsWidget() {
   return (
     <section aria-labelledby="startup-prompts-h" className="mt-4 rounded-[11px] border border-line bg-surface-2 p-4" data-startup-prompts>
       <div className="mb-2 flex items-center gap-2">
-        <h2 id="startup-prompts-h" className="flex-1 text-[14px] font-semibold">
+        <h2 id="startup-prompts-h" className="flex-1 text-lead font-semibold">
           Start-up prompts
         </h2>
         <Button variant="ghost" size="sm" type="button" onClick={dismiss}>

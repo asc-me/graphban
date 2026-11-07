@@ -196,6 +196,8 @@ export function ProjectHome() {
 
           {mapOk && nodes === 0 && <NoGraphYet tag={active.tag} />}
 
+          <StartupPromptsWidget />
+
           <AgentLoopInfo to={to} />
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_1fr]">
