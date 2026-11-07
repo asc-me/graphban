@@ -371,10 +371,25 @@ class Wave:
     #: still never started; `until` (D1) writes `idle-with-waits` when only typed
     #: human waits remain.
     reason: str = ""
-    #: GRPH-1247. Adapters whose vendor account said it is out of quota this wave, keyed by
-    #: adapter name: {"adapter", "said" (the vendor's own words), "seen_at" (epoch seconds)}.
-    #: Never retried before its reset; reported in the terminal JSON.
+    #: GRPH-1247, GRPH-1372. What the vendor said is out of quota this wave, keyed by the
+    #: stored entitlement's name — or by the adapter name when the launch used no record (the
+    #: default login): {"entitlement" ("" for none), "adapter", "vendor" (the record's vendor
+    #: text, else the adapter), "said" (the vendor's own words, never parsed), "seen_at"
+    #: (epoch seconds)}. Process memory only: nothing here is written to disk, and a child
+    #: that registers later does not clear it. Reported in the terminal JSON.
     exhausted: dict[str, dict] = field(default_factory=dict)
+    #: GRPH-1372. Adapters this wave stopped walking — a second `VendorLimit` for the vendor,
+    #: or no record left to try on it — mapped to what the vendor said. `_skip_exhausted`
+    #: drops these from matrix resolution for the rest of the wave.
+    vendor_out: dict[str, str] = field(default_factory=dict)
+    #: GRPH-1372. `VendorLimit`s seen per adapter this wave; the second one ends the walk.
+    vendor_limits: dict[str, int] = field(default_factory=dict)
+    #: GRPH-1372. Adapters a child was started on, and adapters tried that never started
+    #: one, in order. Both always reported, so "the wave continued" names who it continued on.
+    vendors_launched: list[str] = field(default_factory=list)
+    vendors_tried: list[str] = field(default_factory=list)
+    #: GRPH-1372. The registry (`gbfleet entitlement`) as read at wave start.
+    records: list = field(default_factory=list)
     #: PRD-62 S1↔S3 (GRPH-1258). Entitlement ids each adapter runs on, as the operator named
     #: them (`--entitlement ADAPTER=ID`). Empty means the wave reports nothing to the headroom
     #: ledger, which is S1 exactly as it was.

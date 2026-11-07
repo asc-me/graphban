@@ -820,7 +820,8 @@ def _until(args) -> int:
             budget=args.budget or None,
             shared=_shared_servers(args),
             tiers=tiers,
-            launch_for=lambda name, model="": make_adapter_factory(name, None, model),
+            launch_for=lambda name, model="", entitlement=None: make_adapter_factory(
+                name, None, model, entitlement=entitlement),
             matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
             merge=bool(args.merge),
             base_branch=args.base,
