@@ -1160,13 +1160,20 @@ def _full_engine_run(receipts, engine: str) -> bool:
     return False
 
 
-def require_engine_evidence(db: Session, item: Item, incoming) -> None:
+def require_engine_evidence(db: Session, item: Item, incoming, head: str | None = None) -> None:
     """The `evidence_required` primitive, bound to `build.engine_evidence` (GRPH-1271).
 
     Read through the layered resolution (`rule_toggles.resolve`), never a constant: a rule absent
     from the loaded library, or off, is no gate. When on, an item of the class (a touchpoint
     containing `path`, default `alembic/versions/`) needs a test receipt recording a full run on
     `engine` (default `postgres`) before it moves to review. Other items are unaffected.
+
+    **The project's test-scope mode decides who may supply the run (GRPH-1404).** In
+    `agent_targeted` CI runs the full suites, Postgres job included (the `ci` gate job needs
+    it), so a PASSED `suite_green` attestation at the item's CURRENT head satisfies the gate;
+    a local full receipt still does too. An attestation at another commit, or a failing one,
+    counts for nothing, and with no head named there is nothing to bind it to. The other
+    modes keep the local full receipt.
     """
     from app.services import rule_toggles
 
@@ -1180,11 +1187,21 @@ def require_engine_evidence(db: Session, item: Item, incoming) -> None:
     engine = (params.get("engine") or "postgres").lower()
     if not any(path in (t or "") for t in item.touchpoints or []):
         return
-    if _full_engine_run(append_evidence(item.evidence, incoming or []), engine):
+    merged = append_evidence(item.evidence, incoming or [])
+    if _full_engine_run(merged, engine):
         return
+    waiting = ""
+    if rule_toggles.test_scope_mode(db, item.project_id) == "agent_targeted":
+        at = (head or item.head_commit or "").strip()
+        if at and CI_PREDICATE in attested_predicates(merged, commit=at):
+            return
+        waiting = (f" The project's test scope is agent_targeted, so this item is waiting for "
+                   f"CI's {engine} run: {CI_PREDICATE} must be attested at its current head "
+                   + (f"{at[:12]}" if at else "(none is recorded; push and let CI report)")
+                   + ", and an attestation at another commit or a failing one does not count.")
     raise EvidenceRequired(
         f"{item.key} cannot move to review while {ENGINE_EVIDENCE_RULE} is on: it touches "
-        f"{path} and carries no test receipt recording a full {engine} suite run. Record one "
+        f"{path} and carries no test receipt recording a full {engine} suite run.{waiting} Record one "
         f"as {{kind: test, engine: {engine!r}, scope: 'full', passed, failed: 0, skipped}}; a "
         "partial run, or one with failures, does not count")
 
@@ -1357,6 +1374,17 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
         return []
     commits = pr_commits(merged, commit, item.head_commit)
     if any(CI_PREDICATE in attested_predicates(merged, commit=c) for c in commits):
+        return []
+    # GRPH-1404: `agent_full` says the builder's full suites are the proof and the PR's CI is
+    # not required, so silence from CI does not block when full receipts exist on BOTH engines.
+    # CI saying NO at the item's commit still does.
+    from app.services import rule_toggles
+    if (rule_toggles.test_scope_mode(db, item.project_id) == "agent_full"
+            and _full_engine_run(merged, "postgres") and _full_engine_run(merged, "sqlite")
+            and not any(same_commit(str(a.get("commit") or ""), c) for c in commits
+                        for a in attestation_receipts(merged)
+                        if any(isinstance(q, dict) and q.get("name") == CI_PREDICATE
+                               and q.get("passed") is False for q in a.get("predicates") or []))):
         return []
     waited = (utcnow() - _aware(linked)).total_seconds()
     runs = [a for a in attestation_receipts(merged)
@@ -1622,7 +1650,8 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "branch, or attach the PR url as evidence, then move it to review"
             )
     if fields.get("status") == "review" and prev_status != "review":
-        require_engine_evidence(db, item, fields.get("evidence"))
+        require_engine_evidence(db, item, fields.get("evidence"),
+                                head=fields.get("head_commit"))
     # THE COMPLETION GATE (GRPH-543). Before this, `update_item` validated a status
     # transition for MEMBERSHIP IN A LIST and nothing else, so an agent working without a
     # reviewer reached `done` by writing the string — and the result was indistinguishable
