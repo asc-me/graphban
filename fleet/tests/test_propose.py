@@ -467,6 +467,73 @@ def test_no_ci_attestation_on_the_reviewed_commit_holds_it(gh):
     assert forge.verbs() == ["pr view"]
 
 
+def _full(engine, **kw):
+    return {"kind": "test", "engine": engine, "scope": "full", "passed": 10, "failed": 0, **kw}
+
+
+def _merge_scope(forge, gh, *, local_full, green=None, red=()):
+    gh(forge)
+    return propose_mod.merge(REPO, "SA-417", "gb/w-1", reviewed=REVIEWED,
+                             green=set() if green is None else green,
+                             local_full=local_full, red=set(red))
+
+
+def test_agent_full_merges_on_local_receipts_without_a_ci_attestation(gh):
+    """GRPH-1415. Sabotage: ignore `local_full` at the gate — this is held for CI again."""
+    got = _merge_scope(_Forge(), gh, local_full=True)
+
+    assert got.ok
+    assert "local-full-receipts(agent_full)" in got.checked
+
+
+def test_a_failing_ci_attestation_blocks_even_in_agent_full(gh):
+    got = _merge_scope(_Forge(), gh, local_full=True, red={REVIEWED})
+
+    assert not got.ok and "FAILED" in got.reason
+
+
+def test_a_green_rerun_at_the_same_commit_overturns_a_red_attempt(gh):
+    """Bounce of GRPH-1415. Sabotage: check `red` before `green` — a flaky first attempt
+    followed by a green rerun at the same commit blocks the merge for ever, in every mode."""
+    for local_full in (False, True):
+        got = _merge_scope(_Forge(), gh, local_full=local_full,
+                           green={REVIEWED}, red={REVIEWED})
+
+        assert got.ok, got.reason
+        assert f"ci={propose_mod.CI_PREDICATE}" in got.checked
+
+
+def test_red_commits_drop_a_commit_a_rerun_turned_green():
+    item = {"evidence": [_att("github-actions", REVIEWED, ("suite_green", False)),
+                         _att("github-actions", REVIEWED, ("suite_green", True))]}
+
+    assert propose_mod.red_commits(item) == set()
+
+
+def test_without_local_full_a_missing_ci_attestation_still_blocks(gh):
+    """`agent_and_pr` / `agent_targeted` (or receipts short of full) keep waiting for CI."""
+    got = _merge_scope(_Forge(), gh, local_full=False)
+
+    assert not got.ok and "has not attested" in got.reason
+
+
+def test_full_local_receipts_need_both_engines_full_and_passing():
+    both = {"evidence": [_full("postgres"), _full("sqlite")]}
+    assert propose_mod.full_local_receipts(both)
+    assert not propose_mod.full_local_receipts({"evidence": [_full("postgres")]})
+    assert not propose_mod.full_local_receipts(
+        {"evidence": [_full("postgres"), _full("sqlite", scope="partial")]})
+    assert not propose_mod.full_local_receipts(
+        {"evidence": [_full("postgres"), _full("sqlite", failed=1)]})
+
+
+def test_red_commits_name_only_a_failed_suite_green():
+    item = {"evidence": [_att("github-actions", REVIEWED, ("suite_green", False)),
+                         _att("github-actions", MOVED, ("suite_green", True))]}
+
+    assert propose_mod.red_commits(item) == {REVIEWED}
+
+
 def test_no_sign_off_commit_means_nothing_to_compare(gh):
     forge = _Forge()
 

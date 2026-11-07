@@ -3072,6 +3072,9 @@ class Merger:
             paths=item.get("touchpoints") or [],
             release=release,
             scans=propose_mod.scans_clean_verdicts(item),
+            local_full=(propose_mod.full_local_receipts(item)
+                        and self._test_scope() == "agent_full"),
+            red=propose_mod.red_commits(item),
             siblings=propose_mod.pr_receipts(item),
             # Lazy: only read when the PR has files outside this item's own touchpoints.
             covering=lambda: self._covering(item_id, item),
@@ -3082,6 +3085,22 @@ class Merger:
         if got.conflicts:
             self._bounce(wave, item_id, got)
         return got
+
+    def _test_scope(self) -> str:
+        """The project's `build.test_scope` mode (GRPH-1415). Anything unreadable — a client
+        not allowed the tool, a server that does not carry the rule — is `agent_and_pr`, the
+        stricter reading: a merge is never loosened by not knowing."""
+        try:
+            got = self.client.call("get_rule_toggles")
+        except (NotPermitted, ToolFailed, ServerUnreachable):
+            return "agent_and_pr"
+        for t in (got or {}).get("toggles") or []:
+            if t.get("rule_id") == "build.test_scope":
+                params = t.get("params")
+                value = params.get("value") if isinstance(params, dict) else None
+                mode = (value or {}).get("mode") if isinstance(value, dict) else None
+                return str(mode or "agent_and_pr")
+        return "agent_and_pr"
 
     def _bounce(self, wave: Wave, item_id: str, got: "propose_mod.Merged") -> None:
         """A rebase conflict sends the item back naming the files (GRPH-1389)."""
