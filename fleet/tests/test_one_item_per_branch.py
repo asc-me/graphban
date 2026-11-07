@@ -101,7 +101,7 @@ def forge(monkeypatch):
     opened: list[tuple[str, str, str, str]] = []
     monkeypatch.setattr(wt, "default_ref", lambda repo, remote: "origin/main")
 
-    def propose(repo, branch, base, *, title, body):
+    def propose(repo, branch, base, *, title, body, head="", items=()):
         opened.append((branch, base, title, body))
         return propose_mod.Proposed(branch=branch, url=f"https://x/pull/{len(opened)}", ok=True)
 
