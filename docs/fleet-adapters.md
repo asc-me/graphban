@@ -604,9 +604,25 @@ repository's own `.claude/skills/` (`graphban-work`, `graphban-review`, ...) sta
 operator's user-level and plugin skills go. Not `--disable-slash-commands` (drops the
 repo's skills too) and not `--bare` (drops OAuth subscription auth); auth is unaffected.
 
-Measured 2026-11-07, `claude --print` listing its skills, same machine, one run each:
-about 12s before, about 8s after (user-level skills gone, repo skills present). That is
-time to first response, not a full time-to-register.
+Measured 2026-11-07 on Claude Code 2.1.233, macOS, subscription (OAuth) login, from this
+repository's worktree. **Time-to-register** is from process start to the moment the child's
+`register_agent` call reaches the MCP server. The child was launched with the adapter's own
+argv shape (`--print --strict-mcp-config --mcp-config <seat> --dangerously-skip-permissions
+POINTER`, instruction on stdin, `ENABLE_TOOL_SEARCH=false`). Its `graphban` server was a
+local stub that logs the call time, so no ledger agent was created. Five runs per variant,
+interleaved before/after:
+
+| Variant | Time-to-register (s), 5 runs | Median |
+|---|---|---|
+| before (all setting sources) | 3.2, 4.6, 3.3, 10.8, 4.7 | 4.6 |
+| after (`--setting-sources project,local`) | 5.0, 2.2, 4.3, 4.1, 4.3 | 4.3 |
+
+The registration time barely changes. The spread between runs (2-11s) is larger than the
+difference between the variants, so the trim is not a startup fix. Registration-window
+failures come from model latency under load (GRPH-1400), which this does not touch. What
+the trim does change is context size. The first request of a trivial `--print` run was
+44,721 input tokens before and 36,219 after: about 8.5k tokens less, carried on every
+request of every child's session.
 
 ## Before the first run: `gbfleet doctor`
 

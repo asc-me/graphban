@@ -29,4 +29,3 @@ def test_subscription_auth_and_skills_not_disabled(tmp_path):
     argv = _argv(tmp_path)
     assert "--bare" not in argv
     assert "--disable-slash-commands" not in argv
-    assert argv[-1].startswith("Follow the instructions")
