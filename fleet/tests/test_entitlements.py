@@ -97,7 +97,10 @@ def home_in_worktree(tmp_path, monkeypatch):
     tree = tmp_path / "worktree"
     home.mkdir()
     tree.mkdir()
+    # Path.home() reads HOME on POSIX and USERPROFILE on Windows; set both so the
+    # default lands in this temp home on every runner, never the real one.
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv(ent.PATH_ENV, raising=False)
     monkeypatch.chdir(tree)
     return home, tree
@@ -105,8 +108,10 @@ def home_in_worktree(tmp_path, monkeypatch):
 
 def test_file_is_outside_the_worktree(home_in_worktree):
     home, tree = home_in_worktree
-    _run_every_command()
     stored = ent.default_path()
+    # Guard first: a default outside the temp home would write the real user's file.
+    assert stored.is_relative_to(home)
+    _run_every_command()
     assert stored.exists()
     assert stored.is_relative_to(home)
     assert not stored.resolve().is_relative_to(tree.resolve())
