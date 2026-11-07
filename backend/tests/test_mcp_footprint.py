@@ -211,7 +211,8 @@ CEILING = 17775
 # shorter file_finding and resolve_finding descriptions. Its shape ({must_contain,
 # must_not_contain, member?}) lives in docs/mcp.md and the validation hint, not the manifest.
 # CEILING does not move. Headroom 1.
-MEASURED_TOKENS = 17771
+# 17771 -> 17361 (GRPH-1368): accept_set_constraints, accept_prompt and accept_design are removed.
+MEASURED_TOKENS = 17361
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

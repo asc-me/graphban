@@ -28,7 +28,8 @@ def test_unaccepted_gated_section_files_blocked_and_others_normal(db, pid, world
     prd_svc.decompose(db, prd, create=True)
     items = _items(db, prd)
     assert items["Tokens"].status == "blocked"
-    assert "not accepted" in items["Tokens"].description and "`open`" in items["Tokens"].description
+    assert "not approved to build" in items["Tokens"].description
+    assert "`open`" in items["Tokens"].description
     assert "Eight point grid" not in items["Tokens"].description
     assert "Use the teal accent" in items["Tokens"].description
     assert items["Spacing"].status == "backlog" and "Design revision" not in items["Spacing"].description
@@ -55,3 +56,20 @@ def test_accepted_gate_cites_revision_and_goes_stale(db, pid, world, be):
     assert "Design stale" in items["Tokens"].description
     # the removed section is released
     assert items["Spacing"].status == "backlog", (items["Spacing"].blocker, ds_svc.get_design_set(db, pid, sid)["sections"])
+
+
+def test_an_aligned_set_on_a_baselined_prd_hands_off_with_no_accept(db, pid, world):
+    """GRPH-1368: nobody accepts the set; its constraints carry every PRD heading, and the
+    PRD is baselined, so the gated section files unblocked and pins the hashes."""
+    prd, sid = world
+    ds_svc.put_set_constraints(db, pid, sid, "Tokens: teal. Spacing: 8pt.", sections=["Tokens"])
+    row = db.get(DesignSet, sid)
+    row.constraints_accepted = False
+    db.commit()
+    ds_svc.compile_prompts(db, pid, sid)
+    assert ds_svc.get_design_set(db, pid, sid)["alignment"]["approved_to_build"] is True
+    prd_svc.decompose(db, prd, create=True)
+    tok = _items(db, prd)["Tokens"]
+    assert tok.status == "backlog", tok.blocker
+    assert db.get(DesignSet, sid).prd_hash in tok.description
+    assert "aligned to" in tok.description
