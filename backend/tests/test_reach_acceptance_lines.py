@@ -28,3 +28,14 @@ def test_framing_after_acceptance_section_still_fires():
 
 def test_credential_wording_in_acceptance_does_not_fire():
     assert reach_svc.signals(f"## Acceptance\n- {FRAMING}\n") == []
+
+
+def test_non_acceptance_heading_with_credential_wording_still_fires():
+    # A heading is framing: it sets the section, but it is still read (bounce on GRPH-1394).
+    rules = {s["rule"] for s in reach_svc.signals("## Rotate the production key today\nBody.\n")}
+    assert rules
+
+
+def test_heading_after_acceptance_with_credential_wording_fires():
+    text = f"## Acceptance\n- Works.\n\n## {FRAMING}\n"
+    assert reach_svc.signals(text)

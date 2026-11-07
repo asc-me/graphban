@@ -253,8 +253,9 @@ def signals(text: str | None) -> list[dict]:
             continue
         heading = _HEADING.match(stripped)
         if heading:
+            # A heading only moves the section boundary. A heading that opens Acceptance is
+            # skipped with its section; any other heading is framing and is scanned like prose.
             in_acceptance = heading.group(1).strip().lower().startswith("acceptance")
-            continue
         # Acceptance and sabotage lines describe tests by convention (GRPH-1394). Framing
         # prose outside them still counts.
         if in_acceptance or _SABOTAGE_LINE.match(stripped):
