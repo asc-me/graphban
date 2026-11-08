@@ -119,8 +119,10 @@ def test_a_linked_box_can_still_set_it(client, auth, proj, monkeypatch):
 # Captured from the base commit (362341cd) before this slice. A digest rather than a literal
 # so the pin is the whole schema — titles, defaults, nesting — not a field list that would
 # miss a changed type. If this fails, the gitops wire changed: that is not this slice's job.
-_GITOPS_PATCH_SHA = "5ad8d74436a2a088a22f2609c29bbecf546ba8cb16bd58ffe17fc8eef1cfd610"
-_GITOPS_VIEW_SHA = "1392fe0a668cfd2b10a8b952eff434dbe49692dbec71a1e4dfbfd16bc1653673"
+# Re-pinned deliberately by GRPH-1428, which adds `merge_method` to GitopsPatch and GitopsView;
+# `release_ref` is still absent from both (asserted above the digests).
+_GITOPS_PATCH_SHA = "1b4db3c8d5bb7770f2114b7205bbcc200d0f1bae30e0998fe75314ccccba23a0"
+_GITOPS_VIEW_SHA = "59af14a98dd448fa84538437eb6f1b33b65767a29c41c4a0e1c098c7ac04009b"
 
 
 def _digest(model) -> str:

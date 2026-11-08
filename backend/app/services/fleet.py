@@ -21,7 +21,6 @@ from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.orm import Session, object_session
 
 from app.models import Agent, AreaReservation, Enrolment, Item, Project
-from app.services import gitops as gitops_svc
 from app.services import harness as harness_svc
 from app.services import items as items_svc
 from app.services import keys as keys_svc
@@ -1092,8 +1091,6 @@ def fleet_status(db: Session, project_id: str | None = None, *,
         # it already makes. `{ref, source}`, never a bare null: `unmeasured` means no rule is
         # installed, and nothing here infers `main`.
         "release_ref": projects_svc.release_ref_view(db, project_id),
-        # GRPH-1428: which `gh pr merge` flag the supervisor passes. Unset is `squash`.
-        "merge_method": gitops_svc.merge_method_view(db, project_id),
     }
 
 

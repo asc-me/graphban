@@ -637,13 +637,15 @@ def release_ref(roster: dict | None) -> str:
 MERGE_METHODS = ("squash", "merge", "rebase")
 
 
-def merge_method(roster: dict | None) -> str:
-    """The `gitops.merge_method` from a `fleet_status` payload (GRPH-1428).
+def merge_method(ctx: dict | None) -> str:
+    """The `gitops.merge_method` from a `get_context` payload (GRPH-1428) — read where the
+    base branch is read, so a linked box gets the cloud's rule, not a stale local row.
 
     Anything unreadable — a server that predates the field, an unknown word — is `squash`,
     which is what the supervisor always did. It never picks a flag the project did not name."""
-    got = (roster or {}).get("merge_method") if isinstance(roster, dict) else None
-    method = str(got.get("method") or "").strip() if isinstance(got, dict) else ""
+    gitops = ctx.get("gitops") if isinstance(ctx, dict) else None
+    got = gitops.get("merge_method") if isinstance(gitops, dict) else None
+    method = str(got.get("value") or "").strip() if isinstance(got, dict) else ""
     return method if method in MERGE_METHODS else "squash"
 
 
@@ -1270,8 +1272,9 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
     checked.append("alembic-heads=1" if heads is not None else "alembic-heads=unchecked")
 
     # `--auto` is the honest verb for a supervisor: it says "merge when your requirements
-    # are met", and `gh` merges immediately when a PR is already CLEAN. Squash, so the trunk
-    # carries one commit per item and that commit is what the receipt names.
+    # are met", and `gh` merges immediately when a PR is already CLEAN. The flag is the
+    # project's `gitops.merge_method` (GRPH-1428), `--squash` when unset; whichever it is, the
+    # PR head being merged is the reviewed commit checked above.
     try:
         done = _gh(repo, "pr", "merge", selector,
                     f"--{method if method in MERGE_METHODS else 'squash'}", "--auto", timeout=120.0)

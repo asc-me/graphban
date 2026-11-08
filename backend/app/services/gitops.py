@@ -421,16 +421,6 @@ def for_agent(view: GitopsView) -> dict:
     return out
 
 
-def merge_method_view(db: Session, project_id: str | None) -> dict:
-    """`{method, source}` for the supervisor's `gh pr merge` flag. Unset reads as `squash`
-    (today's behaviour) with source `unmeasured`; an unreadable value never picks a flag."""
-    view = resolve(db, project_id)
-    value = view.merge_method.value
-    if value in MERGE_METHODS:
-        return {"method": value, "source": view.merge_method.source}
-    return {"method": DEFAULT_MERGE_METHOD, "source": "unmeasured"}
-
-
 def _has_glob(value: str) -> bool:
     return any(ch in value for ch in GLOB_METACHARS)
 

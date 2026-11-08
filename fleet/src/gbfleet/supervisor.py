@@ -3092,9 +3092,19 @@ class Merger:
         except (ToolFailed, ServerUnreachable) as exc:
             observe.emit("merge_unread", item="", detail=f"release ref: {exc}")
             return None
-        # GRPH-1428: the merge method rides the same read; unreadable stays `squash`.
-        self.merge_method = propose_mod.merge_method(roster if isinstance(roster, dict) else None)
+        self.merge_method = self._merge_method()
         return propose_mod.release_ref(roster if isinstance(roster, dict) else None)
+
+    def _merge_method(self) -> str:
+        """`gitops.merge_method` from `get_context`, read where `gitops.base_branch` is
+        (GRPH-1428). Unreadable is `squash` — what the supervisor always passed — and is
+        said so, rather than folded silently into "unset"."""
+        try:
+            ctx = self.client.call("get_context")
+        except Exception as exc:  # noqa: BLE001 - an unread method is `squash`, not fatal
+            observe.emit("merge_unread", item="", detail=f"merge method: {str(exc)[:80]}")
+            ctx = None
+        return propose_mod.merge_method(ctx if isinstance(ctx, dict) else None)
 
     def _attempt(self, wave: Wave, item_id: str,
                  release: str = "") -> "propose_mod.Merged | None":
