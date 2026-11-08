@@ -144,10 +144,19 @@ function FrameBody({ hosted }: { hosted: boolean }) {
   // ── One-time "Take the tour" toast (GRPH-1444, P67 G5/D6) ──
   // A user backfilled as finished never saw the tour. Offer it once; `tour_offered` is
   // stored in users.onboarding so it never repeats, whichever way the toast is closed.
+  // Only a user already finished on the FIRST onboarding load of this mount is offered it:
+  // a new user who finishes the quick start here (and maybe just started the tour from it)
+  // flips `finished` mid-session and must not get the toast on top.
   const [tourToast, setTourToast] = React.useState(false);
   const toastShown = React.useRef(false);
+  const finishedAtLoad = React.useRef<boolean | null>(null);
+  if (onboardingQ.data && finishedAtLoad.current === null) finishedAtLoad.current = finished;
   const offerTour =
-    !!onboardingQ.data && finished && !onboarding?.tour_completed_at && !onboarding?.tour_offered_at && hasProject;
+    !!onboardingQ.data &&
+    finishedAtLoad.current === true &&
+    !onboarding?.tour_completed_at &&
+    !onboarding?.tour_offered_at &&
+    hasProject;
   React.useEffect(() => {
     if (offerTour && !toastShown.current) {
       toastShown.current = true;

@@ -21,10 +21,21 @@ vi.mock("@/features/docs/DocsReader", () => ({ DocsReader: () => null }));
 vi.mock("@/features/tour/AppTour", () => ({
   AppTour: ({ open }: { open: boolean }) => (open ? <div data-testid="tour-open" /> : null),
 }));
-vi.mock("@/features/onboarding/QuickStartDialog", () => ({
-  QuickStartDialog: () => null,
-  useQuickStart: () => ({}),
-}));
+vi.mock("@/features/onboarding/QuickStartDialog", async () => {
+  const { useMarkOnboarding } = await vi.importActual<typeof import("@/lib/queries")>("@/lib/queries");
+  // Stand-in for the quick start's "Take the 2-minute tour": records quickstart_finished
+  // (which writes the result into the onboarding cache) and starts the tour.
+  function QuickStartDialog({ open, onTakeTour }: { open: boolean; onTakeTour?: () => void }) {
+    const mark = useMarkOnboarding();
+    if (!open) return null;
+    return (
+      <button type="button" onClick={async () => { await mark.mutateAsync("quickstart_finished"); onTakeTour?.(); }}>
+        qs-take-tour
+      </button>
+    );
+  }
+  return { QuickStartDialog, useQuickStart: () => ({}) };
+});
 vi.mock("@/lib/api", () => ({
   hasSession: () => true,
   api: {
@@ -65,6 +76,18 @@ describe("GRPH-1444 one-time tour toast", () => {
     expect(api.markOnboarding).toHaveBeenCalledWith("tour_offered");
     screen.getByRole("button", { name: "Take the tour" }).click();
     await screen.findByTestId("tour-open");
+  });
+
+  it("never shows for a new user who finishes the quick start this session", async () => {
+    vi.mocked(api.onboarding).mockResolvedValue({ onboarding: null });
+    vi.mocked(api.markOnboarding).mockResolvedValue({ onboarding: { quickstart_finished_at: "t" } });
+    mount();
+    (await screen.findByRole("button", { name: "qs-take-tour" })).click();
+    await screen.findByTestId("tour-open");
+    await waitFor(() => expect(api.markOnboarding).toHaveBeenCalledWith("quickstart_finished"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByTestId("tour-toast")).toBeNull();
+    expect(api.markOnboarding).not.toHaveBeenCalledWith("tour_offered");
   });
 
   it("never shows again once tour_offered is stored", async () => {
