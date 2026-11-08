@@ -5,7 +5,7 @@ import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Preferences } from "@/features/harness/Preferences";
 import { PlannerError, TableSkeleton } from "@/components/planner/PlannerStates";
 import { CapacityPanel } from "@/features/harness/CapacityPanel";
-import { Recommendations } from "@/features/harness/Recommendations";
+import { Recommendations, defaultVisibleCount } from "@/features/harness/Recommendations";
 import { GuidanceTab } from "@/features/harness/GuidanceTab";
 import { PerformanceGrid, leafCells } from "@/features/harness/PerformanceGrid";
 import { SurfaceReport } from "@/features/harness/Surface";
@@ -117,8 +117,8 @@ export function HarnessView() {
               </span>
             )}
             {t.id === "changes" && cards && (
-              <span className="ml-1.5 rounded-md border border-line-2 px-1 font-mono text-meta text-muted" data-testid="harness-tab-badge">
-                {cards.cards.length}
+              <span className="ml-1.5 rounded-md border border-line-2 px-1 font-mono text-meta text-muted" title={`${cards.cards.length} cards in total`} data-testid="harness-tab-badge">
+                {defaultVisibleCount(cards.cards)}
               </span>
             )}
           </button>

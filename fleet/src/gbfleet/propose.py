@@ -566,6 +566,18 @@ def red_commits(item: dict) -> set[str]:
 LOCAL_ENGINES = ("postgres", "sqlite")
 
 
+def _full_passing(e: object) -> bool:
+    return (isinstance(e, dict) and e.get("kind") == "test"
+            and str(e.get("scope") or "").lower() == "full"
+            and int(e.get("failed") or 0) == 0 and int(e.get("passed") or 0) > 0)
+
+
+def any_full_local_receipt(item: dict) -> bool:
+    """True when the item carries at least one passing `scope=full` `test` receipt, on any
+    engine — the cheap check before reading which engines the project needs (GRPH-1429)."""
+    return any(_full_passing(e) for e in item.get("evidence") or [])
+
+
 def full_local_receipts(item: dict, engines: tuple[str, ...] | list[str] | None = None) -> bool:
     """True when the item carries a passing `test` receipt with `scope=full` on EACH of
     `engines` (GRPH-1415; default Postgres and SQLite, else the project's `engines`, GRPH-1429).
@@ -573,11 +585,7 @@ def full_local_receipts(item: dict, engines: tuple[str, ...] | list[str] | None 
     need = tuple(e.lower() for e in engines) if engines else LOCAL_ENGINES
     seen: set[str] = set()
     for e in item.get("evidence") or []:
-        if not isinstance(e, dict) or e.get("kind") != "test":
-            continue
-        if str(e.get("scope") or "").lower() != "full":
-            continue
-        if int(e.get("failed") or 0) != 0 or int(e.get("passed") or 0) <= 0:
+        if not _full_passing(e):
             continue
         engine = str(e.get("engine") or "").lower()
         for name in need:

@@ -1819,13 +1819,14 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
         wave.declared_unread[child.branch] = "; ".join(unread)
     if declared:
         missing = tp_mod.undeclared(measured, declared)
-        generated = [f for f in missing if is_generated(f)]
+        allowed = generated_paths(client)
+        generated = [f for f in missing if is_generated(f, allowed)]
         if generated:
             # GRPH-1352: the repo's own generators rewrite these on any migration or test
             # change. They are mechanical, so they warn and do not block the proposal.
             observe.emit("generated_files_allowed", branch=child.branch,
                          detail=", ".join(generated))
-        missing = [f for f in missing if not is_generated(f)]
+        missing = [f for f in missing if not is_generated(f, allowed)]
         if missing:
             wave.undeclared[child.branch] = missing
             # A wait naming the files, so the planner can widen the touchpoints.
@@ -1850,8 +1851,53 @@ GENERATED_PREFIXES = (
 )
 
 
-def is_generated(path: str) -> bool:
-    return path in GENERATED_EXACT or path.startswith(GENERATED_PREFIXES)
+#: GRPH-1424: the project's `build.generated_files` rule, `paths` param.
+GENERATED_RULE = "build.generated_files"
+DEFAULT_GENERATED = tuple(sorted(GENERATED_EXACT)) + GENERATED_PREFIXES
+
+
+def generated_paths(client: Graphban | None) -> tuple[str, ...]:
+    """The paths the undeclared-file hold ignores: the project's resolved
+    `build.generated_files` rule. When it cannot be read — no client, the server does not
+    answer, or the pack does not carry the rule — today's list is used and that is logged."""
+    why = ""
+    allowed = getattr(client, "allowed", None)
+    if client is None:
+        why = "no server client"
+    elif allowed is not None and "get_rule_toggles" not in allowed:
+        why = "this client may not call get_rule_toggles"
+    else:
+        try:
+            got = client.call("get_rule_toggles")
+        except Exception as exc:  # noqa: BLE001 - any failed read falls back, and says so
+            got = None
+            why = f"get_rule_toggles failed: {exc}"
+        else:
+            for t in (got or {}).get("toggles") or []:
+                if t.get("rule_id") == GENERATED_RULE:
+                    params = t.get("params")
+                    params = params.get("value") if isinstance(params, dict) and "value" in params else params
+                    paths = (params or {}).get("paths") if isinstance(params, dict) else None
+                    if isinstance(paths, list) and all(isinstance(x, str) for x in paths):
+                        return tuple(paths)
+                    why = f"{GENERATED_RULE} has no readable `paths`"
+                    break
+            else:
+                why = f"{GENERATED_RULE} is not in the server's rule toggles"
+    observe.emit("generated_files_rule_unread", detail=f"{why}; using the built-in list")
+    return DEFAULT_GENERATED
+
+
+def is_generated(path: str, paths: tuple[str, ...] | list[str] | None = None) -> bool:
+    """Whether `path` matches an entry of `paths` (default: the built-in list). An entry is an
+    exact path, a prefix ending `/`, or a glob (`*`, `**`)."""
+    import fnmatch
+    for entry in (DEFAULT_GENERATED if paths is None else paths):
+        if path == entry or (entry.endswith("/") and path.startswith(entry)):
+            return True
+        if any(c in entry for c in "*?[") and fnmatch.fnmatchcase(path, entry):
+            return True
+    return False
 
 
 def latest_head(repo: Path, orphan, row: dict | None):
@@ -3072,8 +3118,7 @@ class Merger:
             paths=item.get("touchpoints") or [],
             release=release,
             scans=propose_mod.scans_clean_verdicts(item),
-            local_full=(self._test_scope() == "agent_full"
-                        and propose_mod.full_local_receipts(item, self._test_engines())),
+            local_full=self._local_full(item),
             red=propose_mod.red_commits(item),
             siblings=propose_mod.pr_receipts(item),
             # Lazy: only read when the PR has files outside this item's own touchpoints.
@@ -3086,38 +3131,38 @@ class Merger:
             self._bounce(wave, item_id, got)
         return got
 
-    def _test_engines(self) -> list[str]:
-        """The engines `agent_full` needs full local runs on (GRPH-1429): the rule's `engines`
-        param, else postgres and sqlite."""
-        try:
-            got = self.client.call("get_rule_toggles")
-        except (NotPermitted, ToolFailed, ServerUnreachable):
-            return list(propose_mod.LOCAL_ENGINES)
-        for t in (got or {}).get("toggles") or []:
-            if t.get("rule_id") == "build.test_scope":
-                params = t.get("params")
-                value = params.get("value") if isinstance(params, dict) else None
-                eng = value.get("engines") if isinstance(value, dict) else None
-                if (isinstance(eng, list) and eng
-                        and all(isinstance(e, str) and e.strip() for e in eng)):
-                    return [e.strip().lower() for e in eng]
-        return list(propose_mod.LOCAL_ENGINES)
+    def _local_full(self, item: dict) -> bool:
+        """Whether the builder's full local runs stand in for CI (GRPH-1415, GRPH-1429). The
+        receipt check runs first, so an item with no full passing local run never reads the
+        rule; otherwise ONE read of `build.test_scope` gives both the mode and the engines."""
+        if not propose_mod.any_full_local_receipt(item):
+            return False
+        mode, engines = self._test_scope_rule()
+        return mode == "agent_full" and propose_mod.full_local_receipts(item, engines)
 
-    def _test_scope(self) -> str:
-        """The project's `build.test_scope` mode (GRPH-1415). Anything unreadable — a client
-        not allowed the tool, a server that does not carry the rule — is `agent_and_pr`, the
-        stricter reading: a merge is never loosened by not knowing."""
+    def _test_scope_rule(self) -> tuple[str, list[str]]:
+        """The project's `build.test_scope` mode and `engines`, from one `get_rule_toggles`
+        call. Anything unreadable — a client not allowed the tool, a server that does not
+        carry the rule — is `agent_and_pr`, the stricter reading: a merge is never loosened by
+        not knowing. An unset or malformed `engines` is postgres and sqlite."""
+        default = list(propose_mod.LOCAL_ENGINES)
         try:
             got = self.client.call("get_rule_toggles")
         except (NotPermitted, ToolFailed, ServerUnreachable):
-            return "agent_and_pr"
+            return "agent_and_pr", default
         for t in (got or {}).get("toggles") or []:
-            if t.get("rule_id") == "build.test_scope":
-                params = t.get("params")
-                value = params.get("value") if isinstance(params, dict) else None
-                mode = (value or {}).get("mode") if isinstance(value, dict) else None
-                return str(mode or "agent_and_pr")
-        return "agent_and_pr"
+            if t.get("rule_id") != "build.test_scope":
+                continue
+            params = t.get("params")
+            value = params.get("value") if isinstance(params, dict) else None
+            value = value if isinstance(value, dict) else {}
+            mode = str(value.get("mode") or "agent_and_pr")
+            eng = value.get("engines")
+            if (isinstance(eng, list) and eng
+                    and all(isinstance(e, str) and e.strip() for e in eng)):
+                return mode, [e.strip().lower() for e in eng]
+            return mode, default
+        return "agent_and_pr", default
 
     def _bounce(self, wave: Wave, item_id: str, got: "propose_mod.Merged") -> None:
         """A rebase conflict sends the item back naming the files (GRPH-1389)."""
