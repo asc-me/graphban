@@ -266,20 +266,21 @@ def test_THE_CALL_a_held_test_glob_leaves_a_named_test_file_claimable_and_delega
     assert [i["stored_id"] for i in got["items"]] == [second.id]
 
 
-def test_an_exact_test_file_collision_still_blocks_and_names_both_areas(db, held_tests):
+def test_an_exact_hard_area_collision_still_blocks_and_names_both_areas(db, held_tests):
+    """On a HARD area (GRPH-1389): an ordinary file overlap is a soft lease and blocks nobody."""
     from app.services import delegation as dsvc
     from app.services import fleet as fleet_svc
 
     t = held_tests
-    t.hold(["backend/tests/test_b.py"])
-    second = t.want(["backend/tests/test_b.py"])
+    t.hold(["backend/alembic/versions/0190_b.py"])
+    second = t.want(["backend/alembic/versions/0190_b.py"])
     with pytest.raises(dsvc.DelegationRefused) as e:
         dsvc.refuse_bound_collision(db, agent=t.agents["planner"], item=second)
     assert "TG-A1" in str(e.value)
-    assert "backend/tests/test_b.py vs backend/tests/test_b.py" in str(e.value)
+    assert "backend/alembic/versions/0190_b.py vs backend/alembic/versions/0190_b.py" in str(e.value)
     got = fleet_svc.claim_cluster(db, agent_id=t.agents["other"].id, project_id=t.pid)
     assert not got["claimed"]
-    assert "backend/tests/test_b.py vs backend/tests/test_b.py" in got["reason"], got["reason"]
+    assert "backend/alembic/versions/0190_b.py vs backend/alembic/versions/0190_b.py" in got["reason"], got["reason"]
 
 
 def test_a_glob_refusal_names_the_holders_glob_and_the_file_it_covers(db, held_tests):
@@ -288,11 +289,11 @@ def test_a_glob_refusal_names_the_holders_glob_and_the_file_it_covers(db, held_t
     from app.services import fleet as fleet_svc
 
     t = held_tests
-    t.hold(["backend/tests/*"])
-    second = t.want(["backend/tests/conftest.py"])
+    t.hold(["backend/alembic/versions/*"])
+    second = t.want(["backend/alembic/versions/0190_b.py"])
     with pytest.raises(dsvc.DelegationRefused) as e:
         dsvc.refuse_bound_collision(db, agent=t.agents["planner"], item=second)
-    assert "reserved by TG-A1 (backend/tests/* vs backend/tests/conftest.py)" in str(e.value)
-    assert e.value.detail["areas"] == "backend/tests/* vs backend/tests/conftest.py"
+    assert "reserved by TG-A1 (backend/alembic/versions/* vs backend/alembic/versions/0190_b.py)" in str(e.value)
+    assert e.value.detail["areas"] == "backend/alembic/versions/* vs backend/alembic/versions/0190_b.py"
     got = fleet_svc.claim_cluster(db, agent_id=t.agents["other"].id, project_id=t.pid)
-    assert "backend/tests/* vs backend/tests/conftest.py" in got["reason"], got["reason"]
+    assert "backend/alembic/versions/* vs backend/alembic/versions/0190_b.py" in got["reason"], got["reason"]

@@ -18,4 +18,6 @@ Review is a second person. `claim_review` refuses the builder.
 5. `bounce(id, reason)` sends it to `next`. The author keeps the worktree for one lease, then the fleet can take it. The person who delegated the item may bounce it. They may not sign it off.
 6. When the item cites a PRD, call `prd_acceptance` with one `view`. Those views describe what happened. They do not report complete. `get_prd` for the whole body is an edit, not a review. Authoring is `graphban-prd`.
 
+Test scope follows the project's mode, which the delegation brief states. `agent_targeted`: read CI's `suite_green` for the head, rerun the targeted tests and do your own sabotage, without rerunning full suites. `agent_and_pr`: rerun the full suites per `AGENTS.md`'s operating loop. `agent_full`: rerun the full suites; receipts are the proof. In every mode, a full local run is still right when reproducing a CI failure.
+
 `release_item` on a review claim leaves the item in `review`. A bounce is `bounce`.

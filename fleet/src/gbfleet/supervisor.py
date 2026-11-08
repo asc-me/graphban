@@ -48,7 +48,7 @@ from .observe import NEVER_REGISTERED, ChildRecord
 from .seat import Seat, instruction_for
 from .spawn import (
     REGISTRATION_WINDOW, Child, Launch, LaunchFailed, Reason, VendorLimit,
-    await_registration, build_holdings,
+    await_registration, build_holdings, review_holdings,
     spawn, stop,
 )
 from .worktree import Reaped, Worktree
@@ -79,7 +79,9 @@ class Limits:
     #: How long a child gets to register before it is presumed broken (S2). A limit the
     #: supervisor enforces because it can measure it, same as the two above — and the
     #: only one of the three whose default is short enough to matter in a test.
-    registration_window: float = REGISTRATION_WINDOW
+    #: None means "the launch's own window, else REGISTRATION_WINDOW" (GRPH-1400); a
+    #: number set here (`--registration-window`) overrides every adapter's default.
+    registration_window: float | None = None
     #: How long a child may read `offline` on the roster before the backstop stops it
     #: (GRPH-452). NOT the presence TTL, and the difference is the whole point: `offline`
     #: means "no heartbeat within the TTL", which a revoked child and a BUSY one produce
@@ -194,6 +196,8 @@ class Partition:
     #: version did — can only ever report nothing.
     held: dict[str, list[str]] = field(default_factory=dict)
     held_at_cutoff: dict[str, list[str]] | None = None
+    #: Review claims per agent at the last read (GRPH-1413). Separate from `held`.
+    reviewing: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def offline(self) -> bool:
@@ -519,6 +523,10 @@ def _roster(client: Graphban, partition: Partition) -> dict | None:
         partition.held_at_cutoff = None
 
     partition.held = holdings
+    partition.reviewing = {
+        a["id"]: [h.get("id") for h in review_holdings(a) if h.get("id")]
+        for a in (payload.get("agents") or []) if a.get("id")
+    }
     return payload
 
 
@@ -527,6 +535,8 @@ def _remember_holdings(children: Sequence[Child], partition: Partition) -> None:
     for child in children:
         if not child.agent_id:
             continue
+        # Current, not remembered: a reviewer that finished its row has claimed nothing now.
+        child.review_items = list(partition.reviewing.get(child.agent_id) or [])
         items = [i for i in (partition.held.get(child.agent_id) or []) if i]
         if items:
             child.held_items = list(items)
@@ -1093,9 +1103,19 @@ def start_one(
     await_registration(
         child,
         lambda: _roster(client, partition) or {},
-        window=limits.registration_window,
+        window=registration_window(limits, launch),
     )
     return child
+
+
+def registration_window(limits: Limits, launch: Launch) -> float:
+    """The window this child gets to register: the run's explicit limit, else what its
+    adapter asked for on the launch, else `REGISTRATION_WINDOW` (GRPH-1400)."""
+    if limits.registration_window is not None:
+        return limits.registration_window
+    if launch.registration_window is not None:
+        return launch.registration_window
+    return REGISTRATION_WINDOW
 
 
 def _start(
@@ -1163,9 +1183,14 @@ def _start(
             # spawn used to cut a sibling from main and the builder rebuilt reviewed
             # work. Bound seats know the item; resume THAT branch, merged with the
             # wave base. Unbound seats still take salvage, then a fresh cut.
-            bounced = wt_mod.bounce_branch_of(
-                (items or {}).get(seat.item) if seat.item else None
-            )
+            row = (items or {}).get(seat.item) if seat.item else None
+            bounced = wt_mod.bounce_branch_of(row)
+            if not bounced:
+                # GRPH-1390: a committed or salvaged prior attempt is continued, never
+                # rebuilt from the base.
+                bounced = wt_mod.prior_branch_of(repo, row, base)
+                if bounced:
+                    observe.emit("continue_prior_branch", branch=bounced, item=seat.item)
             if bounced and bounced not in taken:
                 slot = bounced.rsplit("-", 1)[-1] or slot
                 agent_slot = f"{wave_name}-{slot}"
@@ -1419,7 +1444,8 @@ def watch_tick(
         persist()
 
 
-def _release_held_items(wave: Wave, child: Child, client: Graphban | None) -> None:
+def _release_held_items(wave: Wave, child: Child, client: Graphban | None,
+                        skip: set[str] = frozenset()) -> None:
     """Release items the child held so `choose_resume` can pick up the salvage branch (GRPH-850).
 
     A child that dies (wall_clock / reap / stop) leaves its items `in_progress` / `claimed_by`
@@ -1442,6 +1468,8 @@ def _release_held_items(wave: Wave, child: Child, client: Graphban | None) -> No
     if not agent_id:
         return
     for item_id in child.held_items:
+        if item_id in skip:
+            continue
         # GRPH-949: read the lease BEFORE releasing it. `held_items` is what the roster said
         # at registration; by reap the child may have handed the item to review, or the
         # lease lapsed and a sibling claimed it. Releasing someone else's lease is refused by
@@ -1463,6 +1491,45 @@ def _release_held_items(wave: Wave, child: Child, client: Graphban | None) -> No
                 wave.failures.append(f"{child.branch}: release_item {item_id} failed ({exc})")
         except (NotPermitted, ServerUnreachable) as exc:
             wave.failures.append(f"{child.branch}: release_item {item_id} failed ({exc})")
+
+
+def _exit_to_review(wave: Wave, child: Child, tree: Worktree,
+                    client: Graphban | None) -> set[str]:
+    """Move a finished child's items to review when its branch is committed and CI-green (GRPH-1391).
+
+    A child that ran out of wall clock rerunning the full suites exited with a complete build
+    and the item `in_progress`; releasing it sent the item back to `next` to be rebuilt. The
+    green CI run on the pushed head (it carries the Postgres shards) is the receipt instead.
+    Returns the items moved. Red, absent or stale CI, no commits, or no `update_item` leaves
+    the item to the release as before. Never fatal.
+    """
+    moved: set[str] = set()
+    if not client or not child.held_items or not child.agent_id:
+        return moved
+    if "update_item" not in client.allowed:
+        return moved
+    try:
+        repo = tree.repo
+        if not wt_mod.commits_beyond_base(repo, child.branch, child.base):
+            return moved
+        head = _branch_head(repo, child.branch)
+        if not propose_mod.ci_green(repo, child.branch, head):
+            return moved
+    except Exception as exc:  # noqa: BLE001 — unreadable CI is "not green", never fatal
+        _note_once(wave, f"{child.branch}: CI state unreadable ({exc})")
+        return moved
+    for item_id in child.held_items:
+        if _lease_holder(client, item_id) != child.agent_id:
+            continue
+        try:
+            client.call("update_item", id=item_id, status="review", agent_id=child.agent_id,
+                        evidence=[{"kind": "note", "detail":
+                                   f"gbfleet: child exited with {child.branch} committed, "
+                                   f"pushed and CI green at {head[:12]}; moved to review"}])
+            moved.add(item_id)
+        except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+            wave.failures.append(f"{child.branch}: move {item_id} to review failed ({exc})")
+    return moved
 
 
 def _lease_holder(client: Graphban, item_id: str) -> str | None:
@@ -1524,7 +1591,8 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
         # salvage branch. Without this, the row stays `in_progress` / `claimed_by=<dead>`
         # and a fresh spawn cuts from main, losing the work just salvaged. mcp/`up` pass
         # SPAWN_READS (includes release_item); until passes the planner client.
-        _release_held_items(wave, child, client)
+        _release_held_items(wave, child, client,
+                            skip=_exit_to_review(wave, child, tree, client))
         # Measured AFTER the salvage, deliberately, exactly as `_reap_all` does: measuring
         # first would miss the work that was most at risk of being lost.
         try:
@@ -2217,13 +2285,25 @@ def _publish_in_review(wave: Wave, children: Sequence[Child],
                 if not pushed.skipped:
                     _note_once(wave, f"{child.branch}: {pushed.reason}")
             continue
+        capped, owner, later = _first_item_tip(repo, child.branch, child.base, child)
         try:
-            pushed = wt_mod.push_branch(repo, child.branch, child.base)
+            if capped:
+                pushed = wt_mod.push_commit(repo, capped, child.branch)
+            else:
+                pushed = wt_mod.push_branch(repo, child.branch, child.base)
         except Exception as exc:  # noqa: BLE001 — a failed publish is reported, never fatal
             _note_once(wave, f"{child.branch}: publish on review failed ({exc})")
             wave.review_unreadable[child.branch] = list(items)
             continue
         wave.published[child.branch] = pushed
+        if capped:
+            _note_once(wave, _capped_line(child.branch, owner, capped, later))
+            if pushed.ok and owner not in items:
+                # GRPH-1407. What is in review is a LATER item, and its commits are not on
+                # this ref — that is the point. Saying "published" would hand its reviewer
+                # the first item's diff. Its own branch is cut and proposed at reap.
+                wave.review_unreadable[child.branch] = list(items)
+                continue
         if pushed.ok:
             wave.published_in_review[child.branch] = head
             wave.review_unreadable.pop(child.branch, None)
@@ -2240,6 +2320,32 @@ def _publish_in_review(wave: Wave, children: Sequence[Child],
             wave.review_unreadable[child.branch] = list(items)
             if not pushed.skipped:
                 _note_once(wave, f"{child.branch}: {pushed.reason}")
+
+
+def _first_item_tip(repo: Path, branch: str, base: str,
+                    child: Child) -> tuple[str, str, list[str]]:
+    """`(sha, owner, later)` when `branch` carries more than one item's commits (GRPH-1407).
+
+    `sha` is the last commit of the leading run that belongs to `owner`. The shared branch
+    is the first item's: its `branch` field names it and its reviewer reads it. Pushing the
+    tip would put the next item's commits under that name — the p59h reviewer bounced
+    GRPH-1359 for exactly that. `("", "", [])` when the branch is one item's, or the
+    history cannot be read, and the branch is pushed as it is.
+    """
+    if not base:
+        return "", "", []
+    try:
+        owner, last, later = wt_mod.first_item_run(repo, branch, base, _branch_items(child))
+    except Exception:  # noqa: BLE001 — unreadable history pushes as before
+        return "", "", []
+    if not (owner and last and later):
+        return "", "", []
+    return last, owner, later
+
+
+def _capped_line(branch: str, owner: str, sha: str, later: list[str]) -> str:
+    return (f"{branch}: carries commits for {owner} and {', '.join(later)}; pushed only "
+            f"{owner}'s ({sha[:12]}), the rest go on a branch per item at reap")
 
 
 def _note_once(wave: Wave, line: str) -> None:
@@ -2293,11 +2399,19 @@ def _publish(wave: Wave, tree: Worktree, *, client: Graphban | None = None,
         except wt_mod.GitError as exc:
             wave.failures.append(f"{tree.branch}: not pushed ({exc})")
             return ""
+    capped, owner, later = ("", "", [])
+    if not divert_reason and child is not None:
+        capped, owner, later = _first_item_tip(tree.repo, tree.branch, tree.base, child)
     try:
-        pushed = wt_mod.push_branch(tree.repo, target, tree.base)
+        if capped:
+            pushed = wt_mod.push_commit(tree.repo, capped, target)
+        else:
+            pushed = wt_mod.push_branch(tree.repo, target, tree.base)
     except Exception as exc:  # noqa: BLE001 — a failed publish is reported, never fatal
         wave.failures.append(f"{target}: publish failed ({exc})")
         return ""
+    if capped:
+        wave.failures.append(_capped_line(target, owner, capped, later))
     wave.published[target] = pushed
     if not pushed.ok and not pushed.skipped:
         wave.failures.append(f"{target}: {pushed.reason}")
@@ -2335,9 +2449,31 @@ def _propose(wave: Wave, tree: Worktree, *, client: Graphban | None,
     After the push and never instead of it. A PR for a branch that is not on the remote is a
     PR for nothing, and the push is the step that can actually fail.
     """
-    propose_branch(wave, tree.repo, tree.branch,
-                   [i for i in ((child.held_items if child else []) or []) if i],
+    propose_branch(wave, tree.repo, tree.branch, _proposal_items(tree, child),
                    client=client, base_override=base_override)
+
+
+def _proposal_items(tree: Worktree, child: Child | None) -> list[str]:
+    """The items this branch is proposed for: every one a commit on it names (GRPH-1407).
+
+    `held_items` alone is the roster's LAST reading. A bound worker that built A, moved A to
+    review and then built B on the same branch holds only B at reap, and the branch was
+    proposed as B's: one PR titled for B carrying A's files. Every item the child ever held
+    and a commit names goes in, so `propose_branch` splits the branch one PR per item. An
+    item it held and never committed for stays out — `split_by_item` would refuse the whole
+    branch for it. With fewer than two named, the old reading stands, and the single-item
+    gate in `propose_branch` refuses a branch carrying another item's commits.
+    """
+    held = [i for i in ((child.held_items if child else []) or []) if i]
+    if child is None or not tree.base:
+        return held
+    known = _branch_items(child)
+    named: list[str] = []
+    for _sha, ids in wt_mod.attributed_commits(tree.repo, tree.branch, tree.base, known):
+        named += [i for i in ids if i in known and i not in named]
+    if len(named) > 1:
+        return [i for i in known if i in named]
+    return held
 
 
 def _branch_head(repo: Path, branch: str) -> str:
@@ -2432,7 +2568,9 @@ def _refuse_proposal(wave: Wave, branch: str) -> str:
     missing = wave.undeclared.get(branch) or []
     if missing:
         shown = ", ".join(missing[:5]) + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else "")
-        reasons.append(f"changed file(s) outside every declared touchpoint: {shown}")
+        reasons.append(f"changed file(s) outside every declared touchpoint: {shown} "
+                       "(declare them with update_item(touchpoints=[...]) and a note; "
+                       "`gbfleet check-touchpoints` runs this gate before the child exits)")
     stale = wave.stale.get(branch)
     if stale and branch not in wave.behind_clean:
         block = wave.behind_block.get(branch)
@@ -2490,7 +2628,36 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
     if len(items) > 1:
         _propose_per_item(wave, repo, branch, items, base, client=client)
         return
+    mixed = _carries_another_item(repo, branch, base, items)
+    if mixed:
+        # GRPH-1407. Proposed under one item's title, this was PR #1388: titled for
+        # GRPH-1399 and carrying GRPH-1359's files, merged as one.
+        wave.proposed[branch] = propose_mod.Proposed(branch=branch, skipped=True, reason=mixed)
+        wave.unproposed[branch] = mixed
+        wave.failures.append(f"{branch}: not proposed — {mixed}")
+        _record_withheld(wave, client, items, branch, mixed)
+        return
     _open_pr(wave, repo, branch, items, base, subj, client=client)
+
+
+def _carries_another_item(repo: Path, branch: str, base: str, items: list[str]) -> str:
+    """Why a one-item proposal of `branch` would carry another item's work, or "".
+
+    Names the proposed item, the other item(s), and the commits attributed to them, so
+    whoever splits it by hand knows which commit goes where.
+    """
+    if len(items) != 1 or not base:
+        return ""
+    item = items[0]
+    foreign = wt_mod.foreign_commits(repo, branch, base, item)
+    if not foreign:
+        return ""
+    others: list[str] = []
+    for _sha, ids in foreign:
+        others += [i for i in ids if i not in others]
+    shas = ", ".join(sha[:12] for sha, _ in foreign)
+    return (f"proposed for {item} but carries commits for {', '.join(others)} ({shas}); "
+            f"one PR per item, so {item}'s commits go on a branch of their own")
 
 
 def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, subj: str, *,
@@ -2507,7 +2674,8 @@ def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, s
         # PR, not the supervisor's stdout, so a clean-but-behind branch that says so
         # only in the log is a branch whose staleness the reviewer never sees.
         body = body.rstrip() + "\n\n" + note + "\n"
-    got = propose_mod.propose(repo, branch, base, title=title, body=body)
+    got = propose_mod.propose(repo, branch, base, title=title, body=body,
+                              head=_branch_head(repo, branch) or "", items=items)
     wave.proposed[branch] = got
     if got.reason and not got.url:
         # Reported, never fatal: the work is committed and pushed by now, and a PR nobody
@@ -2904,11 +3072,67 @@ class Merger:
             paths=item.get("touchpoints") or [],
             release=release,
             scans=propose_mod.scans_clean_verdicts(item),
+            local_full=(propose_mod.full_local_receipts(item)
+                        and self._test_scope() == "agent_full"),
+            red=propose_mod.red_commits(item),
             siblings=propose_mod.pr_receipts(item),
+            # Lazy: only read when the PR has files outside this item's own touchpoints.
+            covering=lambda: self._covering(item_id, item),
         )
+        got = propose_mod.close_after_merge(self.repo, got)
         if got.ok and got.commit:
             got = self._record(wave, got)
+        if got.conflicts:
+            self._bounce(wave, item_id, got)
         return got
+
+    def _test_scope(self) -> str:
+        """The project's `build.test_scope` mode (GRPH-1415). Anything unreadable — a client
+        not allowed the tool, a server that does not carry the rule — is `agent_and_pr`, the
+        stricter reading: a merge is never loosened by not knowing."""
+        try:
+            got = self.client.call("get_rule_toggles")
+        except (NotPermitted, ToolFailed, ServerUnreachable):
+            return "agent_and_pr"
+        for t in (got or {}).get("toggles") or []:
+            if t.get("rule_id") == "build.test_scope":
+                params = t.get("params")
+                value = params.get("value") if isinstance(params, dict) else None
+                mode = (value or {}).get("mode") if isinstance(value, dict) else None
+                return str(mode or "agent_and_pr")
+        return "agent_and_pr"
+
+    def _bounce(self, wave: Wave, item_id: str, got: "propose_mod.Merged") -> None:
+        """A rebase conflict sends the item back naming the files (GRPH-1389)."""
+        try:
+            self.client.call("bounce", id=item_id, reason=got.reason)
+            self.watching.pop(item_id, None)
+        except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+            wave.failures.append(f"{item_id}: {got.reason} (could not bounce: {exc})")
+
+    def _covering(self, item_id: str, item: dict) -> list[str]:
+        """Touchpoints of the OTHER done items on this item's branch whose sign-off names the
+        same commit (GRPH-1408). Their files may ride in the PR; anyone else's may not."""
+        branch = str(item.get("branch") or "")
+        reviewed = propose_mod.reviewed_commit(item)
+        if not branch or not reviewed:
+            return []
+        try:
+            payload = self.client.call("search_items", status="done", fields="full",
+                                       limit=10_000)
+        except (NotPermitted, ToolFailed, ServerUnreachable):
+            return []
+        rows = payload.get("results") if isinstance(payload, dict) else None
+        out: list[str] = []
+        for row in rows or []:
+            if not isinstance(row, dict) or row.get("id") == item_id:
+                continue
+            if str(row.get("branch") or "") != branch:
+                continue
+            if not propose_mod.same_commit(propose_mod.reviewed_commit(row), reviewed):
+                continue
+            out.extend(str(p) for p in (row.get("touchpoints") or []))
+        return out
 
     def _record(self, wave: Wave, got: "propose_mod.Merged") -> "propose_mod.Merged":
         """The receipt. `commit` is on the row so `deps._commits` reads the merge commit as

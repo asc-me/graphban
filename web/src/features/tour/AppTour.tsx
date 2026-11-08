@@ -6,10 +6,13 @@ import { useProjectCtx } from "@/features/ProjectContext";
 import { openDocsReader } from "@/features/docs/DocsReader";
 import { useCounts } from "@/lib/queries";
 
+import { OrgPlug } from "./OrgPlug";
 import { TOUR_STOPS, type Spot, type TourStop, anchorHref, resolveStops, spotFor, visibleAnchor } from "./stops";
 
 const EASE = "cubic-bezier(.2,.8,.2,1)";
 const POP_W = 320;
+/** The closing org card is wider (design: 400). */
+const PLUG_W = 400;
 /** How long a stop waits for its anchor to show after navigating before it is skipped. */
 const ANCHOR_WAIT_MS = 1200;
 
@@ -78,6 +81,9 @@ function TourRun({
   const reduce = prefersReducedMotion();
   const stop = stops[i] as TourStop | undefined;
   const last = i === stops.length - 1;
+  // The org plug is the end of the tour, not a numbered stop (design: "7 STOPS + ORG PLUG").
+  const numbered = stops.filter((s) => !s.plug).length;
+  const popW = stop?.plug ? PLUG_W : POP_W;
 
   // Back where the keyboard was when the tour ends.
   React.useEffect(() => {
@@ -95,7 +101,7 @@ function TourRun({
 
   // Follow the anchor's link to the stop's view; a stop without one (the Agent toggle) stays.
   React.useEffect(() => {
-    if (!stop) return;
+    if (!stop || stop.plug) return;
     const href = anchorHref(stop.id);
     if (href && href !== pathname + search && href !== pathname) navigate(href);
     // Navigation is per stop, not per location change.
@@ -156,7 +162,11 @@ function TourRun({
 
   // The keyboard lands on Next at every stop.
   React.useEffect(() => {
-    if (spot) nextRef.current?.focus({ preventScroll: true });
+    if (spot) {
+      (nextRef.current ?? popRef.current?.querySelector<HTMLElement>("button:not([disabled])"))?.focus({
+        preventScroll: true,
+      });
+    }
     // Only when the stop changes or first shows, not on every re-measure.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stop?.id, !!spot]);
@@ -207,13 +217,13 @@ function TourRun({
   const vh = window.innerHeight || 900;
   const sp = spot ?? { top: 0, left: 0, width: 0, height: 0 };
   const ph = popH || 220;
-  const below = sp.left + sp.width + 14 + POP_W > vw - 12;
+  const below = sp.left + sp.width + 14 + popW > vw - 12;
   let pop: { top: number; left: number };
   let arrow: { top: number; left: number; rot: string };
   if (below) {
-    const left = Math.max(12, sp.left + sp.width - POP_W);
+    const left = Math.max(12, sp.left + sp.width - popW);
     pop = { top: sp.top + sp.height + 12, left };
-    arrow = { top: -7, left: Math.min(POP_W - 24, sp.left + sp.width / 2 - left - 6), rot: "rotate(135deg)" };
+    arrow = { top: -7, left: Math.min(popW - 24, sp.left + sp.width / 2 - left - 6), rot: "rotate(135deg)" };
   } else {
     const top = Math.max(12, Math.min(sp.top + sp.height / 2 - 48, vh - ph - 12));
     pop = { top, left: sp.left + sp.width + 14 };
@@ -223,7 +233,7 @@ function TourRun({
   const popT = reduce ? "none" : `top 280ms ${EASE}, left 280ms ${EASE}`;
   const emptyCount = stop.empty && counts ? counts[stop.empty.count] : undefined;
   const isEmpty = typeof emptyCount === "number" && emptyCount === 0;
-  const pos = `${i + 1} / ${stops.length}`;
+  const pos = stop.plug ? "END OF TOUR" : `${i + 1} / ${numbered}`;
 
   return createPortal(
     <div data-tour-root="">
@@ -253,7 +263,7 @@ function TourRun({
         onKeyDown={trapTab}
         hidden={!spot}
         className="fixed z-[72] flex flex-col gap-2.5 rounded-[12px] border border-line bg-surface-3 px-4 pb-3 pt-3.5 shadow-[0_12px_32px_rgba(0,0,0,.45),0_2px_6px_rgba(0,0,0,.3)]"
-        style={{ top: pop.top, left: pop.left, width: POP_W, transition: popT }}
+        style={{ top: pop.top, left: pop.left, width: popW, transition: popT }}
       >
         <span
           aria-hidden="true"
@@ -261,16 +271,29 @@ function TourRun({
           style={{ top: arrow.top, left: arrow.left, transform: arrow.rot }}
         />
         <span className="font-mono text-[10px] tracking-[.7px] text-faint" data-tour-pos>
-          <span className="sr-only">Stop </span>
+          {!stop.plug && <span className="sr-only">Stop </span>}
           {pos}
         </span>
         <h2 id="tour-title" className="text-[15px] font-semibold">
           {stop.title}
         </h2>
-        <div id="tour-body" className="flex flex-col gap-1.5">
-          <p className="text-[13px] leading-normal text-fg-2 [text-wrap:pretty]">{stop.body}</p>
-          {isEmpty && <p className="text-body text-muted" data-tour-empty>{stop.empty!.text}</p>}
-        </div>
+        {stop.plug ? (
+          <div id="tour-body">
+            <OrgPlug
+              onNotNow={() => onComplete(skipped)}
+              onNavigate={(to) => {
+                onComplete(skipped);
+                navigate(to);
+              }}
+            />
+          </div>
+        ) : (
+          <div id="tour-body" className="flex flex-col gap-1.5">
+            <p className="text-[13px] leading-normal text-fg-2 [text-wrap:pretty]">{stop.body}</p>
+            {isEmpty && <p className="text-body text-muted" data-tour-empty>{stop.empty!.text}</p>}
+          </div>
+        )}
+        {!stop.plug && (
         <button
           type="button"
           onClick={readMore}
@@ -278,9 +301,11 @@ function TourRun({
         >
           Read more →
         </button>
+        )}
         <div className="mt-0.5 flex items-center gap-2">
           <span className="font-mono text-[10.5px] text-faint">Esc to exit</span>
           <span className="flex-1" />
+          {stop.plug ? null : (<>
           <button
             type="button"
             onClick={() => go(i - 1)}
@@ -297,6 +322,7 @@ function TourRun({
           >
             {last ? "Finish" : "Next"}
           </button>
+          </>)}
         </div>
       </div>
       {/* Each stop is announced, not only the first: focus stays inside one dialog. */}

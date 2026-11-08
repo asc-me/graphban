@@ -408,7 +408,8 @@ def test_the_attestation_step_is_not_unconditional():
     above and attest failing runs — which is the defect GRPH-551 was written against."""
     steps = _gate_steps()
     attest = next(s for s in steps
-                  if "attest_ci.py" in (s.get("run") or "") and "--mode head" not in s["run"])
+                  if "attest_ci.py" in (s.get("run") or "") and "--mode head" not in s["run"]
+                  and "--mode failed" not in s["run"])
 
     assert "if" not in attest, (
         "the attestation step is conditional; it must inherit the default, which is 'only "
@@ -596,3 +597,35 @@ def test_the_fields_are_stripped(client, gate_key, an_item):
 
     assert row["branch"] == "gb/grph-992"
     assert row["matched"] == "prose"
+
+
+# ---- the range a run covered (GRPH-1411) -----------------------------------------------
+
+def test_a_pr_run_receipt_carries_its_range_and_a_push_run_an_empty_one(monkeypatch):
+    class Done:
+        stdout = "b" * 40 + "\n" + "c" * 40 + "\n"
+
+    monkeypatch.setattr(attest_ci.subprocess, "run", lambda *a, **k: Done())
+    pr = attest_ci.attestation(commit="c" * 40, branch="x",
+                               commits=attest_ci.covered_commits("a" * 40, "c" * 40))
+    push = attest_ci.attestation(commit="c" * 40, branch="main",
+                                 commits=attest_ci.covered_commits("", "c" * 40))
+
+    assert pr["range"] == ["b" * 40, "c" * 40]
+    assert push["range"] == []
+
+
+def test_the_range_survives_normalization():
+    from app.services import items as items_svc
+
+    stored = items_svc.normalize_evidence(
+        [attest_ci.attestation(commit="c" * 40, branch="x", commits=["b" * 40, "zz"])])
+    assert stored[0]["range"] == ["b" * 40]
+
+
+def test_a_failed_runs_receipt_carries_its_range_too():
+    """A red PR run must be findable from a commit it carried, or it could not block it."""
+    rec = attest_ci.failed_attestation(commit="c" * 40, branch="x", jobs=["backend"], tests=[],
+                                       commits=["b" * 40, "c" * 40])
+    assert rec["range"] == ["b" * 40, "c" * 40]
+    assert rec["predicates"][0]["passed"] is False

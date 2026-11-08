@@ -23,6 +23,7 @@ Configuration is via environment variables. In Docker, set them in `.env` (copy 
 | `BCRYPT_ROUNDS` | `12` | bcrypt work factor for new password hashes, 4–31. Leave it at 12; a stored hash keeps its own cost, so this only affects hashes written after a change. The test suite runs at 4 |
 | `SIGNUP_MODE` | `open` | `open` or `invite_only`. **`open` means anyone who can reach the instance can create an account** — the hosted deployment runs `invite_only` |
 | `PLATFORM_ADMIN_EMAILS` | *(empty)* | Comma-separated. Who reaches the operator plane. Empty means nobody, which is the safe default and not an oversight |
+| `ORG_REQUEST_TO` | *(empty)* | Comma-separated. Where a self-host user's "Request an org" is emailed (GRPH-1364). Empty falls back to `PLATFORM_ADMIN_EMAILS`; with neither set the request is refused (503) and no date is stored |
 | `SECRET_ENCRYPTION_KEY` | *(empty)* | At-rest encryption for stored provider keys. **Empty means BYOK credentials are stored unencrypted**; set it before anyone saves one |
 | `GITHUB_WEBHOOK_SECRET` | *(empty)* | Verifies webhook signatures. Empty means an unsigned payload is accepted, so set it wherever the webhook is reachable |
 | `RULE_PACK_FEED_URL` | `https://api.github.com/repos/asc-me/graphban-rules-releases/releases` | The GitHub-releases-shaped JSON feed `GET /api/rules/pack/available` reads newer rule packs from (releases tagged `pack-v<version>`). Point it at a mirror to self-host; a failing feed reports `unknown`, never `current` |
@@ -35,6 +36,8 @@ Configuration is via environment variables. In Docker, set them in `.env` (copy 
 | `LOGIN_RATE_PER_MIN` | `10` | Per-IP and per-email login attempts |
 | `ORG_RATE_PER_MIN` | `300` | Per-org API calls |
 | `INVITE_EXPIRY_DAYS` | `14` | How long an unaccepted invite stays usable |
+
+Step ① of the quick start reads `JWT_SECRET`, `SIGNUP_MODE`, `SECRET_ENCRYPTION_KEY` and `APP_BASE_URL` through `GET /api/setup/instance` (booleans only, instance admins only) and shows a copyable env line for each that looks unsafe. These are warnings; nothing is blocked.
 
 ## Email (SMTP)
 

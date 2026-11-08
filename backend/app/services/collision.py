@@ -337,9 +337,15 @@ def _with_reservations(db: Session, clusters: list[dict], project_id: str | None
         areas = list(cluster.get("areas") or [])
         holders, soonest = set(), None
         blocking: list[dict] = []
+        sharing: list[dict] = []
         for row in taken:
-            overlap = fleet_svc.areas_collide(areas, [row.area])
+            overlap = fleet_svc.hard_collide(areas, [row.area])
             if not overlap:
+                # A SOFT overlap (GRPH-1389): claimable, but said, so a drain can report that
+                # it spawned alongside another lease instead of looking like it never saw it.
+                soft = fleet_svc.areas_collide(areas, [row.area])
+                if soft and len(sharing) < 3:
+                    sharing.append({"area": soft[0], "reserved": row.area, "by": row.agent_id})
                 continue
             holders.add(row.agent_id)
             if len(blocking) < 3:
@@ -363,6 +369,8 @@ def _with_reservations(db: Session, clusters: list[dict], project_id: str | None
             cluster["free_in"] = (max(0, int((soonest - now).total_seconds()))
                                   if soonest is not None else None)
             cluster["held_because"] = list(cluster.get("held_because") or []) + blocking
+        elif sharing:
+            cluster["soft_overlap"] = sharing
     return clusters
 
 

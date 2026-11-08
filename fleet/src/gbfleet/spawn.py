@@ -167,6 +167,17 @@ def build_holdings(agent: dict) -> list[dict]:
             if (h or {}).get("hold", "build") != "review"]
 
 
+def review_holdings(agent: dict) -> list[dict]:
+    """The agent's REVIEW claims only — the complement of `build_holdings` (GRPH-1413).
+
+    A review-only seat never holds a build lease, so its `held_items` stays empty for its
+    whole life. Whether a reviewer has claimed is read from here instead. Kept apart from
+    `held_items` because salvage and release act on that list.
+    """
+    return [h for h in (agent.get("holdings") or [])
+            if (h or {}).get("hold", "build") == "review"]
+
+
 @dataclass(frozen=True)
 class Launch:
     """Everything one adapter needs to start one child. GRPH-449 builds these."""
@@ -199,6 +210,12 @@ class Launch:
     #: launch on one stored entitlement must not hand the child another record's API-key
     #: variable (GRPH-P72, "The launch selects the handle").
     env_unset: tuple[str, ...] = ()
+    #: Seconds this vendor's child gets to register, or None for `REGISTRATION_WINDOW`.
+    #: Per launch because startup cost is per vendor (GRPH-1400): a claude child measured
+    #: 67s to `register_agent` on a loaded machine, and the 90s default SIGKILLed the slow
+    #: tail of healthy children with empty logs. An explicit `Limits.registration_window`
+    #: still wins over this.
+    registration_window: float | None = None
     #: Where this vendor was told to write a debug log, or None when it has no flag for
     #: one. `None` is a real answer and the supervisor reports it: `cursor-agent` and
     #: `gbagent` have no debug flag at all, and an operator who asked for `--debug` and
@@ -265,6 +282,9 @@ class Child:
     #: `_roster` is overwritten after `release_item`, so reap must not read live
     #: holdings — those are empty and the salvage subject would have no item keys.
     held_items: list = field(default_factory=list)
+    #: Items this child has CLAIMED FOR REVIEW, as the roster last read them (GRPH-1413).
+    #: Not in `held_items`: a reviewer's claim is not a lease to salvage or release.
+    review_items: list = field(default_factory=list)
     #: Every item the roster has EVER read this child holding, in first-seen order (GRPH-1079).
     #: `held_items` is only the latest reading, so a bound child that hands its item to
     #: review and claims another has dropped the first one from it — and the first one is
@@ -574,6 +594,7 @@ def await_registration(
         if held:
             child.held_items = held
             child.ever_held += [i for i in held if i not in child.ever_held]
+        child.review_items = [h.get("id") for h in review_holdings(agent) if h.get("id")]
         return agent
 
     while True:

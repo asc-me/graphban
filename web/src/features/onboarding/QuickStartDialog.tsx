@@ -20,10 +20,12 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { ConnectStep, ROUTE_LABEL, type Route } from "@/features/onboarding/ConnectStep";
+import { StartupPromptRows } from "@/features/onboarding/StartupPrompts";
 import { TagField, useTagField } from "@/features/onboarding/TagField";
+import { postureView, type PostureWarning } from "@/features/onboarding/posture";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { keys, useConfirmSetup, useCredentials, useProjectSetup } from "@/lib/queries";
+import { keys, useConfirmSetup, useCredentials, useInstancePosture, useOrgs, useProjectSetup } from "@/lib/queries";
 import type { Credential, SetupStatus } from "@/lib/types";
 
 import {
@@ -100,6 +102,10 @@ export function QuickStartDialog({
   onTakeTour?: () => void;
 }) {
   const { active, projects } = useProjectCtx();
+  // An invitee joined someone else's org (GRPH-1364): their Finish offers the link setup card
+  // and the start-up prompts. The owner of the org, and every self-host user, get the plain one.
+  const orgsQ = useOrgs(hosted);
+  const invitee = hosted && (orgsQ.data ?? []).some((o) => o.role !== "owner");
   const [createdId, setCreatedId] = React.useState("");
   const projectId = active?.id ?? createdId;
   const project = projects.find((p) => p.id === projectId) ?? active;
@@ -166,6 +172,8 @@ export function QuickStartDialog({
               projectTag={project?.tag ?? ""}
               confirmed={qs.marks.project.status === "done"}
               pendingWhere={pendingWhere}
+              where={pendingWhere?.where ?? storedWhere(qs.setup?.steps.find((s) => s.step === 0))}
+              repoUrl={project?.repo_url ?? ""}
               onCreated={(id) => {
                 setCreatedId(id);
                 setPendingWhere(null);
@@ -227,6 +235,7 @@ export function QuickStartDialog({
               route={route}
               onFinish={onFinish}
               onTakeTour={onTakeTour}
+              invitee={invitee}
             />
           )}
         </div>
@@ -614,6 +623,8 @@ function ProjectStep({
   projectTag,
   confirmed,
   pendingWhere,
+  where,
+  repoUrl,
   onCreated,
   onDone,
   onBack,
@@ -625,6 +636,8 @@ function ProjectStep({
   projectTag: string;
   confirmed: boolean;
   pendingWhere: { where: Where; address: string } | null;
+  where: Where | null;
+  repoUrl: string;
   onCreated: (id: string) => void;
   onDone: () => void;
   onBack: () => void;
@@ -637,6 +650,10 @@ function ProjectStep({
   const [name, setName] = React.useState("");
   const [accent, setAccent] = React.useState(ACCENTS[0]);
   const [ticked, setTicked] = React.useState(confirmed);
+  const [repo, setRepo] = React.useState(repoUrl);
+  const posture = useInstancePosture();
+  // An unreadable posture (403, offline) is hidden, never drawn as "all clear".
+  const view = postureView(posture.isSuccess ? posture.data : null, where);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const tagField = useTagField(name);
@@ -671,6 +688,10 @@ function ProjectStep({
           projectId: id,
           body: { decision: "server", where: pendingWhere.where, address: pendingWhere.address },
         });
+      }
+      if (repo.trim() !== repoUrl.trim()) {
+        await api.updateProject(id, { repo_url: repo.trim() });
+        await qc.invalidateQueries({ queryKey: keys.projects });
       }
       if (creating) await qc.invalidateQueries({ queryKey: keys.projects });
       onDone();
@@ -730,8 +751,52 @@ function ProjectStep({
         </label>
       </div>
       <ErrorLine text={error} />
+      {view && (view.main.length > 0 || view.collapsed) && (
+        <div role="status" className="mt-4 rounded-[10px] border border-line-2 p-3 text-[12px]">
+          <p className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">Is this box safe to expose?</p>
+          {view.collapsed ? (
+            <p className="text-muted">{view.collapsed} Details are under Advanced.</p>
+          ) : (
+            <ul className="space-y-2">
+              {view.main.map((w) => (
+                <li key={w.id}>
+                  <p className="text-muted">{w.text}</p>
+                  <CopyLine text={w.env} label={`Copy ${w.id} fix`} />
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-1.5 text-faint">Warnings only; nothing here blocks you.</p>
+        </div>
+      )}
 
       <Advanced>
+        <div>
+          <label htmlFor="qs-repo" className="mb-1.5 block font-mono text-[10px] uppercase tracking-wide text-faint">
+            Repository
+          </label>
+          <Input
+            id="qs-repo"
+            value={repo}
+            onChange={(e) => setRepo(e.target.value)}
+            placeholder="https://github.com/acme/app"
+            aria-describedby="qs-repo-why"
+          />
+          <p id="qs-repo-why" className="mt-1 text-[11.5px] text-faint">
+            <code>gban setup</code> uses this to find the project from a checkout's git remote.
+          </p>
+        </div>
+        {view?.collapsed && view.advanced.map((w: PostureWarning) => (
+          <div key={w.id}>
+            <p>{w.text}</p>
+            <CopyLine text={w.env} label={`Copy ${w.id} fix`} />
+          </div>
+        ))}
+        {view?.proxyHint && (
+          <Hint lead="Behind a proxy or HTTPS?">
+            Set <code>TRUSTED_HOPS</code> to the number of proxies in front of this box, and serve it over HTTPS.
+          </Hint>
+        )}
         {creating && (
           <>
             <TagField tag={tagField.tag} setTag={tagField.setTag} status={tagField.status} />
@@ -1040,19 +1105,22 @@ function FirstJobStep({
 
 // ── Finish ─────────────────────────────────────────────────────────────────────────────
 
-function FinishScreen({
+export function FinishScreen({
   steps,
   marks,
   route,
   onFinish,
   onTakeTour,
+  invitee = false,
 }: {
   steps: QsStep[];
   marks: Record<QsStep, StepMark>;
   route: Route;
   onFinish: () => Promise<void>;
   onTakeTour?: () => void;
+  invitee?: boolean;
 }) {
+  const [promptsOpen, setPromptsOpen] = React.useState(false);
   const open = steps.filter((s) => marks[s].status !== "done");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
@@ -1108,9 +1176,33 @@ function FinishScreen({
       {marks.connect?.status === "done" && marks.connect.evidence && (
         <p className="mt-2 text-[12px] text-muted">Agent connection: {marks.connect.evidence}</p>
       )}
+      {invitee && <LinkSetupCard />}
+      {invitee && promptsOpen && (
+        <div className="mt-3">
+          <StartupPromptRows />
+        </div>
+      )}
       <ErrorLine text={error} />
       <div className="mt-5 flex items-center justify-end gap-2 border-t border-line pt-4">
-        {onTakeTour ? (
+        {invitee ? (
+          <>
+            <Button variant="ghost" size="sm" type="button" disabled={busy} onClick={() => finish()}>
+              Done
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              aria-expanded={promptsOpen}
+              onClick={() => setPromptsOpen((v) => !v)}
+            >
+              Start-up prompts
+            </Button>
+            <Button variant="outline" size="sm" type="button" disabled={busy || !onTakeTour} onClick={() => finish(onTakeTour)}>
+              Take the tour
+            </Button>
+          </>
+        ) : onTakeTour ? (
           <>
             <Button variant="outline" size="sm" type="button" disabled={busy} onClick={() => finish()}>
               Skip for now
@@ -1126,5 +1218,27 @@ function FinishScreen({
         )}
       </div>
     </section>
+  );
+}
+
+/**
+ * The invitee's optional link setup (GRPH-1364): collapsed, and nothing here is required. It
+ * only builds the `graphban link` command from the org-issued key — the key is never sent
+ * anywhere by this card, and no prefix is assumed (`graphban link` decides what it accepts).
+ */
+function LinkSetupCard() {
+  const [key, setKey] = React.useState("");
+  const cmd = `graphban link --cloud-url ${window.location.origin} --api-key ${key.trim() || "<link key>"}`;
+  return (
+    <details className="mt-4 rounded-[10px] border border-line bg-surface-2 px-3 py-2" data-link-setup>
+      <summary className="cursor-pointer text-body font-medium">Link a self-host deployment (optional)</summary>
+      <div className="mt-2 flex flex-col gap-2">
+        <label className="flex flex-col gap-1 text-small text-muted">
+          Link key from your org
+          <Input value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" spellCheck={false} />
+        </label>
+        <CopyLine text={cmd} label="Copy the link command" />
+      </div>
+    </details>
   );
 }

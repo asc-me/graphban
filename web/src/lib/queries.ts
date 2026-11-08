@@ -88,6 +88,15 @@ export function useCompleteTour() {
   });
 }
 
+/** Request an org (GRPH-1364). Rejects, storing nothing, when the relay could not deliver. */
+export function useRequestOrg() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; email: string; note?: string }) => api.requestOrg(body),
+    onSuccess: (res) => qc.setQueryData(keys.onboarding, res),
+  });
+}
+
 /**
  * The setup checklist for one project. `pollMs` keeps it live while the dialog is watching
  * counters tick (step ④); a failed read is surfaced as an error, never as a pending list.
@@ -99,6 +108,11 @@ export function useProjectSetup(projectId: string, pollMs?: number) {
     enabled: !!projectId,
     refetchInterval: pollMs || false,
   });
+}
+
+/** Step ①'s safety check. Retries off: a 403 is an answer, and the check simply hides. */
+export function useInstancePosture(enabled = true) {
+  return useQuery({ queryKey: ["setup-instance"], queryFn: () => api.instancePosture(), enabled, retry: false });
 }
 
 export function useConfirmSetup() {

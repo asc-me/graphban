@@ -1,5 +1,5 @@
 {
-  "api_version": "1.5.0",
+  "api_version": "1.6.0",
   "primitives": [
     {
       "id": "evidence_attached",
@@ -74,6 +74,17 @@
       "id": "staffing_scope",
       "level": "checked",
       "params": []
+    },
+    {
+      "id": "test_scope",
+      "level": "checked",
+      "params": [
+        {
+          "name": "mode",
+          "required": false,
+          "type": "str"
+        }
+      ]
     }
   ]
 }
