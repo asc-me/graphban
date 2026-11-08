@@ -30,6 +30,26 @@ The supervisor reads the resolved list in place of its fixed pair, and the brief
 line names the engines under `agent_full`. A value that is not a non-empty list of strings is
 refused (422). The rule-pack template must carry `engines` in its default params.
 
+## `build.undeclared_files` — undeclared files hold the PR or only warn (GRPH-1425)
+
+A per-project library rule (stage Build, level `checked`) with one param, `mode`. A project that
+never set it reads `hold`, so nothing changes on upgrade.
+
+| `mode` | A branch with a file outside every declared touchpoint |
+| --- | --- |
+| `hold` (default) | is held back from a PR; a wait names the files until the touchpoints are widened |
+| `warn` | gets its PR; the files are recorded as a wait and as a note on each item |
+
+The API refuses any other value (422). This rule moves only *when* undeclared files are caught.
+The merge-time check is unchanged and applies in both modes: every changed file must sit inside
+a touchpoint of an item signed off at that commit (`propose.merge` `covering`, GRPH-1408).
+
+The supervisor reads the mode through `get_rule_toggles`; anything unreadable is `hold`. The
+note is the `undeclared_warned` kind on `POST /api/fleet/observations`. The rule reaches a box
+through the signed rule-pack feed (primitive `undeclared_files`, template `build.undeclared_files`,
+stage Build, default `on`, `mode = "hold"`); the feed lives outside this repo and needs that
+template added.
+
 ## `plan.exclusive_areas` — which file areas are exclusive (GRPH-1423)
 
 A per-project library rule with one param, `paths`, a list of globs. A lease over a path in the

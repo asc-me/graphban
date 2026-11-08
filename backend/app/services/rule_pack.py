@@ -134,6 +134,12 @@ register_primitive(Primitive(
     "test_scope", "checked",
     Enforcer("doc", "docs/rules.md"),
     {"mode": Param("str")}))
+# GRPH-1425. `checked`: the supervisor reads `mode` (`hold` | `warn`) when it decides whether to
+# open a PR; the merge-time `covering` check refuses an uncovered file in either mode.
+register_primitive(Primitive(
+    "undeclared_files", "checked",
+    Enforcer("supervisor", "gbfleet until"),
+    {"mode": Param("str")}))
 # GRPH-1423. `enforced`: `fleet.hard_collide` refuses a second drain over a path in `paths`.
 # `paths` is a list of strings, checked when a person sets it (`rule_toggles._check_params`).
 register_primitive(Primitive(
