@@ -47,6 +47,8 @@ const srv = vi.hoisted(() => ({
   // GET /setup/instance: null = 403 (not an admin).
   posture: null as Record<string, boolean> | null,
   repoPatches: [] as unknown[],
+  minted: [] as string[],
+  setupFails: false,
 }));
 
 function setupBody(projectId: string): ProjectSetup {
@@ -54,11 +56,11 @@ function setupBody(projectId: string): ProjectSetup {
     project_id: projectId,
     offline: srv.offline,
     onboarding: srv.onboarding,
-    steps: [0, 1, 2, 3, 4].map((n) => ({
+    steps: [0, 1, 2, 3, 4, 5].map((n) => ({
       step: n,
       name: `step ${n}`,
       status: (srv.statuses[n] ?? "pending") as SetupStatus,
-      detail: srv.details[n] ?? (n >= 2 ? "0 thing(s)." : "Not answered yet."),
+      detail: srv.details[n] ?? (n >= 2 && n <= 4 ? "0 thing(s)." : "Not answered yet."),
       how: "",
       ...(srv.reasons[n] ? { reason: srv.reasons[n] } : {}),
     })),
@@ -77,7 +79,14 @@ vi.mock("@/lib/api", () => ({
       srv.onboarding = { ...(srv.onboarding ?? {}), [`${mark}_at`]: "2026-11-06T00:00:00Z" };
       return { onboarding: srv.onboarding };
     }),
-    projectSetup: vi.fn(async (id: string) => setupBody(id)),
+    projectSetup: vi.fn(async (id: string) => {
+      if (srv.setupFails) throw new Error("503 setup down");
+      return setupBody(id);
+    }),
+    createApiKey: vi.fn(async (_n: string, _p: string, _e: unknown, _s: unknown, _t: unknown, origin: string) => {
+      srv.minted.push(origin);
+      return { id: "k1", name: "k", prefix: "gb_sk_ab12", plaintext: "gb_sk_secret", scopes: [], revoked: false };
+    }),
     confirmSetup: vi.fn(async (id: string, body: { decision: string; where?: string; address?: string }) => {
       srv.confirms.push(body);
       if (!srv.confirmIsNoop) {
@@ -157,6 +166,8 @@ beforeEach(() => {
   srv.marks = [];
   srv.posture = null;
   srv.repoPatches = [];
+  srv.minted = [];
+  srv.setupFails = false;
 });
 
 // ── Trigger (D6) ─────────────────────────────────────────────────────────────────────
@@ -241,15 +252,15 @@ describe("every mark comes from GET …/setup", () => {
     const user = userEvent.setup();
     renderFrame();
     const chip = await screen.findByRole("button", { name: /Finish setup/ });
-    await waitFor(() => expect(chip).toHaveTextContent("Finish setup 2/3"));
+    await waitFor(() => expect(chip).toHaveTextContent("Finish setup 2/4"));
     await user.click(chip);
-    // First unfinished: ④ First job.
-    expect(await screen.findByRole("heading", { name: "Give it a first job" })).toBeInTheDocument();
+    // First unfinished: ③ Connect.
+    expect(await screen.findByRole("heading", { name: "Connect your agent" })).toBeInTheDocument();
     expect(railItem("where").dataset.status).toBe("done");
     expect(railItem("project").dataset.status).toBe("done");
     expect(railItem("model").dataset.status).toBe("done");
-    expect(railItem("first_job").dataset.status).toBe("pending");
-    expect(railItem("first_job")).toHaveAttribute("aria-current", "step");
+    expect(railItem("connect").dataset.status).toBe("pending");
+    expect(railItem("connect")).toHaveAttribute("aria-current", "step");
   });
 
   it("SABOTAGE: a step the server reports unknown is never drawn ✓", async () => {
@@ -299,6 +310,8 @@ describe("the chip and Finish", () => {
     await screen.findByRole("heading", { name: "Pick a model" });
     await user.click(screen.getByRole("radio", { name: /Local · Ollama/ }));
     await user.click(screen.getByRole("button", { name: "Next →" }));
+    await screen.findByRole("heading", { name: "Connect your agent" });
+    await user.click(screen.getByRole("button", { name: "Next →" }));
     await screen.findByRole("heading", { name: "Give it a first job" });
     await user.click(screen.getByRole("button", { name: "Finish" }));
 
@@ -306,8 +319,12 @@ describe("the chip and Finish", () => {
     const open = within(finish.parentElement as HTMLElement).getByRole("list", { name: "Steps still open" });
     expect(within(open).getByText(/Model — pending/)).toBeInTheDocument();
     expect(within(open).getByText(/First job — pending/)).toBeInTheDocument();
+    // Walking past ③ proved nothing: Finish says so, naming the route.
+    expect(within(open).getByText("Agent connection unverified — gban CLI")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Done" }));
+    // With a project the frame offers the app tour (GRPH-1363); skipping it still finishes.
+    expect(screen.getByRole("button", { name: "Take the 2-minute tour" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Skip for now" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(srv.marks).toContain("quickstart_finished");
     await waitFor(() => expect(screen.queryByRole("button", { name: /Finish setup/ })).not.toBeInTheDocument());
@@ -344,12 +361,81 @@ describe("step ⓪ on a dedicated server", () => {
 
 // ── The derivation on its own ────────────────────────────────────────────────────────
 
+describe("③ Connect your agent", () => {
+  function atConnect() {
+    srv.projects = [CORE];
+    srv.onboarding = { quickstart_dismissed_at: "2026-11-01T00:00:00Z" };
+    srv.statuses = { 0: "done", 1: "done" };
+    srv.details = { 0: "this_computer" };
+    srv.offline = true;
+  }
+  async function open(user: ReturnType<typeof userEvent.setup>) {
+    renderFrame();
+    await user.click(await screen.findByRole("button", { name: /Finish setup/ }));
+    await screen.findByRole("heading", { name: "Connect your agent" });
+  }
+
+  it("the gban route shows three commands, Next is enabled, and ③ stays PENDING through First job", async () => {
+    atConnect();
+    const user = userEvent.setup();
+    await open(user);
+    expect(screen.getByText("uv tool install graphban-cli")).toBeInTheDocument();
+    // Global options precede the subcommand: `gban login --server …` exits 2 under argparse.
+    expect(screen.getByText(/^gban --server \S+ login$/)).toBeInTheDocument();
+    expect(screen.getByText("gban --project core setup")).toBeInTheDocument();
+    expect(screen.queryByText(/gban (login|setup) --/)).not.toBeInTheDocument();
+    expect(screen.getByText(/then restart your agent/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    await screen.findByRole("heading", { name: "Give it a first job" });
+    expect(railItem("connect").dataset.status).toBe("pending");
+    expect(within(railItem("connect")).queryByText("✓")).not.toBeInTheDocument();
+  });
+
+  it("an agent the CLI does not configure is switched to paste-a-key", async () => {
+    atConnect();
+    const user = userEvent.setup();
+    await open(user);
+    await user.selectOptions(screen.getByLabelText("Which agent?"), "cursor");
+    expect(screen.getByRole("radio", { name: "gban CLI" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "Paste a key" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByText("uv tool install graphban-cli")).not.toBeInTheDocument();
+  });
+
+  it("paste route mints a quickstart key, polls, and ticks only when the server says so", async () => {
+    atConnect();
+    const user = userEvent.setup();
+    await open(user);
+    await user.click(screen.getByRole("radio", { name: "Paste a key" }));
+    await user.click(screen.getByRole("button", { name: /Create a key for Claude Code/ }));
+    expect(await screen.findByText("Waiting for your agent's first call…")).toBeInTheDocument();
+    expect(srv.minted).toEqual(["quickstart"]);
+    expect(railItem("connect").dataset.status).toBe("pending");
+    srv.statuses[5] = "done";
+    srv.details[5] = "First call from key 'alex-mbp' at 13:42.";
+    await waitFor(() => expect(railItem("connect").dataset.status).toBe("done"), { timeout: 5000 });
+    expect(screen.getByText(/First call from key 'alex-mbp'/)).toBeInTheDocument();
+  }, 10000);
+
+  it("SABOTAGE: an API that errors mid-poll shows ③ unknown, not a stale ✓", async () => {
+    atConnect();
+    srv.statuses[5] = "done";
+    srv.details[5] = "First call from key 'alex-mbp'.";
+    const user = userEvent.setup();
+    renderFrame();
+    await user.click(await screen.findByRole("button", { name: /Finish setup/ }));
+    await waitFor(() => expect(railItem("connect").dataset.status).toBe("done"));
+    srv.setupFails = true;
+    await waitFor(() => expect(railItem("connect").dataset.status).toBe("unknown"), { timeout: 5000 });
+    expect(within(railItem("connect")).queryByText("✓")).not.toBeInTheDocument();
+  }, 10000);
+});
+
 describe("deriveMarks", () => {
   const base = (over: Partial<ProjectSetup> = {}): ProjectSetup => ({
     project_id: "p",
     offline: false,
     onboarding: null,
-    steps: [0, 1, 2, 3, 4].map((n) => ({ step: n, name: "", status: "pending", detail: "0 x.", how: "" })),
+    steps: [0, 1, 2, 3, 4, 5].map((n) => ({ step: n, name: "", status: "pending", detail: "0 x.", how: "" })),
     ...over,
   });
 
@@ -398,7 +484,7 @@ describe("deriveMarks", () => {
   it("chip counts numbered steps only, and reopens on the first not done", () => {
     const steps = stepsFor(false);
     const m = deriveMarks({ projectId: "p", setup: base({ offline: true }) });
-    expect(chipCount(steps, m)).toEqual({ done: 1, total: 3 });
+    expect(chipCount(steps, m)).toEqual({ done: 1, total: 4 });
     expect(firstUnfinished(steps, m)).toBe("where");
     expect(stepsFor(true)).not.toContain("where");
   });

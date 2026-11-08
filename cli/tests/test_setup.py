@@ -1267,3 +1267,49 @@ def test_a_project_without_repo_url_never_matches_an_empty_remote(tmp_path):
     here.mkdir()  # not a checkout: no remotes
     with pytest.raises(setup_mod.Unresolved):
         setup_mod.resolve_project(Listing([{"id": "a", "name": "A"}]), here)
+
+
+def test_web_agent_list_is_generated_from_setup_agents():
+    """The quick-start picker's gban-route list (GRPH-1362 / G9) is exported, not copied."""
+    import importlib.util
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location("gen_gban_agents", root / "scripts" / "gen_gban_agents.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.OUT.read_text() == mod.render(), "run scripts/gen_gban_agents.py"
+
+
+def test_quickstart_commands_parse_with_the_cli_parser():
+    """Every gban command the quick-start dialog renders parses with `gban`'s own parser.
+
+    Bounced once: the dialog showed `gban login --server …`, which argparse rejects because
+    `--server` is a top-level option. The strings now come from QUICKSTART_COMMANDS, and this
+    pins them to the parser so they cannot drift again."""
+    import shlex
+
+    from gban.cli import _parser
+    from gban.setup import QUICKSTART_COMMANDS
+
+    gban_cmds = [c for c in QUICKSTART_COMMANDS if c.startswith("gban ")]
+    assert gban_cmds, "the dialog's gban route lost its commands"
+    for template in gban_cmds:
+        argv = shlex.split(template.format(server="https://gb.example.com", project="core"))
+        ns = _parser().parse_args(argv[1:])  # SystemExit(2) here is the bug this guards
+        assert ns.command in {"login", "setup"}
+        if "{server}" in template:
+            assert ns.server == "https://gb.example.com"
+        if "{project}" in template:
+            assert ns.project == "core"
+
+
+def test_the_old_subcommand_flag_order_is_still_rejected():
+    """Sabotage for the test above: the bounced strings must fail to parse, or it proves nothing."""
+    import pytest
+
+    from gban.cli import _parser
+
+    for argv in (["login", "--server", "https://x"], ["setup", "--project", "core"]):
+        with pytest.raises(SystemExit):
+            _parser().parse_args(argv)

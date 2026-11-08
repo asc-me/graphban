@@ -1,5 +1,7 @@
 export type Status = "backlog" | "next" | "in_progress" | "review" | "done" | "blocked";
 export type Fidelity = "low" | "high";
+/** What kind of change an item is (GRPH-1358); `""` = not recorded, NOT "not a feature". */
+export type ItemKind = "feature" | "fix" | "chore" | "";
 /**
  * Where an item's work lands (GRPH-832). `repo` changes files in a worktree; `deploy` acts on
  * a running system and is refused to every spawned agent, on every path. Only a signed-in
@@ -104,6 +106,8 @@ export interface SetupStep {
   how: string;
   /** Present when `status` is `unknown`: why the check could not run. */
   reason?: string;
+  /** Step 5 (③ Connect) only, when done: what proved it. */
+  proof?: "first_call";
 }
 
 /** GET /setup/instance — booleans only; the server never sends a secret's value. */
@@ -703,6 +707,8 @@ export interface Item {
   prd_id: string | null;
   prd_section: string;
   fidelity: Fidelity;
+  /** Always sent by the server; optional only so fixtures predating it still type-check. */
+  kind?: ItemKind;
   /** Where this item's work lands (GRPH-832). `deploy` is refused to every spawned agent. */
   reach: Reach;
   created_at: string;
@@ -1151,7 +1157,7 @@ export interface ApiKey {
   origin?: ApiKeyOrigin | null;
 }
 
-export type ApiKeyOrigin = "web" | "gban_setup" | "gban_swamp_setup" | "fleet";
+export type ApiKeyOrigin = "web" | "gban_setup" | "gban_swamp_setup" | "fleet" | "quickstart";
 
 export interface ApiKeyCreated extends ApiKey {
   plaintext: string;
@@ -3285,3 +3291,6 @@ export interface HarnessRoutingReason {
   reason: string | null;
   at: string | null;
 }
+
+/** GRPH-1405: where the test suites run — the `build.test_scope` rule's `mode` param. */
+export type TestScopeMode = "agent_full" | "agent_and_pr" | "agent_targeted";

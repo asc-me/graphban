@@ -46,7 +46,7 @@ def test_exhausted_is_always_in_the_terminal_json():
 
 def test_an_exhausted_adapter_is_dropped_from_resolution():
     wave = Wave()
-    wave.exhausted["claude"] = {"adapter": "claude", "said": SAID, "seen_at": 1}
+    wave.vendor_out["claude"] = SAID
     check = _skip_exhausted(wave, lambda row: (True, ""))
     ok, why = check(SimpleNamespace(harness="claude"))
     assert not ok and "12:20pm" in why

@@ -83,19 +83,73 @@ export function changeCount(body: string): number {
   return body.split("\n").filter((line) => line.startsWith("- ")).length;
 }
 
-/** A "- #1301 Title (GRPH-1315)" line split into its PR number, ticket ids and remaining title. */
-export function parseCall(line: string): { pr: string; tickets: string[]; title: string } {
+/**
+ * A "- #1301 [fleet 0.18.12] Title (GRPH-1315)" line split into its PR number, bracketed tags
+ * (GRPH-1359: `fleet X` / `cli X` package releases, `feature`), ticket ids and remaining title.
+ * Notes published before the tags existed have none, and parse exactly as they always did.
+ */
+export function parseCall(line: string): { pr: string; tags: string[]; tickets: string[]; title: string } {
   let rest = line.replace(/^-\s+/, "");
   const m = /^(#\d+)\s*/.exec(rest);
   const pr = m ? m[1] : "";
   if (m) rest = rest.slice(m[0].length);
+  const tags: string[] = [];
+  for (let t = TAG_RE.exec(rest); t; t = TAG_RE.exec(rest)) {
+    tags.push(t[1]);
+    rest = rest.slice(t[0].length);
+  }
   const tickets = rest.match(/\b[A-Z][A-Z0-9]*-\d+\b/g) ?? [];
   let title = rest;
   for (const t of tickets) title = title.replace(t, "");
   title = title.replace(/\(\s*[,\s]*\)/g, "").replace(/\s{2,}/g, " ").trim();
   // "items=GRPH-1329" with the id lifted out leaves a bare "items=" behind; drop it.
   if (tickets.length) title = title.replace(/\s*\bitems=[,\s]*$/, "").trim();
-  return { pr, tickets, title };
+  return { pr, tags, tickets, title };
+}
+
+/** Only the tags the release script writes; any other bracket stays in the title. */
+const TAG_RE = /^\[((?:fleet|cli) [^\]\s]+|feature)\]\s*/;
+
+const isFeature = (tag: string) => tag === "feature";
+
+/** A package-release pill and a feature pill look different from each other and from PR/ticket. */
+function TagPill({ label, feature, testId }: { label: string; feature: boolean; testId?: string }) {
+  return (
+    <span
+      data-testid={testId}
+      data-tag={feature ? "feature" : "release"}
+      className={`u-pill ${feature ? "text-ty-feature" : "text-purple"}`}
+    >
+      {label}
+    </span>
+  );
+}
+
+/** The "Since" list's change lines: the `- ` lines after the Since heading; none without one. */
+function sinceCalls(body: string): string[] {
+  const lines = body.split("\n");
+  const at = lines.findIndex((l) => /^\*\*Since\b.*\*\*\s*$/.test(l.trim()));
+  if (at < 0) return [];
+  const out: string[] = [];
+  for (let i = at + 1; i < lines.length && (lines[i].trim() === "" || lines[i].startsWith("- ")); i++) {
+    if (lines[i].startsWith("- ")) out.push(lines[i]);
+  }
+  return out;
+}
+
+/** The collapsed row's highlights: one pill per package release, then "N feature(s)". */
+export function highlights(body: string): { label: string; feature: boolean }[] {
+  const releases: string[] = [];
+  let features = 0;
+  for (const l of sinceCalls(body)) {
+    for (const t of parseCall(l).tags) {
+      if (isFeature(t)) features++;
+      else if (!releases.includes(t)) releases.push(t);
+    }
+  }
+  const out = releases.map((label) => ({ label, feature: false }));
+  if (features) out.push({ label: `${features} ${features === 1 ? "feature" : "features"}`, feature: true });
+  return out;
 }
 
 /** Body of a release note: the "Since <prev>" list as pill rows, the rest as markdown. */
@@ -119,6 +173,7 @@ function NotesBody({ body }: { body: string }) {
           return (
             <li key={i} className="u-call" data-testid="release-call" data-pr={c.pr || undefined}>
               {c.pr ? <span className="u-pill text-muted">{c.pr}</span> : null}
+              {c.tags.map((t) => <TagPill key={t} label={t} feature={isFeature(t)} />)}
               {c.tickets.map((t) => <span key={t} className="u-pill text-accent">{t}</span>)}
               <span className={`u-call-title ${wip ? "text-faint" : ""}`}>{c.title}</span>
             </li>
@@ -133,6 +188,7 @@ function NotesBody({ body }: { body: string }) {
 /** One collapsed row per release, "N changes" at the right, expanding to the body. */
 function NotesAccordion({ label, notes }: { label: string; notes: ReleaseNotes }) {
   const changes = notes.state === "present" ? changeCount(notes.body) : 0;
+  const marks = notes.state === "present" ? highlights(notes.body) : [];
   return (
     <details className="rounded-[10px] border border-line-2 bg-surface p-3.5">
       <summary className="flex cursor-pointer select-none items-center justify-between gap-2 font-mono text-[10.5px] uppercase tracking-wide text-faint">
@@ -141,12 +197,19 @@ function NotesAccordion({ label, notes }: { label: string; notes: ReleaseNotes }
           {label}{" "}
           <span className="font-mono normal-case tracking-normal text-fg">{notes.tag}</span>
         </span>
-        {changes > 0 ? (
-          <span
-            data-testid="changes-pill"
-            className="rounded-full border border-line-2 px-1.5 py-px font-mono normal-case tracking-normal text-fg-2"
-          >
-            {changes} {changes === 1 ? "change" : "changes"}
+        {changes > 0 || marks.length ? (
+          <span className="flex flex-wrap items-center justify-end gap-1.5 normal-case tracking-normal">
+            {marks.map((m) => (
+              <TagPill key={m.label} label={m.label} feature={m.feature} testId="highlight-pill" />
+            ))}
+            {changes > 0 ? (
+              <span
+                data-testid="changes-pill"
+                className="rounded-full border border-line-2 px-1.5 py-px font-mono text-fg-2"
+              >
+                {changes} {changes === 1 ? "change" : "changes"}
+              </span>
+            ) : null}
           </span>
         ) : null}
       </summary>

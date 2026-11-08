@@ -240,6 +240,14 @@ COMMIT = (
     "credential file.\n"
 )
 
+#: GRPH-1391. Children finished and pushed, then ran out of wall clock rerunning both full
+#: suites locally (30-40 minutes) and exited with the item still `in_progress`.
+CI_RECEIPT = (
+    "CI is the full-suite receipt: it already runs the whole SQLite suite and the Postgres "
+    "shards on your pushed branch. Run the targeted tests for what you changed locally, push, "
+    "and hand off. Do not rerun both full suites in parallel before handing off.\n"
+)
+
 #: GRPH-1025. The supervisor withholds a PR from a branch that changed a file outside every
 #: declared touchpoint (GRPH-949), and nothing ever told a child to declare. A planner files
 #: the source path; the acceptance then asks for a test, a migration or a regenerated README,
@@ -252,7 +260,9 @@ DECLARE = (
     "EVERY file you changed — tests, migrations and generated files included, not only the "
     "source the item named. The supervisor compares your branch against the item's declared "
     "touchpoints and does not open a pull request for a branch that changed an undeclared "
-    "file.\n"
+    "file. Run `gbfleet check-touchpoints --item <id> --declared <the item's touchpoints>` "
+    "first: it names the files the gate would refuse and prints the `update_item` call that "
+    "declares them.\n"
 )
 
 
@@ -292,7 +302,7 @@ INSTRUCTION = (
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT + DECLARE + NOT_YET +
+    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT + CI_RECEIPT + DECLARE + NOT_YET +
     "Call claim_review with wait_seconds=0. If there is nothing to review, call "
     "claim_cluster with wait_seconds=0 to take the next ready non-colliding cluster. "
     "EXIT when both are empty — exiting on an empty queue is the normal end of your "
@@ -310,7 +320,7 @@ BOUND_INSTRUCTION = (
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT + DECLARE + NOT_YET +
+    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT + CI_RECEIPT + DECLARE + NOT_YET +
     "This seat is BOUND to {item}: registering on it claims that item for you. Read the "
     "reply's `assigned`. If `assigned.state` is `claimed`, you HOLD {item} — read it with "
     "get_item_details, build it, COMMIT it, then move it to review with evidence. Then, "
@@ -339,7 +349,7 @@ REVIEW_ONLY_INSTRUCTION = (
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT +
+    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT + CI_RECEIPT +
     "This seat is REVIEW-ONLY: you may hold review work and you may NOT take build work. "
     "Do NOT call claim_cluster or claim_next — the server refuses both on this seat, and "
     "that refusal is the seat working, not an empty board. Call claim_review with "
@@ -362,7 +372,7 @@ BOUND_ONLY_INSTRUCTION = (
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT + DECLARE + NOT_YET +
+    + BOUNDARY + DEPENDENCY + OWN_WORK + COMMIT + CI_RECEIPT + DECLARE + NOT_YET +
     "This seat is BOUND to {item} and it is bound-only. Read the reply's `assigned`. If "
     "`assigned.state` is `claimed`, you HOLD {item} — read it with get_item_details, build "
     "it, COMMIT it, then move it to review with evidence. Then EXIT. Do NOT call "

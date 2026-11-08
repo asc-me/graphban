@@ -79,6 +79,24 @@ export function useMarkOnboarding() {
   });
 }
 
+/** Records `tour_completed_at` and `tour_skipped_stops` in `users.onboarding` (GRPH-1363). */
+export function useCompleteTour() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (skippedStops: string[]) => api.completeTour(skippedStops),
+    onSuccess: (res) => qc.setQueryData(keys.onboarding, res),
+  });
+}
+
+/** Request an org (GRPH-1364). Rejects, storing nothing, when the relay could not deliver. */
+export function useRequestOrg() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; email: string; note?: string }) => api.requestOrg(body),
+    onSuccess: (res) => qc.setQueryData(keys.onboarding, res),
+  });
+}
+
 /**
  * The setup checklist for one project. `pollMs` keeps it live while the dialog is watching
  * counters tick (step ④); a failed read is surfaced as an error, never as a pending list.

@@ -34,6 +34,7 @@ const DASHBOARD_DOC: DocEntry = {
     { num: 1, h: "Counts, not a fetch of everything", b: "The stat grid and jump tiles come from the dashboard payload and the shell counts endpoint. Fetching items to call .length is how this page once cost megabytes on every route." },
     { num: 2, h: "One page, both modes", b: "Hosted project home (/p/:tag) and self-host /home are this page. /dashboard still opens it: self-host goes to /home, and hosted /p/:tag/dashboard goes to /p/:tag." },
     { num: 3, h: "Quick start and the Finish setup chip", b: "A new account opens the quick start: where Graphban runs (self-host only), the project you confirm agents may write to, a model, and a first job for your agent. A step shows ✓ only when the server can show it; Next never ticks anything, and a check that could not run shows ? with the reason. Finish later (or Esc) keeps a Finish setup n/N chip in the top bar that reopens on the first unfinished step. Finish clears the chip; anything unproven is listed, not hidden." },
+    { num: 4, h: "The app tour", b: "Take the 2-minute tour from the quick start's Finish. It rings the real nav — Dashboard, Tracker, Specs, the Agent sidebar, Memory review, Code graph, Fleet, Activity — and opens each view as it goes. A stop your nav does not show is skipped and the count drops with it. On an empty view it says so rather than showing sample data. Back, Next, Esc to exit; Read more opens these docs for the stop's page." },
   ],
   related: [{ label: "Tracker", to: "/tracker" }],
 };

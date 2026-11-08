@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import DEFAULT_JWT_SECRET, settings
-from app.models import CodeNode, Item, Membership, MemoryShard, Project
+from app.models import ApiKey, CodeNode, Item, Membership, MemoryShard, Project, utcnow
 
 # Sources are EXTENSIBLE — editor conventions (.cursor/rules, Grok Build GROK.md, Codex
 # AGENTS.md) plug in later (AL-133 D2).
@@ -116,7 +116,40 @@ def checklist(db: Session, project_id: str) -> dict:
                     "capped) — never bulk-create a flood.",
                     lambda: _n(db, Item, project_id), "item(s)", sources=_ITEM_SOURCES),
     ]
+    steps.append(_connect_step(db, project_id))
     return {"project_id": project_id, "offline": bool(d.get("offline")), "steps": steps}
+
+
+CONNECT_STEP = 5  # quick-start ③; numbered last so ①–④ keep the ids agents already read
+
+
+def _connect_step(db: Session, project_id: str) -> dict:
+    """Quick-start ③: ✓ only when a key the dialog minted for this project has made an
+    authenticated call (`api_keys.last_used`, GRPH-1362). A revoked or expired key proves
+    nothing now, so it is not evidence. Opening a later screen never reaches here. A machine
+    report is the second proof and joins with GRPH-1367."""
+    base = {"step": CONNECT_STEP, "name": "Connect your agent",
+            "how": "Install the harness config (gban setup, or paste a key) and restart the agent; "
+                   "the first call it makes is the proof."}
+    try:
+        keys = db.scalars(select(ApiKey).where(
+            ApiKey.project_id == project_id, ApiKey.origin == "quickstart",
+            ApiKey.revoked.is_(False), ApiKey.last_used.is_not(None)
+        ).execution_options(populate_existing=True)).all()  # a row this session loaded earlier may be stale
+        live = []
+        for k in keys:
+            exp = k.expires_at
+            if exp is not None and (exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)) <= utcnow():
+                continue
+            live.append(k)
+    except Exception as e:  # noqa: BLE001
+        return {**base, "status": "unknown", "detail": f"could not check: {type(e).__name__}",
+                "reason": str(e)[:200]}
+    if not live:
+        return {**base, "status": "pending", "detail": "No first call seen yet."}
+    k = max(live, key=lambda r: r.last_used)
+    return {**base, "status": "done", "proof": "first_call", "key_name": k.name,
+            "detail": f"First call from key '{k.name}' at {k.last_used.isoformat()}."}
 
 
 def _n(db: Session, model, project_id: str) -> int:
@@ -127,7 +160,7 @@ def agent_view(db: Session, project_id: str) -> dict:
     """`setup_project`'s answer: a projection of `checklist` — steps ①–④ with the same id and
     status, plus the `empty`/`complete` flags agents already read."""
     full = checklist(db, project_id)
-    steps = [s for s in full["steps"] if s["step"] >= 1]
+    steps = [s for s in full["steps"] if 1 <= s["step"] <= 4]
     counts_ = [s for s in steps if s["step"] >= 2]
     empty = all(s["status"] == "pending" for s in counts_)
     return {
@@ -142,18 +175,34 @@ def agent_view(db: Session, project_id: str) -> dict:
 # The dialog's own progress marks (GRPH-P67 D8). UI facts only: nothing here is evidence that a
 # setup step happened, and no checklist status reads it. Each mark stamps its `<mark>_at` once
 # per call; later items (the tour, Request an org) add their marks here, not a second writer.
-ONBOARDING_MARKS = ("quickstart_finished", "quickstart_dismissed")
+ONBOARDING_MARKS = ("quickstart_finished", "quickstart_dismissed", "tour_completed")
+
+# The tour records which stops this user's nav had no anchor for (GRPH-1363). Ids are the
+# `data-tour` values; the bounds only keep a client from storing an arbitrary blob.
+TOUR_SKIPPED_MAX = 20
+TOUR_STOP_ID_MAX = 40
 
 
-def mark_onboarding(db: Session, user, mark: str) -> dict:
+def mark_onboarding(db: Session, user, mark: str, skipped_stops: list[str] | None = None) -> dict:
     """Stamp `<mark>_at` on the user's onboarding document and return the whole document.
 
     Only the listed marks exist; anything else is refused here so every surface shares the
-    boundary. The document is merged, never replaced, so one mark cannot erase another."""
+    boundary. The document is merged, never replaced, so one mark cannot erase another.
+    `tour_completed` also stores `tour_skipped_stops` (empty when every stop played); no
+    other mark takes it."""
     if mark not in ONBOARDING_MARKS:
         raise ValueError(f"mark must be one of: {', '.join(ONBOARDING_MARKS)}")
+    if skipped_stops is not None and mark != "tour_completed":
+        raise ValueError("skipped_stops goes with the tour_completed mark only")
+    if skipped_stops is not None and (
+        len(skipped_stops) > TOUR_SKIPPED_MAX
+        or any(not isinstance(s, str) or not s or len(s) > TOUR_STOP_ID_MAX for s in skipped_stops)
+    ):
+        raise ValueError(f"skipped_stops is at most {TOUR_SKIPPED_MAX} stop ids of 1-{TOUR_STOP_ID_MAX} characters")
     doc = dict(user.onboarding or {})
     doc[f"{mark}_at"] = datetime.now(timezone.utc).isoformat()
+    if mark == "tour_completed":
+        doc["tour_skipped_stops"] = list(skipped_stops or [])
     user.onboarding = doc  # reassign: a mutated JSON dict is not change-tracked
     db.commit()
     return doc
@@ -190,3 +239,41 @@ def instance_posture(db: Session, *, loopback: bool) -> dict:
 
 
 _DEFAULT_APP_BASE_URL = "http://localhost:5173"
+
+
+# ── Request an org (GRPH-1364) ─────────────────────────────────────────────────────────
+ORG_REQUEST_NAME_MAX = 120
+ORG_REQUEST_EMAIL_MAX = 254
+ORG_REQUEST_NOTE_MAX = 2000
+
+
+class OrgRequestUnavailable(Exception):
+    """No operator address is configured, or the relay could not deliver."""
+
+
+def request_org(db: Session, user, name: str, email: str, note: str = "") -> dict:
+    """Relay a self-host user's org request to the operator, then stamp `org_requested_at`.
+
+    The date is stored only after the relay succeeded, so the card never claims a request
+    that nobody received. A repeat overwrites the date (there is no Declined/Expired state)."""
+    from app.services import email as email_svc
+
+    name, email, note = (name or "").strip(), (email or "").strip(), (note or "").strip()
+    if not name or len(name) > ORG_REQUEST_NAME_MAX:
+        raise ValueError(f"name is required, at most {ORG_REQUEST_NAME_MAX} characters")
+    if not email or len(email) > ORG_REQUEST_EMAIL_MAX or "@" not in email or any(c in email for c in " \r\n"):
+        raise ValueError("a valid contact email is required")
+    if len(note) > ORG_REQUEST_NOTE_MAX:
+        raise ValueError(f"note is at most {ORG_REQUEST_NOTE_MAX} characters")
+    to = settings.org_request_recipients
+    if not to:
+        raise OrgRequestUnavailable("this deployment has no operator address to send an org request to")
+    subject = f"Org request from {name}"
+    text = f"Name: {name}\nContact: {email}\nAccount: {user.email}\n\n{note or '(no note)'}\n"
+    if not all([email_svc.send_email(t, subject, text) for t in to]):
+        raise OrgRequestUnavailable("the request could not be delivered; try again later")
+    doc = dict(user.onboarding or {})
+    doc["org_requested_at"] = datetime.now(timezone.utc).isoformat()
+    user.onboarding = doc
+    db.commit()
+    return doc

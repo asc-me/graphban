@@ -11,11 +11,24 @@ read the route for your task class, not the whole corpus.
 
 ## Operating loop
 
-Every change, regardless of task class:
+Every change, regardless of task class, runs the commands below. **How much of them you run
+yourself follows the project's test-scope mode — the one your delegation brief states.** Follow
+that mode; do not default to the full suites:
+
+- **`agent_targeted`:** run the tests you wrote or changed, the touched module's existing tests
+  and the sabotage check, then push and hand off. The PR's CI runs the full suites and is the
+  receipt. Reviewers read CI's `suite_green` for the head, rerun the targeted tests and do their
+  own sabotage, without rerunning full suites.
+- **`agent_and_pr`:** run the full suites below locally, and CI runs them again on the PR.
+- **`agent_full`:** run the full suites below locally. Your receipts are the proof; no PR CI is
+  required.
+
+In every mode a full local run is still right when reproducing a CI failure. If your brief
+states no mode, use `agent_and_pr`.
 
 ```bash
 # Backend (from backend/; venv via `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`)
-./.venv/bin/python -m pytest -q          # SQLite, ~45s. pytest is NOT on the host PATH.
+./.venv/bin/python -m pytest -q          # SQLite; the full run takes 20-40 min under load. pytest is NOT on the host PATH.
 
 # Backend against real Postgres+pgvector (what production runs — CI runs both):
 docker run -d --name gb-pg -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \

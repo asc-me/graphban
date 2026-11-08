@@ -186,3 +186,114 @@ def test_prediction_survives_an_embedding_failure(db, monkeypatch):
     assert src == "predicted" and areas == []
     clusters = collision.collision_clusters(db, [it], "core")
     assert [c["items"] for c in clusters] == [[it.id]]
+
+
+# ---- GRPH-1399: a test-folder glob does not reserve one named test file ---------------------
+
+def test_a_test_folder_glob_and_a_named_test_file_are_test_glob_and_do_not_collide():
+    from app.services import clustering
+    from app.services import fleet as fleet_svc
+
+    for glob, path in [("backend/tests/*", "backend/tests/test_b.py"),
+                       ("web/src/__tests__/*", "web/src/__tests__/updates-settings.test.tsx"),
+                       ("backend/tests/**", "backend/tests/sub/test_x.py"),
+                       ("pkg/test/*", "pkg/test/thing_test.go")]:
+        assert clustering.why_match(glob, path) == "test-glob", (glob, path)
+        assert clustering.why_match(path, glob) == "test-glob", (path, glob)
+        assert not clustering._match(glob, path)
+        assert fleet_svc.areas_collide([glob], [path]) == []
+        assert fleet_svc.areas_collide([path], [glob]) == []
+    # Still collide: shared test files, a glob outside a test folder, two globs, one file.
+    for x, y in [("backend/tests/*", "backend/tests/conftest.py"),
+                 ("backend/tests/*", "backend/tests/fixtures/data.json"),
+                 ("backend/app/services/*", "backend/app/services/fleet.py"),
+                 ("backend/tests/*", "backend/tests/*"),
+                 ("backend/tests/test_b.py", "backend/tests/test_b.py")]:
+        assert fleet_svc.areas_collide([x], [y]) == [x], (x, y)
+    # The clustering view names no reason for a pair it let through.
+    assert collision._reasons(["backend/tests/*"], ["backend/tests/test_b.py"]) == []
+
+
+@pytest.fixture()
+def held_tests(client, auth, db, monkeypatch):
+    """A fresh project whose holder is building an item declared `backend/tests/*` and holds
+    that reservation, plus a second agent and a planner to claim or delegate after it."""
+    from datetime import timedelta
+
+    from app.models import Agent
+    from app.services import fleet as fleet_svc
+
+    _no_code_hits(monkeypatch)
+    pid = client.post("/api/projects", json={"name": "TestGlob1399"}, headers=auth).json()["id"]
+    agents = {}
+    for n, name in enumerate(("holder", "other", "planner"), start=1):
+        agents[name] = Agent(id=f"TG-A{n}", project_id=pid, number=9300 + n, label=name,
+                             active_role="worker")
+        db.add(agents[name])
+    db.commit()
+
+    def hold(areas):
+        it = items_svc.create_item(db, title="holder build", project_id=pid,
+                                   touchpoints=areas, status="next")
+        assert items_svc.claim_item(db, it.id, agents["holder"].id, lease_seconds=600)
+        fleet_svc.reserve_areas(db, agent_id=agents["holder"].id, item_id=it.id, areas=areas,
+                                expires_at=items_svc.utcnow() + timedelta(seconds=600),
+                                predicted=False)
+        db.commit()
+        return it
+
+    def want(areas):
+        return items_svc.create_item(db, title="adds one test", project_id=pid,
+                                     touchpoints=areas, status="next")
+
+    return types.SimpleNamespace(pid=pid, agents=agents, hold=hold, want=want)
+
+
+def test_THE_CALL_a_held_test_glob_leaves_a_named_test_file_claimable_and_delegable(db, held_tests):
+    """Sabotage: make `_match` ignore NON_COLLIDING (or drop the `test-glob` branch in
+    `why_match`) and both the claim and the seat are refused again."""
+    from app.services import delegation as dsvc
+    from app.services import fleet as fleet_svc
+
+    t = held_tests
+    t.hold(["backend/tests/*", "backend/app/services/tour.py"])
+    second = t.want(["backend/tests/test_b.py"])
+    # A bound seat for it is not refused …
+    dsvc.refuse_bound_collision(db, agent=t.agents["planner"], item=second)
+    # … and the divvy hands it out.
+    got = fleet_svc.claim_cluster(db, agent_id=t.agents["other"].id, project_id=t.pid)
+    assert got["claimed"], got
+    assert [i["stored_id"] for i in got["items"]] == [second.id]
+
+
+def test_an_exact_hard_area_collision_still_blocks_and_names_both_areas(db, held_tests):
+    """On a HARD area (GRPH-1389): an ordinary file overlap is a soft lease and blocks nobody."""
+    from app.services import delegation as dsvc
+    from app.services import fleet as fleet_svc
+
+    t = held_tests
+    t.hold(["backend/alembic/versions/0190_b.py"])
+    second = t.want(["backend/alembic/versions/0190_b.py"])
+    with pytest.raises(dsvc.DelegationRefused) as e:
+        dsvc.refuse_bound_collision(db, agent=t.agents["planner"], item=second)
+    assert "TG-A1" in str(e.value)
+    assert "backend/alembic/versions/0190_b.py vs backend/alembic/versions/0190_b.py" in str(e.value)
+    got = fleet_svc.claim_cluster(db, agent_id=t.agents["other"].id, project_id=t.pid)
+    assert not got["claimed"]
+    assert "backend/alembic/versions/0190_b.py vs backend/alembic/versions/0190_b.py" in got["reason"], got["reason"]
+
+
+def test_a_glob_refusal_names_the_holders_glob_and_the_file_it_covers(db, held_tests):
+    """The 2026-11-07 refusal said only `reserved by GRPH-A14717`. It names the pair now."""
+    from app.services import delegation as dsvc
+    from app.services import fleet as fleet_svc
+
+    t = held_tests
+    t.hold(["backend/alembic/versions/*"])
+    second = t.want(["backend/alembic/versions/0190_b.py"])
+    with pytest.raises(dsvc.DelegationRefused) as e:
+        dsvc.refuse_bound_collision(db, agent=t.agents["planner"], item=second)
+    assert "reserved by TG-A1 (backend/alembic/versions/* vs backend/alembic/versions/0190_b.py)" in str(e.value)
+    assert e.value.detail["areas"] == "backend/alembic/versions/* vs backend/alembic/versions/0190_b.py"
+    got = fleet_svc.claim_cluster(db, agent_id=t.agents["other"].id, project_id=t.pid)
+    assert "backend/alembic/versions/* vs backend/alembic/versions/0190_b.py" in got["reason"], got["reason"]

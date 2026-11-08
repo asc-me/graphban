@@ -89,6 +89,18 @@ _MERGE_HELP = (
     "deps bypass the scope. Default off (GRPH-846, GRPH-880)")
 
 
+
+def _env_window() -> float | None:
+    """`GBFLEET_REGISTRATION_WINDOW` as seconds, or None to use the adapter's own window
+    (GRPH-1400). A value that is not a positive number is ignored rather than fatal: a bad
+    environment variable should not stop a drain from starting."""
+    raw = os.environ.get("GBFLEET_REGISTRATION_WINDOW", "").strip()
+    try:
+        value = float(raw) if raw else None
+    except ValueError:
+        return None
+    return value if value and value > 0 else None
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gbfleet",
@@ -148,6 +160,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     run.add_argument("--max-children", type=int, default=8)
     run.add_argument("--child-wall-clock", type=float, default=3600.0)
+    run.add_argument("--registration-window", type=float, default=_env_window(),
+        help="seconds a child gets to register before it is killed as never_registered (default: the adapter's own window, 240s for claude, else 90s; env GBFLEET_REGISTRATION_WINDOW)")
     run.add_argument("--workspace", default=None, help="where worktrees go")
     run.add_argument(
         "--debug",
@@ -246,6 +260,8 @@ def build_parser() -> argparse.ArgumentParser:
     stdio.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     stdio.add_argument("--child-wall-clock", type=float, default=3600.0,
         help="per-child wall-clock cap in seconds (default 3600). A spawn can override per-child via child_wall_clock=...")
+    stdio.add_argument("--registration-window", type=float, default=_env_window(),
+        help="seconds a child gets to register before it is killed as never_registered (default: the adapter's own window, 240s for claude, else 90s; env GBFLEET_REGISTRATION_WINDOW)")
     stdio.add_argument(
         "--tier", action="append", default=[], metavar="NAME=ADAPTER[:MODEL]",
         help="what a tier means on this machine, e.g. cheap=gbagent:qwen3.6:35b-a3b-coding-mtp-det "
@@ -376,6 +392,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     until.add_argument("--max-children", type=int, default=8)
     until.add_argument("--child-wall-clock", type=float, default=3600.0)
+    until.add_argument("--registration-window", type=float, default=_env_window(),
+        help="seconds a child gets to register before it is killed as never_registered (default: the adapter's own window, 240s for claude, else 90s; env GBFLEET_REGISTRATION_WINDOW)")
     until.add_argument("--workspace", default=None, help="where worktrees go")
     until.add_argument("--debug", action="store_true")
     until.add_argument(
@@ -425,6 +443,41 @@ def build_parser() -> argparse.ArgumentParser:
     td.add_argument("--keep-clone", action="store_true",
                     help="do everything except delete the clone itself")
 
+    chk = sub.add_parser(
+        "check-touchpoints",
+        help="run the PR touchpoint gate from inside a checkout, before moving an item to review",
+        description=(
+            "Lists files this checkout changed since the trunk that no declared touchpoint covers\n"
+            "(the supervisor withholds the PR for those) and prints the update_item call that\n"
+            "declares them. Exit 1 when any are outside; 0 when the gate would pass."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    chk.add_argument("--declared", nargs="*", default=[],
+                     help="the item's declared touchpoints (get_item_details)")
+    chk.add_argument("--item", default="", help="the item id, for the printed update_item call")
+    chk.add_argument("--path", default=".", help="the checkout to measure (default: here)")
+
+    ent = sub.add_parser(
+        "entitlement",
+        help="register the accounts this machine can launch (add, list, remove)",
+        description=(
+            "A local file outside any worktree: name, vendor, kind and launch handle per record,\n"
+            "and no secret field. For api_key the handle is an environment-variable NAME."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ent_do = ent.add_subparsers(dest="act", metavar="ACT")
+    ent_add = ent_do.add_parser("add", help="add a record")
+    ent_add.add_argument("--json", default="", help="the record as a JSON object (overrides flags)")
+    ent_add.add_argument("--name", default="")
+    ent_add.add_argument("--vendor", default="")
+    ent_add.add_argument("--kind", default="")
+    ent_add.add_argument("--handle", default="")
+    ent_do.add_parser("list", help="print name, vendor, kind and handle")
+    ent_rm = ent_do.add_parser("remove", help="delete one record, leaving the others")
+    ent_rm.add_argument("name")
+
     sub.add_parser(
         "gc",
         help="reap the child worktrees of repositories whose supervisor is gone",
@@ -460,8 +513,19 @@ def read_seats(source: str, server: str, api_key: str) -> list[Seat]:
     return seats
 
 
+def with_foreign_variables_stripped(launch, entitlement, records=None):
+    """Strip every OTHER stored record's API-key variable from what the child inherits."""
+    from . import entitlements as ent_mod
+
+    records = ent_mod.load() if records is None else records
+    foreign = ent_mod.foreign_variables(entitlement, records)
+    keep = set(launch.env)  # a variable the selection itself set is never stripped
+    unset = sorted({*launch.env_unset, *(v for v in foreign if v not in keep)})
+    return replace(launch, env_unset=tuple(unset))
+
+
 def make_adapter_factory(name: str, binary: str | None, model: str = "",
-                         tuning: "Tuning | None" = None):
+                         tuning: "Tuning | None" = None, entitlement=None):
     """Resolve the named vendor NOW, so a bad one refuses before any worktree exists.
 
     The version check happens here rather than after launch, because a mismatch that
@@ -480,6 +544,10 @@ def make_adapter_factory(name: str, binary: str | None, model: str = "",
             seat, tree, instruction_file, found.binary, model, tuning,
             debug_file=debug_file,
         )
+        if entitlement is not None:
+            # Selects the record's handle or refuses; never falls back to the default login.
+            launch = found.adapter.select_entitlement(launch, entitlement)
+            launch = with_foreign_variables_stripped(launch, entitlement)
         return replace(launch, binary_version=found.version)
 
     return factory
@@ -777,6 +845,7 @@ def _until(args) -> int:
                 max_children=args.max_children,
                 child_wall_clock=args.child_wall_clock,
                 quiet_after=args.quiet_after,
+                registration_window=args.registration_window,
             ),
             workspace=Path(args.workspace) if args.workspace else None,
             debug=args.debug,
@@ -785,7 +854,8 @@ def _until(args) -> int:
             budget=args.budget or None,
             shared=_shared_servers(args),
             tiers=tiers,
-            launch_for=lambda name, model="": make_adapter_factory(name, None, model),
+            launch_for=lambda name, model="", entitlement=None: make_adapter_factory(
+                name, None, model, entitlement=entitlement),
             matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
             merge=bool(args.merge),
             base_branch=args.base,
@@ -860,7 +930,8 @@ def _serve_stdio(args) -> int:
                 client=client,
                 launch_for=lambda name, model="", tuning=None: make_adapter_factory(name, None, model, tuning),
                 lock=acquired,
-                limits=Limits(max_workers=args.max_workers, child_wall_clock=args.child_wall_clock),
+                limits=Limits(max_workers=args.max_workers, child_wall_clock=args.child_wall_clock,
+                          registration_window=args.registration_window),
                 tiers=tiers,
                 matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
                 shared=_shared_servers(args),
@@ -933,7 +1004,8 @@ def _serve_attached(root: Path, workspace: Path, client: Graphban,
         client=client,
         launch_for=lambda name, model="", tuning=None: make_adapter_factory(name, None, model, tuning),
         lock=None,
-        limits=Limits(max_workers=args.max_workers, child_wall_clock=args.child_wall_clock),
+        limits=Limits(max_workers=args.max_workers, child_wall_clock=args.child_wall_clock,
+                          registration_window=args.registration_window),
         tiers=tiers,
         matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
         shared=_shared_servers(args),
@@ -1140,6 +1212,23 @@ def _surface(args) -> int:
     return 0
 
 
+def gate_report(missing: list[str], *, item_id: str = "") -> str:
+    """What to tell a child whose branch the touchpoint gate would refuse (GRPH-1393).
+
+    Names the files and the exact call that declares them; that call's `evidence` note is the
+    record of the declaration. "" when nothing is outside.
+    """
+    if not missing:
+        return ""
+    shown = ", ".join(missing)
+    return (
+        f"touchpoint gate: {len(missing)} changed file(s) are outside every declared touchpoint "
+        f"and the supervisor will NOT open a PR for this branch: {shown}\n"
+        f"Declare them: update_item(id=\"{item_id or '<item>'}\", touchpoints={missing!r}, "
+        f"evidence=[{{\"kind\": \"note\", \"detail\": \"declared touchpoints: {shown}\"}}])"
+    )
+
+
 def _teardown(args) -> int:
     return teardown_mod.run(args.name, prd=args.prd, dry_run=args.dry_run,
                             keep_clone=args.keep_clone)
@@ -1165,6 +1254,28 @@ def _gc() -> int:
         print("gbfleet gc: something is still on disk that this pass could not remove",
               file=sys.stderr)
         return 1
+    return 0
+
+
+def _entitlement(args) -> int:
+    from . import entitlements as ent_mod
+
+    try:
+        if args.act == "add":
+            payload = (json.loads(args.json) if args.json else
+                       {"name": args.name, "vendor": args.vendor, "kind": args.kind,
+                        "handle": args.handle})
+            ent_mod.add(ent_mod.parse(payload))
+        elif args.act == "list":
+            print(ent_mod.format_list(ent_mod.load()))
+        elif args.act == "remove":
+            ent_mod.remove(args.name)
+        else:
+            print("gbfleet entitlement: choose add, list or remove.", file=sys.stderr)
+            return 2
+    except (ent_mod.EntitlementError, json.JSONDecodeError) as exc:
+        print(f"gbfleet entitlement: {exc}", file=sys.stderr)
+        return 2
     return 0
 
 
@@ -1205,6 +1316,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "gc":
         return _gc()
+
+    if args.command == "check-touchpoints":
+        from . import touchpoints as tp_mod
+        from .supervisor import is_generated
+        try:
+            measured = tp_mod.measure_checkout(args.path)
+        except ValueError as exc:
+            print(f"gbfleet check-touchpoints: {exc}", file=sys.stderr)
+            return 2
+        said = gate_report(tp_mod.gate_missing(measured, args.declared, ignore=is_generated),
+                           item_id=args.item)
+        print(said or "touchpoint gate: every changed file is covered by a declared touchpoint")
+        return 1 if said else 0
+
+    if args.command == "entitlement":
+        return _entitlement(args)
 
     if args.command == "teardown":
         return _teardown(args)
@@ -1282,6 +1409,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_children=args.max_children,
                 child_wall_clock=args.child_wall_clock,
                 quiet_after=args.quiet_after,
+                registration_window=args.registration_window,
             ),
             workspace=Path(args.workspace) if args.workspace else None,
             debug=args.debug,

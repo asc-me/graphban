@@ -7,6 +7,8 @@ directory, never anywhere git could see it.
 
 from __future__ import annotations
 
+import os
+
 import tempfile
 from pathlib import Path
 
@@ -25,6 +27,15 @@ POINTER = (
     "what to claim, and when to exit."
 )
 
+
+
+#: Seconds a claude child gets to register (GRPH-1400). Measured on a loaded machine:
+#: 67s from process start to `register_agent` — ~15s CLI startup (the operator's global
+#: skill listing rides into every child), a 26s first model response, a ToolSearch hop —
+#: and the shared 90s default killed the slow tail of healthy children with empty logs
+#: and `never_registered`. 240s covers that tail with room; `--registration-window`
+#: still overrides it per run.
+REGISTRATION_WINDOW = 240.0
 
 class ClaudeCode(Adapter):
     name = "claude"
@@ -101,6 +112,29 @@ class ClaudeCode(Adapter):
         """
         return ["--debug-file", str(path)]
 
+    def select_entitlement(self, launch: Launch, entitlement) -> Launch:
+        from dataclasses import replace
+        from ..adapters import EntitlementUnsupported
+
+        unset: tuple[str, ...] = ()
+        if entitlement.kind == "subscription":
+            env = {"CLAUDE_CONFIG_DIR": entitlement.handle}
+            # An inherited key outranks the login in `claude`; leaving it would start the
+            # key's account, not the one this record's config directory signed in.
+            unset = ("ANTHROPIC_API_KEY",)
+        elif entitlement.kind == "api_key":
+            # The variable NAMED by the handle is read at launch to hand to the child.
+            value = os.environ.get(entitlement.handle)
+            if value is None:
+                raise EntitlementUnsupported(
+                    f"entitlement {entitlement.name!r}: ${entitlement.handle} is not set")
+            env = {"ANTHROPIC_API_KEY": value}
+        else:
+            raise EntitlementUnsupported(
+                f"adapter 'claude' has no handle to select for a {entitlement.kind} entitlement")
+        return replace(launch, env={**launch.env, **env},
+                       env_unset=tuple(sorted({*launch.env_unset, *unset})))
+
     def launch(
         self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
         model: str = "", tuning: Tuning | None = None, *,
@@ -130,6 +164,12 @@ class ClaudeCode(Adapter):
                 # more reach than anybody granted it.
                 "--strict-mcp-config",
                 "--mcp-config", str(seat_file),
+                # GRPH-1402. `--strict-mcp-config` confines servers, not skills: every child
+                # carried the operator's ~156 user-level and plugin skills (35k chars) in its
+                # first request. Dropping the `user` settings source keeps the repo's own
+                # `.claude/skills/` (project) and drops those; auth is unaffected (OAuth
+                # credentials are not a settings source, unlike `--bare`).
+                "--setting-sources", "project,local",
                 *self.model_argv(model),
                 *self.tuning_argv(tuning or Tuning()),
                 # Headless means nobody is there to answer a permission prompt. PRD-22's
@@ -143,4 +183,10 @@ class ClaudeCode(Adapter):
             config=seat.mcp_config(),
             instruction="",
             stdin_file=instruction_file,
+            # GRPH-1400. Claude Code defers MCP tools behind ToolSearch by default, so a
+            # fresh child spent a whole extra model round trip finding `register_agent`
+            # before it could call it. Off, the seat's two servers' tools are in the first
+            # request. Measured: the `deferred_tools_delta` attachment disappears.
+            env={"ENABLE_TOOL_SEARCH": "false"},
+            registration_window=REGISTRATION_WINDOW,
         )

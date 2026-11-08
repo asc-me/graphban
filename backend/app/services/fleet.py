@@ -3490,7 +3490,12 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # this path used to write the status directly, so a reviewer who linked a PR and
     # signed it off in the same minute — the defect the cooldown tests name — sailed
     # through. Same helper, same message.
-    items_svc.refuse_if_pr_cooling_down(db, item, evidence or [], commit=commit)
+    carried = items_svc.refuse_if_pr_cooling_down(db, item, evidence or [], commit=commit)
+    if carried:
+        # GRPH-1411: the gate let this through on a run attested on another item; the note
+        # naming that run is stored with the verdict.
+        carried = items_svc.normalize_evidence(carried)
+        fresh, merged = fresh + carried, merged + carried
     # THE CALL, again (GRPH-1007). `_predicate` reports honestly and `_predicate_admits` reads
     # it, but the gate those two serve lives in `update_item` — and this function writes the
     # status directly. So the refusal has to be made HERE, next to the cooldown refusal that
@@ -3557,6 +3562,69 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     return item
 
 
+#: The `detail` prefix of the receipt the gbfleet Merger writes when a squash lands
+#: (supervisor.Merger._record). Its presence means the merge happened.
+MERGE_RECEIPT_PREFIX = "merged by gbfleet"
+
+#: The `detail` prefix of the `pr_opened` receipt (`_observation_receipt`). Its presence
+#: means gbfleet proposed this item's PR, so the Merger is the one holding its merge.
+PR_RECEIPT_PREFIX = "draft PR opened by gbfleet"
+
+
+def merger_holds(item: Item) -> bool:
+    """Did gbfleet open this item's PR? (GRPH-1389)
+
+    Only then is a `done` item waiting on the Merger. A `done` item with no such receipt was
+    merged by hand, or before the Merger existed, or in a project that does not use it, and
+    nothing about it is pending.
+    """
+    return any(
+        isinstance(e, dict) and e.get("kind") == "url"
+        and str(e.get("url") or "").strip()
+        and str(e.get("detail") or "").startswith(PR_RECEIPT_PREFIX)
+        for e in item.evidence or [])
+
+
+def merge_landed(item: Item) -> bool:
+    """Has this item's merge been recorded? (GRPH-1389)
+
+    Two receipts say so: the gbfleet Merger's `url` row carrying the merge commit, and an
+    owner's `owner.close` attestation for work they merged by hand. Anything else is a
+    `done` item whose PR has not landed. Its merge can still fail on a rebase conflict.
+    """
+    for e in item.evidence or []:
+        if not isinstance(e, dict):
+            continue
+        if (e.get("kind") == "url" and str(e.get("commit") or "").strip()
+                and str(e.get("detail") or "").startswith(MERGE_RECEIPT_PREFIX)):
+            return True
+    return any(a.get("adapter") == items_svc.OWNER_CLOSE_ADAPTER
+               for a in items_svc.valid_attestations(item.evidence or []))
+
+
+def _require_bounceable(item: Item) -> None:
+    """`review`, or `done` with a gbfleet PR and no merge landed (GRPH-1389).
+
+    A signed-off item whose PR hits a rebase conflict at merge time cannot land, and CI
+    cannot run on it. The Merger only watches `done` items. If bounce refused `done`, every
+    conflict would leave a PR stuck with no way back to its author. A merged item is past
+    any verdict, so it stays refused.
+    """
+    if item.status == "done":
+        if merge_landed(item):
+            raise NotInReview(
+                f"{item.key} is done and its merge has landed, so there is nothing to bounce — "
+                "file a new item for follow-up work")
+        if not merger_holds(item):
+            # Shipped work merged by hand carries no merge receipt either. Without a gbfleet
+            # PR receipt nothing says a merge is pending, so a bounce would reopen it.
+            raise NotInReview(
+                f"{item.key} is done and gbfleet opened no PR for it, so no merge is pending "
+                "and there is nothing to bounce — file a new item for follow-up work")
+        return
+    _require_in_review(item, "bounce")
+
+
 def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
            lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item:
     """Send an item back to `next`, pinned to its AUTHOR for one lease period (D-f).
@@ -3571,7 +3639,10 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     item = db.get(Item, item_id)
     if item is None:
         raise ValueError(f"item not found: {item_id}")
-    _require_in_review(item, "bounce")
+    _require_bounceable(item)
+    # A `done` item comes back because its merge failed, not because review rejected it.
+    # The sign-off stands as a verdict, so no review verdict or attempt outcome is recorded.
+    unmerged = item.status == "done"
     if not (reason or "").strip():
         # A bounce without a reason is a rejection the author cannot act on, and it costs
         # them a full cycle to discover that.
@@ -3597,8 +3668,9 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     item.bounce_reason = reason.strip()
     from app.services import delegation as delegation_svc
     from app.services import harness as harness_svc
-    delegation_svc.on_outcome(db, item, "bounced")
-    harness_svc.record_review_verdict(db, item, agent_id, "bounced")
+    if not unmerged:
+        delegation_svc.on_outcome(db, item, "bounced")
+        harness_svc.record_review_verdict(db, item, agent_id, "bounced")
     item.blocker = ""
     db.commit()
     db.refresh(item)
@@ -4146,6 +4218,55 @@ def areas_collide(a: list[str], b: list[str]) -> list[str]:
     return out
 
 
+def colliding_pairs(a: list[str], b: list[str], *, hard: bool = False) -> list[tuple[str, str]]:
+    """(mine, theirs) for each area of `a` that collides, with the first area of `b` it hits.
+
+    The same rule as `areas_collide`, kept as pairs so a refusal can name BOTH sides
+    (GRPH-1399): "reserved by GRPH-A14717" sends the operator hunting through twenty
+    touchpoints; "backend/tests/* vs backend/tests/test_graphban_release.py" is the answer.
+    `hard=True` keeps only the pairs that block a drain (`hard_collide`, GRPH-1389).
+    """
+    out = []
+    for x in a:
+        for y in b:
+            if (hard_collide if hard else areas_collide)([x], [y]):
+                out.append((x, y))
+                break
+    return out
+
+
+def describe_pairs(pairs: list[tuple[str, str]], *, cap: int = 3) -> str:
+    """"theirs vs mine, …" — the holder's area first, as the refusal reads "reserved by"."""
+    shown = [f"{theirs} vs {mine}" for mine, theirs in pairs[:cap]]
+    more = len(pairs) - len(shown)
+    return ", ".join(shown) + (f" and {more} more" if more > 0 else "")
+
+
+#: Areas whose collisions git cannot see (GRPH-1389). Two new migrations both merge cleanly
+#: and leave two alembic heads, so a lease over these stays exclusive. Every other overlap
+#: is a SOFT lease: git reports a real conflict at merge time, so drains may overlap.
+HARD_AREAS: tuple[str, ...] = ("backend/alembic/versions",)
+
+
+def is_hard_area(area: str) -> bool:
+    """True when `area` is (or lies under) a hard-leased path. A trailing glob is ignored."""
+    n = _normalise_area(area)
+    while n.endswith("*") or n.endswith("/"):
+        n = n.rstrip("*").rstrip("/")
+    return any(n == h or n.startswith(h + "/") or h.startswith(n + "/") or h == n
+               for h in HARD_AREAS if n)
+
+
+def hard_collide(a: list[str], b: list[str]) -> list[str]:
+    """The overlaps in `areas_collide` that must stay exclusive: those touching a hard area.
+
+    Reservation checks use this; `areas_collide` still defines clustering, so items that
+    overlap stay one cluster for one agent, while two DRAINS no longer block each other on
+    files git can merge."""
+    return [x for x in areas_collide(a, b)
+            if is_hard_area(x) or any(is_hard_area(y) and areas_collide([x], [y]) for y in b)]
+
+
 def reserve_areas(db: Session, *, agent_id: str, item_id: str, areas: list[str],
                   expires_at: datetime, predicted: bool) -> None:
     """THE one place an `AreaReservation` is constructed (PRD-20 §1.3, guarded by
@@ -4272,6 +4393,8 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     # Scoping here rather than skipping out-of-scope members below is also what keeps
     # `claim_item`'s refusal unreachable from this path: the two agree by construction.
     scope = items_svc.seat_scope(db, agent_id)
+    #: (mine, theirs) for the first collision of each refused cluster — the refusal names both.
+    collided: list[tuple[str, str]] = []
 
     for cluster in collision_svc.clusters_for_project(db, project_id,
                                                        lease_seconds=lease_seconds,
@@ -4279,8 +4402,10 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         members = set(cluster.get("items") or [])
         free = set().union(*[o for o in overrides if members <= o]) if overrides else set()
         blocked = [r.area for r in taken if r.agent_id != agent_id and r.item_id not in free]
-        overlap = areas_collide(cluster.get("areas") or [], blocked)
+        overlap = hard_collide(cluster.get("areas") or [], blocked)
         if overlap:
+            if len(collided) < 3:
+                collided.extend(colliding_pairs(cluster.get("areas") or [], blocked, hard=True)[:1])
             continue
         ids = (cluster.get("items") or [])[:_capped(db, project_id, cluster, max_items)]
         claimed = [it for it in (items_svc.claim_item(db, i, agent_id, lease_seconds=lease_seconds)
@@ -4312,6 +4437,7 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         free_in = max(0, int((_aware(soonest) - now).total_seconds())) if soonest else None
         reason = ("all ready clusters collide with areas held by "
                   + ", ".join(held)
+                  + (f" ({describe_pairs(collided)})" if collided else "")
                   + (f" — the earliest frees in {free_in}s" if free_in is not None else ""))
     else:
         # Two states, and the difference decides what the caller does next: an unscoped agent

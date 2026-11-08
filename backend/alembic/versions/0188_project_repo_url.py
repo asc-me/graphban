@@ -3,8 +3,8 @@
 Nullable and never backfilled: NULL means nobody said, which `gban setup` reads as "fall back to
 the name match", not as "this project has no repository".
 
-Revision ID: 0187
-Revises: 0186
+Revision ID: 0188
+Revises: 0187
 """
 
 from typing import Sequence, Union
@@ -12,8 +12,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0187"
-down_revision: Union[str, None] = "0186"
+revision: str = "0188"
+down_revision: Union[str, None] = "0187"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

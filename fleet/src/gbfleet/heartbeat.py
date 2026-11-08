@@ -103,12 +103,27 @@ def keep(wave, children, client, *, now: float | None = None) -> None:
                 payload["commit"] = commit
             try:
                 reply = client.post_observation(**payload)
-                if isinstance(reply, dict) and reply.get("extended") is False:
+                if (isinstance(reply, dict) and reply.get("extended") is False
+                        and _still_in_progress(client, item_id)):
                     _note_lapsed_live(wave, child, item_id)
             except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missed beat
                 wave.observations_refused += 1
                 wave.failures.append(f"{item_id}: lease not extended ({exc})")
         child.lease_kept_at = moment
+
+
+def _still_in_progress(client, item_id: str) -> bool:
+    """GRPH-1387. `extended: false` is a lapse only while the item is still `in_progress`.
+
+    A builder that has just moved its item to review, done or released has no build lease
+    to extend; that is a hand-off, not a lapse. When the status cannot be read, nothing is
+    recorded: a false "lapsed" line makes a healthy wave look stuck.
+    """
+    try:
+        got = client.call("get_item_details", id=item_id)
+    except Exception:  # noqa: BLE001 — an unreadable status is not a lapse
+        return False
+    return isinstance(got, dict) and got.get("status") == "in_progress"
 
 
 def _note_lapsed_live(wave, child, item_id: str) -> None:

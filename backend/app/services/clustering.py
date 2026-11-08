@@ -7,6 +7,7 @@ context-switching. Also auto-populates the `code` link type from touchpoint over
 from __future__ import annotations
 
 import fnmatch
+import re
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
@@ -33,6 +34,13 @@ def why_match(x: str, y: str) -> str:
     if x == y:
         return "exact"
     if ("*" in x and fnmatch.fnmatch(y, x)) or ("*" in y and fnmatch.fnmatch(x, y)):
+        # GRPH-1399: a glob over a test folder and one named test file in it. Named, so the
+        # clustering view can say why they did not collide, and in `NON_COLLIDING`, so they
+        # do not. Test files are added per item and almost never edited by two items at once;
+        # `backend/tests/*` held by one long build had reserved every new test file for its
+        # whole lease, and stalled every drain whose item added one.
+        if _test_glob_over_test_file(x, y) or _test_glob_over_test_file(y, x):
+            return "test-glob"
         return "glob"
     if "/" in x and "/" in y and x.rsplit("/", 1)[0] == y.rsplit("/", 1)[0]:
         # GRPH-951: two NAMED files are a statement about exactly which files the work
@@ -44,6 +52,31 @@ def why_match(x: str, y: str) -> str:
             return ""
         return "directory"
     return ""
+
+
+#: Rules `why_match` names that do NOT make two touchpoints collide (GRPH-1399). Named rather
+#: than returned as "" so a view can explain the pair it let through.
+NON_COLLIDING = frozenset({"test-glob"})
+
+_TEST_DIRS = frozenset({"tests", "test", "__tests__", "spec", "specs"})
+_TEST_FILE = re.compile(r"^(test_.+|.+_test\.[^.]+|.+\.(test|spec)\.[^.]+)$")
+
+
+def _test_glob_over_test_file(glob: str, path: str) -> bool:
+    """Is `glob` a wildcard over a test folder and `path` one named test file under it?
+
+    The folder is the glob's fixed part, before its first wildcard, and must contain a test
+    directory segment (`tests`, `__tests__`, …). The file must be named like a test
+    (`test_x.py`, `x_test.go`, `x.test.tsx`, `x.spec.ts`): `conftest.py`, fixtures and
+    helpers are shared by every test in the folder, so a glob still reserves them.
+    """
+    if not any(c in glob for c in "*?[") or not is_file(path):
+        return False
+    fixed = re.split(r"[*?\[]", glob, maxsplit=1)[0]
+    folder = fixed.rsplit("/", 1)[0] if "/" in fixed else ""
+    if not _TEST_DIRS.intersection(folder.split("/")):
+        return False
+    return bool(_TEST_FILE.match(path.rsplit("/", 1)[-1]))
 
 
 def is_file(path: str) -> bool:
@@ -62,12 +95,14 @@ def is_file(path: str) -> bool:
 
 def _match(x: str, y: str) -> bool:
     """Two touchpoints relate if equal, one glob-matches the other, or they share a directory
-    and at least one of them is not a concrete file (GRPH-951).
+    and at least one of them is not a concrete file (GRPH-951) — unless the rule that relates
+    them is one of `NON_COLLIDING` (GRPH-1399: a test-folder glob and a named test file).
 
     One definition, expressed through `why_match`: two functions answering "do these relate?"
     is how the reservation check and the partition came to disagree in the first place.
     """
-    return bool(why_match(x, y))
+    rule = why_match(x, y)
+    return bool(rule) and rule not in NON_COLLIDING
 
 
 def shared_touchpoints(a: list[str], b: list[str]) -> list[str]:
