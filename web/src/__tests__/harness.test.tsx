@@ -516,6 +516,32 @@ describe("Harness tabs", () => {
     expect(screen.getByText(/This page changes nothing/)).toBeInTheDocument();
   });
 
+  it("badges the Changes tab with the default-filter count and gives the total in its tooltip", async () => {
+    const mk = (rule: string, n: number) => ({
+      rule, key: `${rule}:${n}`, evidence_hash: "abc",
+      title: `${rule} card ${n}`, detail: "d",
+      cells: [], siblings: [],
+      draft: { where: "test" },
+      replay: { considered: 0, changed: 0, skipped_no_resolution: 0, truncated: false, moves: [], summary: "" },
+      thresholds: {}, state: "new" as const, previously: null,
+    });
+    harnessRecommendations.mockResolvedValue({
+      project_id: "core",
+      cards: [mk("R2", 1), mk("R5", 1), mk("R5", 2), mk("R5", 3), mk("R7", 1)],
+      rules: ["R1", "R2", "R3", "R4", "R5", "R6", "R7"], lessons_drafted: [], window_days: 90, floor: 5,
+    });
+    show();
+    await screen.findByTestId("harness-cell");
+    const changesTab = screen.getAllByTestId("harness-tab")[2];
+    const badge = await within(changesTab).findByTestId("harness-tab-badge");
+    expect(badge).toHaveTextContent(/^2$/);
+    expect(badge).toHaveAttribute("title", "5 cards in total");
+    harnessRecommendations.mockResolvedValue({
+      project_id: "core", cards: [], rules: ["R1", "R2", "R3", "R4", "R5", "R6"],
+      lessons_drafted: [], window_days: 90, floor: 5,
+    });
+  });
+
   it("shows the effort curve on the Performance tab for above-floor non-family cells", async () => {
     harness.mockResolvedValueOnce(
       report({

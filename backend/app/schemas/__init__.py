@@ -1816,6 +1816,8 @@ class RuleToggleOut(BaseModel):
     params: RuleToggleValueOut
     locked: bool
     locked_by: str | None = None
+    #: `merge.done_predicates` only (GRPH-1426): each predicate `done` needs, with its source.
+    effective_predicates: list[dict] | None = None
 
 
 class RuleTogglesOut(BaseModel):

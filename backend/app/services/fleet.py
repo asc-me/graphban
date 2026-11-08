@@ -1282,11 +1282,7 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     "put_canvas": ("planner", "worker"),
     "file_finding": ("planner", "worker"),
     "resolve_finding": ("planner", "worker"),
-    "accept_prompt": ("planner",),
-    "accept_design": ("planner",),
-    # GRPH-1304. Accepting the constraints hash is a person's decision, relayed like
-    # accept_prompt. Putting the candidate stays open to whoever builds the set.
-    "accept_set_constraints": ("planner",),
+    # GRPH-1368: no accept tool remains; a set aligns to its PRD (spec_alignment).
     "update_prd": ("planner",),
     "decompose_prd": ("planner",),
     "grill_prd": ("planner",),
@@ -3514,6 +3510,8 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             "against — or accept the absence on the record with "
             "waive={\"" + unwaived[0] + "\": \"<why>\"}."
         )
+    # GRPH-1426: a sign-off passes the same required-predicates gate as `update_item`.
+    items_svc.refuse_if_predicates_missing(db, item, merged, (commit or item.head_commit or "").strip())
     release_reservations(db, item_id=item.id)
     item.reviewed_by = agent_id
     # Who reviewed it, by tier (GRPH-945). Kept whether or not a commit was attested: the

@@ -44,7 +44,8 @@ def world(db, pid):
     prd = prd_svc.create_prd(db, title="Screens", project_id=pid, body=BODY)
     approve(db, prd)
     ds = ds_svc.open_design(db, pid, prd.id)
-    ds_svc.put_set_constraints(db, pid, ds["id"], "Teal only.", screens=[{"screen": "home"}])
+    ds_svc.put_set_constraints(db, pid, ds["id"], "Teal only. Tokens and Spacing as the PRD says.",
+                               screens=[{"screen": "home"}])
     ds_svc.confirm_tier(db, pid, ds["id"], "home", "BACKED", "route exists")
     row = db.get(DesignSet, ds["id"])
     row.constraints_accepted = True
@@ -64,20 +65,20 @@ def _ready(db, pid, sid, be, person="dana"):
     return h, c["content_hash"]
 
 
-def test_compile_is_pure_and_refuses_unconfirmed_tier(db, pid, world):
+def test_compile_is_pure_and_needs_no_confirmed_tier(db, pid, world):
     _, sid = world
     a = _compile(db, pid, sid)
     b = _compile(db, pid, sid)
     assert a[0]["prompt_hash"] == b[0]["prompt_hash"] and a[0]["new"] and not b[0]["new"]
     assert len(ds_svc._prompts(db, sid)) == 1
     ds_svc.put_set_constraints(db, pid, sid, "Teal only.", screens=[{"screen": "away"}])
-    with pytest.raises(errors.Validation) as ei:
-        _compile(db, pid, sid)
-    assert "home" in str(ei.value) and "away" in str(ei.value) or "away" in str(ei.value)
-    assert len(ds_svc._prompts(db, sid)) == 1  # nothing written
+    out = _compile(db, pid, sid)  # GRPH-1368: an unconfirmed tier no longer refuses
+    assert {r["screen"] for r in out} == {"home", "away"}
+    away = next(r for r in db.get(DesignSet, sid).screens if r.screen == "away")
+    assert away.tier == "UNBACKED" and not away.tier_confirmed
 
 
-def test_accept_set_constraints_is_a_person_and_unblocks_compile(db, pid):
+def test_accept_set_constraints_is_a_person_but_compile_never_needed_it(db, pid):
     """GRPH-1304. The flag is not a column a test pokes. A person accepts the current hash."""
     from app.models import DesignAcceptance
 
@@ -88,8 +89,7 @@ def test_accept_set_constraints_is_a_person_and_unblocks_compile(db, pid):
         ds_svc.accept_set_constraints(db, pid, sid, "agent:GRPH-A2", "dana")
     ds_svc.put_set_constraints(db, pid, sid, "Teal only.", screens=[{"screen": "home"}])
     ds_svc.confirm_tier(db, pid, sid, "home", "BACKED", "route exists")
-    with pytest.raises(errors.Validation, match="constraints"):
-        _compile(db, pid, sid)
+    _compile(db, pid, sid)  # no prior accept
     with pytest.raises(errors.Validation, match="no person"):
         ds_svc.accept_set_constraints(db, pid, sid, "agent:GRPH-A2")
     with pytest.raises(errors.Validation, match="not a person"):
@@ -105,17 +105,20 @@ def test_accept_set_constraints_is_a_person_and_unblocks_compile(db, pid):
     assert again["constraints_accepted"] is False
 
 
-def test_compile_refuses_unaccepted_constraints_and_candidates_are_not_indexed(db, pid, world):
+def test_compile_with_no_prior_accept_and_only_an_aligned_set_is_indexed(db, pid, world):
     _, sid = world
+    # constraints that miss a PRD heading: the compiled prompt (which quotes the PRD) is not
+    # searchable, because the quote is not the spec (GRPH-1368)
+    ds_svc.put_set_constraints(db, pid, sid, "Teal only.")
     db.get(DesignSet, sid).constraints_accepted = False
-    db.commit()
-    with pytest.raises(errors.Validation, match="constraints"):
-        _compile(db, pid, sid)
-    db.get(DesignSet, sid).constraints_accepted = True
     db.commit()
     _compile(db, pid, sid)
     hits = docs.search_docs(db, pid, "teal", include_design=True)["results"]
     assert all(r["kind"] == "prd" for r in hits)
+    ds_svc.put_set_constraints(db, pid, sid, "Teal only. Tokens and Spacing as the PRD says.")
+    _compile(db, pid, sid)
+    hits = docs.search_docs(db, pid, "teal", include_design=True)["results"]
+    assert {r["kind"] for r in hits} == {"prd", "design_prompt"}
 
 
 def test_accept_prompt_needs_a_person_who_is_not_the_compiler(db, pid, world):
@@ -173,10 +176,10 @@ def test_accept_design_refuses_an_outdated_accepted_prompt(db, pid, world, be):
     assert f["recompiled"]["prompt_hash"] != h  # only this screen, right after the correction
     ds_svc.resolve_finding(db, pid, f["id"], "applied")
     ds_svc.put_canvas(db, pid, sid, "home", b"<html>1</html>", "text/html", h, backend=be)
-    with pytest.raises(errors.Validation, match="newer prompt"):
+    # compile pins the screen to its newest prompt, so the old one binds nothing
+    with pytest.raises(errors.Validation, match="no canvas stored against"):
         ds_svc.accept_design(db, pid, sid, "agent:GRPH-A2", "dana")
     h2 = f["recompiled"]["prompt_hash"]
-    ds_svc.accept_prompt(db, pid, sid, "home", "agent:GRPH-A2", "dana")
     ds_svc.put_canvas(db, pid, sid, "home", b"<html>2</html>", "text/html", h2, backend=be)
     out = ds_svc.accept_design(db, pid, sid, "agent:GRPH-A2", "dana")
     assert out["status"] == "accepted"
@@ -298,49 +301,6 @@ def test_frozen_set_refuses_compile_and_canvas(db, pid, world, be):
         ds_svc.put_canvas(db, pid, sid, "home", b"x", "text/html", "h", backend=be)
 
 
-def test_mcp_accept_set_constraints_from_a_bare_credential_is_a_relay(client, auth, db, pid, world):
-    """Over MCP a call with no agent_id is `key:<name>`; it relays a named person or nothing."""
-    from tests.test_documents import _mcp
-
-    _, sid = world
-    db.get(DesignSet, sid).constraints_accepted = False
-    db.commit()
-    key = client.post("/api/api-keys", json={"name": "conskey"}, headers=auth).json()["plaintext"]
-    h = {"X-API-Key": key}
-
-    def call(args, n):
-        return _mcp(client, h, "accept_set_constraints",
-                    {"design_set_id": sid, "project_id": pid, **args}, n).json()
-
-    for n, args in enumerate([{}, {"accepted_by": "key:conskey"}], 1):
-        body = call(args, n)
-        assert "error" in body or body["result"].get("isError"), body
-    ok = call({"accepted_by": "dana"}, 3)["result"]["structuredContent"]
-    assert (ok["accepted_by"], ok["relayed_by"], ok["constraints_accepted"]) == (
-        "dana", "key:conskey", True)
-    _compile(db, pid, sid)
-
-
-def test_mcp_accept_prompt_from_a_bare_credential_is_a_relay(client, auth, db, pid, world):
-    """Over MCP a call with no agent_id is `key:<name>`; it relays a named person or nothing."""
-    from tests.test_documents import _mcp
-
-    _, sid = world
-    _compile(db, pid, sid)
-    key = client.post("/api/api-keys", json={"name": "fleetkey"}, headers=auth).json()["plaintext"]
-    h = {"X-API-Key": key}
-
-    def call(args, n):
-        return _mcp(client, h, "accept_prompt",
-                    {"design_set_id": sid, "screen": "home", "project_id": pid, **args}, n).json()
-
-    for n, args in enumerate([{}, {"accepted_by": "key:fleetkey"}], 1):
-        body = call(args, n)
-        assert "error" in body or body["result"].get("isError"), body
-    ok = call({"accepted_by": "dana"}, 3)["result"]["structuredContent"]
-    assert (ok["accepted_by"], ok["relayed_by"]) == ("dana", "key:fleetkey")
-
-
 def test_mcp_review_loop_round_trip(client, auth, db, pid, world, tmp_path, monkeypatch):
     """The whole loop over MCP, so the outputSchema probe sees every review tool emit."""
     import base64
@@ -364,7 +324,6 @@ def test_mcp_review_loop_round_trip(client, auth, db, pid, world, tmp_path, monk
         return body["result"]["structuredContent"]
 
     ph = call(compiler, "compile_prompts", {"design_set_id": sid})["prompts"][0]["prompt_hash"]
-    call(relay, "accept_prompt", {"design_set_id": sid, "screen": "home", "accepted_by": "dana"})
     canvas = call(relay, "put_canvas", {
         "design_set_id": sid, "screen": "home", "mime": "text/html", "prompt_hash": ph,
         "bytes_b64": base64.b64encode(b"<html>mcp</html>").decode()})["content_hash"]
@@ -375,12 +334,11 @@ def test_mcp_review_loop_round_trip(client, auth, db, pid, world, tmp_path, monk
     assert call(relay, "resolve_finding",
                 {"finding_id": f["id"], "status": "applied"})["status"] == "applied"
     ph2 = f["recompiled"]["prompt_hash"]
-    call(relay, "accept_prompt", {"design_set_id": sid, "screen": "home", "accepted_by": "dana"})
     call(relay, "put_canvas", {
         "design_set_id": sid, "screen": "home", "mime": "text/html", "prompt_hash": ph2,
         "bytes_b64": base64.b64encode(b"<html>mcp2</html>").decode()})
-    out = call(relay, "accept_design", {"design_set_id": sid, "accepted_by": "dana"})
-    assert (out["status"], out["accepted_by"]) == ("accepted", "dana")
+    out = call(relay, "get_design_set", {"design_set_id": sid})
+    assert out["alignment"]["approved_to_build"] is True
 
 
 def test_canvas_check_gates_applied(db, pid, world, be):
