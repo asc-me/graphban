@@ -77,9 +77,21 @@ TEST_SCOPE_MODES: dict[str, tuple[str, str]] = {
                        "The builder runs the tests it wrote or changed, the module's existing "
                        "tests and the sabotage check; the PR's CI runs the full suites."),
 }
+#: GRPH-1425: whether a branch with a file outside every declared touchpoint is held back from
+#: a PR or only warned about. The merge-time `covering` check (GRPH-1408) is not this rule's.
+UNDECLARED_FILES_RULE = "build.undeclared_files"
+UNDECLARED_FILES_DEFAULT = "hold"
+UNDECLARED_FILES_MODES: dict[str, tuple[str, str]] = {
+    "hold": ("Hold the PR",
+             "The PR is held and a wait names the files until the touchpoints are widened."),
+    "warn": ("Open the PR and warn",
+             "The PR is opened; the files are recorded as a wait and a note on the item, and "
+             "the merge still refuses a file no signed-off item covers."),
+}
 #: A string param that takes one of a closed set: rule id -> param -> allowed values.
 PARAM_CHOICES: dict[str, dict[str, tuple[str, ...]]] = {
     TEST_SCOPE_RULE: {"mode": tuple(TEST_SCOPE_MODES)},
+    UNDECLARED_FILES_RULE: {"mode": tuple(UNDECLARED_FILES_MODES)},
 }
 
 
@@ -154,6 +166,15 @@ def test_scope_mode(db: Session, project_id: str | None) -> str:
         return TEST_SCOPE_DEFAULT
     mode = resolve(db, TEST_SCOPE_RULE, project_id)["params"]["value"].get("mode")
     return mode if mode in TEST_SCOPE_MODES else TEST_SCOPE_DEFAULT
+
+
+def undeclared_files_mode(db: Session, project_id: str | None) -> str:
+    """`hold` (today's behaviour) or `warn`. A project that never set it, or a box whose pack
+    does not carry the rule, reads `hold`."""
+    if UNDECLARED_FILES_RULE not in LIBRARY:
+        return UNDECLARED_FILES_DEFAULT
+    mode = resolve(db, UNDECLARED_FILES_RULE, project_id)["params"]["value"].get("mode")
+    return mode if mode in UNDECLARED_FILES_MODES else UNDECLARED_FILES_DEFAULT
 
 
 def effective(db: Session, project_id: str | None) -> list[dict]:

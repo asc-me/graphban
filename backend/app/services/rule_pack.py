@@ -134,6 +134,12 @@ register_primitive(Primitive(
     "test_scope", "checked",
     Enforcer("doc", "docs/rules.md"),
     {"mode": Param("str")}))
+# GRPH-1425. `checked`: the supervisor reads `mode` (`hold` | `warn`) when it decides whether to
+# open a PR; the merge-time `covering` check refuses an uncovered file in either mode.
+register_primitive(Primitive(
+    "undeclared_files", "checked",
+    Enforcer("supervisor", "gbfleet until"),
+    {"mode": Param("str")}))
 register_primitive(Primitive(
     "evidence_attached", "checked",
     Enforcer("graphban_source", "app/services/items.py"),

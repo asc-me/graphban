@@ -5555,7 +5555,7 @@ def park(db: Session, attempt, *, agent_id: str | None = None,
 #: `merged_trunk` (the trunk was merged into the branch before it was proposed) and
 #: `behind_conflict`, the one kind that also moves the item (`_send_back_behind`).
 OBSERVATION_KINDS = ("cut_from", "pr_opened", "salvage", "withheld", "merged_trunk",
-                     "behind_conflict")
+                     "behind_conflict", "undeclared_warned")
 OBSERVATION_LATER = ("pushed_head",)
 
 _CUT_BASE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -5682,6 +5682,14 @@ def _observation_receipt(kind: str, *, branch: str, base: str | None, url: str |
         if not why:
             raise ObservationError(422, "merged_trunk names the ref and the sha merged")
         return {"kind": "note", "detail": f"gbfleet: `{branch}`: {why}"}
+    if kind == "undeclared_warned":
+        why = (reason or "").strip()
+        if not why:
+            raise ObservationError(422, "undeclared_warned names the files")
+        return {"kind": "note", "detail": (
+            f"gbfleet: `{branch}`: PR opened with file(s) outside every declared touchpoint "
+            f"(build.undeclared_files = warn): {why}. The merge still refuses a file no "
+            "signed-off item covers.")}
     if kind == "behind_conflict":
         why = (reason or "").strip()
         if not why:

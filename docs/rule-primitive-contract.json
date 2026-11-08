@@ -85,6 +85,17 @@
           "type": "str"
         }
       ]
+    },
+    {
+      "id": "undeclared_files",
+      "level": "checked",
+      "params": [
+        {
+          "name": "mode",
+          "required": false,
+          "type": "str"
+        }
+      ]
     }
   ]
 }

@@ -2549,7 +2549,26 @@ def _record_cut_from(wave: Wave, client, item_id: str | None, branch: str, base:
              kind="cut_from", branch=branch, base=base)
 
 
-def _refuse_proposal(wave: Wave, branch: str) -> str:
+def _undeclared_mode(client: Graphban | None) -> str:
+    """The project's `build.undeclared_files` mode (GRPH-1425): `hold` or `warn`. Anything
+    unreadable — no client, a client not allowed the tool, a server without the rule — is
+    `hold`, today's behaviour: a hold is never loosened by not knowing."""
+    if client is None:
+        return "hold"
+    try:
+        got = client.call("get_rule_toggles")
+    except (NotPermitted, ToolFailed, ServerUnreachable):
+        return "hold"
+    for t in (got or {}).get("toggles") or []:
+        if t.get("rule_id") == "build.undeclared_files":
+            params = t.get("params")
+            value = params.get("value") if isinstance(params, dict) else None
+            mode = (value or {}).get("mode") if isinstance(value, dict) else None
+            return "warn" if mode == "warn" else "hold"
+    return "hold"
+
+
+def _refuse_proposal(wave: Wave, branch: str, *, undeclared_mode: str = "hold") -> str:
     """Why this branch must not be proposed as a PR, or "" (GRPH-949, GRPH-1087).
 
     UNDECLARED and BEHIND were recorded and printed and never acted on, so one wave proposed
@@ -2566,7 +2585,7 @@ def _refuse_proposal(wave: Wave, branch: str) -> str:
     """
     reasons = []
     missing = wave.undeclared.get(branch) or []
-    if missing:
+    if missing and undeclared_mode != "warn":
         shown = ", ".join(missing[:5]) + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else "")
         reasons.append(f"changed file(s) outside every declared touchpoint: {shown} "
                        "(declare them with update_item(touchpoints=[...]) and a note; "
@@ -2616,7 +2635,10 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
             _record_salvage_receipt(wave, client, [item], own, _branch_head(repo, own))
         return
     _merge_behind(wave, repo, branch, base, items, client=client)
-    refused = _refuse_proposal(wave, branch)
+    undeclared_mode = _undeclared_mode(client) if wave.undeclared.get(branch) else "hold"
+    refused = _refuse_proposal(wave, branch, undeclared_mode=undeclared_mode)
+    if not refused and undeclared_mode == "warn":
+        _warn_undeclared(wave, client, items, branch)
     if refused:
         # Pushed already, so the work is readable; only the merge request is withheld.
         wave.proposed[branch] = propose_mod.Proposed(branch=branch, skipped=True, reason=refused)
@@ -2691,6 +2713,25 @@ def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, s
         # an evidence array would be `update_item`, which this client may not call.
         _observe(wave, client, item_id, "PR opened but not recorded",
                  kind="pr_opened", branch=branch, url=got.url)
+
+
+def _warn_undeclared(wave: Wave, client: Graphban | None, items: list[str],
+                     branch: str) -> None:
+    """`build.undeclared_files = warn` (GRPH-1425): the PR is opened, and the files are said
+    on the wave and on each item. The merge-time `covering` check still refuses a merge with a
+    file no signed-off item covers."""
+    missing = wave.undeclared.get(branch) or []
+    if not missing:
+        return
+    shown = ", ".join(missing[:8]) + (f" (+{len(missing) - 8} more)" if len(missing) > 8 else "")
+    observe.emit("wait", branch=branch, kind="proposal_warned_undeclared",
+                 detail="PR opened despite changed file(s) outside every declared "
+                        "touchpoint (build.undeclared_files = warn): " + shown)
+    if client is None:
+        return
+    for item_id in items:
+        _observe(wave, client, item_id, "undeclared-files warning not recorded",
+                 kind="undeclared_warned", branch=branch, reason=shown)
 
 
 def _record_withheld(wave: Wave, client: Graphban | None, items: list[str], branch: str,
