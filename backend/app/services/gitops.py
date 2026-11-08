@@ -33,6 +33,8 @@ logger = logging.getLogger("graphban.gitops")
 REVIEWER_BARS = ("sign_off", "forge", "both")
 NAMING_TOKENS = ("item_id", "tag", "slug", "version", "date")
 VERSION_SCHEMES = ("git_tag", "semver", "calver")
+MERGE_METHODS = ("squash", "merge", "rebase")
+DEFAULT_MERGE_METHOD = "squash"
 GITOPS_MODELS = ("push_to_base", "prs_to_base", "prs_to_integration")
 GITOPS_MODEL_LABELS = {
     "push_to_base": "Push to base",
@@ -90,6 +92,7 @@ COL = {
     "reviewer_bar": "gitops_reviewer_bar",
     "version_from": "gitops_version_scheme",
     "release_defined_in": "gitops_release_defined_in",
+    "merge_method": "gitops_merge_method",
 }
 _PATTERN_FIELDS = ("branch_name_pattern", "pr_title_pattern")
 _LITERAL_FIELDS = ("base_branch", "release_defined_in")
@@ -172,13 +175,14 @@ def _plan_ref(db: Session, project: Project | None) -> GitopsPlanRef | None:
 
 
 def _view(*, project_id, org_id, fields, version_from, model, state, was=None, projects=None,
-          writable=False, plan=None, release_defined_in=None) -> GitopsView:
+          writable=False, plan=None, release_defined_in=None, merge_method=None) -> GitopsView:
     return GitopsView(
         project_id=project_id,
         org_id=org_id,
         fields=fields,
         version_from=version_from,
         release_defined_in=release_defined_in if release_defined_in is not None else _unmeasured(),
+        merge_method=merge_method if merge_method is not None else _unmeasured(),
         model=model,
         plan=plan,
         control=_control(state, writable=writable),
@@ -224,6 +228,7 @@ def resolve_local(db: Session, project_id: str | None) -> GitopsView:
         fields=_fields_from({f: _pick(project, org, f) for f in FIELDS}),
         version_from=_pick(project, org, "version_from"),
         release_defined_in=_pick(project, org, "release_defined_in"),
+        merge_method=_pick(project, org, "merge_method"),
         model=_pick_model(project, org),
         plan=_plan_ref(db, project),
         state="local",
@@ -248,6 +253,10 @@ def resolve_org(db: Session, org_id: str) -> GitopsView:
         release_defined_in = (
             GitopsField(value=loc, source="org") if loc is not None else _unmeasured()
         )
+        merge_method = (
+            GitopsField(value=org.gitops_merge_method, source="org")
+            if org.gitops_merge_method is not None else _unmeasured()
+        )
         model = (
             GitopsField(value=org.gitops_model, source="org")
             if org.gitops_model is not None else _unmeasured()
@@ -255,6 +264,7 @@ def resolve_org(db: Session, org_id: str) -> GitopsView:
     else:
         version_from = _unmeasured()
         release_defined_in = _unmeasured()
+        merge_method = _unmeasured()
         model = _unmeasured()
     rows = db.scalars(
         select(Project).where(Project.org_id == org_id).order_by(Project.name)
@@ -266,6 +276,7 @@ def resolve_org(db: Session, org_id: str) -> GitopsView:
         fields=_fields_from(pairs),
         version_from=version_from,
         release_defined_in=release_defined_in,
+        merge_method=merge_method,
         model=model,
         state="local",
         projects=roster,
@@ -285,6 +296,7 @@ def live_view(cloud: GitopsView, *, was: GitopsWas, project_id: str | None) -> G
         fields=cloud.fields,
         version_from=cloud.version_from,
         release_defined_in=cloud.release_defined_in,
+        merge_method=cloud.merge_method,
         model=cloud.model,
         state=state,
         was=was,
@@ -396,6 +408,10 @@ def for_agent(view: GitopsView) -> dict:
         "value": view.release_defined_in.value,
         "source": view.release_defined_in.source,
     }
+    out["merge_method"] = {
+        "value": view.merge_method.value,
+        "source": view.merge_method.source,
+    }
     if view.control.state != "local":
         out["control"] = view.control.state
     if view.control.state == "linked_unreachable":
@@ -453,6 +469,8 @@ def _normalize_str(field: str, raw: str) -> str | None:
             )
     if field == "reviewer_bar" and value not in REVIEWER_BARS:
         raise ValueError(f"reviewer_bar must be one of: {', '.join(REVIEWER_BARS)}")
+    if field == "merge_method" and value not in MERGE_METHODS:
+        raise ValueError(f"merge_method must be one of: {', '.join(MERGE_METHODS)}")
     if field == "version_from" and value not in VERSION_SCHEMES:
         raise ValueError(f"version_from must be one of: {', '.join(VERSION_SCHEMES)}")
     return value

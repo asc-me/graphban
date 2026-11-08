@@ -91,6 +91,9 @@ _GITOPS_RULES = (
          "The single path or URL where the project's release process is written.",
          "advisory", _GITOPS_CONTEXT, "db", channel="context",
          gitops_field="release_defined_in"),
+    Rule("gitops.merge_method", "merge", "Merge method",
+         "How the supervisor merges a PR: squash (default), merge or rebase.",
+         "advisory", _GITOPS_CONTEXT, "db", channel="context", gitops_field="merge_method"),
 )
 
 RULES: tuple[Rule, ...] = _GITOPS_RULES + (
