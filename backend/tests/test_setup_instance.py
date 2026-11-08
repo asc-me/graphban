@@ -23,7 +23,8 @@ def _stranger(client):
 
 def test_non_admin_gets_403_and_anonymous_401(client):
     assert client.get("/api/setup/instance").status_code == 401
-    assert client.get("/api/setup/instance", headers=_stranger(client)).status_code == 403
+    r = client.get("/api/setup/instance", headers=_stranger(client))
+    assert r.status_code == 403 and r.json()["rule_id"] == "setup.posture_needs_instance_admin"
 
 
 def test_never_returns_a_value(client, auth, monkeypatch):
