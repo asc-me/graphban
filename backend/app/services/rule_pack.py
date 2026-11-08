@@ -50,7 +50,7 @@ from app.version import __version__
 
 #: The primitive API this server provides. Bump the minor for additive changes, the major for
 #: a removed primitive or a new required param; the pinned fixtures then fail the PR (below).
-PRIMITIVE_API = "1.6.0"
+PRIMITIVE_API = "1.7.0"
 
 #: Raw Ed25519 public keys (hex) whose signatures are trusted. The graphban-rules signing job
 #: holds the matching private key; it never enters this repo. An empty tuple would refuse every pack.
@@ -62,7 +62,7 @@ TRUSTED_PUBLIC_KEYS: tuple[str, ...] = (
 STAGES = ("Spec", "Plan", "Build", "Review", "Merge", "Release", "Learn")
 #: Strongest first; a template may claim no more than its primitive provides.
 CLAIM_ORDER = ("enforced", "checked")
-PARAM_TYPES = {"int": int, "bool": bool, "str": str}
+PARAM_TYPES = {"int": int, "bool": bool, "str": str, "list": list}
 MAX_ARTIFACT_BYTES = 5_000_000
 
 
@@ -134,6 +134,12 @@ register_primitive(Primitive(
     "test_scope", "checked",
     Enforcer("doc", "docs/rules.md"),
     {"mode": Param("str")}))
+# GRPH-1423. `enforced`: `fleet.hard_collide` refuses a second drain over a path in `paths`.
+# `paths` is a list of strings, checked when a person sets it (`rule_toggles._check_params`).
+register_primitive(Primitive(
+    "exclusive_areas", "enforced",
+    Enforcer("graphban_source", "app/services/fleet.py"),
+    {"paths": Param("list")}))
 register_primitive(Primitive(
     "evidence_attached", "checked",
     Enforcer("graphban_source", "app/services/items.py"),

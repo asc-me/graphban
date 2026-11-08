@@ -110,6 +110,7 @@
 "tests/test_evidence.py": 0.48,
 "tests/test_evidence_appends.py": 0.75,
 "tests/test_evidence_rollup.py": 1.73,
+"tests/test_exclusive_areas_rule.py": 0.84,
 "tests/test_export_import.py": 0.26,
 "tests/test_failover.py": 0.59,
 "tests/test_fallback_says_so.py": 0.43,

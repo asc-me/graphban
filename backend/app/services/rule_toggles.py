@@ -77,6 +77,10 @@ TEST_SCOPE_MODES: dict[str, tuple[str, str]] = {
                        "The builder runs the tests it wrote or changed, the module's existing "
                        "tests and the sabotage check; the PR's CI runs the full suites."),
 }
+#: GRPH-1423: the paths whose leases are exclusive, because git cannot see two agents collide
+#: there (two new migrations merge cleanly and leave two heads). A project sets its own list.
+EXCLUSIVE_AREAS_RULE = "plan.exclusive_areas"
+EXCLUSIVE_AREAS_DEFAULT: tuple[str, ...] = ("backend/alembic/versions",)
 #: A string param that takes one of a closed set: rule id -> param -> allowed values.
 PARAM_CHOICES: dict[str, dict[str, tuple[str, ...]]] = {
     TEST_SCOPE_RULE: {"mode": tuple(TEST_SCOPE_MODES)},
@@ -156,6 +160,17 @@ def test_scope_mode(db: Session, project_id: str | None) -> str:
     return mode if mode in TEST_SCOPE_MODES else TEST_SCOPE_DEFAULT
 
 
+def exclusive_paths(db: Session, project_id: str | None) -> tuple[str, ...]:
+    """The project's exclusive file areas. A project that never set the rule — or a box whose
+    pack does not carry it — reads the default, today's behaviour."""
+    if EXCLUSIVE_AREAS_RULE not in LIBRARY:
+        return EXCLUSIVE_AREAS_DEFAULT
+    paths = resolve(db, EXCLUSIVE_AREAS_RULE, project_id)["params"]["value"].get("paths")
+    if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+        return EXCLUSIVE_AREAS_DEFAULT
+    return tuple(paths)
+
+
 def effective(db: Session, project_id: str | None) -> list[dict]:
     """Every library rule's effective toggle for a project, in library order."""
     org_id = _org_of(db, project_id)
@@ -205,6 +220,8 @@ def _check_params(rule: LibraryRule, params: dict) -> dict:
         want = type(rule.default_params[k])
         if not isinstance(v, want) or (want is int and isinstance(v, bool)):
             raise Validation(f"{rule.id} param {k!r} must be {want.__name__}")
+        if want is list and not all(isinstance(x, str) for x in v):
+            raise Validation(f"{rule.id} param {k!r} must be a list of strings")
         choices = PARAM_CHOICES.get(rule.id, {}).get(k)
         if choices is not None and v not in choices:
             raise Validation(f"{rule.id} param {k!r} must be one of {', '.join(choices)}",

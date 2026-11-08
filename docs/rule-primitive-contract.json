@@ -1,5 +1,5 @@
 {
-  "api_version": "1.6.0",
+  "api_version": "1.7.0",
   "primitives": [
     {
       "id": "evidence_attached",
@@ -25,6 +25,17 @@
           "name": "path",
           "required": false,
           "type": "str"
+        }
+      ]
+    },
+    {
+      "id": "exclusive_areas",
+      "level": "enforced",
+      "params": [
+        {
+          "name": "paths",
+          "required": false,
+          "type": "list"
         }
       ]
     },
