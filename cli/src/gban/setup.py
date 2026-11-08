@@ -63,7 +63,7 @@ SETUP_AGENTS = ("claude", "grok")
 #: rather than a person's terminal.
 QUICKSTART_COMMANDS = (
     "uv tool install graphban-cli",
-    "gban --server {server} login",
+    "gban --server {server} login --pair",
     "gban --project {project} setup",
 )
 
