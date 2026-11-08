@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
 
-import type { HarnessCell, HarnessCost, HarnessReport, HarnessSampling } from "@/lib/types";
+import { CardList, filterCards, useCardFilter } from "@/features/harness/Recommendations";
+import { useHarnessCards } from "@/lib/queries";
+import type { HarnessCard, HarnessCell, HarnessCost, HarnessReport, HarnessSampling } from "@/lib/types";
 
 type Routing = { function: string; effort_band: string; verdict: string; attempts: number; pick: string | null; evidence: string; fallback: string | null };
 
-const EFFORTS = ["All", "S", "M", "L"] as const;
+const EFFORTS = ["All", "XS", "S", "M", "L", "XL"] as const;
 type Effort = (typeof EFFORTS)[number];
 
 /** One grid cell: every measured cell for a harness row and column, summed over the bands kept. */
@@ -70,8 +72,14 @@ const rowKeyOf = (c: HarnessCell) => `${c.key.vendor}${SEP}${c.key.model}`;
  * floor, and the family rollup in that family's column until then. `other` gets its own column.
  * Below-floor cells keep their numbers.
  */
-export function PerformanceGrid({ data, routing }: { data: HarnessReport; routing: Routing[] }) {
+export function PerformanceGrid({ data, routing, projectId }: { data: HarnessReport; routing: Routing[]; projectId?: string }) {
   const [effort, setEffort] = useState<Effort>("All");
+  const [harness, setHarness] = useState("");
+  const [family, setFamily] = useState("");
+  const [hideUnder, setHideUnder] = useState(false);
+  const [showCards, setShowCards] = useState(false);
+  const { data: cardData } = useHarnessCards(projectId);
+  const [cardFilter] = useCardFilter(projectId);
   const [selected, setSelected] = useState<{ row: string; col: string } | null>(null);
 
   const { rows, columns, grid } = useMemo(() => {
@@ -129,9 +137,26 @@ export function PerformanceGrid({ data, routing }: { data: HarnessReport; routin
     }
     for (const col of catalog?.leaves ?? []) if (used.has(col) && !ordered.includes(col)) ordered.push(col);
     const rest = [...used].filter((c) => !ordered.includes(c) && c !== "other").sort();
-    const columns = [...ordered, ...rest, ...(used.has("other") ? ["other"] : [])];
-    return { rows: [...rowMap.values()].sort((a, b) => Number(isUnattributed(a)) - Number(isUnattributed(b))), columns, grid };
-  }, [data.cells, data.capability_set, data.floor, effort]);
+    const allColumns = [...ordered, ...rest, ...(used.has("other") ? ["other"] : [])];
+    const inFamily = new Set(family ? [family, ...(data.capability_set?.families[family] ?? [])] : []);
+    const columns = family ? allColumns.filter((c) => inFamily.has(c)) : allColumns;
+    const allRows = [...rowMap.values()].sort((a, b) => Number(isUnattributed(a)) - Number(isUnattributed(b)));
+    return { rows: allRows, columns, grid };
+  }, [data.cells, data.capability_set, data.floor, effort, family]);
+
+  const shownRows = harness ? rows.filter((r) => r.key === harness) : rows;
+  const familyNames = Object.keys(data.capability_set?.families ?? {}).filter((f) => f !== "other");
+  const familyCols = new Set(family ? [family, ...(data.capability_set?.families[family] ?? [])] : []);
+  // The grid's own harness/family/effort filter, applied to the cards (rules and state come from the card filter).
+  const gridCards: HarnessCard[] = filterCards(cardData?.cards ?? [], { ...cardFilter, harness: "" }).filter((card) =>
+    card.cells.some(
+      (c) =>
+        (!harness || `${c.cell.vendor}${SEP}${c.cell.model}` === harness) &&
+        (!family || familyCols.has(c.cell.capability)) &&
+        (effort === "All" || c.cell.size_band === effort),
+    ),
+  );
+  const harnessOptions = rows.map((r) => ({ value: r.key, label: rowName(r) }));
 
   const label = (cap: string) => data.capability_set?.labels[cap];
   const sel = selected ? grid.get(`${selected.row}${SEP}${selected.col}`) : undefined;
@@ -141,6 +166,47 @@ export function PerformanceGrid({ data, routing }: { data: HarnessReport; routin
     <section data-testid="harness-grid-section" className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
         <span className="text-[13px] font-semibold">Harness × function</span>
+        <select
+          aria-label="Harness"
+          data-testid="harness-grid-harness"
+          value={harness}
+          onChange={(e) => setHarness(e.target.value)}
+          className="rounded-[8px] border border-control bg-surface px-1.5 py-0.5 text-[11.5px]"
+        >
+          <option value="">All harnesses</option>
+          {harnessOptions.map((h) => (
+            <option key={h.value} value={h.value}>
+              {h.label}
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label="Capability family"
+          data-testid="harness-grid-family"
+          value={family}
+          onChange={(e) => setFamily(e.target.value)}
+          className="rounded-[8px] border border-control bg-surface px-1.5 py-0.5 text-[11.5px]"
+        >
+          <option value="">All families</option>
+          {familyNames.map((f) => (
+            <option key={f} value={f}>
+              {f}
+            </option>
+          ))}
+        </select>
+        <label className="flex items-center gap-1 text-[11.5px] text-muted">
+          <input type="checkbox" data-testid="harness-hide-under-floor" checked={hideUnder} onChange={(e) => setHideUnder(e.target.checked)} />
+          Hide under-floor
+        </label>
+        <button
+          type="button"
+          data-testid="harness-grid-recommendations"
+          aria-pressed={showCards}
+          onClick={() => setShowCards((v) => !v)}
+          className="rounded-[6px] border border-control px-2 py-0.5 text-[11.5px] text-muted hover:text-fg-2"
+        >
+          Recommendations ({gridCards.length})
+        </button>
         <div role="group" aria-label="Effort" className="ml-auto flex gap-1">
           {EFFORTS.map((e) => (
             <button
@@ -160,6 +226,18 @@ export function PerformanceGrid({ data, routing }: { data: HarnessReport; routin
         </div>
       </div>
 
+      {showCards && (
+        <div data-testid="harness-grid-cards">
+          {gridCards.length === 0 ? (
+            <div className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted">
+              No recommendations match this filter.
+            </div>
+          ) : (
+            <CardList cards={gridCards} projectId={projectId} />
+          )}
+        </div>
+      )}
+
       <div className="flex min-w-0 items-start gap-3">
         <div className="min-w-0 flex-1 overflow-x-auto rounded-[10px] border border-line-2" data-testid="harness-grid-scroll">
           <table className="w-full border-collapse text-left" data-testid="harness-grid">
@@ -176,7 +254,7 @@ export function PerformanceGrid({ data, routing }: { data: HarnessReport; routin
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => {
+              {shownRows.map((row) => {
                 return (
                   <tr key={row.key} data-testid="harness-grid-row" className="border-b border-line-2 last:border-b-0">
                     <th scope="row" className="px-3 py-2 font-normal">
@@ -194,7 +272,7 @@ export function PerformanceGrid({ data, routing }: { data: HarnessReport; routin
                     </th>
                     {columns.map((cap) => {
                       const a = grid.get(`${row.key}${SEP}${cap}`);
-                      if (!a) {
+                      if (!a || (hideUnder && a.below_floor)) {
                         return (
                           <td key={cap} className="px-2 py-2 font-mono text-faint">
                             —
@@ -248,6 +326,15 @@ export function PerformanceGrid({ data, routing }: { data: HarnessReport; routin
             capLabel={label(selected.col)}
             agg={sel}
             effort={effort}
+            cards={(cardData?.cards ?? []).filter((card) =>
+              card.cells.some(
+                (c) =>
+                  c.cell.vendor === selRow.vendor &&
+                  c.cell.model === selRow.model &&
+                  c.cell.capability === selected.col &&
+                  (effort === "All" || c.cell.size_band === effort),
+              ),
+            )}
             routing={routing.filter((r) => r.function === selected.col && (effort === "All" || r.effort_band === effort))}
             onClose={() => setSelected(null)}
           />
@@ -258,9 +345,9 @@ export function PerformanceGrid({ data, routing }: { data: HarnessReport; routin
 }
 
 function CellPanel({
-  row, cap, capLabel, agg, effort, routing, onClose,
+  row, cap, capLabel, agg, effort, routing, cards, onClose,
 }: {
-  row: Row; cap: string; capLabel?: string; agg: Agg; effort: Effort; routing: Routing[]; onClose: () => void;
+  row: Row; cap: string; capLabel?: string; agg: Agg; effort: Effort; routing: Routing[]; cards: HarnessCard[]; onClose: () => void;
 }) {
   const rate = agg.finished ? agg.signed_off / agg.finished : null;
   const bands = new Map<string, { finished: number; signed_off: number }>();
@@ -341,6 +428,25 @@ function CellPanel({
           </div>
         )}
       </dl>
+
+      <div className="mt-3" data-testid="harness-panel-change">
+        <div className="text-[12px] font-semibold">What to change</div>
+        {cards.length === 0 ? (
+          <div className="font-mono text-[10.5px] text-muted">No rule fired on this cell</div>
+        ) : (
+          cards.map((card) => (
+            <div key={card.key} data-testid="harness-panel-change-card" className="mt-1 font-mono text-[10.5px] text-muted">
+              <div>
+                {card.rule} · {card.title}
+              </div>
+              <div className="break-all text-faint">
+                apply by hand: {String(card.draft.where ?? "")}
+                {typeof card.draft.evidence_line === "string" ? ` — ${card.draft.evidence_line}` : ""}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
 
       {routing.length > 0 && (
         <div className="mt-3" data-testid="harness-panel-told">
