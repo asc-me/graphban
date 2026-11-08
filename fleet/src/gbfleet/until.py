@@ -2600,6 +2600,16 @@ def _fresh_holdings(agent: dict) -> list[dict]:
     return out
 
 
+def _same_path_key(path: str) -> str:
+    """One spelling per directory: symlinks resolved (macOS /var -> /private/var)
+    and, on Windows, case and separators folded."""
+    try:
+        resolved = os.path.realpath(path)
+    except OSError:
+        resolved = path
+    return os.path.normcase(resolved)
+
+
 def _agent_for_child(child: Child, agents: list[dict]) -> dict | None:
     agent_id = getattr(child, "agent_id", None)
     if agent_id:
@@ -2609,19 +2619,12 @@ def _agent_for_child(child: Child, agents: list[dict]) -> dict | None:
     tree = str(getattr(child, "worktree", "") or "")
     if not tree:
         return None
-    try:
-        wanted = os.path.realpath(tree)
-    except OSError:
-        wanted = tree
+    wanted = _same_path_key(tree)
     for agent in agents:
         got = str(agent.get("worktree") or "")
         if not got:
             continue
-        try:
-            spelled = os.path.realpath(got)
-        except OSError:
-            spelled = got
-        if spelled == wanted:
+        if _same_path_key(got) == wanted:
             return agent
     return None
 

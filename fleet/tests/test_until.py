@@ -2462,21 +2462,43 @@ def test_review_wait_names_an_unclaimed_reviewer_the_gate_and_never_the_rows_own
 
 
 def _running_pids(repo: Path, state: Path) -> list[int]:
-    import os
-
+    # `hostos.pid_is_alive`, not `os.kill(pid, 0)`: on Windows signal 0 is
+    # TerminateProcess with exit code 0, so the probe itself killed the sleeper
+    # the lease tests need alive. A zombie (POSIX) has exited; it is not running.
     from gbfleet import adopt as adopt_mod
+    from gbfleet import hostos
 
     loaded = adopt_mod.load(adopt_mod.children_path(repo, state))
     if not isinstance(loaded, list):
         return []
-    alive = []
-    for snap in loaded:
+    return [
+        snap.pid for snap in loaded
+        if hostos.pid_is_alive(snap.pid) and not hostos.pid_is_zombie(snap.pid)
+    ]
+
+
+def _end_pid(pid: int) -> None:
+    """Stop one sleeper from the test side. Windows has no SIGKILL; there
+    `os.kill(pid, SIGTERM)` is already TerminateProcess."""
+    import os
+    import signal
+
+    from gbfleet import hostos
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    for _ in range(50):
+        if not hostos.pid_is_alive(pid) or hostos.pid_is_zombie(pid):
+            return
+        time.sleep(0.02)
+    hard = getattr(signal, "SIGKILL", None)
+    if hard is not None:
         try:
-            os.kill(snap.pid, 0)
+            os.kill(pid, hard)
         except OSError:
-            continue
-        alive.append(snap.pid)
-    return alive
+            pass
 
 
 def _empty_child_run(
@@ -2486,9 +2508,6 @@ def _empty_child_run(
     """One sleeper, then no more ready work. `release_after` kills it once the
     wave has polled past `empty_ticks` while it was still alive — the lease
     tests, which must not return on their own."""
-    import os
-    import signal
-
     workspace = tmp_path / "ws"
     planner, supervisor = _clients(
         workspace, clusters=1, workers=0, review=review, waits=waits,
@@ -2519,15 +2538,7 @@ def _empty_child_run(
             return
         seen["past_idle"] = True
         for pid in _running_pids(git_repo, state):
-            os.kill(pid, signal.SIGTERM)
-            for _ in range(50):
-                try:
-                    os.kill(pid, 0)
-                except OSError:
-                    break
-                time.sleep(0.02)
-            else:
-                os.kill(pid, signal.SIGKILL)
+            _end_pid(pid)
 
     result = run(
         git_repo, _factory(scripts, "sleeper"),
