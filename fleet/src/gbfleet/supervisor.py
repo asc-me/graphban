@@ -3072,8 +3072,8 @@ class Merger:
             paths=item.get("touchpoints") or [],
             release=release,
             scans=propose_mod.scans_clean_verdicts(item),
-            local_full=(propose_mod.full_local_receipts(item)
-                        and self._test_scope() == "agent_full"),
+            local_full=(self._test_scope() == "agent_full"
+                        and propose_mod.full_local_receipts(item, self._test_engines())),
             red=propose_mod.red_commits(item),
             siblings=propose_mod.pr_receipts(item),
             # Lazy: only read when the PR has files outside this item's own touchpoints.
@@ -3085,6 +3085,23 @@ class Merger:
         if got.conflicts:
             self._bounce(wave, item_id, got)
         return got
+
+    def _test_engines(self) -> list[str]:
+        """The engines `agent_full` needs full local runs on (GRPH-1429): the rule's `engines`
+        param, else postgres and sqlite."""
+        try:
+            got = self.client.call("get_rule_toggles")
+        except (NotPermitted, ToolFailed, ServerUnreachable):
+            return list(propose_mod.LOCAL_ENGINES)
+        for t in (got or {}).get("toggles") or []:
+            if t.get("rule_id") == "build.test_scope":
+                params = t.get("params")
+                value = params.get("value") if isinstance(params, dict) else None
+                eng = value.get("engines") if isinstance(value, dict) else None
+                if (isinstance(eng, list) and eng
+                        and all(isinstance(e, str) and e.strip() for e in eng)):
+                    return [e.strip().lower() for e in eng]
+        return list(propose_mod.LOCAL_ENGINES)
 
     def _test_scope(self) -> str:
         """The project's `build.test_scope` mode (GRPH-1415). Anything unreadable — a client

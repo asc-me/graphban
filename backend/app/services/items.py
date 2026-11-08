@@ -1435,7 +1435,8 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
     # CI saying NO at the item's commit still does.
     from app.services import rule_toggles
     if (rule_toggles.test_scope_mode(db, item.project_id) == "agent_full"
-            and _full_engine_run(merged, "postgres") and _full_engine_run(merged, "sqlite")
+            and all(_full_engine_run(merged, e)
+                    for e in rule_toggles.test_scope_engines(db, item.project_id))
             and not any(same_commit(str(a.get("commit") or ""), c) for c in commits
                         for a in attestation_receipts(merged)
                         if any(isinstance(q, dict) and q.get("name") == CI_PREDICATE

@@ -101,3 +101,41 @@ def test_brief_names_the_mode_and_changes_with_it(client, library):
 
 def test_every_mode_has_a_brief_line_and_a_label():
     assert set(D._TEST_SCOPE_BRIEF) == set(T.TEST_SCOPE_MODES) == set(MODES)
+
+
+def _engines_library(monkeypatch):
+    monkeypatch.setattr(T, "LIBRARY", {})
+    T.register(T.LibraryRule(
+        id=RULE, stage="build", title="Where the test suites run", summary="s",
+        enforcement="checked", enforcer=R.Enforcer("doc", "docs/rules.md"),
+        default_on=True, default_params={"mode": T.TEST_SCOPE_DEFAULT,
+                                         "engines": ["postgres", "sqlite"]}))
+
+
+def test_engines_default_and_override(client, monkeypatch):
+    from app.db import SessionLocal
+
+    _engines_library(monkeypatch)
+    auth = _login(client)
+    db = SessionLocal()
+    try:
+        assert T.test_scope_engines(db, "core") == ["postgres", "sqlite"]
+        r = _put(client, auth, {"params": {"engines": ["MySQL"]}, "reason": "mysql shop"})
+        assert r.status_code == 200, r.text
+        db.expire_all()
+        assert T.test_scope_engines(db, "core") == ["mysql"]
+    finally:
+        db.close()
+
+
+def test_engines_must_be_a_non_empty_list_of_strings(client, monkeypatch):
+    _engines_library(monkeypatch)
+    auth = _login(client)
+    for bad in ([], "mysql", [1], [""], None):
+        r = _put(client, auth, {"params": {"engines": bad}, "reason": "x"})
+        assert r.status_code == 422, (bad, r.text)
+
+
+def test_brief_line_names_engines_under_agent_full():
+    assert "Engines: mysql." in D.test_scope_line("agent_full", ["mysql"])
+    assert "Engines" not in D.test_scope_line("agent_targeted", ["mysql"])
