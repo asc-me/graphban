@@ -1861,8 +1861,11 @@ def generated_paths(client: Graphban | None) -> tuple[str, ...]:
     `build.generated_files` rule. When it cannot be read — no client, the server does not
     answer, or the pack does not carry the rule — today's list is used and that is logged."""
     why = ""
+    allowed = getattr(client, "allowed", None)
     if client is None:
         why = "no server client"
+    elif allowed is not None and "get_rule_toggles" not in allowed:
+        why = "this client may not call get_rule_toggles"
     else:
         try:
             got = client.call("get_rule_toggles")

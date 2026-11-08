@@ -28,7 +28,7 @@ outside an item's touchpoints that matches one of them is logged as `generated_f
 and does not hold the PR; any other undeclared file does. The default is the list the supervisor
 always had (`AGENTS.md`, `.claude/agents/`, `.agents/skills/`, `backend/tests/shard_weights.json`, …),
 so nothing changes on upgrade. The supervisor reads the resolved rule at reap time; when it cannot
-(server down, rule absent from the pack) it uses that list and emits `generated_files_rule_unread`
+(server down, rule absent from the pack, a client not allowed `get_rule_toggles`) it uses that list and emits `generated_files_rule_unread`
 with the reason. The rule-pack feed (outside this repo) needs the template `build.generated_files`
 added, as for `build.test_scope`.
 
