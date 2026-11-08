@@ -1335,6 +1335,61 @@ def _carried_note(receipt: dict, commits) -> dict:
     }
 
 
+def effective_required_predicates(db, project_id) -> list[str]:
+    """The predicates `done` needs: the deployment's `required_predicates`, read live, plus the
+    names the project added with the `merge.done_predicates` rule (GRPH-1426)."""
+    from app.services import rule_toggles
+
+    return rule_toggles.done_predicate_names(db, project_id)
+
+
+def refuse_if_predicates_missing(db, item, merged, head) -> None:
+    """Raise MissingAttestation when a required predicate has no passing attestation at
+    `head`. Shared by `update_item` and `fleet.sign_off` (GRPH-1426): a sign-off passes the
+    same gate. A predicate that did not run is not a pass."""
+    required = effective_required_predicates(db, item.project_id)
+    absent = missing_predicates(merged, required, commit=head or None)
+    if absent:
+        attested = sorted(attested_predicates(merged, commit=head or None))
+        failed = [n for n in absent
+                  if n in failing_predicates(merged, commit=head or None)]
+        never_run = [n for n in absent if n not in failed]
+        # Split here, not in missing_predicates. A GREEN suite_green receipt makes
+        # has_valid_attestation true, so the gate above never sees the failing
+        # conformance receipt — and without this split the CALL always said
+        # "nobody has run" for a check that ran and failed (GRPH-569 bounce).
+        bits: list[str] = []
+        if failed:
+            bits.append(
+                f"{', '.join(failed)} ran and failed — that is a check that "
+                "failed, so read what it found rather than running the adapter again"
+            )
+        if never_run:
+            bits.append(
+                f"nothing has attested {', '.join(never_run)}. That is a check "
+                "nobody has run rather than a check that failed — the adapter that "
+                "answers it has not reported, so run it rather than looking for a "
+                "problem in what did"
+            )
+        what = ". ".join(bits)
+        if failed and not never_run:
+            detail = f"{', '.join(failed)} ran and failed."
+        elif never_run and not failed:
+            detail = f"nothing has attested {', '.join(never_run)}."
+        else:
+            detail = (
+                f"{', '.join(failed)} ran and failed; "
+                f"nothing has attested {', '.join(never_run)}."
+            )
+        record_refusal(db, item, predicate="attestation_incomplete", detail=detail)
+        raise MissingAttestation(
+            f"{item.key} cannot move to done: this project requires the predicate(s) "
+            f"{', '.join(required)}. "
+            + (f"What IS attested: {', '.join(attested)}. " if attested else "")
+            + what
+        )
+
+
 def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
                               commit: str | None = None) -> list[dict]:
     """Raise PRCooldown when `done` is asked for too soon after a PR link (GRPH-567).
@@ -1739,47 +1794,7 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         # differs. The one above says "get it attested"; this one names WHICH check has never
         # run, because "attestation_missing" would send them looking for an adapter that is
         # already working.
-        required = settings.required_predicate_list
-        absent = missing_predicates(merged_for_gate, required, commit=head or None)
-        if absent:
-            attested = sorted(attested_predicates(merged_for_gate, commit=head or None))
-            failed = [n for n in absent
-                      if n in failing_predicates(merged_for_gate, commit=head or None)]
-            never_run = [n for n in absent if n not in failed]
-            # Split here, not in missing_predicates. A GREEN suite_green receipt makes
-            # has_valid_attestation true, so the gate above never sees the failing
-            # conformance receipt — and without this split the CALL always said
-            # "nobody has run" for a check that ran and failed (GRPH-569 bounce).
-            bits: list[str] = []
-            if failed:
-                bits.append(
-                    f"{', '.join(failed)} ran and failed — that is a check that "
-                    "failed, so read what it found rather than running the adapter again"
-                )
-            if never_run:
-                bits.append(
-                    f"nothing has attested {', '.join(never_run)}. That is a check "
-                    "nobody has run rather than a check that failed — the adapter that "
-                    "answers it has not reported, so run it rather than looking for a "
-                    "problem in what did"
-                )
-            what = ". ".join(bits)
-            if failed and not never_run:
-                detail = f"{', '.join(failed)} ran and failed."
-            elif never_run and not failed:
-                detail = f"nothing has attested {', '.join(never_run)}."
-            else:
-                detail = (
-                    f"{', '.join(failed)} ran and failed; "
-                    f"nothing has attested {', '.join(never_run)}."
-                )
-            record_refusal(db, item, predicate="attestation_incomplete", detail=detail)
-            raise MissingAttestation(
-                f"{item.key} cannot move to done: this deployment requires the predicate(s) "
-                f"{', '.join(required)}. "
-                + (f"What IS attested: {', '.join(attested)}. " if attested else "")
-                + what
-            )
+        refuse_if_predicates_missing(db, item, merged_for_gate, head)
         # THE PR COOLDOWN (GRPH-567, PRD-26). Shared with `fleet.sign_off` — that path
         # used to write `done` directly and skip this, which is the reviewer CALL the
         # bounce found. Incoming evidence is read as well as the stored stamp so linking

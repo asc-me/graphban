@@ -140,6 +140,12 @@ register_primitive(Primitive(
     "exclusive_areas", "enforced",
     Enforcer("graphban_source", "app/services/fleet.py"),
     {"paths": Param("list")}))
+# GRPH-1426. `enforced`: the done gate (`items.refuse_if_predicates_missing`, reached from
+# `update_item` and `fleet.sign_off`) refuses `done` without a passing attestation of each name.
+register_primitive(Primitive(
+    "done_predicates", "enforced",
+    Enforcer("graphban_source", "app/services/items.py"),
+    {"predicates": Param("list")}))
 register_primitive(Primitive(
     "evidence_attached", "checked",
     Enforcer("graphban_source", "app/services/items.py"),

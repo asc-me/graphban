@@ -3510,6 +3510,8 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             "against — or accept the absence on the record with "
             "waive={\"" + unwaived[0] + "\": \"<why>\"}."
         )
+    # GRPH-1426: a sign-off passes the same required-predicates gate as `update_item`.
+    items_svc.refuse_if_predicates_missing(db, item, merged, (commit or item.head_commit or "").strip())
     release_reservations(db, item_id=item.id)
     item.reviewed_by = agent_id
     # Who reviewed it, by tier (GRPH-945). Kept whether or not a commit was attested: the

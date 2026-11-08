@@ -213,10 +213,14 @@ than guessing at it.
 2. `cd backend && ./.venv/bin/alembic revision --autogenerate -m "..."` — then
    **review the generated file**; the custom `EmbeddingType`/pgvector columns and
    raw-SQL indexes need hand-checking (autogen gets them wrong).
-3. Verify the chain from empty: run the Postgres pytest command above (lifespan
-   migrates on startup). Record it as fields, not only prose — `{kind: test, engine:
-   'postgres', scope: 'full', passed, failed, skipped, detail}`. With `build.engine_evidence`
-   on, a migration item goes to review only with `scope='full'` and `failed=0` (skips are fine).
+3. Verify the chain from empty on Postgres. **Under `agent_targeted`** (the brief's "Test
+   scope" line), run the migration's own tests plus `alembic upgrade head` against a fresh
+   Postgres, push, and let the PR's CI run the full Postgres suite: CI's `suite_green` at the
+   head satisfies `build.engine_evidence` (GRPH-1404). **Under `agent_and_pr` or
+   `agent_full`**, run the full Postgres pytest command above (lifespan migrates on startup)
+   and record it as fields, not only prose — `{kind: test, engine: 'postgres', scope:
+   'full', passed, failed, skipped, detail}`; with `build.engine_evidence` on, the item goes
+   to review only with `scope='full'` and `failed=0` (skips are fine).
 4. Vector indexes are **HNSW**, not ivfflat (migration 0016) — ivfflat built on
    empty tables silently loses recall.
 

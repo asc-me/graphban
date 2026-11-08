@@ -78,6 +78,7 @@ def _clients(
     staff_every_row: bool | None = None,
     observations_status: int = 200,
     observation_posts: list | None = None,
+    agent_holdings: list | None = None,
 ):
     """Planner + supervisor clients sharing one mock Graphban.
 
@@ -246,7 +247,12 @@ def _clients(
                     "state": "idle",
                     "enrolled": True,
                     "enrolment_id": f"seat-{i + 1}",
-                    "holdings": [],
+                    # `shim` is a PATH directory this process creates beside the
+                    # worktrees (GRPH-1401). It is not an agent that claimed
+                    # anything. Copying `agent_holdings` onto it left a build
+                    # lease on the roster after the child was gone, and the
+                    # idle check waited on that directory forever.
+                    "holdings": ([] if p.name == "shim" else list(agent_holdings or [])),
                 }
                 for i, p in enumerate(trees)
             ]
@@ -2450,6 +2456,391 @@ def test_review_wait_names_an_unclaimed_reviewer_the_gate_and_never_the_rows_own
     for line in _review_waits_on_live(Wave(), rows, [builder, own_reviewer],
                                       gate="memory low"):
         assert "pid" not in line
+
+
+# ---- GRPH-1401: a live child that holds nothing is not a lease -----------------------
+
+
+def _running_pids(repo: Path, state: Path) -> list[int]:
+    # `hostos.pid_is_alive`, not `os.kill(pid, 0)`: on Windows signal 0 is
+    # TerminateProcess with exit code 0, so the probe itself killed the sleeper
+    # the lease tests need alive. A zombie (POSIX) has exited; it is not running.
+    from gbfleet import adopt as adopt_mod
+    from gbfleet import hostos
+
+    loaded = adopt_mod.load(adopt_mod.children_path(repo, state))
+    if not isinstance(loaded, list):
+        return []
+    return [
+        snap.pid for snap in loaded
+        if hostos.pid_is_alive(snap.pid) and not hostos.pid_is_zombie(snap.pid)
+    ]
+
+
+def _end_pid(pid: int) -> None:
+    """Stop one sleeper from the test side. Windows has no SIGKILL; there
+    `os.kill(pid, SIGTERM)` is already TerminateProcess."""
+    import os
+    import signal
+
+    from gbfleet import hostos
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    for _ in range(50):
+        if not hostos.pid_is_alive(pid) or hostos.pid_is_zombie(pid):
+            return
+        time.sleep(0.02)
+    hard = getattr(signal, "SIGKILL", None)
+    if hard is not None:
+        try:
+            os.kill(pid, hard)
+        except OSError:
+            pass
+
+
+def _empty_child_run(
+    git_repo, tmp_path, scripts, state, *,
+    review=None, waits=None, holdings=None, release_after=None,
+    claim_after=None, claim_window=0.0,
+):
+    """One sleeper, then no more ready work. `release_after` kills it once the
+    wave has polled past `empty_ticks` while it was still alive — the lease
+    tests, which must not return on their own.
+
+    `claim_window` defaults to 0: the child has been empty longer than its claim
+    window (GRPH-P72). `None` keeps `CLAIM_WINDOW`. `claim_after` puts `holdings`
+    on the roster only after that many live polls: a child that claims late."""
+    import gbfleet.until as until_mod
+
+    workspace = tmp_path / "ws"
+    roster_holdings: list = [] if claim_after is not None else list(holdings or [])
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=0, review=review, waits=waits,
+        agent_holdings=roster_holdings,
+    )
+    calls: list[int] = []
+    seen = {"past_idle": False, "spins": 0}
+
+    def sleep(_):
+        # Count only polls where a child is already alive. Registration and the
+        # spawn itself do not use this sleep; a lease must survive empty_ticks
+        # of these, and an empty child must not.
+        seen["spins"] += 1
+        if seen["spins"] > 200:
+            raise AssertionError(
+                "the wave did not settle; a roster row still looked like a lease"
+            )
+        if release_after is not None and not _running_pids(git_repo, state):
+            return
+        calls.append(1)
+        if claim_after is not None and len(calls) == claim_after:
+            seen["claimed_at_poll"] = len(calls)
+            roster_holdings.extend(holdings or [])
+            # What the server does on claim_review: the row now names its reviewer.
+            claimed = {h.get("id") for h in holdings or [] if h.get("hold") == "review"}
+            for row in review or []:
+                if row.get("id") in claimed:
+                    row["review_claimed_by"] = "GRPH-A1"
+        if release_after is None:
+            if len(calls) > 20:
+                raise AssertionError(
+                    "the wave did not go idle; a live child holding nothing reset empty"
+                )
+            return
+        if len(calls) <= release_after:
+            return
+        seen["past_idle"] = True
+        for pid in _running_pids(git_repo, state):
+            _end_pid(pid)
+
+    saved = until_mod.CLAIM_WINDOW
+    if claim_window is not None:
+        until_mod.CLAIM_WINDOW = claim_window
+    try:
+        result = run(
+            git_repo, _factory(scripts, "sleeper"),
+            planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+            state=state, workspace=workspace, poll=0, sleep=sleep, empty_ticks=3,
+            limits=Limits(max_workers=1, child_wall_clock=3600),
+        )
+    finally:
+        until_mod.CLAIM_WINDOW = saved
+    return result, seen
+
+
+def _assert_children_reaped(result) -> None:
+    kids = list(result.wave.spawned)
+    assert kids, result.as_json()
+    assert all(not child.running for child in kids), [c.pid for c in kids if c.running]
+    assert all(child.reaped for child in kids)
+    reaped = {row.branch for row in result.wave.reaped}
+    assert {child.branch for child in kids} <= reaped
+
+
+def test_a_live_child_holding_nothing_goes_idle_and_is_reaped(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1401. The idle rule is a lease, not a process. Sabotage: put `live`
+    back into the idle check (`if live or busy`) and this raises instead of
+    returning idle — the child keeps resetting `empty`."""
+    result, _seen = _empty_child_run(git_repo, tmp_path, scripts, state)
+    assert result.reason == "idle", result.as_json()
+    assert result.exit == 0
+    assert result.ok is True
+    _assert_children_reaped(result)
+
+
+def test_a_live_child_holding_nothing_with_a_wait_is_idle_with_waits(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    result, _seen = _empty_child_run(
+        git_repo, tmp_path, scripts, state,
+        waits=[{"id": "GRPH-W1", "tags": ["wait:merge"], "status": "blocked"}],
+    )
+    assert result.reason == "idle-with-waits", result.as_json()
+    assert result.exit == 0
+    assert result.waits == ["GRPH-W1"]
+    _assert_children_reaped(result)
+
+
+def test_a_live_child_holding_nothing_with_unsigned_review_is_review_unsigned(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    result, _seen = _empty_child_run(
+        git_repo, tmp_path, scripts, state,
+        review=[{"id": "GRPH-9", "status": "review", "review_claimed_by": ""}],
+    )
+    assert result.reason == "review-unsigned", result.as_json()
+    assert result.exit == 1
+    assert "GRPH-9" in result.review
+    _assert_children_reaped(result)
+
+
+def test_a_live_child_holding_a_build_lease_does_not_go_idle(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """The lease keeps `empty` at 0, and the child is still running past
+    `empty_ticks`. The test ends the process itself so `run` can return."""
+    result, seen = _empty_child_run(
+        git_repo, tmp_path, scripts, state,
+        holdings=[{"id": "GRPH-1", "phase": "building", "hold": "build"}],
+        release_after=3,
+    )
+    assert seen["past_idle"] is True
+    assert result.reason == "idle", result.as_json()
+    kids = list(result.wave.spawned)
+    assert kids
+    assert all(child.stopped_because is None for child in kids), [
+        c.stopped_because for c in kids
+    ]
+
+
+def test_a_live_child_holding_a_review_claim_does_not_go_idle(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1001 kept a review claim out of `_any_holdings`. The process that
+    holds it is still the work. An empty holdings list is the case that is not."""
+    result, seen = _empty_child_run(
+        git_repo, tmp_path, scripts, state,
+        holdings=[{"id": "GRPH-9", "phase": "building", "hold": "review"}],
+        release_after=3,
+    )
+    assert seen["past_idle"] is True
+    assert result.reason == "idle", result.as_json()
+    assert all(child.stopped_because is None for child in result.wave.spawned)
+
+
+class _UnreachableRoster:
+    def call(self, tool, **_args):
+        from gbfleet.client import ServerUnreachable
+        raise ServerUnreachable("no route to host")
+
+
+class _Live:
+    running = True
+    pid = 4242
+    stopped_because = None
+
+
+def test_an_unreadable_roster_is_not_an_empty_one():
+    """GRPH-1401. fleet_status unreachable: a live child may hold an item or a
+    review claim, so it blocks idle and nothing is stopped."""
+    from gbfleet.supervisor import Wave as _Wave
+    from gbfleet.until import _idle_blocked, _roster_agents, _stop_children_holding_nothing
+
+    sup = _UnreachableRoster()
+    child = _Live()
+    assert _roster_agents(sup) is None
+    assert _idle_blocked(sup, [child]) is True
+    assert _idle_blocked(sup, []) is False
+    _stop_children_holding_nothing(_Wave(), [child], sup, sup, "main")
+    assert child.running is True and child.stopped_because is None
+
+
+class _Roster:
+    def __init__(self, agents):
+        self.agents = agents
+
+    def call(self, tool, **_args):
+        assert tool == "fleet_status"
+        return {"agents": self.agents}
+
+
+class _Held:
+    """A fake live child; `stop` is patched, so only these fields are read."""
+
+    def __init__(self, agent_id, worktree):
+        self.agent_id = agent_id
+        self.worktree = worktree
+        self.running = True
+        self.stopped_because = None
+
+
+def test_a_review_spawn_that_claims_late_is_not_stopped_and_is_waited_for(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1401 bounce. A child that registered and has not claimed yet is inside
+    `CLAIM_WINDOW`: it claims only after more than `empty_ticks` polls, and the run
+    neither returns nor stops it before then. Sabotage: drop `_in_claim_window` from
+    `_idle_blocked` and the run returns review-unsigned at poll 3, stopping the child."""
+    result, seen = _empty_child_run(
+        git_repo, tmp_path, scripts, state,
+        review=[{"id": "GRPH-9", "status": "review", "review_claimed_by": ""}],
+        holdings=[{"id": "GRPH-9", "phase": "building", "hold": "review"}],
+        claim_after=6, release_after=9, claim_window=None,
+    )
+    assert seen.get("claimed_at_poll") == 6, seen
+    assert seen["past_idle"] is True, (seen, result.as_json())
+    kids = list(result.wave.spawned)
+    assert kids
+    assert all(child.stopped_because is None for child in kids), [
+        c.stopped_because for c in kids
+    ]
+
+
+def test_a_live_child_whose_only_holding_is_stale_does_not_block_idle():
+    """GRPH-1401 second review. A stale phase is a dead lease, on the roster's build
+    holdings and on this child's own row. Sabotage: drop the stale skip in
+    `_fresh_holdings` and this child blocks idle."""
+    from gbfleet.until import _idle_blocked
+
+    child = _Held("GRPH-A2", "/tmp/stale-child")
+    sup = _Roster([{"id": "GRPH-A2", "worktree": child.worktree,
+                    "holdings": [{"id": "GRPH-9", "phase": "stale", "hold": "review"}]}])
+    assert _idle_blocked(sup, [child]) is False
+    sup.agents[0]["holdings"][0]["phase"] = "building"
+    assert _idle_blocked(sup, [child]) is True
+
+
+def test_the_claim_window_is_bounded_and_ends_on_a_claim():
+    """Registered moments ago and never held: busy. Past `CLAIM_WINDOW`: not. A child
+    that has held something is never in it, and a hand-built one has no start time."""
+    import gbfleet.until as until_mod
+
+    class _C:
+        started_at = 1000.0
+        registration_latency = 20.0
+        held_items: list = []
+        review_items: list = []
+        ever_held: list = []
+
+    child = _C()
+    window = until_mod.CLAIM_WINDOW
+    assert until_mod._in_claim_window(child, now=1020.0 + window - 1) is True
+    assert until_mod._in_claim_window(child, now=1020.0 + window) is False
+    child.ever_held = ["GRPH-1"]
+    assert until_mod._in_claim_window(child, now=1021.0) is False
+    child.ever_held = []
+    child.review_items = ["GRPH-9"]
+    assert until_mod._in_claim_window(child, now=1021.0) is False
+    assert until_mod._in_claim_window(_Live(), now=0.0) is False
+
+
+def test_only_the_child_holding_nothing_is_stopped_at_exit(monkeypatch, tmp_path: Path):
+    """GRPH-1401 bounce. Readable roster: a live child holding a non-stale item must
+    survive `_leave` (the REVIEWER_FAILS exit runs it while builders still hold
+    leases); only the live child that holds nothing is stopped and reaped."""
+    import gbfleet.until as until_mod
+    from gbfleet.supervisor import Wave as _Wave
+
+    builder = _Held("GRPH-A1", str(tmp_path / "builder"))
+    empty = _Held("GRPH-A2", str(tmp_path / "empty"))
+    sup = _Roster([
+        {"id": "GRPH-A1", "worktree": builder.worktree,
+         "holdings": [{"id": "GRPH-7", "phase": "build"}]},
+        {"id": "GRPH-A2", "worktree": empty.worktree, "holdings": []},
+    ])
+    stopped, reaped = [], []
+
+    def fake_stop(child, reason, grace=0):
+        stopped.append(child)
+        child.stopped_because = reason
+        child.running = False
+
+    monkeypatch.setattr(until_mod, "stop", fake_stop)
+    monkeypatch.setattr(until_mod, "_report_exits", lambda gone, *_a, **_k: None)
+    monkeypatch.setattr(until_mod, "_reap_all",
+                        lambda _w, gone, **_k: reaped.extend(gone))
+
+    assert until_mod._idle_blocked(sup, [builder, empty]) is True
+    until_mod._stop_children_holding_nothing(_Wave(), [builder, empty], sup, sup, "main")
+
+    assert stopped == [empty] and reaped == [empty]
+    assert empty.running is False
+    assert builder.running is True and builder.stopped_because is None
+
+
+@pytest.mark.parametrize("window, kept", [(None, True), (0.0, False)])
+def test_leave_keeps_a_child_inside_its_claim_window(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch, window, kept,
+):
+    """GRPH-1401 third bounce. The run exits through `_leave` (the REVIEWER_FAILS
+    exit, forced to the first unheld-review poll) while the builder it spawned a
+    poll earlier has registered, holds nothing, and has never held anything. Inside
+    `CLAIM_WINDOW` it is not stopped and is still running when `run` returns; with
+    the window at 0 it is stopped and reaped. Sabotage: drop `and not
+    _in_claim_window(c)` from `_stop_children_holding_nothing` and the first case
+    stops it."""
+    import gbfleet.until as until_mod
+
+    monkeypatch.setattr(until_mod, "REVIEWER_FAILS", 0)
+    # The memory gate reads this host; it is not what this test is about.
+    monkeypatch.setattr(until_mod, "_room_refusal", lambda *_a, **_k: None)
+    if window is not None:
+        monkeypatch.setattr(until_mod, "CLAIM_WINDOW", window)
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=0,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": ""}],
+        agent_holdings=[],
+    )
+    result = run(
+        git_repo, _factory(scripts, "sleeper"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1, child_wall_clock=3600),
+    )
+    try:
+        assert result.reason == "review-unsigned", result.as_json()
+        kids = list(result.wave.spawned)
+        assert len(kids) == 1, result.as_json()
+        child = kids[0]
+        if kept:
+            assert child.stopped_because is None, child.stopped_because
+            assert child.running is True
+            assert child.pid in _running_pids(git_repo, state)
+            assert not child.reaped
+        else:
+            assert child.stopped_because is not None
+            assert child.running is False
+            _assert_children_reaped(result)
+    finally:
+        for pid in _running_pids(git_repo, state):
+            _end_pid(pid)
 
 
 _CI_STUCK = {"kind": "note", "detail": "refused at `done` (pr_ci_not_green): cooldown over, "
