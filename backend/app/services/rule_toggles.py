@@ -68,6 +68,8 @@ LIBRARY: dict[str, LibraryRule] = {}
 #: GRPH-1405: where the test suites run is a project decision. Mode -> (label, what it means).
 TEST_SCOPE_RULE = "build.test_scope"
 TEST_SCOPE_DEFAULT = "agent_and_pr"
+#: GRPH-1429: the engines a full local run must cover under `agent_full`.
+TEST_SCOPE_ENGINES_DEFAULT = ["postgres", "sqlite"]
 TEST_SCOPE_MODES: dict[str, tuple[str, str]] = {
     "agent_full": ("The agent runs CI",
                    "The builder runs the full suites; the PR's CI is not required."),
@@ -77,6 +79,23 @@ TEST_SCOPE_MODES: dict[str, tuple[str, str]] = {
                        "The builder runs the tests it wrote or changed, the module's existing "
                        "tests and the sabotage check; the PR's CI runs the full suites."),
 }
+#: GRPH-1425: whether a branch with a file outside every declared touchpoint is held back from
+#: a PR or only warned about. The merge-time `covering` check (GRPH-1408) is not this rule's.
+UNDECLARED_FILES_RULE = "build.undeclared_files"
+UNDECLARED_FILES_DEFAULT = "hold"
+UNDECLARED_FILES_MODES: dict[str, tuple[str, str]] = {
+    "hold": ("Hold the PR",
+             "The PR is held and a wait names the files until the touchpoints are widened."),
+    "warn": ("Open the PR and warn",
+             "The PR is opened; the files are recorded as a wait and a note on the item, and "
+             "the merge still refuses a file no signed-off item covers."),
+}
+
+#: GRPH-1423: the paths whose leases are exclusive, because git cannot see two agents collide
+#: there (two new migrations merge cleanly and leave two heads). A project sets its own list.
+EXCLUSIVE_AREAS_RULE = "plan.exclusive_areas"
+EXCLUSIVE_AREAS_DEFAULT: tuple[str, ...] = ("backend/alembic/versions",)
+
 #: GRPH-1424: generated files the supervisor's undeclared-file hold ignores. Only the
 #: supervisor honours it (level `checked`); the default is the built-in list it always had.
 GENERATED_FILES_RULE = "build.generated_files"
@@ -88,6 +107,7 @@ GENERATED_FILES_DEFAULT: list[str] = [
 #: A string param that takes one of a closed set: rule id -> param -> allowed values.
 PARAM_CHOICES: dict[str, dict[str, tuple[str, ...]]] = {
     TEST_SCOPE_RULE: {"mode": tuple(TEST_SCOPE_MODES)},
+    UNDECLARED_FILES_RULE: {"mode": tuple(UNDECLARED_FILES_MODES)},
 }
 
 
@@ -169,6 +189,38 @@ def test_scope_mode(db: Session, project_id: str | None) -> str:
         return TEST_SCOPE_DEFAULT
     mode = resolve(db, TEST_SCOPE_RULE, project_id)["params"]["value"].get("mode")
     return mode if mode in TEST_SCOPE_MODES else TEST_SCOPE_DEFAULT
+
+
+def test_scope_engines(db: Session, project_id: str | None) -> list[str]:
+    """The engines `agent_full` needs full passing local runs on (GRPH-1429). Unset, or a value
+    that is not a non-empty list of strings, reads the default: postgres and sqlite."""
+    if TEST_SCOPE_RULE not in LIBRARY:
+        return list(TEST_SCOPE_ENGINES_DEFAULT)
+    value = resolve(db, TEST_SCOPE_RULE, project_id)["params"]["value"].get("engines")
+    if (isinstance(value, list) and value
+            and all(isinstance(e, str) and e.strip() for e in value)):
+        return [e.strip().lower() for e in value]
+    return list(TEST_SCOPE_ENGINES_DEFAULT)
+
+
+def undeclared_files_mode(db: Session, project_id: str | None) -> str:
+    """`hold` (today's behaviour) or `warn`. A project that never set it, or a box whose pack
+    does not carry the rule, reads `hold`."""
+    if UNDECLARED_FILES_RULE not in LIBRARY:
+        return UNDECLARED_FILES_DEFAULT
+    mode = resolve(db, UNDECLARED_FILES_RULE, project_id)["params"]["value"].get("mode")
+    return mode if mode in UNDECLARED_FILES_MODES else UNDECLARED_FILES_DEFAULT
+
+
+def exclusive_paths(db: Session, project_id: str | None) -> tuple[str, ...]:
+    """The project's exclusive file areas. A project that never set the rule — or a box whose
+    pack does not carry it — reads the default, today's behaviour."""
+    if EXCLUSIVE_AREAS_RULE not in LIBRARY:
+        return EXCLUSIVE_AREAS_DEFAULT
+    paths = resolve(db, EXCLUSIVE_AREAS_RULE, project_id)["params"]["value"].get("paths")
+    if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+        return EXCLUSIVE_AREAS_DEFAULT
+    return tuple(paths)
 
 
 def generated_files(db: Session, project_id: str | None) -> list[str]:
@@ -274,9 +326,18 @@ def _check_params(rule: LibraryRule, params: dict) -> dict:
         raise Validation(f"{rule.id} has no param(s) {', '.join(unknown)}",
                          hint=f"known: {', '.join(sorted(rule.default_params)) or 'none'}")
     for k, v in params.items():
+        if rule.id == TEST_SCOPE_RULE and k == "engines":
+            if (not isinstance(v, list) or not v
+                    or not all(isinstance(e, str) and e.strip() for e in v)):
+                raise Validation(f"{rule.id} param 'engines' must be a non-empty list of "
+                                 "engine names")
+            params = {**params, k: list(dict.fromkeys(e.strip().lower() for e in v))}
+            continue
         want = type(rule.default_params[k])
         if not isinstance(v, want) or (want is int and isinstance(v, bool)):
             raise Validation(f"{rule.id} param {k!r} must be {want.__name__}")
+        if want is list and not all(isinstance(x, str) for x in v):
+            raise Validation(f"{rule.id} param {k!r} must be a list of strings")
         if rule.id == DONE_PREDICATES_RULE and k == "predicates":
             params = {**params, k: _check_done_predicates(v)}
         choices = PARAM_CHOICES.get(rule.id, {}).get(k)

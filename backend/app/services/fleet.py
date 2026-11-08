@@ -4216,7 +4216,9 @@ def areas_collide(a: list[str], b: list[str]) -> list[str]:
     return out
 
 
-def colliding_pairs(a: list[str], b: list[str], *, hard: bool = False) -> list[tuple[str, str]]:
+def colliding_pairs(a: list[str], b: list[str], *, hard: bool = False,
+                    hard_areas: tuple[str, ...] | list[str] | None = None
+                    ) -> list[tuple[str, str]]:
     """(mine, theirs) for each area of `a` that collides, with the first area of `b` it hits.
 
     The same rule as `areas_collide`, kept as pairs so a refusal can name BOTH sides
@@ -4227,7 +4229,7 @@ def colliding_pairs(a: list[str], b: list[str], *, hard: bool = False) -> list[t
     out = []
     for x in a:
         for y in b:
-            if (hard_collide if hard else areas_collide)([x], [y]):
+            if (hard_collide([x], [y], hard_areas) if hard else areas_collide([x], [y])):
                 out.append((x, y))
                 break
     return out
@@ -4246,23 +4248,49 @@ def describe_pairs(pairs: list[tuple[str, str]], *, cap: int = 3) -> str:
 HARD_AREAS: tuple[str, ...] = ("backend/alembic/versions",)
 
 
-def is_hard_area(area: str) -> bool:
-    """True when `area` is (or lies under) a hard-leased path. A trailing glob is ignored."""
+def is_hard_area(area: str, hard_areas: tuple[str, ...] | list[str] | None = None) -> bool:
+    """True when `area` is (or lies under) a hard-leased path. A trailing glob is ignored.
+
+    `hard_areas` is the project's `plan.exclusive_areas` (GRPH-1423); None reads `HARD_AREAS`."""
+    hards = HARD_AREAS if hard_areas is None else _hard_paths(hard_areas)
     n = _normalise_area(area)
     while n.endswith("*") or n.endswith("/"):
         n = n.rstrip("*").rstrip("/")
     return any(n == h or n.startswith(h + "/") or h.startswith(n + "/") or h == n
-               for h in HARD_AREAS if n)
+               for h in hards if n)
 
 
-def hard_collide(a: list[str], b: list[str]) -> list[str]:
+def _hard_paths(paths) -> tuple[str, ...]:
+    """Rule globs as bare directory prefixes: `db/migrations/**` -> `db/migrations`."""
+    out = []
+    for p in paths:
+        n = _normalise_area(p) if isinstance(p, str) else ""
+        while n.endswith("*") or n.endswith("/"):
+            n = n.rstrip("*").rstrip("/")
+        if n:
+            out.append(n)
+    return tuple(out)
+
+
+def project_hard_areas(db: Session, project_id: str | None) -> tuple[str, ...]:
+    """The project's exclusive areas: its resolved `plan.exclusive_areas` `paths`, in place of
+    `HARD_AREAS` (GRPH-1423). A box whose pack lacks the rule reads the default."""
+    from app.services import rule_toggles
+    if rule_toggles.EXCLUSIVE_AREAS_RULE not in rule_toggles.LIBRARY:
+        return HARD_AREAS
+    return rule_toggles.exclusive_paths(db, project_id)
+
+
+def hard_collide(a: list[str], b: list[str],
+                 hard_areas: tuple[str, ...] | list[str] | None = None) -> list[str]:
     """The overlaps in `areas_collide` that must stay exclusive: those touching a hard area.
 
     Reservation checks use this; `areas_collide` still defines clustering, so items that
     overlap stay one cluster for one agent, while two DRAINS no longer block each other on
     files git can merge."""
     return [x for x in areas_collide(a, b)
-            if is_hard_area(x) or any(is_hard_area(y) and areas_collide([x], [y]) for y in b)]
+            if is_hard_area(x, hard_areas)
+            or any(is_hard_area(y, hard_areas) and areas_collide([x], [y]) for y in b)]
 
 
 def reserve_areas(db: Session, *, agent_id: str, item_id: str, areas: list[str],
@@ -4393,6 +4421,7 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     scope = items_svc.seat_scope(db, agent_id)
     #: (mine, theirs) for the first collision of each refused cluster — the refusal names both.
     collided: list[tuple[str, str]] = []
+    hards = project_hard_areas(db, project_id)
 
     for cluster in collision_svc.clusters_for_project(db, project_id,
                                                        lease_seconds=lease_seconds,
@@ -4400,10 +4429,11 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         members = set(cluster.get("items") or [])
         free = set().union(*[o for o in overrides if members <= o]) if overrides else set()
         blocked = [r.area for r in taken if r.agent_id != agent_id and r.item_id not in free]
-        overlap = hard_collide(cluster.get("areas") or [], blocked)
+        overlap = hard_collide(cluster.get("areas") or [], blocked, hards)
         if overlap:
             if len(collided) < 3:
-                collided.extend(colliding_pairs(cluster.get("areas") or [], blocked, hard=True)[:1])
+                collided.extend(colliding_pairs(cluster.get("areas") or [], blocked, hard=True,
+                                                hard_areas=hards)[:1])
             continue
         ids = (cluster.get("items") or [])[:_capped(db, project_id, cluster, max_items)]
         claimed = [it for it in (items_svc.claim_item(db, i, agent_id, lease_seconds=lease_seconds)
@@ -5557,7 +5587,7 @@ def park(db: Session, attempt, *, agent_id: str | None = None,
 #: `merged_trunk` (the trunk was merged into the branch before it was proposed) and
 #: `behind_conflict`, the one kind that also moves the item (`_send_back_behind`).
 OBSERVATION_KINDS = ("cut_from", "pr_opened", "salvage", "withheld", "merged_trunk",
-                     "behind_conflict")
+                     "behind_conflict", "undeclared_warned")
 OBSERVATION_LATER = ("pushed_head",)
 
 _CUT_BASE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -5684,6 +5714,14 @@ def _observation_receipt(kind: str, *, branch: str, base: str | None, url: str |
         if not why:
             raise ObservationError(422, "merged_trunk names the ref and the sha merged")
         return {"kind": "note", "detail": f"gbfleet: `{branch}`: {why}"}
+    if kind == "undeclared_warned":
+        why = (reason or "").strip()
+        if not why:
+            raise ObservationError(422, "undeclared_warned names the files")
+        return {"kind": "note", "detail": (
+            f"gbfleet: `{branch}`: PR opened with file(s) outside every declared touchpoint "
+            f"(build.undeclared_files = warn): {why}. The merge still refuses a file no "
+            "signed-off item covers.")}
     if kind == "behind_conflict":
         why = (reason or "").strip()
         if not why:

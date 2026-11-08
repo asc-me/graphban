@@ -293,7 +293,7 @@ _ORG_TIMEOUT = 3.0       # the window must not hang on a cloud that is down
 _ORG_GITOPS_COLUMNS = (
     "gitops_base_branch", "gitops_no_push_to_base", "gitops_branch_name_pattern",
     "gitops_pr_title_pattern", "gitops_reviewer_bar", "gitops_version_scheme",
-    "gitops_release_defined_in", "gitops_model",
+    "gitops_release_defined_in", "gitops_merge_method", "gitops_model",
 )
 
 # Process-local, keyed on the link it was fetched through so a re-link never serves the old

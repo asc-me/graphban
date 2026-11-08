@@ -280,6 +280,7 @@ class Project(Base):
     gitops_reviewer_bar: Mapped[str | None] = mapped_column(String, nullable=True)
     gitops_version_scheme: Mapped[str | None] = mapped_column(String, nullable=True)
     gitops_release_defined_in: Mapped[str | None] = mapped_column(String, nullable=True)
+    gitops_merge_method: Mapped[str | None] = mapped_column(String, nullable=True)
     gitops_model: Mapped[str | None] = mapped_column(String, nullable=True)
 
     memberships: Mapped[list[Membership]] = relationship(back_populates="project")
@@ -310,6 +311,7 @@ class Organization(Base):
     gitops_reviewer_bar: Mapped[str | None] = mapped_column(String, nullable=True)
     gitops_version_scheme: Mapped[str | None] = mapped_column(String, nullable=True)
     gitops_release_defined_in: Mapped[str | None] = mapped_column(String, nullable=True)
+    gitops_merge_method: Mapped[str | None] = mapped_column(String, nullable=True)
     gitops_model: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # PRD-38 D13: this org contributes weekly cell aggregates to the platform average, and

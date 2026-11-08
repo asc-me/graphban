@@ -1,7 +1,7 @@
 """`machines` — dev machines that reported from `gban setup` / `gban doctor` (GRPH-1442).
 
-Revision ID: 0190
-Revises: 0189
+Revision ID: 0191
+Revises: 0190
 """
 
 from typing import Sequence, Union
@@ -9,8 +9,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0190"
-down_revision: Union[str, None] = "0189"
+revision: str = "0191"
+down_revision: Union[str, None] = "0190"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

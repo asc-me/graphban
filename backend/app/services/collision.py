@@ -333,13 +333,14 @@ def _with_reservations(db: Session, clusters: list[dict], project_id: str | None
     taken = fleet_svc.active_reservations(db, project_id, now=now)
     if not taken:
         return clusters
+    hards = fleet_svc.project_hard_areas(db, project_id)
     for cluster in clusters:
         areas = list(cluster.get("areas") or [])
         holders, soonest = set(), None
         blocking: list[dict] = []
         sharing: list[dict] = []
         for row in taken:
-            overlap = fleet_svc.hard_collide(areas, [row.area])
+            overlap = fleet_svc.hard_collide(areas, [row.area], hards)
             if not overlap:
                 # A SOFT overlap (GRPH-1389): claimable, but said, so a drain can report that
                 # it spawned alongside another lease instead of looking like it never saw it.

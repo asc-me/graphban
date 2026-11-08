@@ -66,8 +66,11 @@ def _stored(rows) -> list[dict]:
 class _Ledger:
     """A fake Graphban `call`: hands out items and records every write."""
 
-    def __init__(self, items: dict[str, dict], *, allowed=None, release=None):
+    def __init__(self, items: dict[str, dict], *, allowed=None, release=None,
+                 merge_method=None):
         self.items = items
+        # GRPH-1428: `get_context`'s `gitops.merge_method`. Unset by default.
+        self.merge_method = merge_method
         self.allowed = allowed
         # GRPH-1109's shape on `fleet_status`. Unset by default, as on a new box.
         self.release = release if release is not None else {"ref": None, "source": "unmeasured"}
@@ -91,6 +94,10 @@ class _Ledger:
             if isinstance(self.release, Exception):
                 raise self.release
             return {"agents": [], "release_ref": self.release}
+        if tool == "get_context":
+            return {"gitops": {"merge_method": {
+                "value": self.merge_method,
+                "source": "project" if self.merge_method else "unmeasured"}}}
         raise AssertionError(f"unexpected call {tool}")
 
     def wrote(self, tool: str) -> list[dict]:

@@ -1,5 +1,5 @@
 {
-  "api_version": "1.6.0",
+  "api_version": "1.7.0",
   "primitives": [
     {
       "id": "done_predicates",
@@ -36,6 +36,17 @@
           "name": "path",
           "required": false,
           "type": "str"
+        }
+      ]
+    },
+    {
+      "id": "exclusive_areas",
+      "level": "enforced",
+      "params": [
+        {
+          "name": "paths",
+          "required": false,
+          "type": "list"
         }
       ]
     },
@@ -88,6 +99,17 @@
     },
     {
       "id": "test_scope",
+      "level": "checked",
+      "params": [
+        {
+          "name": "mode",
+          "required": false,
+          "type": "str"
+        }
+      ]
+    },
+    {
+      "id": "undeclared_files",
       "level": "checked",
       "params": [
         {

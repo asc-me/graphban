@@ -256,15 +256,19 @@ _TEST_SCOPE_BRIEF = {
 }
 
 
-def test_scope_line(mode: str) -> str:
+def test_scope_line(mode: str, engines: list[str] | None = None) -> str:
     """GRPH-1405: one line naming the project's test-scope mode and what it asks of this
-    builder or reviewer."""
-    return f"Test scope: {mode} — {_TEST_SCOPE_BRIEF[mode]}"
+    builder or reviewer. Under `agent_full` it names the engines (GRPH-1429)."""
+    line = f"Test scope: {mode} — {_TEST_SCOPE_BRIEF[mode]}"
+    if mode == "agent_full" and engines:
+        line += f" Engines: {', '.join(engines)}."
+    return line
 
 
 def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[str],
           checklist: str | None, lessons: list[dict], previous: dict | None,
-          attempts: list[dict], test_scope: str | None = None) -> str:
+          attempts: list[dict], test_scope: str | None = None,
+          test_engines: list[str] | None = None) -> str:
     """Prose for a spawn prompt, derived from the fields and nothing else (D16). Deliberately
     excludes the lane and tier suggestions so a pasted brief cannot become the default."""
     lines = [f"Item {item.key}: {item.title}"]
@@ -299,7 +303,7 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
             "and do not rebuild from the base."
         )
     if test_scope:
-        lines.append(test_scope_line(test_scope))
+        lines.append(test_scope_line(test_scope, test_engines))
     if len(attempts) > 1:
         lines.append(f"Attempts so far: {len(attempts)}")
     return "\n".join(lines)
@@ -345,6 +349,7 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     mix = mix_counts(db, item.project_id)
     from app.services import rule_toggles
     test_scope = rule_toggles.test_scope_mode(db, item.project_id)
+    test_engines = rule_toggles.test_scope_engines(db, item.project_id)
     return {
         "item": item.key,
         "title": item.title,
@@ -366,7 +371,8 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
         "pinned": _pinned(item),
         "text": _text(item, summary=summary, touchpoints=touchpoints, blocked_by=blocked_by,
                       checklist=checklist, lessons=lessons, previous=previous,
-                      attempts=attempts, test_scope=test_scope),
+                      attempts=attempts, test_scope=test_scope,
+                      test_engines=test_engines),
         "test_scope": test_scope,
         # PRD-41 D5 / D15: the set the resolver will score, inside the measured_for_lane cap.
         "capabilities": caps,
@@ -888,12 +894,14 @@ def refuse_bound_collision(db: Session, *, agent: Agent, item: Item) -> None:
     areas, _ = collision_svc.touch_areas(db, item, item.project_id)
     taken = fleet_svc.active_reservations(db, item.project_id, now=_now())
     blocked = [r.area for r in taken if r.agent_id != agent.id]
-    if fleet_svc.hard_collide(areas, blocked):
+    hards = fleet_svc.project_hard_areas(db, item.project_id)
+    if fleet_svc.hard_collide(areas, blocked, hards):
         holders = sorted({r.agent_id for r in taken
                           if r.agent_id != agent.id
-                          and fleet_svc.hard_collide(areas, [r.area])})
+                          and fleet_svc.hard_collide(areas, [r.area], hards)})
         # Both sides of the collision, not only who holds it (GRPH-1399).
-        pairs = fleet_svc.describe_pairs(fleet_svc.colliding_pairs(areas, blocked, hard=True))
+        pairs = fleet_svc.describe_pairs(fleet_svc.colliding_pairs(areas, blocked, hard=True,
+                                                                  hard_areas=hards))
         raise DelegationRefused(
             f"{item.key}'s areas are reserved by {', '.join(holders)} ({pairs}); a bound "
             "seat would claim straight through that collision",

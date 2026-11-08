@@ -125,9 +125,13 @@ const view = new URLSearchParams(location.search).get("view");
 
 createRoot(document.getElementById("root")!).render(
   view === "harness-grid" ? (
-    <main className="p-6">
-      <PerformanceGrid data={harnessReport()} routing={[]} />
-    </main>
+    // The grid reads the recommendation cards for its Recommendations button and cell panel
+    // (GRPH-1422), so it needs a query client like every other mount of it.
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <main className="p-6">
+        <PerformanceGrid data={harnessReport()} routing={[]} />
+      </main>
+    </QueryClientProvider>
   ) : (
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <MemoryRouter initialEntries={["/p/CP/tracker"]}>

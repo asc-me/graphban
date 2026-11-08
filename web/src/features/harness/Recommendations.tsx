@@ -114,7 +114,6 @@ export function Recommendations({
   filter?: [CardFilter, (f: CardFilter) => void];
 }) {
   const { data, isLoading } = useHarnessCards(projectId);
-  const mark = useMarkHarnessCard(projectId);
   const own = useCardFilter(projectId);
   const [filter, setFilter] = filterProp ?? own;
 
@@ -199,18 +198,24 @@ export function Recommendations({
           {describeFilter(filter, ruleSet)}.
         </div>
       ) : (
-        <div className="flex flex-col gap-2" data-testid="harness-cards">
-          {shown.map((card) => (
-            <CardRow
-              key={card.key}
-              card={card}
-              onMark={(action) =>
-                mark.mutate({ card_key: card.key, evidence_hash: card.evidence_hash, action })
-              }
-            />
-          ))}
-        </div>
+        <CardList cards={shown} projectId={projectId} />
       )}
+    </div>
+  );
+}
+
+/** The card component the Recommendations tab and the grid's Recommendations button share. */
+export function CardList({ cards, projectId }: { cards: HarnessCard[]; projectId?: string }) {
+  const mark = useMarkHarnessCard(projectId);
+  return (
+    <div className="flex flex-col gap-2" data-testid="harness-cards">
+      {cards.map((card) => (
+        <CardRow
+          key={card.key}
+          card={card}
+          onMark={(action) => mark.mutate({ card_key: card.key, evidence_hash: card.evidence_hash, action })}
+        />
+      ))}
     </div>
   );
 }

@@ -20,6 +20,57 @@ evidence and merge gates (GRPH-1404) adopt the mode. The rule reaches a box thro
 rule-pack feed (primitive `test_scope`, template `build.test_scope`, stage Build, default `on`,
 `mode = "agent_and_pr"`); the feed lives outside this repo and needs that template added.
 
+### `engines` (GRPH-1429)
+
+A second param, `engines`: a list of engine names, default `["postgres", "sqlite"]`, so nothing
+changes on upgrade. It applies only in `agent_full`: a merge with no CI attestation counts the
+builder's runs only when the item carries a full passing `test` receipt for each listed engine
+(e.g. `["mysql"]` is met by one full passing `engine: mysql` run; a SQLite-only run is not).
+The supervisor reads the resolved list in place of its fixed pair, and the brief's `Test scope:`
+line names the engines under `agent_full`. A value that is not a non-empty list of strings is
+refused (422). The rule-pack template must carry `engines` in its default params.
+
+## `build.undeclared_files` — undeclared files hold the PR or only warn (GRPH-1425)
+
+A per-project library rule (stage Build, level `checked`) with one param, `mode`. A project that
+never set it reads `hold`, so nothing changes on upgrade.
+
+| `mode` | A branch with a file outside every declared touchpoint |
+| --- | --- |
+| `hold` (default) | is held back from a PR; a wait names the files until the touchpoints are widened |
+| `warn` | gets its PR; the files are recorded as a wait and as a note on each item |
+
+The API refuses any other value (422). This rule moves only *when* undeclared files are caught.
+The merge-time check is unchanged and applies in both modes: every changed file must sit inside
+a touchpoint of an item signed off at that commit (`propose.merge` `covering`, GRPH-1408).
+
+The supervisor reads the mode through `get_rule_toggles`; anything unreadable is `hold`. The
+note is the `undeclared_warned` kind on `POST /api/fleet/observations`. The rule reaches a box
+through the signed rule-pack feed (primitive `undeclared_files`, template `build.undeclared_files`,
+stage Build, default `on`, `mode = "hold"`); the feed lives outside this repo and needs that
+template added.
+
+## `plan.exclusive_areas` — which file areas are exclusive (GRPH-1423)
+
+A per-project library rule with one param, `paths`, a list of globs. A lease over a path in the
+list is exclusive: a second drain cannot take it. Every other overlap is a soft lease, because
+git reports a real conflict at merge time (GRPH-1389). The default is
+`["backend/alembic/versions"]`, so nothing changes on upgrade. A project whose single-writer
+files live elsewhere (`db/migrations/**`, `prisma/migrations/**`) sets its own list on the Rules
+page (Plan stage), with a reason; the change is recorded in the rule's history like any toggle.
+A trailing glob is ignored: `db/migrations/**` covers `db/migrations/0001.sql`.
+
+The API refuses a `paths` value that is not a list of strings (422).
+
+The merge check reads the same migrations directory. When the merged tree has no
+`backend/alembic/versions`, it records `alembic-heads=none` rather than `alembic-heads=1`, so a
+check that looked at nothing does not read as a pass.
+
+The rule reaches a box through the signed rule-pack feed (primitive `exclusive_areas`,
+template `plan.exclusive_areas`, stage Plan, default `on`,
+`paths = ["backend/alembic/versions"]`); the feed lives outside this repo and needs that
+template added. The primitive API is 1.7.0 (a `list` param type).
+
 ## `build.generated_files` — files the undeclared-file hold ignores (GRPH-1424)
 
 A per-project library rule (stage Build, level `checked`: only the supervisor honours it) with
@@ -47,3 +98,13 @@ re-checked. A predicate that did not run is not a pass, and it must be attested 
   naming the predicate and its source.
 - **Audit:** `GET /api/rules/toggles` returns `effective_predicates` for this rule — each name
   with its source (`deployment` or `project`). The rule history records who set the list and why.
+
+## `gitops.merge_method` — how the supervisor merges (GRPH-1428)
+
+`squash` (default when unset), `merge` or `rebase`. Set it on the gitops PATCH like the other
+`gitops.*` fields; any other value is a 422. It rides `get_context` under `gitops` as
+`merge_method` (`{value, source}`), read where `base_branch` is, so a linked box gets the
+cloud's rule; the supervisor passes the matching `gh pr merge` flag. A branch that
+is behind is updated with `gh pr update-branch --rebase` under `squash` or `rebase`, and with a
+plain merge update under `merge`. The PR head must still be the reviewed commit, whatever the
+method. A server that predates the field, or an unreadable value, reads as `squash`.
