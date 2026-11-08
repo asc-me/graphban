@@ -135,6 +135,15 @@ def login(url: str, email: str, password: str) -> dict:
                             {"email": email, "password": password})
 
 
+def pair_start(url: str) -> dict:
+    """Begin a device-code sign-in: no password, no credential yet (GRPH-1366)."""
+    return Client(url).call("POST", "/api/cli/pair")
+
+
+def pair_poll(url: str, device_code: str) -> dict:
+    return Client(url).call("POST", "/api/cli/pair/token", {"device_code": device_code})
+
+
 def authenticated(url: str, *, act: str = "") -> Client:
     """A client for this invocation: one refresh exchange, access token held in memory.
 

@@ -5,7 +5,7 @@
   ],
   "commands": [
     "uv tool install graphban-cli",
-    "gban --server {server} login",
+    "gban --server {server} login --pair",
     "gban --project {project} setup"
   ]
 }

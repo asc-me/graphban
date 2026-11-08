@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import gbanAgents from "@/lib/gban-agents.json";
 import { api } from "@/lib/api";
 import { McpInstall } from "@/features/settings/McpInstall";
+import { useApproveCliPair } from "@/lib/queries";
 import type { ApiKeyCreated } from "@/lib/types";
 
 import type { StepMark } from "./quickStartProgress";
@@ -64,6 +65,48 @@ export function CopyBlock({ text, label }: { text: string; label: string }) {
         <span aria-live="polite">{copied ? "Copied" : "Copy"}</span>
       </Button>
     </div>
+  );
+}
+
+/** Approves the code `gban login --pair` prints, as the person signed in here (GRPH-1366). */
+export function PairApproval() {
+  const approve = useApproveCliPair();
+  const [code, setCode] = React.useState("");
+  return (
+    <form
+      className="rounded-[8px] border border-line bg-bg p-2.5"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (code.trim()) approve.mutate(code.trim());
+      }}
+    >
+      <label className="block text-[12px] text-muted" htmlFor="qs-pair-code">
+        Code shown by <code className="font-mono">gban login --pair</code>
+      </label>
+      <div className="mt-1 flex gap-2">
+        <input
+          id="qs-pair-code"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          autoComplete="off"
+          placeholder="ABCD-EFGH"
+          className="min-w-0 flex-1 rounded-md border border-control bg-surface-2 px-2 py-1 font-mono text-[13px]"
+        />
+        <Button size="sm" type="submit" loading={approve.isPending} disabled={approve.isPending || !code.trim()}>
+          Approve
+        </Button>
+      </div>
+      {approve.isSuccess && (
+        <p role="status" className="mt-1.5 text-[12px] text-muted">
+          Approved — your terminal is signed in as you.
+        </p>
+      )}
+      {approve.isError && (
+        <p role="alert" className="mt-1.5 text-[12px] text-st-blocked">
+          That code isn't valid, or it has expired. Run gban login --pair again.
+        </p>
+      )}
+    </form>
   );
 }
 
@@ -189,6 +232,7 @@ export function ConnectStep({
           {gbanCommands(server, projectId).map((cmd, i) => (
             <CopyBlock key={cmd} text={cmd} label={COMMAND_LABELS[i] ?? "Copy the command"} />
           ))}
+          <PairApproval />
           <p className="text-[12px] text-muted">
             If you haven't already, run <code className="font-mono">gban setup</code>, then restart your agent.
           </p>
