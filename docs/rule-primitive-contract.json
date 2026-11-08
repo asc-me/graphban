@@ -2,6 +2,17 @@
   "api_version": "1.6.0",
   "primitives": [
     {
+      "id": "done_predicates",
+      "level": "enforced",
+      "params": [
+        {
+          "name": "predicates",
+          "required": false,
+          "type": "list"
+        }
+      ]
+    },
+    {
       "id": "evidence_attached",
       "level": "checked",
       "params": [

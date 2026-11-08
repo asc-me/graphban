@@ -88,11 +88,27 @@ UNDECLARED_FILES_MODES: dict[str, tuple[str, str]] = {
              "The PR is opened; the files are recorded as a wait and a note on the item, and "
              "the merge still refuses a file no signed-off item covers."),
 }
+
+#: GRPH-1424: generated files the supervisor's undeclared-file hold ignores. Only the
+#: supervisor honours it (level `checked`); the default is the built-in list it always had.
+GENERATED_FILES_RULE = "build.generated_files"
+GENERATED_FILES_DEFAULT: list[str] = [
+    ".agents/skills/", ".claude/agents/", ".claude/skills/", ".codex/agents/",
+    ".cursor/agents/", ".cursor/plugins/graphban/", ".cursor/rules/graphban.mdc",
+    "AGENTS.md", "backend/tests/shard_weights.json",
+]
 #: A string param that takes one of a closed set: rule id -> param -> allowed values.
 PARAM_CHOICES: dict[str, dict[str, tuple[str, ...]]] = {
     TEST_SCOPE_RULE: {"mode": tuple(TEST_SCOPE_MODES)},
     UNDECLARED_FILES_RULE: {"mode": tuple(UNDECLARED_FILES_MODES)},
 }
+
+
+#: GRPH-1426: the predicates a project's `done` needs, over the deployment's floor.
+DONE_PREDICATES_RULE = "merge.done_predicates"
+#: Required for any item with a linked PR (`items.refuse_if_pr_cooling_down`); locked in a set
+#: list until GRPH-1059 decides whether it can ever be dropped.
+CI_FLOOR_PREDICATE = "suite_green"
 
 
 def register(rule: LibraryRule) -> None:
@@ -176,6 +192,38 @@ def undeclared_files_mode(db: Session, project_id: str | None) -> str:
     mode = resolve(db, UNDECLARED_FILES_RULE, project_id)["params"]["value"].get("mode")
     return mode if mode in UNDECLARED_FILES_MODES else UNDECLARED_FILES_DEFAULT
 
+def generated_files(db: Session, project_id: str | None) -> list[str]:
+    """The project's generated-file paths; today's list when unset or the rule is absent."""
+    if GENERATED_FILES_RULE not in LIBRARY:
+        return list(GENERATED_FILES_DEFAULT)
+    paths = resolve(db, GENERATED_FILES_RULE, project_id)["params"]["value"].get("paths")
+    return list(paths) if isinstance(paths, list) else list(GENERATED_FILES_DEFAULT)
+
+
+def done_predicate_list(db: Session, project_id: str | None) -> list[dict]:
+    """Each predicate `done` needs for a project with where it came from: `deployment` (the
+    environment setting, read live, and `suite_green` for an item with a linked PR) or
+    `project` (added through `merge.done_predicates`). Unset follows the deployment."""
+    out = [{"name": n, "source": "deployment"} for n in deployment_predicates()]
+    out.append({"name": CI_FLOOR_PREDICATE, "source": "deployment", "when": "item has a linked PR"}
+               if CI_FLOOR_PREDICATE not in deployment_predicates() else None)
+    out = [o for o in out if o]
+    if DONE_PREDICATES_RULE in LIBRARY:
+        state = resolve(db, DONE_PREDICATES_RULE, project_id)
+        if state["on"]["value"]:
+            have = {o["name"] for o in out}
+            for n in (state["params"]["value"] or {}).get("predicates") or []:
+                if n not in have:
+                    out.append({"name": n, "source": "project"})
+                    have.add(n)
+    return out
+
+
+def done_predicate_names(db: Session, project_id: str | None) -> list[str]:
+    """What the done gate requires of every item: the deployment's list plus the project's
+    additions. `suite_green` for a linked PR is the cooldown's own gate, not repeated here."""
+    return [p["name"] for p in done_predicate_list(db, project_id) if "when" not in p]
+
 
 def effective(db: Session, project_id: str | None) -> list[dict]:
     """Every library rule's effective toggle for a project, in library order."""
@@ -185,9 +233,13 @@ def effective(db: Session, project_id: str | None) -> list[dict]:
             (RuleToggle.project_id == project_id) if not org_id else
             ((RuleToggle.project_id == project_id) | (RuleToggle.org_id == org_id))))
     } if project_id else {}
-    return [dict(_resolve(r, rows.get((r.id, "project")), rows.get((r.id, "org")), org_id),
-                 stage=r.stage, title=r.title)
-            for r in LIBRARY.values()]
+    out = [dict(_resolve(r, rows.get((r.id, "project")), rows.get((r.id, "org")), org_id),
+                stage=r.stage, title=r.title)
+           for r in LIBRARY.values()]
+    for t in out:
+        if t["rule_id"] == DONE_PREDICATES_RULE:  # GRPH-1426: the read names each source
+            t["effective_predicates"] = done_predicate_list(db, project_id)
+    return out
 
 
 # ---- writes -------------------------------------------------------------------------------
@@ -213,6 +265,26 @@ def _reason(reason: str | None) -> str:
     return text
 
 
+def deployment_predicates() -> list[str]:
+    from app.config import settings
+    return list(settings.required_predicate_list)
+
+
+def _check_done_predicates(value: object) -> list[str]:
+    if not all(isinstance(p, str) and p.strip() for p in value):
+        raise Validation(f"{DONE_PREDICATES_RULE} param 'predicates' must be a list of names")
+    names = list(dict.fromkeys(p.strip() for p in value))
+    if names:  # an empty list is "unset": the project follows the deployment
+        for name, source in [(n, "deployment `required_predicates`") for n in
+                             deployment_predicates()] + [
+                (CI_FLOOR_PREDICATE, "the CI floor for items with a linked PR")]:
+            if name not in names:
+                raise Validation(
+                    f"{DONE_PREDICATES_RULE} cannot drop {name!r}: it is required by {source}",
+                    hint="a project may only add predicates to the floor")
+    return names
+
+
 def _check_params(rule: LibraryRule, params: dict) -> dict:
     """Params are the template's own keys, each the type of its default. An unknown key is
     refused rather than stored, where it would read as a setting the primitive honours."""
@@ -226,6 +298,8 @@ def _check_params(rule: LibraryRule, params: dict) -> dict:
         want = type(rule.default_params[k])
         if not isinstance(v, want) or (want is int and isinstance(v, bool)):
             raise Validation(f"{rule.id} param {k!r} must be {want.__name__}")
+        if rule.id == DONE_PREDICATES_RULE and k == "predicates":
+            params = {**params, k: _check_done_predicates(v)}
         choices = PARAM_CHOICES.get(rule.id, {}).get(k)
         if choices is not None and v not in choices:
             raise Validation(f"{rule.id} param {k!r} must be one of {', '.join(choices)}",
