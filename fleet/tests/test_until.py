@@ -2658,6 +2658,59 @@ def test_an_unreadable_roster_is_not_an_empty_one():
     assert child.running is True and child.stopped_because is None
 
 
+class _Roster:
+    def __init__(self, agents):
+        self.agents = agents
+
+    def call(self, tool, **_args):
+        assert tool == "fleet_status"
+        return {"agents": self.agents}
+
+
+class _Held:
+    """A fake live child; `stop` is patched, so only these fields are read."""
+
+    def __init__(self, agent_id, worktree):
+        self.agent_id = agent_id
+        self.worktree = worktree
+        self.running = True
+        self.stopped_because = None
+
+
+def test_only_the_child_holding_nothing_is_stopped_at_exit(monkeypatch, tmp_path: Path):
+    """GRPH-1401 bounce. Readable roster: a live child holding a non-stale item must
+    survive `_leave` (the REVIEWER_FAILS exit runs it while builders still hold
+    leases); only the live child that holds nothing is stopped and reaped."""
+    import gbfleet.until as until_mod
+    from gbfleet.supervisor import Wave as _Wave
+
+    builder = _Held("GRPH-A1", str(tmp_path / "builder"))
+    empty = _Held("GRPH-A2", str(tmp_path / "empty"))
+    sup = _Roster([
+        {"id": "GRPH-A1", "worktree": builder.worktree,
+         "holdings": [{"id": "GRPH-7", "phase": "build"}]},
+        {"id": "GRPH-A2", "worktree": empty.worktree, "holdings": []},
+    ])
+    stopped, reaped = [], []
+
+    def fake_stop(child, reason, grace=0):
+        stopped.append(child)
+        child.stopped_because = reason
+        child.running = False
+
+    monkeypatch.setattr(until_mod, "stop", fake_stop)
+    monkeypatch.setattr(until_mod, "_report_exits", lambda gone, *_a, **_k: None)
+    monkeypatch.setattr(until_mod, "_reap_all",
+                        lambda _w, gone, **_k: reaped.extend(gone))
+
+    assert until_mod._idle_blocked(sup, [builder, empty]) is True
+    until_mod._stop_children_holding_nothing(_Wave(), [builder, empty], sup, sup, "main")
+
+    assert stopped == [empty] and reaped == [empty]
+    assert empty.running is False
+    assert builder.running is True and builder.stopped_because is None
+
+
 _CI_STUCK = {"kind": "note", "detail": "refused at `done` (pr_ci_not_green): cooldown over, "
              "no suite_green at commit 5f4e0ecc: run x"}
 
