@@ -62,7 +62,7 @@ TRUSTED_PUBLIC_KEYS: tuple[str, ...] = (
 STAGES = ("Spec", "Plan", "Build", "Review", "Merge", "Release", "Learn")
 #: Strongest first; a template may claim no more than its primitive provides.
 CLAIM_ORDER = ("enforced", "checked")
-PARAM_TYPES = {"int": int, "bool": bool, "str": str}
+PARAM_TYPES = {"int": int, "bool": bool, "str": str, "list": list}
 MAX_ARTIFACT_BYTES = 5_000_000
 
 
@@ -134,6 +134,12 @@ register_primitive(Primitive(
     "test_scope", "checked",
     Enforcer("doc", "docs/rules.md"),
     {"mode": Param("str")}))
+# GRPH-1426. `enforced`: the done gate (`items.refuse_if_predicates_missing`, reached from
+# `update_item` and `fleet.sign_off`) refuses `done` without a passing attestation of each name.
+register_primitive(Primitive(
+    "done_predicates", "enforced",
+    Enforcer("graphban_source", "app/services/items.py"),
+    {"predicates": Param("list")}))
 register_primitive(Primitive(
     "evidence_attached", "checked",
     Enforcer("graphban_source", "app/services/items.py"),

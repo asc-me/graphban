@@ -19,3 +19,19 @@ This item only adds the rule and exposes it; the operating loop and skills (GRPH
 evidence and merge gates (GRPH-1404) adopt the mode. The rule reaches a box through the signed
 rule-pack feed (primitive `test_scope`, template `build.test_scope`, stage Build, default `on`,
 `mode = "agent_and_pr"`); the feed lives outside this repo and needs that template added.
+
+## `merge.done_predicates` — predicates `done` requires (GRPH-1426)
+
+Stage Merge, primitive `done_predicates` (enforced), one param, `predicates` (a list of names).
+The done gate — `update_item` to `done` and `sign_off` alike — requires a passing attestation
+at the item's head for each name in the project's effective list. Items already `done` are not
+re-checked. A predicate that did not run is not a pass, and it must be attested by a
+`gate`-scope key.
+
+- **Unset (empty list):** the project follows the deployment's `REQUIRED_PREDICATES` live, plus
+  `suite_green` for an item with a linked PR (the PR cooldown gate). Today's behaviour.
+- **Set:** the deployment's entries and `suite_green` are a floor. The list must contain all of
+  them; a person may only add predicates, with a `reason`. A list that drops one is refused 422
+  naming the predicate and its source.
+- **Audit:** `GET /api/rules/toggles` returns `effective_predicates` for this rule — each name
+  with its source (`deployment` or `project`). The rule history records who set the list and why.
