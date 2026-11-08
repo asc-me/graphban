@@ -460,6 +460,41 @@ def test_preview_agrees_with_the_write(client, org):
     assert prev == real
 
 
+# ---- GRPH-1425: build.undeclared_files ------------------------------------------------------
+
+def test_undeclared_files_mode_is_hold_or_warn_and_nothing_else(client, monkeypatch):
+    monkeypatch.setattr(T, "LIBRARY", {})
+    rid = T.UNDECLARED_FILES_RULE
+    T.register(T.LibraryRule(
+        id=rid, stage="build", title="Undeclared files",
+        summary="Hold the PR or only warn.", enforcement="checked",
+        enforcer=R.Enforcer("doc", "docs/rules.md"), default_on=True,
+        default_params={"mode": T.UNDECLARED_FILES_DEFAULT}))
+    auth = _login(client, "alex@ascme-labs.com")
+
+    def put(mode):
+        return client.put(f"/api/rules/toggles/{rid}", params={"project_id": "core"},
+                          json={"params": {"mode": mode}, "reason": "try"}, headers=auth)
+
+    with _db() as db:
+        assert T.undeclared_files_mode(db, "core") == "hold"
+    assert put("warn").status_code == 200
+    with _db() as db:
+        assert T.undeclared_files_mode(db, "core") == "warn"
+    bad = put("ignore")
+    assert bad.status_code == 422 and "hold" in bad.text
+
+
+def test_undeclared_warned_observation_names_the_files_and_the_rule():
+    from app.services import fleet as F
+    got = F._observation_receipt("undeclared_warned", branch="b", base=None, url=None,
+                                 commit=None, reason="web/src/App.tsx")
+    assert got["kind"] == "note" and "web/src/App.tsx" in got["detail"]
+    assert "build.undeclared_files" in got["detail"]
+    with pytest.raises(F.ObservationError):
+        F._observation_receipt("undeclared_warned", branch="b", base=None, url=None,
+                               commit=None, reason="")
+
 def test_generated_files_default_is_todays_list_and_a_list_param_is_accepted(library):
     # GRPH-1424: absent from the pack -> today's list; registered -> its default_params paths.
     assert "AGENTS.md" in T.generated_files(None, None)
