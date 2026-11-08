@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 344 of the 344. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 347 of the 347. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -38,6 +38,9 @@ Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
 | POST | `/api/auth/refresh` | none | Refresh token → new tokens |
 | POST | `/api/auth/password-reset` | none | Ask for a reset link. **Always 202 with the same body**, registered address or not — otherwise it is an account-enumeration oracle. Rate-limited on its own bucket so reset attempts cannot lock the account out of `login` |
 | POST | `/api/auth/password-reset/confirm` | none | Spend the link once and set a new password → tokens. Every prior session is revoked |
+| POST | `/api/cli/pair` | none | Start a `gban login --pair` device-code sign-in → `{device_code, user_code, expires_in, interval}`. `device_code` is the CLI's secret (stored hashed); `user_code` is what the human types. 10-minute life |
+| POST | `/api/cli/pair/approve` | session | `{user_code}` — a signed-in human binds the code to **their own** user. 404 for unknown, expired, used or already-approved codes |
+| POST | `/api/cli/pair/token` | none | `{device_code}` → `{status: "pending"}` until approved, then `{status: "approved", access_token, refresh_token, email}` for the approving user, once. 400 for unknown, expired or spent codes |
 | POST | `/api/auth/logout` | JWT | Bump `token_version`, so every access AND refresh token issued so far — on any device — stops validating immediately. What `gb logout` calls, which is why criterion 3 of PRD-40 checks the token against the server rather than checking that a file was deleted |
 | POST | `/api/auth/me/password` | JWT | Change the caller's password. Bumps `token_version`, so every previously issued token stops working, including the caller's, and returns a fresh pair so the caller stays signed in |
 | GET | `/api/auth/me` | JWT | Current user |

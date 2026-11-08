@@ -89,6 +89,11 @@ UNDECLARED_FILES_MODES: dict[str, tuple[str, str]] = {
              "the merge still refuses a file no signed-off item covers."),
 }
 
+#: GRPH-1423: the paths whose leases are exclusive, because git cannot see two agents collide
+#: there (two new migrations merge cleanly and leave two heads). A project sets its own list.
+EXCLUSIVE_AREAS_RULE = "plan.exclusive_areas"
+EXCLUSIVE_AREAS_DEFAULT: tuple[str, ...] = ("backend/alembic/versions",)
+
 #: GRPH-1424: generated files the supervisor's undeclared-file hold ignores. Only the
 #: supervisor honours it (level `checked`); the default is the built-in list it always had.
 GENERATED_FILES_RULE = "build.generated_files"
@@ -191,6 +196,18 @@ def undeclared_files_mode(db: Session, project_id: str | None) -> str:
         return UNDECLARED_FILES_DEFAULT
     mode = resolve(db, UNDECLARED_FILES_RULE, project_id)["params"]["value"].get("mode")
     return mode if mode in UNDECLARED_FILES_MODES else UNDECLARED_FILES_DEFAULT
+
+
+def exclusive_paths(db: Session, project_id: str | None) -> tuple[str, ...]:
+    """The project's exclusive file areas. A project that never set the rule — or a box whose
+    pack does not carry it — reads the default, today's behaviour."""
+    if EXCLUSIVE_AREAS_RULE not in LIBRARY:
+        return EXCLUSIVE_AREAS_DEFAULT
+    paths = resolve(db, EXCLUSIVE_AREAS_RULE, project_id)["params"]["value"].get("paths")
+    if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+        return EXCLUSIVE_AREAS_DEFAULT
+    return tuple(paths)
+
 
 def generated_files(db: Session, project_id: str | None) -> list[str]:
     """The project's generated-file paths; today's list when unset or the rule is absent."""
@@ -298,6 +315,8 @@ def _check_params(rule: LibraryRule, params: dict) -> dict:
         want = type(rule.default_params[k])
         if not isinstance(v, want) or (want is int and isinstance(v, bool)):
             raise Validation(f"{rule.id} param {k!r} must be {want.__name__}")
+        if want is list and not all(isinstance(x, str) for x in v):
+            raise Validation(f"{rule.id} param {k!r} must be a list of strings")
         if rule.id == DONE_PREDICATES_RULE and k == "predicates":
             params = {**params, k: _check_done_predicates(v)}
         choices = PARAM_CHOICES.get(rule.id, {}).get(k)

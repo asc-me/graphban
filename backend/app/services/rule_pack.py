@@ -50,7 +50,7 @@ from app.version import __version__
 
 #: The primitive API this server provides. Bump the minor for additive changes, the major for
 #: a removed primitive or a new required param; the pinned fixtures then fail the PR (below).
-PRIMITIVE_API = "1.6.0"
+PRIMITIVE_API = "1.7.0"
 
 #: Raw Ed25519 public keys (hex) whose signatures are trusted. The graphban-rules signing job
 #: holds the matching private key; it never enters this repo. An empty tuple would refuse every pack.
@@ -140,6 +140,12 @@ register_primitive(Primitive(
     "undeclared_files", "checked",
     Enforcer("supervisor", "gbfleet until"),
     {"mode": Param("str")}))
+# GRPH-1423. `enforced`: `fleet.hard_collide` refuses a second drain over a path in `paths`.
+# `paths` is a list of strings, checked when a person sets it (`rule_toggles._check_params`).
+register_primitive(Primitive(
+    "exclusive_areas", "enforced",
+    Enforcer("graphban_source", "app/services/fleet.py"),
+    {"paths": Param("list")}))
 # GRPH-1426. `enforced`: the done gate (`items.refuse_if_predicates_missing`, reached from
 # `update_item` and `fleet.sign_off`) refuses `done` without a passing attestation of each name.
 register_primitive(Primitive(
