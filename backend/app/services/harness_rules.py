@@ -102,13 +102,19 @@ class Card:
     draft: dict = field(default_factory=dict)
     replay: dict = field(default_factory=dict)
     thresholds: dict = field(default_factory=dict)
+    #: Which cell (or capability) of the target the card is about, when one target can draw
+    #: several cards — `C1/M`, `C1/M:probe`, `project:C1`. Part of `key`, so dismissing the
+    #: C1/S card does not overwrite the mark on the C1/M one.
+    subject: str = ""
 
     @property
     def key(self) -> str:
-        """Rule + the thing it is about + the version it is about. Stable across evidence."""
+        """Rule + the thing it is about + the version it is about (+ the cell, when one target
+        draws several cards). Stable across evidence."""
         target = self.draft.get("target") or ""
         version = self.draft.get("binary_version") or ""
-        return f"{self.rule}:{target}:{version}"
+        base = f"{self.rule}:{target}:{version}"
+        return f"{base}:{self.subject}" if self.subject else base
 
     @property
     def evidence_hash(self) -> str:
@@ -327,7 +333,24 @@ def cards(db: Session, project_id: str | None = None, *, org_id: str | None = No
                 card.detail = (card.detail.rstrip(".")
                                + f". Evidence from {', '.join(names)}.")
     order = {"R2": 0, "R6": 1, "R7": 2, "R4": 3, "R5": 4, "R1": 5, "R3": 6, "probe": 7}
-    return sorted(out, key=lambda c: (order.get(c.rule, 9), c.key))
+    return _distinct_titles(sorted(out, key=lambda c: (order.get(c.rule, 9), c.key)))
+
+
+def _distinct_titles(out: list[Card]) -> list[Card]:
+    """Two cards never share a title. Every rule already names what tells its cards apart;
+    this is the backstop for a shape nobody anticipated, and it names the card's key rather
+    than numbering it, so the suffix still says which thing the card is about."""
+    seen: dict[str, int] = {}
+    for card in out:
+        seen[card.title] = seen.get(card.title, 0) + 1
+    for card in out:
+        if seen[card.title] > 1:
+            card.title = f"{card.title} [{card.key}]"
+    return out
+
+
+def _plural(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
 
 
 def _projects_of(card: Card, report: dict) -> list[str]:
@@ -351,9 +374,11 @@ def _probe_suggestions(report: dict) -> list[Card]:
     out: list[Card] = []
     for sug in report.get("probe_suggestions") or []:
         target = f"{sug['vendor']}:{sug['model']}"
+        display = f"{sug['vendor']}:{sug['model']}" if sug.get("model") else str(sug["vendor"])
+        version = sug.get("binary_version") or ""
         out.append(Card(
             rule="probe",
-            title=f"Probe {target}",
+            title=f"Probe {display}" + (f" v{version}" if version else ""),
             detail=sug.get("reason") or "a harness first resolved with no cell for it",
             draft={"target": target, "trigger": sug["trigger"],
                    "binary_version": sug.get("binary_version") or "",
@@ -409,6 +434,7 @@ def _promote_and_demote(report: dict, rows: list[AttemptTelemetry],
                         f"generalises to {cell['key']['capability']} — the sibling cells below "
                         f"are what it would be generalising over."),
                 cells=[_cell_out(cell)], siblings=_siblings(report, cell),
+                subject=_label(cell),
                 draft={"target": name, "kind": "matrix_status", "status": "verified",
                        "binary_version": cell["key"]["binary_version"],
                        "evidence_line": (f"verified: {cell['signed_off']}/{cell['finished']} "
@@ -424,6 +450,7 @@ def _promote_and_demote(report: dict, rows: list[AttemptTelemetry],
                 detail=(f"{name} signed off only {cell['signed_off']} of {cell['finished']} in "
                         f"{_label(cell)} and its matrix row is verified."),
                 cells=[_cell_out(cell)], siblings=_siblings(report, cell),
+                subject=_label(cell),
                 draft={"target": name, "kind": "matrix_status", "status": "failed",
                        "binary_version": cell["key"]["binary_version"],
                        "evidence_line": (f"failed: {cell['signed_off']}/{cell['finished']} "
@@ -497,7 +524,10 @@ def _reweight(db: Session, scope_id: str, report: dict,
                     cells.extend(_cell_out(c) for c in family_rates[top_key]["cells"][:1])
             out.append(Card(
                 rule="R3",
-                title=f"reorder {profile.user_id}'s defaults: {rival_name} above {top}",
+                title=(f"reorder {profile.user_id}'s "
+                       f"{profile.project_id + ' ' if profile.project_id else ''}defaults: "
+                       f"{rival_name} above {top}"),
+                subject=rival_name,
                 detail=(f"{rival_name} beats {top} at the family level across "
                         f"{len(set(families))} families ({', '.join(sorted(set(families)))}), "
                         f"and {top} is this profile's first default."),
@@ -524,9 +554,12 @@ def _policy(db: Session, project_ids: list[str], report: dict,
         if cell["rate"] is None or _cell_name(cell) not in local_names:
             continue
         by_cap.setdefault(cell["key"]["capability"], []).append(cell)
+    # At org scope by_cap is org-wide, so every project would draw the same title; name it.
+    many = len(project_ids) > 1
     for project_id in project_ids:
         project = db.get(Project, project_id)
         policy = (project.fleet_policy or {}) if project is not None else {}
+        in_project = f" in {project_id}" if many else ""
         local_only = bool(policy.get("local_only"))
         for cap, cells in by_cap.items():
             finished = sum(c["finished"] for c in cells)
@@ -539,7 +572,8 @@ def _policy(db: Session, project_ids: list[str], report: dict,
             if local_only and (1.0 - rate) >= POLICY_BOUNCE_RATE:
                 out.append(Card(
                     rule="R4",
-                    title=f"consider lifting local_only for {cap}",
+                    title=f"consider lifting local_only for {cap}{in_project}",
+                    subject=cap,
                     detail=(f"{name} is the local row this policy keeps, and in {cap} it "
                             f"bounced {finished - signed} of {finished}. The replay says "
                             f"what lifting the policy would have changed; it does not say "
@@ -553,7 +587,8 @@ def _policy(db: Session, project_ids: list[str], report: dict,
             elif not local_only and rate >= POLICY_KEEP_RATE:
                 out.append(Card(
                     rule="R4",
-                    title=f"consider local_only for {cap}",
+                    title=f"consider local_only for {cap}{in_project}",
+                    subject=cap,
                     detail=(f"{name} runs locally and signed off {signed} of {finished} "
                             f"in {cap}. Turning `local_only` on would keep work on it; "
                             f"the replay says which resolutions that changes."),
@@ -563,11 +598,12 @@ def _policy(db: Session, project_ids: list[str], report: dict,
                            "where": "PUT /api/fleet/policy"},
                     replay=replay(rows, {"kind": "policy", "local_only": True}),
                     thresholds={"min_n": POLICY_MIN_N, "keep_rate": POLICY_KEEP_RATE}))
-        out.extend(_policy_drops(project_id, report, rows))
+        out.extend(_policy_drops(project_id, report, rows, in_project=in_project))
     return out
 
 
-def _policy_drops(project_id: str, report: dict, rows: list[AttemptTelemetry]) -> list[Card]:
+def _policy_drops(project_id: str, report: dict, rows: list[AttemptTelemetry], *,
+                  in_project: str = "") -> list[Card]:
     """A row repeatedly dropped by policy for a capability feeds R4 for that capability."""
     counts: dict[tuple[str, str], int] = {}
     for row in rows:
@@ -591,7 +627,8 @@ def _policy_drops(project_id: str, report: dict, rows: list[AttemptTelemetry]) -
                      if _cell_name(c) == name and c["key"]["capability"] == cap), None)
         out.append(Card(
             rule="R4",
-            title=f"policy dropped {name} for {cap} {n} times",
+            title=f"policy dropped {name} for {cap} {n} times{in_project}",
+            subject=f"{cap}:{name}",
             detail=(f"{name} was dropped by project policy on {n} resolutions that needed "
                     f"{cap}. The control is PUT /api/fleet/policy."),
             cells=[_cell_out(cell)] if cell else [],
@@ -698,6 +735,7 @@ def _reprior(report: dict, rows: list[AttemptTelemetry],
                         + " R5 drafts an evidence entry naming the capability and never "
                           "flips the row's status."),
                 cells=[_cell_out(cell)], siblings=_siblings(report, cell),
+                subject=_label(cell) + (":probe" if probe_labelled else ""),
                 draft={"target": name, "kind": "matrix_evidence", "capability": cap,
                        "binary_version": cell["key"].get("binary_version") or "",
                        "evidence_line": evidence, "probe": probe_labelled,
@@ -706,21 +744,29 @@ def _reprior(report: dict, rows: list[AttemptTelemetry],
                                      "status": status or "unverified"}),
                 thresholds={"min_n": REPRIOR_MIN_N, "margin": REPRIOR_MARGIN}))
     for name, entries in unprior.items():
+        # One evidence line per capability (the matrix keys on capability, not on band);
+        # the cells behind each line stay listed one by one in `cells`.
+        per_cap: dict[str, list[tuple[dict, str, dict]]] = {}
+        for entry in entries:
+            per_cap.setdefault(entry[0]["key"]["capability"], []).append(entry)
+        caps = list(per_cap)
         lines: list[str] = []
-        caps: list[str] = []
-        for cell, kind, side in entries:
-            cap = cell["key"]["capability"]
-            if cap not in caps:
-                caps.append(cap)
-            lines.append(f"{cap}: {side['signed_off']}/{side['finished']} signed off "
-                         f"(rate {side['rate']}) — no per-capability prior; draft from the cell"
-                         + (" [probe]" if kind == "probe" else ""))
+        for cap, group in per_cap.items():
+            finished = sum(side["finished"] for _, _, side in group)
+            signed = sum(side["signed_off"] for _, _, side in group)
+            parts = ", ".join(f"{_where(c).split('/', 1)[1]} {side['signed_off']}/"
+                              f"{side['finished']}" + (" [probe]" if k == "probe" else "")
+                              for c, k, side in group)
+            lines.append(f"{cap}: {signed}/{finished} signed off (rate "
+                         f"{round(signed / finished, 3)}; {parts}) — no per-capability prior; "
+                         f"draft from the cells")
         display = _display_name(entries[0][0])
         any_probe = any(kind == "probe" for _, kind, _ in entries)
         where = ", ".join(_where(c) + (" [probe]" if k == "probe" else "") for c, k, _ in entries)
         out.append(Card(
             rule="R5",
-            title=f"draft evidence for {len(caps)} capabilities of {display}",
+            title=(f"draft evidence for {_plural(len(caps), 'capability', 'capabilities')} "
+                   f"of {display}"),
             detail=(f"{display} has no per-capability prior, and {len(entries)} of its cells "
                     f"({where}) have at least {REPRIOR_MIN_N} finished attempts."
                     + (" Probe samples contributed; they are labelled, not mixed into "
@@ -840,6 +886,7 @@ def _availability(db: Session, report: dict, rows: list[AttemptTelemetry]) -> li
         out.append(Card(
             rule="R6",
             title=f"install {name} for {cap}",
+            subject=cap,
             detail=(f"{len(hit_rows)} resolutions dropped {name} as not installed for {cap}. "
                     f"Its measured grade is {d_rate:.2f} from {d_layer} (n={d_n}) against "
                     f"{winner_name or 'the winner'}'s {w_rate:.2f} from {w_layer} (n={w_n}). "
@@ -880,8 +927,13 @@ def _capacity(db: Session, org_id: str | None) -> list[Card]:
     if org is None or not quotas.plan_of(org).capacity_routing:
         return []
     out: list[Card] = []
-    for f in headroom_svc.routine_findings(db, org_id):
+    findings = headroom_svc.routine_findings(db, org_id)
+    labels = [f"{f['vendor']} {f['plan_label'] or f['kind']}".strip() for f in findings]
+    for f in findings:
         label = f"{f['vendor']} {f['plan_label'] or f['kind']}".strip()
+        # Two entitlements on one vendor and plan are two cards; the id tells them apart.
+        if labels.count(label) > 1:
+            label = f"{label} ({f['entitlement_id']})"
         if f["kind_of"] == "unused":
             title = f"{label} routinely resets with headroom unused"
             detail = (f"{f['weeks']} of the last {f['weeks_read']} whole weeks used under "
