@@ -2793,6 +2793,56 @@ def test_only_the_child_holding_nothing_is_stopped_at_exit(monkeypatch, tmp_path
     assert builder.running is True and builder.stopped_because is None
 
 
+@pytest.mark.parametrize("window, kept", [(None, True), (0.0, False)])
+def test_leave_keeps_a_child_inside_its_claim_window(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch, window, kept,
+):
+    """GRPH-1401 third bounce. The run exits through `_leave` (the REVIEWER_FAILS
+    exit, forced to the first unheld-review poll) while the builder it spawned a
+    poll earlier has registered, holds nothing, and has never held anything. Inside
+    `CLAIM_WINDOW` it is not stopped and is still running when `run` returns; with
+    the window at 0 it is stopped and reaped. Sabotage: drop `and not
+    _in_claim_window(c)` from `_stop_children_holding_nothing` and the first case
+    stops it."""
+    import gbfleet.until as until_mod
+
+    monkeypatch.setattr(until_mod, "REVIEWER_FAILS", 0)
+    # The memory gate reads this host; it is not what this test is about.
+    monkeypatch.setattr(until_mod, "_room_refusal", lambda *_a, **_k: None)
+    if window is not None:
+        monkeypatch.setattr(until_mod, "CLAIM_WINDOW", window)
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=0,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": ""}],
+        agent_holdings=[],
+    )
+    result = run(
+        git_repo, _factory(scripts, "sleeper"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1, child_wall_clock=3600),
+    )
+    try:
+        assert result.reason == "review-unsigned", result.as_json()
+        kids = list(result.wave.spawned)
+        assert len(kids) == 1, result.as_json()
+        child = kids[0]
+        if kept:
+            assert child.stopped_because is None, child.stopped_because
+            assert child.running is True
+            assert child.pid in _running_pids(git_repo, state)
+            assert not child.reaped
+        else:
+            assert child.stopped_because is not None
+            assert child.running is False
+            _assert_children_reaped(result)
+    finally:
+        for pid in _running_pids(git_repo, state):
+            _end_pid(pid)
+
+
 _CI_STUCK = {"kind": "note", "detail": "refused at `done` (pr_ci_not_green): cooldown over, "
              "no suite_green at commit 5f4e0ecc: run x"}
 
