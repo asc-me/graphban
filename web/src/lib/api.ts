@@ -297,6 +297,11 @@ export const api = {
     accessToken = null;
     setRefreshToken(null);
   },
+  // ---- `gban login --pair` (GRPH-1366) ----
+  /** Approve the code the CLI printed. Binds it to THIS session's user. */
+  approveCliPair: (userCode: string) =>
+    request<void>("/cli/pair/approve", { method: "POST", body: JSON.stringify({ user_code: userCode }) }),
+
   // ---- forgotten password (GRPH-359 / GRPH-570) ----
   //
   // The request endpoint answers 202 with one sentence whether or not the address is

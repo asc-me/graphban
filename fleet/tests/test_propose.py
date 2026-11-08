@@ -1256,3 +1256,27 @@ def test_the_release_ref_is_read_only_from_a_project_setting():
     assert propose_mod.release_ref({"release_ref": {"ref": None, "source": "unknown"}}) == ""
     assert propose_mod.release_ref({"agents": []}) == "", "a server without the field is unset"
     assert propose_mod.release_ref(None) == ""
+
+
+def test_a_merge_of_a_repo_with_no_versions_directory_records_heads_none(gh, git_repo: Path):
+    """GRPH-1423. A repo with no `backend/alembic/versions` has zero heads; that is `none`,
+    not `1` — a check that looked at nothing must not read as a pass.
+
+    Sabotage: go back to appending `alembic-heads=1` whenever heads is not None.
+    """
+    for ref in ("refs/remotes/origin/main",):
+        subprocess.run(["git", "update-ref", ref, "HEAD"], cwd=git_repo, check=True)
+    subprocess.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+                   cwd=git_repo, check=True)
+    (git_repo / "item.py").write_text("mine\n", encoding="utf-8")
+    subprocess.run(["git", "add", "item.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "item"], cwd=git_repo, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo,
+                          capture_output=True, text=True, check=True).stdout.strip()
+    forge = _Forge(draft=False, head=head)
+    gh(_only_gh(forge))
+    got = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=head, green={head})
+
+    assert got.ok and got.commit == MERGE_OID
+    assert "alembic-heads=none" in got.checked
+    assert "alembic-heads=1" not in got.checked

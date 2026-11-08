@@ -466,6 +466,26 @@ class PasswordReset(Base):
     requested_ip: Mapped[str] = mapped_column(String, default="")
 
 
+class CliPair(Base):
+    """A device-code sign-in for the CLI (GRPH-1366).
+
+    `gban login --pair` creates a row and prints `user_code`; a signed-in human types that code
+    into the quick-start dialog, which sets `approved_user_id` to THEIR session's user. The CLI
+    polls with `device_code` (stored only as a hash, and never shown to the browser) and is
+    handed a token pair for `approved_user_id` and nobody else. `used_at` makes it single-use.
+    """
+
+    __tablename__ = "cli_pairs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # clp_...
+    device_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
+    user_code: Mapped[str] = mapped_column(String, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    approved_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Membership(Base):
     __tablename__ = "memberships"
 

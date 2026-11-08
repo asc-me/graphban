@@ -79,6 +79,11 @@ export function useMarkOnboarding() {
   });
 }
 
+/** Approve a `gban login --pair` code (GRPH-1366). Rejects on an unknown, expired or taken code. */
+export function useApproveCliPair() {
+  return useMutation({ mutationFn: (userCode: string) => api.approveCliPair(userCode) });
+}
+
 /** Records `tour_completed_at` and `tour_skipped_stops` in `users.onboarding` (GRPH-1363). */
 export function useCompleteTour() {
   const qc = useQueryClient();

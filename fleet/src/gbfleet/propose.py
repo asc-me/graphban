@@ -1260,7 +1260,10 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                       reason=f"merging would leave {len(heads)} alembic heads "
                              f"({', '.join(heads)}); refused — rebase and re-chain the migration")
-    checked.append("alembic-heads=1" if heads is not None else "alembic-heads=unchecked")
+    # No versions directory in the merged tree is `none`: a check that looked at nothing must
+    # not read as a pass (GRPH-1423).
+    checked.append("alembic-heads=unchecked" if heads is None
+                   else "alembic-heads=none" if not heads else "alembic-heads=1")
 
     # `--auto` is the honest verb for a supervisor: it says "merge when your requirements
     # are met", and `gh` merges immediately when a PR is already CLEAN. Squash, so the trunk

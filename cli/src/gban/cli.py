@@ -13,12 +13,14 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from gban import config, doctor as doctor_mod, setup as setup_mod, stackmap, swamp as swamp_mod
 from gban.client import (EXIT_NO_SESSION, EXIT_NO_SUPERVISOR, EXIT_REFUSED, EXIT_UNREACHABLE,
                        Client, NoSession,
-                       Refused, Unreachable, authenticated, login)
+                       Refused, Unreachable, authenticated, login, pair_poll,
+                       pair_start)
 
 PROG = "gban"
 
@@ -44,6 +46,10 @@ def _parser() -> argparse.ArgumentParser:
                      "written to session.json at mode 600; the access token is never stored, "
                      "because it is renewed on every invocation anyway."))
     login_cmd.add_argument("--email", default=None)
+    login_cmd.add_argument(
+        "--pair", action="store_true",
+        help=("sign in without typing a password here: prints a short code that a signed-in "
+              "person approves in the web app's quick-start dialog"))
 
     sub.add_parser("logout", help="end the session, here and on the server")
     sub.add_parser(
@@ -183,6 +189,8 @@ def _server(args) -> str:
 
 def cmd_login(args) -> int:
     url = _server(args)
+    if args.pair:
+        return _login_pair(args, url)
     # A TERMINAL, OR NOTHING. `getpass` falls back to a plain echoing read when it cannot
     # turn echo off, and warns about it — which is the wrong trade for a password: the
     # warning arrives after the person has already decided to type. Without a tty the
@@ -205,7 +213,38 @@ def cmd_login(args) -> int:
         # same rule criterion 4 applies to an expired session applies to a cancelled login.
         print(f"\n{PROG}: cancelled", file=sys.stderr)
         return EXIT_REFUSED
-    pair = login(url, email, password)
+    return _finish_login(args, url, email, login(url, email, password))
+
+
+def _login_pair(args, url: str) -> int:
+    """Device-code sign-in (GRPH-1366): the identity is whoever approves the code in the app."""
+    started = pair_start(url)
+    code = started.get("user_code") or ""
+    print(f"{PROG}: open the quick-start dialog in {url} (step 3) and enter this code:\n\n"
+          f"       {code}\n\n     waiting for approval (expires in "
+          f"{int(started.get('expires_in', 0)) // 60} min)…", file=sys.stderr)
+    deadline = time.monotonic() + float(started.get("expires_in", 600))
+    interval = max(float(started.get("interval", 3)), 0.0)
+    try:
+        while time.monotonic() < deadline:
+            time.sleep(interval)
+            try:
+                got = pair_poll(url, started.get("device_code", ""))
+            except Refused:
+                print(f"{PROG}: the code expired or was already used. Run `{PROG} login --pair` "
+                      f"again.", file=sys.stderr)
+                return EXIT_REFUSED
+            if got.get("status") == "approved":
+                return _finish_login(args, url, got.get("email") or "", got)
+    except KeyboardInterrupt:
+        print(f"\n{PROG}: cancelled", file=sys.stderr)
+        return EXIT_REFUSED
+    print(f"{PROG}: the code expired before anyone approved it. Run `{PROG} login --pair` "
+          f"again.", file=sys.stderr)
+    return EXIT_REFUSED
+
+
+def _finish_login(args, url: str, email: str, pair: dict) -> int:
     refresh = pair.get("refresh_token") or ""
     if not refresh:
         print(f"{PROG}: the server returned no refresh token", file=sys.stderr)

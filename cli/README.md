@@ -206,7 +206,7 @@ A real post needs a git commit (there is nothing to send for a repo with no HEAD
 It refuses without one, rather than prompting. `getpass` falls back to a plain **echoing**
 read when it cannot turn echo off — it warns, but the warning arrives after the person has
 decided to type — so a login through a pipe, a heredoc or an editor's command runner would
-put the password in the scrollback. There is no non-interactive login yet (PRD-40 open
+put the password in the scrollback. `gban login --pair` is the alternative with no password prompt: it prints a short code, and a person signed in to the web app approves it in the quick-start dialog (step ③). The session you get is the approver's, and the code is single-use and expires after 10 minutes. There is no unattended login yet (PRD-40 open
 question 2: an API key cannot reach the JWT routes, so CI would need a service session).
 
 ## Why not `gb`
