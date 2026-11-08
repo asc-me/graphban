@@ -4,15 +4,6 @@ import { Check, ChevronRight, X } from "lucide-react";
 import { useHarnessCards, useMarkHarnessCard } from "@/lib/queries";
 import type { HarnessCard, HarnessCardCell } from "@/lib/types";
 
-/**
- * PRD-38 D7 — recommended changes, as drafts.
- *
- * A card names the rule that produced it, the cells it fired on, the sibling cells it did NOT
- * fire on, and a replay of what the change would have done to resolutions that actually
- * happened. Accepting one does not apply it: R1 and R2 hand you evidence text for a commit,
- * R3 and R4 send you to the profile or policy screen. The button here records that you have
- * seen the card, so it stays quiet until its numbers move.
- */
 export type CardStateFilter = "all" | "new" | "changed" | "handled";
 
 export interface CardFilter {
@@ -64,11 +55,16 @@ function harnessNames(card: HarnessCard): string[] {
   return card.cells.map((c) => `${c.cell.vendor}${c.cell.model ? `:${c.cell.model}` : ""}`);
 }
 
+/**
+ * The server drops cards you have already handled unless their evidence moved, so a card it
+ * returns as previously accepted or dismissed is one carrying `previously` — its `state` is
+ * "new" again. `state` is still honoured for a payload fetched with include_seen.
+ */
 function matchesState(card: HarnessCard, state: CardStateFilter): boolean {
-  const changed = !!card.previously?.evidence_changed;
-  if (state === "new") return card.state === "new" && !changed;
-  if (state === "changed") return changed;
-  if (state === "handled") return card.state === "accepted" || card.state === "dismissed";
+  const handled = card.previously != null || card.state !== "new";
+  if (state === "new") return !handled;
+  if (state === "changed") return !!card.previously?.evidence_changed;
+  if (state === "handled") return handled;
   return true;
 }
 
@@ -86,20 +82,30 @@ export function defaultVisibleCount(cards: HarnessCard[]): number {
   return filterCards(cards, DEFAULT_CARD_FILTER).length;
 }
 
-function describeFilter(f: CardFilter, rules: string[]): string {
-  const parts: string[] = [];
+export function describeFilter(f: CardFilter, rules: string[]): string {
   const on = rules.filter((r) => !f.off.includes(r));
-  if (on.length === 1) parts.push(on[0]);
-  else if (on.length === 0) parts.push("any rule (all switched off)");
+  const parts = ["No"];
+  if (on.length === 0) parts.push("cards — every rule is switched off");
+  else parts.push(on.length === 1 ? `${on[0]} cards` : `${on.join("/")} cards`);
   if (f.harness) parts.push(`for ${f.harness}`);
   if (f.state !== "all")
     parts.push(
-      `that are ${{ new: "new", changed: "evidence-changed", handled: "accepted or dismissed" }[f.state]}`,
+      { new: "that are new", changed: "whose evidence changed", handled: "previously accepted or dismissed" }[
+        f.state
+      ],
     );
-  if (on.length > 1 && parts.length === 0) return "No cards match the selected rules";
-  return `No ${parts.join(" ")} cards`.replace("cards for", "cards for").replace(/ +/g, " ");
+  return parts.join(" ");
 }
 
+/**
+ * PRD-38 D7 — recommended changes, as drafts.
+ *
+ * A card names the rule that produced it, the cells it fired on, the sibling cells it did NOT
+ * fire on, and a replay of what the change would have done to resolutions that actually
+ * happened. Accepting one does not apply it: R1 and R2 hand you evidence text for a commit,
+ * R3 and R4 send you to the profile or policy screen. The button here records that you have
+ * seen the card, so it stays quiet until its numbers move.
+ */
 export function Recommendations({
   projectId,
   filter: filterProp,

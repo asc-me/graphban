@@ -176,7 +176,9 @@ describe("Harness recommendations", () => {
       window.localStorage.clear();
       cards.mockResolvedValueOnce(payload({ cards: [
         mk("R2", 1, { cells: [{ cell: key({ vendor: "anthropic", model: "opus" }), finished: 1, signed_off: 1, rate: 1 }] }),
-        mk("R2", 2, { state: "accepted" }),
+        // Server-shaped: a handled card comes back only once its evidence moved, as state "new"
+        // carrying `previously` (backend/app/routers/harness.py drops seen cards).
+        mk("R2", 2, { previously: { state: "accepted", at: "2026-09-01T00:00:00Z", evidence_changed: true } }),
         mk("R7", 1, { previously: { state: "dismissed", at: "2026-09-01T00:00:00Z", evidence_changed: true } }),
       ] }));
       show();
@@ -184,10 +186,13 @@ describe("Harness recommendations", () => {
       fireEvent.change(screen.getByTestId("harness-filter-harness"), { target: { value: "anthropic:opus" } });
       expect(screen.getAllByTestId("harness-card")).toHaveLength(1);
       fireEvent.change(screen.getByTestId("harness-filter-harness"), { target: { value: "" } });
+      fireEvent.change(screen.getByTestId("harness-filter-state"), { target: { value: "new" } });
+      expect(screen.getAllByTestId("harness-card").map((c) => c.dataset.rule)).toEqual(["R2"]);
+      expect(screen.getAllByTestId("harness-card")).toHaveLength(1);
       fireEvent.change(screen.getByTestId("harness-filter-state"), { target: { value: "changed" } });
-      expect(screen.getAllByTestId("harness-card")).toHaveLength(1);
+      expect(screen.getAllByTestId("harness-card")).toHaveLength(2);
       fireEvent.change(screen.getByTestId("harness-filter-state"), { target: { value: "handled" } });
-      expect(screen.getAllByTestId("harness-card")).toHaveLength(1);
+      expect(screen.getAllByTestId("harness-card")).toHaveLength(2);
     });
 
     it("names the filter when nothing matches", async () => {
@@ -198,8 +203,9 @@ describe("Harness recommendations", () => {
       fireEvent.click(screen.getAllByTestId("harness-rule-chip").find((c) => c.dataset.rule === "R7")!);
       fireEvent.change(screen.getByTestId("harness-filter-harness"), { target: { value: "gbagent:qwen3.6" } });
       fireEvent.change(screen.getByTestId("harness-filter-state"), { target: { value: "handled" } });
-      expect(screen.getByTestId("harness-filter-empty")).toHaveTextContent("R2");
-      expect(screen.getByTestId("harness-filter-empty")).toHaveTextContent("gbagent:qwen3.6");
+      expect(screen.getByTestId("harness-filter-empty")).toHaveTextContent(
+        /^No R2 cards for gbagent:qwen3\.6 previously accepted or dismissed\.$/,
+      );
       expect(screen.queryByTestId("harness-no-cards")).toBeNull();
     });
 
