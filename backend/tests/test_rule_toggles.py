@@ -458,3 +458,18 @@ def test_preview_agrees_with_the_write(client, org):
     assert prev["projects_changed"] and sorted(prev["projects_changed"]) == sorted(
         real["projects_changed"])
     assert prev == real
+
+
+def test_generated_files_default_is_todays_list_and_a_list_param_is_accepted(library):
+    # GRPH-1424: absent from the pack -> today's list; registered -> its default_params paths.
+    assert "AGENTS.md" in T.generated_files(None, None)
+    T.register(T.LibraryRule(
+        id=T.GENERATED_FILES_RULE, stage="build", title="Generated files", summary="",
+        enforcement="checked", enforcer=R.Enforcer("graphban_source", "fleet/src/gbfleet/supervisor.py"),
+        default_on=True, default_params={"paths": list(T.GENERATED_FILES_DEFAULT)}))
+    assert T.generated_files(None, None) == T.GENERATED_FILES_DEFAULT
+    rule = T.LIBRARY[T.GENERATED_FILES_RULE]
+    assert T._check_params(rule, {"paths": ["client/generated/**"]}) == {
+        "paths": ["client/generated/**"]}
+    with pytest.raises(Exception):
+        T._check_params(rule, {"paths": "client/generated/**"})

@@ -77,6 +77,14 @@ TEST_SCOPE_MODES: dict[str, tuple[str, str]] = {
                        "The builder runs the tests it wrote or changed, the module's existing "
                        "tests and the sabotage check; the PR's CI runs the full suites."),
 }
+#: GRPH-1424: generated files the supervisor's undeclared-file hold ignores. Only the
+#: supervisor honours it (level `checked`); the default is the built-in list it always had.
+GENERATED_FILES_RULE = "build.generated_files"
+GENERATED_FILES_DEFAULT: list[str] = [
+    ".agents/skills/", ".claude/agents/", ".claude/skills/", ".codex/agents/",
+    ".cursor/agents/", ".cursor/plugins/graphban/", ".cursor/rules/graphban.mdc",
+    "AGENTS.md", "backend/tests/shard_weights.json",
+]
 #: A string param that takes one of a closed set: rule id -> param -> allowed values.
 PARAM_CHOICES: dict[str, dict[str, tuple[str, ...]]] = {
     TEST_SCOPE_RULE: {"mode": tuple(TEST_SCOPE_MODES)},
@@ -154,6 +162,14 @@ def test_scope_mode(db: Session, project_id: str | None) -> str:
         return TEST_SCOPE_DEFAULT
     mode = resolve(db, TEST_SCOPE_RULE, project_id)["params"]["value"].get("mode")
     return mode if mode in TEST_SCOPE_MODES else TEST_SCOPE_DEFAULT
+
+
+def generated_files(db: Session, project_id: str | None) -> list[str]:
+    """The project's generated-file paths; today's list when unset or the rule is absent."""
+    if GENERATED_FILES_RULE not in LIBRARY:
+        return list(GENERATED_FILES_DEFAULT)
+    paths = resolve(db, GENERATED_FILES_RULE, project_id)["params"]["value"].get("paths")
+    return list(paths) if isinstance(paths, list) else list(GENERATED_FILES_DEFAULT)
 
 
 def effective(db: Session, project_id: str | None) -> list[dict]:
