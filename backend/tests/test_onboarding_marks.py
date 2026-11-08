@@ -73,3 +73,12 @@ def test_tour_completed_records_the_skipped_stops(client, auth):
     # A later tour with every stop played records an empty list, not the stale one.
     client.patch("/api/auth/me/onboarding", json={"mark": "tour_completed"}, headers=auth)
     assert _onboarding(client, auth)["tour_skipped_stops"] == []
+
+
+def test_tour_offered_mark_is_stored_once_and_merged(client, auth):
+    """GRPH-1444: the one-time tour toast records `tour_offered_at` without erasing other marks."""
+    client.patch("/api/auth/me/onboarding", json={"mark": "quickstart_finished"}, headers=auth)
+    r = client.patch("/api/auth/me/onboarding", json={"mark": "tour_offered"}, headers=auth)
+    assert r.status_code == 200, r.text
+    doc = _onboarding(client, auth)
+    assert doc["tour_offered_at"] and doc["quickstart_finished_at"]

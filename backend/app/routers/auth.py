@@ -232,7 +232,8 @@ def me(user: User = Depends(get_current_user)):
 class OnboardingMarkIn(BaseModel):
     """One dialog progress mark (GRPH-P67 D8). Unknown fields are refused."""
     model_config = ConfigDict(extra="forbid")
-    mark: Literal["quickstart_finished", "quickstart_dismissed", "tour_completed"]
+    mark: Literal["quickstart_finished", "quickstart_dismissed", "tour_completed",
+                  "tour_offered"]
     # With `tour_completed` only (GRPH-1363): the stops this user's nav skipped.
     skipped_stops: list[str] | None = None
 
@@ -251,7 +252,8 @@ def mark_my_onboarding(body: OnboardingMarkIn, user: User = Depends(get_current_
                        db: Session = Depends(get_db)):
     """Stamp one mark: `quickstart_finished` (Finish; clears the top-bar chip) or
     `quickstart_dismissed` (Finish later; the dialog stops opening by itself), or
-    `tour_completed` (the app tour's Finish, with `skipped_stops`)."""
+    `tour_completed` (the app tour's Finish, with `skipped_stops`), or
+    `tour_offered` (the one-time "Take the tour" toast was shown; GRPH-1444)."""
     try:
         doc = setup_svc.mark_onboarding(db, user, body.mark, body.skipped_stops)
     except ValueError as e:

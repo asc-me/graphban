@@ -196,7 +196,8 @@ def agent_view(db: Session, project_id: str) -> dict:
 # The dialog's own progress marks (GRPH-P67 D8). UI facts only: nothing here is evidence that a
 # setup step happened, and no checklist status reads it. Each mark stamps its `<mark>_at` once
 # per call; later items (the tour, Request an org) add their marks here, not a second writer.
-ONBOARDING_MARKS = ("quickstart_finished", "quickstart_dismissed", "tour_completed")
+ONBOARDING_MARKS = ("quickstart_finished", "quickstart_dismissed", "tour_completed",
+                    "tour_offered")
 
 # The tour records which stops this user's nav had no anchor for (GRPH-1363). Ids are the
 # `data-tour` values; the bounds only keep a client from storing an arbitrary blob.
