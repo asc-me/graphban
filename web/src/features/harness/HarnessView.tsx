@@ -181,36 +181,40 @@ function PerformanceTab({
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-3">
-      {data.coverage && data.coverage.attempts > 0 && (
-        <div
-          data-testid="harness-coverage"
-          className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted"
-        >
-          Coverage {data.coverage.rate === null ? "—" : `${Math.round(data.coverage.rate * 100)}%`}
-          {" — "}
-          {data.coverage.with_leaf}/{data.coverage.attempts} attempts tagged a leaf.
-          Attempts that match none land in <span className="font-mono">other</span>.
+      <details data-testid="harness-notices" className="rounded-[10px] border border-line-2 bg-surface-2">
+        <summary data-testid="harness-notices-summary" className="cursor-pointer px-3.5 py-2 text-body text-muted">
+          {[
+            data.coverage && data.coverage.attempts > 0
+              ? `Coverage ${data.coverage.rate === null ? "—" : `${Math.round(data.coverage.rate * 100)}%`}`
+              : null,
+            data.platform === null && data.platform_reason ? "no platform average" : null,
+            data.below_floor_count > 0 ? `${data.below_floor_count} of ${data.cells.length} cells below the floor` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ") || "Notes on this grid"}
+        </summary>
+        <div className="flex flex-col gap-2 px-3.5 pb-2.5 text-body text-muted">
+          {data.coverage && data.coverage.attempts > 0 && (
+            <div data-testid="harness-coverage">
+              Coverage {data.coverage.rate === null ? "—" : `${Math.round(data.coverage.rate * 100)}%`}
+              {" — "}
+              {data.coverage.with_leaf}/{data.coverage.attempts} attempts tagged a leaf.
+              Attempts that match none land in <span className="font-mono">other</span>.
+            </div>
+          )}
+          {data.platform === null && data.platform_reason && (
+            <div data-testid="harness-no-platform">{data.platform_reason}</div>
+          )}
+          {data.below_floor_count > 0 && (
+            <div data-testid="harness-floor-note">
+              {data.below_floor_count} of {data.cells.length} cells are below the{" "}
+              {data.floor}-attempt floor. Their rates are shown because hiding them would read
+              as having none, not as having too few.
+            </div>
+          )}
         </div>
-      )}
-      {data.platform === null && data.platform_reason && (
-        <div
-          data-testid="harness-no-platform"
-          className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted"
-        >
-          {data.platform_reason}
-        </div>
-      )}
-      {data.below_floor_count > 0 && (
-        <div
-          data-testid="harness-floor-note"
-          className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted"
-        >
-          {data.below_floor_count} of {data.cells.length} cells are below the{" "}
-          {data.floor}-attempt floor. Their rates are shown because hiding them would read
-          as having none, not as having too few.
-        </div>
-      )}
-      <PerformanceGrid data={data} routing={routing} />
+      </details>
+      <PerformanceGrid data={data} routing={routing} projectId={activeId} />
       <EffortCurve cells={data.cells} />
       <SurfaceReport surface={data.surface} />
       <details className="rounded-[10px] border border-line-2" data-testid="harness-detail-cards">
