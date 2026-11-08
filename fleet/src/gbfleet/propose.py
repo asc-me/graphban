@@ -634,6 +634,21 @@ def release_ref(roster: dict | None) -> str:
     return str(got.get("ref") or "").strip()
 
 
+MERGE_METHODS = ("squash", "merge", "rebase")
+
+
+def merge_method(ctx: dict | None) -> str:
+    """The `gitops.merge_method` from a `get_context` payload (GRPH-1428) — read where the
+    base branch is read, so a linked box gets the cloud's rule, not a stale local row.
+
+    Anything unreadable — a server that predates the field, an unknown word — is `squash`,
+    which is what the supervisor always did. It never picks a flag the project did not name."""
+    gitops = ctx.get("gitops") if isinstance(ctx, dict) else None
+    got = gitops.get("merge_method") if isinstance(gitops, dict) else None
+    method = str(got.get("value") or "").strip() if isinstance(got, dict) else ""
+    return method if method in MERGE_METHODS else "squash"
+
+
 def release_phrase(ref: str) -> str:
     """How every MERGE line names the release ref it used (GRPH-P57 D1)."""
     if not ref:
@@ -865,7 +880,7 @@ def rebase_conflicts(repo: Path, base: str, head: str) -> list[str]:
 
 
 def _update_branch(repo: Path, item_id: str, selector: str, url: str, base_ref: str, head: str,
-                   checked: list[str]) -> Merged:
+                   checked: list[str], method: str = "squash") -> Merged:
     """A PR behind its base is rebased and left for CI to run at the new head (GRPH-1389).
 
     Merging waits for green at the NEW head: the next tick finds a head that moved with the
@@ -877,7 +892,9 @@ def _update_branch(repo: Path, item_id: str, selector: str, url: str, base_ref: 
         if Path(repo).is_dir():
             subprocess.run(["git", "fetch", "origin", base_ref] if base_ref else ["git", "fetch"],
                            cwd=str(repo), capture_output=True, text=True, timeout=120)
-        done = _gh(repo, "pr", "update-branch", selector, "--rebase", timeout=120.0)
+        # `--rebase` under squash/rebase (today's behaviour); a merge update under merge.
+        update = ["pr", "update-branch", selector] + ([] if method == "merge" else ["--rebase"])
+        done = _gh(repo, *update, timeout=120.0)
     except (OSError, subprocess.SubprocessError) as exc:
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                       reason=f"gh could not run: {exc}")
@@ -900,7 +917,8 @@ def _update_branch(repo: Path, item_id: str, selector: str, url: str, base_ref: 
 
 def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
           green: set[str], paths: list[str] | tuple[str, ...] | None = None,
-          release: str = "", scans: list[ScanVerdict] | tuple[ScanVerdict, ...] = (),
+          release: str = "", method: str = "squash",
+          scans: list[ScanVerdict] | tuple[ScanVerdict, ...] = (),
           siblings: list[str] | tuple[str, ...] = (),
           covering=(), local_full: bool = False,
           red: set[str] | frozenset[str] = frozenset()) -> Merged:
@@ -943,7 +961,7 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
     and names the release ref it used.
     """
     got = _merge(repo, item_id, selector, reviewed=reviewed, green=green, paths=paths,
-                 release=release, scans=scans, siblings=tuple(siblings or ()),
+                 release=release, method=method, scans=scans, siblings=tuple(siblings or ()),
                  covering=covering if callable(covering) else tuple(covering or ()),
                  local_full=local_full, red=frozenset(red))
     if got.ok and siblings:
@@ -1028,7 +1046,7 @@ def _sibling_at(repo: Path, item_id: str, selector: str, url: str, head: str, re
 
 def _via_sibling(repo: Path, item_id: str, selector: str, pr: dict, *, reviewed: str,
                  green: set[str], paths, release: str, scans, siblings: tuple[str, ...],
-                 covering=(), local_full: bool = False,
+                 method: str = "squash", covering=(), local_full: bool = False,
                  red: frozenset[str] = frozenset(),
                  checked: list[str], miss: Merged | None = None) -> Merged:
     """Merge the item's sibling PR at `reviewed` in place of the selected `pr`, or hold
@@ -1044,7 +1062,7 @@ def _via_sibling(repo: Path, item_id: str, selector: str, pr: dict, *, reviewed:
                       reason=hold)
     got = _merge(repo, item_id, sibling, reviewed=reviewed, green=green, paths=paths,
                  covering=covering, local_full=local_full, red=red,
-                 release=release, scans=scans)
+                 release=release, scans=scans, method=method)
     why = (f"sibling={sibling} (selected {_pr_ref(pr, selector)} head {head[:12] or '?'} "
            "is not the reviewed commit)")
     return replace(got, checked=tuple(checked) + (why,) + got.checked)
@@ -1078,7 +1096,7 @@ def _outside_files(repo: Path, selector: str, paths, covering) -> tuple[list[str
 
 def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set[str],
            paths, release: str, scans, siblings: tuple[str, ...] = (),
-           covering=(), local_full: bool = False,
+           method: str = "squash", covering=(), local_full: bool = False,
            red: frozenset[str] = frozenset()) -> Merged:
     checked: list[str] = []
     if not find():
@@ -1111,7 +1129,7 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
             # GRPH-1219: a closed selection may be the superseded PR; the sibling at the
             # reviewed commit is still the one to merge. Without one, the skip stands.
             return _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
-                                paths=paths, release=release, scans=scans,
+                                paths=paths, release=release, scans=scans, method=method,
                                 siblings=siblings, covering=covering, checked=checked, miss=not_open,
                                 local_full=local_full, red=red)
         return not_open
@@ -1141,7 +1159,7 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
             # at the reviewed commit is the PR the sign-off vouches for; merge that one, and
             # say which and why. The recursion gets no siblings, so it cannot loop.
             return _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
-                                paths=paths, release=release, scans=scans,
+                                paths=paths, release=release, scans=scans, method=method,
                                 siblings=siblings, covering=covering, checked=checked,
                                 local_full=local_full, red=red)
         else:
@@ -1225,7 +1243,8 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
     status = str(pr.get("mergeStateStatus") or "").upper()
     base_ref = str(pr.get("baseRefName") or "").strip()
     if status == "BEHIND":
-        return _update_branch(repo, item_id, selector, url, base_ref, head, checked)
+        return _update_branch(repo, item_id, selector, url, base_ref, head, checked,
+                              method=method)
     if mergeable == "CONFLICTING" or status == "DIRTY":
         files = rebase_conflicts(repo, f"origin/{base_ref}" if base_ref else "origin/HEAD", head)
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
@@ -1256,10 +1275,12 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
                    else "alembic-heads=none" if not heads else "alembic-heads=1")
 
     # `--auto` is the honest verb for a supervisor: it says "merge when your requirements
-    # are met", and `gh` merges immediately when a PR is already CLEAN. Squash, so the trunk
-    # carries one commit per item and that commit is what the receipt names.
+    # are met", and `gh` merges immediately when a PR is already CLEAN. The flag is the
+    # project's `gitops.merge_method` (GRPH-1428), `--squash` when unset; whichever it is, the
+    # PR head being merged is the reviewed commit checked above.
     try:
-        done = _gh(repo, "pr", "merge", selector, "--squash", "--auto", timeout=120.0)
+        done = _gh(repo, "pr", "merge", selector,
+                    f"--{method if method in MERGE_METHODS else 'squash'}", "--auto", timeout=120.0)
     except (OSError, subprocess.SubprocessError) as exc:
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                       reason=f"gh could not run: {exc}")

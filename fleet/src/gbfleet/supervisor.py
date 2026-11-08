@@ -3092,7 +3092,19 @@ class Merger:
         except (ToolFailed, ServerUnreachable) as exc:
             observe.emit("merge_unread", item="", detail=f"release ref: {exc}")
             return None
+        self.merge_method = self._merge_method()
         return propose_mod.release_ref(roster if isinstance(roster, dict) else None)
+
+    def _merge_method(self) -> str:
+        """`gitops.merge_method` from `get_context`, read where `gitops.base_branch` is
+        (GRPH-1428). Unreadable is `squash` — what the supervisor always passed — and is
+        said so, rather than folded silently into "unset"."""
+        try:
+            ctx = self.client.call("get_context")
+        except Exception as exc:  # noqa: BLE001 - an unread method is `squash`, not fatal
+            observe.emit("merge_unread", item="", detail=f"merge method: {str(exc)[:80]}")
+            ctx = None
+        return propose_mod.merge_method(ctx if isinstance(ctx, dict) else None)
 
     def _attempt(self, wave: Wave, item_id: str,
                  release: str = "") -> "propose_mod.Merged | None":
@@ -3117,6 +3129,7 @@ class Merger:
             green=propose_mod.green_commits(item),
             paths=item.get("touchpoints") or [],
             release=release,
+            method=getattr(self, "merge_method", "squash"),
             scans=propose_mod.scans_clean_verdicts(item),
             local_full=(propose_mod.full_local_receipts(item)
                         and self._test_scope() == "agent_full"),

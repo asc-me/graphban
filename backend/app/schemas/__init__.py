@@ -1244,6 +1244,9 @@ class GitopsView(BaseModel):
     release_defined_in: GitopsField = Field(
         default_factory=lambda: GitopsField(value=None, source="unmeasured")
     )
+    merge_method: GitopsField = Field(
+        default_factory=lambda: GitopsField(value=None, source="unmeasured")
+    )
     model: GitopsField
     plan: GitopsPlanRef | None = None
     projects: list[GitopsProjectRef] = Field(default_factory=list)
@@ -1258,6 +1261,7 @@ class GitopsPatch(BaseModel):
     reviewer_bar: str | None = None
     version_from: str | None = None
     release_defined_in: str | None = None
+    merge_method: str | None = None
     model: str | None = None
 
 
