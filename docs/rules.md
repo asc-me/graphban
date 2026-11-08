@@ -31,3 +31,19 @@ so nothing changes on upgrade. The supervisor reads the resolved rule at reap ti
 (server down, rule absent from the pack) it uses that list and emits `generated_files_rule_unread`
 with the reason. The rule-pack feed (outside this repo) needs the template `build.generated_files`
 added, as for `build.test_scope`.
+
+## `merge.done_predicates` — predicates `done` requires (GRPH-1426)
+
+Stage Merge, primitive `done_predicates` (enforced), one param, `predicates` (a list of names).
+The done gate — `update_item` to `done` and `sign_off` alike — requires a passing attestation
+at the item's head for each name in the project's effective list. Items already `done` are not
+re-checked. A predicate that did not run is not a pass, and it must be attested by a
+`gate`-scope key.
+
+- **Unset (empty list):** the project follows the deployment's `REQUIRED_PREDICATES` live, plus
+  `suite_green` for an item with a linked PR (the PR cooldown gate). Today's behaviour.
+- **Set:** the deployment's entries and `suite_green` are a floor. The list must contain all of
+  them; a person may only add predicates, with a `reason`. A list that drops one is refused 422
+  naming the predicate and its source.
+- **Audit:** `GET /api/rules/toggles` returns `effective_predicates` for this rule — each name
+  with its source (`deployment` or `project`). The rule history records who set the list and why.
