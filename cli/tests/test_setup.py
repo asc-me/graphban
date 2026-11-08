@@ -1227,6 +1227,10 @@ def _checkout(path, remote):
     ("git@github.com:acme/app", "github.com/acme/app"),
     ("ssh://git@github.com:22/acme/app/", "github.com/acme/app"),
     ("github.com/acme/app", "github.com/acme/app"),
+    ("git@github.com:1password/cli.git", "github.com/1password/cli"),
+    ("https://github.com/1password/cli", "github.com/1password/cli"),
+    ("ssh://git@github.com/37signals/x", "github.com/37signals/x"),
+    ("git@github.com:37signals/x", "github.com/37signals/x"),
     ("https://user:tok@gitlab.com/a/b/c.git", "gitlab.com/a/b/c"),
     ("app", ""), ("", ""),
 ])

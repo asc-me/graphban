@@ -473,14 +473,14 @@ def normalize_repo_url(raw: str | None) -> str | None:
     value = (raw or "").strip()
     if not value:
         return None
-    m = re.match(r"^(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]*@)?([^/:]+)(?::(?:\d+/|(?=[^/\d])))?/?(.+)$",
+    m = re.match(r"^(?:[a-z][a-z0-9+.-]*://(?:[^@/]*@)?([^/:]+)(?::\d*)?|(?:[^@/]*@)?([^/:]+):?)/?(.+)$",
                  value, re.IGNORECASE)
-    path = m.group(2).strip("/") if m else ""
+    path = m.group(3).strip("/") if m else ""
     if path.endswith(".git"):
         path = path[:-4]
     if not m or any(ch.isspace() for ch in value) or "/" not in path:
         raise ValueError(f"repo_url {value!r} must look like host/owner/name")
-    return f"{m.group(1)}/{path}".lower()
+    return f"{m.group(1) or m.group(2)}/{path}".lower()
 
 
 def normalize_release_ref(raw: str | None) -> str | None:

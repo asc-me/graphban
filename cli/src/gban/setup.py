@@ -775,13 +775,13 @@ def normalize_remote(raw: str) -> str:
     backend/app/services/projects.py:normalize_repo_url (a separate distribution cannot import
     it); tests on both sides pin the same table. "" when it does not look like a remote."""
     value = (raw or "").strip()
-    m = re.match(r"^(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]*@)?([^/:]+)(?::(?:\d+/|(?=[^/\d])))?/?(.+)$",
+    m = re.match(r"^(?:[a-z][a-z0-9+.-]*://(?:[^@/]*@)?([^/:]+)(?::\d*)?|(?:[^@/]*@)?([^/:]+):?)/?(.+)$",
                  value, re.IGNORECASE)
     if not m or any(ch.isspace() for ch in value):
         return ""
-    path = m.group(2).strip("/")
+    path = m.group(3).strip("/")
     path = path[:-4] if path.endswith(".git") else path
-    return f"{m.group(1)}/{path}".lower() if "/" in path else ""
+    return f"{m.group(1) or m.group(2)}/{path}".lower() if "/" in path else ""
 
 
 def git_remotes(here: Path) -> list[str]:
