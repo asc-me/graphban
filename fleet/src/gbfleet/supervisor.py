@@ -3159,8 +3159,7 @@ class Merger:
             paths=item.get("touchpoints") or [],
             release=release,
             scans=propose_mod.scans_clean_verdicts(item),
-            local_full=(propose_mod.full_local_receipts(item)
-                        and self._test_scope() == "agent_full"),
+            local_full=self._local_full(item),
             red=propose_mod.red_commits(item),
             siblings=propose_mod.pr_receipts(item),
             # Lazy: only read when the PR has files outside this item's own touchpoints.
@@ -3173,21 +3172,38 @@ class Merger:
             self._bounce(wave, item_id, got)
         return got
 
-    def _test_scope(self) -> str:
-        """The project's `build.test_scope` mode (GRPH-1415). Anything unreadable — a client
-        not allowed the tool, a server that does not carry the rule — is `agent_and_pr`, the
-        stricter reading: a merge is never loosened by not knowing."""
+    def _local_full(self, item: dict) -> bool:
+        """Whether the builder's full local runs stand in for CI (GRPH-1415, GRPH-1429). The
+        receipt check runs first, so an item with no full passing local run never reads the
+        rule; otherwise ONE read of `build.test_scope` gives both the mode and the engines."""
+        if not propose_mod.any_full_local_receipt(item):
+            return False
+        mode, engines = self._test_scope_rule()
+        return mode == "agent_full" and propose_mod.full_local_receipts(item, engines)
+
+    def _test_scope_rule(self) -> tuple[str, list[str]]:
+        """The project's `build.test_scope` mode and `engines`, from one `get_rule_toggles`
+        call. Anything unreadable — a client not allowed the tool, a server that does not
+        carry the rule — is `agent_and_pr`, the stricter reading: a merge is never loosened by
+        not knowing. An unset or malformed `engines` is postgres and sqlite."""
+        default = list(propose_mod.LOCAL_ENGINES)
         try:
             got = self.client.call("get_rule_toggles")
         except (NotPermitted, ToolFailed, ServerUnreachable):
-            return "agent_and_pr"
+            return "agent_and_pr", default
         for t in (got or {}).get("toggles") or []:
-            if t.get("rule_id") == "build.test_scope":
-                params = t.get("params")
-                value = params.get("value") if isinstance(params, dict) else None
-                mode = (value or {}).get("mode") if isinstance(value, dict) else None
-                return str(mode or "agent_and_pr")
-        return "agent_and_pr"
+            if t.get("rule_id") != "build.test_scope":
+                continue
+            params = t.get("params")
+            value = params.get("value") if isinstance(params, dict) else None
+            value = value if isinstance(value, dict) else {}
+            mode = str(value.get("mode") or "agent_and_pr")
+            eng = value.get("engines")
+            if (isinstance(eng, list) and eng
+                    and all(isinstance(e, str) and e.strip() for e in eng)):
+                return mode, [e.strip().lower() for e in eng]
+            return mode, default
+        return "agent_and_pr", default
 
     def _bounce(self, wave: Wave, item_id: str, got: "propose_mod.Merged") -> None:
         """A rebase conflict sends the item back naming the files (GRPH-1389)."""

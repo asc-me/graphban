@@ -68,6 +68,8 @@ LIBRARY: dict[str, LibraryRule] = {}
 #: GRPH-1405: where the test suites run is a project decision. Mode -> (label, what it means).
 TEST_SCOPE_RULE = "build.test_scope"
 TEST_SCOPE_DEFAULT = "agent_and_pr"
+#: GRPH-1429: the engines a full local run must cover under `agent_full`.
+TEST_SCOPE_ENGINES_DEFAULT = ["postgres", "sqlite"]
 TEST_SCOPE_MODES: dict[str, tuple[str, str]] = {
     "agent_full": ("The agent runs CI",
                    "The builder runs the full suites; the PR's CI is not required."),
@@ -187,6 +189,18 @@ def test_scope_mode(db: Session, project_id: str | None) -> str:
         return TEST_SCOPE_DEFAULT
     mode = resolve(db, TEST_SCOPE_RULE, project_id)["params"]["value"].get("mode")
     return mode if mode in TEST_SCOPE_MODES else TEST_SCOPE_DEFAULT
+
+
+def test_scope_engines(db: Session, project_id: str | None) -> list[str]:
+    """The engines `agent_full` needs full passing local runs on (GRPH-1429). Unset, or a value
+    that is not a non-empty list of strings, reads the default: postgres and sqlite."""
+    if TEST_SCOPE_RULE not in LIBRARY:
+        return list(TEST_SCOPE_ENGINES_DEFAULT)
+    value = resolve(db, TEST_SCOPE_RULE, project_id)["params"]["value"].get("engines")
+    if (isinstance(value, list) and value
+            and all(isinstance(e, str) and e.strip() for e in value)):
+        return [e.strip().lower() for e in value]
+    return list(TEST_SCOPE_ENGINES_DEFAULT)
 
 
 def undeclared_files_mode(db: Session, project_id: str | None) -> str:
@@ -312,6 +326,13 @@ def _check_params(rule: LibraryRule, params: dict) -> dict:
         raise Validation(f"{rule.id} has no param(s) {', '.join(unknown)}",
                          hint=f"known: {', '.join(sorted(rule.default_params)) or 'none'}")
     for k, v in params.items():
+        if rule.id == TEST_SCOPE_RULE and k == "engines":
+            if (not isinstance(v, list) or not v
+                    or not all(isinstance(e, str) and e.strip() for e in v)):
+                raise Validation(f"{rule.id} param 'engines' must be a non-empty list of "
+                                 "engine names")
+            params = {**params, k: list(dict.fromkeys(e.strip().lower() for e in v))}
+            continue
         want = type(rule.default_params[k])
         if not isinstance(v, want) or (want is int and isinstance(v, bool)):
             raise Validation(f"{rule.id} param {k!r} must be {want.__name__}")

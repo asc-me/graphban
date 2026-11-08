@@ -20,6 +20,16 @@ evidence and merge gates (GRPH-1404) adopt the mode. The rule reaches a box thro
 rule-pack feed (primitive `test_scope`, template `build.test_scope`, stage Build, default `on`,
 `mode = "agent_and_pr"`); the feed lives outside this repo and needs that template added.
 
+### `engines` (GRPH-1429)
+
+A second param, `engines`: a list of engine names, default `["postgres", "sqlite"]`, so nothing
+changes on upgrade. It applies only in `agent_full`: a merge with no CI attestation counts the
+builder's runs only when the item carries a full passing `test` receipt for each listed engine
+(e.g. `["mysql"]` is met by one full passing `engine: mysql` run; a SQLite-only run is not).
+The supervisor reads the resolved list in place of its fixed pair, and the brief's `Test scope:`
+line names the engines under `agent_full`. A value that is not a non-empty list of strings is
+refused (422). The rule-pack template must carry `engines` in its default params.
+
 ## `build.undeclared_files` — undeclared files hold the PR or only warn (GRPH-1425)
 
 A per-project library rule (stage Build, level `checked`) with one param, `mode`. A project that
