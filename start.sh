@@ -31,7 +31,7 @@ CONFIG_FILE="${CONFIG_DIR}/mcp.json"
 
 say() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
-say "Starting Graphban…"
+say "Starting Graphban… (the web app will be at http://localhost:${WEB_PORT} - open this to continue setup)"
 $COMPOSE up -d --build
 
 say "Waiting for the API to become healthy…"

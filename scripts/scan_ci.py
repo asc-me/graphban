@@ -89,6 +89,8 @@ NOT_CODE: tuple[str, ...] = (
     ".gitattributes", "*/.gitattributes",
     ".editorconfig",
     ".gbfleet/servers",  # MCP server names for gbfleet drains, not code
+    "docker-compose.yml",  # deployment wiring (service env/ports), not scanned code
+    "start.sh",  # deployment wiring (launcher script), not scanned code
     "LICENSE", "LICENSE.*", "COPYING", "NOTICE",
 )
 

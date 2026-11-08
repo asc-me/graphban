@@ -381,6 +381,15 @@ def test_gbfleet_servers_alone_is_not_code_and_not_never_run(repo, fakes):
     assert not v.results
 
 
+@pytest.mark.parametrize("path", ["docker-compose.yml", "start.sh"])
+def test_deployment_wiring_is_not_code_and_not_never_run(repo, fakes, path):
+    head = _pr(repo, {path: "changed\n"})
+    v = _eval(repo, head)
+    assert v.passed, v.detail
+    assert "never-run" not in v.detail
+    assert not v.results
+
+
 @pytest.mark.parametrize("path", [".codex/agents/gb-verifier.toml", ".cursor/rules/graphban.mdc"])
 def test_generated_agent_instructions_touch_nothing(repo, fakes, path):
     head = _pr(repo, {path: "prose\n"})

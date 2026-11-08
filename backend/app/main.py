@@ -51,6 +51,14 @@ from app.routers import (
 logger = logging.getLogger("graphban.main")
 
 
+def setup_url_banner() -> str:
+    """The line a self-hoster reads in `docker compose up` (GRPH-P67 G3)."""
+    import os
+
+    url = os.environ.get("PUBLIC_WEB_URL") or "http://localhost:8080"
+    return f"Graphban is ready at {url} - open this to continue setup"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.observability import configure_logging
@@ -198,6 +206,8 @@ async def lifespan(app: FastAPI):
     # here would mean the first probe's timeout is added to every boot.
     # Under N uvicorn workers exactly one process owns both loops (GRPH-1241).
     is_leader = leader.claim_background_leader()
+    if is_leader:
+        logger.info(setup_url_banner())
     if not is_leader:
         logger.info("background loops: not the leader; another worker runs them")
     retry_task = None
