@@ -71,7 +71,9 @@ API_KEY_ENV = "GBFLEET_API_KEY"
 #: could not see a fix already in the trunk and pushed the rework onto the branch that fix
 #: uses. A read, same as `search_items`. `ALLOWED_TOOLS` stays the supervisor's own two.
 SPAWN_READS: frozenset[str] = ALLOWED_TOOLS | frozenset(
-    {"search_items", "release_item", "get_context", "get_item_details"})
+    {"search_items", "release_item", "get_context", "get_item_details",
+     # GRPH-1424: the reap reads `build.generated_files` for the undeclared-file hold.
+     "get_rule_toggles"})
 
 #: What `up --merge` needs beyond `SPAWN_READS` (GRPH-846): the item and its attestations,
 #: the dependency rows, and ONE write — the receipt naming the merge commit. Only under the
