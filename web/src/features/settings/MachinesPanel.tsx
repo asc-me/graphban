@@ -14,11 +14,11 @@ export const STALE_DAYS = 14;
  */
 export function MachineState({ machine }: { machine: Pick<Machine, "state" | "fail_count"> & { unknowns?: number } | null }) {
   if (!machine) {
-    return <span data-state="never" className="font-mono text-[11px] text-faint">○ NEVER REPORTED</span>;
+    return <span data-state="never" className="font-mono text-small text-faint">○ NEVER REPORTED</span>;
   }
   if (machine.state === "failed") {
     return (
-      <span data-state="failed" className="font-mono text-[11px] text-danger">
+      <span data-state="failed" className="font-mono text-small text-danger">
         × REPORTED · {machine.fail_count} FAIL
       </span>
     );
@@ -26,12 +26,12 @@ export function MachineState({ machine }: { machine: Pick<Machine, "state" | "fa
   if (machine.state === "unknown") {
     // No FAIL, but not all PASS either: a check that could not run is never a pass.
     return (
-      <span data-state="unknown" className="font-mono text-[11px] text-muted">
+      <span data-state="unknown" className="font-mono text-small text-muted">
         ? REPORTED · {machine.unknowns ? `${machine.unknowns} ` : ""}UNKNOWN
       </span>
     );
   }
-  return <span data-state="clean" className="font-mono text-[11px] text-accent">✓ CLEAN</span>;
+  return <span data-state="clean" className="font-mono text-small text-accent">✓ CLEAN</span>;
 }
 
 export function isStale(m: Machine, now = Date.now()): boolean {
@@ -58,7 +58,7 @@ export function MachinesPanel() {
         <p className="text-[13px] text-muted">Loading…</p>
       ) : rows.length === 0 ? (
         <p className="text-[13px] text-muted" data-testid="machines-empty">
-          <span className="font-mono text-[11px] text-faint">○ NEVER REPORTED</span> — run{" "}
+          <span className="font-mono text-small text-faint">○ NEVER REPORTED</span> — run{" "}
           <code>gban doctor</code> on a dev machine and it appears here.
         </p>
       ) : (
