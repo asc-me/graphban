@@ -174,12 +174,11 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         "put_document", "get_document", "search_docs",
         # GRPH-1279. QUALITY, not authority: design-set writes keep a set's state; the
         # preamble is planner-gated and refuses agent identities like put_document.
-        "open_design", "put_preamble", "put_set_constraints", "accept_set_constraints",
+        "open_design", "put_preamble", "put_set_constraints",
         "confirm_tier", "get_design_set",
         # GRPH-1280. Review loop: compile/file/resolve keep a set's state; the accepts are a
         # person's decision, planner-gated and relayed the way answer_grill is.
-        "compile_prompts", "accept_prompt", "put_canvas", "file_finding", "resolve_finding",
-        "accept_design",
+        "compile_prompts", "put_canvas", "file_finding", "resolve_finding",
         # PRD-20 D8. QUALITY, not authority: it computes hubs/components/path over edges that
         # already exist and writes nothing. It can tell an agent what depends on the thing it
         # is about to change; it cannot grant that agent permission to change anything.

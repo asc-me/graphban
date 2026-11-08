@@ -1326,7 +1326,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "put_document",
         "description": (
             "Write the project's PREAMBLE (GRPH-1275); other kinds come from design-set ops. "
-            "Person only; cites prd_id's baseline hash (PRD needs a baseline)."
+            "Person only. prd_id optional: with none it is stored and not approved to build."
         ),
         "inputSchema": {
             "type": "object",
@@ -1336,7 +1336,7 @@ TOOLS: list[dict[str, Any]] = [
                 "body": {"type": "string"},
                 "title": {"type": "string"},
             },
-            "required": ["kind", "prd_id", "body"],
+            "required": ["kind", "body"],
         },
     },
     {
@@ -1380,13 +1380,14 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "put_preamble",
         "description": (
-            "Write the project's standing preamble citing cites_prd_id's baseline hash. Person "
-            "only. A new version marks sets built on the old one stale."
+            "Write the project's standing preamble, optionally citing cites_prd_id's baseline hash. "
+            "Person only. With no PRD it is stored, not approved to build. A new version marks "
+            "sets built on the old one stale."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {"body": {"type": "string"}, "cites_prd_id": {"type": "string"}},
-            "required": ["body", "cites_prd_id"],
+            "required": ["body"],
         },
     },
     {
@@ -1404,20 +1405,6 @@ TOOLS: list[dict[str, Any]] = [
                 "screens": {"type": "array", "items": {"type": "object"}},
             },
             "required": ["design_set_id", "body"],
-        },
-    },
-    {
-        "name": "accept_set_constraints",
-        "description": (
-            "A person accepts the current set constraints hash. Refused with no person."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "design_set_id": {"type": "string"},
-                "accepted_by": {"type": "string", "description": "The person (agent relay)."},
-            },
-            "required": ["design_set_id", "accepted_by"],
         },
     },
     {
@@ -1442,29 +1429,12 @@ TOOLS: list[dict[str, Any]] = [
         "name": "compile_prompts",
         "description": (
             "Compile candidate screen prompts (all or one); same inputs, same hash. "
-            "Refused on an unconfirmed tier. The compiling key may relay an accept."
+            "An unconfirmed tier compiles as UNBACKED. Nothing is accepted: the set aligns to its PRD."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {"design_set_id": {"type": "string"}, "screen": {"type": "string"}},
             "required": ["design_set_id"],
-        },
-    },
-    {
-        "name": "accept_prompt",
-        "description": (
-            "A person accepts; an agent relays in accepted_by. prompts "
-            "[{screen, prompt_hash}] accepts many; a stale hash refuses all."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "design_set_id": {"type": "string"},
-                "screen": {"type": "string"},
-                "prompts": {"type": "array"},
-                "accepted_by": {"type": "string", "description": "The person (agent relay)."},
-            },
-            "required": ["design_set_id", "accepted_by"],
         },
     },
     {
@@ -1490,7 +1460,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "file_finding",
         "description": (
             "File a canvas finding. Every kind but spec_gap adds a correction; spec_gap cites "
-            "a PRD heading and blocks only accept_design."
+            "a PRD heading."
         ),
         "inputSchema": {
             "type": "object",
@@ -1524,20 +1494,6 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "accept_design",
-        "description": (
-            "A person accepts the design; refused while any gate is open (the reply names them)."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "design_set_id": {"type": "string"},
-                "accepted_by": {"type": "string", "description": "The person (agent relay)."},
-            },
-            "required": ["design_set_id", "accepted_by"],
-        },
-    },
-    {
         "name": "get_design_set",
         "description": "One design set: status (stale names the hash that moved), screens, tiers.",
         "inputSchema": {
@@ -1555,10 +1511,9 @@ _PROJECT_SCOPED = {
     "describe_code", "get_code_map", "code_neighbors", "search_code", "graph_query",
     "link_code", "unlink_code", "record_scan", "scan_status", "scans_due", "create_prd",
     "put_document", "get_document", "search_docs",
-    "open_design", "put_preamble", "put_set_constraints", "accept_set_constraints",
+    "open_design", "put_preamble", "put_set_constraints",
     "confirm_tier", "get_design_set",
-    "compile_prompts", "accept_prompt", "put_canvas", "file_finding", "resolve_finding",
-    "accept_design",
+    "compile_prompts", "put_canvas", "file_finding", "resolve_finding",
 }
 # Tools that ACCEPT `project_id`, which is a different question from the one above.
 #
@@ -2021,15 +1976,12 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     "open_design": {"type": "object"},
     "put_preamble": {"type": "object"},
     "put_set_constraints": {"type": "object"},
-    "accept_set_constraints": {"type": "object"},
     "confirm_tier": {"type": "object"},
     "get_design_set": {"type": "object"},
     "compile_prompts": {"type": "object"},
-    "accept_prompt": {"type": "object"},
     "put_canvas": {"type": "object"},
     "file_finding": {"type": "object"},
     "resolve_finding": {"type": "object"},
-    "accept_design": {"type": "object"},
     "record_scan": {
         "type": "object",
         "properties": {
@@ -4133,7 +4085,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 hint="call put_document with a human credential, outside a registered session")
         return documents_svc.put_document(
             db, project_id=pid, kind=str(args["kind"]), body=str(args["body"]),
-            prd_id=str(args["prd_id"]), title=str(args.get("title") or ""),
+            prd_id=str(args.get("prd_id") or "") or None, title=str(args.get("title") or ""),
             created_by=fleet_svc.caller_identity("", key),
         )
     if name == "put_preamble":
@@ -4143,7 +4095,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 "the preamble is written by a person, not an agent seat",
                 hint="call put_preamble with a human credential, outside a registered session")
         return design_sets_svc.put_preamble(
-            db, pid, str(args["body"]), str(args["cites_prd_id"]),
+            db, pid, str(args["body"]), str(args.get("cites_prd_id") or "") or None,
             created_by=fleet_svc.caller_identity("", key))
     if name == "open_design":
         return design_sets_svc.open_design(
@@ -4158,25 +4110,12 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             db, pid, str(args["design_set_id"]), str(args["screen"]), str(args["tier"]),
             str(args["note"]), routes=args.get("routes"),
             confirmed_by=fleet_svc.caller_identity(str(args.get("agent_id") or "").strip(), key))
-    if name in ("compile_prompts", "accept_prompt", "put_canvas", "file_finding",
-                "resolve_finding", "accept_design", "accept_set_constraints"):
+    if name in ("compile_prompts", "put_canvas", "file_finding", "resolve_finding"):
         actor = fleet_svc.caller_identity(str(args.get("agent_id") or "").strip(), key)
         sid = str(args.get("design_set_id") or "")
-        if name == "accept_set_constraints":
-            return design_sets_svc.accept_set_constraints(
-                db, pid, sid, actor, str(args.get("accepted_by") or ""))
         if name == "compile_prompts":
             return design_sets_svc.compile_prompts(
                 db, pid, sid, screen=args.get("screen"), actor=actor)
-        if name == "accept_prompt" and args.get("prompts"):
-            return design_sets_svc.accept_prompts(
-                db, pid, sid, list(args["prompts"]), actor, str(args.get("accepted_by") or ""))
-        if name == "accept_prompt":
-            return design_sets_svc.accept_prompt(
-                db, pid, sid, str(args["screen"]), actor, str(args.get("accepted_by") or ""))
-        if name == "accept_design":
-            return design_sets_svc.accept_design(
-                db, pid, sid, actor, str(args.get("accepted_by") or ""))
         if name == "put_canvas":
             import base64
             import binascii
