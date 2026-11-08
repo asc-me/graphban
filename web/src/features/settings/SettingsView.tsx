@@ -6,6 +6,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
+import { MachinesPanel } from "@/features/settings/MachinesPanel";
 import { CredentialsPanel } from "@/features/settings/CredentialsPanel";
 import { GitopsPanel } from "@/features/settings/GitopsPanel";
 import { LogExportPanel } from "@/features/settings/LogExportPanel";
@@ -58,6 +59,8 @@ const SELF_HOST_NAV: { group: string; items: { to: string; label: string; end?: 
       { to: settingsPath("project/mcp"), label: "MCP Tools" },
       { to: settingsPath("project/integrations"), label: "Integrations" },
       { to: settingsPath("project/members"), label: "Members" },
+      // Per user, not per project: the machines THIS account ran `gban setup` / `gban doctor` on.
+      { to: settingsPath("account/machines"), label: "Machines" },
     ],
   },
 ];
@@ -144,6 +147,7 @@ function SelfHostPane({ pathname }: { pathname: string }) {
   if (pathname === settingsPath("project") || pathname.startsWith(`${settingsPath("project")}/`)) {
     return <ProjectPanel />;
   }
+  if (pathname.startsWith(settingsPath("account/machines"))) return <MachinesPanel />;
   if (pathname.startsWith(settingsPath("account"))) return <AccountPanel />;
   return <CredentialsPanel />;
 }
@@ -184,6 +188,7 @@ const HOSTED_NAV: { to: string; label: string; end?: boolean }[] = [
   { to: settingsPath("project"), label: "Project", end: true },
   { to: settingsPath("project/members"), label: "Members" },
   { to: settingsPath("project/api-keys"), label: "API keys" },
+  { to: settingsPath("account/machines"), label: "Machines" },
   { to: settingsPath("account"), label: "Account" },
   { to: settingsPath("deployment/updates"), label: "Updates" },
 ];
@@ -253,6 +258,7 @@ function HostedPane({ pathname }: { pathname: string }) {
   if (pathname === settingsPath("project") || pathname.startsWith(`${settingsPath("project")}/`)) {
     return <ProjectPanel />;
   }
+  if (pathname.startsWith(settingsPath("account/machines"))) return <MachinesPanel />;
   if (pathname.startsWith(settingsPath("account"))) return <AccountPanel />;
   return <CredentialsPanel />;
 }

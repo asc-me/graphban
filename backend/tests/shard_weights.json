@@ -214,6 +214,7 @@
 "tests/test_lock_concurrency.py": 1.93,
 "tests/test_logexport.py": 3.62,
 "tests/test_loggers_survive_boot.py": 0.1,
+"tests/test_machines.py": 1.5,
 "tests/test_mcp_annotations.py": 0.39,
 "tests/test_mcp_errors.py": 0.83,
 "tests/test_mcp_footprint.py": 0.94,

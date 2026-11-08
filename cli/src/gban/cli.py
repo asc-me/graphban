@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from gban import config, doctor as doctor_mod, setup as setup_mod, stackmap, swamp as swamp_mod
+from gban import config, doctor as doctor_mod, machine as machine_mod, setup as setup_mod, stackmap, swamp as swamp_mod
 from gban.client import (EXIT_NO_SESSION, EXIT_NO_SUPERVISOR, EXIT_REFUSED, EXIT_UNREACHABLE,
                        Client, NoSession,
                        Refused, Unreachable, authenticated, login, pair_poll,
@@ -52,12 +52,14 @@ def _parser() -> argparse.ArgumentParser:
               "person approves in the web app's quick-start dialog"))
 
     sub.add_parser("logout", help="end the session, here and on the server")
-    sub.add_parser(
+    doctor_cmd = sub.add_parser(
         "doctor", help="check both halves: the ledger, and the local fleet",
         description=("Everything that can be checked before anything is spawned. The ledger "
                      "half runs here; the local half is `gbfleet doctor`, run as a subprocess. "
                      "Neither half silences the other: what could not be checked prints "
                      "UNKNOWN with its reason, never a pass."))
+    doctor_cmd.add_argument("--no-report", action="store_true",
+                            help="do not send the result to the server (Settings → Machines)")
 
     setup_cmd = sub.add_parser(
         "setup", help="enable delegation on a project",
@@ -81,6 +83,8 @@ def _parser() -> argparse.ArgumentParser:
              "lookup")
     setup_cmd.add_argument("--no-install", action="store_true",
                            help="do not install the supervisor")
+    setup_cmd.add_argument("--no-report", action="store_true",
+                           help="do not send the result to the server (Settings → Machines)")
 
     swamp_cmd = sub.add_parser(
         "swamp", help="wire this checkout to Swamp's Graphban adapter",
@@ -366,6 +370,8 @@ def cmd_doctor(args) -> int:
     project = config.resolve(args.project, config.PROJECT_ENV, "project")
     api_key = doctor_mod.resolve_supervisor_key(project, url=url)
     lines, code = doctor_mod.run(url, project, api_key)
+    if not getattr(args, "no_report", False):
+        lines += machine_mod.send(url, project, lines)  # UNKNOWN when undelivered: exit unchanged
     _out({"lines": lines, "ok": code == 0}, doctor_mod.render(lines), args.as_json)
     return code
 
@@ -393,6 +399,8 @@ def cmd_setup(args) -> int:
         return EXIT_REFUSED
     lines, code, made = setup_mod.run(client, url, project, Path.cwd(), scope=args.scope,
                                       install=not args.no_install)
+    if not args.no_report:
+        lines += machine_mod.send(url, project, lines)
     human = [doctor_mod.render(lines)]
     if how != "named":
         human.insert(0, f"{PROG}: {project} — {how}")
@@ -427,6 +435,8 @@ def _setup_auto(args, url: str, client) -> int:
         got, code, made = setup_mod.run(client, url, pid, repo, scope=args.scope,
                                         install=not args.no_install)
         lines += [{**l, "name": f"{pid}: {l['name']}"} for l in got]
+        if not args.no_report:
+            lines += [{**l, "name": f"{pid}: {l['name']}"} for l in machine_mod.send(url, pid, got)]
         done[pid], worst = {"repo": str(repo), "ok": code == 0, **made}, max(worst, code)
     human = [doctor_mod.render(lines),
              f"\n     {sum(1 for d in done.values() if d['ok'])} of {len(done)} enabled. "

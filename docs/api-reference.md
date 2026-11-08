@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 347 of the 347. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 350 of the 350. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -41,6 +41,9 @@ Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
 | POST | `/api/cli/pair` | none | Start a `gban login --pair` device-code sign-in → `{device_code, user_code, expires_in, interval}`. `device_code` is the CLI's secret (stored hashed); `user_code` is what the human types. 10-minute life |
 | POST | `/api/cli/pair/approve` | session | `{user_code}` — a signed-in human binds the code to **their own** user. 404 for unknown, expired, used or already-approved codes |
 | POST | `/api/cli/pair/token` | none | `{device_code}` → `{status: "pending"}` until approved, then `{status: "approved", access_token, refresh_token, email}` for the approving user, once. 400 for unknown, expired or spent codes |
+| POST | `/api/machines/report` | session | `gban setup` / `gban doctor` report (GRPH-1442): `{machine_id, label, os, gban_version, gbfleet_version, harnesses[], project, lines[{status: PASS\|FAIL\|UNKNOWN, name, detail}]}`. Upserts the caller's machine by `machine_id` (the label never merges machines). Any FAIL line makes the report `failed`; no FAIL but any UNKNOWN (or no lines) makes it `unknown`; only an all-PASS report is `clean`, the second proof for quick-start step ③, which also lists every reporting machine under `machines[]`. 403/404 for a project the caller cannot read |
+| GET | `/api/machines` | session | The caller's machines, newest report first, with `state` (`clean`\|`failed`\|`unknown`), `fail_count` and per-project latest reports |
+| DELETE | `/api/machines/{id}` | session | Remove one of the caller's machines (404 for anyone else's) |
 | POST | `/api/auth/logout` | JWT | Bump `token_version`, so every access AND refresh token issued so far — on any device — stops validating immediately. What `gb logout` calls, which is why criterion 3 of PRD-40 checks the token against the server rather than checking that a file was deleted |
 | POST | `/api/auth/me/password` | JWT | Change the caller's password. Bumps `token_version`, so every previously issued token stops working, including the caller's, and returns a fresh pair so the caller stays signed in |
 | GET | `/api/auth/me` | JWT | Current user |

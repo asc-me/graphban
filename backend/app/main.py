@@ -510,6 +510,8 @@ app.include_router(auth.router, prefix=API)
 app.include_router(cli_pair.router, prefix=API)
 from app.routers import setup as setup_routes  # noqa: E402
 app.include_router(setup_routes.router, prefix=API)
+from app.routers import machines as machines_routes  # noqa: E402
+app.include_router(machines_routes.router, prefix=API)
 app.include_router(projects.router, prefix=API)
 app.include_router(items.router, prefix=API)
 app.include_router(requests.router, prefix=API)
