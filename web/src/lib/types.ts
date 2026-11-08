@@ -107,7 +107,35 @@ export interface SetupStep {
   /** Present when `status` is `unknown`: why the check could not run. */
   reason?: string;
   /** Step 5 (③ Connect) only, when done: what proved it. */
-  proof?: "first_call";
+  proof?: "first_call" | "machine_report";
+  /** Step 5 when proven by a machine report: which machine. */
+  machine?: string;
+  /** Step 5 pending after a report that had FAIL lines (GRPH-1442). */
+  reported?: { machine: string; fails: number; failing: { status: string; name: string; detail: string }[]; at: string };
+}
+
+/** One project's latest report on a machine. */
+export interface MachineProjectReport {
+  state: "clean" | "failed";
+  fails: number;
+  failing: { status: string; name: string; detail: string }[];
+  at: string;
+}
+
+/** GET /api/machines — a dev machine that reported from `gban setup` / `gban doctor`. */
+export interface Machine {
+  id: string;
+  machine_id: string;
+  label: string;
+  os: string;
+  gban_version: string;
+  gbfleet_version: string;
+  harnesses: string[];
+  state: "clean" | "failed";
+  fail_count: number;
+  projects: Record<string, MachineProjectReport>;
+  first_reported_at: string;
+  last_reported_at: string;
 }
 
 /** GET /setup/instance — booleans only; the server never sends a secret's value. */

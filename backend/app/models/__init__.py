@@ -486,6 +486,35 @@ class CliPair(Base):
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class Machine(Base):
+    """A dev machine that ran `gban setup` / `gban doctor` and reported (GRPH-1442).
+
+    Keyed by `(user_id, machine_id)`: `machine_id` is the random id `gban` keeps in its home
+    directory, so wiping that directory is a NEW machine, and two machines sharing a `label`
+    stay separate (the label is display-only and never merges entries). `projects` maps a
+    project id to its latest report there: `{state: clean|failed, fails, failing: [...], at}`.
+    Only a report with no FAIL line counts as `clean`; a delivery that never arrived leaves no
+    row at all.
+    """
+
+    __tablename__ = "machines"
+    __table_args__ = (UniqueConstraint("user_id", "machine_id", name="uq_machines_user_machine"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # mch_...
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    machine_id: Mapped[str] = mapped_column(String)
+    label: Mapped[str] = mapped_column(String, default="")
+    os: Mapped[str] = mapped_column(String, default="")
+    gban_version: Mapped[str] = mapped_column(String, default="")
+    gbfleet_version: Mapped[str] = mapped_column(String, default="")
+    harnesses: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    projects: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    state: Mapped[str] = mapped_column(String, default="clean")  # clean | failed, of the latest report
+    fail_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Membership(Base):
     __tablename__ = "memberships"
 

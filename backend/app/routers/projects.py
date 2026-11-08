@@ -185,7 +185,7 @@ def project_setup(project_id: str, db: Session = Depends(get_db),
                   user: User = Depends(get_current_user)):
     """The quick-start checklist (steps ⓪–④) plus the caller's UI progress. Ticks are server state."""
     authz.require_readable(db, user.id, project_id)
-    return {**setup_svc.checklist(db, project_id), "onboarding": user.onboarding}
+    return {**setup_svc.checklist(db, project_id, user.id), "onboarding": user.onboarding}
 
 
 @router.post("/{project_id}/setup/confirm")
@@ -200,7 +200,7 @@ def project_setup_confirm(project_id: str, body: SetupConfirmIn, db: Session = D
                            target_id=project_id, project_id=project_id,
                            meta={"decision": body.decision, "where": body.where,
                                  "address": body.address if body.where == "dedicated_server" else ""})
-    return {**setup_svc.checklist(db, project_id), "onboarding": user.onboarding}
+    return {**setup_svc.checklist(db, project_id, user.id), "onboarding": user.onboarding}
 
 
 @router.get("/{project_id}/triage")

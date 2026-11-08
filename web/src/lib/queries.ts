@@ -120,6 +120,22 @@ export function useInstancePosture(enabled = true) {
   return useQuery({ queryKey: ["setup-instance"], queryFn: () => api.instancePosture(), enabled, retry: false });
 }
 
+/** Settings → Machines and the dashboard Setup status card (GRPH-1442). */
+export function useMachines() {
+  return useQuery({ queryKey: ["machines"], queryFn: () => api.machines() });
+}
+
+export function useRemoveMachine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.removeMachine(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["machines"] });
+      qc.invalidateQueries({ queryKey: ["setup"] });
+    },
+  });
+}
+
 export function useConfirmSetup() {
   const qc = useQueryClient();
   return useMutation({

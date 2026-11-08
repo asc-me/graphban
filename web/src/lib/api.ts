@@ -1,5 +1,5 @@
 import type { HarnessRecommendations, HarnessReport, ShardClass } from "@/lib/types";
-import type { InstancePosture, Credential, CredentialIn, Onboarding, OnboardingMark, ProjectSetup, SetupConfirm, FleetOverview, FleetPolicy, FleetPresence, FleetProfile, FleetProfileRead, FleetTierMap, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
+import type { Machine, InstancePosture, Credential, CredentialIn, Onboarding, OnboardingMark, ProjectSetup, SetupConfirm, FleetOverview, FleetPolicy, FleetPresence, FleetProfile, FleetProfileRead, FleetTierMap, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
  * localStorage so a reload can silently re-auth. On a 401 the client attempts one
@@ -488,6 +488,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  machines: () => request<Machine[]>("/machines"),
+  removeMachine: (id: string) =>
+    request<void>(`/machines/${encodeURIComponent(id)}`, { method: "DELETE" }),
   tagCheck: (tag: string) =>
     request<{ tag: string; available: boolean; reason: string }>(
       `/projects/tag-check?tag=${encodeURIComponent(tag)}`,

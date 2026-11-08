@@ -83,7 +83,7 @@ def _count_step(step: int, name: str, how: str, run, label: str, **extra) -> dic
             "detail": f"{n} {label}.", "how": how, **extra}
 
 
-def checklist(db: Session, project_id: str) -> dict:
+def checklist(db: Session, project_id: str, user_id: str | None = None) -> dict:
     """Steps ⓪–④. ✓ comes from server state (counts, stored human decisions), never from UI
     progress. `steps` holds all five; `setup_project` projects ①–④ via `agent_view`."""
     d = _decisions(db, project_id)
@@ -116,18 +116,19 @@ def checklist(db: Session, project_id: str) -> dict:
                     "capped) — never bulk-create a flood.",
                     lambda: _n(db, Item, project_id), "item(s)", sources=_ITEM_SOURCES),
     ]
-    steps.append(_connect_step(db, project_id))
+    steps.append(_connect_step(db, project_id, user_id))
     return {"project_id": project_id, "offline": bool(d.get("offline")), "steps": steps}
 
 
 CONNECT_STEP = 5  # quick-start ③; numbered last so ①–④ keep the ids agents already read
 
 
-def _connect_step(db: Session, project_id: str) -> dict:
+def _connect_step(db: Session, project_id: str, user_id: str | None = None) -> dict:
     """Quick-start ③: ✓ only when a key the dialog minted for this project has made an
     authenticated call (`api_keys.last_used`, GRPH-1362). A revoked or expired key proves
     nothing now, so it is not evidence. Opening a later screen never reaches here. A machine
-    report is the second proof and joins with GRPH-1367."""
+    report is the second proof (GRPH-1442): any of this user's machines that reported with no
+    FAIL line for this project. A failed or undelivered report is never proof."""
     base = {"step": CONNECT_STEP, "name": "Connect your agent",
             "how": "Install the harness config (gban setup, or paste a key) and restart the agent; "
                    "the first call it makes is the proof."}
@@ -145,7 +146,23 @@ def _connect_step(db: Session, project_id: str) -> dict:
     except Exception as e:  # noqa: BLE001
         return {**base, "status": "unknown", "detail": f"could not check: {type(e).__name__}",
                 "reason": str(e)[:200]}
+    from app.services import machines as machines_svc
+
+    try:
+        proof = machines_svc.project_proof(db, project_id, user_id)
+    except Exception as e:  # noqa: BLE001
+        return {**base, "status": "unknown", "detail": f"could not check: {type(e).__name__}",
+                "reason": str(e)[:200]}
+    if proof["clean"] and not live:
+        name, entry = proof["clean"]
+        return {**base, "status": "done", "proof": "machine_report", "machine": name,
+                "detail": f"{name} reported clean at {entry['at']}."}
     if not live:
+        if proof["failed"]:
+            name, entry = proof["failed"]
+            return {**base, "status": "pending", "detail": f"{name} reported {entry['fails']} FAIL.",
+                    "reported": {"machine": name, "fails": entry["fails"],
+                                 "failing": entry.get("failing", []), "at": entry["at"]}}
         return {**base, "status": "pending", "detail": "No first call seen yet."}
     k = max(live, key=lambda r: r.last_used)
     return {**base, "status": "done", "proof": "first_call", "key_name": k.name,

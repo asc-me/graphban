@@ -8,6 +8,7 @@ import { CreateFirstProject } from "@/features/onboarding/CreateFirstProject";
 import { QuickStartDialog, useQuickStart } from "@/features/onboarding/QuickStartDialog";
 import type { QsStep } from "@/features/onboarding/quickStartProgress";
 import { AppTour } from "@/features/tour/AppTour";
+import { onConnectStepRequested } from "@/features/home/SetupStatusCard";
 import { onTourRequested } from "@/features/tour/replay";
 import { useCompleteTour, useConfig, useMarkOnboarding, useOnboarding, useOrgs } from "@/lib/queries";
 import { ORG_BASE, clearOrgStateForSelfHost } from "@/lib/routes";
@@ -135,6 +136,10 @@ function FrameBody({ hosted }: { hosted: boolean }) {
   React.useEffect(
     () => (hasProject ? onTourRequested(() => { setPaletteOpen(false); setTourOpen(true); }) : undefined),
     [hasProject],
+  );
+  React.useEffect(
+    () => onConnectStepRequested(() => { setQsStep("connect"); setQsOpen(true); }),
+    [],
   );
   const qs = useQuickStart(finished || !onboardingQ.data ? "" : active?.id ?? "", hosted);
   React.useEffect(() => {
