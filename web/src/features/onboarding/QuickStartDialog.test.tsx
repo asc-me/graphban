@@ -550,4 +550,36 @@ describe("step ① posture check (GRPH-1365)", () => {
     await user.click(screen.getByRole("button", { name: "Next →" }));
     await waitFor(() => expect(srv.repoPatches).toEqual([{ repo_url: "https://github.com/acme/app" }]));
   });
+
+  describe("BYOK plaintext warning (GRPH-1445)", () => {
+    async function toClaudeCard() {
+      const user = await toProjectStep();
+      await user.click(screen.getByRole("checkbox", { name: /workspace I want agents/ }));
+      await user.click(screen.getByRole("button", { name: "Next →" }));
+      await screen.findByRole("heading", { name: "Pick a model" });
+      await user.click(screen.getByRole("radio", { name: /Cloud · Claude/ }));
+      await screen.findByLabelText("Anthropic API key");
+    }
+
+    it("warns when the key is unset", async () => {
+      srv.posture = { ...GOOD, secret_encryption_key_set: false };
+      await toClaudeCard();
+      expect(await screen.findByText(/SECRET_ENCRYPTION_KEY is unset on this box/)).toBeInTheDocument();
+    });
+
+    it("is silent when the key is set", async () => {
+      srv.posture = GOOD;
+      await toClaudeCard();
+      await waitFor(() => expect(srv.posture).toBe(GOOD));
+      expect(screen.queryByText(/stored unencrypted/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Could not check/)).not.toBeInTheDocument();
+    });
+
+    it("says plainly it could not check when the posture is unreadable", async () => {
+      srv.posture = null;
+      await toClaudeCard();
+      expect(await screen.findByText(/Could not check whether SECRET_ENCRYPTION_KEY is set/)).toBeInTheDocument();
+      expect(screen.queryByText(/stored unencrypted/)).not.toBeInTheDocument();
+    });
+  });
 });

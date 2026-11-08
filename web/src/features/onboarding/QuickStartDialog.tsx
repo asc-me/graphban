@@ -857,6 +857,7 @@ function ModelStep({
   const qc = useQueryClient();
   const confirm = useConfirmSetup();
   const serving = servingChat(credentials, projectId);
+  const posture = useInstancePosture();
   const [choice, setChoice] = React.useState<ModelChoice>(
     offline ? "offline" : serving?.kind === "ollama" ? "ollama" : serving?.kind === "anthropic" ? "claude" : "offline",
   );
@@ -975,7 +976,6 @@ function ModelStep({
                 setClaudeKey(e.target.value);
                 setResult(null);
               }}
-              aria-describedby="qs-key-warn"
             />
             <Button
               variant="outline"
@@ -986,11 +986,18 @@ function ModelStep({
               Test call
             </Button>
           </div>
-          {/* G7 belongs beside the paste box. Whether THIS box has the key set is read by the
-              instance posture check (GRPH-1365); until then the line states the condition. */}
-          <p id="qs-key-warn" className="mt-1.5 text-[11.5px] text-st-review">
-            If SECRET_ENCRYPTION_KEY is unset on this box, provider keys are stored unencrypted. Set it first.
-          </p>
+          {/* G7 belongs beside the paste box. Shown only when the instance posture (GRPH-1365)
+              reports the key unset; an unreadable posture (non-admin 403, offline) says so plainly. */}
+          {posture.isSuccess && !posture.data.secret_encryption_key_set && (
+            <p id="qs-key-warn" className="mt-1.5 text-[11.5px] text-st-review">
+              SECRET_ENCRYPTION_KEY is unset on this box, so provider keys are stored unencrypted. Set it first.
+            </p>
+          )}
+          {!posture.isSuccess && !posture.isPending && (
+            <p id="qs-key-warn" className="mt-1.5 text-[11.5px] text-faint">
+              Could not check whether SECRET_ENCRYPTION_KEY is set on this box (admins only).
+            </p>
+          )}
           {result ? (
             <StatusLine status={result.status} text={result.text} />
           ) : (
