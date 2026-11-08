@@ -9,9 +9,10 @@ export const STALE_DAYS = 14;
 
 /**
  * ONE state per machine, worded and coloured the same here and on the dashboard card:
- * ✓ CLEAN (green), × REPORTED · n FAIL (failure red), ○ NEVER REPORTED (grey).
+ * ✓ CLEAN (green), × REPORTED · n FAIL (failure red), ○ NEVER REPORTED (grey) — plus
+ * ? REPORTED · UNKNOWN (muted) for a report with no FAIL that was still not all-PASS.
  */
-export function MachineState({ machine }: { machine: Machine | null }) {
+export function MachineState({ machine }: { machine: Pick<Machine, "state" | "fail_count"> & { unknowns?: number } | null }) {
   if (!machine) {
     return <span data-state="never" className="font-mono text-[11px] text-faint">○ NEVER REPORTED</span>;
   }
@@ -19,6 +20,14 @@ export function MachineState({ machine }: { machine: Machine | null }) {
     return (
       <span data-state="failed" className="font-mono text-[11px] text-danger">
         × REPORTED · {machine.fail_count} FAIL
+      </span>
+    );
+  }
+  if (machine.state === "unknown") {
+    // No FAIL, but not all PASS either: a check that could not run is never a pass.
+    return (
+      <span data-state="unknown" className="font-mono text-[11px] text-muted">
+        ? REPORTED · {machine.unknowns ? `${machine.unknowns} ` : ""}UNKNOWN
       </span>
     );
   }

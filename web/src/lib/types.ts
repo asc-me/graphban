@@ -110,15 +110,38 @@ export interface SetupStep {
   proof?: "first_call" | "machine_report";
   /** Step 5 when proven by a machine report: which machine. */
   machine?: string;
-  /** Step 5 pending after a report that had FAIL lines (GRPH-1442). */
-  reported?: { machine: string; fails: number; failing: { status: string; name: string; detail: string }[]; at: string };
+  /** Step 5 pending after a report that was not all-PASS (GRPH-1442): FAIL or UNKNOWN lines. */
+  reported?: { machine: string; fails: number; unknowns?: number; failing: ReportLine[]; at: string };
+  /** Step 5: every one of this user's machines that reported for this project, freshest first. */
+  machines?: SetupMachineReport[];
+}
+
+export interface ReportLine {
+  status: string;
+  name: string;
+  detail: string;
+}
+
+/** A report state: only `clean` (every line PASS) is proof; `unknown` = no FAIL but not all PASS. */
+export type MachineReportState = "clean" | "failed" | "unknown";
+
+/** One machine's latest report for the project, as listed on step ③. */
+export interface SetupMachineReport {
+  id: string;
+  machine: string;
+  state: MachineReportState;
+  fails: number;
+  unknowns: number;
+  failing: ReportLine[];
+  at: string;
 }
 
 /** One project's latest report on a machine. */
 export interface MachineProjectReport {
-  state: "clean" | "failed";
+  state: MachineReportState;
   fails: number;
-  failing: { status: string; name: string; detail: string }[];
+  unknowns?: number;
+  failing: ReportLine[];
   at: string;
 }
 
@@ -131,7 +154,7 @@ export interface Machine {
   gban_version: string;
   gbfleet_version: string;
   harnesses: string[];
-  state: "clean" | "failed";
+  state: MachineReportState;
   fail_count: number;
   projects: Record<string, MachineProjectReport>;
   first_reported_at: string;

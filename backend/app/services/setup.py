@@ -153,6 +153,7 @@ def _connect_step(db: Session, project_id: str, user_id: str | None = None) -> d
     except Exception as e:  # noqa: BLE001
         return {**base, "status": "unknown", "detail": f"could not check: {type(e).__name__}",
                 "reason": str(e)[:200]}
+    base["machines"] = proof["machines"]
     if proof["clean"] and not live:
         name, entry = proof["clean"]
         return {**base, "status": "done", "proof": "machine_report", "machine": name,
@@ -160,8 +161,11 @@ def _connect_step(db: Session, project_id: str, user_id: str | None = None) -> d
     if not live:
         if proof["failed"]:
             name, entry = proof["failed"]
-            return {**base, "status": "pending", "detail": f"{name} reported {entry['fails']} FAIL.",
-                    "reported": {"machine": name, "fails": entry["fails"],
+            why = (f"{entry.get('fails', 0)} FAIL" if entry.get("fails")
+                   else f"{entry.get('unknowns', 0)} UNKNOWN")
+            return {**base, "status": "pending", "detail": f"{name} reported {why}.",
+                    "reported": {"machine": name, "fails": entry.get("fails", 0),
+                                 "unknowns": entry.get("unknowns", 0),
                                  "failing": entry.get("failing", []), "at": entry["at"]}}
         return {**base, "status": "pending", "detail": "No first call seen yet."}
     k = max(live, key=lambda r: r.last_used)

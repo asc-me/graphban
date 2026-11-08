@@ -42,9 +42,35 @@ def test_a_later_clean_report_replaces_the_failure(client, auth):
     assert _step3(client, auth)["status"] == "done"
 
 
-def test_unknown_alone_is_not_a_failure_but_a_bad_status_is_refused(client, auth):
-    assert _report(client, auth, lines=[{"status": "UNKNOWN", "name": "a"}]).json()["state"] == "clean"
+def test_unknown_is_not_a_pass_so_it_never_proves(client, auth):
+    """§6: step ③ needs ALL-PASS. An UNKNOWN is a check that could not run — never a pass."""
+    r = _report(client, auth, lines=[{"status": "PASS", "name": "server"},
+                                     {"status": "UNKNOWN", "name": "gbfleet", "detail": "not found"}])
+    assert r.json()["state"] == "unknown" and r.json()["fail_count"] == 0
+    s = _step3(client, auth)
+    assert s["status"] == "pending"
+    assert s["reported"]["unknowns"] == 1 and s["reported"]["failing"][0]["name"] == "gbfleet"
+
+
+def test_an_empty_report_proves_nothing_and_a_bad_status_is_refused(client, auth):
+    assert _report(client, auth, lines=[]).json()["state"] == "unknown"
+    assert _step3(client, auth)["status"] == "pending"
     assert _report(client, auth, lines=[{"status": "MAYBE", "name": "a"}]).status_code == 422
+
+
+def test_the_step_lists_each_machine_separately_and_one_clean_is_enough(client, auth):
+    _report(client, auth, machine_id="a", label="ubuntu", lines=[{"status": "FAIL", "name": "x"}])
+    _report(client, auth, machine_id="b", label="alex-mbp")
+    s = _step3(client, auth)
+    assert s["status"] == "done" and s["machine"] == "alex-mbp"
+    assert {(m["machine"], m["state"]) for m in s["machines"]} == {("ubuntu", "failed"),
+                                                                    ("alex-mbp", "clean")}
+
+
+def test_a_report_for_another_project_does_not_prove_this_one(client, auth):
+    _report(client, auth, project="")
+    s = _step3(client, auth)
+    assert s["status"] == "pending" and s["machines"] == []
 
 
 def test_same_label_two_machine_ids_stay_separate_and_wiping_makes_a_new_one(client, auth):

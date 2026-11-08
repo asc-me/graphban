@@ -161,7 +161,7 @@ Three properties worth knowing, each of which is a bug this command exists to no
 
 `gban setup` and `gban doctor` send the server a report of their PASS/FAIL/UNKNOWN lines, tagged
 with a random machine id kept in `~/.graphban/machine.json` (delete it and you are a new
-machine). A report with no FAIL turns the dashboard's "Connect your agent" step ✓; the list is
+machine). A report whose every line is PASS turns the dashboard's "Connect your agent" step ✓ (an UNKNOWN is never a pass); the list is
 under Settings → Machines. Pass `--no-report` to skip it. When the report cannot be delivered,
 the command prints `UNKNOWN report could not report to <server>: <reason>` and still exits on
 its own checks — an undelivered report never counts as proof.

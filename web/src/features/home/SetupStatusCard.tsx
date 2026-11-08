@@ -2,7 +2,9 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { MachineState } from "@/features/settings/MachinesPanel";
-import { useMachines, useProjectSetup } from "@/lib/queries";
+import { useProjectSetup } from "@/lib/queries";
+import { relTime } from "@/lib/relTime";
+import type { SetupMachineReport } from "@/lib/types";
 import { settingsPath } from "@/lib/routes";
 import { Link } from "react-router-dom";
 
@@ -21,12 +23,12 @@ const dismissKey = (projectId: string) => `al.setupStatus.dismissed.${projectId}
 
 /**
  * Dashboard "Setup status" card (GRPH-1442). Actionable, never passive: an unproven step says
- * WHY (never reported, or reported with n FAIL and the failing lines) and what to run next.
+ * WHY (never reported, or reported with n FAIL / UNKNOWN and those lines), one row per machine,
+ * and what to run next.
  * Dismiss hides only this card, for good; Settings → Machines keeps the list.
  */
 export function SetupStatusCard({ projectId }: { projectId: string }) {
   const setup = useProjectSetup(projectId);
-  const machines = useMachines();
   const [dismissed, setDismissed] = React.useState(() => {
     try {
       return localStorage.getItem(dismissKey(projectId)) === "1";
@@ -55,26 +57,24 @@ export function SetupStatusCard({ projectId }: { projectId: string }) {
     );
   }
 
-  const reported = step.reported;
-  const machine = reported ? (machines.data ?? []).find((m) => (m.label || m.machine_id) === reported.machine) ?? null : null;
+  // Each machine separately (§6): the browser cannot know which one you are sitting at.
+  const rows: SetupMachineReport[] = step.machines?.length
+    ? step.machines
+    : step.reported
+      ? [{ id: "", machine: step.reported.machine, state: step.reported.fails ? "failed" : "unknown",
+           fails: step.reported.fails, unknowns: step.reported.unknowns ?? 0,
+           failing: step.reported.failing, at: step.reported.at }]
+      : [];
   return (
     <section data-testid="setup-status-card" data-state="unproven" className="mb-4 rounded-lg border border-line p-4">
       <h2 className="text-[13px] font-semibold">Setup status — Connect your agent</h2>
-      {reported ? (
-        <div className="mt-2" data-testid="setup-status-failed">
-          <p className="text-[13px] text-danger">
-            {reported.machine} reported with {reported.fails} FAIL
-          </p>
-          <ul className="mt-1 space-y-0.5 font-mono text-[12px] text-danger">
-            {reported.failing.map((l, i) => (
-              <li key={i}>FAIL {l.name}{l.detail ? ` — ${l.detail}` : ""}</li>
-            ))}
-          </ul>
-          {machine ? <div className="mt-1"><MachineState machine={machine} /></div> : null}
-        </div>
+      {rows.length ? (
+        <ul className="mt-2 space-y-2">
+          {rows.map((r, i) => <MachineReportRow key={r.id || i} row={r} />)}
+        </ul>
       ) : (
         <p className="mt-2 text-[13px] text-muted" data-testid="setup-status-never">
-          <MachineState machine={null} /> — no machine has reported for this project yet.
+          <MachineState machine={null} /> — this machine never reported for this project.
         </p>
       )}
       <p className="mt-2 text-[13px] text-fg-2">
@@ -87,5 +87,28 @@ export function SetupStatusCard({ projectId }: { projectId: string }) {
         <Button variant="ghost" size="sm" onClick={dismiss}>Dismiss</Button>
       </div>
     </section>
+  );
+}
+
+function MachineReportRow({ row }: { row: SetupMachineReport }) {
+  const tone = row.state === "failed" ? "text-danger" : row.state === "clean" ? "text-accent" : "text-muted";
+  const when = Number.isFinite(Date.parse(row.at)) ? relTime(row.at) : row.at;
+  const what = row.state === "failed" ? `${row.fails} FAIL` : row.state === "unknown" ? `${row.unknowns || "an"} UNKNOWN` : "no failures";
+  return (
+    <li data-testid={row.state === "clean" ? "setup-status-clean" : "setup-status-failed"} data-machine={row.machine}>
+      <div className="flex items-center gap-2">
+        <p className={`text-[13px] ${tone}`}>
+          {row.machine}: last report {when} had {what}
+        </p>
+        <MachineState machine={{ state: row.state, fail_count: row.fails, unknowns: row.unknowns }} />
+      </div>
+      {row.failing.length ? (
+        <ul className={`mt-1 space-y-0.5 font-mono text-[12px] ${tone}`}>
+          {row.failing.map((l, i) => (
+            <li key={i}>{l.status} {l.name}{l.detail ? ` — ${l.detail}` : ""}</li>
+          ))}
+        </ul>
+      ) : null}
+    </li>
   );
 }

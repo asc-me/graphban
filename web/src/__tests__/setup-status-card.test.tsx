@@ -47,10 +47,32 @@ describe("dashboard Setup status card (GRPH-1442)", () => {
   it("a failed report shows the count and failing lines in the failure colour, not a tick", async () => {
     renderCard({ reported: { machine: "ubuntu", fails: 1, at: "x", failing: [{ status: "FAIL", name: "gbfleet", detail: "missing" }] } });
     const box = await screen.findByTestId("setup-status-failed");
-    expect(box).toHaveTextContent("ubuntu reported with 1 FAIL");
+    expect(box).toHaveTextContent("ubuntu: last report x had 1 FAIL");
     expect(box).toHaveTextContent("FAIL gbfleet — missing");
     expect(box.querySelector("p")!.className).toContain("text-danger");
     expect(screen.queryByText(/Agent connection verified/)).toBeNull();
+  });
+
+  it("an UNKNOWN-only report is not a tick either, and says what could not be checked", async () => {
+    renderCard({ machines: [{ id: "m1", machine: "ubuntu", state: "unknown", fails: 0, unknowns: 1, at: "x",
+      failing: [{ status: "UNKNOWN", name: "gbfleet", detail: "not found" }] }] });
+    const box = await screen.findByTestId("setup-status-failed");
+    expect(box).toHaveTextContent("had 1 UNKNOWN");
+    expect(box).toHaveTextContent("UNKNOWN gbfleet — not found");
+    expect(box.querySelector("[data-state]")!.getAttribute("data-state")).toBe("unknown");
+    expect(screen.queryByText(/Agent connection verified/)).toBeNull();
+  });
+
+  it("lists each machine separately with its own state", async () => {
+    renderCard({ machines: [
+      { id: "a", machine: "ubuntu", state: "failed", fails: 2, unknowns: 0, at: "x", failing: [] },
+      { id: "b", machine: "ubuntu", state: "unknown", fails: 0, unknowns: 1, at: "y", failing: [] },
+    ] });
+    const rows = await screen.findAllByTestId("setup-status-failed");
+    expect(rows).toHaveLength(2);
+    expect(rows[0].querySelector("[data-state]")!.textContent).toBe("× REPORTED · 2 FAIL");
+    expect(rows[0].querySelector("p")!.className).toContain("text-danger");
+    expect(rows[1].querySelector("[data-state]")!.getAttribute("data-state")).toBe("unknown");
   });
 
   it("Verify with a key instead asks the shell to open the paste route", async () => {
