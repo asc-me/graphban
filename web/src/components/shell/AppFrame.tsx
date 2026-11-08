@@ -141,6 +141,29 @@ function FrameBody({ hosted }: { hosted: boolean }) {
     () => onConnectStepRequested(() => { setQsStep("connect"); setQsOpen(true); }),
     [],
   );
+  // ── One-time "Take the tour" toast (GRPH-1444, P67 G5/D6) ──
+  // A user backfilled as finished never saw the tour. Offer it once; `tour_offered` is
+  // stored in users.onboarding so it never repeats, whichever way the toast is closed.
+  // Only a user already finished on the FIRST onboarding load of this mount is offered it:
+  // a new user who finishes the quick start here (and maybe just started the tour from it)
+  // flips `finished` mid-session and must not get the toast on top.
+  const [tourToast, setTourToast] = React.useState(false);
+  const toastShown = React.useRef(false);
+  const finishedAtLoad = React.useRef<boolean | null>(null);
+  if (onboardingQ.data && finishedAtLoad.current === null) finishedAtLoad.current = finished;
+  const offerTour =
+    !!onboardingQ.data &&
+    finishedAtLoad.current === true &&
+    !onboarding?.tour_completed_at &&
+    !onboarding?.tour_offered_at &&
+    hasProject;
+  React.useEffect(() => {
+    if (offerTour && !toastShown.current) {
+      toastShown.current = true;
+      setTourToast(true);
+      markOnboarding.mutate("tour_offered");
+    }
+  }, [offerTour, markOnboarding]);
   const qs = useQuickStart(finished || !onboardingQ.data ? "" : active?.id ?? "", hosted);
   React.useEffect(() => {
     if (shouldAutoOpen && !autoOpened.current) {
@@ -240,6 +263,25 @@ function FrameBody({ hosted }: { hosted: boolean }) {
       </div>
       {quickStart}
       <AppTour open={tourOpen} onExit={exitTour} onComplete={finishTour} />
+      {tourToast && (
+        <div
+          role="status"
+          data-testid="tour-toast"
+          className="fixed bottom-4 right-4 z-[60] flex items-center gap-3 rounded-lg border border-line-hover bg-surface-3 px-3 py-2 text-[13px] text-fg shadow-lg"
+        >
+          <span>New here? A short tour of the app.</span>
+          <button
+            type="button"
+            className="rounded-md bg-accent px-2 py-1 text-[12px] font-medium text-black"
+            onClick={() => { setTourToast(false); setTourOpen(true); }}
+          >
+            Take the tour
+          </button>
+          <button type="button" aria-label="Dismiss" className="text-faint" onClick={() => setTourToast(false)}>
+            ×
+          </button>
+        </div>
+      )}
     </>
   );
 }

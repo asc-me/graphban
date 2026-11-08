@@ -88,11 +88,12 @@ export interface Onboarding {
   quickstart_finished_at?: string;
   quickstart_dismissed_at?: string;
   tour_completed_at?: string;
+  tour_offered_at?: string;
   tour_skipped_stops?: string[];
   org_requested_at?: string;
 }
 
-export type OnboardingMark = "quickstart_finished" | "quickstart_dismissed";
+export type OnboardingMark = "quickstart_finished" | "quickstart_dismissed" | "tour_offered";
 
 /** Three states, never two: `unknown` is a check that could not run, and is never shown ✓. */
 export type SetupStatus = "done" | "pending" | "unknown";
