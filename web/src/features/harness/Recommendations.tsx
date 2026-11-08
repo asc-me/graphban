@@ -83,14 +83,18 @@ function CardRow({
               since.
             </p>
           )}
-          <p data-testid="harness-card-replay" className="mt-1.5 font-mono text-small text-faint">
-            {card.replay?.summary}
-            {(card.replay?.moves?.length ?? 0) > 0 &&
-              ` — ${card.replay.moves
-                .map((m) => `${m.count} from ${m.from} to ${m.to}`)
-                .join(", ")}`}
-            {card.replay?.truncated && " (replay truncated)"}
-          </p>
+          {!(
+            (card.replay?.moves?.length ?? 0) === 0 && (card.replay?.changed ?? 0) === 0
+          ) && (
+            <p data-testid="harness-card-replay" className="mt-1.5 font-mono text-small text-faint">
+              {card.replay?.summary}
+              {(card.replay?.moves?.length ?? 0) > 0 &&
+                ` — ${card.replay.moves
+                  .map((m) => `${m.count} from ${m.from} to ${m.to}`)
+                  .join(", ")}`}
+              {card.replay?.truncated && " (replay truncated)"}
+            </p>
+          )}
         </div>
         <div className="flex flex-none gap-1.5">
           <button

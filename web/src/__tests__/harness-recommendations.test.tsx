@@ -95,6 +95,18 @@ describe("Harness recommendations", () => {
     );
   });
 
+  it("hides the replay line when it moves nothing, keeps it when it does", async () => {
+    cards.mockResolvedValueOnce(payload({
+      cards: [card({
+        replay: { considered: 66, changed: 0, skipped_no_resolution: 0, truncated: false,
+                  moves: [], summary: "would have changed 0 of 66 recorded resolutions" },
+      })],
+    }));
+    show();
+    await screen.findByTestId("harness-card");
+    expect(screen.queryByTestId("harness-card-replay")).not.toBeInTheDocument();
+  });
+
   it("shows the sibling cells it did not fire on, and says that is what accepting generalises over", async () => {
     show();
     fireEvent.click(await screen.findByTestId("harness-card-expand"));

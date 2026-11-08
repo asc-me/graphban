@@ -518,3 +518,113 @@ def test_snapshot_http_is_the_served_payload(client, auth, db, proj):
     assert r.status_code == 200, r.text
     assert r.json()["snapshot_at"]
     assert r.json()["cells"][0]["n"] in ("50–199", "20–49", "200+")
+
+
+# ---- R5 groups per row (GRPH-1420) -----------------------------------------------------------
+
+def _leaf(cap, band, vendor="anthropic", model="opus", version="", finished=6, signed=5):
+    return {"key": {"vendor": vendor, "model": model, "binary_version": version,
+                    "capability": cap, "size_band": band},
+            "finished": finished, "signed_off": signed, "rate": signed / finished,
+            "sampling": {}, "skew": None, "below_floor": False}
+
+
+def test_r5_unverified_row_yields_one_card_for_all_its_cells():
+    from app.services import harness_rules as hr
+    cells = [_leaf(f"C{i}", b) for i in range(1, 7) for b in ("S", "M")]
+    out = hr._reprior({"cells": cells}, [], {"anthropic:opus": "unverified"})
+    assert len(out) == 1
+    card = out[0]
+    assert card.title == "draft evidence for 6 capabilities of anthropic:opus"
+    assert len(card.cells) == 12
+    # One evidence line per capability; the twelve cells stay listed in `cells`.
+    assert len(card.draft["evidence_lines"]) == 6
+    assert card.draft["evidence_lines"][0].startswith("C1: 10/12 signed off")
+    before = card.evidence_hash
+    cells[0]["signed_off"] = 2
+    cells[0]["rate"] = 2 / 6
+    again = hr._reprior({"cells": cells}, [], {"anthropic:opus": "unverified"})[0]
+    assert again.evidence_hash != before
+
+
+def test_r5_prior_row_keeps_per_cell_cards_titled_with_the_band():
+    from app.services import harness_rules as hr
+    cells = [_leaf("C1", "M", signed=0), _leaf("C1", "L", version="2.0", signed=0),
+             _leaf("C2", "M", signed=6)]
+    out = hr._reprior({"cells": cells}, [], {"anthropic:opus": "verified"})
+    titles = [c.title for c in out]
+    assert titles == ["reprior anthropic:opus for C1/M", "reprior anthropic:opus for C1/L v2.0"]
+    assert len(set(titles)) == len(titles)
+
+
+def test_display_name_has_no_trailing_colon_when_model_is_empty():
+    from app.services import harness_rules as hr
+    cell = _leaf("C1", "M", vendor="alibaba", model="")
+    assert hr._display_name(cell) == "alibaba"
+    assert hr._cell_name(cell) == "alibaba:"
+
+
+def test_r5_one_capability_is_singular():
+    from app.services import harness_rules as hr
+    out = hr._reprior({"cells": [_leaf("C1", "S"), _leaf("C1", "M")]}, [],
+                      {"anthropic:opus": "unverified"})
+    assert [c.title for c in out] == ["draft evidence for 1 capability of anthropic:opus"]
+
+
+def test_org_scope_payload_has_no_two_cards_with_one_title_or_one_key(db, monkeypatch):
+    """GRPH-1420: two cards never share a title — at org scope, where R4 runs once per
+    project over org-wide cells, and where probes, R7 entitlements and per-band cells could
+    each collide. Keys must be distinct too: a mark is stored by key, so two cards sharing one
+    would have dismissing either overwrite the other's mark.
+
+    Sabotage: drop the project from R4's title, or the version from the probe title, or the
+    entitlement id from R7's — the title set shrinks and this fails.
+    """
+    from types import SimpleNamespace
+
+    from app.services import harness_rules as hr
+
+    db.add(Organization(id="org_titles", name="org_titles", telemetry_share=False))
+    db.commit()
+    for pid in ("pa", "pb"):
+        db.add(Project(id=pid, name=pid, tag=pid.upper(), org_id="org_titles", fleet_policy={}))
+    db.commit()
+
+    local = {"harness": "gbagent", "model": "qwen3.6", "vendor": "gbagent",
+             "status": "unverified", "local": True, "score": 1.0}
+    dropped = {"harness": "claude", "model": "opus", "vendor": "claude", "stage": "policy",
+               "why": "local_only", "local": False, "status": "verified"}
+    res = {"shortlist": [local], "winner": local, "dropped_rows": [dropped],
+           "capabilities": ["C1"], "profile": {"defaults": []}}
+    rows = [SimpleNamespace(resolution=res, capabilities=["C1"]) for _ in range(12)]
+
+    cells = ([_leaf("C1", b, vendor="gbagent", model="qwen3.6", finished=10, signed=10)
+              for b in ("S", "M", "L")]
+             + [_leaf("C1", b, vendor="gbagent", model="qwen3.6", version="2.0",
+                      finished=10, signed=10) for b in ("S", "M")]
+             + [_leaf(f"C{i}", "M", vendor="alibaba", model="") for i in (1, 2)]
+             + [_leaf("C2", b, vendor="claude", model="opus", signed=0) for b in ("S", "M")])
+    report = {"cells": cells, "projects": ["pa", "pb"],
+              "probe_suggestions": [
+                  {"vendor": "anthropic", "model": "opus", "trigger": "new_row",
+                   "binary_version": v} for v in ("1.0", "2.0")]}
+    monkeypatch.setattr(hr.harness_svc, "org_report", lambda *a, **k: report)
+    monkeypatch.setattr(hr, "_rows_in_window", lambda *a, **k: rows)
+    monkeypatch.setattr(hr.quotas, "plan_of",
+                        lambda org: SimpleNamespace(capacity_routing=True))
+    finding = {"vendor": "anthropic", "kind": "subscription", "plan_label": "max",
+               "weeks_read": 4, "kind_of": "early", "weeks": 3}
+    monkeypatch.setattr(hr.headroom_svc, "routine_findings", lambda db, org: [
+        {**finding, "entitlement_id": "ent-1"}, {**finding, "entitlement_id": "ent-2"}])
+
+    out = hr.cards(db, org_id="org_titles")
+    rules_seen = {c.rule for c in out}
+    assert {"R1", "R4", "R5", "R7", "probe"} <= rules_seen, rules_seen
+    assert sum(c.rule == "R4" for c in out) >= 4  # local_only + policy drop, per project
+    titles = [c.title for c in out]
+    assert len(set(titles)) == len(titles), sorted(titles)
+    assert not any("[" in t for t in titles), "a rule left it to the backstop: " + str(titles)
+    keys = [c.key for c in out]
+    assert len(set(keys)) == len(keys), sorted(keys)
+    assert "Probe anthropic:opus v2.0" in titles
+    assert not any("alibaba:" in t for t in titles)
