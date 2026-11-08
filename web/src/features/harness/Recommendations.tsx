@@ -156,8 +156,8 @@ export function Recommendations({
               data-rule={r}
               aria-pressed={on}
               onClick={() => toggle(r)}
-              className={`rounded-full border px-2 py-0.5 font-mono text-[11px] ${
-                on ? "border-accent text-fg-2" : "border-line-2 text-faint"
+              className={`rounded-full border px-2 py-0.5 font-mono text-small ${
+                on ? "border-accent text-fg-2" : "border-control text-faint"
               }`}
             >
               {r} <span data-testid="harness-rule-count">{counts[r]}</span>
