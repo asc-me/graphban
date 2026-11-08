@@ -107,6 +107,12 @@ MINT_BUDGET_S = 30.0
 #: until stops trying. Re-keyed off the fact it measures (a child exited and the
 #: review rows are still unheld) rather than off a role that no longer exists.
 REVIEWER_FAILS = 3
+#: GRPH-1401 bounce. Seconds a registered child that has never held anything still
+#: counts as busy. Registration is not a claim: a reviewer spends several LLM turns on
+#: search_items and claim_review before the roster shows its claim, and `empty_ticks`
+#: polls of one second would stop it first. A constant, not a setting. A child empty
+#: for longer than this (the GRPH-P72 drain: tens of minutes) is not busy.
+CLAIM_WINDOW = 300.0
 
 #: 4xx-shaped server refusals that will not change this process. Quota is config, not idle.
 _CONFIG_CODES = frozenset({
@@ -1178,9 +1184,10 @@ def _loop(
             sleep(poll)
             continue
 
-        # Nothing running: an unheld review row is unsigned now. A live child that
-        # holds nothing still gets the empty_ticks window, so the reviewer spawned
-        # on the previous poll is not killed before it can claim.
+        # Nothing running: an unheld review row is unsigned now. A child spawned on
+        # an earlier poll that has not claimed yet is `busy` above (`CLAIM_WINDOW`),
+        # so it is not reached here; one past that window still holding nothing
+        # gets `empty_ticks` and is then stopped by `_leave`.
         if not live:
             unheld = [r for r in rows if not review_held(r)]
             if unheld:
@@ -2629,6 +2636,22 @@ def _agent_for_child(child: Child, agents: list[dict]) -> dict | None:
     return None
 
 
+def _in_claim_window(child, now: float | None = None) -> bool:
+    """A child that registered under `CLAIM_WINDOW` ago and has never held anything.
+
+    It has not had the turns it needs to claim, so it is the work starting, not a
+    process holding nothing. A hand-built child with no start time is not in it.
+    """
+    if _has_claimed(child) or list(getattr(child, "ever_held", None) or []):
+        return False
+    started = getattr(child, "started_at", None)
+    if not isinstance(started, (int, float)):
+        return False
+    registered = started + float(getattr(child, "registration_latency", None) or 0.0)
+    now = time.monotonic() if now is None else now
+    return now - registered < CLAIM_WINDOW
+
+
 def _child_currently_holds(child: Child, agents: list[dict]) -> bool:
     """True when this live child's roster row has a non-stale holding.
 
@@ -2657,7 +2680,7 @@ def _idle_blocked(supervisor: Graphban, live: list) -> bool:
     GRPH-1001). A live child of this wave that currently holds an item is the
     other, and a review claim counts: the process is the work, which is the
     half ``_any_holdings`` deliberately does not answer. A running child whose
-    holdings are empty is neither.
+    holdings are empty is neither, once its claim window (`CLAIM_WINDOW`) is over.
     """
     agents = _roster_agents(supervisor)
     if agents is None:
@@ -2666,7 +2689,8 @@ def _idle_blocked(supervisor: Graphban, live: list) -> bool:
     for agent in agents:
         if any((h or {}).get("phase") != "stale" for h in build_holdings(agent)):
             return True
-    return any(_child_currently_holds(child, agents) for child in live)
+    return any(_child_currently_holds(child, agents) or _in_claim_window(child)
+               for child in live)
 
 
 def _stop_children_holding_nothing(
@@ -2675,12 +2699,15 @@ def _stop_children_holding_nothing(
     """Stop a child that is still running with nothing held, and reap its tree.
 
     Leaving it running is how the next cycle adopts a process that holds nothing
-    and then never goes idle (GRPH-1401). A child that holds an item stays.
+    and then never goes idle (GRPH-1401). A child that holds an item stays, and so
+    does one still inside its claim window: it has not had the turns to claim yet.
     """
     agents = _roster_agents(supervisor)
     if agents is None:
         return  # roster unread: stop nothing, a child may hold an item
-    quitting = [c for c in children if c.running and not _child_currently_holds(c, agents)]
+    quitting = [c for c in children
+                if c.running and not _child_currently_holds(c, agents)
+                and not _in_claim_window(c)]
     for child in quitting:
         stop(child, Reason.SHUTDOWN)
     gone = [c for c in quitting if not c.running]

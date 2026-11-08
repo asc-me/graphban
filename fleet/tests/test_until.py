@@ -2504,14 +2504,22 @@ def _end_pid(pid: int) -> None:
 def _empty_child_run(
     git_repo, tmp_path, scripts, state, *,
     review=None, waits=None, holdings=None, release_after=None,
+    claim_after=None, claim_window=0.0,
 ):
     """One sleeper, then no more ready work. `release_after` kills it once the
     wave has polled past `empty_ticks` while it was still alive — the lease
-    tests, which must not return on their own."""
+    tests, which must not return on their own.
+
+    `claim_window` defaults to 0: the child has been empty longer than its claim
+    window (GRPH-P72). `None` keeps `CLAIM_WINDOW`. `claim_after` puts `holdings`
+    on the roster only after that many live polls: a child that claims late."""
+    import gbfleet.until as until_mod
+
     workspace = tmp_path / "ws"
+    roster_holdings: list = [] if claim_after is not None else list(holdings or [])
     planner, supervisor = _clients(
         workspace, clusters=1, workers=0, review=review, waits=waits,
-        agent_holdings=holdings,
+        agent_holdings=roster_holdings,
     )
     calls: list[int] = []
     seen = {"past_idle": False, "spins": 0}
@@ -2528,6 +2536,14 @@ def _empty_child_run(
         if release_after is not None and not _running_pids(git_repo, state):
             return
         calls.append(1)
+        if claim_after is not None and len(calls) == claim_after:
+            seen["claimed_at_poll"] = len(calls)
+            roster_holdings.extend(holdings or [])
+            # What the server does on claim_review: the row now names its reviewer.
+            claimed = {h.get("id") for h in holdings or [] if h.get("hold") == "review"}
+            for row in review or []:
+                if row.get("id") in claimed:
+                    row["review_claimed_by"] = "GRPH-A1"
         if release_after is None:
             if len(calls) > 20:
                 raise AssertionError(
@@ -2540,12 +2556,18 @@ def _empty_child_run(
         for pid in _running_pids(git_repo, state):
             _end_pid(pid)
 
-    result = run(
-        git_repo, _factory(scripts, "sleeper"),
-        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
-        state=state, workspace=workspace, poll=0, sleep=sleep, empty_ticks=3,
-        limits=Limits(max_workers=1, child_wall_clock=3600),
-    )
+    saved = until_mod.CLAIM_WINDOW
+    if claim_window is not None:
+        until_mod.CLAIM_WINDOW = claim_window
+    try:
+        result = run(
+            git_repo, _factory(scripts, "sleeper"),
+            planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+            state=state, workspace=workspace, poll=0, sleep=sleep, empty_ticks=3,
+            limits=Limits(max_workers=1, child_wall_clock=3600),
+        )
+    finally:
+        until_mod.CLAIM_WINDOW = saved
     return result, seen
 
 
@@ -2675,6 +2697,66 @@ class _Held:
         self.worktree = worktree
         self.running = True
         self.stopped_because = None
+
+
+def test_a_review_spawn_that_claims_late_is_not_stopped_and_is_waited_for(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1401 bounce. A child that registered and has not claimed yet is inside
+    `CLAIM_WINDOW`: it claims only after more than `empty_ticks` polls, and the run
+    neither returns nor stops it before then. Sabotage: drop `_in_claim_window` from
+    `_idle_blocked` and the run returns review-unsigned at poll 3, stopping the child."""
+    result, seen = _empty_child_run(
+        git_repo, tmp_path, scripts, state,
+        review=[{"id": "GRPH-9", "status": "review", "review_claimed_by": ""}],
+        holdings=[{"id": "GRPH-9", "phase": "building", "hold": "review"}],
+        claim_after=6, release_after=9, claim_window=None,
+    )
+    assert seen.get("claimed_at_poll") == 6, seen
+    assert seen["past_idle"] is True, (seen, result.as_json())
+    kids = list(result.wave.spawned)
+    assert kids
+    assert all(child.stopped_because is None for child in kids), [
+        c.stopped_because for c in kids
+    ]
+
+
+def test_a_live_child_whose_only_holding_is_stale_does_not_block_idle():
+    """GRPH-1401 second review. A stale phase is a dead lease, on the roster's build
+    holdings and on this child's own row. Sabotage: drop the stale skip in
+    `_fresh_holdings` and this child blocks idle."""
+    from gbfleet.until import _idle_blocked
+
+    child = _Held("GRPH-A2", "/tmp/stale-child")
+    sup = _Roster([{"id": "GRPH-A2", "worktree": child.worktree,
+                    "holdings": [{"id": "GRPH-9", "phase": "stale", "hold": "review"}]}])
+    assert _idle_blocked(sup, [child]) is False
+    sup.agents[0]["holdings"][0]["phase"] = "building"
+    assert _idle_blocked(sup, [child]) is True
+
+
+def test_the_claim_window_is_bounded_and_ends_on_a_claim():
+    """Registered moments ago and never held: busy. Past `CLAIM_WINDOW`: not. A child
+    that has held something is never in it, and a hand-built one has no start time."""
+    import gbfleet.until as until_mod
+
+    class _C:
+        started_at = 1000.0
+        registration_latency = 20.0
+        held_items: list = []
+        review_items: list = []
+        ever_held: list = []
+
+    child = _C()
+    window = until_mod.CLAIM_WINDOW
+    assert until_mod._in_claim_window(child, now=1020.0 + window - 1) is True
+    assert until_mod._in_claim_window(child, now=1020.0 + window) is False
+    child.ever_held = ["GRPH-1"]
+    assert until_mod._in_claim_window(child, now=1021.0) is False
+    child.ever_held = []
+    child.review_items = ["GRPH-9"]
+    assert until_mod._in_claim_window(child, now=1021.0) is False
+    assert until_mod._in_claim_window(_Live(), now=0.0) is False
 
 
 def test_only_the_child_holding_nothing_is_stopped_at_exit(monkeypatch, tmp_path: Path):
