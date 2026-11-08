@@ -88,3 +88,45 @@ def test_expired_code_cannot_be_approved_or_redeemed(client, auth, db):
 
 def test_unknown_device_code_is_refused(client):
     assert _redeem(client, "nope").status_code == 400
+
+
+def test_used_code_cannot_be_approved_again(client, auth):
+    p = _start(client)
+    assert client.post("/api/cli/pair/approve", json={"user_code": p["user_code"]},
+                       headers=auth).status_code == 204
+    assert _redeem(client, p["device_code"]).json()["status"] == "approved"
+    assert client.post("/api/cli/pair/approve", json={"user_code": p["user_code"]},
+                       headers=auth).status_code == 404
+
+
+def test_an_api_key_cannot_approve(client, auth):
+    """Approval is a human's session, never an agent key — the authority gate."""
+    plaintext = client.post("/api/api-keys", json={"name": "k", "project_id": "core"},
+                            headers=auth).json()["plaintext"]
+    p = _start(client)
+    for h in ({"X-API-Key": plaintext}, {"Authorization": f"Bearer {plaintext}"}):
+        r = client.post("/api/cli/pair/approve", json={"user_code": p["user_code"]}, headers=h)
+        assert r.status_code in (401, 403), r.text
+    assert _redeem(client, p["device_code"]).json() == {"status": "pending"}
+
+
+def test_redeem_spends_once_even_if_the_row_was_already_spent(client, auth, db):
+    """The conditional UPDATE refuses a row whose `used_at` was set between read and write."""
+    from app.services import cli_pair as svc
+    p = _start(client)
+    client.post("/api/cli/pair/approve", json={"user_code": p["user_code"]}, headers=auth)
+    row = db.query(CliPair).one()
+    real_live = svc._live
+
+    def live_then_spent(r):
+        out = real_live(r)
+        db.execute(CliPair.__table__.update().values(used_at=utcnow()))
+        db.commit()
+        return out
+    svc._live = live_then_spent
+    try:
+        with pytest.raises(svc.InvalidPair):
+            svc.redeem(db, device_code=p["device_code"])
+    finally:
+        svc._live = real_live
+    assert row.id

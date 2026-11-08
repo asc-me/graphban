@@ -12,7 +12,7 @@ import secrets
 import uuid
 from datetime import timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models import CliPair, User, utcnow
@@ -65,26 +65,42 @@ def start(db: Session) -> dict:
 
 def approve(db: Session, *, user_code: str, user: User) -> None:
     """Bind a live code to `user`. Re-approving an already-approved code is refused, so a second
-    person who learns the code cannot swap the identity the first one granted."""
+    person who learns the code cannot swap the identity the first one granted.
+
+    One conditional UPDATE, so two approvals racing on the same code cannot both win: only the
+    one that finds `approved_user_id` still NULL changes a row."""
     code = normalize_code(user_code)
-    row = db.scalar(select(CliPair).where(CliPair.user_code == code,
-                                          CliPair.used_at.is_(None),
-                                          CliPair.expires_at > utcnow()))
-    row = _live(row)
-    if row.approved_user_id is not None:
+    now = utcnow()
+    res = db.execute(
+        update(CliPair)
+        .where(CliPair.user_code == code, CliPair.used_at.is_(None),
+               CliPair.expires_at > now, CliPair.approved_user_id.is_(None))
+        .values(approved_user_id=user.id)
+        .execution_options(synchronize_session=False))
+    if res.rowcount != 1:
+        db.rollback()
         raise InvalidPair()
-    row.approved_user_id = user.id
     db.commit()
 
 
 def redeem(db: Session, *, device_code: str) -> User | None:
-    """The approving user (and the code is spent), or None while still pending."""
+    """The approving user (and the code is spent), or None while still pending.
+
+    Spending is a conditional UPDATE on `used_at IS NULL`, so two polls racing on one approved
+    code hand out one token pair, not two."""
     row = _live(db.scalar(select(CliPair).where(CliPair.device_hash == _digest(device_code))))
     if row.approved_user_id is None:
         return None
     user = db.get(User, row.approved_user_id)
     if user is None:
         raise InvalidPair()
-    row.used_at = utcnow()
+    res = db.execute(
+        update(CliPair)
+        .where(CliPair.id == row.id, CliPair.used_at.is_(None))
+        .values(used_at=utcnow())
+        .execution_options(synchronize_session=False))
+    if res.rowcount != 1:
+        db.rollback()
+        raise InvalidPair()
     db.commit()
     return user
