@@ -537,6 +537,7 @@ class ProjectOut(ORMModel):
     allow_self_review: bool = False
     # The release branch, set on this box (PRD-P57 S2). Null is unmeasured, never `main`.
     release_ref: str | None = None
+    repo_url: str | None = None
 
 
 class ProjectSummaryOut(BaseModel):
@@ -674,7 +675,6 @@ class ItemOut(ORMModel):
     decision: dict | None = None
     #: Hidden from triage until this time (GRPH-1137).
     snoozed_until: datetime | None = None
-
     @field_validator("decision", mode="before")
     @classmethod
     def _decision_public(cls, v):
@@ -687,6 +687,14 @@ class ItemOut(ORMModel):
     @classmethod
     def _tp_default(cls, v):
         return v or []
+
+
+class ItemWritten(ItemOut):
+    """What create/update return: the item, plus `touchpoint_warnings` (GRPH-1393) — touchpoints
+    matching nothing in the code graph, each with the closest existing path. A subclass so the
+    read and list shapes stay exactly as they were."""
+
+    touchpoint_warnings: list[dict] = []
 
 
 #: What the project list leaves out by default (GRPH-1228): the per-item fields that are large
@@ -1296,6 +1304,8 @@ class ProjectUpdate(BaseModel):
     # Unlike the fields above, an explicit null here CLEARS (back to unmeasured); omit the
     # key for no change. Validated in services/projects.normalize_release_ref.
     release_ref: str | None = None
+    # Null or blank clears; stored normalized (services/projects.normalize_repo_url).
+    repo_url: str | None = None
 
     @field_validator("memory_write_mode")
     @classmethod

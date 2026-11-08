@@ -6,7 +6,7 @@ import re
 
 from datetime import timedelta, timezone
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -398,6 +398,9 @@ def normalize_evidence_report(raw) -> tuple[list[dict], list[dict]]:
                     # "not recorded" rather than a claim about either.
                     "branch": str(e.get("branch") or "").strip(),
                     "matched": str(e.get("matched") or "").strip(),
+                    # GRPH-1411: every commit the run covered (`git rev-list base..head`).
+                    # Empty for a push run, and for older receipts.
+                    "range": _normalize_range(e.get("range")),
                     "schema_version": schema_version,
                 })
                 if not detail:
@@ -585,6 +588,45 @@ def touchpoint_intake(existing, incoming) -> dict:
     }}
 
 
+def remove_touchpoints(db: Session, item: Item, remove, *, by: str | None,
+                       planner: bool = False) -> list[str]:
+    """Take paths off an item's touchpoints (GRPH-1398). Returns the paths actually removed.
+
+    `touchpoints` only ever unions, so a broad glob filed to unblock a PR stayed on the item
+    and made every later claim collide with unrelated work. Removal is its own, explicit
+    field so the safe default is unchanged: a plain write still cannot shrink the list.
+
+    Refused while the item is `in_progress` and held by ANOTHER agent (a planner may), so a
+    live claim's reservations cannot shrink under it. Recorded as a `note` receipt, and any
+    area reservation on a removed path is released. Does not commit.
+    """
+    if isinstance(remove, str):
+        remove = [remove]
+    wanted = [q.strip() for q in (remove or []) if isinstance(q, str) and q.strip()]
+    if not wanted:
+        return []
+    holder = item.claimed_by
+    if (item.status == "in_progress" and holder and not planner
+            and by and holder != by):
+        raise ValueError(
+            f"{item.key} is in_progress and held by {holder}; only the holder or a planner "
+            "may remove its touchpoints"
+        )
+    stored = list(item.touchpoints or [])
+    removed = [q for q in dict.fromkeys(wanted) if q in stored]
+    if not removed:
+        return []
+    item.touchpoints = [q for q in stored if q not in removed]
+    from app.models import AreaReservation
+    db.execute(delete(AreaReservation).where(
+        AreaReservation.item_id == item.id, AreaReservation.area.in_(removed)))
+    item.evidence = append_evidence(item.evidence, [{
+        "kind": "note",
+        "detail": f"touchpoints removed by {by or 'unknown'}: {', '.join(removed)}",
+    }])
+    return removed
+
+
 def union_touchpoints(existing, incoming) -> list[str]:
     """Add measured paths without removing declared ones (GRPH-611 / P30 D10).
 
@@ -689,6 +731,18 @@ def has_effective_sabotage(evidence) -> bool:
     if any(e.get("tests_failed") for e in sabotage_receipts(evidence)):
         return True
     return "sabotage_observed" in attested_predicates(evidence)
+
+
+def _normalize_range(value) -> list[str]:
+    """The commits a CI receipt covered: a list of hex strings, deduplicated, else []."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[str] = []
+    for c in value:
+        c = str(c or "").strip().lower()
+        if _COMMIT.match(c) and c not in out:
+            out.append(c)
+    return out
 
 
 def attestation_receipts(evidence) -> list[dict]:
@@ -1106,13 +1160,20 @@ def _full_engine_run(receipts, engine: str) -> bool:
     return False
 
 
-def require_engine_evidence(db: Session, item: Item, incoming) -> None:
+def require_engine_evidence(db: Session, item: Item, incoming, head: str | None = None) -> None:
     """The `evidence_required` primitive, bound to `build.engine_evidence` (GRPH-1271).
 
     Read through the layered resolution (`rule_toggles.resolve`), never a constant: a rule absent
     from the loaded library, or off, is no gate. When on, an item of the class (a touchpoint
     containing `path`, default `alembic/versions/`) needs a test receipt recording a full run on
     `engine` (default `postgres`) before it moves to review. Other items are unaffected.
+
+    **The project's test-scope mode decides who may supply the run (GRPH-1404).** In
+    `agent_targeted` CI runs the full suites, Postgres job included (the `ci` gate job needs
+    it), so a PASSED `suite_green` attestation at the item's CURRENT head satisfies the gate;
+    a local full receipt still does too. An attestation at another commit, or a failing one,
+    counts for nothing, and with no head named there is nothing to bind it to. The other
+    modes keep the local full receipt.
     """
     from app.services import rule_toggles
 
@@ -1126,11 +1187,21 @@ def require_engine_evidence(db: Session, item: Item, incoming) -> None:
     engine = (params.get("engine") or "postgres").lower()
     if not any(path in (t or "") for t in item.touchpoints or []):
         return
-    if _full_engine_run(append_evidence(item.evidence, incoming or []), engine):
+    merged = append_evidence(item.evidence, incoming or [])
+    if _full_engine_run(merged, engine):
         return
+    waiting = ""
+    if rule_toggles.test_scope_mode(db, item.project_id) == "agent_targeted":
+        at = (head or item.head_commit or "").strip()
+        if at and CI_PREDICATE in attested_predicates(merged, commit=at):
+            return
+        waiting = (f" The project's test scope is agent_targeted, so this item is waiting for "
+                   f"CI's {engine} run: {CI_PREDICATE} must be attested at its current head "
+                   + (f"{at[:12]}" if at else "(none is recorded; push and let CI report)")
+                   + ", and an attestation at another commit or a failing one does not count.")
     raise EvidenceRequired(
         f"{item.key} cannot move to review while {ENGINE_EVIDENCE_RULE} is on: it touches "
-        f"{path} and carries no test receipt recording a full {engine} suite run. Record one "
+        f"{path} and carries no test receipt recording a full {engine} suite run.{waiting} Record one "
         f"as {{kind: test, engine: {engine!r}, scope: 'full', passed, failed: 0, skipped}}; a "
         "partial run, or one with failures, does not count")
 
@@ -1198,8 +1269,74 @@ def pr_commits(evidence, *named) -> list[str]:
     return out
 
 
+def _range_receipts(db, item, commits) -> list[dict]:
+    """CI receipts on OTHER items of this project whose `range` lists one of `commits`
+    (GRPH-1411). Each is a copy tagged `_carried_by` with the carrying item's key.
+
+    A PR run attests its head onto the items its text names, but vouches for every commit in
+    the PR; work merged inside another item's PR has no receipt of its own. The server has no
+    git, so the range CI recorded is the only way to tell that head H contains commit c.
+    """
+    wanted = [c for c in commits if c]
+    if not wanted:
+        return []
+    # Every item in the project, read only on a gated `done` whose item has no CI answer at
+    # its own commit — the rare path, so a scan is acceptable. Narrow it (an index of range
+    # commits) if that path ever becomes common.
+    rows = db.execute(select(Item).where(Item.project_id == item.project_id,
+                                         Item.id != item.id)).scalars().all()
+    out: list[tuple[tuple, dict]] = []
+    for other in rows:
+        for pos, a in enumerate(attestation_receipts(other.evidence)):
+            if not any(isinstance(q, dict) and q.get("name") == CI_PREDICATE
+                       for q in a.get("predicates") or []):
+                continue
+            covered = list(a.get("range") or [])
+            if not any(same_commit(r, c) for r in covered for c in wanted):
+                continue
+            out.append((_run_order(a, pos), {**a, "_carried_by": other.key}))
+    # Oldest first, so the caller's `[-1]` is the latest run.
+    return [a for _, a in sorted(out, key=lambda t: t[0])]
+
+
+#: `.../actions/runs/<id>` and optional `/attempts/<n>` in a receipt's `run_ref`.
+_RUN_REF = re.compile(r"/runs/(\d+)(?:/attempts/(\d+))?")
+
+
+def _run_order(receipt: dict, pos: int) -> tuple:
+    """Sort key for CI runs across items: GitHub's run id (monotonic), then the attempt, then
+    the receipt's place on its item. Receipts carry no timestamp, and a re-run keeps its run
+    id and raises its attempt, so this is the order the runs happened in."""
+    m = _RUN_REF.search(str(receipt.get("run_ref") or ""))
+    if not m:
+        return (0, 0, pos)
+    return (int(m.group(1)), int(m.group(2) or 0), pos)
+
+
+def _covered_here(receipt: dict, commits) -> str:
+    """The first of `commits` that `receipt`'s range lists, shortened for a message."""
+    for c in commits:
+        if c and any(same_commit(r, c) for r in receipt.get("range") or []):
+            return c[:12]
+    return "?"
+
+
+def _carried_note(receipt: dict, commits) -> dict:
+    """The receipt that says WHY a carried-green item was let through (GRPH-1411): the run,
+    its head, and the item that holds the attestation. A note, never an attestation — the
+    pass is the carrying item's; this records only that the gate relied on it."""
+    run = receipt.get("run_ref") or "an unnamed run"
+    return {
+        "kind": "note",
+        "detail": (f"pr_ci_green carried: {CI_PREDICATE} by {receipt.get('adapter')} run "
+                   f"{run} at head {str(receipt.get('commit'))[:12]}, attested on "
+                   f"{receipt.get('_carried_by')}, whose PR range covered "
+                   f"{_covered_here(receipt, commits)}"),
+    }
+
+
 def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
-                              commit: str | None = None) -> None:
+                              commit: str | None = None) -> list[dict]:
     """Raise PRCooldown when `done` is asked for too soon after a PR link (GRPH-567).
 
     One function, two writers. `update_item` is tested; `fleet.sign_off` is the other
@@ -1218,20 +1355,37 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
     stamp was written only by a successful `update_item`, so a `done`/`sign_off` carrying the
     PR's first link measured ~0s, refused, and every retry measured ~0s again. The stamp is
     kept even though the call fails; first link wins, so no later URL moves it.
+
+    **A run on another item can answer (GRPH-1411).** With no CI answer at the item's own
+    commit, a run whose recorded PR `range` covered it — attested on whichever item that PR
+    named — answers instead; the latest such run decides. Returns the receipts the caller
+    must store with the `done` (a note naming the carrying run when one let it through), so
+    the acceptance is as readable as a refusal would be.
     """
     cooldown = max(0, int(getattr(settings, "pr_cooldown_seconds", 0) or 0))
     linked = pr_linked_at(incoming_evidence or [], item.pr_linked_at)
     if not cooldown or linked is None:
-        return
+        return []
     merged = append_evidence(item.evidence, incoming_evidence or [])
     # An owner.close receipt is the owner saying the work is already on the base.
     # The cooldown waits for CI after a PR is linked; that wait does not apply to a
     # human closing something they already merged (GRPH-1030).
     if any(a.get("adapter") == OWNER_CLOSE_ADAPTER for a in valid_attestations(merged)):
-        return
+        return []
     commits = pr_commits(merged, commit, item.head_commit)
     if any(CI_PREDICATE in attested_predicates(merged, commit=c) for c in commits):
-        return
+        return []
+    # GRPH-1404: `agent_full` says the builder's full suites are the proof and the PR's CI is
+    # not required, so silence from CI does not block when full receipts exist on BOTH engines.
+    # CI saying NO at the item's commit still does.
+    from app.services import rule_toggles
+    if (rule_toggles.test_scope_mode(db, item.project_id) == "agent_full"
+            and _full_engine_run(merged, "postgres") and _full_engine_run(merged, "sqlite")
+            and not any(same_commit(str(a.get("commit") or ""), c) for c in commits
+                        for a in attestation_receipts(merged)
+                        if any(isinstance(q, dict) and q.get("name") == CI_PREDICATE
+                               and q.get("passed") is False for q in a.get("predicates") or []))):
+        return []
     waited = (utcnow() - _aware(linked)).total_seconds()
     runs = [a for a in attestation_receipts(merged)
             if any(isinstance(q, dict) and q.get("name") == CI_PREDICATE
@@ -1251,18 +1405,40 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
     failed_at_head = [a for a in runs
                       if any(same_commit(str(a.get("commit") or ""), c) for c in commits)
                       and CI_PREDICATE not in attested_predicates([a])]
+    if not failed_at_head:
+        # GRPH-1411: no answer of its own at the commit, so ask the runs on OTHER items whose
+        # PR range covered it. Only after the item's own red check: a red run at its own
+        # commit is the item's answer and a green run elsewhere does not overrule it. Among
+        # the carrying runs the LATEST answers — a PR re-run green after a red one has fixed
+        # what the red one saw, and the reverse has broken it.
+        carried = _range_receipts(db, item, commits)
+        if carried:
+            latest = carried[-1]
+            if CI_PREDICATE in attested_predicates([latest]):
+                return [_carried_note(latest, commits)]
+            failed_at_head = [latest]
     if failed_at_head:
         if item.pr_linked_at is None:
             item.pr_linked_at = linked
         bad = failed_at_head[-1]
         failed = (f"{bad.get('adapter')} "
                   + (f"run {bad['run_ref']} " if bad.get("run_ref") else "")
-                  + f"at {str(bad.get('commit'))[:12]} did not pass {CI_PREDICATE}")
-        record_refusal(db, item, predicate="pr_ci_not_green", detail=failed)
+                  + f"at {str(bad.get('commit'))[:12]} did not pass {CI_PREDICATE}"
+                  + (f" (carried by {bad['_carried_by']}, whose PR range covered "
+                     f"{_covered_here(bad, commits)})" if bad.get("_carried_by") else ""))
+        # GRPH-1410: the failure CI named (jobs, first failing tests) rides on the refusal, so
+        # a reviewer has the bounce reason in hand rather than reading this as "CI pending".
+        why = "; ".join(str(q.get("detail")) for q in bad.get("predicates") or []
+                        if isinstance(q, dict) and q.get("name") == CI_PREDICATE
+                        and q.get("passed") is False and q.get("detail"))
+        record_refusal(db, item, predicate="pr_ci_not_green",
+                       detail=f"{failed}: {why}" if why else failed)
         raise PRCINotGreen(
-            f"{item.key} cannot move to done: CI ran the suite for its PR and it is red — "
-            f"{failed}. Waiting will not change this; fix the PR and let CI attest "
-            f"{CI_PREDICATE} at its head")
+            f"{item.key} cannot move to done: CI failed at {str(bad.get('commit'))[:12]}"
+            + (f": {why}" if why else "")
+            + f" — {failed}. This is a BOUNCE, not a wait: CI has answered and the answer is "
+            f"no, so bounce the item with this failure as the reason. Waiting will not change "
+            f"it; the PR needs a fix and a CI run that attests {CI_PREDICATE} at its head")
     if waited >= cooldown:
         # The cooldown gave CI time to answer. Silence after it is not a pass.
         if commits or not any(CI_PREDICATE in attested_predicates([a]) for a in runs):
@@ -1277,7 +1453,7 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
                 f"cooldown is over, and {CI_PREDICATE} is not attested for {where} — {run}. "
                 f"Waiting will not change this; CI must attest {CI_PREDICATE} at the PR's "
                 "head or merge commit")
-        return
+        return []
     if item.pr_linked_at is None:
         # Persisted by `record_refusal`'s commit below. Nothing else on the item has been
         # written by either caller at this point, so this is the only field that lands.
@@ -1474,7 +1650,8 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "branch, or attach the PR url as evidence, then move it to review"
             )
     if fields.get("status") == "review" and prev_status != "review":
-        require_engine_evidence(db, item, fields.get("evidence"))
+        require_engine_evidence(db, item, fields.get("evidence"),
+                                head=fields.get("head_commit"))
     # THE COMPLETION GATE (GRPH-543). Before this, `update_item` validated a status
     # transition for MEMBERSHIP IN A LIST and nothing else, so an agent working without a
     # reviewer reached `done` by writing the string — and the result was indistinguishable
@@ -1607,8 +1784,10 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         # used to write `done` directly and skip this, which is the reviewer CALL the
         # bounce found. Incoming evidence is read as well as the stored stamp so linking
         # and completing in ONE call is the case this catches.
-        refuse_if_pr_cooling_down(db, item, fields.get("evidence") or [],
-                                  commit=fields.get("head_commit"))
+        carried = refuse_if_pr_cooling_down(db, item, fields.get("evidence") or [],
+                                            commit=fields.get("head_commit"))
+        if carried:
+            item.evidence = append_evidence(item.evidence, carried)
     # Captured BEFORE the status moves. `intent_hold` is about work in flight and goes
     # quiet once an item is done, so asking after the transition always answers None —
     # which silently turned the completion receipt into dead code.
@@ -1690,6 +1869,11 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         incoming_tps = fields["touchpoints"]
         if incoming_tps:
             item.touchpoints = union_touchpoints(item.touchpoints, incoming_tps)
+    if fields.get("touchpoints_remove"):
+        # GRPH-1398. The one explicit way off the list; see `remove_touchpoints`.
+        fields["removed_touchpoints"] = remove_touchpoints(
+            db, item, fields["touchpoints_remove"], by=submitted_by,
+            planner=bool(fields.get("remove_as_planner")))
     if fields.get("evidence") is not None:
         # Appends. See `append_evidence` — a write here must never remove a receipt somebody
         # else left, because `sign_off` gates on the stored ones (GRPH-494).
@@ -1732,8 +1916,8 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         observations_svc.on_rules_passed(db, item, (ENGINE_EVIDENCE_RULE,))
     if fields.get("evidence"):
         observations_svc.on_evidence(db, item)
-    if (("touchpoints" in fields and fields["touchpoints"] is not None) or reopened) \
-            and item.touchpoints:
+    if (("touchpoints" in fields and fields["touchpoints"] is not None) or reopened
+            or fields.get("removed_touchpoints")) and item.touchpoints:
         from app.services.clustering import sync_code_links
         sync_code_links(db, item)
 

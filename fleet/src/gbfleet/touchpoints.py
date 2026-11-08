@@ -204,3 +204,40 @@ def overlaps(touched_by_branch: dict[str, list[str]]) -> dict[str, list[str]]:
         for path in set(paths or []):
             seen.setdefault(path, []).append(branch)
     return {path: sorted(bs) for path, bs in sorted(seen.items()) if len(bs) > 1}
+
+
+def measure_checkout(path: str) -> list[str]:
+    """Files the checkout at `path` has changed since it left the trunk — committed or not.
+
+    The child-side twin of `measure` (GRPH-1393): a child has a working directory and no
+    `Worktree` record. Counted from the merge-base with the trunk ref, plus uncommitted work.
+    """
+    import subprocess
+
+    def git(*a: str) -> str:
+        proc = subprocess.run(["git", *a], cwd=path, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise ValueError(f"git {' '.join(a)}: {proc.stderr.strip()}")
+        return proc.stdout
+
+    top = git("rev-parse", "--show-toplevel").strip()
+    ref = default_ref(top, remote_for(top))
+    base = git("merge-base", ref, "HEAD").strip() if ref else ""
+    names = set(git("diff", "--name-only", base or "HEAD").split())
+    names |= set(git("ls-files", "--others", "--exclude-standard").split())
+    return sorted(f for f in names if not is_seat_relative(f))
+
+
+def gate_missing(measured: list[str], declared: list[str], *, ignore=None) -> list[str]:
+    """The files the PR gate will refuse this branch for, told while the child can still act
+    (GRPH-1393). The supervisor's gate runs after the child exits, so its refusal reached nobody
+    who could fix it; this is the same comparison (`undeclared`), runnable by the child.
+    `ignore` drops mechanically generated files, as the gate does. [] means the gate passes.
+
+    The message that tells the child how to declare lives in the CLI: this module reports and
+    never writes an item.
+    """
+    missing = undeclared(measured, declared)
+    if ignore is not None:
+        missing = [f for f in missing if not ignore(f)]
+    return missing

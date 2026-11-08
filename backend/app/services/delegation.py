@@ -244,9 +244,27 @@ def _pinned(item: Item) -> dict | None:
     return {"to": holder, "until": until.isoformat() if until else None}
 
 
+_TEST_SCOPE_BRIEF = {
+    "agent_full": "run the full suites (both DB engines, frontend, fleet as touched) and record "
+                  "them as receipts; the PR's CI is not required. A reviewer checks those "
+                  "receipts.",
+    "agent_and_pr": "run the full suites (both DB engines, frontend, fleet as touched); the "
+                    "PR's CI runs them again and both are needed.",
+    "agent_targeted": "run only the tests you wrote or changed, the module's existing tests and "
+                      "the sabotage check; the PR's CI runs the full suites and its "
+                      "`suite_green` on the head is the proof. A reviewer need not rerun them.",
+}
+
+
+def test_scope_line(mode: str) -> str:
+    """GRPH-1405: one line naming the project's test-scope mode and what it asks of this
+    builder or reviewer."""
+    return f"Test scope: {mode} — {_TEST_SCOPE_BRIEF[mode]}"
+
+
 def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[str],
           checklist: str | None, lessons: list[dict], previous: dict | None,
-          attempts: list[dict]) -> str:
+          attempts: list[dict], test_scope: str | None = None) -> str:
     """Prose for a spawn prompt, derived from the fields and nothing else (D16). Deliberately
     excludes the lane and tier suggestions so a pasted brief cannot become the default."""
     lines = [f"Item {item.key}: {item.title}"]
@@ -280,6 +298,8 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
             "Resume from that head (merged with the base). Do not refuse to merge it "
             "and do not rebuild from the base."
         )
+    if test_scope:
+        lines.append(test_scope_line(test_scope))
     if len(attempts) > 1:
         lines.append(f"Attempts so far: {len(attempts)}")
     return "\n".join(lines)
@@ -323,6 +343,8 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
         spend.update(period_spend(db, item.project_id, str(policy_caps["period"])))
     measured_lane = measured_for_lane(db, item, caps)
     mix = mix_counts(db, item.project_id)
+    from app.services import rule_toggles
+    test_scope = rule_toggles.test_scope_mode(db, item.project_id)
     return {
         "item": item.key,
         "title": item.title,
@@ -344,7 +366,8 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
         "pinned": _pinned(item),
         "text": _text(item, summary=summary, touchpoints=touchpoints, blocked_by=blocked_by,
                       checklist=checklist, lessons=lessons, previous=previous,
-                      attempts=attempts),
+                      attempts=attempts, test_scope=test_scope),
+        "test_scope": test_scope,
         # PRD-41 D5 / D15: the set the resolver will score, inside the measured_for_lane cap.
         "capabilities": caps,
         "measured_for_lane": measured_lane,
@@ -865,12 +888,12 @@ def refuse_bound_collision(db: Session, *, agent: Agent, item: Item) -> None:
     areas, _ = collision_svc.touch_areas(db, item, item.project_id)
     taken = fleet_svc.active_reservations(db, item.project_id, now=_now())
     blocked = [r.area for r in taken if r.agent_id != agent.id]
-    if fleet_svc.areas_collide(areas, blocked):
+    if fleet_svc.hard_collide(areas, blocked):
         holders = sorted({r.agent_id for r in taken
                           if r.agent_id != agent.id
-                          and fleet_svc.areas_collide(areas, [r.area])})
+                          and fleet_svc.hard_collide(areas, [r.area])})
         # Both sides of the collision, not only who holds it (GRPH-1399).
-        pairs = fleet_svc.describe_pairs(fleet_svc.colliding_pairs(areas, blocked))
+        pairs = fleet_svc.describe_pairs(fleet_svc.colliding_pairs(areas, blocked, hard=True))
         raise DelegationRefused(
             f"{item.key}'s areas are reserved by {', '.join(holders)} ({pairs}); a bound "
             "seat would claim straight through that collision",

@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 343 of the 343. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 344 of the 344. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -59,6 +59,7 @@ Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
 | GET | `/api/projects/tag-check` | JWT | `{tag, available, reason}` for live form feedback (`?tag=`) |
 | GET | `/api/projects/{id}/counts` | JWT | The badge numbers the shell renders, a few integers instead of the four full lists |
 | GET | `/api/projects/{id}/setup` | JWT | The quick-start checklist, steps ⓪–④ plus step 5 (③ Connect your agent: ✓ only when a live `quickstart`-origin key for the project has `last_used`, with `proof: first_call`; `setup_project` still shows ①–④ only), each as `{step, status, detail, how}` with `status` done\|pending\|unknown (a check that could not run is `unknown` with a `reason`, never `done`), plus `offline` and the caller's `onboarding`. Ticks are server state; `onboarding` is dialog progress only (GRPH-1360) |
+| GET | `/api/setup/instance` | JWT (instance admin) | Step ①'s "Is this box safe to expose?" read: booleans only (`jwt_secret_set`, `jwt_secret_strong`, `signup_open`, `secret_encryption_key_set`, `app_base_url_set`, `request_on_loopback`), never a value. Admin is the platform operator when hosted, otherwise anyone who owns a project; anyone else gets 403 with `rule_id: setup.posture_needs_instance_admin`. Warnings, not blockers (GRPH-1365) |
 | POST | `/api/projects/{id}/setup/confirm` | JWT (write) | Stores one human decision: `{decision: workspace}`, `{decision: offline}` or `{decision: server, where: this_computer\|dedicated_server, address}`. Anything else is 422. Each is audited as a `setup_confirm` event (GRPH-1360) |
 | POST | `/api/projects/{id}/retag` | JWT (write) | Move the project's tag. One UPDATE + one tag-history row + one audit event; **no other row in the database changes**. Retired tags are never reusable |
 | PATCH | `/api/projects/{id}` | JWT | Update project config. **Not** the tag — changing that has to record tag history |

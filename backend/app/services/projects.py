@@ -462,6 +462,27 @@ def project_summaries(db: Session, readable_ids: list[str]) -> list[dict]:
 RELEASE_REF_LITERAL = "release_ref stores one literal ref, not a pattern"
 
 
+def normalize_repo_url(raw: str | None) -> str | None:
+    """`host/owner/name` — one spelling for every way a remote is written. None/blank clears.
+
+    `https://github.com/Acme/App.git`, `git@github.com:acme/app` and `ssh://git@github.com:22/acme/app/`
+    are the same repository. Credentials, scheme, port, a trailing `.git` and case are dropped.
+    cli/src/gban/setup.py:normalize_remote is the same rule (a separate distribution cannot import
+    this); a test on each side pins the same table.
+    """
+    value = (raw or "").strip()
+    if not value:
+        return None
+    m = re.match(r"^(?:[a-z][a-z0-9+.-]*://(?:[^@/]*@)?([^/:]+)(?::\d*)?|(?:[^@/]*@)?([^/:]+):?)/?(.+)$",
+                 value, re.IGNORECASE)
+    path = m.group(3).strip("/") if m else ""
+    if path.endswith(".git"):
+        path = path[:-4]
+    if not m or any(ch.isspace() for ch in value) or "/" not in path:
+        raise ValueError(f"repo_url {value!r} must look like host/owner/name")
+    return f"{m.group(1) or m.group(2)}/{path}".lower()
+
+
 def normalize_release_ref(raw: str | None) -> str | None:
     """`None` or blank clears; anything else must be ONE literal branch name.
 

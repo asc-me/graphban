@@ -216,6 +216,10 @@ _RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ),
 )
 
+#: A markdown heading, and a line that opens a sabotage description (optionally bulleted).
+_HEADING = re.compile(r"^#{1,6}\s+(.*)$")
+_SABOTAGE_LINE = re.compile(r"^(?:[-*+]\s+)?(?:\*\*)?sabotage(?:\*\*)?\s*:", re.I)
+
 #: How many signals a caller is shown. Enough to judge, few enough to read. A description that
 #: trips nine rules is not nine times more informative than one that trips three.
 MAX_SIGNALS = 3
@@ -242,9 +246,19 @@ def signals(text: str | None) -> list[dict]:
     """
     found: list[dict] = []
     seen: set[str] = set()
+    in_acceptance = False
     for line in (text or "").splitlines():
         stripped = line.strip()
         if not stripped:
+            continue
+        heading = _HEADING.match(stripped)
+        if heading:
+            # A heading only moves the section boundary. A heading that opens Acceptance is
+            # skipped with its section; any other heading is framing and is scanned like prose.
+            in_acceptance = heading.group(1).strip().lower().startswith("acceptance")
+        # Acceptance and sabotage lines describe tests by convention (GRPH-1394). Framing
+        # prose outside them still counts.
+        if in_acceptance or _SABOTAGE_LINE.match(stripped):
             continue
         for name, pattern, means in _RULES:
             if name in seen:

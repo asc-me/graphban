@@ -72,6 +72,41 @@ def existing(repo: Path, branch: str) -> str:
         return ""
 
 
+#: A check-rollup entry that counts as passing. Anything else (pending, failed, cancelled)
+#: is not green, and a PR with no checks at all is not green either (GRPH-1391).
+_PASSING = {"SUCCESS", "SKIPPED", "NEUTRAL"}
+
+
+def ci_green(repo: Path, branch: str, head: str) -> bool:
+    """True when `branch` has a PR whose head is `head` and every check on it passed.
+
+    The full-suite receipt: CI already carries the SQLite and Postgres shards. Fails closed:
+    no `gh`, no PR, a different head, no checks, or any check not passing all answer False.
+    """
+    if not head or not find():
+        return False
+    try:
+        done = _gh(repo, "pr", "view", branch, "--json", "headRefOid,statusCheckRollup")
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if done.returncode != 0:
+        return False
+    try:
+        data = json.loads(done.stdout or "{}")
+    except ValueError:
+        return False
+    if str(data.get("headRefOid") or "") != head:
+        return False
+    rollup = data.get("statusCheckRollup") or []
+    if not rollup:
+        return False
+    for check in rollup:
+        verdict = str(check.get("conclusion") or check.get("state") or "").upper()
+        if verdict not in _PASSING:
+            return False
+    return True
+
+
 def existing_any(repo: Path, branch: str) -> dict:
     """The newest PR for this branch in any state, or {}.
 
@@ -103,6 +138,65 @@ def existing_any(repo: Path, branch: str) -> dict:
     }
 
 
+def open_prs(repo: Path) -> list[dict]:
+    """Every open PR with what is needed to tell whose it is, or [] when it cannot be read."""
+    done = _gh(repo, "pr", "list", "--state", "open", "--limit", "200", "--json",
+               "number,url,headRefName,headRefOid,isDraft,title,body")
+    if done.returncode != 0:
+        return []
+    try:
+        rows = json.loads(done.stdout or "[]")
+    except ValueError:
+        return []
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def _pr_number(url: str) -> int:
+    tail = (url or "").rstrip("/").rsplit("/", 1)[-1]
+    return int(tail) if tail.isdigit() else 0
+
+
+def _carries_item(pr: dict, item: str) -> bool:
+    """Whether the PR is `item`'s: named in its title, or in an `Items:`/`Attests:` line of
+    its body. A passing mention elsewhere in a body is not ownership."""
+    if _names(str(pr.get("title") or ""), item):
+        return True
+    for line in str(pr.get("body") or "").splitlines():
+        if line.startswith(("Items:", "Attests:")) and _names(line, item):
+            return True
+    return False
+
+
+def close_item_prs(repo: Path, item: str, keeper_url: str, *, comment: str,
+                   older_drafts_only: bool = False) -> tuple[str, ...]:
+    """Close every other open `gb/*` PR of `item` with `comment` (GRPH-1396).
+
+    `older_drafts_only` is the newer-attempt case: only drafts opened before the keeper are
+    superseded. After a merge every other open PR of the item is, whatever its age. Best
+    effort: a PR that cannot be closed stays open and nothing raises.
+    """
+    keeper = _pr_number(keeper_url)
+    closed: list[str] = []
+    try:
+        rows = open_prs(repo)
+        for pr in rows:
+            url = str(pr.get("url") or "")
+            if not url or url == keeper_url or not _carries_item(pr, item):
+                continue
+            if not str(pr.get("headRefName") or "").startswith("gb/"):
+                continue
+            number = pr.get("number") or _pr_number(url)
+            if older_drafts_only and not (pr.get("isDraft") and keeper
+                                          and int(number or 0) < keeper):
+                continue
+            done = _gh(repo, "pr", "close", str(number), "--comment", comment)
+            if done.returncode == 0:
+                closed.append(f"#{number}")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return tuple(closed)
+
+
 def _reopen(repo: Path, number) -> bool:
     """Reopen a closed PR. True when gh accepted it."""
     if not number:
@@ -111,7 +205,8 @@ def _reopen(repo: Path, number) -> bool:
     return done.returncode == 0
 
 
-def propose(repo: Path, branch: str, base: str, *, title: str, body: str) -> Proposed:
+def propose(repo: Path, branch: str, base: str, *, title: str, body: str,
+            head: str = "", items: tuple[str, ...] | list[str] = ()) -> Proposed:
     """Open a draft PR for `branch` against `base`, or say why not.
 
     Never raises and never fails a wave. The work is committed and pushed by the time this
@@ -156,6 +251,16 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str) -> Pro
             if url:
                 return Proposed(branch=branch, url=url, skipped=True,
                                 reason="already proposed")
+        if head:
+            # GRPH-1396: another branch whose open PR already carries this commit (a salvage
+            # of a stopped child, a re-reap). A second PR for the same commit is the defect.
+            for pr in open_prs(repo):
+                if (pr.get("headRefName") != branch and pr.get("url")
+                        and same_commit(str(pr.get("headRefOid") or ""), head)):
+                    return Proposed(
+                        branch=branch, url=str(pr["url"]), skipped=True,
+                        reason=f"commit already carried by open PR #{pr.get('number')} "
+                               f"({pr.get('headRefName')}); not opening a second")
         done = _gh(repo, "pr", "create", "--draft", "--head", branch,
                    "--base", base.split("/", 1)[-1], "--title", title, "--body", body)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -166,6 +271,12 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str) -> Pro
                         reason=f"gh pr create failed: {tail[-1][:200] if tail else done.returncode}")
     url = next((line.strip() for line in (done.stdout or "").splitlines()
                 if line.strip().startswith("http")), "")
+    if url:
+        # GRPH-1396: this attempt replaces older drafts of the same item.
+        by = f"#{_pr_number(url)}" if _pr_number(url) else url
+        for item in items:
+            close_item_prs(repo, item, url, comment=f"Superseded by {by}",
+                           older_drafts_only=True)
     return Proposed(branch=branch, url=url, ok=bool(url),
                     reason="" if url else "gh reported success without a URL")
 
@@ -377,6 +488,9 @@ class Merged:
     release: str = ""
     #: Other open PRs of the item closed as "Superseded by #n" after this merge (GRPH-1219).
     closed: tuple[str, ...] = ()
+    #: Files a rebase onto the base could not reconcile (GRPH-1389). Non-empty means the item
+    #: is to be bounced, naming these, rather than left as a PR that can never run CI.
+    conflicts: tuple[str, ...] = ()
 
     @property
     def final(self) -> bool:
@@ -425,6 +539,49 @@ def green_commits(item: dict) -> set[str]:
         if any(str(p.get("name") or "") == CI_PREDICATE for p in rows):
             out.add(commit)
     return out
+
+
+def red_commits(item: dict) -> set[str]:
+    """Every commit some attestation reports `suite_green` FAILED on (GRPH-1415).
+
+    The counterpart of `green_commits`: a red CI run at the vouched commit blocks the merge in
+    every `build.test_scope` mode, so local receipts can stand in for a MISSING attestation but
+    never overrule a present failure. A commit that ALSO has a passing `suite_green` (a rerun
+    at the same commit that went green) is not red: one green run was always enough."""
+    out: set[str] = set()
+    for e in item.get("evidence") or []:
+        if not isinstance(e, dict) or e.get("kind") != "attestation":
+            continue
+        commit = str(e.get("commit") or "").strip()
+        preds = e.get("predicates") or []
+        if not commit or not isinstance(preds, list):
+            continue
+        if any(isinstance(p, dict) and str(p.get("name") or "") == CI_PREDICATE
+               and not p.get("passed") for p in preds):
+            out.add(commit)
+    return out - green_commits(item)
+
+
+#: The engines a full local run must have covered for `agent_full` to stand in for CI.
+LOCAL_ENGINES = ("postgres", "sqlite")
+
+
+def full_local_receipts(item: dict) -> bool:
+    """True when the item carries a passing `test` receipt with `scope=full` on EACH of
+    Postgres and SQLite (GRPH-1415). A partial run, a failing run, or one engine is not it."""
+    seen: set[str] = set()
+    for e in item.get("evidence") or []:
+        if not isinstance(e, dict) or e.get("kind") != "test":
+            continue
+        if str(e.get("scope") or "").lower() != "full":
+            continue
+        if int(e.get("failed") or 0) != 0 or int(e.get("passed") or 0) <= 0:
+            continue
+        engine = str(e.get("engine") or "").lower()
+        for name in LOCAL_ENGINES:
+            if name in engine:
+                seen.add(name)
+    return all(n in seen for n in LOCAL_ENGINES)
 
 
 @dataclass(frozen=True)
@@ -639,10 +796,114 @@ def same_commit(a: str, b: str) -> bool:
     return a.startswith(b) or b.startswith(a)
 
 
+_VERSIONS = "backend/alembic/versions"
+_REV = re.compile(r"""^revision(?:\s*:\s*[^=]+)?\s*=\s*['"]([^'"]+)['"]""", re.M)
+_DOWN = re.compile(r"""^down_revision(?:\s*:\s*[^=]+)?\s*=\s*(.+)$""", re.M)
+
+
+def heads_of(files: dict[str, str]) -> list[str]:
+    """Alembic heads of {path: source}: revisions no other revision names as its parent."""
+    revs: set[str] = set()
+    parents: set[str] = set()
+    for src in files.values():
+        m = _REV.search(src)
+        if not m:
+            continue
+        revs.add(m.group(1))
+        d = _DOWN.search(src)
+        if d:
+            parents.update(re.findall(r"""['"]([^'"]+)['"]""", d.group(1)))
+    return sorted(revs - parents)
+
+
+def merged_alembic_heads(repo: Path, base: str, head: str) -> list[str] | None:
+    """Alembic heads of the tree merging `head` into `base` would produce; None when git
+    could not say (then the check is reported as unchecked, never as passed)."""
+    def git(*a: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *a], cwd=str(repo), capture_output=True, text=True)
+
+    if not Path(repo).is_dir():
+        return None
+    try:
+        tree = git("merge-tree", "--write-tree", base, head)
+        if tree.returncode != 0 or not tree.stdout.strip():
+            return None
+        tree_id = tree.stdout.strip().splitlines()[0]
+        names = git("ls-tree", "-r", "--name-only", tree_id, "--", _VERSIONS + "/")
+        if names.returncode != 0:
+            return None
+        files: dict[str, str] = {}
+        for name in names.stdout.split():
+            if not name.endswith(".py"):
+                continue
+            blob = git("show", f"{tree_id}:{name}")
+            if blob.returncode == 0:
+                files[name] = blob.stdout
+        return heads_of(files) if files else []
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def rebase_conflicts(repo: Path, base: str, head: str) -> list[str]:
+    """Files a merge of `head` onto `base` would conflict on (empty when none or unknown)."""
+    if not Path(repo).is_dir():
+        return []
+    try:
+        out = subprocess.run(["git", "merge-tree", "--write-tree", "--name-only", base, head],
+                             cwd=str(repo), capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode == 0:
+        return []
+    lines = out.stdout.splitlines()[1:]
+    names = []
+    for ln in lines:
+        if not ln.strip():
+            break
+        names.append(ln.strip())
+    return names
+
+
+def _update_branch(repo: Path, item_id: str, selector: str, url: str, base_ref: str, head: str,
+                   checked: list[str]) -> Merged:
+    """A PR behind its base is rebased and left for CI to run at the new head (GRPH-1389).
+
+    Merging waits for green at the NEW head: the next tick finds a head that moved with the
+    item's own files unchanged, and CI has not attested it yet. A rebase the forge cannot do
+    is a conflict, and the item is bounced naming the files instead of left as a PR that can
+    never run CI."""
+    base = f"origin/{base_ref}" if base_ref else "origin/HEAD"
+    try:
+        if Path(repo).is_dir():
+            subprocess.run(["git", "fetch", "origin", base_ref] if base_ref else ["git", "fetch"],
+                           cwd=str(repo), capture_output=True, text=True, timeout=120)
+        done = _gh(repo, "pr", "update-branch", selector, "--rebase", timeout=120.0)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      reason=f"gh could not run: {exc}")
+    if done.returncode != 0:
+        files = rebase_conflicts(repo, base, head)
+        tail = (done.stderr or done.stdout or "").strip().splitlines()
+        if files or any("conflict" in t.lower() for t in tail):
+            return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                          conflicts=tuple(files) or ("(files not reported)",),
+                          reason="rebase onto the base conflicts in "
+                                 + (", ".join(files) or "files the forge did not name"))
+        return Merged(item=item_id, selector=selector, url=url, skipped=True,
+                      checked=tuple(checked),
+                      reason=f"gh pr update-branch failed: {tail[-1][:200] if tail else done.returncode}")
+    return Merged(item=item_id, selector=selector, url=url, pending=True,
+                  checked=tuple(checked) + ("rebased",),
+                  reason="PR was behind its base and has been rebased; waiting for CI "
+                         "to attest the new head before merging")
+
+
 def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
           green: set[str], paths: list[str] | tuple[str, ...] | None = None,
           release: str = "", scans: list[ScanVerdict] | tuple[ScanVerdict, ...] = (),
-          siblings: list[str] | tuple[str, ...] = ()) -> Merged:
+          siblings: list[str] | tuple[str, ...] = (),
+          covering=(), local_full: bool = False,
+          red: set[str] | frozenset[str] = frozenset()) -> Merged:
     """Finish one item's merge, or say exactly which precondition stopped it.
 
     `reviewed` is the commit the sign-off attestation names; `green` is every commit CI has
@@ -666,14 +927,38 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
     a hold naming every PR checked and its head (GRPH-1219). After a merge, any other
     sibling still open is closed as superseded — best effort, never a failed merge.
 
+    `covering` is the touchpoints of every OTHER item on this branch that is signed off at the
+    reviewed commit (GRPH-1408). A PR's changed files must all sit inside `paths` plus
+    `covering`; a file in neither is work nobody reviewed under this sign-off, and the merge is
+    refused naming it. Empty `paths` declares nothing to compare against, so it does not gate.
+    It may be a zero-argument callable: it is then called only when some changed file lies
+    outside `paths`, so the common merge does not pay for the lookup.
+
+    `local_full` is True only when the project's `build.test_scope` is `agent_full` AND the item
+    carries full local receipts on both engines (`full_local_receipts`) — the caller decides
+    both (GRPH-1415). Then a MISSING `suite_green` no longer blocks the merge. `red` is every
+    commit with a FAILING `suite_green`; one at the vouched commit blocks in every mode.
+
     Never raises and never fails a wave. Every path returns a `Merged` that says what it did,
     and names the release ref it used.
     """
     got = _merge(repo, item_id, selector, reviewed=reviewed, green=green, paths=paths,
-                 release=release, scans=scans, siblings=tuple(siblings or ()))
+                 release=release, scans=scans, siblings=tuple(siblings or ()),
+                 covering=covering if callable(covering) else tuple(covering or ()),
+                 local_full=local_full, red=frozenset(red))
     if got.ok and siblings:
         got = replace(got, closed=_close_superseded(repo, got, siblings))
     return replace(got, release=release_phrase(release))
+
+
+def close_after_merge(repo: Path, got: "Merged") -> "Merged":
+    """GRPH-1396: close every other open `gb/*` PR of the merged item, named by `got.url`,
+    whether or not an item receipt lists it. Best effort; returns `got` with `closed` extended."""
+    if not (got.ok and got.url):
+        return got
+    more = close_item_prs(repo, got.item, got.url,
+                          comment=f"Superseded by {_pr_ref(None, got.url)}")
+    return replace(got, closed=got.closed + tuple(m for m in more if m not in got.closed))
 
 
 def _close_superseded(repo: Path, got: Merged, siblings) -> tuple[str, ...]:
@@ -743,6 +1028,8 @@ def _sibling_at(repo: Path, item_id: str, selector: str, url: str, head: str, re
 
 def _via_sibling(repo: Path, item_id: str, selector: str, pr: dict, *, reviewed: str,
                  green: set[str], paths, release: str, scans, siblings: tuple[str, ...],
+                 covering=(), local_full: bool = False,
+                 red: frozenset[str] = frozenset(),
                  checked: list[str], miss: Merged | None = None) -> Merged:
     """Merge the item's sibling PR at `reviewed` in place of the selected `pr`, or hold
     naming every PR checked (`miss` instead, when given). The recursion gets no siblings,
@@ -756,14 +1043,43 @@ def _via_sibling(repo: Path, item_id: str, selector: str, pr: dict, *, reviewed:
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                       reason=hold)
     got = _merge(repo, item_id, sibling, reviewed=reviewed, green=green, paths=paths,
+                 covering=covering, local_full=local_full, red=red,
                  release=release, scans=scans)
     why = (f"sibling={sibling} (selected {_pr_ref(pr, selector)} head {head[:12] or '?'} "
            "is not the reviewed commit)")
     return replace(got, checked=tuple(checked) + (why,) + got.checked)
 
 
+def _outside_files(repo: Path, selector: str, paths, covering) -> tuple[list[str], str]:
+    """`(files, error)`: the PR's changed files covered by neither `paths` nor `covering`.
+
+    No declared `paths` means nothing to compare against: `([], "")`, as `touchpoints.undeclared`.
+    A diff that cannot be read is an error, not a pass."""
+    from . import touchpoints as tp_mod
+
+    if not (paths or []):
+        return [], ""
+    try:
+        done = _gh(repo, "pr", "diff", selector, "--name-only")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [], f"could not read the PR's changed files: {exc}"
+    if done.returncode != 0:
+        tail = (done.stderr or done.stdout or "").strip().splitlines()
+        return [], f"could not read the PR's changed files: {tail[-1][:200] if tail else done.returncode}"
+    files = [f.strip() for f in (done.stdout or "").splitlines() if f.strip()]
+    own = [p for p in paths if isinstance(p, str) and p.strip()]
+    outside = tp_mod.undeclared(files, own)
+    if not outside:
+        return [], ""
+    others = covering() if callable(covering) else covering
+    declared = own + [p for p in (others or []) if isinstance(p, str) and p.strip()]
+    return tp_mod.undeclared(outside, declared), ""
+
+
 def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set[str],
-           paths, release: str, scans, siblings: tuple[str, ...] = ()) -> Merged:
+           paths, release: str, scans, siblings: tuple[str, ...] = (),
+           covering=(), local_full: bool = False,
+           red: frozenset[str] = frozenset()) -> Merged:
     checked: list[str] = []
     if not find():
         return Merged(item=item_id, selector=selector, skipped=True,
@@ -796,7 +1112,8 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
             # reviewed commit is still the one to merge. Without one, the skip stands.
             return _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
                                 paths=paths, release=release, scans=scans,
-                                siblings=siblings, checked=checked, miss=not_open)
+                                siblings=siblings, covering=covering, checked=checked, miss=not_open,
+                                local_full=local_full, red=red)
         return not_open
     checked.append("open")
     if pr.get("isCrossRepository"):
@@ -825,7 +1142,8 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
             # say which and why. The recursion gets no siblings, so it cannot loop.
             return _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
                                 paths=paths, release=release, scans=scans,
-                                siblings=siblings, checked=checked)
+                                siblings=siblings, covering=covering, checked=checked,
+                                local_full=local_full, red=red)
         else:
             return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                           reason=f"PR head {head[:12] or '?'} is not the reviewed commit "
@@ -838,10 +1156,39 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
     # (GRPH-1032), the suite that matters is the one on `head`: the reviewed commit can
     # stay red forever while the follow-up commit is the one CI attested.
     vouched = head if "paths-unchanged" in checked else reviewed
-    if not any(same_commit(vouched, g) for g in green):
+    # Green first: CI reruns at the same commit (`attempts/N`), and one passing run there was
+    # always enough to merge. A flaky red attempt a later green rerun overturned must not hold
+    # the PR for ever — that was the regression this order fixes (GRPH-1415 bounce).
+    if any(same_commit(vouched, g) for g in green):
+        checked.append(f"ci={CI_PREDICATE}")
+    elif any(same_commit(vouched, r) for r in red):
+        # A failing run with no passing one is CI's answer, in every mode; local receipts
+        # never overrule it.
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      reason=f"CI attested {CI_PREDICATE} FAILED on {vouched[:12]}")
+    elif local_full:
+        # GRPH-1415: `agent_full` — the builder's full runs on both engines stand in for a
+        # CI attestation that never came, as the server's done gate does.
+        checked.append("local-full-receipts(agent_full)")
+    else:
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                       reason=f"CI has not attested {CI_PREDICATE} on {vouched[:12]}")
-    checked.append(f"ci={CI_PREDICATE}")
+
+    # GRPH-1408. The sign-off vouches for THIS item's files. A PR that also carries another
+    # item's unreviewed work (#1388 landed GRPH-1359 under GRPH-1399's sign-off) is not
+    # covered by it. Read from the forge's own diff, which is against the base's merge-base.
+    outside, why_out = _outside_files(repo, selector, paths, covering)
+    if why_out:
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      reason=why_out)
+    if outside:
+        shown = ", ".join(outside[:8]) + (f" (+{len(outside) - 8} more)" if len(outside) > 8 else "")
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      reason=f"PR changes {len(outside)} file(s) outside {item_id}'s touchpoints "
+                             f"and every other signed-off item's on this branch: {shown} — "
+                             "work nobody signed off; review it, not merge it")
+    if paths:
+        checked.append("files-within-touchpoints")
 
     # GRPH-P57 D6. Against `head`, not `reviewed`: the paths-unchanged pass above vouches
     # for the item's own files, and says nothing about what main brought in with it. A PR
@@ -876,6 +1223,15 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
 
     mergeable = str(pr.get("mergeable") or "").upper()
     status = str(pr.get("mergeStateStatus") or "").upper()
+    base_ref = str(pr.get("baseRefName") or "").strip()
+    if status == "BEHIND":
+        return _update_branch(repo, item_id, selector, url, base_ref, head, checked)
+    if mergeable == "CONFLICTING" or status == "DIRTY":
+        files = rebase_conflicts(repo, f"origin/{base_ref}" if base_ref else "origin/HEAD", head)
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      conflicts=tuple(files) or ("(files not reported)",),
+                      reason="conflicts with the base in " + (", ".join(files) or
+                                                              "files the forge did not name"))
     if mergeable != "MERGEABLE" or status != "CLEAN":
         if status == "BLOCKED":
             # Branch protection wants something this process is not: an approval, a check
@@ -887,6 +1243,14 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
                       reason=f"not mergeable yet: mergeable={mergeable or '?'}, "
                              f"mergeStateStatus={status or '?'}")
     checked.append("mergeable=CLEAN")
+
+    # Backstop: two migrations both merge cleanly and leave two heads, which git cannot see.
+    heads = merged_alembic_heads(repo, f"origin/{base_ref}" if base_ref else "origin/HEAD", head)
+    if heads is not None and len(heads) > 1:
+        return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                      reason=f"merging would leave {len(heads)} alembic heads "
+                             f"({', '.join(heads)}); refused — rebase and re-chain the migration")
+    checked.append("alembic-heads=1" if heads is not None else "alembic-heads=unchecked")
 
     # `--auto` is the honest verb for a supervisor: it says "merge when your requirements
     # are met", and `gh` merges immediately when a PR is already CLEAN. Squash, so the trunk

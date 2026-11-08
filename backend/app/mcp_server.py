@@ -50,6 +50,7 @@ from app.services import code_graph as code_svc
 from app.services import design_sets as design_sets_svc
 from app.services import documents as documents_svc
 from app.services import scans as scans_svc
+from app.services import touchpoint_check
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
 from app.services import gitops
@@ -2265,10 +2266,15 @@ _FLEET_ONLY_ARGS = {
     # GRPH-1031. Planner/supervisor retarget after a bounce. Fleet-only for the reason
     # every entry here is: the ceiling is measured on the base manifest, and a worker
     # must not be told it can rewrite identity. Empty is not a write.
-    "update_item": {"branch": {
-        "type": "string",
-        "description": "Planner/supervisor: retarget. Empty is not a write.",
-    }},
+    "update_item": {
+        "branch": {
+            "type": "string",
+            "description": "Planner/supervisor: retarget. Empty is not a write.",
+        },
+        # GRPH-1398. The fleet tier is where touchpoints are written and narrowed, and the core
+        # manifest has no headroom. The dispatcher accepts it whether or not it was advertised.
+        "touchpoints_remove": {"type": "array", "items": {"type": "string"}},
+    },
     # GRPH-1061. A tests scan's counts. Fleet-only for the reason every entry here is: the
     # ceiling had no room for it, and `record_scan` is a worker tool (fleet.py gates it to
     # the worker role). The REST ingest (`POST /platform/stack/scans`) takes the same field.
@@ -2488,6 +2494,12 @@ def _validate_args(name: str, args: dict[str, Any]) -> None:
                 raise errors.Validation(
                     f"{field} must be {label}", hint=f"got {type(value).__name__}"
                 )
+
+
+def _caller_is_planner(db, key, agent_id) -> bool:
+    """Whether this call carries the planner role (GRPH-1398). Unrestricted callers count."""
+    role, _ = fleet_svc.role_for_call(db, api_key=key, agent_id=agent_id)
+    return role in ("planner", "*")
 
 
 def _item_dict(item) -> dict:
@@ -3003,7 +3015,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             reporter={"name": "Agent", "handle": "mcp", "avatar": "#a78bfa"},
         )
         _idempotent_remember(db, args, "create_item", item.id)
-        return _item_dict(item)
+        out = _item_dict(item)
+        # GRPH-1393: a touchpoint matching nothing in the code graph is named, with the
+        # closest real path, instead of being accepted silently.
+        tw = touchpoint_check.warnings(db, item.project_id, args.get("touchpoints"))
+        if tw:
+            out["touchpoint_warnings"] = tw
+        return out
     if name == "update_item":
         _scoped_item(db, args["id"], allowed)
         if "reach" in args:
@@ -3018,8 +3036,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 hint="a human sets it on the item in the UI")
         # Captured BEFORE the write, because `union_touchpoints` mutates the stored list and
         # the reply has to say what the caller's list left behind (GRPH-985).
-        before_tps = list(getattr(_scoped_item(db, args["id"], allowed), "touchpoints", None) or []) \
-            if args.get("touchpoints") is not None else []
+        before_all_tps = list(getattr(_scoped_item(db, args["id"], allowed), "touchpoints", None) or [])
+        before_tps = before_all_tps if args.get("touchpoints") is not None else []
         item = items_svc.update_item(
             db,
             args["id"],
@@ -3039,6 +3057,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             fidelity=args.get("fidelity"),
             kind=args.get("kind"),
             touchpoints=args.get("touchpoints"),
+            touchpoints_remove=args.get("touchpoints_remove"),
+            remove_as_planner=_caller_is_planner(db, key, args.get("agent_id")),
             prd_id=args.get("prd_id"),
             prd_section=args.get("prd_section"),
             head_commit=args.get("head_commit"),
@@ -3049,6 +3069,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         if item is None:
             raise errors.NotFound(f"item not found: {args['id']}")
         out = _item_dict(item)
+        if args.get("touchpoints_remove"):
+            # GRPH-1398. Say what came off, so a no-match is visible rather than silent.
+            out["touchpoints_removed"] = [
+                q for q in dict.fromkeys(
+                    x.strip() for x in args["touchpoints_remove"] if isinstance(x, str))
+                if q and q not in (item.touchpoints or [])
+                and q in before_all_tps]
         if args.get("evidence") is not None:
             # GRPH-839. A refused receipt used to show only as an `evidence` array that did
             # not grow, and this tool is the one that moves an item to `review` — so the
@@ -3063,6 +3090,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # signal that the narrowing did not happen. Computed against `before`, captured
             # before the write.
             out.update(items_svc.touchpoint_intake(before_tps, args["touchpoints"]))
+            tw = touchpoint_check.warnings(db, item.project_id, args["touchpoints"])
+            if tw:
+                out["touchpoint_warnings"] = tw
         return out
     if name == "search_items":
         rows = items_svc.search_items(
@@ -4732,9 +4762,10 @@ async def mcp_endpoint(
             # hint ("wait and send it again") would send an agent into a retry loop that
             # cannot succeed. Name the action instead.
             return _fail("conflict", str(e),
-                               "do not retry — waiting will not change this. Fix the PR so its "
-                               "CI passes, or get CI to attest suite_green at the PR's head "
-                               "commit, then send it again")
+                               "do not retry — waiting will not change this. If the message says "
+                               "CI failed, bounce the item with that failure as the reason; if "
+                               "CI has not reported, get CI to attest suite_green at the PR's "
+                               "head commit, then send it again")
         except items_svc.PRCooldown as e:
             # CONFLICT for the same reason, and the hint says WAIT rather than naming an
             # action (GRPH-567). It is the only refusal in this surface that resolves on its

@@ -770,6 +770,40 @@ def match(projects: list[dict], here: Path) -> tuple[dict, list[dict]]:
     return by_project, notes
 
 
+def normalize_remote(raw: str) -> str:
+    """`host/owner/name`, lowercased, no scheme, credentials, port or `.git`. The same rule as
+    backend/app/services/projects.py:normalize_repo_url (a separate distribution cannot import
+    it); tests on both sides pin the same table. "" when it does not look like a remote."""
+    value = (raw or "").strip()
+    m = re.match(r"^(?:[a-z][a-z0-9+.-]*://(?:[^@/]*@)?([^/:]+)(?::\d*)?|(?:[^@/]*@)?([^/:]+):?)/?(.+)$",
+                 value, re.IGNORECASE)
+    if not m or any(ch.isspace() for ch in value):
+        return ""
+    path = m.group(3).strip("/")
+    path = path[:-4] if path.endswith(".git") else path
+    return f"{m.group(1) or m.group(2)}/{path}".lower() if "/" in path else ""
+
+
+def git_remotes(here: Path) -> list[str]:
+    """Normalized URLs of every remote of the checkout at `here`, `origin` first. [] when it is
+    not a checkout or git is absent — which is "no signal", and falls through to the name match."""
+    try:
+        names_out = subprocess.run(["git", "-C", str(here), "remote"], capture_output=True,
+                                   text=True, timeout=10)
+        if names_out.returncode != 0:
+            return []
+        out = []
+        for name in sorted(names_out.stdout.split(), key=lambda n: n != "origin"):
+            got = subprocess.run(["git", "-C", str(here), "remote", "get-url", name],
+                                 capture_output=True, text=True, timeout=10)
+            norm = normalize_remote(got.stdout) if got.returncode == 0 else ""
+            if norm and norm not in out:
+                out.append(norm)
+        return out
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
 class Unresolved(Exception):
     """The directory does not name a project on this deployment (GRPH-795)."""
 
@@ -792,6 +826,15 @@ def resolve_project(client, here: Path, asked: str = "", stored: str = "") -> tu
         return asked, "named"
     rows = client.call("GET", "/api/projects")
     projects = [p for p in (rows if isinstance(rows, list) else []) if isinstance(p, dict)]
+    # The git remote is the stronger signal: a directory can be renamed, a remote names the repo.
+    remotes = git_remotes(here)
+    by_remote = [p for p in projects if str(p.get("repo_url") or "") in remotes]
+    if len(by_remote) == 1:
+        return str(by_remote[0].get("id") or ""), f"matched the git remote {by_remote[0].get('repo_url')!r}"
+    if len(by_remote) > 1:
+        raise Unresolved(
+            f"this checkout's remote matches several projects "
+            f"({', '.join(sorted(str(p.get('id')) for p in by_remote))}), so none was chosen — name one with --project")
     hits = [p for p in projects if slug(here.name) in names(p)]
     if len(hits) == 1:
         return str(hits[0].get("id") or ""), f"matched the directory name {here.name!r}"

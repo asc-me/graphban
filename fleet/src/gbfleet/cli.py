@@ -443,6 +443,21 @@ def build_parser() -> argparse.ArgumentParser:
     td.add_argument("--keep-clone", action="store_true",
                     help="do everything except delete the clone itself")
 
+    chk = sub.add_parser(
+        "check-touchpoints",
+        help="run the PR touchpoint gate from inside a checkout, before moving an item to review",
+        description=(
+            "Lists files this checkout changed since the trunk that no declared touchpoint covers\n"
+            "(the supervisor withholds the PR for those) and prints the update_item call that\n"
+            "declares them. Exit 1 when any are outside; 0 when the gate would pass."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    chk.add_argument("--declared", nargs="*", default=[],
+                     help="the item's declared touchpoints (get_item_details)")
+    chk.add_argument("--item", default="", help="the item id, for the printed update_item call")
+    chk.add_argument("--path", default=".", help="the checkout to measure (default: here)")
+
     ent = sub.add_parser(
         "entitlement",
         help="register the accounts this machine can launch (add, list, remove)",
@@ -1197,6 +1212,23 @@ def _surface(args) -> int:
     return 0
 
 
+def gate_report(missing: list[str], *, item_id: str = "") -> str:
+    """What to tell a child whose branch the touchpoint gate would refuse (GRPH-1393).
+
+    Names the files and the exact call that declares them; that call's `evidence` note is the
+    record of the declaration. "" when nothing is outside.
+    """
+    if not missing:
+        return ""
+    shown = ", ".join(missing)
+    return (
+        f"touchpoint gate: {len(missing)} changed file(s) are outside every declared touchpoint "
+        f"and the supervisor will NOT open a PR for this branch: {shown}\n"
+        f"Declare them: update_item(id=\"{item_id or '<item>'}\", touchpoints={missing!r}, "
+        f"evidence=[{{\"kind\": \"note\", \"detail\": \"declared touchpoints: {shown}\"}}])"
+    )
+
+
 def _teardown(args) -> int:
     return teardown_mod.run(args.name, prd=args.prd, dry_run=args.dry_run,
                             keep_clone=args.keep_clone)
@@ -1284,6 +1316,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "gc":
         return _gc()
+
+    if args.command == "check-touchpoints":
+        from . import touchpoints as tp_mod
+        from .supervisor import is_generated
+        try:
+            measured = tp_mod.measure_checkout(args.path)
+        except ValueError as exc:
+            print(f"gbfleet check-touchpoints: {exc}", file=sys.stderr)
+            return 2
+        said = gate_report(tp_mod.gate_missing(measured, args.declared, ignore=is_generated),
+                           item_id=args.item)
+        print(said or "touchpoint gate: every changed file is covered by a declared touchpoint")
+        return 1 if said else 0
 
     if args.command == "entitlement":
         return _entitlement(args)

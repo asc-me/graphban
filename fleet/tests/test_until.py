@@ -1737,10 +1737,12 @@ def test_report_collided_carries_the_actual_overlap():
 class _SeedPlanner:
     """Enough of Graphban.call for `_delegate_next` (GRPH-886)."""
 
-    def __init__(self, clusters, details):
+    def __init__(self, clusters, details, *, refuse_update: bool = False):
         self.clusters = clusters
         self.details = details
         self.delegated: list[str] = []
+        self.updates: list[dict] = []
+        self.refuse_update = refuse_update
 
     def call(self, tool, **kw):
         if tool == "collision_clusters":
@@ -1752,6 +1754,12 @@ class _SeedPlanner:
         if tool == "delegate":
             self.delegated.append(kw["id"])
             return {"enrolment_code": "WORKER-X"}
+        if tool == "update_item":
+            if self.refuse_update:
+                from gbfleet.client import ToolFailed
+                raise ToolFailed("update_item", "error", "refused for the test")
+            self.updates.append(dict(kw))
+            return {"id": kw["id"], "status": kw.get("status")}
         raise AssertionError(tool)
 
 
@@ -1805,7 +1813,55 @@ def test_a_git_merged_member_occupies_the_glob(tmp_path: Path, monkeypatch):
         )
         assert seed is None
         assert planner.delegated == []
-        assert "READY" not in seen and "MERGED" not in seen
+        assert "READY" not in seen
+
+
+def _merged_and_ready(monkeypatch):
+    from gbfleet import worktree as wt
+
+    monkeypatch.setattr(wt, "reaches", lambda repo, base, ref: ref == "gb/merged")
+    brief = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by": []}
+    return {
+        "MERGED": {"id": "MERGED", "status": "next", "branch": "gb/merged",
+                   "pr": "https://github.com/o/r/pull/1", "brief": brief, "evidence": []},
+        "READY": {"id": "READY", "status": "next", "branch": "gb/ready",
+                  "brief": brief, "evidence": []},
+    }
+
+
+def test_a_git_merged_unsigned_item_is_offered_for_review(tmp_path: Path, monkeypatch):
+    """GRPH-1408. An item merged into the base but unsigned is moved to `review`, so the
+    drain's review staffing spawns a reviewer for it, rather than being held forever (as
+    GRPH-1359 was after #1388). It still occupies its files for this tick.
+
+    Sabotage: hold it without the update_item move. This fails: no review move recorded.
+    """
+    from gbfleet.until import _delegate_next
+
+    planner = _SeedPlanner([{"items": ["MERGED", "READY"]}], _merged_and_ready(monkeypatch))
+    seen: set[str] = set()
+    seed, _code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", seen, None, repo=tmp_path, base="origin/main",
+    )
+    assert seed is None and planner.delegated == []
+    assert [(u["id"], u["status"]) for u in planner.updates] == [("MERGED", "review")]
+    assert "origin/main" in planner.updates[0]["evidence"][0]["detail"]
+    assert "MERGED" in seen
+
+
+def test_a_refused_review_offer_falls_back_to_the_hold(tmp_path: Path, monkeypatch):
+    """GRPH-1408. When the server refuses the move, the item is held exactly as before and
+    not marked delegated, so a later tick tries again."""
+    from gbfleet.until import _delegate_next
+
+    planner = _SeedPlanner([{"items": ["MERGED", "READY"]}], _merged_and_ready(monkeypatch),
+                           refuse_update=True)
+    seen: set[str] = set()
+    seed, _code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", seen, None, repo=tmp_path, base="origin/main",
+    )
+    assert seed is None and planner.delegated == [] and planner.updates == []
+    assert "MERGED" not in seen
 
 
 def test_a_blocked_items0_is_not_the_seed(tmp_path: Path):
@@ -2562,3 +2618,96 @@ def test_a_live_child_holding_a_review_claim_does_not_go_idle(
     assert seen["past_idle"] is True
     assert result.reason == "idle", result.as_json()
     assert all(child.stopped_because is None for child in result.wave.spawned)
+
+
+class _UnreachableRoster:
+    def call(self, tool, **_args):
+        from gbfleet.client import ServerUnreachable
+        raise ServerUnreachable("no route to host")
+
+
+class _Live:
+    running = True
+    pid = 4242
+    stopped_because = None
+
+
+def test_an_unreadable_roster_is_not_an_empty_one():
+    """GRPH-1401. fleet_status unreachable: a live child may hold an item or a
+    review claim, so it blocks idle and nothing is stopped."""
+    from gbfleet.supervisor import Wave as _Wave
+    from gbfleet.until import _idle_blocked, _roster_agents, _stop_children_holding_nothing
+
+    sup = _UnreachableRoster()
+    child = _Live()
+    assert _roster_agents(sup) is None
+    assert _idle_blocked(sup, [child]) is True
+    assert _idle_blocked(sup, []) is False
+    _stop_children_holding_nothing(_Wave(), [child], sup, sup, "main")
+    assert child.running is True and child.stopped_because is None
+
+
+_CI_STUCK = {"kind": "note", "detail": "refused at `done` (pr_ci_not_green): cooldown over, "
+             "no suite_green at commit 5f4e0ecc: run x"}
+
+
+def test_a_row_refused_pr_ci_not_green_past_cooldown_gets_no_reviewer(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1409: another reviewer cannot clear it, so none is spawned and the run says why."""
+    workspace = tmp_path / "ws"
+    roles: list[str] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "", "evidence": [_CI_STUCK]}],
+        minted_roles=roles,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert roles == []
+    assert result.reason == "review-ci-unattestable"
+    assert "GRPH-9" in result.detail and "5f4e0ecc" in result.detail
+    assert "CI attestation or an owner close" in result.detail
+
+
+def test_ci_failure_refusal_still_gets_a_reviewer(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """A red run is a bounce a reviewer can make, so only the silent-CI refusal is skipped."""
+    from gbfleet.until import ci_unattestable
+    red = {"kind": "note", "detail": "refused at `done` (pr_ci_not_green): x did not pass"}
+    assert ci_unattestable({"evidence": [red]}) is False
+    assert ci_unattestable({"evidence": [_CI_STUCK]}) is True
+    # A newer, different refusal supersedes it.
+    other = {"kind": "note", "detail": "refused at `done` (adversarial): nope"}
+    assert ci_unattestable({"evidence": [_CI_STUCK, other]}) is False
+
+
+def test_a_suite_green_attestation_after_the_refusal_clears_the_stuck_row():
+    """GRPH-1409 bounce: CI attesting after the refusal lets a reviewer sign it off again."""
+    from gbfleet.until import ci_unattestable
+    green = {"kind": "attestation", "commit": "5f4e0ecc",
+             "predicates": [{"name": "suite_green", "passed": True}]}
+    assert ci_unattestable({"evidence": [_CI_STUCK, green]}) is False
+    # A red attestation is a bounce a reviewer can make, so it also needs a reviewer.
+    red = {"kind": "attestation", "predicates": [{"name": "suite_green", "passed": False}]}
+    assert ci_unattestable({"evidence": [_CI_STUCK, red]}) is False
+    # An attestation OLDER than the refusal does not clear it.
+    assert ci_unattestable({"evidence": [green, _CI_STUCK]}) is True
+    # A scans-only attestation says nothing about suite_green.
+    scans = {"kind": "attestation", "predicates": [{"name": "scans_clean", "passed": True}]}
+    assert ci_unattestable({"evidence": [_CI_STUCK, scans]}) is True
+
+
+def test_a_review_unsigned_exit_names_the_ci_stuck_rows_beside_it():
+    """GRPH-1409 bounce: in the mixed case the stuck rows are still named in the detail."""
+    from gbfleet.until import Report, _name_ci_stuck
+    row = {"id": "GRPH-9", "evidence": [_CI_STUCK]}
+    report = _name_ci_stuck(Report(ok=False, reason="review-unsigned", exit=1), [row])
+    assert "GRPH-9" in report.detail and "owner close" in report.detail
+    assert _name_ci_stuck(Report(ok=False, reason="review-unsigned", exit=1), []).detail == ""

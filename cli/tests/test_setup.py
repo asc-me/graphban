@@ -1210,6 +1210,69 @@ def test_setup_refuses_to_write_a_key_that_would_not_be_ignored(tmp_path, wired,
     assert any("would not be gitignored" in l["detail"] for l in lines)
 
 
+# ---- resolving by git remote first (GRPH-1365) ---------------------------------------------------
+
+import subprocess as _sp
+
+
+def _checkout(path, remote):
+    path.mkdir()
+    _sp.run(["git", "-C", str(path), "init", "-q"], check=True)
+    _sp.run(["git", "-C", str(path), "remote", "add", "origin", remote], check=True)
+    return path
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("https://github.com/Acme/App.git", "github.com/acme/app"),
+    ("git@github.com:acme/app", "github.com/acme/app"),
+    ("ssh://git@github.com:22/acme/app/", "github.com/acme/app"),
+    ("github.com/acme/app", "github.com/acme/app"),
+    ("git@github.com:1password/cli.git", "github.com/1password/cli"),
+    ("https://github.com/1password/cli", "github.com/1password/cli"),
+    ("ssh://git@github.com/37signals/x", "github.com/37signals/x"),
+    ("git@github.com:37signals/x", "github.com/37signals/x"),
+    ("https://user:tok@gitlab.com/a/b/c.git", "gitlab.com/a/b/c"),
+    ("app", ""), ("", ""),
+])
+def test_normalize_remote_table_matches_the_backend(raw, want):
+    assert setup_mod.normalize_remote(raw) == want
+
+
+def test_a_matching_remote_picks_the_project_even_when_names_differ(tmp_path):
+    here = _checkout(tmp_path / "checkout-7", "git@github.com:Acme/App.git")
+    rows = [{"id": "core", "name": "Core", "repo_url": "github.com/acme/app"},
+            {"id": "checkout-7", "name": "Decoy", "repo_url": "github.com/other/thing"}]
+
+    pid, how = setup_mod.resolve_project(Listing(rows), here)
+
+    assert pid == "core" and "git remote" in how
+
+
+def test_no_matching_remote_falls_back_to_the_name(tmp_path):
+    here = _checkout(tmp_path / "super-arc", "git@github.com:acme/unrelated.git")
+    rows = [{"id": "super-arc", "name": "Super Arc", "repo_url": "github.com/acme/app"}]
+
+    pid, how = setup_mod.resolve_project(Listing(rows), here)
+
+    assert pid == "super-arc" and "directory name" in how
+
+
+def test_a_remote_matching_two_projects_is_refused(tmp_path):
+    here = _checkout(tmp_path / "x", "https://github.com/acme/app")
+    rows = [{"id": "a", "name": "A", "repo_url": "github.com/acme/app"},
+            {"id": "b", "name": "B", "repo_url": "github.com/acme/app"}]
+
+    with pytest.raises(setup_mod.Unresolved):
+        setup_mod.resolve_project(Listing(rows), here)
+
+
+def test_a_project_without_repo_url_never_matches_an_empty_remote(tmp_path):
+    here = tmp_path / "plain"
+    here.mkdir()  # not a checkout: no remotes
+    with pytest.raises(setup_mod.Unresolved):
+        setup_mod.resolve_project(Listing([{"id": "a", "name": "A"}]), here)
+
+
 def test_web_agent_list_is_generated_from_setup_agents():
     """The quick-start picker's gban-route list (GRPH-1362 / G9) is exported, not copied."""
     import importlib.util

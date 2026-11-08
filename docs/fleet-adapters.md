@@ -53,7 +53,7 @@ without stopping the other.
 | vendor | version seen | range | MCP config | prompt reaches the child by | seat inside the worktree? |
 |---|---|---|---|---|---|
 | `claude` | `2.1.233 (Claude Code)` | 2.0 – 3.0 | `--mcp-config <path>` | stdin | **no** — private temp file |
-| `gbagent` | `gbagent 0.18.14` | **exactly `0.18.14`** — a pin, not a range | `--mcp-config <path>` | `--instruction-file <path>` | **no** — private temp file |
+| `gbagent` | `gbagent 0.18.15` | **exactly `0.18.15`** — a pin, not a range | `--mcp-config <path>` | `--instruction-file <path>` | **no** — private temp file |
 | `cursor-agent` | `2026.04.17-787b533` | 2026.1 – 2027.1 | none; reads `.cursor/mcp.json` from the project dir | stdin | **yes** — forced |
 | `grok` | `grok 1.0.25 (f7e67d6988e2) [stable]` | 1.0 – 2.0 | project-scoped `<worktree>/.grok/config.toml` (**TOML**), needs `--trust` | `--prompt-file <path>` | yes — `.grok/config.toml`, see below |
 | `qwen-code` | `0.23.0` | 0.23 – 1.0 | `--mcp-config <path>` + `--allowed-mcp-server-names graphban`; the entry must be `httpUrl` | stdin | **no** — private temp file |
@@ -199,7 +199,7 @@ literal would refuse the next release the moment somebody bumped one file and no
 
 *Releasing bumps this table.* `verified_against` is the version the suite actually resolved,
 and for this row it is re-verified on every CI run rather than observed once on a laptop —
-`test_adapters.py` runs the real binary. When the package version changes, the `0.18.14` above
+`test_adapters.py` runs the real binary. When the package version changes, the `0.18.15` above
 changes with it, and a test says so rather than letting the matrix go quietly stale — which it
 has now done for 0.2.0 and again for 0.3.0. **Bumping `fleet/pyproject.toml` is not one edit,
 it is two**, and the second one is this table; the test is what stops the release shipping a
@@ -596,6 +596,34 @@ children were killed with empty logs. The `claude` launch now sets `ENABLE_TOOL_
 which removes the deferral: the seat's `graphban` and `context7` tools are in the first
 request, and the `deferred_tools_delta` attachment disappears from the child's transcript.
 
+### Skill listing trim (GRPH-1402)
+
+Every claude child's first request carried the operator's whole skill listing (~156
+skills, 35k characters). The launch now passes `--setting-sources project,local`: the
+repository's own `.claude/skills/` (`graphban-work`, `graphban-review`, ...) stay, the
+operator's user-level and plugin skills go. Not `--disable-slash-commands` (drops the
+repo's skills too) and not `--bare` (drops OAuth subscription auth); auth is unaffected.
+
+Measured 2026-11-07 on Claude Code 2.1.233, macOS, subscription (OAuth) login, from this
+repository's worktree. **Time-to-register** is from process start to the moment the child's
+`register_agent` call reaches the MCP server. The child was launched with the adapter's own
+argv shape (`--print --strict-mcp-config --mcp-config <seat> --dangerously-skip-permissions
+POINTER`, instruction on stdin, `ENABLE_TOOL_SEARCH=false`). Its `graphban` server was a
+local stub that logs the call time, so no ledger agent was created. Five runs per variant,
+interleaved before/after:
+
+| Variant | Time-to-register (s), 5 runs | Median |
+|---|---|---|
+| before (all setting sources) | 3.2, 4.6, 3.3, 10.8, 4.7 | 4.6 |
+| after (`--setting-sources project,local`) | 5.0, 2.2, 4.3, 4.1, 4.3 | 4.3 |
+
+The registration time barely changes. The spread between runs (2-11s) is larger than the
+difference between the variants, so the trim is not a startup fix. Registration-window
+failures come from model latency under load (GRPH-1400), which this does not touch. What
+the trim does change is context size. The first request of a trivial `--print` run was
+44,721 input tokens before and 36,219 after: about 8.5k tokens less, carried on every
+request of every child's session.
+
 ## Before the first run: `gbfleet doctor`
 
 Every trap in this document is one an operator meets on their first run, and several are
@@ -796,3 +824,20 @@ changes what every worker in the fleet is allowed to do.
 
 On 2026-09-05 a session delegated this item to a bound seat, and gbfleet resolved
 the cheap tier through the preference matrix with no --tier flag.
+
+## Soft leases and rebase-before-merge (GRPH-1389)
+
+Area leases are **soft by default**. `areas_collide` still groups overlapping items into one
+cluster, but a reservation blocks another drain only where git cannot see the collision:
+`backend/alembic/versions/*` (`HARD_AREAS` in `backend/app/services/fleet.py`). Two new
+migrations both merge cleanly and leave two heads, so those leases stay exclusive. Every
+other overlap may be claimed by two drains at once; git reports a real conflict at merge time.
+`collision_clusters` marks such a cluster with `soft_overlap` (who holds what) rather than
+`held_by`, and the drain logs a `contention` line saying it is spawning alongside that lease
+instead of "Not spawning". Refusals that do fire (`claim_cluster`, a bound seat) name only
+the hard pairs.
+
+With `--merge`, a PR that is `BEHIND` its base is rebased (`gh pr update-branch --rebase`)
+and left for CI to attest the new head before merging. A rebase conflict bounces the item
+naming the conflicting files. Before merging, the merged tree's alembic heads are counted
+and a result with more than one head is refused with a reason.

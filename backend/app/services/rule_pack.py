@@ -50,7 +50,7 @@ from app.version import __version__
 
 #: The primitive API this server provides. Bump the minor for additive changes, the major for
 #: a removed primitive or a new required param; the pinned fixtures then fail the PR (below).
-PRIMITIVE_API = "1.5.0"
+PRIMITIVE_API = "1.6.0"
 
 #: Raw Ed25519 public keys (hex) whose signatures are trusted. The graphban-rules signing job
 #: holds the matching private key; it never enters this repo. An empty tuple would refuse every pack.
@@ -127,6 +127,13 @@ register_primitive(Primitive(
 register_primitive(Primitive(
     "human_only_clause", "enforced",
     Enforcer("graphban_source", "app/services/fleet.py")))
+# GRPH-1405. `checked`: nothing refuses on the mode itself; the delegation brief states it and
+# the operating loop / merge gates (GRPH-1403, GRPH-1404) read it. `mode` is one of
+# `rule_toggles.TEST_SCOPE_MODES`, enforced when a person sets the param.
+register_primitive(Primitive(
+    "test_scope", "checked",
+    Enforcer("doc", "docs/rules.md"),
+    {"mode": Param("str")}))
 register_primitive(Primitive(
     "evidence_attached", "checked",
     Enforcer("graphban_source", "app/services/items.py"),

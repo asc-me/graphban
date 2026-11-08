@@ -18,6 +18,8 @@ Take one item, leave a receipt, hand it to review. Reading the repo is `graphban
 5. `update_item` as you go. Evidence appends. Touchpoints union: send the files you actually touched. An empty touchpoint list writes nothing. Status goes to `review`.
 6. Stopping unfinished: `release_item`. A blocker that is still true tomorrow is status `blocked` with `blocker` set. `backlog` is claimable and will be handed out again. A build claim released without `to_status` goes back to `next`.
 
+Test scope follows the project's mode, which your delegation brief states. `agent_targeted`: run the tests you wrote or changed, the module's existing tests and the sabotage check, then push and hand off; the PR's CI runs the full suites and is the receipt. `agent_and_pr`: run the full suites per `AGENTS.md`'s operating loop. `agent_full`: run the full suites; your receipts are the proof. In every mode, a full local run is still right when reproducing a CI failure.
+
 A product decision the item and its PRD framing do not already state: file a wait and stop. `create_item` with tag `wait:decision`, `status=blocked`, this item's `prd_id`, and a description that is the question plus what each answer would make you do. `link_items` with `a` this item, `b` the wait, `type` `dependency`, `reason` `wait:decision`. Leave this item `blocked`. Leave the wait blocked. Answering it is `graphban-answer`.
 
 A broken build stays a free-text `blocker` on this item. That is not a wait.
