@@ -113,6 +113,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "Linking, re-pointing or unlinking this deployment's cloud org is done by the box's "
          "operator or an owner/admin of one of their projects, not by any member.",
          "enforced", _src("app/routers/sync.py", "refuse_unless_box_admin"), "code", scope="org"),
+    Rule("setup.posture_needs_instance_admin", "build", "The instance posture needs an instance admin",
+         "Whether this box's secrets and signup are safe to expose is read only by its operator "
+         "(hosted) or an owner of one of its projects (self-host); anyone else learns nothing.",
+         "enforced", _src("app/routers/setup.py", "instance_posture"), "code", scope="org"),
     Rule("keys.rotate_only_where_it_replaces", "build", "A key is rotated only where rotating replaces it",
          "Rotate refuses a revoked key, a link key (relink instead), a fleet-wave key (End wave) "
          "and a key a gban command minted and stored (rerun that command).",

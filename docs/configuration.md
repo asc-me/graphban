@@ -37,6 +37,8 @@ Configuration is via environment variables. In Docker, set them in `.env` (copy 
 | `ORG_RATE_PER_MIN` | `300` | Per-org API calls |
 | `INVITE_EXPIRY_DAYS` | `14` | How long an unaccepted invite stays usable |
 
+Step ① of the quick start reads `JWT_SECRET`, `SIGNUP_MODE`, `SECRET_ENCRYPTION_KEY` and `APP_BASE_URL` through `GET /api/setup/instance` (booleans only, instance admins only) and shows a copyable env line for each that looks unsafe. These are warnings; nothing is blocked.
+
 ## Email (SMTP)
 
 Invites and password flows go nowhere without these. An unset `SMTP_HOST` does not fail —

@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import ApiKey, CodeNode, Item, MemoryShard, Project, utcnow
+from app.config import DEFAULT_JWT_SECRET, settings
+from app.models import ApiKey, CodeNode, Item, Membership, MemoryShard, Project, utcnow
 
 # Sources are EXTENSIBLE — editor conventions (.cursor/rules, Grok Build GROK.md, Codex
 # AGENTS.md) plug in later (AL-133 D2).
@@ -207,6 +208,39 @@ def mark_onboarding(db: Session, user, mark: str, skipped_stops: list[str] | Non
     return doc
 
 
+# ---- instance posture (GRPH-1365) ------------------------------------------------------------
+
+def is_instance_admin(db: Session, user) -> bool:
+    """Who may read the posture: the platform operator when hosted, otherwise anyone who owns a
+    project on this box (self-host has no separate admin role; the first account owns its first
+    project). A member of someone else's project learns nothing about this deployment."""
+    from app.services import quotas
+
+    if settings.hosted_mode:
+        return quotas.is_platform_admin(user)
+    return db.scalar(select(func.count()).select_from(Membership).where(
+        Membership.user_id == user.id, Membership.role == "owner")) > 0
+
+
+def instance_posture(db: Session, *, loopback: bool) -> dict:
+    """Booleans only — never a value. `ok` is True when the setting is safe; every field answers
+    one question the dialog's \"Is this box safe to expose?\" check asks.
+
+    The caller is signed in, so an account already exists: open signup is past its first-account
+    use (D3)."""
+    return {
+        "jwt_secret_set": settings.jwt_secret != DEFAULT_JWT_SECRET,
+        "jwt_secret_strong": not settings.jwt_secret_is_weak,
+        "signup_open": settings.signup_mode == "open",
+        "secret_encryption_key_set": bool(settings.secret_encryption_key),
+        "app_base_url_set": settings.app_base_url != _DEFAULT_APP_BASE_URL,
+        "request_on_loopback": loopback,
+    }
+
+
+_DEFAULT_APP_BASE_URL = "http://localhost:5173"
+
+
 # ── Request an org (GRPH-1364) ─────────────────────────────────────────────────────────
 ORG_REQUEST_NAME_MAX = 120
 ORG_REQUEST_EMAIL_MAX = 254
@@ -222,7 +256,6 @@ def request_org(db: Session, user, name: str, email: str, note: str = "") -> dic
 
     The date is stored only after the relay succeeded, so the card never claims a request
     that nobody received. A repeat overwrites the date (there is no Declined/Expired state)."""
-    from app.config import settings
     from app.services import email as email_svc
 
     name, email, note = (name or "").strip(), (email or "").strip(), (note or "").strip()

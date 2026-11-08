@@ -121,8 +121,14 @@ def update_project(
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
         changed["release_ref"] = project.release_ref
+    if "repo_url" in changed:
+        try:
+            changed["repo_url"] = projects_svc.normalize_repo_url(changed["repo_url"])
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        project.repo_url = changed["repo_url"]  # None clears, so it skips the loop below
     for k, v in changed.items():
-        if v is not None and k != "release_ref":
+        if v is not None and k not in ("release_ref", "repo_url"):
             setattr(project, k, v)
     db.commit()
     db.refresh(project)

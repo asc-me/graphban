@@ -44,6 +44,9 @@ const srv = vi.hoisted(() => ({
   confirmIsNoop: false,
   confirms: [] as unknown[],
   marks: [] as string[],
+  // GET /setup/instance: null = 403 (not an admin).
+  posture: null as Record<string, boolean> | null,
+  repoPatches: [] as unknown[],
   minted: [] as string[],
   setupFails: false,
 }));
@@ -95,6 +98,14 @@ vi.mock("@/lib/api", () => ({
         }
       }
       return setupBody(id);
+    }),
+    instancePosture: vi.fn(async () => {
+      if (!srv.posture) throw new Error("403");
+      return srv.posture;
+    }),
+    updateProject: vi.fn(async (id: string, body: unknown) => {
+      srv.repoPatches.push(body);
+      return { id };
     }),
     credentials: vi.fn(async () => ({ credentials: [] })),
     createProject: vi.fn(async (body: { name: string }) => {
@@ -153,6 +164,8 @@ beforeEach(() => {
   srv.confirmIsNoop = false;
   srv.confirms = [];
   srv.marks = [];
+  srv.posture = null;
+  srv.repoPatches = [];
   srv.minted = [];
   srv.setupFails = false;
 });
@@ -489,5 +502,52 @@ describe("deriveMarks", () => {
       "dedicated_server",
     );
     expect(storedWhere({ step: 0, name: "", status: "pending", detail: "this_computer", how: "" })).toBeNull();
+  });
+});
+
+
+describe("step ① posture check (GRPH-1365)", () => {
+  const GOOD = {
+    jwt_secret_set: true, jwt_secret_strong: true, signup_open: false,
+    secret_encryption_key_set: true, app_base_url_set: true, request_on_loopback: true,
+  };
+
+  async function toProjectStep() {
+    const user = userEvent.setup();
+    srv.projects = [CORE];
+    renderFrame();
+    await screen.findByRole("dialog");
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    await screen.findByRole("heading", { name: "Confirm your project" });
+    return user;
+  }
+
+  it("shows one collapsed line on this computer when something is wrong, with the env line under Advanced", async () => {
+    srv.posture = { ...GOOD, jwt_secret_set: false, jwt_secret_strong: false };
+    const user = await toProjectStep();
+    expect(await screen.findByText(/1 setting to fix before you expose this box/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Advanced" }));
+    expect(screen.getByText("JWT_SECRET=$(openssl rand -hex 32)")).toBeInTheDocument();
+  });
+
+  it("shows nothing when the box is fine", async () => {
+    srv.posture = GOOD;
+    await toProjectStep();
+    await waitFor(() => expect(screen.queryByText(/safe to expose/)).not.toBeInTheDocument());
+  });
+
+  it("shows nothing — not an all-clear — when the caller is not an admin", async () => {
+    srv.posture = null;
+    await toProjectStep();
+    expect(screen.queryByText(/safe to expose/)).not.toBeInTheDocument();
+  });
+
+  it("saves the Repository field from Advanced onto the project", async () => {
+    const user = await toProjectStep();
+    await user.click(screen.getByRole("button", { name: "Advanced" }));
+    await user.type(screen.getByLabelText("Repository"), "https://github.com/acme/app");
+    await user.click(screen.getByRole("checkbox", { name: /This is the workspace I want agents writing to/ }));
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    await waitFor(() => expect(srv.repoPatches).toEqual([{ repo_url: "https://github.com/acme/app" }]));
   });
 });

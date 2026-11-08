@@ -110,6 +110,11 @@ export function useProjectSetup(projectId: string, pollMs?: number) {
   });
 }
 
+/** Step ①'s safety check. Retries off: a 403 is an answer, and the check simply hides. */
+export function useInstancePosture(enabled = true) {
+  return useQuery({ queryKey: ["setup-instance"], queryFn: () => api.instancePosture(), enabled, retry: false });
+}
+
 export function useConfirmSetup() {
   const qc = useQueryClient();
   return useMutation({

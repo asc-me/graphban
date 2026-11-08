@@ -506,6 +506,8 @@ app.add_middleware(RequestIdMiddleware)
 # REST API under /api; MCP endpoint at /api/mcp.
 API = "/api"
 app.include_router(auth.router, prefix=API)
+from app.routers import setup as setup_routes  # noqa: E402
+app.include_router(setup_routes.router, prefix=API)
 app.include_router(projects.router, prefix=API)
 app.include_router(items.router, prefix=API)
 app.include_router(requests.router, prefix=API)
