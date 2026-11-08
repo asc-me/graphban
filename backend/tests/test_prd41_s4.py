@@ -518,3 +518,45 @@ def test_snapshot_http_is_the_served_payload(client, auth, db, proj):
     assert r.status_code == 200, r.text
     assert r.json()["snapshot_at"]
     assert r.json()["cells"][0]["n"] in ("50–199", "20–49", "200+")
+
+
+# ---- R5 groups per row (GRPH-1420) -----------------------------------------------------------
+
+def _leaf(cap, band, vendor="anthropic", model="opus", version="", finished=6, signed=5):
+    return {"key": {"vendor": vendor, "model": model, "binary_version": version,
+                    "capability": cap, "size_band": band},
+            "finished": finished, "signed_off": signed, "rate": signed / finished,
+            "sampling": {}, "skew": None, "below_floor": False}
+
+
+def test_r5_unverified_row_yields_one_card_for_all_its_cells():
+    from app.services import harness_rules as hr
+    cells = [_leaf(f"C{i}", b) for i in range(1, 7) for b in ("S", "M")]
+    out = hr._reprior({"cells": cells}, [], {"anthropic:opus": "unverified"})
+    assert len(out) == 1
+    card = out[0]
+    assert card.title == "draft evidence for 6 capabilities of anthropic:opus"
+    assert len(card.cells) == 12
+    assert len(card.draft["evidence_lines"]) == 12
+    before = card.evidence_hash
+    cells[0]["signed_off"] = 2
+    cells[0]["rate"] = 2 / 6
+    again = hr._reprior({"cells": cells}, [], {"anthropic:opus": "unverified"})[0]
+    assert again.evidence_hash != before
+
+
+def test_r5_prior_row_keeps_per_cell_cards_titled_with_the_band():
+    from app.services import harness_rules as hr
+    cells = [_leaf("C1", "M", signed=0), _leaf("C1", "L", version="2.0", signed=0),
+             _leaf("C2", "M", signed=6)]
+    out = hr._reprior({"cells": cells}, [], {"anthropic:opus": "verified"})
+    titles = [c.title for c in out]
+    assert titles == ["reprior anthropic:opus for C1/M", "reprior anthropic:opus for C1/L v2.0"]
+    assert len(set(titles)) == len(titles)
+
+
+def test_display_name_has_no_trailing_colon_when_model_is_empty():
+    from app.services import harness_rules as hr
+    cell = _leaf("C1", "M", vendor="alibaba", model="")
+    assert hr._display_name(cell) == "alibaba"
+    assert hr._cell_name(cell) == "alibaba:"

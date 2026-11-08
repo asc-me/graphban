@@ -271,6 +271,19 @@ def _cell_name(cell: dict) -> str:
     return f"{k['vendor']}:{k['model']}"
 
 
+def _display_name(cell: dict) -> str:
+    """The name a person reads. `_cell_name` stays the `statuses` lookup key, trailing colon and all."""
+    k = cell["key"]
+    return f"{k['vendor']}:{k['model']}" if k.get("model") else str(k["vendor"])
+
+
+def _where(cell: dict) -> str:
+    """`C1/M`, plus ` v1.2.3` when the cell is for one binary version: which cell a title is about."""
+    k = cell["key"]
+    version = k.get("binary_version") or ""
+    return f"{k['capability']}/{k['size_band']}" + (f" v{version}" if version else "")
+
+
 def _label(cell: dict) -> str:
     k = cell["key"]
     return f"{k['capability']}/{k['size_band']}"
@@ -389,7 +402,7 @@ def _promote_and_demote(report: dict, rows: list[AttemptTelemetry],
                 and rate >= PROMOTE_MIN_RATE):
             out.append(Card(
                 rule="R1",
-                title=f"promote {name} for {cell['key']['capability']}",
+                title=f"promote {_display_name(cell)} for {_where(cell)}",
                 detail=(f"{name} signed off {cell['signed_off']} of {cell['finished']} in "
                         f"{_label(cell)} and its matrix row is still unverified. The matrix "
                         f"keys on harness and model, not on size band, so a verified row here "
@@ -407,7 +420,7 @@ def _promote_and_demote(report: dict, rows: list[AttemptTelemetry],
                 and rate <= DEMOTE_MAX_RATE):
             out.append(Card(
                 rule="R2",
-                title=f"demote {name} for {cell['key']['capability']}",
+                title=f"demote {_display_name(cell)} for {_where(cell)}",
                 detail=(f"{name} signed off only {cell['signed_off']} of {cell['finished']} in "
                         f"{_label(cell)} and its matrix row is verified."),
                 cells=[_cell_out(cell)], siblings=_siblings(report, cell),
@@ -649,6 +662,8 @@ def _reprior(report: dict, rows: list[AttemptTelemetry],
     the cells, not just the proposal (the PRD-38 defect, retested).
     """
     out: list[Card] = []
+    #: Cells with no per-capability prior, grouped per row: one card per row, not per cell.
+    unprior: dict[str, list[tuple[dict, str, dict]]] = {}
     for cell in _rule_cells(report):
         name = _cell_name(cell)
         cap = cell["key"]["capability"]
@@ -660,28 +675,24 @@ def _reprior(report: dict, rows: list[AttemptTelemetry],
             candidates.append(("natural", natural))
         if (probe.get("finished") or 0) >= REPRIOR_MIN_N and probe.get("rate") is not None:
             candidates.append(("probe", probe))
-        if not candidates:
-            continue
         for kind, side in candidates:
             rate = side["rate"]
             if prior is None:
-                disagree = True
-            else:
-                disagree = abs(rate - prior) >= REPRIOR_MARGIN
-            if not disagree:
+                unprior.setdefault(name, []).append((cell, kind, side))
+                continue
+            if abs(rate - prior) < REPRIOR_MARGIN:
                 continue
             probe_labelled = kind == "probe"
             evidence = (f"{cap}: {side['signed_off']}/{side['finished']} signed off "
-                        f"(rate {rate})"
-                        + (f" vs prior {status} ({prior})" if prior is not None
-                           else " — no per-capability prior; draft from the cell")
+                        f"(rate {rate}) vs prior {status} ({prior})"
                         + (" [probe]" if probe_labelled else ""))
             out.append(Card(
                 rule="R5",
-                title=f"reprior {name} for {cap}",
-                detail=(f"{name}'s {cap} cell is {side['signed_off']}/{side['finished']} "
-                        + (f"against a {status} prior of {prior}." if prior is not None
-                           else "and the row has no per-capability prior.")
+                title=(f"reprior {_display_name(cell)} for {_where(cell)}"
+                       + (" (probe)" if probe_labelled else "")),
+                detail=(f"{_display_name(cell)}'s {cap} cell is "
+                        f"{side['signed_off']}/{side['finished']} against a {status} prior "
+                        f"of {prior}."
                         + (" Probe samples contributed; they are labelled, not mixed into "
                            "the natural rate." if probe_labelled else "")
                         + " R5 drafts an evidence entry naming the capability and never "
@@ -694,6 +705,36 @@ def _reprior(report: dict, rows: list[AttemptTelemetry],
                 replay=replay(rows, {"kind": "status", "target": name,
                                      "status": status or "unverified"}),
                 thresholds={"min_n": REPRIOR_MIN_N, "margin": REPRIOR_MARGIN}))
+    for name, entries in unprior.items():
+        lines: list[str] = []
+        caps: list[str] = []
+        for cell, kind, side in entries:
+            cap = cell["key"]["capability"]
+            if cap not in caps:
+                caps.append(cap)
+            lines.append(f"{cap}: {side['signed_off']}/{side['finished']} signed off "
+                         f"(rate {side['rate']}) — no per-capability prior; draft from the cell"
+                         + (" [probe]" if kind == "probe" else ""))
+        display = _display_name(entries[0][0])
+        any_probe = any(kind == "probe" for _, kind, _ in entries)
+        where = ", ".join(_where(c) + (" [probe]" if k == "probe" else "") for c, k, _ in entries)
+        out.append(Card(
+            rule="R5",
+            title=f"draft evidence for {len(caps)} capabilities of {display}",
+            detail=(f"{display} has no per-capability prior, and {len(entries)} of its cells "
+                    f"({where}) have at least {REPRIOR_MIN_N} finished attempts."
+                    + (" Probe samples contributed; they are labelled, not mixed into "
+                       "the natural rate." if any_probe else "")
+                    + " R5 drafts one evidence entry per capability and never flips the "
+                      "row's status."),
+            cells=[{**_cell_out(c), "sample": k} for c, k, _ in entries],
+            siblings=[],
+            draft={"target": name, "kind": "matrix_evidence", "capability": ", ".join(caps),
+                   "capabilities": caps, "binary_version": "",
+                   "evidence_line": "\n".join(lines), "evidence_lines": lines,
+                   "probe": any_probe, "where": "fleet/src/gbfleet/matrix.toml"},
+            replay=replay(rows, {"kind": "status", "target": name, "status": "unverified"}),
+            thresholds={"min_n": REPRIOR_MIN_N, "margin": REPRIOR_MARGIN}))
     return out
 
 
