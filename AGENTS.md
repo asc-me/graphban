@@ -23,8 +23,10 @@ that mode; do not default to the full suites:
 - **`agent_full`:** run the full suites below locally. Your receipts are the proof; no PR CI is
   required.
 
-In every mode a full local run is still right when reproducing a CI failure. If your brief
-states no mode, use `agent_and_pr`.
+When CI fails, reproduce **the tests CI named**: run those test ids (and their files) on the
+engine that failed, fix, rerun them, push, and let CI run the full suites again. A full
+local run is right only when the failure cannot be pinned to named tests (a collection
+error, a hang, a whole job that died). If your brief states no mode, use `agent_and_pr`.
 
 ```bash
 # Backend (from backend/; venv via `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`)
