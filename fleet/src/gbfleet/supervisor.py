@@ -3046,6 +3046,8 @@ class Merger:
         except (ToolFailed, ServerUnreachable) as exc:
             observe.emit("merge_unread", item="", detail=f"release ref: {exc}")
             return None
+        # GRPH-1428: the merge method rides the same read; unreadable stays `squash`.
+        self.merge_method = propose_mod.merge_method(roster if isinstance(roster, dict) else None)
         return propose_mod.release_ref(roster if isinstance(roster, dict) else None)
 
     def _attempt(self, wave: Wave, item_id: str,
@@ -3071,6 +3073,7 @@ class Merger:
             green=propose_mod.green_commits(item),
             paths=item.get("touchpoints") or [],
             release=release,
+            method=getattr(self, "merge_method", "squash"),
             scans=propose_mod.scans_clean_verdicts(item),
             local_full=(propose_mod.full_local_receipts(item)
                         and self._test_scope() == "agent_full"),

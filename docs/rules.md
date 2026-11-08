@@ -35,3 +35,12 @@ re-checked. A predicate that did not run is not a pass, and it must be attested 
   naming the predicate and its source.
 - **Audit:** `GET /api/rules/toggles` returns `effective_predicates` for this rule — each name
   with its source (`deployment` or `project`). The rule history records who set the list and why.
+
+## `gitops.merge_method` — how the supervisor merges (GRPH-1428)
+
+`squash` (default when unset), `merge` or `rebase`. Set it on the gitops PATCH like the other
+`gitops.*` fields; any other value is a 422. It rides `fleet_status` as `merge_method`
+(`{method, source}`) and the supervisor passes the matching `gh pr merge` flag. A branch that
+is behind is updated with `gh pr update-branch --rebase` under `squash` or `rebase`, and with a
+plain merge update under `merge`. The PR head must still be the reviewed commit, whatever the
+method. A server that predates the field, or an unreadable value, reads as `squash`.
