@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, ChevronRight, X } from "lucide-react";
 
 import { useHarnessCards, useMarkHarnessCard } from "@/lib/queries";
@@ -13,9 +13,104 @@ import type { HarnessCard, HarnessCardCell } from "@/lib/types";
  * R3 and R4 send you to the profile or policy screen. The button here records that you have
  * seen the card, so it stays quiet until its numbers move.
  */
-export function Recommendations({ projectId }: { projectId?: string }) {
+export type CardStateFilter = "all" | "new" | "changed" | "handled";
+
+export interface CardFilter {
+  /** Rules switched OFF. R5 starts off: it only reprioritises draft evidence and never changes a pick. */
+  off: string[];
+  /** "vendor:model", or "" for every harness. */
+  harness: string;
+  state: CardStateFilter;
+}
+
+export const DEFAULT_CARD_FILTER: CardFilter = { off: ["R5"], harness: "", state: "all" };
+const STORAGE_KEY = "harness-card-filter";
+
+function storageKey(projectId?: string) {
+  return `${STORAGE_KEY}:${projectId ?? ""}`;
+}
+
+function loadFilter(projectId?: string): CardFilter {
+  try {
+    const raw = window.localStorage.getItem(storageKey(projectId));
+    if (!raw) return DEFAULT_CARD_FILTER;
+    const v = JSON.parse(raw);
+    if (!v || !Array.isArray(v.off) || typeof v.harness !== "string") return DEFAULT_CARD_FILTER;
+    const state = ["all", "new", "changed", "handled"].includes(v.state) ? v.state : "all";
+    return { off: v.off.filter((r: unknown) => typeof r === "string"), harness: v.harness, state };
+  } catch {
+    return DEFAULT_CARD_FILTER;
+  }
+}
+
+/** Per-viewer filter state, persisted in localStorage (guarded: storage may throw). */
+export function useCardFilter(projectId?: string): [CardFilter, (f: CardFilter) => void] {
+  const [filter, setFilter] = useState<CardFilter>(() => loadFilter(projectId));
+  useEffect(() => {
+    setFilter(loadFilter(projectId));
+  }, [projectId]);
+  const update = (f: CardFilter) => {
+    setFilter(f);
+    try {
+      window.localStorage.setItem(storageKey(projectId), JSON.stringify(f));
+    } catch {
+      /* storage unavailable: the choice holds for this session only */
+    }
+  };
+  return [filter, update];
+}
+
+function harnessNames(card: HarnessCard): string[] {
+  return card.cells.map((c) => `${c.cell.vendor}${c.cell.model ? `:${c.cell.model}` : ""}`);
+}
+
+function matchesState(card: HarnessCard, state: CardStateFilter): boolean {
+  const changed = !!card.previously?.evidence_changed;
+  if (state === "new") return card.state === "new" && !changed;
+  if (state === "changed") return changed;
+  if (state === "handled") return card.state === "accepted" || card.state === "dismissed";
+  return true;
+}
+
+export function filterCards(cards: HarnessCard[], f: CardFilter): HarnessCard[] {
+  return cards.filter(
+    (c) =>
+      !f.off.includes(c.rule) &&
+      (f.harness === "" || harnessNames(c).includes(f.harness)) &&
+      matchesState(c, f.state),
+  );
+}
+
+/** Cards the default filter shows — what the tab badge counts. */
+export function defaultVisibleCount(cards: HarnessCard[]): number {
+  return filterCards(cards, DEFAULT_CARD_FILTER).length;
+}
+
+function describeFilter(f: CardFilter, rules: string[]): string {
+  const parts: string[] = [];
+  const on = rules.filter((r) => !f.off.includes(r));
+  if (on.length === 1) parts.push(on[0]);
+  else if (on.length === 0) parts.push("any rule (all switched off)");
+  if (f.harness) parts.push(`for ${f.harness}`);
+  if (f.state !== "all")
+    parts.push(
+      `that are ${{ new: "new", changed: "evidence-changed", handled: "accepted or dismissed" }[f.state]}`,
+    );
+  if (on.length > 1 && parts.length === 0) return "No cards match the selected rules";
+  return `No ${parts.join(" ")} cards`.replace("cards for", "cards for").replace(/ +/g, " ");
+}
+
+export function Recommendations({
+  projectId,
+  filter: filterProp,
+}: {
+  projectId?: string;
+  filter?: [CardFilter, (f: CardFilter) => void];
+}) {
   const { data, isLoading } = useHarnessCards(projectId);
   const mark = useMarkHarnessCard(projectId);
+  const own = useCardFilter(projectId);
+  const [filter, setFilter] = filterProp ?? own;
 
   if (isLoading || !data) return null;
   if (data.cards.length === 0) {
@@ -30,17 +125,86 @@ export function Recommendations({ projectId }: { projectId?: string }) {
     );
   }
 
+  const ruleSet = Array.from(new Set([...data.cards.map((c) => c.rule)])).sort();
+  const counts = Object.fromEntries(
+    ruleSet.map((r) => [r, data.cards.filter((c) => c.rule === r).length]),
+  );
+  const harnesses = Array.from(new Set(data.cards.flatMap(harnessNames))).sort();
+  const shown = filterCards(data.cards, filter);
+  const toggle = (r: string) =>
+    setFilter({
+      ...filter,
+      off: filter.off.includes(r) ? filter.off.filter((x) => x !== r) : [...filter.off, r],
+    });
+
   return (
-    <div className="flex flex-col gap-2" data-testid="harness-cards">
-      {data.cards.map((card) => (
-        <CardRow
-          key={card.key}
-          card={card}
-          onMark={(action) =>
-            mark.mutate({ card_key: card.key, evidence_hash: card.evidence_hash, action })
-          }
-        />
-      ))}
+    <div className="flex flex-col gap-2">
+      <div data-testid="harness-card-filters" className="flex flex-wrap items-center gap-2">
+        {ruleSet.map((r) => {
+          const on = !filter.off.includes(r);
+          return (
+            <button
+              key={r}
+              type="button"
+              data-testid="harness-rule-chip"
+              data-rule={r}
+              aria-pressed={on}
+              onClick={() => toggle(r)}
+              className={`rounded-full border px-2 py-0.5 font-mono text-[11px] ${
+                on ? "border-accent text-fg-2" : "border-line-2 text-faint"
+              }`}
+            >
+              {r} <span data-testid="harness-rule-count">{counts[r]}</span>
+            </button>
+          );
+        })}
+        <select
+          aria-label="Harness"
+          data-testid="harness-filter-harness"
+          value={filter.harness}
+          onChange={(e) => setFilter({ ...filter, harness: e.target.value })}
+          className="rounded-[8px] border border-control bg-surface px-1.5 py-0.5 text-[11.5px]"
+        >
+          <option value="">All harnesses</option>
+          {harnesses.map((h) => (
+            <option key={h} value={h}>
+              {h}
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label="State"
+          data-testid="harness-filter-state"
+          value={filter.state}
+          onChange={(e) => setFilter({ ...filter, state: e.target.value as CardStateFilter })}
+          className="rounded-[8px] border border-control bg-surface px-1.5 py-0.5 text-[11.5px]"
+        >
+          <option value="all">Any state</option>
+          <option value="new">New</option>
+          <option value="changed">Evidence changed</option>
+          <option value="handled">Accepted or dismissed</option>
+        </select>
+      </div>
+      {shown.length === 0 ? (
+        <div
+          data-testid="harness-filter-empty"
+          className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted"
+        >
+          {describeFilter(filter, ruleSet)}.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2" data-testid="harness-cards">
+          {shown.map((card) => (
+            <CardRow
+              key={card.key}
+              card={card}
+              onMark={(action) =>
+                mark.mutate({ card_key: card.key, evidence_hash: card.evidence_hash, action })
+              }
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

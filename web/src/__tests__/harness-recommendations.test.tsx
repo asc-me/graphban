@@ -153,4 +153,63 @@ describe("Harness recommendations", () => {
       "R1–R7 fire on cells above the 5-attempt floor",
     );
   });
+
+  describe("filters", () => {
+    const mk = (rule: string, n: number, over: Partial<HarnessCard> = {}) =>
+      card({ rule, key: `${rule}:${n}`, ...over });
+    const fixture = () =>
+      payload({ cards: [mk("R2", 1), mk("R5", 1), mk("R5", 2), mk("R5", 3), mk("R7", 1)] });
+
+    it("defaults to every rule but R5, and still counts R5", async () => {
+      window.localStorage.clear();
+      cards.mockResolvedValueOnce(fixture());
+      show();
+      await screen.findByTestId("harness-cards");
+      expect(screen.getAllByTestId("harness-card")).toHaveLength(2);
+      const r5 = screen.getAllByTestId("harness-rule-chip").find((c) => c.dataset.rule === "R5")!;
+      expect(within(r5).getByTestId("harness-rule-count")).toHaveTextContent("3");
+      fireEvent.click(r5);
+      expect(screen.getAllByTestId("harness-card")).toHaveLength(5);
+    });
+
+    it("narrows by harness and by state", async () => {
+      window.localStorage.clear();
+      cards.mockResolvedValueOnce(payload({ cards: [
+        mk("R2", 1, { cells: [{ cell: key({ vendor: "anthropic", model: "opus" }), finished: 1, signed_off: 1, rate: 1 }] }),
+        mk("R2", 2, { state: "accepted" }),
+        mk("R7", 1, { previously: { state: "dismissed", at: "2026-09-01T00:00:00Z", evidence_changed: true } }),
+      ] }));
+      show();
+      await screen.findByTestId("harness-cards");
+      fireEvent.change(screen.getByTestId("harness-filter-harness"), { target: { value: "anthropic:opus" } });
+      expect(screen.getAllByTestId("harness-card")).toHaveLength(1);
+      fireEvent.change(screen.getByTestId("harness-filter-harness"), { target: { value: "" } });
+      fireEvent.change(screen.getByTestId("harness-filter-state"), { target: { value: "changed" } });
+      expect(screen.getAllByTestId("harness-card")).toHaveLength(1);
+      fireEvent.change(screen.getByTestId("harness-filter-state"), { target: { value: "handled" } });
+      expect(screen.getAllByTestId("harness-card")).toHaveLength(1);
+    });
+
+    it("names the filter when nothing matches", async () => {
+      window.localStorage.clear();
+      cards.mockResolvedValueOnce(payload({ cards: [mk("R2", 1), mk("R7", 1)] }));
+      show();
+      await screen.findByTestId("harness-cards");
+      fireEvent.click(screen.getAllByTestId("harness-rule-chip").find((c) => c.dataset.rule === "R7")!);
+      fireEvent.change(screen.getByTestId("harness-filter-harness"), { target: { value: "gbagent:qwen3.6" } });
+      fireEvent.change(screen.getByTestId("harness-filter-state"), { target: { value: "handled" } });
+      expect(screen.getByTestId("harness-filter-empty")).toHaveTextContent("R2");
+      expect(screen.getByTestId("harness-filter-empty")).toHaveTextContent("gbagent:qwen3.6");
+      expect(screen.queryByTestId("harness-no-cards")).toBeNull();
+    });
+
+    it("falls back to defaults when storage throws", async () => {
+      const spy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("no"); });
+      cards.mockResolvedValueOnce(fixture());
+      show();
+      await screen.findByTestId("harness-cards");
+      expect(screen.getAllByTestId("harness-card")).toHaveLength(2);
+      spy.mockRestore();
+    });
+  });
 });
