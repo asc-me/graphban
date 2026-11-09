@@ -20,8 +20,9 @@ function setup(step: Partial<SetupStep>): ProjectSetup {
   };
 }
 
-function renderCard(step: Partial<SetupStep>) {
-  vi.mocked(api.projectSetup).mockResolvedValue(setup(step));
+function renderCard(step: Partial<SetupStep>, extra: SetupStep[] = []) {
+  const base = setup(step);
+  vi.mocked(api.projectSetup).mockResolvedValue({ ...base, steps: [...extra, ...base.steps] });
   vi.mocked(api.machines).mockResolvedValue([]);
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -93,5 +94,27 @@ describe("dashboard Setup status card (GRPH-1442)", () => {
     await vi.waitFor(() => expect(vi.mocked(api.projectSetup).mock.calls.length).toBeGreaterThan(1));
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByTestId("setup-status-card")).toBeNull();
+  });
+
+  const job = (status: SetupStep["status"], n: number) =>
+    [2, 3, 4].map((step) => ({ step, name: "c", status, detail: step === 4 ? `${n} item(s).` : "0 counted.", how: "" }));
+
+  it("First job stays on the card with its three counters until ✓", async () => {
+    renderCard({}, job("pending", 3));
+    const row = await screen.findByTestId("setup-status-first-job");
+    expect(row).toHaveTextContent("First job — pending");
+    expect(screen.getByTestId("setup-status-count-items")).toHaveTextContent("3");
+    expect(screen.getByTestId("setup-status-count-code-nodes")).toHaveTextContent("0");
+  });
+
+  it("First job shows under a verified connection too, and its counter updates", async () => {
+    renderCard({ status: "done", proof: "first_call" }, job("pending", 1));
+    expect(await screen.findByTestId("setup-status-count-items")).toHaveTextContent("1");
+  });
+
+  it("no First job row once it is ✓", async () => {
+    renderCard({ status: "done", proof: "first_call" }, job("done", 5));
+    await screen.findByText(/Agent connection verified/);
+    expect(screen.queryByTestId("setup-status-first-job")).toBeNull();
   });
 });
