@@ -5,14 +5,27 @@ so what is rolled up is what the server really derives, not a fixture's idea of 
 """
 from __future__ import annotations
 
+import inspect
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 
+from app.db import SessionLocal, engine
 from app.models import AttemptTelemetry, HarnessRollup, Item
 from app.services import harness as hsvc
 from app.services import items as items_svc
+
+postgres_only = pytest.mark.skipif(
+    not engine.url.drivername.startswith("postgresql"),
+    reason=(
+        "ROLL LOCK UNVERIFIED ON THIS ENGINE. SQLite has no advisory lock, so a second "
+        "reader cannot be shown to wait here. Run against Postgres "
+        "(DATABASE_URL=postgresql+psycopg://…) — CI does."
+    ),
+)
 
 
 def _mcp(client, key, name, args=None):
@@ -190,6 +203,90 @@ def test_a_read_rolls_the_weeks_whose_rows_have_moved(client, key, db, proj, aut
     assert _report(client, auth, proj)["cells"][0]["finished"] == 1
     _attempt(client, key, db, planner, "second")
     assert _report(client, auth, proj)["cells"][0]["finished"] == 2
+
+
+def test_the_page_answers_when_the_roll_loses_the_insert(
+        client, key, db, proj, auth, monkeypatch):
+    """The grid and guidance both re-roll the same weeks. The loser used to 500, and the
+    page reads that as the catalog never having been served.
+
+    Sabotage: let the exception out of `roll_if_stale`, and this request is a 500.
+    """
+    planner = _agent(client, key, "planner")
+    _attempt(client, key, db, planner, "raced")
+    calls = {"n": 0}
+
+    def lose(*_args, **_kwargs):
+        calls["n"] += 1
+        raise IntegrityError(
+            "INSERT INTO harness_rollups", {}, Exception("duplicate key"))
+
+    monkeypatch.setattr(hsvc, "roll", lose)
+    body = _report(client, auth, proj)
+    assert calls["n"] >= 1
+    assert body["project_id"] == proj
+    assert "cells" in body
+    # The attempts are still there. An empty grid is the lost roll, not a project with
+    # nothing to count — coverage is what says which of those this response is.
+    assert body["coverage"]["attempts"] >= 1
+
+
+def test_the_re_roll_still_takes_the_lock():
+    """Runs on both engines. Deleting the call leaves the postgres race green on a machine
+    that only runs SQLite, which is where this suite usually runs."""
+    assert "_lock_project_roll" in inspect.getsource(hsvc._roll_if_stale_on)
+    assert "pg_advisory_xact_lock" in inspect.getsource(hsvc._lock_project_roll)
+    if not engine.url.drivername.startswith("postgresql"):
+        print(
+            "\n  ROLL LOCK NOT EXERCISED on this engine — SQLite cannot take "
+            "pg_advisory_xact_lock. The wait is test_a_second_reader_waits_for_the_roll; "
+            "CI runs it on Postgres."
+        )
+
+
+@postgres_only
+def test_a_second_reader_waits_for_the_roll_already_in_progress(client, key, db, proj):
+    """A cell with no row yet is how the duplicate key happens. The second reader has to
+    be waiting on the first, not inserting beside it. Sabotage: drop the advisory lock
+    and this thread finishes inside the join instead of still sitting on it."""
+    planner = _agent(client, key, "planner")
+    _attempt(client, key, db, planner, "held")
+    holder = SessionLocal()
+    done: dict = {}
+
+    def run():
+        own = SessionLocal()
+        try:
+            done["n"] = hsvc.roll_if_stale(own, proj)
+        except Exception as exc:  # pragma: no cover - the assertion below reports it
+            done["err"] = exc
+        finally:
+            own.close()
+
+    thread = threading.Thread(target=run)
+    try:
+        holder.execute(
+            text("SELECT pg_advisory_xact_lock(:ns, hashtext(:project_id))"),
+            {"ns": hsvc._ROLL_LOCK_NS, "project_id": proj})
+        thread.start()
+        thread.join(1.0)
+        assert thread.is_alive() and "n" not in done and "err" not in done, (
+            "roll_if_stale did not wait — the lock is absent, or it failed before taking it: "
+            f"{done!r}"
+        )
+    finally:
+        holder.rollback()
+        holder.close()
+    thread.join(10)
+    assert not thread.is_alive()
+    assert "err" not in done, done.get("err")
+    assert done["n"] >= 1
+    follow = SessionLocal()
+    try:
+        # The first reader committed. Nothing has moved, so a page opened now does no insert.
+        assert hsvc.roll_if_stale(follow, proj) == 0
+    finally:
+        follow.close()
 
 
 # ---- 6: the floor and the skew ----------------------------------------------------------------

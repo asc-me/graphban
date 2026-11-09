@@ -30,7 +30,8 @@ from datetime import datetime, timedelta, timezone
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (Agent, AttemptTelemetry, Delegation, Enrolment,
@@ -965,26 +966,98 @@ def roll(db: Session, project_id: str, *, weeks: set[str] | None = None) -> int:
     return len(buckets)
 
 
+#: `pg_advisory_xact_lock` class id for a harness re-roll. Not a row lock: `FOR UPDATE` on
+#: the project would also block every insert that references it, and the fleet writes those
+#: the whole time a page is open. Two re-rolls of one project queue on this instead.
+_ROLL_LOCK_NS = 38140
+
+
+def _lock_project_roll(db: Session, project_id: str) -> None:
+    """Queue this session behind any other re-roll of `project_id`. No-op on SQLite.
+
+    Released when the transaction ends. On Postgres that transaction is the short one
+    `_roll_if_stale_on` commits; the page's own session does not hold it while it shapes
+    the response.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(:ns, hashtext(:project_id))"),
+        {"ns": _ROLL_LOCK_NS, "project_id": project_id},
+    )
+
+
+def _expire_rollups(db: Session) -> None:
+    """Forget cached rollup rows so the next read sees the transaction that just committed.
+
+    The recommendations route stages lesson drafts on this same session and commits them
+    later. Expiring the whole session would drop those drafts on the refresh.
+    """
+    for obj in list(db):
+        if isinstance(obj, HarnessRollup):
+            db.expire(obj)
+
+
+def _roll_if_stale_on(db: Session, project_id: str, *, commit: bool) -> int:
+    """Re-roll stale weeks on `db`. A lost insert rolls back to the savepoint and returns 0.
+
+    Returning 0 lets the caller read the rows the other transaction committed. The
+    savepoint keeps that loss from aborting `db`. On SQLite `db` is the request
+    session, which guidance later commits when it releases an offline item.
+    """
+    _lock_project_roll(db, project_id)
+    nested = db.begin_nested()
+    try:
+        rolled: dict[str, datetime] = {
+            r.week: _aware(r.rolled_at) for r in db.scalars(select(HarnessRollup).where(
+                HarnessRollup.project_id == project_id)).all()}
+        stale: set[str] = set()
+        for row in db.scalars(select(AttemptTelemetry).where(
+                AttemptTelemetry.project_id == project_id,
+                AttemptTelemetry.derived_at.is_not(None))).all():
+            week = week_of(row.derived_at)
+            seen = max(t for t in (_aware(row.derived_at), _aware(row.reported_at)) if t)
+            if week not in rolled or rolled[week] is None or rolled[week] < seen:
+                stale.add(week)
+        # A week whose raw rows are all gone (retention) leaves a rollup nothing refreshes;
+        # that is correct — the rollup is the surviving fact — so `stale` only ever names
+        # weeks with rows.
+        written = roll(db, project_id, weeks=stale) if stale else 0
+        nested.commit()
+    except IntegrityError:
+        nested.rollback()
+        return 0
+    if commit and written:
+        db.commit()
+    return written
+
+
 def roll_if_stale(db: Session, project_id: str) -> int:
     """Re-roll only the weeks whose raw rows have moved since they were last rolled.
 
     The nightly job is the ordinary path; this is what keeps a page honest between runs
     without recomputing a year of weeks to answer one request.
+
+    The page fires this from several requests at once — the grid, guidance, and the
+    recommendation cards. Each deletes the stale weeks and inserts them again. A cell
+    that did not exist yet has no row to lock, so both inserts meet on the primary key
+    and the loser raises `UniqueViolation`. That 500 is the page that says the catalog
+    was not served. Postgres runs the roll in its own transaction: the request session
+    stays free to commit something else (guidance releasing an offline item was the
+    commit that published one insert underneath the other), and the lock lasts for the
+    roll rather than for the rest of the read.
     """
-    rolled: dict[str, datetime] = {
-        r.week: _aware(r.rolled_at) for r in db.scalars(select(HarnessRollup).where(
-            HarnessRollup.project_id == project_id)).all()}
-    stale: set[str] = set()
-    for row in db.scalars(select(AttemptTelemetry).where(
-            AttemptTelemetry.project_id == project_id,
-            AttemptTelemetry.derived_at.is_not(None))).all():
-        week = week_of(row.derived_at)
-        seen = max(t for t in (_aware(row.derived_at), _aware(row.reported_at)) if t)
-        if week not in rolled or rolled[week] is None or rolled[week] < seen:
-            stale.add(week)
-    # A week whose raw rows are all gone (retention) leaves a rollup nothing refreshes; that is
-    # correct — the rollup is the surviving fact — so `stale` only ever names weeks with rows.
-    return roll(db, project_id, weeks=stale) if stale else 0
+    if db.get_bind().dialect.name == "postgresql":
+        from app.db import SessionLocal
+
+        own = SessionLocal()
+        try:
+            written = _roll_if_stale_on(own, project_id, commit=True)
+        finally:
+            own.close()
+        _expire_rollups(db)
+        return written
+    return _roll_if_stale_on(db, project_id, commit=False)
 
 
 def _version_key(version: str) -> tuple:
