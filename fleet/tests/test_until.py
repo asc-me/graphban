@@ -2957,3 +2957,44 @@ def test_a_row_whose_ci_run_is_in_progress_gets_no_reviewer_and_waits(
         )
     assert roles == []
     assert len(ticks) > 3  # waited past empty_ticks instead of exiting
+
+
+def test_ci_running_overdue_bounds_the_wait_and_a_new_run_restarts_it(monkeypatch):
+    """GRPH-1416 bounce side note: a run cancelled at the head never attests, so the wait is
+    bounded rather than open-ended."""
+    from gbfleet import until
+    monkeypatch.setattr(until, "CI_RUNNING_MAX_WAIT_SECONDS", 100.0)
+    row = {"id": "GRPH-9", "evidence": [_CI_RUNNING]}
+    seen: dict = {}
+    assert until.ci_running_overdue([row], seen, 0.0) == []
+    assert until.ci_running_overdue([row], seen, 99.0) == []
+    assert until.ci_running_overdue([row], seen, 100.0) == [row]
+    assert "most likely died" in until.ci_stuck_detail(row)
+    newer = {"kind": "note", "detail": _CI_RUNNING["detail"].replace("runs/42", "runs/43")}
+    row2 = {"id": "GRPH-9", "evidence": [_CI_RUNNING, newer]}
+    assert until.ci_running_overdue([row2], seen, 150.0) == []  # a new run, a new clock
+    assert len(seen) == 1  # the old run's entry is pruned
+
+
+def test_a_ci_running_row_past_the_cap_ends_the_wave_as_unattestable(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    from gbfleet import until
+    monkeypatch.setattr(until, "CI_RUNNING_MAX_WAIT_SECONDS", 0.0)
+    workspace = tmp_path / "ws"
+    roles: list[str] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "", "evidence": [_CI_RUNNING]}],
+        minted_roles=roles,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert roles == []
+    assert result.reason == "review-ci-unattestable"
+    assert "GRPH-9" in result.detail and "most likely died" in result.detail

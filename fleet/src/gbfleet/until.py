@@ -720,6 +720,9 @@ def _loop(
     mint_left = mint_tries
     review_fails = 0
     ci_stuck: list[dict] = []
+    # GRPH-1416: when each row's current in-progress refusal was first seen. A run cancelled
+    # at the head never posts suite_green, so without a bound the wave would wait forever.
+    ci_running_seen: dict[tuple[str, str], float] = {}
     review_spawned: list = []  # GRPH-1374: children this loop spawned for review rows
     # GRPH-842. One gate for the whole run, not one per spawn: a child spawned seconds ago
     # is not in the kernel's numbers yet, and a fresh reading per seat cannot know that. Its
@@ -953,6 +956,9 @@ def _loop(
             # failing: no reviewer is spawned for it and it never counts toward review-unsigned.
             ci_running_rows = [r for r in rows if ci_running(r)]
             rows = [r for r in rows if not ci_running(r)]
+            overdue = ci_running_overdue(ci_running_rows, ci_running_seen, time.monotonic())
+            ci_running_rows = [r for r in ci_running_rows if r not in overdue]
+            ci_stuck = ci_stuck + overdue
             reviews = [str(r["id"]) for r in rows + ci_stuck + ci_running_rows]
             outside = [str(r["id"]) for r in rows_outside]
             waits = _wait_ids(planner)
@@ -2572,6 +2578,31 @@ def ci_running(row: dict) -> bool:
     return _latest_refusal(row).startswith(_REFUSED_AT_DONE + "pr_ci_in_progress)")
 
 
+#: GRPH-1416: how long a row may read "CI run in progress" before until stops waiting on it.
+#: A full run with the Windows job is well under this; past it the run most likely died
+#: (cancelled, runner lost) without a `suite_green`, and the row is CI-unattestable.
+CI_RUNNING_MAX_WAIT_SECONDS = 3600.0
+
+
+def ci_running_overdue(rows: list[dict], seen: dict[tuple[str, str], float],
+                       now: float) -> list[dict]:
+    """The in-progress rows that have waited past `CI_RUNNING_MAX_WAIT_SECONDS`.
+
+    Keyed on the row AND its refusal text, so a new run (a new refusal naming it) restarts the
+    clock. `seen` is updated in place and pruned to the rows passed in.
+    """
+    keys = {(str(r.get("id")), _latest_refusal(r)): r for r in rows}
+    for k in list(seen):
+        if k not in keys:
+            del seen[k]
+    out = []
+    for k, r in keys.items():
+        start = seen.setdefault(k, now)
+        if now - start >= CI_RUNNING_MAX_WAIT_SECONDS:
+            out.append(r)
+    return out
+
+
 def ci_running_detail(row: dict) -> str:
     detail = _latest_refusal(row).split("): ", 1)[-1]
     return f"{row.get('id')}: waiting on CI ({detail[:300]}); no reviewer spawned"
@@ -2587,6 +2618,10 @@ def _name_ci_stuck(report: Report, ci_stuck: list[dict]) -> Report:
 
 def ci_stuck_detail(row: dict) -> str:
     detail = _latest_refusal(row).split("): ", 1)[-1]
+    if ci_running(row):
+        return (f"{row.get('id')}: CI run still reads in progress after "
+                f"{int(CI_RUNNING_MAX_WAIT_SECONDS)}s ({detail[:300]}); it most likely died "
+                "without attesting — needs a CI re-run, a CI attestation or an owner close")
     return (f"{row.get('id')}: sign_off refused pr_ci_not_green ({detail[:300]}); another "
             "reviewer cannot clear it — needs a CI attestation or an owner close")
 

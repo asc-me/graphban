@@ -745,8 +745,36 @@ def _normalize_range(value) -> list[str]:
     return out
 
 
+#: GRPH-1416. The predicate CI's run-start marker carries (scripts/attest_ci.py `--mode started`).
+CI_RUNNING_PREDICATE = "ci_in_progress"
+
+
+def _is_run_marker(e: dict) -> bool:
+    """A run-start announcement: every predicate on it is `ci_in_progress`.
+
+    Stored as `kind: attestation` because CI writes with the `gate` scope, but it is NOT a
+    verdict and must never be read as one. Its predicate is `passed: True`, so a reader that
+    saw it would take "a run began" for "the work was checked": the gate would pass a PR
+    whose CI is still running, or has since gone red (the GRPH-1416 bounce).
+    """
+    names = [q.get("name") for q in (e.get("predicates") or []) if isinstance(q, dict)]
+    return bool(names) and all(n == CI_RUNNING_PREDICATE for n in names)
+
+
 def attestation_receipts(evidence) -> list[dict]:
-    """Every well-formed attestation on an item (GRPH-542)."""
+    """Every well-formed attestation on an item (GRPH-542).
+
+    Run-start markers (GRPH-1416) are excluded here, so no verdict reader — the completion
+    gate, required predicates, head staleness, sign-off, metrics — ever sees one. They
+    announce a run; they attest nothing. `_ci_run_records` is the one reader that wants them.
+    """
+    return [e for e in (evidence or [])
+            if isinstance(e, dict) and e.get("kind") == "attestation"
+            and not _is_run_marker(e)]
+
+
+def _ci_run_records(evidence) -> list[dict]:
+    """Attestations INCLUDING run-start markers, in evidence order (for `ci_run_in_progress`)."""
     return [e for e in (evidence or [])
             if isinstance(e, dict) and e.get("kind") == "attestation"]
 
@@ -1390,9 +1418,6 @@ def refuse_if_predicates_missing(db, item, merged, head) -> None:
         )
 
 
-CI_RUNNING_PREDICATE = "ci_in_progress"
-
-
 def ci_run_in_progress(evidence, commits) -> dict | None:
     """GRPH-1416. The newest CI run announced as started at one of `commits` and not answered since.
 
@@ -1402,7 +1427,7 @@ def ci_run_in_progress(evidence, commits) -> dict | None:
     answers it; the evidence array only grows, so list order is time order.
     """
     live = None
-    for e in attestation_receipts(evidence):
+    for e in _ci_run_records(evidence):
         names = {q.get("name") for q in e.get("predicates") or [] if isinstance(q, dict)}
         at = str(e.get("commit") or "")
         if not any(same_commit(at, c) for c in commits):

@@ -172,3 +172,39 @@ def test_a_finished_run_is_not_reported_as_in_progress(db, cooldown):
 def test_no_started_marker_keeps_the_silent_ci_wording(db, cooldown):
     msg = _refusal(db, [])
     assert "cooldown is over" in msg and "in progress" not in msg
+
+
+def test_a_started_marker_is_not_a_verdict():
+    """Bounce on GRPH-1416: the marker's predicate is `passed: True`, so it read as a valid
+    attestation — a running (or since red) CI run opened the completion gate."""
+    red = {"kind": "attestation", "adapter": "github-actions", "commit": HEAD,
+           "predicates": [{"name": "suite_green", "passed": False, "detail": "CI failed"}]}
+    assert not items_svc.has_valid_attestation([_started()], commit=HEAD)
+    assert not items_svc.has_valid_attestation([_started(), red], commit=HEAD)
+    assert items_svc.attested_predicates([_started()], commit=HEAD) == set()
+    assert items_svc.attestation_receipts([_started(), red]) == [red]
+
+
+def test_started_then_red_at_head_is_refused_as_failing(db, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "pr_cooldown_seconds", 0, raising=False)
+    red = {"kind": "attestation", "adapter": "github-actions", "commit": HEAD,
+           "predicates": [{"name": "suite_green", "passed": False, "detail": "CI failed"}]}
+    item = items_svc.create_item(db, project_id="core", title="Built it")
+    items_svc.update_item(db, item.id, evidence=[_started(), red])
+    with pytest.raises(items_svc.MissingAttestation) as exc:
+        items_svc.update_item(db, item.id, status="done", head_commit=HEAD)
+    assert "suite_green as failing" in str(exc.value)
+    with pytest.raises(items_svc.MissingAttestation) as exc:
+        items_svc.update_item(db, item.id, status="done")
+    assert "suite_green as failing" in str(exc.value)
+
+
+def test_a_started_marker_alone_does_not_open_the_gate(db, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "pr_cooldown_seconds", 0, raising=False)
+    item = items_svc.create_item(db, project_id="core", title="Built it")
+    items_svc.update_item(db, item.id, evidence=[_started()])
+    with pytest.raises(items_svc.MissingAttestation) as exc:
+        items_svc.update_item(db, item.id, status="done", head_commit=HEAD)
+    assert "nothing has attested it" in str(exc.value)
