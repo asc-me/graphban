@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 
 import json
 import time
@@ -1055,6 +1056,10 @@ def _loop(
                 empty = 0
                 sleep(poll)
                 continue
+            if seed is not None:
+                # GRPH-1458: a reopen_on_red item reaches its next child with the failing
+                # tests named, not just the failing jobs.
+                name_red_tests(planner, repo, seed, agent_id)
             if seed is None:
                 # No takeable work this tick. Fall through to the idle counter below.
                 pass
@@ -2679,22 +2684,144 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
                 logged.add(key)
                 observe.emit("review_ci_red", item=item, commit=head, job=job,
                              detail=f"{item}: CI failed at {head[:12]}: {job}")
-            if planner is not None and _block_ci_red(planner, item, head, job, agent_id):
+            if planner is not None and _block_ci_red(
+                    planner, item, head, job, agent_id,
+                    repo=repo, branch=str(row.get("branch") or "")):
                 blocked.append(row)
                 continue
         ready.append(row)
     return ready, waiting, blocked
 
 
-def ci_red_blocker(head: str, job: str) -> str:
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_JOB_ID = re.compile(r"/job/(\d+)")
+_FAILED_LINE = re.compile(r"^\s*(?:\d{4}-\d\d-\d\dT[\d:.]+Z\s+)?(FAILED\s+\S.*)$")
+_TALLY_LINE = re.compile(r"=+\s*(\d+ failed.*?)\s*=+\s*$|^(\d+ failed, .*)$")
+
+
+def _failed_tests_from_log(log: str, max_lines: int = 10, max_bytes: int = 2048) -> str:
+    """The pytest `FAILED <nodeid> - <message>` lines of a job log plus its last tally line."""
+    log = _ANSI.sub("", log).replace("\r", "")
+    failed: list[str] = []
+    tally = ""
+    for line in log.splitlines():
+        m = _FAILED_LINE.match(line)
+        if m and m.group(1).strip() not in failed:
+            failed.append(m.group(1).strip())
+        t = _TALLY_LINE.search(re.sub(r"^\d{4}-\d\d-\d\dT[\d:.]+Z\s+", "", line.strip()))
+        if t:
+            tally = (t.group(1) or t.group(2) or "").strip()
+    out = failed[:max_lines]
+    if tally:
+        out.append(tally)
+    return "\n".join(out).encode("utf-8")[:max_bytes].decode("utf-8", "ignore")
+
+
+def failed_test_summary(repo: Path, branch: str) -> str:
+    """The failing tests of `branch`'s red CI jobs, or why they could not be read (GRPH-1458).
+
+    `gh` works here (the planner's machine) and not in a child's sandbox, so the cause is read
+    once, now, and travels in the note. A bare job name is never the whole answer: when the
+    log cannot be read the summary says so.
+    """
+    from . import propose
+    not_failed = propose._PASSING | propose._RUNNING
+    try:
+        done = propose._gh(repo, "pr", "view", branch, "--json", "statusCheckRollup")
+        if done.returncode != 0:
+            return ("failing test names unavailable: gh pr view failed "
+                    f"({(done.stderr or '').strip()[:200]})")
+        rollup = json.loads(done.stdout or "{}").get("statusCheckRollup") or []
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return f"failing test names unavailable: could not read the check rollup ({exc})"
+    parts: list[str] = []
+    for check in rollup:
+        verdict = str(check.get("conclusion") or check.get("state") or "").upper()
+        if verdict in not_failed:
+            continue
+        name = str(check.get("name") or check.get("context") or "unknown job")
+        m = _JOB_ID.search(str(check.get("detailsUrl") or check.get("targetUrl") or ""))
+        if not m:
+            parts.append(f"{name}: log could not be read (no job id in the check URL)")
+            continue
+        try:
+            got = propose._gh(repo, "api",
+                              f"repos/{{owner}}/{{repo}}/actions/jobs/{m.group(1)}/logs")
+        except (OSError, subprocess.SubprocessError) as exc:
+            parts.append(f"{name}: log could not be read ({exc})")
+            continue
+        if got.returncode != 0:
+            parts.append(f"{name}: log could not be read "
+                         f"(gh api: {(got.stderr or '').strip()[:200]})")
+            continue
+        body = _failed_tests_from_log(got.stdout or "")
+        parts.append(f"{name}:\n{body}" if body
+                     else f"{name}: log read, no pytest FAILED lines found")
+    return "\n".join(parts) or "failing test names unavailable: no failed check in the rollup"
+
+
+#: The prefix `merge.reopen_on_red` writes on `bounce_reason` (backend/app/services/fleet.py).
+REOPEN_ON_RED = "merge.reopen_on_red"
+_REOPEN_HEAD = re.compile(r"signed-off head ([0-9a-f]{7,40})")
+
+
+def red_tests_note_marker(head: str) -> str:
+    return f"gbfleet: failing tests at reopened head {head or 'unknown'}"
+
+
+def name_red_tests(planner: Graphban, repo: Path, item_id: str, agent_id: str = "") -> str | None:
+    """Name the failing tests on an item `merge.reopen_on_red` sent back (GRPH-1458).
+
+    The server reopens with the failing JOB names only ("failing jobs: fleet, windows"), and
+    the resumed child cannot read the log — its sandbox refuses `gh`, and should. `until`
+    runs where `gh` works, so before the next child is spawned on the item it reads the red
+    jobs' logs and appends their pytest FAILED lines as an evidence note, which the child
+    reads in `get_item_details`. Once per reopened head: the note is the record, so a
+    restarted loop does not write it twice. Returns the note written, else None.
+    """
+    try:
+        details = planner.call("get_item_details", id=item_id)
+    except Exception:  # noqa: BLE001 - a read failure is silence, as in `_item_brief`
+        return None
+    if not isinstance(details, dict):
+        return None
+    reason = str(details.get("bounce_reason") or "")
+    if not reason.startswith(REOPEN_ON_RED):
+        return None
+    m = _REOPEN_HEAD.search(reason)
+    marker = red_tests_note_marker(m.group(1) if m else "")
+    for ev in details.get("evidence") or []:
+        if isinstance(ev, dict) and str(ev.get("detail") or "").startswith(marker):
+            return None
+    branch = str(details.get("branch") or "").strip()
+    tests = (failed_test_summary(repo, branch) if branch else
+             "failing test names unavailable: the item records no branch to read CI for")
+    note = f"{marker} (read by gbfleet from the CI job logs; gh is not needed):\n{tests}"
+    args: dict = {"id": item_id, "evidence": [{"kind": "note", "detail": note}]}
+    if agent_id:
+        args["agent_id"] = agent_id
+    try:
+        planner.call("update_item", **args)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("red_tests_refused", item=item_id,
+                     detail=f"{item_id}: could not record the failing tests: {exc}")
+        return None
+    observe.emit("red_tests_named", item=item_id, detail=note[:400])
+    return note
+
+
+def ci_red_blocker(head: str, job: str, tests: str = "") -> str:
     """The blocker written on a review row whose CI failed (GRPH-1392)."""
-    return (f"CI red at {head[:12]}: {job} failed. Fix it on the branch, then move the "
+    text = (f"CI red at {head[:12]}: {job} failed. Fix it on the branch, then move the "
             f"item back to next (gbfleet held review: a reviewer could not sign off).")
+    return f"{text}\nFailing tests:\n{tests}" if tests else text
 
 
-def _block_ci_red(planner: Graphban, item: str, head: str, job: str, agent_id: str) -> bool:
+def _block_ci_red(planner: Graphban, item: str, head: str, job: str, agent_id: str,
+                  *, repo: Path | None = None, branch: str = "") -> bool:
     """Block a review row on its failing CI job. False when the write was refused."""
-    args: dict = {"id": item, "status": "blocked", "blocker": ci_red_blocker(head, job)}
+    tests = failed_test_summary(repo, branch) if repo is not None and branch else ""
+    args: dict = {"id": item, "status": "blocked", "blocker": ci_red_blocker(head, job, tests)}
     if agent_id:
         args["agent_id"] = agent_id
     try:
