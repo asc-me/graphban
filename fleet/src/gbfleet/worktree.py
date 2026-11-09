@@ -194,6 +194,12 @@ class Worktree:
     #: because "HEAD" stops meaning the same thing the moment anything else moves, and
     #: measuring what a worker changed needs a fixed point to measure from.
     base: str = ""
+    #: GRPH-1440. Set by `resume_bounced`: the ref merged into a resumed branch, its sha and
+    #: the new head, or the files that stopped the merge from being attempted.
+    merged_ref: str = ""
+    merged_ref_sha: str = ""
+    behind_ref: str = ""
+    behind_conflicts: list[str] = field(default_factory=list)
 
 
 def branch_exists(repo: Path, branch: str) -> bool:
@@ -1217,17 +1223,27 @@ def resume_bounced(repo: Path, path: Path, branch: str, base: str = "") -> Workt
         base_sha = _git(repo, "rev-parse", merge_from).strip()
     except GitError as exc:
         raise ResumeFailed(f"{branch}: could not resolve base {merge_from} ({exc})") from exc
-    # Conflicts are left for the child (returncode 1). Anything else is git failing
-    # to answer, and still must not fall through to a sibling cut from the base.
+    # GRPH-1440. A resumed branch carries the AGENTS.md, skills and docs of the day it was
+    # cut. Merge the base in before the child starts. Where the merge would conflict, do not
+    # attempt it: the child starts on the branch as it stands and is told which files clash.
+    conflicts = conflicted_paths(repo, base_sha, branch)
+    if conflicts:
+        return Worktree(path=path, branch=branch, repo=repo, base=base_sha,
+                        behind_ref=merge_from, behind_conflicts=conflicts)
+    # Anything but a clean merge is git failing to answer, and still must not fall through
+    # to a sibling cut from the base.
     proc = subprocess.run(
         ["git", "merge", "--no-edit", base_sha],
         cwd=str(path), capture_output=True, text=True,
     )
-    if proc.returncode not in (0, 1):
+    if proc.returncode != 0:
+        subprocess.run(["git", "merge", "--abort"], cwd=str(path),
+                       capture_output=True, text=True)
         raise ResumeFailed(
             f"{branch}: merge of {merge_from} failed ({proc.stderr.strip() or proc.returncode})"
         )
-    return Worktree(path=path, branch=branch, repo=repo, base=base_sha)
+    return Worktree(path=path, branch=branch, repo=repo, base=base_sha,
+                    merged_ref=merge_from, merged_ref_sha=base_sha)
 
 
 def choose_resume(

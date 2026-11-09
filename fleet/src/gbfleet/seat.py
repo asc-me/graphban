@@ -384,7 +384,8 @@ BOUND_ONLY_INSTRUCTION = (
 )
 
 
-def instruction_for(seat: Seat, worktree: Path, branch: str) -> str:
+def instruction_for(seat: Seat, worktree: Path, branch: str, *,
+                    behind_ref: str = "", conflicts: list[str] | None = None) -> str:
     # `review_only` first. A seat cannot be both that and bound — the server refuses to mint
     # one that is — and if that ever changed, the narrower promise is the one to state.
     if seat.review_only:
@@ -412,6 +413,11 @@ def instruction_for(seat: Seat, worktree: Path, branch: str) -> str:
                        "exactly this; it names what you are so the ledger can attribute your "
                        "outcome")
         text = text.replace(anchor, f"and branch={branch!r}{clause}.", 1)
+    if conflicts:
+        text += (f"\n\nThis branch is behind {behind_ref or 'main'} and merging it conflicts in: "
+                 f"{', '.join(conflicts)}. It was not merged. Before anything else run "
+                 f"`git merge {behind_ref or 'main'}` (no rebase, no force-push), resolve "
+                 "keeping both sides, and commit. Your copy of AGENTS.md may be stale until you do.")
     return text
 
 

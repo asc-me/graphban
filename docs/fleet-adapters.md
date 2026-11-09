@@ -841,3 +841,12 @@ With `--merge`, a PR that is `BEHIND` its base is rebased (`gh pr update-branch 
 and left for CI to attest the new head before merging. A rebase conflict bounces the item
 naming the conflicting files. Before merging, the merged tree's alembic heads are counted
 and a result with more than one head is refused with a reason.
+
+## Resuming a prior branch (GRPH-1440)
+
+When a re-delegated item continues from its last committed branch, the supervisor merges
+the wave base (`origin/main`) into that branch before the child starts, so the child reads
+current `AGENTS.md`, skills and docs. A clean merge is recorded as an evidence note
+("merged <ref>@<sha> into <branch> before resuming"). If the merge would conflict it is not
+attempted: the child starts on the branch as it stands, its instruction names the
+conflicting files, and the note records the conflict.
