@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 
 import json
 import time
@@ -2679,22 +2680,95 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
                 logged.add(key)
                 observe.emit("review_ci_red", item=item, commit=head, job=job,
                              detail=f"{item}: CI failed at {head[:12]}: {job}")
-            if planner is not None and _block_ci_red(planner, item, head, job, agent_id):
+            if planner is not None and _block_ci_red(
+                    planner, item, head, job, agent_id,
+                    repo=repo, branch=str(row.get("branch") or "")):
                 blocked.append(row)
                 continue
         ready.append(row)
     return ready, waiting, blocked
 
 
-def ci_red_blocker(head: str, job: str) -> str:
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_JOB_ID = re.compile(r"/job/(\d+)")
+_FAILED_LINE = re.compile(r"^\s*(?:\d{4}-\d\d-\d\dT[\d:.]+Z\s+)?(FAILED\s+\S.*)$")
+_TALLY_LINE = re.compile(r"=+\s*(\d+ failed.*?)\s*=+\s*$|^(\d+ failed, .*)$")
+_NOT_FAILED = {"SUCCESS", "SKIPPED", "NEUTRAL", "", "PENDING", "QUEUED", "IN_PROGRESS",
+               "EXPECTED", "WAITING", "REQUESTED"}
+
+
+def _failed_tests_from_log(log: str, max_lines: int = 10, max_bytes: int = 2048) -> str:
+    """The pytest `FAILED <nodeid> - <message>` lines of a job log plus its last tally line."""
+    log = _ANSI.sub("", log).replace("\r", "")
+    failed: list[str] = []
+    tally = ""
+    for line in log.splitlines():
+        m = _FAILED_LINE.match(line)
+        if m and m.group(1).strip() not in failed:
+            failed.append(m.group(1).strip())
+        t = _TALLY_LINE.search(re.sub(r"^\d{4}-\d\d-\d\dT[\d:.]+Z\s+", "", line.strip()))
+        if t:
+            tally = (t.group(1) or t.group(2) or "").strip()
+    out = failed[:max_lines]
+    if tally:
+        out.append(tally)
+    return "\n".join(out).encode("utf-8")[:max_bytes].decode("utf-8", "ignore")
+
+
+def failed_test_summary(repo: Path, branch: str) -> str:
+    """The failing tests of `branch`'s red CI jobs, or why they could not be read (GRPH-1458).
+
+    `gh` works here (the planner's machine) and not in a child's sandbox, so the cause is read
+    once, now, and travels in the note. A bare job name is never the whole answer: when the
+    log cannot be read the summary says so.
+    """
+    from . import propose
+    try:
+        done = propose._gh(repo, "pr", "view", branch, "--json", "statusCheckRollup")
+        if done.returncode != 0:
+            return ("failing test names unavailable: gh pr view failed "
+                    f"({(done.stderr or '').strip()[:200]})")
+        rollup = json.loads(done.stdout or "{}").get("statusCheckRollup") or []
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return f"failing test names unavailable: could not read the check rollup ({exc})"
+    parts: list[str] = []
+    for check in rollup:
+        verdict = str(check.get("conclusion") or check.get("state") or "").upper()
+        if verdict in _NOT_FAILED:
+            continue
+        name = str(check.get("name") or check.get("context") or "unknown job")
+        m = _JOB_ID.search(str(check.get("detailsUrl") or check.get("targetUrl") or ""))
+        if not m:
+            parts.append(f"{name}: log could not be read (no job id in the check URL)")
+            continue
+        try:
+            got = propose._gh(repo, "api",
+                              f"repos/{{owner}}/{{repo}}/actions/jobs/{m.group(1)}/logs")
+        except (OSError, subprocess.SubprocessError) as exc:
+            parts.append(f"{name}: log could not be read ({exc})")
+            continue
+        if got.returncode != 0:
+            parts.append(f"{name}: log could not be read "
+                         f"(gh api: {(got.stderr or '').strip()[:200]})")
+            continue
+        body = _failed_tests_from_log(got.stdout or "")
+        parts.append(f"{name}:\n{body}" if body
+                     else f"{name}: log read, no pytest FAILED lines found")
+    return "\n".join(parts) or "failing test names unavailable: no failed check in the rollup"
+
+
+def ci_red_blocker(head: str, job: str, tests: str = "") -> str:
     """The blocker written on a review row whose CI failed (GRPH-1392)."""
-    return (f"CI red at {head[:12]}: {job} failed. Fix it on the branch, then move the "
+    text = (f"CI red at {head[:12]}: {job} failed. Fix it on the branch, then move the "
             f"item back to next (gbfleet held review: a reviewer could not sign off).")
+    return f"{text}\nFailing tests:\n{tests}" if tests else text
 
 
-def _block_ci_red(planner: Graphban, item: str, head: str, job: str, agent_id: str) -> bool:
+def _block_ci_red(planner: Graphban, item: str, head: str, job: str, agent_id: str,
+                  *, repo: Path | None = None, branch: str = "") -> bool:
     """Block a review row on its failing CI job. False when the write was refused."""
-    args: dict = {"id": item, "status": "blocked", "blocker": ci_red_blocker(head, job)}
+    tests = failed_test_summary(repo, branch) if repo is not None and branch else ""
+    args: dict = {"id": item, "status": "blocked", "blocker": ci_red_blocker(head, job, tests)}
     if agent_id:
         args["agent_id"] = agent_id
     try:
