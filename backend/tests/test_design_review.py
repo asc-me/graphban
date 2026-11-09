@@ -358,7 +358,9 @@ def test_canvas_check_gates_applied(db, pid, world, be):
     def zipped(body: bytes) -> bytes:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:
-            z.writestr("rules.html", body)
+            # A fixed timestamp: writestr(name) stamps the wall clock (2s resolution) into
+            # the zip header, so identical bytes built across a tick hash differently.
+            z.writestr(zipfile.ZipInfo("rules.html", date_time=(2020, 1, 1, 0, 0, 0)), body)
         return buf.getvalue()
 
     bad = ds_svc.put_canvas(db, pid, sid, "home", zipped(b"Rule 7 TODO"), "application/zip", h2,
@@ -404,7 +406,7 @@ def _zip(files: dict) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         for k, v in files.items():
-            z.writestr(k, v)
+            z.writestr(zipfile.ZipInfo(k, date_time=(2020, 1, 1, 0, 0, 0)), v)
     return buf.getvalue()
 
 
