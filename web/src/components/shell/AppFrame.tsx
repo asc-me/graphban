@@ -196,14 +196,40 @@ function FrameBody({ hosted }: { hosted: boolean }) {
     />
   );
 
-  // A new user meets the quick start, which creates the project in step ①. Closing it (or a
-  // user who finished without one) falls back to the plain create form underneath.
+  const setupChip =
+    onboardingQ.data && !finished
+      ? {
+          ...qs.chip,
+          onOpen: () => {
+            setQsStep(qs.firstUnfinished);
+            setQsOpen(true);
+          },
+        }
+      : undefined;
+
+  // A new user meets the quick start, which creates the project in step ① (with its
+  // workspace confirmation). Finish later / Esc leaves an empty shell with the "Finish
+  // setup" chip, never the old create form: that page would create a project without
+  // recording the confirmation. CreateFirstProject stays only for a user whose onboarding
+  // is finished (or unreadable) and who has no project.
   // The dialog sits at the same position in both branches, so creating the first project in
   // step ① swaps what is behind it without remounting it mid-flow.
   if (projects.length === 0 && !onOrgPlane) {
     return (
       <>
-        <CreateFirstProject />
+        {setupChip ? (
+          <div className="flex h-full flex-col" data-testid="empty-shell">
+            <TopBar
+              agentOpen={false}
+              onToggleAgent={() => {}}
+              onOpenPalette={() => {}}
+              setupChip={setupChip}
+            />
+            <main id="main-content" className="min-h-0 flex-1" />
+          </div>
+        ) : (
+          <CreateFirstProject />
+        )}
         {quickStart}
       </>
     );
@@ -227,17 +253,7 @@ function FrameBody({ hosted }: { hosted: boolean }) {
           agentOpen={agentOpen}
           onToggleAgent={toggleAgent}
           onOpenPalette={() => setPaletteOpen(true)}
-          setupChip={
-            onboardingQ.data && !finished
-              ? {
-                  ...qs.chip,
-                  onOpen: () => {
-                    setQsStep(qs.firstUnfinished);
-                    setQsOpen(true);
-                  },
-                }
-              : undefined
-          }
+          setupChip={setupChip}
         />
         <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
         <div className="flex min-h-0 flex-1">
