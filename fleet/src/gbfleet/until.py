@@ -1056,6 +1056,10 @@ def _loop(
                 empty = 0
                 sleep(poll)
                 continue
+            if seed is not None:
+                # GRPH-1458: a reopen_on_red item reaches its next child with the failing
+                # tests named, not just the failing jobs.
+                name_red_tests(planner, repo, seed, agent_id)
             if seed is None:
                 # No takeable work this tick. Fall through to the idle counter below.
                 pass
@@ -2693,8 +2697,6 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _JOB_ID = re.compile(r"/job/(\d+)")
 _FAILED_LINE = re.compile(r"^\s*(?:\d{4}-\d\d-\d\dT[\d:.]+Z\s+)?(FAILED\s+\S.*)$")
 _TALLY_LINE = re.compile(r"=+\s*(\d+ failed.*?)\s*=+\s*$|^(\d+ failed, .*)$")
-_NOT_FAILED = {"SUCCESS", "SKIPPED", "NEUTRAL", "", "PENDING", "QUEUED", "IN_PROGRESS",
-               "EXPECTED", "WAITING", "REQUESTED"}
 
 
 def _failed_tests_from_log(log: str, max_lines: int = 10, max_bytes: int = 2048) -> str:
@@ -2723,6 +2725,7 @@ def failed_test_summary(repo: Path, branch: str) -> str:
     log cannot be read the summary says so.
     """
     from . import propose
+    not_failed = propose._PASSING | propose._RUNNING
     try:
         done = propose._gh(repo, "pr", "view", branch, "--json", "statusCheckRollup")
         if done.returncode != 0:
@@ -2734,7 +2737,7 @@ def failed_test_summary(repo: Path, branch: str) -> str:
     parts: list[str] = []
     for check in rollup:
         verdict = str(check.get("conclusion") or check.get("state") or "").upper()
-        if verdict in _NOT_FAILED:
+        if verdict in not_failed:
             continue
         name = str(check.get("name") or check.get("context") or "unknown job")
         m = _JOB_ID.search(str(check.get("detailsUrl") or check.get("targetUrl") or ""))
@@ -2755,6 +2758,56 @@ def failed_test_summary(repo: Path, branch: str) -> str:
         parts.append(f"{name}:\n{body}" if body
                      else f"{name}: log read, no pytest FAILED lines found")
     return "\n".join(parts) or "failing test names unavailable: no failed check in the rollup"
+
+
+#: The prefix `merge.reopen_on_red` writes on `bounce_reason` (backend/app/services/fleet.py).
+REOPEN_ON_RED = "merge.reopen_on_red"
+_REOPEN_HEAD = re.compile(r"signed-off head ([0-9a-f]{7,40})")
+
+
+def red_tests_note_marker(head: str) -> str:
+    return f"gbfleet: failing tests at reopened head {head or 'unknown'}"
+
+
+def name_red_tests(planner: Graphban, repo: Path, item_id: str, agent_id: str = "") -> str | None:
+    """Name the failing tests on an item `merge.reopen_on_red` sent back (GRPH-1458).
+
+    The server reopens with the failing JOB names only ("failing jobs: fleet, windows"), and
+    the resumed child cannot read the log — its sandbox refuses `gh`, and should. `until`
+    runs where `gh` works, so before the next child is spawned on the item it reads the red
+    jobs' logs and appends their pytest FAILED lines as an evidence note, which the child
+    reads in `get_item_details`. Once per reopened head: the note is the record, so a
+    restarted loop does not write it twice. Returns the note written, else None.
+    """
+    try:
+        details = planner.call("get_item_details", id=item_id)
+    except Exception:  # noqa: BLE001 - a read failure is silence, as in `_item_brief`
+        return None
+    if not isinstance(details, dict):
+        return None
+    reason = str(details.get("bounce_reason") or "")
+    if not reason.startswith(REOPEN_ON_RED):
+        return None
+    m = _REOPEN_HEAD.search(reason)
+    marker = red_tests_note_marker(m.group(1) if m else "")
+    for ev in details.get("evidence") or []:
+        if isinstance(ev, dict) and str(ev.get("detail") or "").startswith(marker):
+            return None
+    branch = str(details.get("branch") or "").strip()
+    tests = (failed_test_summary(repo, branch) if branch else
+             "failing test names unavailable: the item records no branch to read CI for")
+    note = f"{marker} (read by gbfleet from the CI job logs; gh is not needed):\n{tests}"
+    args: dict = {"id": item_id, "evidence": [{"kind": "note", "detail": note}]}
+    if agent_id:
+        args["agent_id"] = agent_id
+    try:
+        planner.call("update_item", **args)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("red_tests_refused", item=item_id,
+                     detail=f"{item_id}: could not record the failing tests: {exc}")
+        return None
+    observe.emit("red_tests_named", item=item_id, detail=note[:400])
+    return note
 
 
 def ci_red_blocker(head: str, job: str, tests: str = "") -> str:
