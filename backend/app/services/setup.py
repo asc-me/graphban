@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import DEFAULT_JWT_SECRET, settings
-from app.models import ApiKey, CodeNode, Item, Membership, MemoryShard, Project, utcnow
+from app.models import ApiKey, CodeNode, Item, Membership, MemoryShard, Project, User, utcnow
 
 # Sources are EXTENSIBLE — editor conventions (.cursor/rules, Grok Build GROK.md, Codex
 # AGENTS.md) plug in later (AL-133 D2).
@@ -240,8 +240,13 @@ def is_instance_admin(db: Session, user) -> bool:
 
     if settings.hosted_mode:
         return quotas.is_platform_admin(user)
-    return db.scalar(select(func.count()).select_from(Membership).where(
-        Membership.user_id == user.id, Membership.role == "owner")) > 0
+    if db.scalar(select(func.count()).select_from(Membership).where(
+            Membership.user_id == user.id, Membership.role == "owner")) > 0:
+        return True
+    # GRPH-1447: the first account on a fresh self-host box owns no project yet on step ①, but it
+    # is the box's only user, so it is its operator. The read returns booleans only. Hosted mode
+    # returned above and is not loosened.
+    return db.scalar(select(func.count()).select_from(User)) == 1
 
 
 def instance_posture(db: Session, *, loopback: bool) -> dict:
