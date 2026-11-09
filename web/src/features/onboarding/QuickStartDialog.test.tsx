@@ -230,6 +230,35 @@ describe("every mark comes from GET …/setup", () => {
     expect(railItem("project").dataset.status).toBe("done");
   });
 
+  it("Finish later at ⓪ with no project shows the chip over an empty shell, never the old create form; the chip reopens ⓪", async () => {
+    const user = userEvent.setup();
+    renderFrame();
+    await screen.findByRole("heading", { name: "Where is Graphban running?" });
+    await user.click(screen.getByRole("button", { name: "Finish later" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    // Not the old CreateFirstProject page: no project-name input anywhere.
+    expect(screen.queryByPlaceholderText("e.g. Core Platform")).not.toBeInTheDocument();
+    expect(screen.queryByText("Create your first project")).not.toBeInTheDocument();
+    const chip = await screen.findByRole("button", { name: /Finish setup/ });
+    expect(chip).toHaveTextContent("Finish setup 0/4");
+    await user.click(chip);
+    expect(await screen.findByRole("heading", { name: "Where is Graphban running?" })).toBeInTheDocument();
+  });
+
+  it("the DOM never holds two project-name inputs, and a project made in the dialog records the workspace confirmation", async () => {
+    const user = userEvent.setup();
+    renderFrame();
+    await screen.findByRole("dialog");
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    await screen.findByRole("heading", { name: "Create your project" });
+    expect(screen.getAllByPlaceholderText("e.g. Core Platform")).toHaveLength(1);
+    await user.type(within(screen.getByRole("dialog")).getByLabelText("Project name"), "Core Platform");
+    await user.click(screen.getByRole("checkbox", { name: /This is the workspace I want agents writing to/ }));
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    await screen.findByRole("heading", { name: "Pick a model" });
+    expect(srv.confirms).toContainEqual({ decision: "workspace" });
+  });
+
   it("clicking Next does not turn a step ✓ when the server did not store it", async () => {
     srv.projects = [CORE];
     srv.confirmIsNoop = true;
