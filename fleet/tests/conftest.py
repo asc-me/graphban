@@ -64,6 +64,23 @@ def no_reading_your_real_entitlements(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_asking_the_real_forge_about_ci(monkeypatch):
+    """No wave in the suite may ask the real `gh` whether CI is green (GRPH-1392).
+
+    The drain reads CI before it spawns a reviewer for a review row. Unpinned, every test
+    whose ledger holds a review row shells out to whatever `gh` is on PATH, once per row per
+    poll: on a developer box a shim refuses it at once, on the Windows runner it is a real
+    `gh.exe` that takes its time to fail, and the timing-sensitive wave tests then read the
+    runner rather than the code. `unknown` is what a repo with no CI answers, so it holds
+    nothing. A test that wants a verdict patches `until.ci_verdict` itself; the rollup
+    parser is tested through `propose.ci_rollup`, which this does not touch.
+    """
+    from gbfleet import until
+
+    monkeypatch.setattr(until, "ci_verdict", lambda *a: ("unknown", "", ""))
+
+
+@pytest.fixture(autouse=True)
 def no_sweeping_your_real_state(tmp_path_factory, monkeypatch):
     """No test may reap a worktree the developer's own supervisors recorded (GRPH-1011).
 

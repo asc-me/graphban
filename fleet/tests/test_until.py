@@ -2909,33 +2909,33 @@ def test_a_review_unsigned_exit_names_the_ci_stuck_rows_beside_it():
     assert _name_ci_stuck(Report(ok=False, reason="review-unsigned", exit=1), []).detail == ""
 
 
+
 _CI_RUNNING = {"kind": "note", "detail": "refused at `done` (pr_ci_in_progress): waiting on CI "
                "run https://x/runs/42/attempts/1, in progress at 89a0225d2552"}
 
 
-def test_ci_running_is_not_ci_unattestable_and_clears_on_a_newer_attestation():
-    """GRPH-1416: the in-progress refusal is its own wording, and CI answering ends it."""
-    from gbfleet.until import ci_running, ci_running_detail, ci_unattestable
-    row = {"id": "GRPH-9", "evidence": [_CI_RUNNING]}
-    assert ci_running(row) is True
-    assert ci_unattestable(row) is False
-    assert ci_running({"evidence": [_CI_STUCK]}) is False
-    answered = {"kind": "attestation", "predicates": [{"name": "suite_green", "passed": True}]}
-    assert ci_running({"evidence": [_CI_RUNNING, answered]}) is False
-    assert "waiting on CI" in ci_running_detail(row) and "runs/42" in ci_running_detail(row)
+def test_the_in_progress_refusal_is_not_read_as_ci_unattestable():
+    """GRPH-1416: the server's in-progress refusal is its own wording, so until never takes it
+    for a dead-end `pr_ci_not_green` and ends the wave on it."""
+    from gbfleet.until import ci_unattestable
+    assert ci_unattestable({"id": "GRPH-9", "evidence": [_CI_RUNNING]}) is False
+    assert ci_unattestable({"id": "GRPH-9", "evidence": [_CI_STUCK]}) is True
 
 
 def test_a_row_whose_ci_run_is_in_progress_gets_no_reviewer_and_waits(
-    git_repo: Path, tmp_path: Path, scripts, state: Path,
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
 ):
-    """GRPH-1416: no reviewer is spawned, the log names the wait, and the run does not exit
+    """GRPH-1416: a row the server refused `pr_ci_in_progress`, whose CI is still running,
+    gets no reviewer; until waits (the one CI wait, GRPH-1392's) and does not exit
     `review-unsigned` because of it."""
+    from gbfleet import until
+    monkeypatch.setattr(until, "ci_verdict", lambda *a: ("pending", "89a0225d2552", ""))
     workspace = tmp_path / "ws"
     roles: list[str] = []
     planner, supervisor = _clients(
         workspace,
         review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
-                 "review_claimed_by": "", "evidence": [_CI_RUNNING]}],
+                 "review_claimed_by": "", "branch": "gb/x", "evidence": [_CI_RUNNING]}],
         minted_roles=roles,
     )
     ticks: list[int] = []
@@ -2957,44 +2957,3 @@ def test_a_row_whose_ci_run_is_in_progress_gets_no_reviewer_and_waits(
         )
     assert roles == []
     assert len(ticks) > 3  # waited past empty_ticks instead of exiting
-
-
-def test_ci_running_overdue_bounds_the_wait_and_a_new_run_restarts_it(monkeypatch):
-    """GRPH-1416 bounce side note: a run cancelled at the head never attests, so the wait is
-    bounded rather than open-ended."""
-    from gbfleet import until
-    monkeypatch.setattr(until, "CI_RUNNING_MAX_WAIT_SECONDS", 100.0)
-    row = {"id": "GRPH-9", "evidence": [_CI_RUNNING]}
-    seen: dict = {}
-    assert until.ci_running_overdue([row], seen, 0.0) == []
-    assert until.ci_running_overdue([row], seen, 99.0) == []
-    assert until.ci_running_overdue([row], seen, 100.0) == [row]
-    assert "most likely died" in until.ci_stuck_detail(row)
-    newer = {"kind": "note", "detail": _CI_RUNNING["detail"].replace("runs/42", "runs/43")}
-    row2 = {"id": "GRPH-9", "evidence": [_CI_RUNNING, newer]}
-    assert until.ci_running_overdue([row2], seen, 150.0) == []  # a new run, a new clock
-    assert len(seen) == 1  # the old run's entry is pruned
-
-
-def test_a_ci_running_row_past_the_cap_ends_the_wave_as_unattestable(
-    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
-):
-    from gbfleet import until
-    monkeypatch.setattr(until, "CI_RUNNING_MAX_WAIT_SECONDS", 0.0)
-    workspace = tmp_path / "ws"
-    roles: list[str] = []
-    planner, supervisor = _clients(
-        workspace,
-        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
-                 "review_claimed_by": "", "evidence": [_CI_RUNNING]}],
-        minted_roles=roles,
-    )
-    result = run(
-        git_repo, _factory(scripts, "works_then_exits"),
-        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
-        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
-        limits=Limits(max_workers=1),
-    )
-    assert roles == []
-    assert result.reason == "review-ci-unattestable"
-    assert "GRPH-9" in result.detail and "most likely died" in result.detail

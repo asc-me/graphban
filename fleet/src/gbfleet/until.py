@@ -720,9 +720,7 @@ def _loop(
     mint_left = mint_tries
     review_fails = 0
     ci_stuck: list[dict] = []
-    # GRPH-1416: when each row's current in-progress refusal was first seen. A run cancelled
-    # at the head never posts suite_green, so without a bound the wave would wait forever.
-    ci_running_seen: dict[tuple[str, str], float] = {}
+    ci_logged: set[tuple[str, str, str]] = set()  # GRPH-1392: events already logged
     review_spawned: list = []  # GRPH-1374: children this loop spawned for review rows
     # GRPH-842. One gate for the whole run, not one per spawn: a child spawned seconds ago
     # is not in the kernel's numbers yet, and a fresh reading per seat cannot know that. Its
@@ -952,13 +950,6 @@ def _loop(
             # be cleared by another reviewer, so it is taken out of what can spawn one.
             ci_stuck = [r for r in rows if ci_unattestable(r)]
             rows = [r for r in rows if not ci_unattestable(r)]
-            # GRPH-1416: a row refused because its CI run is still going is waiting, not
-            # failing: no reviewer is spawned for it and it never counts toward review-unsigned.
-            ci_running_rows = [r for r in rows if ci_running(r)]
-            rows = [r for r in rows if not ci_running(r)]
-            overdue = ci_running_overdue(ci_running_rows, ci_running_seen, time.monotonic())
-            ci_running_rows = [r for r in ci_running_rows if r not in overdue]
-            ci_stuck = ci_stuck + overdue
             # GRPH-1417: silence from a run that is still going is not "unattestable": its
             # attestation will arrive. Those rows wait; only the rest can end the wave.
             ci_pending: dict[str, str] = {}
@@ -967,13 +958,9 @@ def _loop(
                 if running:
                     ci_pending[str(r["id"])] = running
                     ci_stuck.remove(r)
-            reviews = [str(r["id"]) for r in rows + ci_stuck + ci_running_rows]
+            reviews = [str(r["id"]) for r in rows + ci_stuck]
             outside = [str(r["id"]) for r in rows_outside]
             waits = _wait_ids(planner)
-            for r in ci_running_rows:
-                line = ci_running_detail(r)
-                if line not in waits:
-                    waits.append(line)
             for rid, running in ci_pending.items():
                 line = f"{rid}: review_waits_on_ci ({running})"
                 if line not in waits:
@@ -1197,7 +1184,6 @@ def _loop(
         # GRPH-965 and built it on the reviewer's branch while the child actually assigned to
         # that item produced nothing. The authority is the seat, not the prompt, so the gate is
         # server-side (`items.review_only_seat`) and this is only the mint that asks for it.
-        unheld_review = [r for r in rows if not review_held(r)]
         # No memory gate on this branch, deliberately (GRPH-842): `not live` means nothing
         # is running, and the gate never refuses the first child — so a check here could
         # only ever cost a `vm_stat` per poll and answer yes. **If that guard goes, this
@@ -1209,6 +1195,16 @@ def _loop(
         # it has not claimed yet, so a second would stack reviewers on the same rows — and,
         # when anything is live, the memory gate and child cap like every other spawn.
         review_busy = _review_busy(live, review_spawned)
+        # GRPH-1392: CI is read only when this branch would spawn — one `gh pr view` per row,
+        # not paid on a poll where `need` or a live review spawn decides nothing spawns.
+        unheld_review = [r for r in rows if not review_held(r)]
+        ci_waiting: list[dict] = []
+        if unheld_review and need <= 0 and not review_busy:
+            unheld_review, ci_waiting, ci_blocked = _ci_attested(
+                unheld_review, repo, ci_logged, planner=planner, agent_id=agent_id)
+            if ci_blocked:
+                rows = [r for r in rows if r not in ci_blocked]
+                reviews = [str(r["id"]) for r in rows + ci_stuck]
         # GRPH-1387: the gate's reason is kept so the wait below names it, read once per poll
         # and only when this branch would otherwise spawn.
         review_gate = None
@@ -1252,6 +1248,18 @@ def _loop(
             sleep(poll)
             continue
 
+        if ci_waiting:
+            # GRPH-1392: CI is still running at these heads. That is a wait, not unsigned
+            # work: keep polling until it settles, then the branch above spawns (green) or
+            # blocks (red). CI finishes on its own, so this is bounded.
+            for row in ci_waiting:
+                line = f"{row.get('id')}: review waits on CI"
+                if line not in waits:
+                    waits.append(line)
+            empty = 0
+            sleep(poll)
+            continue
+
         # Nothing running: an unheld review row is unsigned now. A child spawned on
         # an earlier poll that has not claimed yet is `busy` above (`CLAIM_WINDOW`),
         # so it is not reached here; one past that window still holding nothing
@@ -1264,8 +1272,8 @@ def _loop(
                     _leave("review-unsigned", 1, review=reviews, waits=waits,
                            outside=outside), ci_stuck)
 
-        if ci_pending or (ci_running_rows and not rows):
-            # GRPH-1416/1417: CI is still running for the head; no reviewer, no exit.
+        if ci_pending:
+            # GRPH-1417: CI is still running for the head; no reviewer, no exit.
             empty = 0
             sleep(poll)
             continue
@@ -2584,46 +2592,6 @@ def ci_unattestable(row: dict) -> bool:
             and "cooldown over" in detail)
 
 
-def ci_running(row: dict) -> bool:
-    """GRPH-1416. The newest `done` refusal says a CI run is in progress at the head.
-
-    Unlike `ci_unattestable` this clears itself: the run's `suite_green` (pass or fail) is a
-    newer attestation, and `_latest_refusal` then reads "". Wait for it; do not spend a
-    reviewer, and do not count it as a reviewer failure.
-    """
-    return _latest_refusal(row).startswith(_REFUSED_AT_DONE + "pr_ci_in_progress)")
-
-
-#: GRPH-1416: how long a row may read "CI run in progress" before until stops waiting on it.
-#: A full run with the Windows job is well under this; past it the run most likely died
-#: (cancelled, runner lost) without a `suite_green`, and the row is CI-unattestable.
-CI_RUNNING_MAX_WAIT_SECONDS = 3600.0
-
-
-def ci_running_overdue(rows: list[dict], seen: dict[tuple[str, str], float],
-                       now: float) -> list[dict]:
-    """The in-progress rows that have waited past `CI_RUNNING_MAX_WAIT_SECONDS`.
-
-    Keyed on the row AND its refusal text, so a new run (a new refusal naming it) restarts the
-    clock. `seen` is updated in place and pruned to the rows passed in.
-    """
-    keys = {(str(r.get("id")), _latest_refusal(r)): r for r in rows}
-    for k in list(seen):
-        if k not in keys:
-            del seen[k]
-    out = []
-    for k, r in keys.items():
-        start = seen.setdefault(k, now)
-        if now - start >= CI_RUNNING_MAX_WAIT_SECONDS:
-            out.append(r)
-    return out
-
-
-def ci_running_detail(row: dict) -> str:
-    detail = _latest_refusal(row).split("): ", 1)[-1]
-    return f"{row.get('id')}: waiting on CI ({detail[:300]}); no reviewer spawned"
-
-
 def ci_run_in_progress(repo: Path, row: dict) -> str:
     """GRPH-1417. A description of a CI run for this row's head that is queued or in progress,
     or "". Asks the forge (`gh run list`); any failure to ask reads as "none", so an
@@ -2662,12 +2630,81 @@ def _name_ci_stuck(report: Report, ci_stuck: list[dict]) -> Report:
 
 def ci_stuck_detail(row: dict) -> str:
     detail = _latest_refusal(row).split("): ", 1)[-1]
-    if ci_running(row):
-        return (f"{row.get('id')}: CI run still reads in progress after "
-                f"{int(CI_RUNNING_MAX_WAIT_SECONDS)}s ({detail[:300]}); it most likely died "
-                "without attesting — needs a CI re-run, a CI attestation or an owner close")
     return (f"{row.get('id')}: sign_off refused pr_ci_not_green ({detail[:300]}); another "
             "reviewer cannot clear it — needs a CI attestation or an owner close")
+
+
+def ci_verdict(repo: Path, branch: str) -> tuple[str, str, str]:
+    """(state, head, failing_job) for `branch`'s PR (GRPH-1392): `propose.ci_rollup`.
+
+    `unknown` (no gh, no PR, no checks, unreadable) does not hold a reviewer: a repo without
+    CI must not wedge its review queue.
+    """
+    from . import propose
+    return propose.ci_rollup(repo, branch)
+
+
+def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
+                 planner: Graphban | None = None,
+                 agent_id: str = "") -> tuple[list[dict], list[dict], list[dict]]:
+    """Split unheld review rows into (spawnable, waiting on CI, blocked on red CI) (GRPH-1392).
+
+    A reviewer cannot `sign_off` until CI has attested the head, so a spawn against pending
+    CI is wasted: those rows are held back, logged once per head as `review_waits_on_ci`, and
+    returned second so the loop keeps polling for them instead of reading them as unsigned.
+
+    A red row is blocked with the failing job named (`review_ci_red`), and no reviewer is
+    spawned for it. The supervisor may not bounce (PRD-22 §4); the planner may write a
+    blocker, as the GRPH-950 hold does. If that write is refused the row stays spawnable, so
+    the reviewer — who can bounce — is still the fallback, never a wedged row. A blocked row
+    has left `review`, so the loop drops it rather than reading it as unsigned work.
+    """
+    ready: list[dict] = []
+    waiting: list[dict] = []
+    blocked: list[dict] = []
+    for row in rows:
+        item = str(row.get("id") or "")
+        state, head, job = ci_verdict(repo, str(row.get("branch") or ""))
+        if state == "pending":
+            key = ("review_waits_on_ci", item, head)
+            if key not in logged:
+                logged.add(key)
+                observe.emit("review_waits_on_ci", item=item, commit=head,
+                             detail=f"{item}: CI has not finished at {head[:12]}")
+            waiting.append(row)
+            continue
+        if state == "red":
+            key = ("review_ci_red", item, head)
+            if key not in logged:
+                logged.add(key)
+                observe.emit("review_ci_red", item=item, commit=head, job=job,
+                             detail=f"{item}: CI failed at {head[:12]}: {job}")
+            if planner is not None and _block_ci_red(planner, item, head, job, agent_id):
+                blocked.append(row)
+                continue
+        ready.append(row)
+    return ready, waiting, blocked
+
+
+def ci_red_blocker(head: str, job: str) -> str:
+    """The blocker written on a review row whose CI failed (GRPH-1392)."""
+    return (f"CI red at {head[:12]}: {job} failed. Fix it on the branch, then move the "
+            f"item back to next (gbfleet held review: a reviewer could not sign off).")
+
+
+def _block_ci_red(planner: Graphban, item: str, head: str, job: str, agent_id: str) -> bool:
+    """Block a review row on its failing CI job. False when the write was refused."""
+    args: dict = {"id": item, "status": "blocked", "blocker": ci_red_blocker(head, job)}
+    if agent_id:
+        args["agent_id"] = agent_id
+    try:
+        planner.call("update_item", **args)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("review_ci_red_unrecorded", item=item, detail=str(exc))
+        return False
+    observe.emit("review_ci_red_blocked", item=item, commit=head, job=job,
+                 detail=f"{item}: blocked on {job} at {head[:12]}")
+    return True
 
 
 def review_held(row: dict) -> bool:
