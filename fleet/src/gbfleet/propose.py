@@ -317,6 +317,25 @@ def subject(repo: Path, branch: str, base: str) -> str:
     return (done.stdout or "").strip().splitlines()[0].strip() if done.returncode == 0 and done.stdout.strip() else ""
 
 
+def title_subject(repo: Path, branch: str, base: str) -> str:
+    """The subject to TITLE a PR with: the branch's FIRST non-merge commit beyond `base`.
+
+    The newest commit is the smallest follow-up fix on a branch with a bounce or a merge
+    of main, and the squash commit would land on main named after it (GRPH-1419). The
+    oldest non-merge commit is the build. Empty when unreadable; the caller falls back.
+    """
+    if not base:
+        return ""
+    done = subprocess.run(["git", "log", "--reverse", "--no-merges", "--format=%s",
+                           f"{base}..{branch}"], cwd=str(repo), capture_output=True, text=True)
+    if done.returncode != 0:
+        return ""
+    for line in (done.stdout or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
 def _names(subject: str, item: str) -> bool:
     return re.search(rf"(?<![A-Za-z0-9_-]){re.escape(item)}(?![A-Za-z0-9_])", subject or "") is not None
 
