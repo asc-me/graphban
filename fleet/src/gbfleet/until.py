@@ -399,7 +399,8 @@ def run(
                 raise ConfigError(f"the entitlement registry could not be read: {exc}") from exc
             identity = _identify(planner, repo, adapter, wave)
             _preflight_observations(supervisor)
-            result = _loop(
+            try:
+              result = _loop(
                 wave, children, occupied, persist,
                 repo, workspace, wave_name, api_key, server,
                 launch_factory, planner, supervisor, identity, pool,
@@ -418,7 +419,19 @@ def run(
                 adapter=adapter,
                 merge=merge,
                 wave_base=chosen_base,
-            )
+              )
+            except CapError as exc:
+                # GRPH-1438. A cap exit stops SPAWNING; it must not abandon a child that is
+                # still running. Design chosen: wait here, keep reaping, and exit only after
+                # the last live child is reaped and its branch published (not a hand-off to
+                # a successor through the children file).
+                waited = _drain_live(wave, children, persist, planner, supervisor,
+                                     limits, poll, sleep, debug, chosen_base.ref)
+                if waited:
+                    raise CapError(exc.reason,
+                                   f"{exc} [waited for {waited} live child(ren) to finish "
+                                   "and be reaped before exiting]") from exc
+                raise
             result.wave = wave
             if wave.observations_refused:
                 result.ok = False
@@ -450,6 +463,32 @@ def run(
         wave.reason = "stall"
         return Report(ok=False, reason="stall", exit=1, detail=str(exc), wave=wave,
                       minted=minted, spawned=len(wave.spawned))
+
+
+def _drain_live(wave, children, persist, planner, supervisor, limits, poll, sleep, debug,
+                base) -> int:
+    """After a cap exit, keep reaping until no spawned child is running (GRPH-1438).
+
+    Returns how many live children it waited for. Reaping publishes each child's branch, the
+    same path the main loop uses, so a commit made after the cap was hit still reaches the
+    remote. Bounded by `watch_tick`, which stops a child past its wall-clock limit.
+    """
+    waited = sum(1 for c in children if c.running)
+    while any(c.running for c in children):
+        try:
+            watch_tick(wave, children, limits, planner, debug=debug, persist=persist,
+                       base_branch=base)
+        except (ToolFailed, ServerUnreachable, NotPermitted) as exc:
+            observe.emit("drain_retry", detail=str(exc))
+        finished = [c for c in children if not c.running]
+        if finished:
+            _report_exits(finished, supervisor, wave)
+            _reap_all(wave, finished, client=planner, base_branch=base)
+            children[:] = [c for c in children if c.running]
+            persist()
+        if any(c.running for c in children):
+            sleep(poll)
+    return waited
 
 
 def _identify(planner: Graphban, repo: Path, adapter: str = "",
