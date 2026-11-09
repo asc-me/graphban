@@ -101,22 +101,22 @@ def _gh_answers(monkeypatch, payload: dict):
 
 def test_a_pr_with_no_checks_is_unknown_not_pending(monkeypatch):
     _gh_answers(monkeypatch, {"headRefOid": HEAD, "statusCheckRollup": []})
-    assert until.ci_verdict(Path("."), "gb/x")[0] == "unknown"
+    assert propose.ci_rollup(Path("."), "gb/x")[0] == "unknown"
     assert propose.ci_green(Path("."), "gb/x", HEAD) is False  # still fails closed
 
 
 def test_the_rollup_reads_pending_green_and_red(monkeypatch):
     _gh_answers(monkeypatch, {"headRefOid": HEAD, "statusCheckRollup": [
         {"name": "a", "conclusion": "SUCCESS"}, {"name": "b", "status": "IN_PROGRESS"}]})
-    assert until.ci_verdict(Path("."), "gb/x") == ("pending", HEAD, "")
+    assert propose.ci_rollup(Path("."), "gb/x") == ("pending", HEAD, "")
     _gh_answers(monkeypatch, {"headRefOid": HEAD, "statusCheckRollup": [
         {"name": "a", "conclusion": "SUCCESS"}, {"context": "lint", "state": "SKIPPED"}]})
-    assert until.ci_verdict(Path("."), "gb/x") == ("green", HEAD, "")
+    assert propose.ci_rollup(Path("."), "gb/x") == ("green", HEAD, "")
     assert propose.ci_green(Path("."), "gb/x", HEAD) is True
     assert propose.ci_green(Path("."), "gb/x", "other") is False
     _gh_answers(monkeypatch, {"headRefOid": HEAD, "statusCheckRollup": [
         {"name": "a", "conclusion": "SUCCESS"}, {"name": "fleet-tests", "conclusion": "FAILURE"}]})
-    assert until.ci_verdict(Path("."), "gb/x") == ("red", HEAD, "fleet-tests")
+    assert propose.ci_rollup(Path("."), "gb/x") == ("red", HEAD, "fleet-tests")
 
 
 # --- the loop -----------------------------------------------------------------------------
