@@ -2735,6 +2735,8 @@ def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, s
     `attest` writes `Attests: <item>` into the body. The per-item split asks for it; a
     single-item branch does not, and its body stays the one it had.
     """
+    # GRPH-1419: title from the build commit, not the newest follow-up fix.
+    subj = propose_mod.title_subject(repo, branch, base) or subj
     title, body = propose_mod.describe(branch, items, subj, attest=attest)
     note = wave.behind_clean.get(branch)
     if note:
