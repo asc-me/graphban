@@ -66,6 +66,9 @@ export function useQuickStart(projectId: string, hosted: boolean, pollMs?: numbe
     steps,
     marks,
     setup: setupQ.data,
+    /** The setup read has answered, with data or an error. The auto-open waits on this,
+     *  not on data, so a failed read still opens the dialog (at ⓪). */
+    setupSettled: !!setupQ.data || !!setupQ.error,
     credentials: credQ.data?.credentials ?? [],
     chip: chipCount(steps, marks),
     firstUnfinished: firstUnfinished(steps, marks),

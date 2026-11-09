@@ -168,12 +168,13 @@ function FrameBody({ hosted }: { hosted: boolean }) {
   React.useEffect(() => {
     // With a project, wait for its setup read so the dialog opens at the first unfinished
     // step (as the chip does), not at ⓪. No project: nothing to read, open at the start.
-    if (shouldAutoOpen && !loading && !autoOpened.current && (!active?.id || qs.setup)) {
+    // A failed setup read still opens it, at ⓪, rather than never opening.
+    if (shouldAutoOpen && !loading && !autoOpened.current && (!active?.id || qs.setupSettled)) {
       autoOpened.current = true;
-      if (active?.id) setQsStep(qs.firstUnfinished);
+      if (active?.id && qs.setup) setQsStep(qs.firstUnfinished);
       setQsOpen(true);
     }
-  }, [shouldAutoOpen, loading, active?.id, qs.setup, qs.firstUnfinished]);
+  }, [shouldAutoOpen, loading, active?.id, qs.setup, qs.setupSettled, qs.firstUnfinished]);
 
   if (loading || (projects.length === 0 && onboardingQ.isLoading)) return <Loading />;
 
