@@ -55,7 +55,7 @@ function Sparkline({ days }: { days: (number | null)[] }) {
 }
 
 function Row({ e }: { e: HarnessCapacityEntitlement }) {
-  const budget = e.token_budget === null ? "no token_budget stated" : `${e.token_budget} tokens`;
+  const budget = e.token_budget === null ? "no burn-down" : `${e.token_budget} tokens`;
   return (
     <tr key={e.id} data-testid="capacity-row" data-state={e.state} className="align-top">
       <td className="py-2 pr-3">
@@ -98,11 +98,11 @@ function Row({ e }: { e: HarnessCapacityEntitlement }) {
         </div>
       </td>
       <td className="py-2 pr-3" title={e.projected_exhaustion.basis}>
-        <div className="font-mono text-small">{budget}</div>
-        <div className="text-small text-muted">
+        <div data-testid="capacity-budget" className="font-mono text-small">{budget}</div>
+        <div data-testid="capacity-projection" className="text-small text-muted">
           {e.projected_exhaustion.at
             ? `runs out ~${when(e.projected_exhaustion.at)}`
-            : `— ${e.projected_exhaustion.reason}`}
+            : e.projected_exhaustion.reason}
         </div>
       </td>
       <td className="py-2">
