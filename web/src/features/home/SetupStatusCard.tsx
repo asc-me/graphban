@@ -6,8 +6,9 @@ import { useProjectSetup } from "@/lib/queries";
 import { relTime } from "@/lib/relTime";
 import type { SetupMachineReport, SetupStep } from "@/lib/types";
 import { settingsPath } from "@/lib/routes";
-import { countFrom, deriveMarks } from "@/features/onboarding/quickStartProgress";
+import { countFrom, deriveMarks, storedAddress, storedWhere } from "@/features/onboarding/quickStartProgress";
 import { Link } from "react-router-dom";
+import { copyText } from "@/lib/clipboard";
 
 /** Open the quick-start dialog at ③ (its paste-a-key route). The shell owns the dialog. */
 const CONNECT_EVENT = "graphban:open-quickstart-connect";
@@ -78,6 +79,8 @@ export function SetupStatusCard({ projectId }: { projectId: string }) {
   }
 
   // Each machine separately (§6): the browser cannot know which one you are sitting at.
+  const whereStep = setup.data?.steps.find((s) => s.step === 0);
+  const dedicated = storedWhere(whereStep) === "dedicated_server";
   const rows: SetupMachineReport[] = step.machines?.length
     ? step.machines
     : step.reported
@@ -93,19 +96,26 @@ export function SetupStatusCard({ projectId }: { projectId: string }) {
           {rows.map((r, i) => <MachineReportRow key={r.id || i} row={r} />)}
         </ul>
       ) : (
-        <p className="mt-2 text-[13px] text-muted" data-testid="setup-status-never">
-          <MachineState machine={null} /> — this machine never reported for this project.
-        </p>
+        <div data-testid="setup-status-never" className="mt-2">
+          <p className="text-[13px] text-muted">
+            <MachineState machine={null} /> — No machine has reported yet. Run <code>gban setup</code> (or{" "}
+            <code>gban doctor</code>) on the machine you code on.
+          </p>
+          <CommandBlock command="gban setup" />
+        </div>
       )}
-      <p className="mt-2 text-[13px] text-fg-2">
-        Next: run <code>gban doctor</code> on that machine. On a dedicated server, also check it from
-        outside: <code>curl -fsS &lt;your-server&gt;/health</code>.
-      </p>
+      {dedicated ? (
+        <p data-testid="setup-status-curl" className="mt-2 text-[13px] text-fg-2">
+          On a dedicated server, also check it from outside:{" "}
+          <code>curl -fsS {storedAddress(whereStep) || "<your-server>"}/health</code>.
+        </p>
+      ) : null}
       {jobBlock}
       <div className="mt-3 flex items-center gap-2">
         <Button variant="outline" size="sm" onClick={requestConnectStep}>Verify with a key instead</Button>
         <Link className="text-[12px] text-muted underline" to={settingsPath("account/machines")}>Machines</Link>
         <Button variant="ghost" size="sm" onClick={dismiss}>Dismiss</Button>
+        <span className="text-[12px] text-muted">Hides this card. Settings → Machines keeps the list.</span>
       </div>
     </section>
   );
@@ -134,6 +144,18 @@ function FirstJobBlock({ mark, steps }: { mark: { status: string; reason?: strin
   );
 }
 
+function CommandBlock({ command }: { command: string }) {
+  const [copied, setCopied] = React.useState(false);
+  return (
+    <div className="mt-1 flex items-center gap-2">
+      <code className="rounded-[10px] border border-line bg-surface-2 px-2 py-1 font-mono text-[12px]">$ {command}</code>
+      <Button variant="outline" size="sm" onClick={() => { void copyText(command); setCopied(true); }}>
+        {copied ? "Copied" : "Copy"}
+      </Button>
+    </div>
+  );
+}
+
 function MachineReportRow({ row }: { row: SetupMachineReport }) {
   const tone = row.state === "failed" ? "text-danger" : row.state === "clean" ? "text-accent" : "text-muted";
   const when = Number.isFinite(Date.parse(row.at)) ? relTime(row.at) : row.at;
@@ -146,6 +168,7 @@ function MachineReportRow({ row }: { row: SetupMachineReport }) {
         </p>
         <MachineState machine={{ state: row.state, fail_count: row.fails, unknowns: row.unknowns }} />
       </div>
+      <CommandBlock command="gban doctor" />
       {row.failing.length ? (
         <ul className={`mt-1 space-y-0.5 font-mono text-[12px] ${tone}`}>
           {row.failing.map((l, i) => (

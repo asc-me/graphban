@@ -41,8 +41,40 @@ describe("dashboard Setup status card (GRPH-1442)", () => {
 
   it("never reported: says so and gives the next command", async () => {
     renderCard({});
-    expect(await screen.findByTestId("setup-status-never")).toHaveTextContent("NEVER REPORTED");
-    expect(screen.getByText("gban doctor")).toBeTruthy();
+    const box = await screen.findByTestId("setup-status-never");
+    expect(box).toHaveTextContent("No machine has reported yet");
+    expect(screen.getByTestId("setup-status-card").textContent).not.toMatch(/this machine|that machine/i);
+    expect(screen.getByText("$ gban setup")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
+  });
+
+  it("two machines: two rows, each with a copyable doctor command", async () => {
+    renderCard({ machines: [
+      { id: "a", machine: "laptop", state: "failed", fails: 1, unknowns: 0, at: "x", failing: [] },
+      { id: "b", machine: "ubuntu", state: "clean", fails: 0, unknowns: 0, at: "y", failing: [] },
+    ] });
+    await screen.findAllByTestId("setup-status-failed");
+    expect(screen.getAllByTestId(/setup-status-(failed|clean)/)).toHaveLength(2);
+    expect(screen.getAllByText("$ gban doctor")).toHaveLength(2);
+  });
+
+  const where = (detail: string): SetupStep => ({ step: 0, name: "Where", status: "done", detail, how: "" });
+
+  it("this computer: no curl line", async () => {
+    renderCard({}, [where("this_computer")]);
+    await screen.findByTestId("setup-status-never");
+    expect(screen.queryByTestId("setup-status-curl")).toBeNull();
+  });
+
+  it("dedicated server: the curl line is shown", async () => {
+    renderCard({}, [where("dedicated_server at http://srv:8080")]);
+    expect(await screen.findByTestId("setup-status-curl")).toHaveTextContent("curl -fsS http://srv:8080/health");
+  });
+
+  it("Dismiss carries its consequence", async () => {
+    renderCard({});
+    await screen.findByRole("button", { name: "Dismiss" });
+    expect(screen.getByText(/Hides this card\. Settings → Machines keeps the list\./)).toBeTruthy();
   });
 
   it("a failed report shows the count and failing lines in the failure colour, not a tick", async () => {
