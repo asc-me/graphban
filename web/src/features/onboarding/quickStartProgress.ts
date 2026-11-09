@@ -15,7 +15,7 @@ export const STEP_META: Record<QsStep, { num: string; label: string }> = {
   where: { num: "⓪", label: "Where" },
   project: { num: "①", label: "Project" },
   model: { num: "②", label: "Model" },
-  connect: { num: "③", label: "Connect" },
+  connect: { num: "③", label: "Connect your agent" },
   first_job: { num: "④", label: "First job" },
 };
 
