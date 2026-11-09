@@ -1138,6 +1138,18 @@ class PRCINotGreen(PRCooldown):
     this subclass first and name the action instead (see mcp_server)."""
 
 
+#: What `fleet` writes on an item whose branch was pushed but not opened as a PR.
+SALVAGE_MARKER = "not proposed as a PR"
+
+
+class NoPRForBranch(PRCINotGreen):
+    """`done` was asked for an item whose work is on a branch and has no PR (GRPH-1457).
+
+    A PRCINotGreen so every caller that refuses on a PR gate refuses here too, and with the
+    same "this does not clear itself" reading: the fix is a PR, not more waiting.
+    """
+
+
 #: A link to a proposed change, as opposed to any other URL an item might carry.
 #:
 #: GitHub and GitLab spell it differently and both are matched; anything else is not a PR
@@ -1440,6 +1452,36 @@ def ci_run_in_progress(evidence, commits) -> dict | None:
     return live
 
 
+def _refuse_if_branch_has_no_pr(db, item, incoming_evidence) -> None:
+    """GRPH-1457: an item whose evidence names a branch needs a linked PR to reach `done`.
+
+    A missing PR used to read as "no PR needed": the cooldown and `suite_green` gate apply
+    only to an item with a linked PR, so a salvaged branch signed off before anyone proposed
+    it went `done` with no CI attestation and its code on no PR. Only ``linked is None``
+    reaches here, so no PR url is in the evidence; an owner's close is exempt, and so is an
+    item with a recorded PR (`pr`, `github_url`).
+    """
+    branch = (item.branch or "").strip()
+    if not branch or (item.github_url or "").strip() or (getattr(item, "pr", None) or ""):
+        return
+    merged = append_evidence(item.evidence, incoming_evidence)
+    # The evidence must NAME the unproposed branch: the supervisor's salvage receipt says
+    # "not proposed as a PR". An ordinary built item also has a branch and no PR yet, and the
+    # proposal that follows its build is not this gate's business.
+    if not any(isinstance(e, dict) and SALVAGE_MARKER in str(e.get("detail") or "")
+               for e in merged):
+        return
+    if any(a.get("adapter") == OWNER_CLOSE_ADAPTER for a in valid_attestations(merged)):
+        return
+    record_refusal(db, item, predicate="pr_missing",
+                   detail=f"work is on branch {branch} and no PR is linked")
+    raise NoPRForBranch(
+        f"{item.key} cannot move to done: its work is on branch {branch} and no PR is linked. "
+        "A branch nobody proposed never reaches the base and no CI has attested it. Open a PR "
+        "for the branch (gbfleet proposes salvaged branches on `until`), or link its URL on "
+        "the item, then retry")
+
+
 def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
                               commit: str | None = None) -> list[dict]:
     """Raise PRCooldown when `done` is asked for too soon after a PR link (GRPH-567).
@@ -1469,6 +1511,8 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
     """
     cooldown = max(0, int(getattr(settings, "pr_cooldown_seconds", 0) or 0))
     linked = pr_linked_at(incoming_evidence or [], item.pr_linked_at)
+    if cooldown and linked is None:
+        _refuse_if_branch_has_no_pr(db, item, incoming_evidence or [])
     if not cooldown or linked is None:
         return []
     merged = append_evidence(item.evidence, incoming_evidence or [])

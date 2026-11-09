@@ -3200,12 +3200,60 @@ class Merger:
             # Lazy: only read when the PR has files outside this item's own touchpoints.
             covering=lambda: self._covering(item_id, item),
         )
+        if got.skipped and got.reason.startswith("no PR for"):
+            # GRPH-1457: done with its work on a branch and no PR is a stuck state, not a
+            # skip. Propose it; if that cannot be done, say so and keep watching.
+            got = self._propose_unproposed(item_id, item, got)
         got = propose_mod.close_after_merge(self.repo, got)
         if got.ok and got.commit:
             got = self._record(wave, got)
         if got.conflicts:
             self._bounce(wave, item_id, got)
         return got
+
+    def _propose_unproposed(self, item_id: str, item: dict,
+                            got: "propose_mod.Merged") -> "propose_mod.Merged":
+        """GRPH-1457: a `done` item whose branch carries commits and has no PR gets one.
+
+        The same path as a normal reap (`propose_mod.propose`). Never a silent skip: when it
+        cannot be opened, a `wait` naming the item is emitted and the item stays watched
+        (the returned outcome is neither `skipped` nor `ok`, so it is not final). Once the PR
+        exists the next tick merges it through the usual checks.
+        """
+        branch = str(item.get("branch") or "").strip()
+
+        def stuck(why: str) -> "propose_mod.Merged":
+            observe.emit("wait", item=item_id, branch=branch, kind="done_without_pr",
+                         detail=f"{item_id} is done but its work has no PR: {why}")
+            return propose_mod.Merged(item=item_id, selector=got.selector,
+                                      reason=f"done without a PR; {why}")
+
+        if not branch:
+            return stuck("the item names no branch to propose")
+        base = self.base or "main"
+        try:
+            ahead = wt_mod.commits_beyond_base(self.repo, branch, base)
+        except Exception as exc:  # noqa: BLE001 - unreadable is a wait, not a skip
+            return stuck(f"could not compare {branch} with {base}: {exc}")
+        if ahead <= 0:
+            return stuck(f"{branch} has no commits beyond {base} to propose")
+        title, body = propose_mod.describe(
+            branch, [item_id], propose_mod.title_subject(self.repo, branch, base) or "")
+        prop = propose_mod.propose(self.repo, branch, base, title=title, body=body,
+                                   head=_branch_head(self.repo, branch) or "",
+                                   items=[item_id])
+        if not prop.url:
+            return stuck(prop.reason or "gh opened no PR")
+        try:
+            self.client.post_observation(item_id=item_id, kind="pr_opened",
+                                         branch=branch, url=prop.url)
+        except Exception as exc:  # noqa: BLE001 - the PR exists; the receipt is best-effort
+            observe.emit("wait", item=item_id, branch=branch, kind="done_without_pr",
+                         detail=f"proposed {prop.url} but could not record it: {exc}")
+        observe.emit("wait", item=item_id, branch=branch, kind="done_without_pr_proposed",
+                     detail=f"{item_id} was done with no PR; proposed {prop.url}")
+        return propose_mod.Merged(item=item_id, selector=prop.url, url=prop.url,
+                                  reason=f"proposed {prop.url}; merge is attempted next tick")
 
     def _local_full(self, item: dict) -> bool:
         """Whether the builder's full local runs stand in for CI (GRPH-1415, GRPH-1429). The
