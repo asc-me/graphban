@@ -949,9 +949,24 @@ def _loop(
             # be cleared by another reviewer, so it is taken out of what can spawn one.
             ci_stuck = [r for r in rows if ci_unattestable(r)]
             rows = [r for r in rows if not ci_unattestable(r)]
+            # GRPH-1417: silence from a run that is still going is not "unattestable": its
+            # attestation will arrive. Those rows wait; only the rest can end the wave.
+            ci_pending: dict[str, str] = {}
+            for r in list(ci_stuck):
+                running = ci_run_in_progress(repo, r)
+                if running:
+                    ci_pending[str(r["id"])] = running
+                    ci_stuck.remove(r)
             reviews = [str(r["id"]) for r in rows + ci_stuck]
             outside = [str(r["id"]) for r in rows_outside]
             waits = _wait_ids(planner)
+            for rid, running in ci_pending.items():
+                line = f"{rid}: review_waits_on_ci ({running})"
+                if line not in waits:
+                    waits.append(line)
+                if line not in wave.review_waits:
+                    wave.review_waits.append(line)
+                    observe.emit("review_waits_on_ci", review=rid, run=running)
         except NotPermitted as exc:
             raise ConfigError(f"cannot classify review/waits: {exc}") from exc
         except ToolFailed as exc:
@@ -1234,6 +1249,12 @@ def _loop(
                 return _name_ci_stuck(
                     _leave("review-unsigned", 1, review=reviews, waits=waits,
                            outside=outside), ci_stuck)
+
+        if ci_pending:
+            # GRPH-1417: CI is still running for the head; no reviewer, no exit.
+            empty = 0
+            sleep(poll)
+            continue
 
         empty += 1
         if empty >= empty_ticks:
@@ -2547,6 +2568,34 @@ def ci_unattestable(row: dict) -> bool:
     detail = _latest_refusal(row)
     return (detail.startswith(_REFUSED_AT_DONE + "pr_ci_not_green)")
             and "cooldown over" in detail)
+
+
+def ci_run_in_progress(repo: Path, row: dict) -> str:
+    """GRPH-1417. A description of a CI run for this row's head that is queued or in progress,
+    or "". Asks the forge (`gh run list`); any failure to ask reads as "none", so an
+    unreachable forge falls back to the GRPH-1409 exit rather than waiting forever.
+    """
+    import subprocess
+    m = re.search(r"commit ([0-9a-f]{7,40})", _latest_refusal(row))
+    branch = str(row.get("branch") or "")
+    if not m or not branch:
+        return ""
+    sha = m.group(1)
+    try:
+        done = subprocess.run(
+            ["gh", "run", "list", "--branch", branch, "--limit", "50",
+             "--json", "databaseId,status,name,headSha"],
+            cwd=str(repo), capture_output=True, text=True, timeout=60)
+        if done.returncode != 0:
+            return ""
+        runs = json.loads(done.stdout or "[]")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ""
+    for run in runs:
+        if (str(run.get("headSha") or "").startswith(sha)
+                and run.get("status") in ("queued", "in_progress", "waiting", "pending", "requested")):
+            return f"run {run.get('databaseId')} {run.get('name') or ''} {run.get('status')}".replace("  ", " ")
+    return ""
 
 
 def _name_ci_stuck(report: Report, ci_stuck: list[dict]) -> Report:
