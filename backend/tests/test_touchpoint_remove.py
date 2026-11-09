@@ -174,3 +174,26 @@ def test_removal_that_matches_nothing_is_named_not_silent(client, auth):
     out = call("update_item", {"id": item["id"], "touchpoints_remove": ["nope/*", "a.py"]})
     assert out["touchpoints_removed"] == ["a.py"]
     assert out["touchpoints_remove_unmatched"] == ["nope/*"]
+
+
+def test_planner_key_narrows_unheld_item_created_by_worker(client, auth):
+    """GRPH-1441 acceptance 2, the original report: a planner-role key narrows the globs on an
+    item it does not hold (a worker key created it), through the MCP route — so
+    `_caller_is_planner` is exercised, not the service-layer `remove_as_planner` flag."""
+    proj = client.post("/api/projects", json={"name": "rm4"}, headers=auth).json()["id"]
+
+    def key(name, roles):
+        return client.post("/api/api-keys", json={"name": name, "project_id": proj,
+                                                    "roles": roles},
+                           headers=auth).json()["plaintext"]
+
+    worker = _mcp(client, key("rm4-w", ["worker"]))
+    planner = _mcp(client, key("rm4-p", ["planner"]))
+    item = worker("create_item", {"title": "x", "touchpoints": ["a.py", "backend/**"]})
+    out = planner("update_item", {"id": item["id"], "touchpoints": ["b.py"],
+                                  "touchpoints_remove": ["backend/**"]})
+    assert out.get("touchpoints_removed") == ["backend/**"], out
+    assert "backend/**" not in out["touchpoints"]
+    assert set(out["touchpoints"]) == {"a.py", "b.py"}
+    assert "backend/**" not in out["touchpoint_intake"]["retained"]
+    assert "touchpoints_remove_unmatched" not in out
