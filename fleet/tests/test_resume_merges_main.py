@@ -28,6 +28,10 @@ def _prior(tmp_path: Path) -> Path:
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "core.autocrlf", "false")
+    # resume_bounced runs `git merge`, which needs the repo's own identity: a CI
+    # runner has no global one.
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
     _commit(repo, "AGENTS.md", "old\n", "base")
     _git(repo, "checkout", "-q", "-b", "gb/w-1")
     _commit(repo, "built", "work\n", "prior attempt")
