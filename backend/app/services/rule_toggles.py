@@ -130,8 +130,12 @@ SYNC_TTL = 2.0
 _last_sync = 0.0
 
 
-def _sync_library(db: Session) -> None:
-    """Reload this worker's `LIBRARY` when another worker installed a different pack. One
+def sync_library(db: Session) -> None:
+    """Reload this worker's `LIBRARY` when another worker installed a different pack.
+
+    Called ONCE, at the start of a request (`app.db.get_db`), before anything reads `LIBRARY`
+    — the gates' `RULE not in LIBRARY` guards included. Never mid-request: a reload between a
+    guard and the `resolve` behind it would 404 a gate on a rule the new pack dropped. One
     indexed read at most every `SYNC_TTL` seconds; a no-op when no pack is installed."""
     global _last_sync
     now = time.monotonic()
@@ -195,7 +199,6 @@ def _resolve(rule: LibraryRule, proj: RuleToggle | None, org: RuleToggle | None,
 
 def resolve(db: Session, rule_id: str, project_id: str | None) -> dict:
     """The effective state and params of one rule for one project, each with its source."""
-    _sync_library(db)
     rule = _rule(rule_id)
     org_id = _org_of(db, project_id)
     return _resolve(rule, _row(db, rule_id, project_id=project_id),
@@ -205,7 +208,6 @@ def resolve(db: Session, rule_id: str, project_id: str | None) -> dict:
 def test_scope_mode(db: Session, project_id: str | None) -> str:
     """The project's test-scope mode. A project that never set it — or a box whose pack does
     not carry the rule — reads `agent_and_pr`, today's behaviour."""
-    _sync_library(db)
     if TEST_SCOPE_RULE not in LIBRARY:
         return TEST_SCOPE_DEFAULT
     mode = resolve(db, TEST_SCOPE_RULE, project_id)["params"]["value"].get("mode")
@@ -215,7 +217,6 @@ def test_scope_mode(db: Session, project_id: str | None) -> str:
 def test_scope_engines(db: Session, project_id: str | None) -> list[str]:
     """The engines `agent_full` needs full passing local runs on (GRPH-1429). Unset, or a value
     that is not a non-empty list of strings, reads the default: postgres and sqlite."""
-    _sync_library(db)
     if TEST_SCOPE_RULE not in LIBRARY:
         return list(TEST_SCOPE_ENGINES_DEFAULT)
     value = resolve(db, TEST_SCOPE_RULE, project_id)["params"]["value"].get("engines")
@@ -228,7 +229,6 @@ def test_scope_engines(db: Session, project_id: str | None) -> list[str]:
 def undeclared_files_mode(db: Session, project_id: str | None) -> str:
     """`hold` (today's behaviour) or `warn`. A project that never set it, or a box whose pack
     does not carry the rule, reads `hold`."""
-    _sync_library(db)
     if UNDECLARED_FILES_RULE not in LIBRARY:
         return UNDECLARED_FILES_DEFAULT
     mode = resolve(db, UNDECLARED_FILES_RULE, project_id)["params"]["value"].get("mode")
@@ -238,7 +238,6 @@ def undeclared_files_mode(db: Session, project_id: str | None) -> str:
 def exclusive_paths(db: Session, project_id: str | None) -> tuple[str, ...]:
     """The project's exclusive file areas. A project that never set the rule — or a box whose
     pack does not carry it — reads the default, today's behaviour."""
-    _sync_library(db)
     if EXCLUSIVE_AREAS_RULE not in LIBRARY:
         return EXCLUSIVE_AREAS_DEFAULT
     paths = resolve(db, EXCLUSIVE_AREAS_RULE, project_id)["params"]["value"].get("paths")
@@ -249,7 +248,6 @@ def exclusive_paths(db: Session, project_id: str | None) -> tuple[str, ...]:
 
 def generated_files(db: Session, project_id: str | None) -> list[str]:
     """The project's generated-file paths; today's list when unset or the rule is absent."""
-    _sync_library(db)
     if GENERATED_FILES_RULE not in LIBRARY:
         return list(GENERATED_FILES_DEFAULT)
     paths = resolve(db, GENERATED_FILES_RULE, project_id)["params"]["value"].get("paths")
@@ -260,7 +258,6 @@ def done_predicate_list(db: Session, project_id: str | None) -> list[dict]:
     """Each predicate `done` needs for a project with where it came from: `deployment` (the
     environment setting, read live, and `suite_green` for an item with a linked PR) or
     `project` (added through `merge.done_predicates`). Unset follows the deployment."""
-    _sync_library(db)
     out = [{"name": n, "source": "deployment"} for n in deployment_predicates()]
     out.append({"name": CI_FLOOR_PREDICATE, "source": "deployment", "when": "item has a linked PR"}
                if CI_FLOOR_PREDICATE not in deployment_predicates() else None)
@@ -284,7 +281,6 @@ def done_predicate_names(db: Session, project_id: str | None) -> list[str]:
 
 def effective(db: Session, project_id: str | None) -> list[dict]:
     """Every library rule's effective toggle for a project, in library order."""
-    _sync_library(db)
     org_id = _org_of(db, project_id)
     rows = {(r.rule_id, "org" if r.org_id else "project"): r for r in db.scalars(
         select(RuleToggle).where(
@@ -496,7 +492,6 @@ def org_view(db: Session, org_id: str) -> dict:
     """The org's own state per library rule, and each of its projects' effective value with
     its source — one read, instead of one `effective` call per project. The org's `on` /
     `params` are its own row's, or the platform default when it holds none."""
-    _sync_library(db)
     project_ids = list(db.scalars(select(Project.id).where(Project.org_id == org_id)
                                   .order_by(Project.id)))
     rows = {r.rule_id: r for r in db.scalars(select(RuleToggle).where(RuleToggle.org_id == org_id))}
