@@ -33,16 +33,26 @@ export const AGENTS: { id: string; label: string; restart: string }[] = [
 export const GBAN_AGENTS: readonly string[] = gbanAgents.agents;
 
 /**
- * The gban route's commands, exported by the CLI package with `{server}` / `{project}` holes.
+ * The gban route's commands, exported by the CLI package with `{server}` / `{project}` holes, in
+ * order: install, login, login --pair, setup (from the checkout), setup --project (no repo).
  * cli/tests parses each with gban's own argparse, so these cannot drift from the CLI's flags.
  */
 export function gbanCommands(server: string, projectId: string): string[] {
   return gbanAgents.commands.map((c) => c.replaceAll("{server}", server).replaceAll("{project}", projectId));
 }
-const COMMAND_LABELS = ["Copy the install command", "Copy the login command", "Copy the setup command"];
+
+/** The checkout directory name for a repo URL ("" when there is no usable repo). */
+export function repoDir(repoUrl: string): string {
+  const last = repoUrl.trim().replace(/\/+$/, "").replace(/\.git$/, "").split(/[/:]/).pop() ?? "";
+  return last;
+}
 
 export type Route = "gban" | "key";
 export const ROUTE_LABEL: Record<Route, string> = { gban: "gban CLI", key: "pasted key" };
+export const ROUTE_TITLE: Record<Route, [string, string]> = {
+  gban: ["Recommended — the gban CLI", "Sets up everything"],
+  key: ["Just paste a key", "2 minutes, no delegation"],
+};
 
 export const HINT_AFTER_MS = 120_000;
 
@@ -114,6 +124,7 @@ export function ConnectStep({
   projectId,
   address,
   dedicated,
+  repoUrl = "",
   mark,
   agent,
   onAgent,
@@ -126,6 +137,8 @@ export function ConnectStep({
   /** Step ⓪'s address; "" means this computer (the page's own origin). */
   address: string;
   dedicated: boolean;
+  /** The project's repo; with one, setup runs from the checkout and resolves the project (S5). */
+  repoUrl?: string;
   mark: StepMark;
   agent: string;
   onAgent: (a: string) => void;
@@ -138,6 +151,8 @@ export function ConnectStep({
   const gbanOk = GBAN_AGENTS.includes(agent);
   const effective: Route = gbanOk ? route : "key";
   const server = address || (typeof window !== "undefined" ? window.location.origin : "");
+  const cmds = gbanCommands(server, projectId);
+  const dir = repoDir(repoUrl);
   const info = AGENTS.find((a) => a.id === agent) ?? AGENTS[0];
 
   const [minted, setMinted] = React.useState<ApiKeyCreated | null>(null);
@@ -216,7 +231,7 @@ export function ConnectStep({
                 effective === r ? "border-accent/50 bg-surface-3 text-fg" : "border-control text-muted"
               } disabled:opacity-50`}
             >
-              {r === "gban" ? "gban CLI" : "Paste a key"}
+              {ROUTE_TITLE[r][0]} <span className="text-faint">· {ROUTE_TITLE[r][1]}</span>
             </button>
           );
         })}
@@ -229,12 +244,26 @@ export function ConnectStep({
 
       {effective === "gban" ? (
         <div className="mt-3 space-y-2">
-          {gbanCommands(server, projectId).map((cmd, i) => (
-            <CopyBlock key={cmd} text={cmd} label={COMMAND_LABELS[i] ?? "Copy the command"} />
-          ))}
-          <PairApproval />
+          <CopyBlock text={cmds[0]} label="Copy the install command" />
+          <div className="rounded-[8px] border border-line p-2.5" data-testid="your-step">
+            <p className="font-mono text-[10px] uppercase tracking-wide text-faint">
+              Your step — signing in is yours; it can't be done for you
+            </p>
+            <div className="mt-1.5 space-y-2">
+              <CopyBlock text={cmds[1]} label="Copy the login command" />
+              <p className="text-[12px] text-muted">
+                No password prompt? Use the pairing flow instead:
+              </p>
+              <CopyBlock text={cmds[2]} label="Copy the pair login command" />
+              <PairApproval />
+            </div>
+          </div>
+          <CopyBlock
+            text={dir ? `cd ~/code/${dir} && ${cmds[3]}` : cmds[4]}
+            label="Copy the setup command"
+          />
           <p className="text-[12px] text-muted">
-            If you haven't already, run <code className="font-mono">gban setup</code>, then restart your agent.
+            …then restart your agent and ask it <em>"what's in my backlog?"</em>
           </p>
         </div>
       ) : (

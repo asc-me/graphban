@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
-import { ConnectStep, ROUTE_LABEL, type Route } from "@/features/onboarding/ConnectStep";
+import { AGENTS, ConnectStep, ROUTE_LABEL, type Route } from "@/features/onboarding/ConnectStep";
 import { StartupPromptRows } from "@/features/onboarding/StartupPrompts";
 import { TagField, useTagField } from "@/features/onboarding/TagField";
 import { postureView, type PostureWarning } from "@/features/onboarding/posture";
@@ -200,6 +200,7 @@ export function QuickStartDialog({
               projectId={projectId}
               address={storedAddress(whereStep) || (pendingWhere?.where === "dedicated_server" ? pendingWhere.address : "")}
               dedicated={(storedWhere(whereStep) ?? pendingWhere?.where) === "dedicated_server"}
+              repoUrl={project?.repo_url ?? ""}
               mark={qs.marks.connect}
               agent={agent}
               onAgent={setAgent}
@@ -219,6 +220,7 @@ export function QuickStartDialog({
           {screen === "first_job" && (
             <FirstJobStep
               hosted={hosted}
+              agentLabel={AGENTS.find((a) => a.id === agent)?.label ?? "your agent"}
               mark={qs.marks.first_job}
               setupSteps={qs.setup?.steps ?? []}
               isLast={isLast}
@@ -1034,6 +1036,7 @@ export function firstJobPrompt(hosted: boolean): string {
 
 function FirstJobStep({
   hosted,
+  agentLabel,
   mark,
   setupSteps,
   isLast,
@@ -1043,6 +1046,7 @@ function FirstJobStep({
   onFinishLater,
 }: {
   hosted: boolean;
+  agentLabel: string;
   mark: StepMark;
   setupSteps: { step: number; status: SetupStatus; detail: string; name: string; how: string; reason?: string }[];
   isLast: boolean;
@@ -1073,7 +1077,7 @@ function FirstJobStep({
       <h2 id="qs-job-h" className="text-[16px] font-semibold">
         Give it a first job
       </h2>
-      <p className="mb-1.5 mt-3 font-mono text-[10px] uppercase tracking-wide text-faint">Paste into your agent</p>
+      <p className="mb-1.5 mt-3 font-mono text-[10px] uppercase tracking-wide text-faint">Paste into {agentLabel}</p>
       <CopyLine text={prompt} label="Copy the first-job prompt" />
       <StatusLine status={line.status} text={line.text} />
       <dl className="mt-3 grid grid-cols-3 gap-2">

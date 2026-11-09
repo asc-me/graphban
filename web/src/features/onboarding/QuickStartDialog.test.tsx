@@ -408,7 +408,7 @@ describe("③ Connect your agent", () => {
     atConnect();
     const user = userEvent.setup();
     await open(user);
-    expect(screen.getByText("uv tool install graphban-cli")).toBeInTheDocument();
+    expect(screen.getByText("uv tool install graphban-cli graphban-fleet")).toBeInTheDocument();
     // Global options precede the subcommand: `gban login --server …` exits 2 under argparse.
     expect(screen.getByText(/^gban --server \S+ login --pair$/)).toBeInTheDocument();
     expect(screen.getByText("gban --project core setup")).toBeInTheDocument();
@@ -425,8 +425,8 @@ describe("③ Connect your agent", () => {
     const user = userEvent.setup();
     await open(user);
     await user.selectOptions(screen.getByLabelText("Which agent?"), "cursor");
-    expect(screen.getByRole("radio", { name: "gban CLI" })).toBeDisabled();
-    expect(screen.getByRole("radio", { name: "Paste a key" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: /the gban CLI/ })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: /Just paste a key/ })).toHaveAttribute("aria-checked", "true");
     expect(screen.queryByText("uv tool install graphban-cli")).not.toBeInTheDocument();
   });
 
@@ -434,7 +434,7 @@ describe("③ Connect your agent", () => {
     atConnect();
     const user = userEvent.setup();
     await open(user);
-    await user.click(screen.getByRole("radio", { name: "Paste a key" }));
+    await user.click(screen.getByRole("radio", { name: /Just paste a key/ }));
     await user.click(screen.getByRole("button", { name: /Create a key for Claude Code/ }));
     expect(await screen.findByText("Waiting for your agent's first call…")).toBeInTheDocument();
     expect(srv.minted).toEqual(["quickstart"]);
