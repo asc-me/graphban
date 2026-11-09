@@ -2907,3 +2907,53 @@ def test_a_review_unsigned_exit_names_the_ci_stuck_rows_beside_it():
     report = _name_ci_stuck(Report(ok=False, reason="review-unsigned", exit=1), [row])
     assert "GRPH-9" in report.detail and "owner close" in report.detail
     assert _name_ci_stuck(Report(ok=False, reason="review-unsigned", exit=1), []).detail == ""
+
+
+
+_CI_RUNNING = {"kind": "note", "detail": "refused at `done` (pr_ci_in_progress): waiting on CI "
+               "run https://x/runs/42/attempts/1, in progress at 89a0225d2552"}
+
+
+def test_the_in_progress_refusal_is_not_read_as_ci_unattestable():
+    """GRPH-1416: the server's in-progress refusal is its own wording, so until never takes it
+    for a dead-end `pr_ci_not_green` and ends the wave on it."""
+    from gbfleet.until import ci_unattestable
+    assert ci_unattestable({"id": "GRPH-9", "evidence": [_CI_RUNNING]}) is False
+    assert ci_unattestable({"id": "GRPH-9", "evidence": [_CI_STUCK]}) is True
+
+
+def test_a_row_whose_ci_run_is_in_progress_gets_no_reviewer_and_waits(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """GRPH-1416: a row the server refused `pr_ci_in_progress`, whose CI is still running,
+    gets no reviewer; until waits (the one CI wait, GRPH-1392's) and does not exit
+    `review-unsigned` because of it."""
+    from gbfleet import until
+    monkeypatch.setattr(until, "ci_verdict", lambda *a: ("pending", "89a0225d2552", ""))
+    workspace = tmp_path / "ws"
+    roles: list[str] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "", "branch": "gb/x", "evidence": [_CI_RUNNING]}],
+        minted_roles=roles,
+    )
+    ticks: list[int] = []
+
+    class Stop(Exception):
+        pass
+
+    def sleep(_):
+        ticks.append(1)
+        if len(ticks) > 12:
+            raise Stop
+
+    with pytest.raises(Stop):
+        run(
+            git_repo, _factory(scripts, "works_then_exits"),
+            planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+            state=state, workspace=workspace, poll=0, sleep=sleep, empty_ticks=3,
+            limits=Limits(max_workers=1),
+        )
+    assert roles == []
+    assert len(ticks) > 3  # waited past empty_ticks instead of exiting

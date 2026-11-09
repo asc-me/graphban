@@ -745,8 +745,36 @@ def _normalize_range(value) -> list[str]:
     return out
 
 
+#: GRPH-1416. The predicate CI's run-start marker carries (scripts/attest_ci.py `--mode started`).
+CI_RUNNING_PREDICATE = "ci_in_progress"
+
+
+def _is_run_marker(e: dict) -> bool:
+    """A run-start announcement: every predicate on it is `ci_in_progress`.
+
+    Stored as `kind: attestation` because CI writes with the `gate` scope, but it is NOT a
+    verdict and must never be read as one. Its predicate is `passed: True`, so a reader that
+    saw it would take "a run began" for "the work was checked": the gate would pass a PR
+    whose CI is still running, or has since gone red (the GRPH-1416 bounce).
+    """
+    names = [q.get("name") for q in (e.get("predicates") or []) if isinstance(q, dict)]
+    return bool(names) and all(n == CI_RUNNING_PREDICATE for n in names)
+
+
 def attestation_receipts(evidence) -> list[dict]:
-    """Every well-formed attestation on an item (GRPH-542)."""
+    """Every well-formed attestation on an item (GRPH-542).
+
+    Run-start markers (GRPH-1416) are excluded here, so no verdict reader — the completion
+    gate, required predicates, head staleness, sign-off, metrics — ever sees one. They
+    announce a run; they attest nothing. `_ci_run_records` is the one reader that wants them.
+    """
+    return [e for e in (evidence or [])
+            if isinstance(e, dict) and e.get("kind") == "attestation"
+            and not _is_run_marker(e)]
+
+
+def _ci_run_records(evidence) -> list[dict]:
+    """Attestations INCLUDING run-start markers, in evidence order (for `ci_run_in_progress`)."""
     return [e for e in (evidence or [])
             if isinstance(e, dict) and e.get("kind") == "attestation"]
 
@@ -1390,6 +1418,28 @@ def refuse_if_predicates_missing(db, item, merged, head) -> None:
         )
 
 
+def ci_run_in_progress(evidence, commits) -> dict | None:
+    """GRPH-1416. The newest CI run announced as started at one of `commits` and not answered since.
+
+    CI posts a `ci_in_progress` attestation when a run begins (scripts/attest_ci.py
+    `--mode started`). It is an announcement, not a verdict: it carries no `suite_green`, so it
+    never satisfies the gate. A later `suite_green` receipt (pass or fail) at the same commit
+    answers it; the evidence array only grows, so list order is time order.
+    """
+    live = None
+    for e in _ci_run_records(evidence):
+        names = {q.get("name") for q in e.get("predicates") or [] if isinstance(q, dict)}
+        at = str(e.get("commit") or "")
+        if not any(same_commit(at, c) for c in commits):
+            continue
+        if CI_RUNNING_PREDICATE in names:
+            live = e
+        elif CI_PREDICATE in names and live is not None and same_commit(
+                str(live.get("commit") or ""), at):
+            live = None
+    return live
+
+
 def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
                               commit: str | None = None) -> list[dict]:
     """Raise PRCooldown when `done` is asked for too soon after a PR link (GRPH-567).
@@ -1496,6 +1546,21 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
             f"no, so bounce the item with this failure as the reason. Waiting will not change "
             f"it; the PR needs a fix and a CI run that attests {CI_PREDICATE} at its head")
     if waited >= cooldown:
+        # GRPH-1416: past the cooldown, but CI announced a run at the head and has not
+        # answered. That is a wait, not the "needs an attestation or an owner" dead end below.
+        going = ci_run_in_progress(merged, commits)
+        if going is not None:
+            if item.pr_linked_at is None:
+                item.pr_linked_at = linked
+            ref = going.get("run_ref") or "(no run reference)"
+            at = str(going.get("commit"))[:12]
+            record_refusal(db, item, predicate="pr_ci_in_progress",
+                           detail=f"waiting on CI run {ref}, in progress at {at}")
+            raise PRCooldown(
+                f"{item.key} cannot move to done yet: waiting on CI run {ref}, in progress at "
+                f"commit {at}. The cooldown is over but the run has not finished, so this is a "
+                f"WAIT, not a bounce: retry once {CI_PREDICATE} is attested at the PR's head "
+                "— nothing needs changing")
         # The cooldown gave CI time to answer. Silence after it is not a pass.
         if commits or not any(CI_PREDICATE in attested_predicates([a]) for a in runs):
             if item.pr_linked_at is None:
