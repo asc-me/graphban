@@ -553,7 +553,7 @@ function WhereStep({
       <h2 id="qs-where-h" className="text-[16px] font-semibold">
         Where is Graphban running?
       </h2>
-      <fieldset className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+      <fieldset className="mt-3 space-y-2">
         <legend className="sr-only">Where is Graphban running?</legend>
         <Choice name="qs-where" value="this_computer" checked={where === "this_computer"} onChange={(v) => setWhere(v as Where)} title="On this computer" sub="the one I code on">
           {inferred.where === "this_computer" && (
@@ -927,11 +927,17 @@ function ModelStep({
       <h2 id="qs-model-h" className="text-[16px] font-semibold">
         Pick a model
       </h2>
-      <fieldset className="mt-3 space-y-2">
+      <fieldset className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
         <legend className="sr-only">Model</legend>
-        <Choice name="qs-model" value="offline" checked={choice === "offline"} onChange={pick} title="Offline" sub="Stub" />
-        <Choice name="qs-model" value="ollama" checked={choice === "ollama"} onChange={pick} title="Local" sub="Ollama" />
-        <Choice name="qs-model" value="claude" checked={choice === "claude"} onChange={pick} title="Cloud" sub="Claude" />
+        <Choice name="qs-model" value="offline" checked={choice === "offline"} onChange={pick} title="Offline" sub="Stub">
+          <span className="mt-1 block text-[11.5px] text-faint">Runs as is. Chat is canned and nothing gets graded.</span>
+        </Choice>
+        <Choice name="qs-model" value="ollama" checked={choice === "ollama"} onChange={pick} title="Local" sub="Ollama">
+          <span className="mt-1 block text-[11.5px] text-faint">A model server on your network.</span>
+        </Choice>
+        <Choice name="qs-model" value="claude" checked={choice === "claude"} onChange={pick} title="Cloud" sub="Claude">
+          <span className="mt-1 block text-[11.5px] text-faint">Your Anthropic API key.</span>
+        </Choice>
       </fieldset>
 
       {choice === "ollama" && (
