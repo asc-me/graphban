@@ -62,8 +62,10 @@ SETUP_AGENTS = ("claude", "grok")
 #: flag that moves (e.g. `--server` is a top-level option, not a `login` one) fails a test
 #: rather than a person's terminal.
 QUICKSTART_COMMANDS = (
-    "uv tool install graphban-cli",
+    "uv tool install graphban-cli && uv tool install graphban-fleet",
+    "gban --server {server} login",
     "gban --server {server} login --pair",
+    "gban setup",
     "gban --project {project} setup",
 )
 

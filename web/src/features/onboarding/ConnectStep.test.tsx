@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { api } from "@/lib/api";
 
-import { ConnectStep, GBAN_AGENTS, PairApproval } from "./ConnectStep";
+import { ConnectStep, GBAN_AGENTS, PairApproval, repoDir } from "./ConnectStep";
 
 vi.mock("@/lib/api", () => ({
   api: {
@@ -61,6 +61,51 @@ describe("ConnectStep", () => {
   it("the gban route list is the CLI's export", () => {
     expect(GBAN_AGENTS).toContain("claude");
     expect(GBAN_AGENTS).not.toContain("cursor");
+  });
+});
+
+describe("ConnectStep gban route (GRPH-1449)", () => {
+  function renderGban(repoUrl: string) {
+    return render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ConnectStep
+          projectId="core"
+          address="https://gb.example.com"
+          dedicated
+          repoUrl={repoUrl}
+          mark={{ status: "pending" }}
+          agent="claude"
+          onAgent={() => undefined}
+          route="gban"
+          onRoute={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+  }
+
+  it("shows install (with fleet), login, --pair, and setup from the checkout, under YOUR STEP", () => {
+    renderGban("https://github.com/acme/widgets.git");
+    expect(screen.getByText("uv tool install graphban-cli && uv tool install graphban-fleet")).toBeInTheDocument();
+    const step = screen.getByTestId("your-step");
+    expect(step).toHaveTextContent(/signing in is yours/i);
+    expect(step).toHaveTextContent("gban --server https://gb.example.com login");
+    expect(step).toHaveTextContent("gban --server https://gb.example.com login --pair");
+    expect(step).toHaveTextContent("No password prompt?");
+    expect(screen.getByText("cd ~/code/widgets && gban setup")).toBeInTheDocument();
+    expect(screen.getByText(/what's in my backlog\?/)).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Recommended — the gban CLI/ })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Just paste a key/ })).toBeInTheDocument();
+  });
+
+  it("falls back to --project when the project has no repo", () => {
+    renderGban("");
+    expect(screen.getByText("gban --project core setup")).toBeInTheDocument();
+  });
+
+  it("repoDir handles ssh and https remotes", () => {
+    expect(repoDir("git@github.com:acme/widgets.git")).toBe("widgets");
+    expect(repoDir("https://github.com/acme/widgets/")).toBe("widgets");
+    expect(repoDir("")).toBe("");
   });
 });
 
