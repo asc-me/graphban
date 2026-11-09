@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import socket
 import sys
 import threading
@@ -122,6 +123,23 @@ def test_compose_mounts_the_helper_directory_not_docker_sock():
     assert "GRAPHBAN_APPLY_DIR" in text
     assert "/run/graphban-apply" in text
     assert "docker.sock" not in text
+
+
+def test_every_compose_service_restarts_after_a_host_reboot():
+    """2026-11-09: ubuntu-srv rebooted and the stack stayed down (restart=no) while the
+    box's other containers came back; every drain then exited on ConnectError. Sabotage:
+    drop the restart line from any one service and this names it.
+    """
+    text = (REPO / "docker-compose.yml").read_text(encoding="utf-8")
+    services = text.split("\nservices:\n", 1)[1].split("\nvolumes:\n", 1)[0]
+    blocks = re.split(r"\n(?=  [a-z][a-z0-9_-]*:\n)", "\n" + services)
+    names = {}
+    for block in blocks:
+        m = re.match(r"\s*([a-z][a-z0-9_-]*):\n", block)
+        if m:
+            names[m.group(1)] = re.search(r"^    restart: unless-stopped$", block, re.M) is not None
+    assert set(names) >= {"db", "api", "web"}, names
+    assert all(names.values()), {k: v for k, v in names.items() if not v}
 
 
 def test_script_is_executable():

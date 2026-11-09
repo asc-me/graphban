@@ -7,6 +7,10 @@ name: agentledger
 
 services:
   db:
+    # Comes back after a host reboot. Without it a reboot leaves the whole stack down
+    # while the box's other containers return (seen on ubuntu-srv 2026-11-09).
+    # unless-stopped, not always: `docker compose stop` still means stopped.
+    restart: unless-stopped
     image: pgvector/pgvector:pg16
     environment:
       # These defaults are baked into the volume at initdb, so they are frozen too — a
@@ -25,6 +29,7 @@ services:
       retries: 20
 
   api:
+    restart: unless-stopped
     build:
       context: ./backend
       args:
@@ -78,6 +83,7 @@ services:
       - "${API_PORT:-8000}:8000"
 
   web:
+    restart: unless-stopped
     build:
       context: ./web
       args:

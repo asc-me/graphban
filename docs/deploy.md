@@ -16,6 +16,8 @@ step here has been run in anger.
   sets `DB_PORT=5433`, `API_PORT=8001`, `WEB_PORT=8080`
   (`CORS_ORIGINS=http://192.168.50.81:8080,...`, stub providers).
 - **Services:** `docker compose` — `db` (pgvector), `api`, `web` (nginx SPA).
+  Each runs with `restart: unless-stopped`, so the stack comes back after a host
+  reboot; a container you `docker compose stop` stays stopped.
 - **Schema:** Alembic migrations run automatically on API startup (Postgres); the
   container comes up, migrates `0001 → head`, then serves.
 
