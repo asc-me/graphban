@@ -3021,13 +3021,21 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         if item is None:
             raise errors.NotFound(f"item not found: {args['id']}")
         out = _item_dict(item)
-        if args.get("touchpoints_remove"):
+        removed_now: list[str] = []
+        rm_req = args.get("touchpoints_remove")
+        if rm_req:
             # GRPH-1398. Say what came off, so a no-match is visible rather than silent.
-            out["touchpoints_removed"] = [
-                q for q in dict.fromkeys(
-                    x.strip() for x in args["touchpoints_remove"] if isinstance(x, str))
-                if q and q not in (item.touchpoints or [])
-                and q in before_all_tps]
+            asked = list(dict.fromkeys(
+                x.strip() for x in ([rm_req] if isinstance(rm_req, str) else rm_req)
+                if isinstance(x, str) and x.strip()))
+            removed_now = [q for q in asked
+                           if q not in (item.touchpoints or []) and q in before_all_tps]
+            out["touchpoints_removed"] = removed_now
+            # GRPH-1441. An empty `touchpoints_removed` read as "nothing was attempted". Name
+            # what was asked for and matched no stored entry (removal is by exact string).
+            unmatched = [q for q in asked if q not in removed_now]
+            if unmatched:
+                out["touchpoints_remove_unmatched"] = unmatched
         if args.get("evidence") is not None:
             # GRPH-839. A refused receipt used to show only as an `evidence` array that did
             # not grow, and this tool is the one that moves an item to `review` — so the
@@ -3041,7 +3049,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # say so. `retained` names the stored paths this call did not, which is the only
             # signal that the narrowing did not happen. Computed against `before`, captured
             # before the write.
-            out.update(items_svc.touchpoint_intake(before_tps, args["touchpoints"]))
+            # GRPH-1441: a path removed by this same call is not "retained".
+            out.update(items_svc.touchpoint_intake(
+                [q for q in before_tps if q not in removed_now], args["touchpoints"]))
             tw = touchpoint_check.warnings(db, item.project_id, args["touchpoints"])
             if tw:
                 out["touchpoint_warnings"] = tw
