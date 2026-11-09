@@ -23,6 +23,7 @@ rather than leaving an empty list to read as "no rules".
 from __future__ import annotations
 
 import copy
+import time
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
@@ -121,6 +122,28 @@ CI_FLOOR_PREDICATE = "suite_green"
 def register(rule: LibraryRule) -> None:
     """Add (or replace) a library rule. Called by the pack loader, and by tests."""
     LIBRARY[rule.id] = rule
+
+
+#: GRPH-1418: seconds a worker trusts its loaded library before re-reading the installed pack's
+#: sha. Each uvicorn worker has its own `LIBRARY`; another worker's install shows up here.
+SYNC_TTL = 2.0
+_last_sync = 0.0
+
+
+def sync_library(db: Session) -> None:
+    """Reload this worker's `LIBRARY` when another worker installed a different pack.
+
+    Called ONCE, at the start of a request (`app.db.get_db`), before anything reads `LIBRARY`
+    — the gates' `RULE not in LIBRARY` guards included. Never mid-request: a reload between a
+    guard and the `resolve` behind it would 404 a gate on a rule the new pack dropped. One
+    indexed read at most every `SYNC_TTL` seconds; a no-op when no pack is installed."""
+    global _last_sync
+    now = time.monotonic()
+    if now - _last_sync < SYNC_TTL:
+        return
+    _last_sync = now
+    from app.services import rule_pack
+    rule_pack.sync(db)
 
 
 def library_loaded() -> bool:

@@ -1,5 +1,16 @@
 # Rules
 
+## Installing a rule pack takes effect on every worker (GRPH-1418)
+
+A server can run several uvicorn workers, each with its own copy of the rule library. The
+installed pack in the database is the source of truth: at the start of every request, before
+anything reads the library (a gate's guard included), the worker compares the installed pack's
+sha with the one it loaded (a read at most every two seconds) and reloads its library when they
+differ. A pack install, or a replaced rule, therefore takes effect on every worker within a few
+seconds without a restart: a rule the new pack adds is offered and enforced everywhere, and a
+rule it drops stops being offered and enforced on all of them. The library never changes in the
+middle of a request.
+
 ## `build.test_scope` — where the test suites run (GRPH-1405)
 
 A per-project library rule with one param, `mode`. Set it on the Rules page (Build stage); a
