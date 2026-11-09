@@ -910,9 +910,17 @@ def _loop(
             # be cleared by another reviewer, so it is taken out of what can spawn one.
             ci_stuck = [r for r in rows if ci_unattestable(r)]
             rows = [r for r in rows if not ci_unattestable(r)]
-            reviews = [str(r["id"]) for r in rows + ci_stuck]
+            # GRPH-1416: a row refused because its CI run is still going is waiting, not
+            # failing: no reviewer is spawned for it and it never counts toward review-unsigned.
+            ci_running_rows = [r for r in rows if ci_running(r)]
+            rows = [r for r in rows if not ci_running(r)]
+            reviews = [str(r["id"]) for r in rows + ci_stuck + ci_running_rows]
             outside = [str(r["id"]) for r in rows_outside]
             waits = _wait_ids(planner)
+            for r in ci_running_rows:
+                line = ci_running_detail(r)
+                if line not in waits:
+                    waits.append(line)
         except NotPermitted as exc:
             raise ConfigError(f"cannot classify review/waits: {exc}") from exc
         except ToolFailed as exc:
@@ -1195,6 +1203,11 @@ def _loop(
                 return _name_ci_stuck(
                     _leave("review-unsigned", 1, review=reviews, waits=waits,
                            outside=outside), ci_stuck)
+
+        if ci_running_rows and not rows:
+            empty = 0
+            sleep(poll)
+            continue
 
         empty += 1
         if empty >= empty_ticks:
@@ -2508,6 +2521,21 @@ def ci_unattestable(row: dict) -> bool:
     detail = _latest_refusal(row)
     return (detail.startswith(_REFUSED_AT_DONE + "pr_ci_not_green)")
             and "cooldown over" in detail)
+
+
+def ci_running(row: dict) -> bool:
+    """GRPH-1416. The newest `done` refusal says a CI run is in progress at the head.
+
+    Unlike `ci_unattestable` this clears itself: the run's `suite_green` (pass or fail) is a
+    newer attestation, and `_latest_refusal` then reads "". Wait for it; do not spend a
+    reviewer, and do not count it as a reviewer failure.
+    """
+    return _latest_refusal(row).startswith(_REFUSED_AT_DONE + "pr_ci_in_progress)")
+
+
+def ci_running_detail(row: dict) -> str:
+    detail = _latest_refusal(row).split("): ", 1)[-1]
+    return f"{row.get('id')}: waiting on CI ({detail[:300]}); no reviewer spawned"
 
 
 def _name_ci_stuck(report: Report, ci_stuck: list[dict]) -> Report:

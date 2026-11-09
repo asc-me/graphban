@@ -33,6 +33,25 @@ jobs:
         with:
           # The stamp check diffs base..head itself; paths-filter fetches its own.
           fetch-depth: 0
+      # GRPH-1416: announce the run, so a sign_off refused past the PR cooldown can say "CI run
+      # … in progress" instead of reading as a run that will never attest. Not a verdict:
+      # `ci_in_progress` is not `suite_green`. Best effort; a miss only loses the wording.
+      - name: Announce this run to Graphban
+        continue-on-error: true
+        env:
+          GRAPHBAN_URL: ${{ vars.GRAPHBAN_URL }}
+          GRAPHBAN_GATE_KEY: ${{ secrets.GRAPHBAN_GATE_KEY }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 scripts/attest_ci.py --mode started \
+            --commit "$HEAD_SHA" \
+            --branch "$HEAD_REF" \
+            --run-url "$RUN_URL" \
+            --text "$PR_TITLE $PR_BODY"
       - name: Is this only a release stamp?
         id: stamp
         env:

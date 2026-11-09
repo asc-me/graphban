@@ -156,6 +156,21 @@ def attestation(*, commit: str, branch: str, run_url: str = "",
                    })
 
 
+def started_attestation(*, commit: str, branch: str, run_url: str = "", matched: str = "",
+                        run_attempt: str = "") -> dict:
+    """GRPH-1416. Announce that a run began, so a refusal past the cooldown can say "in progress".
+
+    Its one predicate is `ci_in_progress`, never `suite_green`: it is not a verdict and the
+    gate does not read it as one. The run's own `suite_green` receipt (pass or fail), posted
+    later at the same commit, is what answers it.
+    """
+    return receipt(commit=commit, branch=branch, run_url=run_url, matched=matched,
+                   run_attempt=run_attempt,
+                   predicate={"name": "ci_in_progress", "passed": True,
+                              "detail": f"CI run started on {branch or 'an unnamed ref'} "
+                                        f"at {commit[:12]}"})
+
+
 #: A pytest short-summary line naming a failing test, e.g. `FAILED tests/x.py::test_y - msg`.
 FAILED_TEST = re.compile(r"^(?:FAILED|ERROR)\s+(\S+::\S+)", re.MULTILINE)
 MAX_TESTS = 5
@@ -368,7 +383,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base", default="",
                     help="PR base sha; the receipt records `git rev-list base..commit` "
                          "(GRPH-1411). Omit on a push run.")
-    ap.add_argument("--mode", choices=("attest", "head", "failed"), default="attest",
+    ap.add_argument("--mode", choices=("attest", "head", "failed", "started"), default="attest",
                     help="`head` records the observed commit and runs even when CI failed; "
                          "`attest` writes the receipt and must not; `failed` writes a "
                          "`suite_green` receipt with passed=false and runs ONLY when CI failed.")
@@ -418,6 +433,10 @@ def main(argv: list[str] | None = None) -> int:
             commit=args.commit, branch=args.branch, jobs=failing_jobs(args.needs_json),
             tests=failing_tests(log), run_url=args.run_url, run_attempt=args.run_attempt,
             matched=matched_by(args.text), commits=commits)
+    elif args.mode == "started":
+        receipt = started_attestation(commit=args.commit, branch=args.branch,
+                                      run_url=args.run_url, run_attempt=args.run_attempt,
+                                      matched=matched_by(args.text))
     else:
         receipt = attestation(commit=args.commit, branch=args.branch, run_url=args.run_url,
                               run_attempt=args.run_attempt, matched=matched_by(args.text),

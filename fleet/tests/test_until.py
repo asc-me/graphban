@@ -2907,3 +2907,53 @@ def test_a_review_unsigned_exit_names_the_ci_stuck_rows_beside_it():
     report = _name_ci_stuck(Report(ok=False, reason="review-unsigned", exit=1), [row])
     assert "GRPH-9" in report.detail and "owner close" in report.detail
     assert _name_ci_stuck(Report(ok=False, reason="review-unsigned", exit=1), []).detail == ""
+
+
+_CI_RUNNING = {"kind": "note", "detail": "refused at `done` (pr_ci_in_progress): waiting on CI "
+               "run https://x/runs/42/attempts/1, in progress at 89a0225d2552"}
+
+
+def test_ci_running_is_not_ci_unattestable_and_clears_on_a_newer_attestation():
+    """GRPH-1416: the in-progress refusal is its own wording, and CI answering ends it."""
+    from gbfleet.until import ci_running, ci_running_detail, ci_unattestable
+    row = {"id": "GRPH-9", "evidence": [_CI_RUNNING]}
+    assert ci_running(row) is True
+    assert ci_unattestable(row) is False
+    assert ci_running({"evidence": [_CI_STUCK]}) is False
+    answered = {"kind": "attestation", "predicates": [{"name": "suite_green", "passed": True}]}
+    assert ci_running({"evidence": [_CI_RUNNING, answered]}) is False
+    assert "waiting on CI" in ci_running_detail(row) and "runs/42" in ci_running_detail(row)
+
+
+def test_a_row_whose_ci_run_is_in_progress_gets_no_reviewer_and_waits(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1416: no reviewer is spawned, the log names the wait, and the run does not exit
+    `review-unsigned` because of it."""
+    workspace = tmp_path / "ws"
+    roles: list[str] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": "", "evidence": [_CI_RUNNING]}],
+        minted_roles=roles,
+    )
+    ticks: list[int] = []
+
+    class Stop(Exception):
+        pass
+
+    def sleep(_):
+        ticks.append(1)
+        if len(ticks) > 12:
+            raise Stop
+
+    with pytest.raises(Stop):
+        run(
+            git_repo, _factory(scripts, "works_then_exits"),
+            planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+            state=state, workspace=workspace, poll=0, sleep=sleep, empty_ticks=3,
+            limits=Limits(max_workers=1),
+        )
+    assert roles == []
+    assert len(ticks) > 3  # waited past empty_ticks instead of exiting

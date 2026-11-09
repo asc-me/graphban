@@ -130,3 +130,45 @@ def test_items_recorded_on_the_head_branch_are_found_even_when_the_pr_names_anot
     assert attest_ci.items_on_branch("u", "k", "gb/p59h-1", search=search) == [
         "GRPH-1359", "GRPH-1399"]
     assert attest_ci.items_on_branch("u", "k", "", search=search) == []
+
+
+# ---- GRPH-1416: a run still in progress is a wait, not a dead end ---------------------
+
+def _started(commit=HEAD, ref="https://ci/runs/42/attempts/1"):
+    return {"kind": "attestation", "adapter": "github-actions", "commit": commit,
+            "run_ref": ref, "predicates": [{"name": "ci_in_progress", "passed": True,
+                                            "detail": "CI run started"}]}
+
+
+def _refusal_exc(db, evidence):
+    item = items_svc.create_item(db, project_id="core", title="Built it")
+    items_svc.update_item(db, item.id, evidence=[PR, *evidence])
+    item.pr_linked_at = utcnow() - timedelta(seconds=3600)
+    db.commit()
+    with pytest.raises(items_svc.PRCooldown) as exc:
+        items_svc.refuse_if_pr_cooling_down(db, item, [], commit=HEAD)
+    return exc.value
+
+
+def test_past_cooldown_with_a_run_in_progress_names_the_run_and_is_not_a_dead_end(db, cooldown):
+    exc = _refusal_exc(db, [_started()])
+    msg = str(exc)
+    assert not isinstance(exc, items_svc.PRCINotGreen)
+    assert "waiting on CI run https://ci/runs/42/attempts/1, in progress" in msg
+    assert "cooldown over" not in msg and "Waiting will not change" not in msg
+
+
+def test_a_finished_run_is_not_reported_as_in_progress(db, cooldown):
+    red = {"kind": "attestation", "adapter": "github-actions", "commit": HEAD,
+           "predicates": [{"name": "suite_green", "passed": False, "detail": "CI failed"}]}
+    green_other = {"kind": "attestation", "adapter": "github-actions", "commit": HEAD,
+                   "predicates": [{"name": "suite_green", "passed": False, "detail": "x"}]}
+    assert items_svc.ci_run_in_progress([_started(), red], [HEAD]) is None
+    assert items_svc.ci_run_in_progress([_started(), green_other, _started(ref="r2")],
+                                        [HEAD]) is not None
+    assert items_svc.ci_run_in_progress([_started(commit="f" * 40)], [HEAD]) is None
+
+
+def test_no_started_marker_keeps_the_silent_ci_wording(db, cooldown):
+    msg = _refusal(db, [])
+    assert "cooldown is over" in msg and "in progress" not in msg
