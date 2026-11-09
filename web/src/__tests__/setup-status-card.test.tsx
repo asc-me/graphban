@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { SetupStatusCard, onConnectStepRequested } from "@/features/home/SetupStatusCard";
+import { SetupStatusCard, onConnectStepRequested, setupStatusTiming } from "@/features/home/SetupStatusCard";
 import { api } from "@/lib/api";
 import type { ProjectSetup, SetupStep } from "@/lib/types";
 
@@ -107,9 +107,38 @@ describe("dashboard Setup status card (GRPH-1442)", () => {
     expect(screen.getByTestId("setup-status-count-code-nodes")).toHaveTextContent("0");
   });
 
-  it("First job shows under a verified connection too, and its counter updates", async () => {
+  it("First job shows under a verified connection too", async () => {
     renderCard({ status: "done", proof: "first_call" }, job("pending", 1));
     expect(await screen.findByTestId("setup-status-count-items")).toHaveTextContent("1");
+  });
+
+  it("the counter updates when an item is seeded, without a reload", async () => {
+    const saved = setupStatusTiming.pollMs;
+    setupStatusTiming.pollMs = 20;
+    try {
+      renderCard({ status: "done", proof: "first_call" }, job("pending", 0));
+      expect(await screen.findByTestId("setup-status-count-items")).toHaveTextContent("0");
+      const base = setup({ status: "done", proof: "first_call" });
+      vi.mocked(api.projectSetup).mockResolvedValue({ ...base, steps: [...job("pending", 1), ...base.steps] });
+      await vi.waitFor(() => expect(screen.getByTestId("setup-status-count-items")).toHaveTextContent("1"), { timeout: 1000 });
+    } finally {
+      setupStatusTiming.pollMs = saved;
+    }
+  });
+
+  it("stops polling once the connection and First job are both ✓", async () => {
+    const saved = setupStatusTiming.pollMs;
+    setupStatusTiming.pollMs = 20;
+    try {
+      renderCard({ status: "done", proof: "first_call" }, job("done", 5));
+      await screen.findByText(/Agent connection verified/);
+      await new Promise((r) => setTimeout(r, 60));
+      const calls = vi.mocked(api.projectSetup).mock.calls.length;
+      await new Promise((r) => setTimeout(r, 120));
+      expect(vi.mocked(api.projectSetup).mock.calls.length).toBe(calls);
+    } finally {
+      setupStatusTiming.pollMs = saved;
+    }
   });
 
   it("no First job row once it is ✓", async () => {

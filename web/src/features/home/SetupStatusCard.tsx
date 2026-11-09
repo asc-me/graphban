@@ -20,6 +20,9 @@ export function onConnectStepRequested(fn: () => void): () => void {
 }
 
 const CONNECT_STEP = 5;
+
+/** How often the card re-reads setup while a step is still unproven. Mutable for tests. */
+export const setupStatusTiming = { pollMs: 3000 };
 const dismissKey = (projectId: string) => `al.setupStatus.dismissed.${projectId}`;
 
 /**
@@ -29,7 +32,10 @@ const dismissKey = (projectId: string) => `al.setupStatus.dismissed.${projectId}
  * Dismiss hides only this card, for good; Settings → Machines keeps the list.
  */
 export function SetupStatusCard({ projectId }: { projectId: string }) {
-  const setup = useProjectSetup(projectId);
+  // Poll while the connection or First job is unproven, so an agent seeding an item moves the
+  // counter without a reload; stop once both are ✓ or the card is dismissed.
+  const [polling, setPolling] = React.useState(true);
+  const setup = useProjectSetup(projectId, polling ? setupStatusTiming.pollMs : undefined);
   const [dismissed, setDismissed] = React.useState(() => {
     try {
       return localStorage.getItem(dismissKey(projectId)) === "1";
@@ -38,6 +44,9 @@ export function SetupStatusCard({ projectId }: { projectId: string }) {
     }
   });
   const step = setup.data?.steps.find((s) => s.step === CONNECT_STEP);
+  const job = deriveMarks({ projectId, setup: setup.data }).first_job;
+  const unproven = !setup.data || step?.status !== "done" || job.status !== "done";
+  React.useEffect(() => setPolling(unproven && !dismissed), [unproven, dismissed]);
   if (dismissed || !step) return null;
 
   const dismiss = () => {
@@ -51,7 +60,6 @@ export function SetupStatusCard({ projectId }: { projectId: string }) {
 
   // ④ First job: the finish screen listed it as unproven, so the card keeps listing it, with the
   // same three counters the dialog reads, until it is ✓.
-  const job = deriveMarks({ projectId, setup: setup.data }).first_job;
   const jobBlock = job.status === "done" ? null : (
     <FirstJobBlock mark={job} steps={setup.data?.steps ?? []} />
   );
