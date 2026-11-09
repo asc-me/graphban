@@ -73,6 +73,13 @@ export function OrgPlug({
         Working with a team? Link this <strong className="font-semibold text-fg">deployment</strong> to an org. Not now is
         always an equal choice.
       </p>
+      <ul className="list-disc space-y-0.5 pl-4 text-[13px] leading-normal text-fg-2" data-tour-pitch>
+        <li>Shared house rules</li>
+        <li>Memory that carries across projects</li>
+        <li>One roster of everyone's agents</li>
+        <li>Capacity routing across your team's entitlements</li>
+        <li>Your code graph stays local-first</li>
+      </ul>
       {form && (
         <div className="flex flex-col gap-2">
           <label className="flex flex-col gap-1 text-small text-muted">

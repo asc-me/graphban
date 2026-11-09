@@ -292,6 +292,16 @@ describe("every mark comes from GET …/setup", () => {
     expect(railItem("connect")).toHaveAttribute("aria-current", "step");
   });
 
+  it("a reload with a project and ② pending auto-opens at the first unfinished step, not ⓪", async () => {
+    srv.projects = [CORE];
+    srv.onboarding = null;
+    srv.statuses = { 0: "done", 1: "done" };
+    srv.details = { 0: "this_computer" };
+    renderFrame();
+    expect(await screen.findByRole("heading", { name: "Pick a model" })).toBeInTheDocument();
+    expect(railItem("model")).toHaveAttribute("aria-current", "step");
+  });
+
   it("SABOTAGE: a step the server reports unknown is never drawn ✓", async () => {
     srv.projects = [CORE];
     srv.statuses = { 0: "done", 1: "unknown", 2: "unknown" };
@@ -337,7 +347,7 @@ describe("the chip and Finish", () => {
     await user.click(screen.getByRole("checkbox", { name: /workspace I want agents/ }));
     await user.click(screen.getByRole("button", { name: "Next →" }));
     await screen.findByRole("heading", { name: "Pick a model" });
-    await user.click(screen.getByRole("radio", { name: /Local · Ollama/ }));
+    await user.click(screen.getByRole("radio", { name: /Local/ }));
     await user.click(screen.getByRole("button", { name: "Next →" }));
     await screen.findByRole("heading", { name: "Connect your agent" });
     await user.click(screen.getByRole("button", { name: "Next →" }));
@@ -586,7 +596,7 @@ describe("step ① posture check (GRPH-1365)", () => {
       await user.click(screen.getByRole("checkbox", { name: /workspace I want agents/ }));
       await user.click(screen.getByRole("button", { name: "Next →" }));
       await screen.findByRole("heading", { name: "Pick a model" });
-      await user.click(screen.getByRole("radio", { name: /Cloud · Claude/ }));
+      await user.click(screen.getByRole("radio", { name: /Cloud/ }));
       await screen.findByLabelText("Anthropic API key");
     }
 

@@ -166,11 +166,14 @@ function FrameBody({ hosted }: { hosted: boolean }) {
   }, [offerTour, markOnboarding]);
   const qs = useQuickStart(finished || !onboardingQ.data ? "" : active?.id ?? "", hosted);
   React.useEffect(() => {
-    if (shouldAutoOpen && !autoOpened.current) {
+    // With a project, wait for its setup read so the dialog opens at the first unfinished
+    // step (as the chip does), not at ⓪. No project: nothing to read, open at the start.
+    if (shouldAutoOpen && !loading && !autoOpened.current && (!active?.id || qs.setup)) {
       autoOpened.current = true;
+      if (active?.id) setQsStep(qs.firstUnfinished);
       setQsOpen(true);
     }
-  }, [shouldAutoOpen]);
+  }, [shouldAutoOpen, loading, active?.id, qs.setup, qs.firstUnfinished]);
 
   if (loading || (projects.length === 0 && onboardingQ.isLoading)) return <Loading />;
 

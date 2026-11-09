@@ -54,6 +54,8 @@ def confirm(db: Session, project_id: str, decision: str, *, where: str | None = 
         raise ValueError("project not found")
     d = dict(project.setup_decisions or {})
     if decision == "workspace":
+        if d.get("workspace_confirmed_at"):
+            return d  # already confirmed: re-confirming is a no-op
         d["workspace_confirmed_at"] = datetime.now(timezone.utc).isoformat()
     elif decision == "offline":
         d["offline"] = True
