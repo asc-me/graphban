@@ -77,34 +77,56 @@ def existing(repo: Path, branch: str) -> str:
 _PASSING = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 
 
+#: A check-rollup entry still running. Anything neither passing nor this is a failure.
+_RUNNING = {"", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", "REQUESTED"}
+
+
+def ci_rollup(repo: Path, branch: str) -> tuple[str, str, str]:
+    """(state, head, failing_job) for `branch`'s PR — the one reading of its check rollup.
+
+    state is `green` (every check passed), `pending` (none failed, some still running), `red`
+    (one failed — `failing_job` names it) or `unknown`: no `gh`, no PR, an unreadable answer,
+    or a PR with NO checks. No checks is unknown rather than pending (GRPH-1392): a repo
+    without CI would otherwise wait on it forever.
+    """
+    if not branch or not find():
+        return "unknown", "", ""
+    try:
+        done = _gh(repo, "pr", "view", branch, "--json", "headRefOid,statusCheckRollup")
+    except (OSError, subprocess.SubprocessError):
+        return "unknown", "", ""
+    if done.returncode != 0:
+        return "unknown", "", ""
+    try:
+        data = json.loads(done.stdout or "{}")
+    except ValueError:
+        return "unknown", "", ""
+    head = str(data.get("headRefOid") or "")
+    rollup = data.get("statusCheckRollup") or []
+    if not head or not rollup:
+        return "unknown", head, ""
+    running = False
+    for check in rollup:
+        verdict = str(check.get("conclusion") or check.get("state") or "").upper()
+        if verdict in _PASSING:
+            continue
+        if verdict in _RUNNING:
+            running = True
+            continue
+        return "red", head, str(check.get("name") or check.get("context") or "unknown job")
+    return ("pending" if running else "green"), head, ""
+
+
 def ci_green(repo: Path, branch: str, head: str) -> bool:
     """True when `branch` has a PR whose head is `head` and every check on it passed.
 
     The full-suite receipt: CI already carries the SQLite and Postgres shards. Fails closed:
     no `gh`, no PR, a different head, no checks, or any check not passing all answer False.
     """
-    if not head or not find():
+    if not head:
         return False
-    try:
-        done = _gh(repo, "pr", "view", branch, "--json", "headRefOid,statusCheckRollup")
-    except (OSError, subprocess.SubprocessError):
-        return False
-    if done.returncode != 0:
-        return False
-    try:
-        data = json.loads(done.stdout or "{}")
-    except ValueError:
-        return False
-    if str(data.get("headRefOid") or "") != head:
-        return False
-    rollup = data.get("statusCheckRollup") or []
-    if not rollup:
-        return False
-    for check in rollup:
-        verdict = str(check.get("conclusion") or check.get("state") or "").upper()
-        if verdict not in _PASSING:
-            return False
-    return True
+    state, at, _ = ci_rollup(repo, branch)
+    return state == "green" and at == head
 
 
 def existing_any(repo: Path, branch: str) -> dict:
