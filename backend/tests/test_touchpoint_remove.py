@@ -137,3 +137,40 @@ def test_claim_that_collided_only_on_a_removed_path_now_succeeds(db):
 
     after, _ = drain()
     assert target.id in after, "removing the glob did not free the claim that collided on it"
+
+
+def _mcp(client, key):
+    def call(tool, args):
+        r = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": tool, "arguments": args}},
+                        headers={"X-API-Key": key}).json()
+        return r.get("result", {}).get("structuredContent") or r
+    return call
+
+
+def _worker_call(client, auth, name):
+    proj = client.post("/api/projects", json={"name": name}, headers=auth).json()["id"]
+    r = client.post("/api/api-keys", json={"name": name, "project_id": proj, "roles": ["worker"]},
+                    headers=auth).json()
+    return _mcp(client, r["plaintext"])
+
+
+def test_non_fleet_key_removal_is_applied_and_not_reported_retained(client, auth):
+    """GRPH-1441: a key never advertised `touchpoints_remove` still gets it applied, and the
+    reply does not list the removed entry as retained."""
+    call = _worker_call(client, auth, "rm2")
+    item = call("create_item", {"title": "x", "touchpoints": ["a.py", "backend/tests/*"]})
+    out = call("update_item", {"id": item["id"], "touchpoints": ["b.py"],
+                               "touchpoints_remove": ["backend/tests/*"]})
+    assert out["touchpoints_removed"] == ["backend/tests/*"]
+    assert out["touchpoints"] == ["a.py", "b.py"]
+    assert out["touchpoint_intake"]["retained"] == ["a.py"]
+    assert "touchpoints_remove_unmatched" not in out
+
+
+def test_removal_that_matches_nothing_is_named_not_silent(client, auth):
+    call = _worker_call(client, auth, "rm3")
+    item = call("create_item", {"title": "x", "touchpoints": ["a.py"]})
+    out = call("update_item", {"id": item["id"], "touchpoints_remove": ["nope/*", "a.py"]})
+    assert out["touchpoints_removed"] == ["a.py"]
+    assert out["touchpoints_remove_unmatched"] == ["nope/*"]
