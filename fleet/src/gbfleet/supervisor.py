@@ -1201,6 +1201,7 @@ def _start(
                     )
                     wave.resumed.append(bounced)
                     taken.add(bounced)
+                    _record_resume_merge(wave, client, seat.item, tree)
                 except wt_mod.ResumeFailed as exc:
                     wave.resume_misses.append(str(exc))
                     observe.emit("resume_miss", detail=str(exc), branch=bounced)
@@ -1349,7 +1350,10 @@ def _instruction_file(tree: Worktree, seat: Seat, wave_name: str) -> Path:
     thing from declining to sandbox.
     """
     path = tree.path / ".gbfleet-instruction"
-    path.write_text(instruction_for(seat, tree.path, tree.branch), encoding="utf-8")
+    path.write_text(instruction_for(seat, tree.path, tree.branch,
+                                         behind_ref=tree.behind_ref,
+                                         conflicts=tree.behind_conflicts),
+                    encoding="utf-8")
     # This file carries the enrolment CODE, so it is the more sensitive of the two and
     # was protected by the same call that does nothing on Windows.
     if not restrict_to_owner(path):
@@ -2565,6 +2569,22 @@ def _record_salvage_receipt(wave: Wave, client: Graphban | None, items: list[str
         _observe(wave, client, item_id, "salvage not recorded",
                  kind="salvage", branch=branch, commit=commit or None,
                  reason=reason or None)
+
+
+def _record_resume_merge(wave: Wave, client, item_id: str | None, tree: Worktree) -> None:
+    """Evidence note: main merged into a resumed branch, or why it was not (GRPH-1440)."""
+    if tree.behind_conflicts:
+        note = (f"{tree.branch} is behind {tree.behind_ref} with conflicts in "
+                f"{_shown(tree.behind_conflicts)}; not merged, the child resolves them first")
+    elif tree.merged_ref:
+        note = (f"merged {tree.merged_ref}@{tree.merged_ref_sha[:12]} into {tree.branch} "
+                "before resuming")
+    else:
+        return
+    if client is None or not item_id:
+        return
+    _observe(wave, client, item_id, "resume merge not recorded",
+             kind="merged_trunk", branch=tree.branch, reason=note)
 
 
 def _record_cut_from(wave: Wave, client, item_id: str | None, branch: str, base: str) -> None:
