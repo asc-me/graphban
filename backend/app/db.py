@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, event, text
@@ -30,9 +31,23 @@ class Base(DeclarativeBase):
     pass
 
 
+def _sync_rule_library(db) -> None:
+    """GRPH-1418: bring this worker's rule library up to the installed pack before the request
+    reads it. Each uvicorn worker holds its own copy, and an install reloads only the worker
+    that served it. A failed check leaves the loaded library in force and the request served."""
+    from app.services import rule_toggles
+
+    try:
+        rule_toggles.sync_library(db)
+    except Exception:  # noqa: BLE001 - a stale library beats a refused request
+        logging.getLogger(__name__).warning("rule library sync failed", exc_info=True)
+        db.rollback()
+
+
 def get_db() -> Generator:
     db = SessionLocal()
     try:
+        _sync_rule_library(db)
         yield db
     finally:
         db.close()

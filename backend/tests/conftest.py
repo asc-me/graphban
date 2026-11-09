@@ -209,6 +209,17 @@ def _reset_rate_limit():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_rule_library_sync(monkeypatch):
+    # GRPH-1418: `get_db` re-reads the installed pack's sha at most every SYNC_TTL seconds, so
+    # whether a request carries that statement depends on the wall clock. Statement-count tests
+    # would flake on it. Off by default; tests of the sync opt in by setting SYNC_TTL themselves.
+    from app.services import rule_toggles
+
+    monkeypatch.setattr(rule_toggles, "SYNC_TTL", float("inf"))
+    yield
+
+
 def _is_sqlite() -> bool:
     from app.db import engine
 
