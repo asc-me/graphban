@@ -192,10 +192,14 @@ def project_setup(project_id: str, db: Session = Depends(get_db),
 def project_setup_confirm(project_id: str, body: SetupConfirmIn, db: Session = Depends(get_db),
                           user: User = Depends(get_current_user)):
     authz.require_writable(db, user.id, project_id)
+    already = body.decision == "workspace" and bool(
+        setup_svc._decisions(db, project_id).get("workspace_confirmed_at"))
     try:
         setup_svc.confirm(db, project_id, body.decision, where=body.where, address=body.address)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
+    if already:  # re-confirming a confirmed project: nothing changed, so no event
+        return {**setup_svc.checklist(db, project_id, user.id), "onboarding": user.onboarding}
     events_svc.record_user(db, user, action="setup_confirm", target_type="project",
                            target_id=project_id, project_id=project_id,
                            meta={"decision": body.decision, "where": body.where,

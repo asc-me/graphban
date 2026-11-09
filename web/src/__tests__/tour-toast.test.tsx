@@ -34,7 +34,7 @@ vi.mock("@/features/onboarding/QuickStartDialog", async () => {
       </button>
     );
   }
-  return { QuickStartDialog, useQuickStart: () => ({}) };
+  return { QuickStartDialog, useQuickStart: () => ({ setupSettled: true }) };
 });
 vi.mock("@/lib/api", () => ({
   hasSession: () => true,

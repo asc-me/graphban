@@ -10,10 +10,10 @@ export const DialogClose = DialogPrimitive.Close;
 
 export const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { overlayClassName?: string }
+>(({ className, children, overlayClassName, ...props }, ref) => (
   <DialogPrimitive.Portal>
-    <DialogPrimitive.Overlay className="gb-overlay fixed inset-0 z-50 bg-black/55 backdrop-blur-[2px]" />
+    <DialogPrimitive.Overlay className={cn("gb-overlay fixed inset-0 z-50 bg-black/55 backdrop-blur-[2px]", overlayClassName)} />
     <DialogPrimitive.Content
       ref={ref}
       className={cn(

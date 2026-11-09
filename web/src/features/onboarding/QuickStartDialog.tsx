@@ -66,6 +66,9 @@ export function useQuickStart(projectId: string, hosted: boolean, pollMs?: numbe
     steps,
     marks,
     setup: setupQ.data,
+    /** The setup read has answered, with data or an error. The auto-open waits on this,
+     *  not on data, so a failed read still opens the dialog (at ⓪). */
+    setupSettled: !!setupQ.data || !!setupQ.error,
     credentials: credQ.data?.credentials ?? [],
     chip: chipCount(steps, marks),
     firstUnfinished: firstUnfinished(steps, marks),
@@ -137,6 +140,7 @@ export function QuickStartDialog({
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onFinishLater()}>
       <DialogContent
+        overlayClassName="bg-black/30 backdrop-blur-none"
         className="max-h-[92vh] max-w-[560px] overflow-y-auto p-0"
         aria-describedby="qs-desc"
       >
@@ -928,11 +932,17 @@ function ModelStep({
       <h2 id="qs-model-h" className="text-[16px] font-semibold">
         Pick a model
       </h2>
-      <fieldset className="mt-3 space-y-2">
+      <fieldset className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
         <legend className="sr-only">Model</legend>
-        <Choice name="qs-model" value="offline" checked={choice === "offline"} onChange={pick} title="Offline · stub" sub="Runs as is. Chat is canned and nothing gets graded." />
-        <Choice name="qs-model" value="ollama" checked={choice === "ollama"} onChange={pick} title="Local · Ollama" sub="A model server on your network." />
-        <Choice name="qs-model" value="claude" checked={choice === "claude"} onChange={pick} title="Cloud · Claude" sub="Your Anthropic API key." />
+        <Choice name="qs-model" value="offline" checked={choice === "offline"} onChange={pick} title="Offline" sub="Stub">
+          <span className="mt-1 block text-[11.5px] text-faint">Runs as is. Chat is canned and nothing gets graded.</span>
+        </Choice>
+        <Choice name="qs-model" value="ollama" checked={choice === "ollama"} onChange={pick} title="Local" sub="Ollama">
+          <span className="mt-1 block text-[11.5px] text-faint">A model server on your network.</span>
+        </Choice>
+        <Choice name="qs-model" value="claude" checked={choice === "claude"} onChange={pick} title="Cloud" sub="Claude">
+          <span className="mt-1 block text-[11.5px] text-faint">Your Anthropic API key.</span>
+        </Choice>
       </fieldset>
 
       {choice === "ollama" && (

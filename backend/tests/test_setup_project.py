@@ -158,6 +158,20 @@ def test_confirm_writes_an_events_row_per_decision(client, auth, db):
     assert sorted(r.meta["decision"] for r in rows) == ["offline", "server", "workspace"]
 
 
+def test_reconfirming_a_confirmed_project_is_a_noop(client, auth, db):
+    from sqlalchemy import select
+
+    from app.models import Event
+    pid = client.post("/api/projects", json={"name": "Again"}, headers=auth).json()["id"]
+    url = f"/api/projects/{pid}/setup/confirm"
+    first = client.post(url, json={"decision": "workspace"}, headers=auth)
+    for _ in range(3):
+        assert client.post(url, json={"decision": "workspace"}, headers=auth).status_code == 200
+    rows = db.scalars(select(Event).where(Event.project_id == pid, Event.action == "setup_confirm")).all()
+    assert len(rows) == 1
+    assert first.json()["steps"][1]["status"] == "done"
+
+
 def test_new_user_onboarding_is_unset(db):
     from app.models import User
     u = User(id="u-new", name="N", handle="newbie", email="n@example.com", password_hash="x")
