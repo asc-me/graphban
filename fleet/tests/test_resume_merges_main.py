@@ -18,7 +18,7 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _commit(repo: Path, name: str, text: str, msg: str) -> None:
-    (repo / name).write_text(text)
+    (repo / name).write_bytes(text.encode())
     _git(repo, "add", "-A")
     _git(repo, *_CFG, "commit", "-qm", msg)
 
@@ -27,6 +27,7 @@ def _prior(tmp_path: Path) -> Path:
     repo = tmp_path / "r"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "core.autocrlf", "false")
     _commit(repo, "AGENTS.md", "old\n", "base")
     _git(repo, "checkout", "-q", "-b", "gb/w-1")
     _commit(repo, "built", "work\n", "prior attempt")
@@ -48,8 +49,8 @@ def test_clean_resume_starts_on_a_head_with_mains_commits(tmp_path):
     repo = _prior(tmp_path)
     _commit(repo, "AGENTS.md", "new\n", "main moved")
     tree = wt.resume_bounced(repo, tmp_path / "wt", "gb/w-1", base="main")
-    assert (tree.path / "AGENTS.md").read_text() == "new\n"
-    assert (tree.path / "built").read_text() == "work\n"
+    assert (tree.path / "AGENTS.md").read_bytes().decode().replace("\r\n", "\n") == "new\n"
+    assert (tree.path / "built").read_bytes().decode().replace("\r\n", "\n") == "work\n"
     assert not tree.behind_conflicts
     client, wave = _Client(), Wave()
     _record_resume_merge(wave, client, "GRPH-1", tree)
@@ -65,7 +66,7 @@ def test_conflicting_resume_is_not_merged_and_names_the_files(tmp_path):
     _commit(repo, "AGENTS.md", "main\n", "main edit")
     tree = wt.resume_bounced(repo, tmp_path / "wt", "gb/w-1", base="main")
     assert tree.behind_conflicts == ["AGENTS.md"]
-    assert (tree.path / "AGENTS.md").read_text() == "branch\n"
+    assert (tree.path / "AGENTS.md").read_bytes().decode().replace("\r\n", "\n") == "branch\n"
     assert _git(tree.path, "status", "--porcelain") == ""
     text = instruction_for(Seat(code="X", item="GRPH-1", server_url="u", api_key="k"), tree.path, tree.branch,
                            behind_ref=tree.behind_ref, conflicts=tree.behind_conflicts)
