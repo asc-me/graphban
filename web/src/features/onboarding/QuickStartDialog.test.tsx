@@ -408,7 +408,7 @@ describe("③ Connect your agent", () => {
     atConnect();
     const user = userEvent.setup();
     await open(user);
-    expect(screen.getByText("uv tool install graphban-cli graphban-fleet")).toBeInTheDocument();
+    expect(screen.getByText("uv tool install graphban-cli && uv tool install graphban-fleet")).toBeInTheDocument();
     // Global options precede the subcommand: `gban login --server …` exits 2 under argparse.
     expect(screen.getByText(/^gban --server \S+ login --pair$/)).toBeInTheDocument();
     expect(screen.getByText("gban --project core setup")).toBeInTheDocument();
@@ -418,6 +418,18 @@ describe("③ Connect your agent", () => {
     await screen.findByRole("heading", { name: "Give it a first job" });
     expect(railItem("connect").dataset.status).toBe("pending");
     expect(within(railItem("connect")).queryByText("✓")).not.toBeInTheDocument();
+  });
+
+  it("step ④ names the agent chosen at ③, not a generic 'your agent'", async () => {
+    atConnect();
+    const user = userEvent.setup();
+    await open(user);
+    await user.selectOptions(screen.getByLabelText("Which agent?"), "grok");
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    await screen.findByRole("heading", { name: "Give it a first job" });
+    expect(screen.getByText("Paste into Grok")).toBeInTheDocument();
+    expect(screen.queryByText("Paste into Claude Code")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Paste into your agent/i)).not.toBeInTheDocument();
   });
 
   it("an agent the CLI does not configure is switched to paste-a-key", async () => {

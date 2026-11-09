@@ -4,7 +4,7 @@
     "grok"
   ],
   "commands": [
-    "uv tool install graphban-cli graphban-fleet",
+    "uv tool install graphban-cli && uv tool install graphban-fleet",
     "gban --server {server} login",
     "gban --server {server} login --pair",
     "gban setup",

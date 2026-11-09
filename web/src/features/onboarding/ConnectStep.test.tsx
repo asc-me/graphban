@@ -85,7 +85,7 @@ describe("ConnectStep gban route (GRPH-1449)", () => {
 
   it("shows install (with fleet), login, --pair, and setup from the checkout, under YOUR STEP", () => {
     renderGban("https://github.com/acme/widgets.git");
-    expect(screen.getByText("uv tool install graphban-cli graphban-fleet")).toBeInTheDocument();
+    expect(screen.getByText("uv tool install graphban-cli && uv tool install graphban-fleet")).toBeInTheDocument();
     const step = screen.getByTestId("your-step");
     expect(step).toHaveTextContent(/signing in is yours/i);
     expect(step).toHaveTextContent("gban --server https://gb.example.com login");
