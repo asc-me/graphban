@@ -1308,6 +1308,50 @@ def test_quickstart_commands_parse_with_the_cli_parser():
             assert ns.project == "core"
 
 
+def _uv_tool_install_packages(command: str) -> list[list[str]]:
+    """The positional arguments of each `uv tool install` in a `&&`-chained line.
+
+    `uv tool install [OPTIONS] <PACKAGE>` takes exactly one package; a second positional
+    exits with "unexpected argument". Options (`--with x`, `-p 3.12`) are skipped with
+    their value so only real positionals are counted."""
+    import shlex
+
+    takes_value = {"--with", "-w", "--python", "-p", "--from", "--index", "--index-url"}
+    out = []
+    for part in command.split("&&"):
+        argv = shlex.split(part)
+        assert argv[:3] == ["uv", "tool", "install"], part
+        pos, i = [], 3
+        while i < len(argv):
+            a = argv[i]
+            if a.startswith("-"):
+                i += 2 if a in takes_value else 1
+                continue
+            pos.append(a)
+            i += 1
+        out.append(pos)
+    return out
+
+
+def test_quickstart_install_line_installs_both_packages_one_per_uv_call():
+    """Bounced once: `uv tool install graphban-cli graphban-fleet` exits 2 — uv takes one
+    package per install. The line must install both tools, each in its own `uv tool install`."""
+    from gban.setup import QUICKSTART_COMMANDS
+
+    installs = [c for c in QUICKSTART_COMMANDS if c.startswith("uv ")]
+    assert len(installs) == 1, "the dialog shows exactly one install line"
+    packages = _uv_tool_install_packages(installs[0])
+    assert all(len(p) == 1 for p in packages), f"one package per uv tool install: {packages}"
+    assert sorted(p[0] for p in packages) == ["graphban-cli", "graphban-fleet"]
+
+
+def test_the_bounced_install_line_is_rejected_by_the_check():
+    """Sabotage for the test above: the bounced string must fail it, or it proves nothing."""
+    packages = _uv_tool_install_packages("uv tool install graphban-cli graphban-fleet")
+    assert packages == [["graphban-cli", "graphban-fleet"]]
+    assert not all(len(p) == 1 for p in packages)
+
+
 def test_the_old_subcommand_flag_order_is_still_rejected():
     """Sabotage for the test above: the bounced strings must fail to parse, or it proves nothing."""
     import pytest
