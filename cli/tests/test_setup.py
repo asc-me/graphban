@@ -613,9 +613,8 @@ def test_the_skill_hands_the_person_a_runnable_line_and_carries_the_rest(tmp_pat
     assert "do not retry" in body.lower()
 
 
-def test_the_skill_ships_in_the_wheel(tmp_path):
-    """Package DATA, not a .py file — the one class of file a packaging config silently drops.
-    A skill that exists in the repo and not in the wheel installs nothing for anyone."""
+def _built_wheel_names(tmp_path):
+    """Build the CLI wheel and return its member names; skip when no builder exists."""
     import subprocess
     import sys
     import zipfile
@@ -634,13 +633,18 @@ def test_the_skill_ships_in_the_wheel(tmp_path):
     if done is None or done.returncode != 0:
         pytest.skip("no wheel builder available")
     wheel = next(out.glob("*.whl"))
-    names = zipfile.ZipFile(wheel).namelist()
+    return zipfile.ZipFile(wheel).namelist()
+
+
+def test_the_skill_ships_in_the_wheel(tmp_path):
+    """Package DATA, not a .py file — the one class of file a packaging config silently drops.
+    A skill that exists in the repo and not in the wheel installs nothing for anyone."""
+    names = _built_wheel_names(tmp_path)
     assert any(n.endswith("skills/graphban-delegation/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/watch-wave/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/graphban-grill/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/graphban-wave/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/graphban-answer/SKILL.md") for n in names), names[:20]
-    assert any(n.endswith("skills/graphban-ship/SKILL.md") for n in names), names[:20]
 
 
 def test_graphban_wave_drains_one_prd_and_does_not_file_tasks():
@@ -657,7 +661,7 @@ def test_graphban_wave_drains_one_prd_and_does_not_file_tasks():
     assert "Do not attach a spawn watcher" in body
 
 
-def test_graphban_ship_names_base_salvage_and_done():
+def test_graphban_ship_names_base_salvage_and_done(tmp_path):
     body = " ".join(setup_mod.skill_source("graphban-ship").read_text(encoding="utf-8").split())
     assert "get_context" in body
     assert "unmeasured" in body
@@ -666,6 +670,8 @@ def test_graphban_ship_names_base_salvage_and_done():
     assert "is not merged" in body
     wave = setup_mod.skill_source("graphban-wave").read_text(encoding="utf-8")
     assert "graphban-ship" in wave
+    names = _built_wheel_names(tmp_path)
+    assert any(n.endswith("skills/graphban-ship/SKILL.md") for n in names), names[:20]
 
 
 def test_watch_wave_names_the_scheduler_and_cancels_on_idle():
