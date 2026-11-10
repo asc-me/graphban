@@ -63,6 +63,21 @@ def test_all_kinds_blockers_first_with_counts(client, auth, db):
     col = next(r for r in f["rows"] if r["kind"] == "collision"
                and {a, b} <= {m["id"] for m in r["members"]})
     assert col["risk"] == "serialize"
+    assert col["recommendation"] == (
+        "Running them together is what produces the conflict this check exists to predict."
+    )
+
+
+def test_collision_recommendation_blocked_when_a_member_is_held(client, auth):
+    held = _item(client, auth, "Held member", touchpoints=["app/shared.py"], status="in_progress")
+    _item(client, auth, "Waiting behind", touchpoints=["app/shared.py"])
+    f = _feed(client, auth)
+    col = next(r for r in f["rows"] if r["kind"] == "collision"
+               and held in {m["id"] for m in r["members"]})
+    assert col["risk"] == "blocked"
+    assert col["recommendation"] == (
+        "the overlap is already held, so a second claim would be refused rather than queued"
+    )
 
 
 def test_failing_source_is_named_not_empty(client, auth, monkeypatch):

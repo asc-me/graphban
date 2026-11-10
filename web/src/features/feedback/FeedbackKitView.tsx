@@ -1,7 +1,7 @@
 import { Check, Copy } from "lucide-react";
 import * as React from "react";
 
-import { FETCH_FAILED } from "@/components/planner/PlannerStates";
+import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
@@ -72,35 +72,41 @@ export function FeedbackKitView() {
     setTimeout(() => setCopied(false), 1500);
   }
 
+  const header = (
+    <div className="flex-none border-b border-line px-5 py-4">
+      <h1 className="text-[18px] font-semibold tracking-tight">Feedback Kit</h1>
+      <p className="mt-0.5 text-body text-muted">
+        A themeable, embeddable feedback widget with built-in duplicate detection. Configure, preview, and copy the snippet.
+      </p>
+      <div className="mt-3 flex gap-1">
+        {(["customize", "setup"] as KitTab[]).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={cn(
+              "rounded-md px-2.5 py-1 text-[12px] capitalize transition-colors",
+              tab === t ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
+            )}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  if (platformQ.isError && !platform) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        {header}
+        <PlannerError message={FETCH_FAILED} onRetry={() => void platformQ.refetch()} />
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex-none border-b border-line px-5 py-4">
-        <h1 className="text-[18px] font-semibold tracking-tight">Feedback Kit</h1>
-        <p className="mt-0.5 text-body text-muted">
-          A themeable, embeddable feedback widget with built-in duplicate detection. Configure, preview, and copy the snippet.
-        </p>
-        <div className="mt-3 flex gap-1">
-          {(["customize", "setup"] as KitTab[]).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={cn(
-                "rounded-md px-2.5 py-1 text-[12px] capitalize transition-colors",
-                tab === t ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
-              )}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {platformQ.isError && !platform && (
-        <p role="alert" className="flex-none border-b border-line px-5 py-2.5 text-[12px] text-st-blocked">
-          {FETCH_FAILED} The snippet below is missing this project's spam-protection and
-          ingest settings — it is not a project that has none.
-        </p>
-      )}
+      {header}
 
       {tab === "setup" ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-6">

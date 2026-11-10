@@ -170,4 +170,22 @@ describe("Capacity routing mode", () => {
     wrap(<RoutingMode projectId="p" entitlements={[local]} />);
     expect(await screen.findByTestId("capacity-local-unreachable")).toHaveTextContent(/local is unreachable/i);
   });
+
+  it("says when local is unreachable even if the profile removed the local rung", async () => {
+    policyRead.mockResolvedValue({ project_id: "p", policy: null, writable: true });
+    ladderRead.mockResolvedValue({
+      project_id: "p",
+      policy: [rung("subscription"), rung("api_key"), rung("local", true)],
+      override: null,
+      effective: [rung("subscription"), rung("api_key"), rung("local", true)],
+      refused: [],
+    } satisfies HarnessLadder);
+    const local: HarnessCapacityEntitlement = {
+      ...sub("local-1", "ollama"),
+      kind: "local",
+      state: "unreachable",
+    };
+    wrap(<RoutingMode projectId="p" entitlements={[local]} />);
+    expect(await screen.findByTestId("capacity-local-unreachable")).toHaveTextContent(/local is unreachable/i);
+  });
 });
