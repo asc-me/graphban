@@ -7,9 +7,17 @@ aligns to the PRD it links, and `assess` is the only check.
     {"linked_prd": "<rendered key or null>", "prd_passed": false, "gaps": ["<heading>"],
      "functionally_complete": false, "approved_to_build": false}
 
-The requirements are the linked PRD baseline's `## ` headings. A gap is a heading whose text
-does not appear in the spec body, case and whitespace folded. No linked PRD, or a linked PRD
-with no baseline, is never approved to build: an absence is not a clean result.
+`assess` measures a body against every `## ` heading of the linked baseline. A gap is a
+heading whose text does not appear in the spec body, case and whitespace folded. No linked
+PRD, or a linked PRD with no baseline, is never approved to build: an absence is not a clean
+result.
+
+A design set is narrower. It answers the sections it gates, not the framing and the sections
+it does not list. A gated name counts only when it is a baseline heading, the same string
+decompose matches. A screen brief states the behavior of those headings, so the title does
+not have to be pasted into the brief. A name that is not a heading stays a gap. With no
+brief, each gated heading still has to appear in the set's own text, as the heading and not
+as a piece of a longer one. The compiled prompt's quote of the PRD never counts.
 
 This module imports no other service that reads documents, so `documents` and `design_sets`
 can both call it.
@@ -29,6 +37,45 @@ _HEADING = re.compile(r"^##\s+(.*\S)\s*$", re.MULTILINE)
 
 def _fold(text: str) -> str:
     return " ".join((text or "").lower().split())
+
+
+# A dot, a slash, an ASCII hyphen, or a dash in U+2010–U+2015 joins a longer heading.
+# A period ends the heading only at the end of the text or before whitespace (`2. API.`).
+_HEADING_BEFORE = "(?<![\\w./\u2010-\u2015-])"
+_HEADING_AFTER = "(?![\\w/\u2010-\u2015-]|\\.(?=\\w))"
+
+
+def _heading_stated(heading: str, hay: str, headings: list[str] | None = None) -> bool:
+    """The folded heading appears in `hay` as itself, not inside a longer heading.
+
+    A dot, slash, or dash on either side is still the same heading. A colon is not.
+    A sentence period is not either, unless the words after it are a longer baseline heading.
+    """
+    needle = _fold(heading)
+    if not needle:
+        return False
+    longer = [_fold(other) for other in headings or []
+              if _fold(other) != needle and _fold(other).startswith(needle)]
+    pattern = re.compile(_HEADING_BEFORE + re.escape(needle) + _HEADING_AFTER)
+    for match in pattern.finditer(hay):
+        if _covered_by_longer(hay, match.start(), longer):
+            continue
+        return True
+    return False
+
+
+def _covered_by_longer(hay: str, at: int, longer: list[str]) -> bool:
+    """True when a longer baseline heading occupies `hay` at `at` and ends on a boundary.
+
+    `1.2. Overview` covers `1.2`. `1.2. Overviews` does not: the next letter is still
+    part of the word.
+    """
+    for item in longer:
+        if not hay.startswith(item, at):
+            continue
+        if re.match(_HEADING_AFTER, hay[at + len(item):]):
+            return True
+    return False
 
 
 def requirements(body: str) -> list[str]:
@@ -68,7 +115,13 @@ def for_design_set(db: Session, ds: DesignSet) -> dict:
     A compiled prompt also quotes the whole governing PRD under `## Governing PRD`. That quote
     is never matched: it carries every heading, so counting it would approve any set the moment
     it compiled (bounce of 865c6cb2). The rest of a prompt is exactly these inputs, so they are
-    read at their source rather than cut back out of the chunked prompt."""
+    read at their source rather than cut back out of the chunked prompt.
+
+    When the set names the sections it gates, those are its only requirements, and only when
+    each name is a baseline heading. A non-empty screen brief states the behavior of those
+    headings. A name decompose will not attach stays a gap, brief or not. With no brief, each
+    real heading still has to appear in this text. A set that gates nothing is still measured
+    against every baseline heading."""
     bodies = [ds.constraints_body or ""] + [s.brief or "" for s in ds.screens]
     compiled = {d.screen for d in db.scalars(select(Document).where(
         Document.set_id == ds.id, Document.kind == "design_prompt"))}
@@ -81,7 +134,23 @@ def for_design_set(db: Session, ds: DesignSet) -> dict:
         bodies += [c.text or "" for c in db.scalars(select(DesignCorrection).where(
             DesignCorrection.design_set_id == ds.id, DesignCorrection.status == "open",
             DesignCorrection.screen.in_(compiled)))]
-    return assess(db, ds.prd_id, bodies)
+    align = assess(db, ds.prd_id, bodies)
+    gated = [str(s) for s in (ds.sections or []) if str(s).strip()]
+    if not gated:
+        return align
+    prd = prd_svc.get_prd(db, ds.prd_id) if ds.prd_id else None
+    base = prd_svc.baseline_of(db, prd.id) if prd is not None else None
+    # parse_sections is the list decompose passes to gating_set. requirements() is not:
+    # it reads a fenced ## line as a heading, and a bare ## swallows the next title.
+    headings = prd_svc.parse_sections(base.body) if base is not None else []
+    known = set(headings)
+    stated = any((s.brief or "").strip() for s in ds.screens)
+    hay = _fold("\n".join(b or "" for b in bodies))
+    gaps = [name for name in gated
+            if name not in known or not (stated or _heading_stated(name, hay, headings))]
+    complete = align["linked_prd"] is not None and not gaps
+    return {**align, "gaps": gaps, "functionally_complete": complete,
+            "approved_to_build": complete and align["prd_passed"]}
 
 
 def for_document(db: Session, doc: Document) -> dict:
