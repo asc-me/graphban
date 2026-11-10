@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import get_db
 from app.models import Organization, User
 from app.errors import NotFound, Refused, Validation
-from app.schemas import (ObservationBackfillOut, ObservationsOut, OrgRuleToggleOut, OrgRuleTogglesOut,
+from app.schemas import (ObservationBackfillOut, ObservationsOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
                          RulesFlowOut, RulesOut, RuleToggleOut, RuleTogglesOut,
                          RuleToggleWrite, UnmappedRefusalsOut)
@@ -191,26 +191,8 @@ def set_project_rule_toggle(rule_id: str, body: RuleToggleWrite, project_id: str
     return next(t for t in rule_toggles.effective(db, project_id) if t["rule_id"] == rule_id)
 
 
-@router.get("/orgs/{org_id}/rule-toggles", response_model=OrgRuleTogglesOut)
-def org_rule_toggles(org_id: str, db: Session = Depends(get_db),
-                     user: User = Depends(get_current_user)):
-    """The org's `on` / `params` / `locked` per library rule, and each project's effective
-    value with its `source`. Org owners/admins on `team` / `enterprise` (402 otherwise)."""
-    authz.require_org_admin(db, user.id, org_id)
-    quotas.require_org_rules(db, org_id)
-    return rule_toggles.org_view(db, org_id)
-
-
-@router.put("/orgs/{org_id}/rule-toggles/{rule_id}", response_model=OrgRuleToggleOut)
-def set_org_rule_toggle(org_id: str, rule_id: str, body: RuleToggleWrite,
-                        dry_run: bool = False,
-                        db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """The org's value and lock, for every project in the org at once — one audit event
-    naming the projects it changed. Org admins on `team` / `enterprise` (402 otherwise).
-    `?dry_run=true` returns the same reply (including `projects_changed`) and writes nothing."""
-    return _toggle_write(rule_toggles.set_org_toggle, org_id, rule_id, body=body, user=user,
-                         db=db, dry_run=dry_run)
-
+# Org rule toggles are served by the console (GBC-P8). `set_org_toggle` / `org_view` stay
+# for the box and for tests. The product routes are gone.
 
 # ---- measurement (GRPH-1265 / PRD-P63 S5, D8, D9) ----------------------------------------
 # Read-only. Every measured value is {status, value, n, min_n, reason} (measured | insufficient
@@ -327,27 +309,8 @@ def project_profile_drift(profile_id: str, project_id: str = "core",
     return _org_call(rules_org.project_drift, db, user, project_id, profile_id)
 
 
-@router.get("/orgs/{org_id}/rules/profiles")
-def org_profiles(org_id: str, db: Session = Depends(get_db),
-                 user: User = Depends(get_current_user)):
-    """Oversight profiles from the loaded rule pack. Org admins on `team` / `enterprise`."""
-    return rules_org.list_profiles(db, user, org_id)
-
-
-@router.get("/orgs/{org_id}/rules/profiles/applied")
-def org_applied_profiles(org_id: str, db: Session = Depends(get_db),
-                         user: User = Depends(get_current_user)):
-    """The profile applied to each project and whether it was applied to the project alone or
-    inherited from the org's apply. Org admins on `team` / `enterprise`."""
-    return _org_call(rules_org.applied_profiles, db, user, org_id)
-
-
-@router.post("/orgs/{org_id}/rules/profiles/{profile_id}/apply")
-def apply_org_profile(org_id: str, profile_id: str, body: ProfileApply,
-                      db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Pin the profile's rules across the org, locked: one event per rule and one for the act."""
-    return _org_call(rules_org.apply_profile, db, user, org_id, profile_id, reason=body.reason)
-
+# Org profile list, applied, and apply are served by the console. Drift, updates, and the
+# project apply stay here: the console does not serve them.
 
 @router.get("/orgs/{org_id}/rules/profiles/{profile_id}/drift")
 def org_profile_drift(org_id: str, profile_id: str, db: Session = Depends(get_db),
@@ -364,13 +327,7 @@ def org_recommended_rules(org_id: str, refresh: bool = False, db: Session = Depe
     return rules_org.recommended(db, user, org_id, refresh=refresh)
 
 
-@router.get("/orgs/{org_id}/rules/sync")
-def org_rule_sync(org_id: str, db: Session = Depends(get_db),
-                  user: User = Depends(get_current_user)):
-    """Each linked box's rule-sync state (applied vs published version, pending, overdue),
-    read from what boxes reported. A box that never reported has no applied version."""
-    return _org_call(rules_org.org_box_states, db, user, org_id)
-
+# Org rule-sync (`/rules/sync`) is served by the console. `rules_org.org_box_states` stays.
 
 # ---- install a signed rule pack (GRPH-1329 / PRD-P63 D10, D12) ---------------------------
 class PackUpload(BaseModel):

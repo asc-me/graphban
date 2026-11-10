@@ -7,7 +7,7 @@ from app.services import rule_toggles as T
 from app.services import rules as R
 from app.services import rules_org as RO
 from app.services import rules_recommend as rr
-from tests.test_rule_toggles import RULE, _db, _login, _set_plan, _toggles
+from tests.test_rule_toggles import RULE, _as_http, _db, _login, _owner, _put_org, _set_plan, _toggles
 
 OTHER = "review.evidence_attached"
 
@@ -44,8 +44,17 @@ def _url(org, tail):
 
 
 def _apply(client, org, pid="standard", reason="adopt"):
-    return client.post(_url(org, f"profiles/{pid}/apply"), json={"reason": reason},
-                       headers=org["owner"])
+    """Org profile apply through the service. The product route is the console's."""
+    db = _db()
+    try:
+        return _as_http(lambda: RO.apply_profile(
+            db, _owner(db), org["id"], pid, reason=reason))
+    finally:
+        db.close()
+
+
+def _org_toggle(org, rule_id, body):
+    return _put_org(None, org, body, rule_id=rule_id)
 
 
 def test_apply_pins_locked_values_in_every_project_with_audit(client, org):
@@ -88,8 +97,7 @@ def test_drift_clean_then_weakening_when_a_locked_pin_is_turned_off(client, org)
     d = client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).json()
     assert d["state"] == "clean" and d["drift"] == []
     # The lock stays on, so only the on -> off check can report this.
-    client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
-               json={"on": False, "reason": "loosen"}, headers=org["owner"])
+    _org_toggle(org, RULE, {"on": False, "reason": "loosen"})
     assert _toggles(client, {"owner": org["owner"]}, org["ps"][0])[RULE]["locked"] is True
     d = client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).json()
     assert d["state"] == "drifted" and len(d["drift"]) == 3
@@ -98,7 +106,11 @@ def test_drift_clean_then_weakening_when_a_locked_pin_is_turned_off(client, org)
 
 
 def test_list_profiles(client, org):
-    r = client.get(_url(org, "profiles"), headers=org["owner"]).json()
+    db = _db()
+    try:
+        r = RO.list_profiles(db, _owner(db), org["id"])
+    finally:
+        db.close()
     assert r["pack_loaded"] and {p["id"] for p in r["profiles"]} == {"standard", "bad"}
 
 
@@ -134,8 +146,7 @@ def test_org_recommendation_needs_the_floor_of_projects(client, org):
 def test_org_recommendation_drops_a_rule_the_org_has_on(client, org):
     _observe(org["ps"][0])
     _observe(org["ps"][1])
-    client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
-               json={"on": True, "reason": "adopt"}, headers=org["owner"])
+    _org_toggle(org, RULE, {"on": True, "reason": "adopt"})
     r = client.get(_url(org, "recommended"), params={"refresh": True}, headers=org["owner"]).json()
     assert r["suggestions"] == []
 
@@ -153,20 +164,17 @@ def test_org_recommendation_drops_an_adopted_rule_without_a_refresh(client, org)
     _observe(org["ps"][1])
     assert [s["rule_id"] for s in client.get(
         _url(org, "recommended"), headers=org["owner"]).json()["suggestions"]] == [RULE]
-    client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
-               json={"on": True, "reason": "adopt"}, headers=org["owner"])
+    _org_toggle(org, RULE, {"on": True, "reason": "adopt"})
     assert client.get(_url(org, "recommended"), headers=org["owner"]).json()["suggestions"] == []
     _apply(client, org)  # adopting through a profile is read live too
-    client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
-               json={"on": False, "locked": False, "reason": "drop"}, headers=org["owner"])
+    _org_toggle(org, RULE, {"on": False, "locked": False, "reason": "drop"})
     assert [s["rule_id"] for s in client.get(
         _url(org, "recommended"), headers=org["owner"]).json()["suggestions"]] == [RULE]
 
 
 def test_drift_reports_a_removed_lock_as_weakening(client, org):
     _apply(client, org)
-    client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
-               json={"locked": False, "reason": "let projects choose"}, headers=org["owner"])
+    _org_toggle(org, RULE, {"locked": False, "reason": "let projects choose"})
     d = client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).json()
     assert d["state"] == "drifted" and len(d["drift"]) == 3
     assert {(x["rule_id"], x["kind"]) for x in d["drift"]} == {(RULE, "weakening")}
@@ -177,8 +185,7 @@ def test_drift_an_off_pin_turned_on_is_changed_not_weakening(client, org, monkey
     prof = P.CURRENT.profiles["standard"]
     monkeypatch.setitem(prof, "rules", {**prof["rules"], OTHER: {"state": "off"}})
     _apply(client, org)
-    client.put(f"/api/orgs/{org['id']}/rule-toggles/{OTHER}",
-               json={"on": True, "reason": "tighten"}, headers=org["owner"])
+    _org_toggle(org, OTHER, {"on": True, "reason": "tighten"})
     d = client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).json()
     assert {(x["rule_id"], x["kind"]) for x in d["drift"]} == {(OTHER, "changed")}
 
@@ -237,9 +244,7 @@ def test_drift_unmeasured_for_a_rule_not_in_the_library(client, org):
 
 def test_drift_a_params_change_is_changed_with_a_params_detail(client, org):
     _apply(client, org)
-    client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
-               json={"on": True, "locked": True, "params": {"n": 7}, "reason": "retune"},
-               headers=org["owner"])
+    _org_toggle(org, RULE, {"on": True, "locked": True, "params": {"n": 7}, "reason": "retune"})
     d = client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).json()
     assert d["state"] == "drifted" and len(d["drift"]) == 3
     assert {(x["rule_id"], x["kind"]) for x in d["drift"]} == {(RULE, "changed")}
@@ -289,8 +294,18 @@ def test_org_recommendation_recomputes_after_a_week_and_reports_its_age(client, 
 
 @pytest.mark.parametrize("plan,code", [("enterprise", 200), ("free", 402)])
 def test_profiles_and_drift_are_plan_gated(client, org, plan, code):
+    from app.errors import QuotaExceeded
     _set_plan(org["id"], plan)
-    assert client.get(_url(org, "profiles"), headers=org["owner"]).status_code == code
+    db = _db()
+    try:
+        if code == 200:
+            assert RO.list_profiles(db, _owner(db), org["id"])["pack_loaded"]
+        else:
+            with pytest.raises(QuotaExceeded):
+                RO.list_profiles(db, _owner(db), org["id"])
+    finally:
+        db.close()
+    # Drift stays on the product. The profile list moved to the console.
     assert client.get(_url(org, "profiles/standard/drift"), headers=org["owner"]).status_code == code
 
 
@@ -322,8 +337,7 @@ def test_apply_to_a_project_is_refused_whole_when_the_org_locks_a_rule(client, o
     # Lock the rule that sorts LAST, so a write loop that refuses per rule would already have
     # written OTHER: only the up-front lock check keeps the apply from being half done.
     assert OTHER < RULE
-    client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
-               json={"on": False, "locked": True, "reason": "freeze"}, headers=org["owner"])
+    _org_toggle(org, RULE, {"on": False, "locked": True, "reason": "freeze"})
     p = org["ps"][0]
     r = _apply_project(client, org, p)
     assert r.status_code == 409, r.text
@@ -445,8 +459,7 @@ def test_accept_is_refused_for_a_key_or_engine_and_under_an_org_lock(client, org
         with pytest.raises(HTTPException) as e:
             RO.accept_project_update(db, actor, p, "standard", reason="x")
         assert e.value.status_code == 403 and e.value.rule_id == T.PERSON_RULE
-    client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}",
-               json={"on": False, "locked": True, "reason": "freeze"}, headers=org["owner"])
+    _org_toggle(org, RULE, {"on": False, "locked": True, "reason": "freeze"})
     n = len(_events("apply_rule_profile"))
     r = client.post(f"/api/rules/profiles/standard/updates/accept", params={"project_id": p},
                     json={"reason": "go"}, headers=org["owner"])
@@ -463,12 +476,14 @@ def test_updates_org_scope_is_plan_gated(client, org, monkeypatch):
 
 def test_applied_profiles_report_project_alone_and_inherited(client, org):
     a, b, c = org["ps"]
-    url = _url(org, "profiles/applied")
 
     def rows():
-        r = client.get(url, headers=org["owner"])
-        assert r.status_code == 200, r.text
-        return {x["project_id"]: x for x in r.json()["projects"]}
+        db = _db()
+        try:
+            body = RO.applied_profiles(db, _owner(db), org["id"])
+        finally:
+            db.close()
+        return {x["project_id"]: x for x in body["projects"]}
 
     assert all(x["profile"] is None and x["source"] is None for x in rows().values())
     assert _apply_project(client, org, a).status_code == 200
@@ -485,8 +500,14 @@ def test_applied_profiles_report_project_alone_and_inherited(client, org):
 
 
 def test_applied_profiles_are_plan_gated(client, org):
+    from app.errors import QuotaExceeded
     _set_plan(org["id"], "free")
-    assert client.get(_url(org, "profiles/applied"), headers=org["owner"]).status_code == 402
+    db = _db()
+    try:
+        with pytest.raises(QuotaExceeded):
+            RO.applied_profiles(db, _owner(db), org["id"])
+    finally:
+        db.close()
 
 
 def _org_sugg(client, org, **kw):

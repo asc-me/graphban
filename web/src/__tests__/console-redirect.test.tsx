@@ -3,7 +3,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ConsoleRedirect } from "@/components/ConsoleRedirect";
-import { consoleHref, consolePathFromProduct } from "@/lib/routes";
+import { consoleHref, consoleOrigin, consolePathFromProduct } from "@/lib/routes";
 
 describe("consolePathFromProduct", () => {
   it("maps operator bookmarks onto /operator", () => {
@@ -56,5 +56,17 @@ describe("ConsoleRedirect", () => {
     renderAt("/org/admin/billing");
     expect(replace).toHaveBeenCalledWith(consoleHref("/org/admin/billing"));
     expect(replace.mock.calls[0][0]).toMatch(/\/org\/admin\/billing$/);
+  });
+
+  it("keeps the local console in dev when VITE_CONSOLE_URL is unset", () => {
+    vi.stubEnv("MODE", "development");
+    vi.stubEnv("VITE_CONSOLE_URL", "");
+    expect(consoleOrigin()).toBe("http://localhost:5174");
+  });
+
+  it("refuses a localhost console link when a production build omits VITE_CONSOLE_URL", () => {
+    vi.stubEnv("MODE", "production");
+    vi.stubEnv("VITE_CONSOLE_URL", "");
+    expect(() => consoleOrigin()).toThrow(/localhost/);
   });
 });

@@ -120,6 +120,23 @@ def test_resumable_after_a_failed_batch(db, monkeypatch):
     assert r["pushed"] == 2 and len(_paths_sent(calls)) == 2
 
 
+def test_box_view_posts_once_after_the_graph(db, monkeypatch):
+    _describe(db, "a.py", "b.py")
+    calls = _capture(monkeypatch)
+    out = code_sync.push(db, project_id="core", cloud_url="https://c", api_key="k", batch_size=1)
+    kinds = []
+    for body in calls:
+        if not isinstance(body, dict):
+            continue
+        if body.get("record") == "box_push":
+            kinds.append("box_push")
+        elif any(k in body for k in ("nodes", "remove", "edges")):
+            kinds.append("graph")
+    assert kinds[-1] == "box_push" and kinds.count("box_push") == 1
+    assert "graph" in kinds
+    assert out["box"]["pushed"] is True and out["pushed"] == 2
+
+
 def test_push_without_a_link_raises_notlinked(db):
     with pytest.raises(code_sync.NotLinked):
         code_sync.push(db, project_id="core", cloud_url="", api_key="")
@@ -158,7 +175,12 @@ def test_push_skipped_when_graph_privacy_is_on(client, auth, db, monkeypatch):
     db.expire_all()  # re-read the flag committed by the PATCH
     calls = _capture(monkeypatch)
     r = code_sync.push(db, project_id="core", cloud_url="https://c", api_key="k")
-    assert r.get("skipped") is True and calls == []  # nothing left the box
+    assert r.get("skipped") is True
+    # The graph stays on the box. The org-view push still rides this sync.
+    assert not any(isinstance(c, dict) and any(k in c for k in ("nodes", "remove", "edges"))
+                   for c in calls)
+    assert r["box"]["pushed"] is True
+    assert sum(1 for c in calls if isinstance(c, dict) and c.get("record") == "box_push") == 1
 
 
 class _PurgeResp:

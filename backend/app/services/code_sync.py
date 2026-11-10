@@ -186,7 +186,7 @@ def push(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = ""
     cfg = db.get(PlatformConfig, project_id)
     if cfg is not None and not cfg.sync_graph:
         return {"project_id": project_id, "skipped": True, "reason": "graph kept local (sync_graph off)",
-                "rules": _pull_rules_on_sync(db, url, key)}
+                **_sync_tail(db, url, key)}
 
     nodes = {n.path: n for n in code_graph.list_nodes(db, project_id)}
     local = {p: (n.content_hash or "") for p, n in nodes.items()}
@@ -227,7 +227,7 @@ def push(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = ""
 
     return {"project_id": project_id, "pushed": sent, "removed": len(removed),
             "unchanged": len(local) - len(changed),
-            "rules": _pull_rules_on_sync(db, url, key)}
+            **_sync_tail(db, url, key)}
 
 
 def purge(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = "") -> dict:
@@ -433,6 +433,26 @@ def org_overview(db: Session) -> dict:
 
 # ---- pulling the org's rule decisions (GRPH-1297) ----------------------------------------
 
+def _push_box_on_sync(db: Session, url: str, key: str) -> dict:
+    """The org-view push rides this same sync, once, after the graph batches. A refusal or a
+    network error is reported here and retried on the next sync; neither fails the graph push."""
+    from app.services import box_push
+
+    try:
+        return box_push.push_box_view(db, cloud_url=url, api_key=key)
+    except Exception as e:  # noqa: BLE001 — the graph push already landed; never undo it
+        db.rollback()
+        return {"pushed": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def _sync_tail(db: Session, url: str, key: str) -> dict:
+    """Rule decisions, then the org-view push. Both run after any graph batches."""
+    return {
+        "rules": _pull_rules_on_sync(db, url, key),
+        "box": _push_box_on_sync(db, url, key),
+    }
+
+
 def _pull_rules_on_sync(db: Session, url: str, key: str) -> dict:
     """Every sync (`graphban sync`, `POST /api/sync/push`) also pulls the org's rule decisions —
     that is the box's sync cadence. Never fatal to the push: a failure is reported in the
@@ -458,6 +478,9 @@ def pull_rule_decisions(db: Session, *, cloud_url: str = "", api_key: str = "") 
         return {"pulled": False, "reason": "no organization for this credential"}
     resp.raise_for_status()
     record = resp.json()
+    # Nothing published yet: version is null, not "0". Do not apply and do not report.
+    if not isinstance(record, dict) or record.get("version") is None:
+        return {"pulled": False, "reason": "nothing published"}
     pull = db.get(RuleDecisionPull, "instance")
     changed = pull is None or pull.applied_version != record.get("version")
     if changed:

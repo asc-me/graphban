@@ -20,6 +20,7 @@ import { noteGitopsUnlinked } from "@/features/settings/GitopsPanel";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { useSyncStatus } from "@/lib/queries";
+import { CONSOLE_URL } from "@/lib/routes";
 import type { SyncProjectState, SyncProjectStatus } from "@/lib/types";
 import { useSearchParams } from "react-router-dom";
 
@@ -81,10 +82,10 @@ export function SyncLinkPanel() {
       <div>
         <h2 className="text-[15px] font-semibold tracking-tight">Sync / Link</h2>
         <p className="mt-1 max-w-[60ch] text-body leading-relaxed text-muted">
-          Connect this self-hosted instance to a cloud org. Mint the link key there — Settings
-          → Sync / Link, or API keys → Link key — then paste the cloud URL and link key
-          below. This box builds the graph; the cloud holds items, claims, and memory.
-          Vectors never leave the box; the cloud re-embeds.
+          Connect this self-hosted instance to the Graphban console. Mint the link key there —
+          Settings → Sync / Link, or API keys → Link key — then paste the console URL and
+          link key below. This box builds the graph; the console holds items, claims, and
+          memory. Vectors never leave the box; the console re-embeds.
         </p>
         {reason === "missing" && (
           <p className="mt-3 rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 text-body text-st-review">
@@ -296,8 +297,8 @@ function CloudLinkCard({
       ) : (
         <div className="space-y-3">
           <div>
-            <Label>Cloud URL</Label>
-            <Input value={cloudUrl} onChange={(e) => setCloudUrl(e.target.value)} placeholder="cloud.graphban.dev" />
+            <Label>Console URL</Label>
+            <Input value={cloudUrl} onChange={(e) => setCloudUrl(e.target.value)} placeholder={CONSOLE_URL} />
           </div>
           <div>
             <Label>Link key</Label>

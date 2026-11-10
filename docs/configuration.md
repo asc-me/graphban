@@ -64,7 +64,7 @@ mail is simply not sent, so an invite can be "issued" and never arrive.
 | `LOG_JSON` | `false` | Structured logs. On for anything with log search |
 | `REDIS_URL` | *(empty)* | Empty keeps rate-limit state in process, which is per-worker rather than per-deployment |
 | `SYNC_DIR` | `/data/sync` | Where the Drive/file sync writes |
-| `SYNC_CLOUD_URL`, `SYNC_API_KEY` | *(empty)* | Local → cloud code-graph push |
+| `SYNC_CLOUD_URL`, `SYNC_API_KEY` | *(empty)* | Local → console code-graph push. Point the URL at the Graphban console. Until `cloud.graphban.dev` is that console, use `https://graphban-console-console-production-ascme-labs.unkey.app` |
 | `UPSTREAM_FEEDBACK_URL` | `https://feedback.asc-me.dev/api/public/requests` | Where `report_graphban_issue` sends |
 | `UPSTREAM_FEEDBACK_PROJECT` | `agentledger` | |
 | `UPSTREAM_FEEDBACK_TOKEN` | *(empty)* | |
@@ -145,6 +145,10 @@ See [AI providers](ai-providers.md) for the details (and why embeddings are depl
 The dev server proxies `/api` to the backend; override the target with `VITE_API_PROXY`
 (default `http://localhost:8000`). In the built image, nginx proxies `/api` and `/health` to
 the `api` service.
+
+Org-plane links use `VITE_CONSOLE_URL`. The web image sets it at build time
+(`web/Dockerfile`) to the console. A production build without it refuses to emit a
+localhost console link. `pnpm dev` falls back to `http://localhost:5174`.
 
 ## Wire names during the Graphban rename
 

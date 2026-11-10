@@ -703,15 +703,6 @@ export function useSetRuleToggle(projectId: string) {
   });
 }
 
-export function useSetOrgRuleToggle(orgId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ ruleId, body }: { ruleId: string; body: RuleToggleWrite }) =>
-      api.setOrgRuleToggle(orgId, ruleId, body),
-    onSuccess: () => invalidateRuleToggles(qc),
-  });
-}
-
 /** Unmapped refusals (GRPH-1195): aggregated on the server over a 7-day window. */
 export function useUnmappedRefusals(projectId: string) {
   return useQuery({

@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GITOPS_PRELINK_KEY } from "@/features/settings/GitopsPanel";
 import { SyncLinkPanel } from "@/features/settings/SyncLinkPanel";
 import { keys } from "@/lib/queries";
+import { CONSOLE_URL } from "@/lib/routes";
 import type { SyncStatus } from "@/lib/types";
 
 const unlinked: SyncStatus = {
@@ -65,11 +66,11 @@ describe("SyncLinkPanel", () => {
   it("shows the link form when the instance is not linked", async () => {
     renderPanel();
     expect(await screen.findByText("not linked")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("cloud.graphban.dev")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(CONSOLE_URL)).toBeInTheDocument();
     expect(screen.getByPlaceholderText("paste link key…")).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("paste key…")).not.toBeInTheDocument();
     expect(screen.getByText(/Mint the link key there/)).toBeInTheDocument();
-    expect(screen.getByText(/paste the cloud URL and link key/i)).toBeInTheDocument();
+    expect(screen.getByText(/paste the console URL and link key/i)).toBeInTheDocument();
     // Same object the intro names. This field used to say "Sync API key" while
     // the paragraph said "link key".
     expect(screen.getByText("Link key")).toBeInTheDocument();
@@ -86,7 +87,7 @@ describe("SyncLinkPanel", () => {
     renderPanel();
     await screen.findByText("not linked");
 
-    await user.type(screen.getByPlaceholderText("cloud.graphban.dev"), "cloud.agentldgr.dev");
+    await user.type(screen.getByPlaceholderText(CONSOLE_URL), "cloud.agentldgr.dev");
     await user.type(screen.getByPlaceholderText("paste link key…"), "gb_sk_secret");
     await user.type(screen.getByPlaceholderText("acme"), "acme");
     await user.click(screen.getByRole("button", { name: "Link instance" }));
@@ -138,7 +139,7 @@ describe("SyncLinkPanel", () => {
     qc.setQueryData(keys.gitops("core"), { fields: { base_branch: { value: "test" } } });
     await screen.findByText("not linked");
 
-    await user.type(screen.getByPlaceholderText("cloud.graphban.dev"), "cloud.agentldgr.dev");
+    await user.type(screen.getByPlaceholderText(CONSOLE_URL), "cloud.agentldgr.dev");
     await user.type(screen.getByPlaceholderText("paste link key…"), "gb_sk_secret");
     await user.type(screen.getByPlaceholderText("acme"), "acme");
     await user.click(screen.getByRole("button", { name: "Link instance" }));

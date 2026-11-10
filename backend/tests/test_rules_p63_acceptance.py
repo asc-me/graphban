@@ -22,7 +22,7 @@ from tests.test_fleet_adversarial_gate import _rpc, _ready_for_review, key, proj
 from tests.test_observations import _ci, _item, _signoff
 from tests.test_rule_measure import _adopt, _kind_obs, _org, _signoffs
 from tests.test_rule_pack import FIX, TRUST, build
-from tests.test_rule_toggles import _login, _set_plan
+from tests.test_rule_toggles import _as_http, _db, _login, _owner, _set_plan
 
 PID = "core"
 GAP_ITEM = "GRPH-1249"
@@ -201,8 +201,13 @@ def org(client, db, monkeypatch):
 
 
 def _apply(client, org):
-    return client.post(f"/api/orgs/{org['id']}/rules/profiles/regulated/apply",
-                       json={"reason": "we ship to a regulator"}, headers=org["owner"])
+    """Org profile apply through the service. The product route is the console's."""
+    db = _db()
+    try:
+        return _as_http(lambda: RO.apply_profile(
+            db, _owner(db), org["id"], "regulated", reason="we ship to a regulator"))
+    finally:
+        db.close()
 
 
 def _toggles(client, org, pid):

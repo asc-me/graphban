@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SettingsView } from "@/features/settings/SettingsView";
 import { SyncCredentialInstall } from "@/features/settings/SyncCredentialInstall";
+import { CONSOLE_URL } from "@/lib/routes";
 
 const api = vi.hoisted(() => ({
   createApiKey: vi.fn(),
@@ -198,6 +199,7 @@ describe("hosted Sync / Link is the cloud-org mint, not the self-host paste form
     expect(screen.queryByPlaceholderText("Key name (e.g. laptop — acme-core)")).not.toBeInTheDocument();
     expect(screen.queryByText(/scoped credential/i)).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText("cloud.graphban.dev")).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(CONSOLE_URL)).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText("paste link key…")).not.toBeInTheDocument();
     expect(screen.queryByText(/Connect this self-hosted instance/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Link instance" })).not.toBeInTheDocument();
