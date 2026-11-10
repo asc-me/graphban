@@ -63,28 +63,46 @@ def test_green_ci_spawns(monkeypatch):
     assert seen == []
 
 
-def test_red_ci_reopens_the_item_with_the_failing_job_named(monkeypatch):
+def test_red_ci_bounces_the_item_to_its_author(monkeypatch):
     _verdict(monkeypatch, "red", job="fleet-tests")
+    monkeypatch.setattr(until, "failed_test_summary", lambda *a: "FAILED tests/test_x.py::test_y")
     seen = _events(monkeypatch)
     planner = _Planner()
     got = _ci_attested([ROW], Path("."), set(), planner=planner, agent_id="GRPH-P1")
-    assert got == ([], [], [ROW])  # no reviewer for it
-    assert [e for e, _ in seen] == ["review_ci_red", "review_ci_red_reopened"]
-    assert seen[0][1]["job"] == "fleet-tests"
+    assert got == ([], [], [ROW])  # not spawnable
+    assert "review_ci_red_bounced" in [e for e, _ in seen]
+    assert not any(args.get("status") == "blocked" for _, args in planner.calls)
+    (tool, args), = [c for c in planner.calls if c[0] == "bounce"]
+    assert args["id"] == "GRPH-1" and args["agent_id"] == "GRPH-P1"
+    assert "fleet-tests" in args["reason"] and "test_y" in args["reason"]
+    assert args["reason"].startswith(until.CI_RED_BOUNCE)
+
+
+def test_a_second_red_head_reopens_claimable(monkeypatch):
+    """A later red head is not bounced again and is not parked blocked.
+
+    GRPH-1471: `status=blocked` with a prose blocker is not claimable, so the drain
+    exits idle and the item sits until a person moves it. Reopen to `next` instead.
+    """
+    _verdict(monkeypatch, "red", job="fleet-tests")
+    _events(monkeypatch)
+    planner = _Planner()
+    row = {**ROW, "bounce_reason": f"{until.CI_RED_BOUNCE} CI red at old"}
+    got = _ci_attested([row], Path("."), set(), planner=planner, agent_id="GRPH-P1")
+    assert got == ([], [], [row])
+    assert not any(tool == "bounce" for tool, _ in planner.calls)
     (tool, args), = planner.calls
-    assert tool == "update_item" and args["id"] == "GRPH-1" and args["status"] == "next"
-    assert args["blocker"] == ""
+    assert tool == "update_item" and args["status"] == "next" and args["blocker"] == ""
     note = args["evidence"][0]["detail"]
     assert "fleet-tests" in note and HEAD[:12] in note
-    assert until.REVIEW_CI_RED in note
-    assert args["agent_id"] == "GRPH-P1"
 
 
-def test_a_refused_block_falls_back_to_a_reviewer_who_can_bounce(monkeypatch):
+def test_a_refused_bounce_falls_back_to_a_reviewer(monkeypatch):
     _verdict(monkeypatch, "red", job="fleet-tests")
     seen = _events(monkeypatch)
-    got = _ci_attested([ROW], Path("."), set(), planner=_Planner(refuse=True))
-    assert got == ([ROW], [], [])
+    got = _ci_attested([{**ROW, "bounce_reason": ""}], Path("."), set(),
+                       planner=_Planner(refuse=True))
+    assert got == ([{**ROW, "bounce_reason": ""}], [], [])
     assert "review_ci_red_unrecorded" in [e for e, _ in seen]
 
 
@@ -160,7 +178,7 @@ def test_the_loop_polls_through_pending_ci_then_spawns_on_green(
     assert result.spawned >= 1
 
 
-def test_the_loop_blocks_a_red_row_and_spawns_no_reviewer(
+def test_the_loop_bounces_a_red_row_and_spawns_no_reviewer(
     git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
 ):
     monkeypatch.setattr(until, "ci_verdict", lambda *a: ("red", HEAD, "fleet-tests"))
@@ -175,6 +193,6 @@ def test_the_loop_blocks_a_red_row_and_spawns_no_reviewer(
         limits=Limits(max_workers=1),
     )
     assert roles == []
-    assert "update_item" in calls
+    assert "bounce" in calls
     assert result.spawned == 0
     assert result.reason != "review-unsigned"

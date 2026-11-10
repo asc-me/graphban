@@ -64,7 +64,7 @@ def test_tool_roles_review_tools_are_worker():
     """claim_review, sign_off and bounce moved from reviewer to worker."""
     assert fleet.TOOL_ROLES["claim_review"] == ("worker",)
     assert fleet.TOOL_ROLES["sign_off"] == ("worker",)
-    assert fleet.TOOL_ROLES["bounce"] == ("worker",)
+    assert fleet.TOOL_ROLES["bounce"] == ("worker", "planner")
     assert fleet.TOOL_ROLES["release_item"] == ("worker",)
 
 
@@ -245,3 +245,9 @@ def test_issue_enrolment_reviewer_is_refused(client, auth, proj, db):
     """`issue_enrolment(role="reviewer")` → refused with valid roles listed."""
     with pytest.raises(ValueError, match="planner.*worker|valid roles"):
         fleet.issue_enrolment(db, project_id=proj, role="reviewer", wave="w1")
+
+
+def test_a_planner_may_bounce_but_not_sign_off():
+    """GRPH-1472: until returns a red review to its author; it never approves one."""
+    assert "planner" in fleet.TOOL_ROLES["bounce"]
+    assert "planner" not in fleet.TOOL_ROLES["sign_off"]
