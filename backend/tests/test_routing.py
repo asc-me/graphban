@@ -446,6 +446,8 @@ def test_custom_hierarchy_gate_chooses_policy_order_over_soonest_reset(client, w
     assert _claim(a, item_id) == item_id
     (rec,) = [d for d in _decisions(item_id) if d["kind"] == "claim"]
     assert rec["entitlement_id"] == late
+    assert f"chosen over {soon} by subscription policy order" in rec["reason"]
+    assert "not usable" not in rec["reason"]
 
 
 def test_unreachable_local_entitlement_refuses_spawn_start(client, world):

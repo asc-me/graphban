@@ -158,8 +158,19 @@ def _why(entry: dict, ranked: list[dict]) -> str:
         parts.append(f"no stated reset separates it from {', '.join(e['id'] for e in tied)}"
                      "; creation order decides")
     if sooner:
-        parts.append(f"{', '.join(e['id'] for e in sooner)} reset sooner but were not "
-                     "usable for this claim")
+        by_policy, by_unusable = [], []
+        for e in sooner:
+            if (entry["rung_rank"] == e["rung_rank"]
+                    and entry.get("subscription_rank", 0) < e.get("subscription_rank", 0)):
+                by_policy.append(e)
+            else:
+                by_unusable.append(e)
+        if by_policy:
+            parts.append(f"chosen over {', '.join(x['id'] for x in by_policy)} by subscription "
+                           "policy order")
+        if by_unusable:
+            parts.append(f"{', '.join(x['id'] for x in by_unusable)} reset sooner but were not "
+                         "usable for this claim")
     return f"{head}; {'; '.join(parts)}"
 
 
