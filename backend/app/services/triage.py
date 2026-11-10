@@ -23,6 +23,14 @@ from app.services import keys
 from app.services import prds as prds_svc
 from app.services import prioritization as prio
 from app.services import requests as req_svc
+
+# PRD-47 S3: collision detail shows the risk in plain language, not a reorder hint.
+_COLLISION_BLOCKED = (
+    "the overlap is already held, so a second claim would be refused rather than queued"
+)
+_COLLISION_SERIALIZE = (
+    "Running them together is what produces the conflict this check exists to predict."
+)
 from app.services import waits as waits_svc
 
 logger = logging.getLogger("graphban.triage")
@@ -114,20 +122,18 @@ def _collision_rows(db: Session, project_id: str, now) -> list[dict]:
             continue
         # `blocked`: someone already holds a member, so the rest cannot simply be reordered.
         held = any(m.status in ("in_progress", "review") for m in members)
-        order = " → ".join(m.key for m in members)
+        risk = "blocked" if held else "serialize"
         rows.append({
             # Stable while the member set is unchanged; frozen ids, so a retag keeps it.
             "id": "col:" + collision_svc.member_key(c["items"]),
             "kind": "collision", "title": f"{len(members)} items touch the same code",
             "age_seconds": max(_age(m.created_at, now) for m in members),
-            "risk": "blocked" if held else "serialize",
+            "risk": risk,
             "predicted": c["predicted"],
             "members": [{"id": m.key, "title": m.title, "owner": m.claimed_by,
                          "status": m.status} for m in members],
             "paths": c["areas"],
-            "recommendation": (f"Finish {members[0].key} first, then {order[len(members[0].key) + 3:]}"
-                               if not held else
-                               f"A member is already in flight; hold the rest behind it: {order}"),
+            "recommendation": _COLLISION_BLOCKED if held else _COLLISION_SERIALIZE,
         })
     return rows
 

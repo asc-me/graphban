@@ -35,12 +35,23 @@ const dupBug: TriageFeedRow = {
   by: "sam", votes: 5, source: "In-app widget", body: "",
   duplicate: { id: "CORE-R7", title: "Sidebar collapse bug", score: 0.86, status: "new" },
 };
-const collision: TriageFeedRow = {
+const collisionBlocked: TriageFeedRow = {
   id: "col:abc", kind: "collision", title: "2 items touch the same code", age_seconds: 600,
-  paths: ["a.py"], risk: "blocked", predicted: false, recommendation: "Hold the rest.",
+  paths: ["a.py"], risk: "blocked", predicted: false,
+  recommendation: "the overlap is already held, so a second claim would be refused rather than queued",
   members: [
     { id: "GRPH-1", title: "One", owner: "w1", status: "in_progress" },
     { id: "GRPH-2", title: "Two", owner: null, status: "next" },
+  ],
+};
+const collisionSerialize: TriageFeedRow = {
+  ...collisionBlocked,
+  id: "col:def",
+  risk: "serialize",
+  recommendation: "Running them together is what produces the conflict this check exists to predict.",
+  members: [
+    { id: "GRPH-3", title: "Three", owner: null, status: "next" },
+    { id: "GRPH-4", title: "Four", owner: null, status: "next" },
   ],
 };
 
@@ -92,7 +103,7 @@ const selected = () => document.querySelector('[role="option"][aria-selected="tr
 
 beforeEach(() => {
   vi.clearAllMocks();
-  m.projectTriage.mockResolvedValue(feed([blocker, bug, dupBug, collision]));
+  m.projectTriage.mockResolvedValue(feed([blocker, bug, dupBug, collisionBlocked]));
   m.requestComments.mockResolvedValue([]);
 });
 
@@ -289,23 +300,36 @@ describe("Triage inbox", () => {
   });
 
   it("renders the collision cluster table and the amber recommendation callout", async () => {
-    m.projectTriage.mockResolvedValue(feed([collision]));
+    m.projectTriage.mockResolvedValue(feed([collisionBlocked]));
     renderTriage();
     expect(await screen.findByText("ITEMS IN THIS CLUSTER")).toBeInTheDocument();
     expect(screen.queryByText("MEMBERS, IN ORDER")).not.toBeInTheDocument();
     const rec = screen.getByText("RECOMMENDATION · BLOCKED");
     expect(rec.parentElement).toHaveClass("border-st-review/30");
-    expect(screen.getByText("Hold the rest.")).toBeInTheDocument();
+    expect(
+      screen.getByText("the overlap is already held, so a second claim would be refused rather than queued"),
+    ).toBeInTheDocument();
     expect(screen.getByText("GRPH-2")).toBeInTheDocument();
   });
 
-  it("renders the likely-duplicate callout with the score in its heading", async () => {
-    m.projectTriage.mockResolvedValue(feed([dupBug]));
+  it("pins PRD-47 S3 copy for duplicate, collisions, and scope", async () => {
+    m.projectTriage.mockResolvedValue(feed([dupBug, collisionBlocked, collisionSerialize]));
     renderTriage();
-    const head = await screen.findByText(/LIKELY DUPLICATE · 86%/);
-    expect(head.parentElement).toHaveClass("border-st-next/30");
-    expect(screen.getByText("CORE-R7")).toBeInTheDocument();
-    expect(screen.getByText("Sidebar collapse bug")).toBeInTheDocument();
+    const user = userEvent.setup();
+    expect(await screen.findByText("looks like CORE-R7 — 86% similar")).toBeInTheDocument();
+    expect(screen.getByText(/galaxy edge, not a collision/)).toBeInTheDocument();
+    await user.keyboard("5");
+    expect(
+      await screen.findByText(
+        "the overlap is already held, so a second claim would be refused rather than queued",
+      ),
+    ).toBeInTheDocument();
+    await user.keyboard("j");
+    expect(
+      screen.getByText(
+        "Running them together is what produces the conflict this check exists to predict.",
+      ),
+    ).toBeInTheDocument();
   });
 });
 

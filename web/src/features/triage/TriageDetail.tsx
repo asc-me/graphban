@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { CommentThread } from "@/features/requests/CommentThread";
 import type { TriageFeedRow } from "@/lib/types";
 
-import { formatAge, type TriageAction } from "./actions";
+import { duplicateHintCopy, formatAge, type TriageAction } from "./actions";
 
 const STATUS_TEXT: Record<string, string> = {
   in_progress: "text-st-next", review: "text-st-review", blocked: "text-st-blocked", next: "text-purple",
@@ -154,7 +154,7 @@ export function TriageDetail({
               <div className="mt-4 rounded-lg border border-st-next/30 bg-st-next/[0.07] px-3 py-2.5">
                 <div className="flex items-center gap-1.5 font-mono text-micro uppercase tracking-[0.07em] text-st-next">
                   <span aria-hidden>⧉</span>
-                  LIKELY DUPLICATE · {Math.round(row.duplicate.score * 100)}%
+                  {duplicateHintCopy(row.duplicate.id, row.duplicate.score)}
                 </div>
                 <div className="mt-1.5 flex items-center gap-2">
                   <span className="font-mono text-meta text-st-next">{row.duplicate.id}</span>
