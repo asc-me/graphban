@@ -217,7 +217,9 @@ CEILING = 17775
 # Headroom 10.
 # 17765 -> 17356 (GRPH-1368): accept_set_constraints, accept_prompt and accept_design are removed.
 # 17356 -> 17530 (GRPH-1480): report_utilization lands in the fleet tier. Headroom 245.
-MEASURED_TOKENS = 17530
+# 17530 -> 17550 (GRPH-1495): put_document gains `reference` and `item_id`, search_docs gains
+# `include_reference`; paid partly by a shorter put_document description. Headroom 225.
+MEASURED_TOKENS = 17550
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

@@ -1343,16 +1343,15 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "put_document",
         "description": (
-            "Write the project's PREAMBLE (person only), or a non-governing REFERENCE document "
-            "(review/analysis/audit; a person or an agent key; a new body for the same title is "
-            "a new version). Other kinds come from design-set ops."
+            "Write the PREAMBLE (person only) or a non-governing REFERENCE doc (review, "
+            "analysis; agents may; same title = new version). Other kinds: design-set ops."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "kind": {"type": "string", "enum": ["preamble", "reference"]},
                 "prd_id": {"type": "string"},
-                "item_id": {"type": "string", "description": "reference only: link to an item."},
+                "item_id": {"type": "string"},
                 "body": {"type": "string"},
                 "title": {"type": "string"},
             },
@@ -1380,7 +1379,7 @@ TOOLS: list[dict[str, Any]] = [
                 "query": {"type": "string"},
                 "include_drafts": {"type": "boolean"},
                 "include_design": {"type": "boolean"},
-                "include_reference": {"type": "boolean", "description": "Also return reference documents (kind: reference, never the spec)."},
+                "include_reference": {"type": "boolean"},
                 "top_k": {"type": "integer"},
             },
             "required": ["query"],
