@@ -614,7 +614,7 @@ def test_the_skill_hands_the_person_a_runnable_line_and_carries_the_rest(tmp_pat
 
 
 def _built_wheel_names(tmp_path):
-    """Build the CLI wheel into tmp_path and return its member names (skips with no builder)."""
+    """Build the CLI wheel and return its member names; skip when no builder exists."""
     import subprocess
     import sys
     import zipfile
@@ -660,6 +660,19 @@ def test_graphban_wave_drains_one_prd_and_does_not_file_tasks():
     assert "graphban-prd" in body
     assert "graphban-answer" in body
     assert "Do not attach a spawn watcher" in body
+
+
+def test_graphban_ship_names_base_salvage_and_done(tmp_path):
+    body = " ".join(setup_mod.skill_source("graphban-ship").read_text(encoding="utf-8").split())
+    assert "get_context" in body
+    assert "unmeasured" in body
+    assert "whitelist" in body
+    assert "no pull URL" in body
+    assert "is not merged" in body
+    wave = setup_mod.skill_source("graphban-wave").read_text(encoding="utf-8")
+    assert "graphban-ship" in wave
+    names = _built_wheel_names(tmp_path)
+    assert any(n.endswith("skills/graphban-ship/SKILL.md") for n in names), names[:20]
 
 
 def test_watch_wave_names_the_scheduler_and_cancels_on_idle():
@@ -1385,6 +1398,23 @@ def test_graphban_prove_states_the_finish_bar(tmp_path):
     assert "The builder does not set `done`" in body
     names = _built_wheel_names(tmp_path)
     assert any(n.endswith("skills/graphban-prove/SKILL.md") for n in names), names[:20]
+
+
+def test_graphban_unstick_names_the_stuck_drain(tmp_path):
+    """The unstick skill names the item, the review row outside --prd, the lease
+    timer and the empty-holdings child, and never starts a second until or signs off."""
+    body = " ".join(setup_mod.skill_source("graphban-unstick").read_text(encoding="utf-8").split())
+    assert "review-unsigned" in body
+    assert "review row outside `--prd`" in body
+    assert "Dropped lease" in body
+    assert "empty holdings" in body
+    assert "Do not start a second `until` on the same repo" in body
+    assert "Do not `sign_off` the item" in body
+    for slug in ("graphban-wave", "watch-wave"):
+        other = " ".join(setup_mod.skill_source(slug).read_text(encoding="utf-8").split())
+        assert "graphban-unstick" in other, slug
+    names = _built_wheel_names(tmp_path)
+    assert any(n.endswith("skills/graphban-unstick/SKILL.md") for n in names), names[:20]
 
 
 def test_graphban_work_names_the_lease_the_graph_and_prove():

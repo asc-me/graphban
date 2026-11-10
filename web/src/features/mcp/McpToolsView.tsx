@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import {
+  FETCH_FAILED,
   PlannerEmpty,
   PlannerError,
   TableSkeleton,
@@ -43,10 +44,7 @@ export function McpToolsView() {
     return (
       <div className="flex h-full min-h-0 flex-col">
         <Header />
-        <PlannerError
-          message="MCP catalog unavailable — the tool list could not be fetched."
-          onRetry={() => void refetch()}
-        />
+        <PlannerError message={FETCH_FAILED} onRetry={() => void refetch()} />
       </div>
     );
   }
