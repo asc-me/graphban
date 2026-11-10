@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useFleetPolicy, useSaveFleetPolicy, useHarnessLadder } from "@/lib/queries";
+import { useFleetPolicy, useSaveFleetPolicy } from "@/lib/queries";
 import type { FleetPolicy, HarnessCapacityEntitlement } from "@/lib/types";
 
 const btn = "rounded-md border border-control px-2 py-0.5 text-small hover:bg-surface-3 disabled:opacity-50";
@@ -44,7 +44,6 @@ export function RoutingMode({
   entitlements: HarnessCapacityEntitlement[];
 }) {
   const { data: policyRead } = useFleetPolicy(projectId ?? "");
-  const { data: ladder } = useHarnessLadder(projectId);
   const save = useSaveFleetPolicy(projectId ?? "");
 
   const saved = mergePolicy(policyRead?.policy);
@@ -74,7 +73,6 @@ export function RoutingMode({
   const localUnreachable = entitlements.some(
     (e) => e.kind === "local" && e.state === "unreachable",
   );
-  const localOnLadder = ladder?.effective.some((r) => r.rung === "local" && !r.removed) ?? false;
 
   const move = (i: number, d: number) => {
     const o = order.slice();
@@ -110,7 +108,7 @@ export function RoutingMode({
         or drop ladder rungs; they cannot add a rung the policy removed.
       </p>
 
-      {localOnLadder && localUnreachable && (
+      {localUnreachable && (
         <p data-testid="capacity-local-unreachable" className="mt-2 text-body text-muted" role="status">
           Local is unreachable — spawns on the local rung do not start until a runner reports again.
         </p>
