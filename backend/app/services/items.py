@@ -1986,6 +1986,9 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         if derived:
             item.branch = derived
     pending_lesson_applies: list[str] = []
+    # Rows `return_on_green` moved besides this one. Filled only when evidence arrived.
+    # Their telemetry runs after the commit, with this item's own review transition.
+    returned_on_green: list = []
     if fields.get("touchpoints") is not None:
         # Unions. See `union_touchpoints` — a write here must never remove a declared or
         # earlier-measured path, because the next partition reads this list as the item's
@@ -2012,8 +2015,12 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         gitops_svc.apply_already_evidence(item)
         # `merge.reopen_on_red` (GRPH-1272): a red suite at the signed-off head sends the
         # item back to its builder on this same write. `reopened` below sees it leave `done`.
+        # `return_on_green` is the other direction: a passing suite returns rows the fleet
+        # bounced with `gbfleet CI red:`. Same new receipts, still uncommitted.
         from app.services import fleet as fleet_svc
-        fleet_svc.reopen_on_red(db, item, (item.evidence or [])[old_len:])
+        arrived = (item.evidence or [])[old_len:]
+        fleet_svc.reopen_on_red(db, item, arrived)
+        returned_on_green = fleet_svc.return_on_green(db, item, arrived)
     if fields.get("ack_section_drift"):
         # "I have read what changed in the PRD and this item is right as it stands"
         # (GRPH-360). A FLAG, not a value: the caller cannot supply the hash, so it can only
@@ -2039,6 +2046,11 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         observations_svc.on_reopen(db, item)
     if item.status == "review" and prev_status != "review":
         observations_svc.on_rules_passed(db, item, (ENGINE_EVIDENCE_RULE,))
+    for sib in returned_on_green:
+        # This item is covered by the transition above. A sibling mutated in the same
+        # session never entered `update_item`, so its hold closes here.
+        if sib.id != item.id and sib.status == "review":
+            observations_svc.on_rules_passed(db, sib, (ENGINE_EVIDENCE_RULE,))
     if fields.get("evidence"):
         observations_svc.on_evidence(db, item)
     if (("touchpoints" in fields and fields["touchpoints"] is not None) or reopened

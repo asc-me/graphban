@@ -3176,6 +3176,158 @@ def reopen_on_red(db: Session, item: Item, arrived: list,
     return True
 
 
+#: The prefix `gbfleet until` writes on `bounce_reason` when a red suite sends a review row
+#: back (`fleet/src/gbfleet/until.py`, `CI_RED_BOUNCE`). The return keys off this string.
+#: A human sentence that mentions CI does not start with it and stays where it was put.
+CI_RED_BOUNCE_PREFIX = "gbfleet CI red:"
+
+#: Note prefix for the return, parallel to the fleet's `gbfleet.review_ci_red`.
+REVIEW_CI_GREEN_NOTE = "gbfleet.review_ci_green"
+
+
+def _suite_green_flag(receipt: dict) -> bool | None:
+    """True when this attestation passes `suite_green`, False when it fails it, else None.
+
+    A failing predicate wins over a passing one on the same receipt. `passed` must be a
+    real bool: a truthy string is not a verdict.
+    """
+    flag: bool | None = None
+    for q in receipt.get("predicates") or []:
+        if not isinstance(q, dict) or q.get("name") != items_svc.CI_PREDICATE:
+            continue
+        if q.get("passed") is False:
+            return False
+        if q.get("passed") is True:
+            flag = True
+    return flag
+
+
+def _passing_suite(arrived: list) -> dict | None:
+    """The first arrived attestation that passes `suite_green` at a real commit, or None.
+
+    Run-start markers are not attestations (`attestation_receipts` drops them). A commit
+    shorter than 7 characters is below `same_commit`'s floor and is not an identity.
+    """
+    for receipt in items_svc.attestation_receipts(arrived):
+        if len(str(receipt.get("commit") or "").strip()) < 7:
+            continue
+        if _suite_green_flag(receipt) is True:
+            return receipt
+    return None
+
+
+def _suite_failed_at(arrived: list, commit: str) -> bool:
+    """Whether this write also fails `suite_green` at `commit`."""
+    for receipt in items_svc.attestation_receipts(arrived):
+        if not items_svc.same_commit(receipt.get("commit"), commit):
+            continue
+        if _suite_green_flag(receipt) is False:
+            return True
+    return False
+
+
+def _ci_red_returnable(item: Item) -> bool:
+    """A row the fleet sent back for a red suite and has not since blocked by hand.
+
+    `bounce` and the fleet's later red-head write both clear `blocker`. A blocker set
+    after that is a person's hold, and a green suite does not lift it.
+    """
+    return (item.status == "next"
+            and str(item.bounce_reason or "").startswith(CI_RED_BOUNCE_PREFIX)
+            and not str(item.blocker or "").strip())
+
+
+def _has_passing_suite_at(evidence, commit: str) -> bool:
+    for receipt in items_svc.attestation_receipts(evidence):
+        if not items_svc.same_commit(receipt.get("commit"), commit):
+            continue
+        if _suite_green_flag(receipt) is True:
+            return True
+    return False
+
+
+def _apply_ci_green_return(item: Item, passing: dict, *, copy_receipt: bool) -> None:
+    """Move one CI-red row back to review. Does not commit.
+
+    Clears the bounce pin so the author reservation ends with the red run. Clears the
+    review lease too: `bounce` already dropped it, and a stale holder must not keep the
+    row out of `claim_review`. Does not touch `built_by`.
+    """
+    commit = str(passing.get("commit") or "").strip()
+    run = str(passing.get("run_ref") or "")
+    if copy_receipt and not _has_passing_suite_at(item.evidence, commit):
+        item.evidence = items_svc.append_evidence(item.evidence, [passing])
+    item.evidence = items_svc.append_evidence(item.evidence, [{
+        "kind": "note",
+        "detail": (f"{REVIEW_CI_GREEN_NOTE}: {items_svc.CI_PREDICATE} passed at "
+                   f"{commit[:12]}; returned to review"),
+        "url": run if run.startswith("http") else "",
+    }])
+    item.status = "review"
+    item.bounce_reason = ""
+    item.bounce_pinned_to = None
+    item.bounce_pinned_until = None
+    item.review_claimed_by = None
+    item.review_claimed_at = None
+    item.review_takes = 0
+
+
+def return_on_green(db: Session, item: Item, arrived: list) -> list[Item]:
+    """Return rows a red suite bounced, once `suite_green` passes (the CI-red stall).
+
+    The other half of the fleet's CI bounce. `reopen_on_red` only runs for `done`. A red
+    PR while a row is in `review` calls `bounce` with a reason starting `gbfleet CI red:`
+    and a later green head never moves it back, so `claim_review` cannot see it. This
+    runs on the same attestation write, from the receipts that arrived on it.
+
+    Not a library rule. The fleet already accepted these rows for review and sent them
+    back only because the suite was red. A toggle would let that decision strand them.
+
+    A passing `suite_green` at a commit of at least 7 characters is the event, whether
+    it is a rerun of the red commit or a newer one on the branch. A failing
+    `suite_green` at that same commit in this write is not a pass. `done`, `review`,
+    and `in_progress` are left alone. A human bounce — any reason that does not start
+    with the prefix — stays `next`.
+
+    The current item returns when the attestation names no branch, or names this item's
+    branch. An item with no branch of its own still returns: the receipt was posted on
+    it. When the attestation names a branch, every other `next` item in the project on
+    that branch with the same prefix and an empty blocker returns in this session, and
+    the passing receipt is copied onto a sibling that does not already have one at that
+    commit. CI's `Attests:` line posts the receipt onto one item; the siblings still
+    need it for a later sign-off. An empty attestation branch does not sweep.
+
+    Mutates without committing. Returns every row it moved to `review`.
+    """
+    passing = _passing_suite(arrived)
+    if passing is None:
+        return []
+    commit = str(passing.get("commit") or "").strip()
+    if _suite_failed_at(arrived, commit):
+        return []
+    att_branch = str(passing.get("branch") or "").strip()
+    item_branch = str(item.branch or "").strip()
+    moved: list[Item] = []
+    if ((not att_branch or not item_branch or item_branch == att_branch)
+            and _ci_red_returnable(item)):
+        _apply_ci_green_return(item, passing, copy_receipt=False)
+        moved.append(item)
+    if not att_branch:
+        return moved
+    siblings = db.scalars(select(Item).where(
+        Item.project_id == item.project_id,
+        Item.branch == att_branch,
+        Item.status == "next",
+        Item.id != item.id,
+    )).all()
+    for sibling in siblings:
+        if not _ci_red_returnable(sibling):
+            continue
+        _apply_ci_green_return(sibling, passing, copy_receipt=True)
+        moved.append(sibling)
+    return moved
+
+
 #: The library rules that guard a sign-off. A sign-off that lands got past every one of them,
 #: so any hold they had on the item ends there (GRPH-1283).
 SIGN_OFF_RULES = (SABOTAGE_REQUIRED_RULE, GAP_BLOCKS_RULE, DISTINCT_VENDOR_RULE,
