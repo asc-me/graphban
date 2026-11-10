@@ -1312,6 +1312,9 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # holds — `headroom.report` refuses a reporter whose `entitlement_ids` does not name it;
     # a reviewer has no spawn to report.
     "report_entitlement_event": ("worker", "planner"),
+    # PRD-62 S5 (GRPH-1480). The planner's count when a wave ends on capacity or leaves
+    # work deferred to a vendor reset; the org rollup sums these, and absence is unknown.
+    "report_utilization": ("planner",),
 }
 
 #: Prefix marking a tool that is open because NOBODY HAS ARGUED IT, as opposed to one that is

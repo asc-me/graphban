@@ -128,7 +128,7 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # is planner-gated in TOOL_ROLES. It grants no permission and crosses no tenant.
         "list_entitlements", "set_entitlement",
         # PRD-62 S3 (GRPH-1249). QUALITY: appends an event to the key's own org ledger.
-        "report_entitlement_event",
+        "report_entitlement_event", "report_utilization",
         # PRD-P63 S2a (GRPH-1262). A read. Setting a toggle is deliberately NOT here: D10
         # keeps that a person's REST request, so no agent can switch off a rule reviewing it.
         "get_rule_toggles",

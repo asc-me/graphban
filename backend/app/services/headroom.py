@@ -27,8 +27,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFound, Validation
-from app.models import (Agent, Entitlement, EntitlementEvent, Organization, Project, User,
-                        utcnow)
+from app.models import (Agent, Entitlement, EntitlementEvent, OrgUtilizationReport, Organization,
+                        Project, User, utcnow)
 from app.services import quotas
 
 EVENTS: tuple[str, ...] = ("spawn_start", "registered", "limit_hit", "spawn_failed", "spend")
@@ -175,6 +175,42 @@ UNUSED_SHARE = 0.5
 EARLY_MIN_WEEKS = 2
 #: Said wherever a not-recorded count is shown, so a zero is never read where nobody looked.
 NOT_RECORDED = ("not recorded: no supervisor reports it yet. This is unknown, not zero.")
+UTILIZATION_KINDS: tuple[str, ...] = ("wave_ended_capacity", "item_deferred_reset")
+
+
+def report_utilization(db: Session, org_id: str, kind: str, *, count: int,
+                       agent_id: str | None = None) -> dict:
+    """Record one supervisor count for the org utilization rollup (PRD-62 S5)."""
+    quotas.require_capacity_routing(db, org_id)
+    if kind not in UTILIZATION_KINDS:
+        raise Validation(f"kind must be one of: {', '.join(UTILIZATION_KINDS)}")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        raise Validation("count must be a positive integer")
+    reporter = db.get(Agent, agent_id) if agent_id else None
+    if reporter is None:
+        raise Validation("report_utilization needs a registered planner: pass agent_id")
+    from app.services import fleet as fleet_svc
+
+    if reporter.active_role not in (fleet_svc.ALL_IN_ONE, "planner"):
+        raise Validation("report_utilization is the planner's wave-end report")
+    project = db.get(Project, reporter.project_id)
+    if project is None or project.org_id != org_id:
+        raise Validation("agent_id is not in this org")
+    db.add(OrgUtilizationReport(org_id=org_id, kind=kind, count=count, agent_id=agent_id,
+                                created_at=utcnow()))
+    db.commit()
+    return {"recorded": True}
+
+
+def _utilization_count(db: Session, org_id: str, kind: str, start: datetime,
+                       end: datetime) -> dict:
+    rows = [r for r in db.scalars(select(OrgUtilizationReport).where(
+        OrgUtilizationReport.org_id == org_id,
+        OrgUtilizationReport.kind == kind,
+    )) if start <= _aware(r.created_at) < end]
+    if not rows:
+        return {"count": None, "note": NOT_RECORDED}
+    return {"count": sum(r.count for r in rows), "note": ""}
 
 
 def _spend_between(events: list[EntitlementEvent], start: datetime, end: datetime) -> dict:
@@ -294,8 +330,10 @@ def utilization(db: Session, org_id: str, *, now: datetime | None = None) -> dic
         "tokens_used": used, "budget": budget or None,
         "entitlements_with_budget": with_budget, "entitlements_without_budget": without_budget,
         "unreported_spends": unreported,
-        "waves_ended_by_capacity": {"count": None, "note": NOT_RECORDED},
-        "items_deferred_to_reset": {"count": None, "note": NOT_RECORDED},
+        "waves_ended_by_capacity": _utilization_count(
+            db, org_id, "wave_ended_capacity", start, end),
+        "items_deferred_to_reset": _utilization_count(
+            db, org_id, "item_deferred_reset", start, end),
     }
 
 
