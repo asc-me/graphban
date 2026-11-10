@@ -168,7 +168,7 @@ INVOCATIONS = {
 #: `setup` writes config files and so needs a repository and a target of its own
 #: (`test_setup.py`, which makes the same route-documentation assertion this file does),
 #: `swamp` is `test_swamp.py`, and `stack` is `test_stackmap.py`.
-NOT_DRIVEN_HERE = {"login", "doctor", "fleet", "setup", "swamp", "stack"}
+NOT_DRIVEN_HERE = {"login", "doctor", "fleet", "setup", "swamp", "stack", "update"}
 
 
 def _documented() -> list[re.Pattern]:
