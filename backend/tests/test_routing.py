@@ -380,6 +380,66 @@ def _e(vendor, state="available", eligible=True):
     return {"vendor": vendor, "state": state, "reviewer_eligible": eligible}
 
 
+def test_custom_hierarchy_uses_policy_subscription_order_before_reset(client, world):
+    from app.db import SessionLocal
+    from app.models import Entitlement, Project
+    from app.services import fleet_profiles, routing
+
+    soon = _ent(client, world, "anthropic", kind="subscription",
+                reset=datetime.now(timezone.utc) + timedelta(hours=1))
+    late = _ent(client, world, "openai", kind="subscription",
+                reset=datetime.now(timezone.utc) + timedelta(days=3))
+    a = _runner(client, world, [soon, late])
+    for e in (soon, late):
+        _report(client, world, e, a, "registered")
+    proj = world["project"]["id"]
+    db = SessionLocal()
+    try:
+        project = db.get(Project, proj)
+        project.fleet_policy = fleet_profiles.normalise_policy({
+            "local_only": False,
+            "reviewer_cross_vendor": False,
+            "allowed_harnesses": [],
+            "routing_mode": "custom_hierarchy",
+            "subscription_order": [late, soon],
+        })
+        db.commit()
+        ranked = routing.rank(db, db.get(Entitlement, soon).org_id, project_id=proj)
+        assert ranked[0]["id"] == late
+    finally:
+        db.close()
+
+
+def test_next_available_ignores_subscription_order(client, world):
+    from app.db import SessionLocal
+    from app.models import Entitlement, Project
+    from app.services import fleet_profiles, routing
+
+    soon = _ent(client, world, "anthropic", kind="subscription",
+                reset=datetime.now(timezone.utc) + timedelta(hours=1))
+    late = _ent(client, world, "openai", kind="subscription",
+                reset=datetime.now(timezone.utc) + timedelta(days=3))
+    a = _runner(client, world, [soon, late])
+    for e in (soon, late):
+        _report(client, world, e, a, "registered")
+    proj = world["project"]["id"]
+    db = SessionLocal()
+    try:
+        project = db.get(Project, proj)
+        project.fleet_policy = fleet_profiles.normalise_policy({
+            "local_only": False,
+            "reviewer_cross_vendor": False,
+            "allowed_harnesses": [],
+            "routing_mode": "next_available",
+            "subscription_order": [late, soon],
+        })
+        db.commit()
+        ranked = routing.rank(db, db.get(Entitlement, soon).org_id, project_id=proj)
+        assert ranked[0]["id"] == soon
+    finally:
+        db.close()
+
+
 def test_the_reserve_is_worked_out_per_builder_vendor():
     from app.services import routing
 
