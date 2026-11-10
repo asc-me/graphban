@@ -160,6 +160,34 @@ def test_an_item_is_held_for_the_runner_with_headroom_then_lapses_to_the_ladder(
     assert _claim(b, item) == item
 
 
+def test_a_lapsed_reservation_is_not_created_again_for_the_same_entitlement(client, world):
+    held = _ent(client, world, "anthropic")
+    b = _runner(client, world, [held])
+    _report(client, world, held, b, "registered")
+    broke = _ent(client, world, "openai")
+    x = _runner(client, world, [broke], vendor="openai")
+    _report(client, world, broke, x, "spawn_failed", vendor_text="boom")
+    _ent(client, world, "google")  # reviewer reserve; no runner declares it
+    item = _item()
+    assert _claim(x, item) is None
+    res_rows = [d for d in _decisions(item) if d["kind"] == "reservation"]
+    assert len(res_rows) == 1
+    assert res_rows[0]["entitlement_id"] == held
+    from app.db import SessionLocal
+    from app.models import RoutingDecision
+    db = SessionLocal()
+    row = db.query(RoutingDecision).filter_by(kind="reservation").one()
+    row.reserved_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.commit()
+    db.close()
+    assert len([d for d in _decisions(item) if d["kind"] == "reservation"]) == 1
+    # the headroomless runner, not the reserved entitlement's holder, may claim normally
+    assert _claim(x, item) == item
+    assert len([d for d in _decisions(item) if d["kind"] == "reservation"]) == 1
+    (x_claim,) = [d for d in _decisions(item) if d["kind"] == "claim" and d["agent_id"] == x]
+    assert x_claim["entitlement_id"] is None
+
+
 def test_a_reserved_claim_that_fails_ends_its_reservation_at_once(client, world):
     held = _ent(client, world, "anthropic")
     b = _runner(client, world, [held])
