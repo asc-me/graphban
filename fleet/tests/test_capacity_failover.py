@@ -51,6 +51,14 @@ def _sub(name, vendor="claude", handle=None):
     return ent.Entitlement(name, vendor, "subscription", handle or f"/cfg/{name}")
 
 
+def _ent(name, kind, vendor="claude", handle=None):
+    if kind == "subscription":
+        return ent.Entitlement(name, vendor, kind, handle or f"/cfg/{name}")
+    if kind == "api_key":
+        return ent.Entitlement(name, vendor, kind, handle or f"KEY_{name}")
+    return ent.Entitlement(name, vendor, kind, handle or "")
+
+
 def _registry(*rows):
     return {r["id"]: r for r in rows}
 
@@ -70,6 +78,73 @@ def test_the_later_record_in_file_is_chosen_when_its_reset_is_sooner():
     )
     record, registered = _next_record(wave, "claude", None)
     assert registered and record.name == "second"
+
+
+def test_available_is_chosen_before_unknown_even_when_unknown_resets_sooner():
+    """Sabotage: sort on reset before headroom state and an unknown with a sooner reset wins."""
+    wave = Wave()
+    wave.records = [_sub("unk"), _sub("avail")]
+    wave.entitlements = {"claude": ["unk", "avail"]}
+    wave.entitlement_registry = _registry(
+        {"id": "avail", "vendor": "claude", "kind": "subscription",
+         "headroom": {"state": "available"},
+         "next_reset_at": "2026-06-02T12:00:00+00:00"},
+        {"id": "unk", "vendor": "claude", "kind": "subscription",
+         "headroom": {"state": "unknown"},
+         "next_reset_at": "2026-06-01T12:00:00+00:00"},
+    )
+    record, registered = _next_record(wave, "claude", None)
+    assert registered and record.name == "avail"
+
+
+def test_subscription_is_chosen_before_api_key_and_local_at_same_headroom():
+    """Sabotage: use file order only and the last-listed local record is never first."""
+    wave = Wave()
+    wave.records = [
+        _ent("local", "local"),
+        _ent("key", "api_key"),
+        _ent("sub", "subscription"),
+    ]
+    wave.entitlements = {"claude": ["local", "key", "sub"]}
+    reset = "2026-06-01T12:00:00+00:00"
+    wave.entitlement_registry = _registry(
+        {"id": "local", "vendor": "claude", "kind": "local",
+         "headroom": {"state": "available"}, "next_reset_at": reset},
+        {"id": "key", "vendor": "claude", "kind": "api_key",
+         "headroom": {"state": "available"}, "next_reset_at": reset},
+        {"id": "sub", "vendor": "claude", "kind": "subscription",
+         "headroom": {"state": "available"}, "next_reset_at": reset},
+    )
+    record, registered = _next_record(wave, "claude", None)
+    assert registered and record.name == "sub"
+
+
+def test_next_record_sorts_available_then_rung_then_reset_then_file():
+    """One pin on the full `_record_sort_key` ordering among four non-exhausted records."""
+    wave = Wave()
+    wave.records = [
+        _ent("later_sub", "subscription"),
+        _ent("key", "api_key"),
+        _ent("unk", "subscription"),
+        _ent("sooner_sub", "subscription"),
+    ]
+    wave.entitlements = {"claude": [r.name for r in wave.records]}
+    wave.entitlement_registry = _registry(
+        {"id": "later_sub", "vendor": "claude", "kind": "subscription",
+         "headroom": {"state": "available"},
+         "next_reset_at": "2026-06-03T12:00:00+00:00"},
+        {"id": "key", "vendor": "claude", "kind": "api_key",
+         "headroom": {"state": "available"},
+         "next_reset_at": "2026-06-01T12:00:00+00:00"},
+        {"id": "unk", "vendor": "claude", "kind": "subscription",
+         "headroom": {"state": "unknown"},
+         "next_reset_at": "2026-06-01T12:00:00+00:00"},
+        {"id": "sooner_sub", "vendor": "claude", "kind": "subscription",
+         "headroom": {"state": "available"},
+         "next_reset_at": "2026-06-02T12:00:00+00:00"},
+    )
+    record, registered = _next_record(wave, "claude", None)
+    assert registered and record.name == "sooner_sub"
 
 
 def test_exhausted_records_stay_skipped_with_a_registry():
