@@ -53,7 +53,7 @@ import {
   type Level,
   type MapLayout,
 } from "./levels";
-import { LibraryRuleControls } from "./LibraryRuleControls";
+import { LibraryRuleControls, MemoryWriteModeControl } from "./LibraryRuleControls";
 import { RecommendedSheet, UnmappedSheet, useDialogBehavior } from "./RefusalPanels";
 import { AdminGitopsLink, BudgetCapEditor, GITOPS_RULE_FIELDS, GitopsRuleEditor, useOrgName } from "./RuleEditors";
 import { RuleLevelIcon } from "./RuleLevelIcon";
@@ -1116,7 +1116,9 @@ function RuleRow({
         </div>
         {dim && (
           <span className="text-[11.5px] leading-snug text-muted" data-testid="rules-row-not-used">
-            {library
+            {rule.not_used_reason
+              ? `NOT USED — ${rule.not_used_reason}.`
+              : library
               ? `NOT USED — ${rule.label ?? "turned off for this project"}. On, it is ${LEVELS[rule.enforcement].word}.`
               : `Not used by this project's model${model ? `: ${model}` : ""}.`}
           </span>
@@ -1161,7 +1163,9 @@ function RuleRow({
             <span className="text-[11.5px] text-muted">Nothing has reported yet. That is not a pass.</span>
           </div>
         ))}
-        {library ? (
+        {rule.control === "select" ? (
+          <MemoryWriteModeControl rule={rule} />
+        ) : library ? (
           <LibraryRuleControls rule={rule} />
         ) : rule.truth === "db" && rule.id !== "plan.budget_cap" && (
           <ValueBox rule={rule} value={value} prefill={prefill} />

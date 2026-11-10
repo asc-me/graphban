@@ -1187,6 +1187,12 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  /** The project's memory write mode, a person's change with a reason (GRPH-1497). */
+  setMemoryWriteMode: (projectId: string, body: { mode: string; reason: string }) =>
+    request<Project>(`/projects/${encodeURIComponent(projectId)}/memory-write-mode`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
   /** Unmapped refusals grouped and ranked over the last `days` by the server (GRPH-1195). */
   unmappedRefusals: (projectId: string, days = 7) =>
     request<UnmappedRefusals>(`/rules/refusals/unmapped${projectQuery(projectId)}&days=${days}`),

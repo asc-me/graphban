@@ -703,6 +703,17 @@ export function useSetRuleToggle(projectId: string) {
   });
 }
 
+export function useSetMemoryWriteMode(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { mode: string; reason: string }) => api.setMemoryWriteMode(projectId, body),
+    onSuccess: () => {
+      invalidateRuleToggles(qc);
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+}
+
 /** Unmapped refusals (GRPH-1195): aggregated on the server over a 7-day window. */
 export function useUnmappedRefusals(projectId: string) {
   return useQuery({

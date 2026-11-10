@@ -11,6 +11,29 @@ seconds without a restart: a rule the new pack adds is offered and enforced ever
 rule it drops stops being offered and enforced on all of them. The library never changes in the
 middle of a request.
 
+## `memory.write_mode` — how a project publishes memory (GRPH-1497)
+
+A Learn-stage rule backed by `Project.memory_write_mode` (truth `db`, no migration). The Rules
+page shows the project's mode and what it means:
+
+| `mode` | A candidate shard |
+| --- | --- |
+| `review` (default) | waits for a person or an independent judge |
+| `auto` | is published when the judge scores it high enough; the rest wait |
+| `trusted` | is published with no judge and no person assessing it |
+
+A person changes it from the Rules page with a reason (`PUT /api/projects/{id}/memory-write-mode`;
+no reason is a 422). The change is recorded in the rule's history — a `set_rule_toggle` event on
+`memory.write_mode` with who, when, the old and new values and the reason. A change through the
+project settings update (`PATCH /api/projects/{id}`, optional `memory_write_mode_reason`) records
+the same event with the reason optional, so the history is never missing a change. An agent API
+key cannot change it (`rules.person_adopts`).
+
+`memory.independent_adjudication` is drawn per project: under `review` and `auto` as before;
+under `trusted` it is drawn NOT USED with the reason "this project publishes agent memory
+without adjudication (memory.write_mode = trusted)", because a trusted project publishes agent
+memory with no judge. The registry carries that reason as `not_used_reason`.
+
 ## `build.test_scope` — where the test suites run (GRPH-1405)
 
 A per-project library rule with one param, `mode`. Set it on the Rules page (Build stage); a

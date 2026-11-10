@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.embeddings import cosine_similarity, get_embedder, safe_embed
+from app.errors import Validation
 from app.models import CodeNode, Event, Item, LessonOutcome, MemoryShard, Project
 from app.services import events as events_svc
 
@@ -1694,6 +1695,40 @@ def agent_adjudication_enabled(db: Session, project_id: str | None) -> bool:
         return False  # a project-less shard has no owner to have opted in
     project = db.get(Project, project_id)
     return bool(project and project.agent_adjudication)
+
+
+#: GRPH-1497: the project's memory write mode as a rule. Changing it is recorded in the rule's
+#: history (a `set_rule_toggle` event on this id), the same record a library toggle leaves.
+WRITE_MODE_RULE = "memory.write_mode"
+WRITE_MODE_MEANING = {
+    "review": "Every candidate waits for a person or an independent judge.",
+    "auto": "A candidate the judge scores high enough is published; the rest wait.",
+    "trusted": "Candidates are published with no judge and no person assessing them.",
+}
+
+
+def set_write_mode(db: Session, project: Project, mode: str, *, actor: object,
+                   reason: str | None, require_reason: bool = True) -> bool:
+    """Set `Project.memory_write_mode` and record who, when, old and new, and why.
+
+    A person only (`rules.person_adopts`). The Rules page requires the reason; the settings
+    update passes `require_reason=False` and records whatever it was given, so the history is
+    never missing a change. Returns whether the mode changed."""
+    from app.services import rule_toggles
+    user = rule_toggles._require_person(db, actor)
+    if mode not in WRITE_MODES:
+        raise Validation(f"memory write mode must be one of: {', '.join(WRITE_MODES)}")
+    why = rule_toggles._reason(reason) if require_reason else (reason or "").strip()
+    old = project.memory_write_mode
+    if old == mode:
+        return False
+    project.memory_write_mode = mode
+    db.commit()
+    events_svc.record_user(
+        db, user, action="set_rule_toggle", target_type="rule", target_id=WRITE_MODE_RULE,
+        project_id=project.id,
+        meta={"scope": "project", "reason": why, "old": {"value": old}, "new": {"value": mode}})
+    return True
 
 
 #: The rule an `agent_reject_shard` event names (GRPH-1158): an agent holds only the "no" side
