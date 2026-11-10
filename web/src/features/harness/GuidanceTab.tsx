@@ -213,6 +213,7 @@ export function GuidanceTab({ guidance }: { guidance?: HarnessGuidance }) {
         >
           {fleetStatusText}
         </pre>
+        <p className="mt-3 text-[12px] text-muted">Nothing here is hidden from the agents.</p>
       </section>
     </div>
   );
