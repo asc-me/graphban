@@ -722,9 +722,18 @@ def _poll(args) -> None:
     if not url:
         return
     try:
-        result = playbooks.poll(url, Path.cwd(), force=args.command == "update")
+        # The checkout root, not the cwd: from `cli/` the receipt and the pack still land at
+        # the top of the repository.
+        repo = playbooks.checkout(Path.cwd())
+        if repo is None:  # not in a checkout: there is nowhere the agent files belong
+            result = {"note": "not inside a git checkout; nothing to refresh"}
+        else:
+            project = config.resolve(args.project, config.PROJECT_ENV, "project")
+            result = playbooks.poll(url, repo, force=args.command == "update", project=project)
     except Exception as exc:  # a poll must not break the verb the person typed
         result = {"note": f"poll skipped: {exc}"}
+    if "polled" not in result and args.command != "update":
+        return  # nothing was checked; a non-update verb stays quiet about it
     if args.command == "update" or not args.as_json:
         print(f"{PROG}: {result['note']}",
               file=sys.stdout if args.command == "update" else sys.stderr)

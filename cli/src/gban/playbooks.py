@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess  # nosec B404 - fixed argv, no shell
 import time
+from collections.abc import Callable
 from pathlib import Path
 
-from gban.client import Client, Refused, Unreachable
+from gban import config
+from gban.client import Client, NoSession, Refused, Unreachable, authenticated
 
 RECEIPT = Path(".graphban") / "playbooks.json"
 INTERVAL = 3600
@@ -39,10 +43,48 @@ def when(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(ts))
 
 
+def checkout(start: Path) -> Path | None:
+    """The git toplevel containing `start`, or None outside a checkout.
+
+    The receipt and every pack path are relative to the checkout root, so running `gban`
+    from `cli/` must not plant `.graphban/` and the skills under `cli/`.
+    """
+    try:
+        proc = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    top = (proc.stdout or "").strip()
+    return Path(top) if proc.returncode == 0 and top else None
+
+
+def credentialed(url: str, project: str = "") -> Client:
+    """A client that may read `/api/playbooks`: the `gban login` session, else the API key
+    (`$GRAPHBAN_API_KEY`, then the key `gban setup` stored for this project).
+
+    Raises `NoSession` when there is none. `/health` stays unauthenticated; only the pack,
+    which carries the bodies, needs this.
+    """
+    try:
+        return authenticated(url, act="update")
+    except NoSession:
+        key = (os.environ.get(config.API_KEY_ENV) or "").strip() \
+            or config.stored_supervisor_key(project)
+        if not key:
+            raise
+        return Client(url, api_key=key)
+
+
 def poll(url: str, repo: Path, *, force: bool = False, client: Client | None = None,
+         auth: Callable[[], Client] | None = None, project: str = "",
          now: float | None = None) -> dict:
     """One poll decision. Returns `{"polled": bool, "note": str, ...}`; never raises for an
-    unreachable or unreadable `/health` (that leaves `polled_at` alone)."""
+    unreachable or unreadable `/health` (that leaves `polled_at` alone).
+
+    `client` reads `/health`, which needs no credential. `auth` builds the client for the
+    pack, which does: by default the `gban login` session or the stored API key.
+    """
     now = time.time() if now is None else now
     url = url.rstrip("/")
     receipt = _read(repo)
@@ -51,6 +93,8 @@ def poll(url: str, repo: Path, *, force: bool = False, client: Client | None = N
             and 0 <= now - polled_at < INTERVAL):
         return {"polled": False, "polled_at": polled_at, "git_sha": receipt.get("git_sha", ""),
                 "note": f"last poll {when(polled_at)}; not checked again within the hour"}
+    if auth is None:
+        auth = lambda: credentialed(url, project)  # noqa: E731
     client = client or Client(url)
     try:
         health = client.call("GET", "/health")
@@ -70,7 +114,10 @@ def poll(url: str, repo: Path, *, force: bool = False, client: Client | None = N
         _save(repo, new)
         return {"polled": True, "polled_at": now, "git_sha": sha, "note": f"current at {sha[:12]}"}
     try:
-        pack = client.call("GET", "/api/playbooks")
+        pack = auth().call("GET", "/api/playbooks")
+    except NoSession:
+        return {"polled": False, "failed": True,
+                "note": "no credential to fetch the pack; run `gban login` or `gban setup`"}
     except Refused as exc:
         if exc.status == 404:
             new["no_pack"] = True
