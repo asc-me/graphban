@@ -1396,3 +1396,21 @@ def test_graphban_work_names_the_lease_the_graph_and_prove():
     assert "`describe_code` those paths" in body
     assert "A review-ready receipt is a test line" in body
     assert "Finishing the item is `graphban-prove`" in body
+
+
+def test_graphban_prove_states_the_finish_bar(tmp_path):
+    """The finish bar lives in the shipped skill: heartbeat around the long suite, both
+    engines, a sabotage receipt that failed a test, a quoted live read, no builder `done`."""
+    body = " ".join(setup_mod.skill_source("graphban-prove").read_text(encoding="utf-8").split())
+    assert "Heartbeat immediately before" in body
+    assert "and again when that suite returns" in body
+    assert "SQLite suite" in body
+    assert "Postgres suite" in body
+    assert "`sabotage` receipt" in body
+    assert "`tests_failed`" in body
+    assert "above zero" in body
+    assert "Quote the sentence" in body
+    assert "An empty list is a finding" in body
+    assert "The builder does not set `done`" in body
+    names = _built_wheel_names(tmp_path)
+    assert any(n.endswith("skills/graphban-prove/SKILL.md") for n in names), names[:20]
