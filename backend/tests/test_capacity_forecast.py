@@ -7,7 +7,7 @@ unreported spend; the page endpoint is premium and reaches the card list.
 """
 from datetime import datetime, timedelta, timezone
 
-from tests.test_entitlements import _ev, _new_ent, _url, hosted, org  # noqa: F401
+from tests.test_entitlements import _ev, _new_ent, _ok, _url, hosted, org  # noqa: F401
 
 
 def _age(ent, *, days=0, created_days=None, event_ids=None):
@@ -88,6 +88,34 @@ def test_unreported_spend_is_a_count_in_the_week(client, org):
     _ev(client, org, ent, "registered")
     (row,) = _cap(client, org)["entitlements"]
     assert row["week"]["unreported"] == 1 and row["week"]["tokens"] == 0
+
+
+def _age_util(org, *, days=10):
+    from app.db import SessionLocal
+    from app.models import OrgUtilizationReport
+
+    db = SessionLocal()
+    try:
+        for row in db.query(OrgUtilizationReport).filter(OrgUtilizationReport.org_id == org["id"]):
+            row.created_at = datetime.now(timezone.utc) - timedelta(days=days)
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_one_capacity_ending_moves_waves_and_deferred_stays_not_recorded(client, org):
+    """Sabotage: skip `_utilization_count` in `utilization` and this stays null."""
+    planner = _ok(client, org["key"], "register_agent",
+                  {"label": "planner", "role_hint": "planner", "project_id": org["project"]["id"]})
+    agent_id = planner["agent_id"]
+    _ok(client, org["key"], "report_utilization",
+        {"kind": "wave_ended_capacity", "count": 1, "agent_id": agent_id,
+         "project_id": org["project"]["id"]})
+    _age_util(org, days=10)
+    u = _cap(client, org)["utilization"]
+    assert u["waves_ended_by_capacity"]["count"] == 1
+    assert u["items_deferred_to_reset"]["count"] is None
+    assert "not recorded" in u["items_deferred_to_reset"]["note"]
 
 
 def test_utilization_is_unknown_without_a_budget_and_never_zero_for_unrecorded(client, org):

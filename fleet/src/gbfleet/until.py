@@ -63,6 +63,8 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
     # PRD-62 S1↔S3 (GRPH-1258). The wave's own ledger events for the entitlements it declared
     # at `register_agent`; the server refuses a reporter that did not declare the id.
     "report_entitlement_event",
+    # PRD-62 S5 (GRPH-1480): wave-end counts for the org utilization rollup.
+    "report_utilization",
     "search_items",
     # GRPH-1012: the base this wave cuts children from. Step 2 of the three is the
     # project's MEASURED `gitops.base_branch`, and `get_context` is the only way to ask
@@ -403,6 +405,7 @@ def run(
             except (ent_mod.EntitlementError, ValueError) as exc:
                 raise ConfigError(f"the entitlement registry could not be read: {exc}") from exc
             identity = _identify(planner, repo, adapter, wave)
+            wave.planner_agent_id = str(identity.get("agent_id") or identity.get("id") or "")
             _preflight_observations(supervisor)
             try:
               result = _loop(
@@ -462,6 +465,8 @@ def run(
                       minted=minted, spawned=len(wave.spawned))
     except CapError as exc:
         wave.reason = exc.reason
+        if exc.reason == "capacity":
+            _report_capacity_utilization(planner, wave)
         return Report(ok=False, reason=exc.reason, exit=1, detail=str(exc), wave=wave,
                       minted=minted, spawned=len(wave.spawned))
     except watchdog_mod.Stalled as exc:
@@ -661,6 +666,24 @@ def _selecting(factory, record):
 def _capacity_detail(wave: Wave, last: str) -> str:
     names = ", ".join(sorted(wave.exhausted)) or "none recorded"
     return f"no entitlement with headroom is left (exhausted: {names}). {last}"
+
+
+def _report_capacity_utilization(planner: Graphban, wave: Wave) -> None:
+    """Best-effort planner report when a wave ends on `capacity` (GRPH-1480)."""
+    if wave.ledger_off:
+        return
+    agent_id = getattr(wave, "planner_agent_id", None)
+    if not agent_id:
+        return
+    deferred = list(getattr(wave, "deferred_to_reset", None) or [])
+    try:
+        planner.call("report_utilization", kind="wave_ended_capacity", count=1,
+                     agent_id=agent_id)
+        if deferred:
+            planner.call("report_utilization", kind="item_deferred_reset",
+                         count=len(deferred), agent_id=agent_id)
+    except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+        observe.emit("utilization_off", detail=str(exc))
 
 
 def _loop(
@@ -863,6 +886,12 @@ def _loop(
             nxt = next_candidate(seed, want)
             if nxt is None:
                 wave.reason = "capacity"
+                bucket = getattr(wave, "deferred_to_reset", None)
+                if bucket is None:
+                    wave.deferred_to_reset = []
+                    bucket = wave.deferred_to_reset
+                if seed not in bucket:
+                    bucket.append(seed)
                 raise CapError("capacity", _capacity_detail(wave, str(exc))) from exc
             # The failed attempt is superseded by the retry, not a second failure.
             del wave.failures[mark[0]:]

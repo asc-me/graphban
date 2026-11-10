@@ -661,6 +661,24 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "report_utilization",
+        "description": (
+            "Planner's wave-end report for org utilization (PRD-62 S5): waves that ended "
+            "on `capacity`, or items deferred to a vendor reset. Counts are summed into the "
+            "last full week on the Harness capacity rollup; unreported stays null, never 0."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": list(headroom_svc.UTILIZATION_KINDS)},
+                "count": {"type": "integer"},
+                "agent_id": {"type": "string"},
+                "project_id": {"type": "string"},
+            },
+            "required": ["kind", "count"],
+        },
+    },
+    {
         "name": "assign_role",
         "description": (
             "Commit a role change for ANOTHER agent. It reaches them on their next poll as a "
@@ -1777,6 +1795,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     "get_rule_toggles": {"type": "object", "properties": {"toggles": {"type": "array"}}},
     "set_entitlement": {"type": "object", "properties": {"id": {"type": "string"}}},
     "report_entitlement_event": {"type": "object", "properties": {"admitted": {"type": "boolean"}}},
+    "report_utilization": {"type": "object", "properties": {"recorded": {"type": "boolean"}}},
     "delegate": {
         "type": "object",
         "properties": {
@@ -3287,6 +3306,11 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             db, entitlements_svc.org_for_project(db, pid), args["id"], args["event"],
             agent_id=me, vendor_text=args.get("vendor_text") or "",
             tokens=args.get("tokens"))
+    if name == "report_utilization":
+        me = _agent_for_call(db, key, args, session_id)
+        return headroom_svc.report_utilization(
+            db, entitlements_svc.org_for_project(db, pid), args["kind"],
+            count=args["count"], agent_id=me)
     if name == "set_entitlement":
         # Everything but routing goes to the service, unknown keys included: it refuses a
         # field it does not know rather than this dispatcher dropping it, which would answer
