@@ -24,6 +24,11 @@ PRIMER = """You are working this repo through Graphban (MCP). Follow the loop:
 Set touchpoints on items you create/update — that is what keeps parallel agents from
 colliding. Errors are typed: branch on structuredContent.error.code and read the hint."""
 
+# When the hook already fetched the snapshot, step 1 must not send the model back for it.
+FIRST_STEP = "1. get_context — orient (your project, scopes, what you can read/write). Call it FIRST."
+FETCHED_STEP = ("1. get_context — already in this context (see Live get_context below); "
+                "do not call it again this session.")
+
 
 def live_context():
     # New names first, old ones still honoured — an exported AGENTLEDGER_* keeps working.
@@ -54,6 +59,7 @@ def main():
     try:
         live = live_context()
         if live:
+            context = PRIMER.replace(FIRST_STEP, FETCHED_STEP)
             context += "\n\nLive get_context: " + live
     except Exception:
         pass  # fail-open: the primer alone is still useful
