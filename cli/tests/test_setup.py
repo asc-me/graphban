@@ -640,6 +640,7 @@ def test_the_skill_ships_in_the_wheel(tmp_path):
     assert any(n.endswith("skills/graphban-grill/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/graphban-wave/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/graphban-answer/SKILL.md") for n in names), names[:20]
+    assert any(n.endswith("skills/graphban-prove/SKILL.md") for n in names), names[:20]
 
 
 def test_graphban_wave_drains_one_prd_and_does_not_file_tasks():
@@ -1361,3 +1362,19 @@ def test_the_old_subcommand_flag_order_is_still_rejected():
     for argv in (["login", "--server", "https://x"], ["setup", "--project", "core"]):
         with pytest.raises(SystemExit):
             _parser().parse_args(argv)
+
+
+def test_graphban_prove_states_the_finish_bar():
+    """The finish bar lives in the shipped skill: heartbeat around the long suite, both
+    engines, a sabotage receipt that failed a test, a quoted live read, no builder `done`."""
+    body = " ".join(setup_mod.skill_source("graphban-prove").read_text(encoding="utf-8").split())
+    assert "Heartbeat immediately before" in body
+    assert "and again when that suite returns" in body
+    assert "SQLite suite" in body
+    assert "Postgres suite" in body
+    assert "`sabotage` receipt" in body
+    assert "`tests_failed`" in body
+    assert "above zero" in body
+    assert "Quote the sentence" in body
+    assert "An empty list is a finding" in body
+    assert "The builder does not set `done`" in body
