@@ -1,6 +1,7 @@
-import { Download, Radio, X } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { ChevronRight, Download, Radio, X } from "lucide-react";
 import * as React from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import {
   EventListSkeleton,
@@ -12,8 +13,10 @@ import {
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Button } from "@/components/ui/button";
 import { useProjectCtx } from "@/features/ProjectContext";
-import { useEventById, useEvents } from "@/lib/queries";
-import type { ActivityLensId, ActivityRange, EventsQuery } from "@/lib/types";
+import { api } from "@/lib/api";
+import { keys, useConfig, useEventById, useEvents } from "@/lib/queries";
+import { settingsPath } from "@/lib/routes";
+import type { ActivityLensId, ActivityRange, EventsQuery, LogExportState } from "@/lib/types";
 
 import { EventPanel } from "./EventPanel";
 import { EventRow } from "./EventRow";
@@ -402,29 +405,84 @@ function Chip({ label, onClear }: { label: string; onClear: () => void }) {
   );
 }
 
-/**
- * Where this ledger goes when it leaves the box — which today is nowhere.
- *
- * Deliberately not a link. The OTLP settings panel is S15 and does not exist; Settings
- * falls through to the AI Providers pane on an unknown path, so a link there would land
- * on a wrong pane that looks like the right one. The `soon` marker is the same idiom the
- * nav uses for a destination the design names but nothing serves yet.
- */
+const OTLP_STATE: Record<LogExportState, string> = {
+  exporting: "Exporting",
+  paused: "Paused",
+  not_running: "On, but nothing is draining",
+  unknown: "Unknown",
+};
+
+const stripClass =
+  "flex items-center gap-2 rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2";
+
+/** Where Activity events may leave the box — links to S15 on self-host; plain status on hosted. */
 function OtlpStrip() {
+  const configQ = useConfig();
+  if (configQ.isPending) {
+    return (
+      <div className={stripClass} aria-busy="true">
+        <Radio size={13} className="flex-none text-faint" aria-hidden />
+        <p className="min-w-0 flex-1 text-[11.5px] leading-snug text-muted">
+          Reading deployment mode…
+        </p>
+      </div>
+    );
+  }
+  if (configQ.data?.hosted_mode) return <HostedOtlpStrip />;
+  return <SelfHostOtlpStrip />;
+}
+
+function HostedOtlpStrip() {
   return (
-    <div className="flex items-center gap-2 rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2">
+    <div className={stripClass} role="status">
       <Radio size={13} className="flex-none text-faint" aria-hidden />
       <p className="min-w-0 flex-1 text-[11.5px] leading-snug text-muted">
-        Log export is not built. Nothing here is being sent to a collector and nothing is
-        queued for one, so there is no last batch, no send count and no queue depth to
-        report — events stay in this database only.
+        Log export is not available on a hosted instance. The operator configures export for
+        the deployment — events here stay in this database only.
       </p>
-      <span
-        className="flex-none rounded border border-line-2 px-1.5 py-px text-[9px] text-faint-2"
-        title="The OTLP panel is PRD-47 S15 and is not built yet."
-      >
-        soon
-      </span>
     </div>
+  );
+}
+
+function SelfHostOtlpStrip() {
+  const dest = settingsPath("deployment/log-export");
+  const { data, isError, isPending } = useQuery({
+    queryKey: keys.logExport,
+    queryFn: () => api.logExport(),
+    staleTime: 0,
+    retry: false,
+  });
+
+  const body = (() => {
+    if (isPending && !data) {
+      return "Reading whether log export is on…";
+    }
+    if (isError) {
+      return "Whether log export is on could not be read — open settings for the full status.";
+    }
+    const st = data?.status;
+    if (!st) return "Configure where this ledger hands telemetry to an OTLP collector.";
+    const label = OTLP_STATE[st.state];
+    if (st.enabled === false) {
+      return `${label}. Log export is off — nothing is being sent to a collector.`;
+    }
+    if (st.state === "exporting" && st.sent_24h != null) {
+      return `${label} — ${st.sent_24h.toLocaleString()} records sent in the last 24h.`;
+    }
+  return `${label}. Open settings for the collector, send counts and queue depth.`;
+  })();
+
+  return (
+    <Link
+      to={dest}
+      className={`${stripClass} transition-colors hover:border-line-hover hover:bg-surface-3`}
+    >
+      <Radio size={13} className="flex-none text-faint" aria-hidden />
+      <p className="min-w-0 flex-1 text-[11.5px] leading-snug text-muted">{body}</p>
+      <span className="flex flex-none items-center gap-0.5 text-[10px] text-faint">
+        Log export
+        <ChevronRight size={12} aria-hidden />
+      </span>
+    </Link>
   );
 }
