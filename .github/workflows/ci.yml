@@ -77,6 +77,9 @@ jobs:
               # Host/pack/upgrade tests import scripts/*. A scripts-only PR
               # would otherwise skip the suite that exists to keep them honest.
               - 'scripts/**'
+              # The Cursor hooks are Python that test_cursor_hooks runs; a hook-only PR
+              # must run it, and scripts/scan_ci.py maps them to backend/ to match.
+              - '.cursor/hooks/**'
               # The skills manifest guard (test_pack_release) reads cli/: a gban version bump
               # or a new skill must fail it until backend/scripts/gban_skills.json is regenerated.
               - 'cli/pyproject.toml'

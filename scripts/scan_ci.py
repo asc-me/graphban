@@ -75,6 +75,8 @@ MAPPED: tuple[tuple[str, str], ...] = (
     ("scripts/**", "backend/"),
     ("docs/**", "backend/"),
     ("AGENTS.md", "backend/"),
+    # Cursor hook scripts: Python the backend suite runs (test_cursor_hooks).
+    (".cursor/hooks/**", "backend/"),
 )
 
 #: Files that touch nothing. Anything else outside the prefixes is never-run "no component
