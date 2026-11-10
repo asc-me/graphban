@@ -98,6 +98,21 @@ describe("Capacity routing mode", () => {
     expect(screen.queryByText(/hold-until-reset/i)).not.toBeInTheDocument();
   });
 
+  it("with custom hierarchy off, shows the three-rung ladder and soonest-reset rule together", async () => {
+    policyRead.mockResolvedValue({
+      project_id: "p",
+      policy: null,
+      writable: true,
+    });
+    capacity.mockResolvedValue(emptyCapacity([sub("s1", "anthropic")]));
+    wrap(<CapacityPanel projectId="p" />);
+    await screen.findByTestId("capacity-ladder");
+    const rule = await screen.findByTestId("routing-rule-in-force");
+    expect(rule).toHaveTextContent(/soonest reset/i);
+    const rungs = screen.getAllByTestId("ladder-policy-rung");
+    expect(rungs.map((r) => r.getAttribute("data-rung"))).toEqual(["subscription", "api_key", "local"]);
+  });
+
   it("custom hierarchy Apply persists subscription order on policy", async () => {
     const user = userEvent.setup();
     policyRead.mockResolvedValue({

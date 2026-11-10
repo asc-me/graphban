@@ -410,6 +410,78 @@ def test_custom_hierarchy_uses_policy_subscription_order_before_reset(client, wo
         db.close()
 
 
+def test_custom_hierarchy_gate_chooses_policy_order_over_soonest_reset(client, world):
+    """`routing.gate` on a live claim — not rank alone — must honour `subscription_order`."""
+    from app.db import SessionLocal
+    from app.models import Entitlement, Project
+    from app.services import fleet_profiles, items, routing
+
+    soon = _ent(client, world, "anthropic", kind="subscription",
+                reset=datetime.now(timezone.utc) + timedelta(hours=1))
+    late = _ent(client, world, "openai", kind="subscription",
+                reset=datetime.now(timezone.utc) + timedelta(days=3))
+    a = _runner(client, world, [soon, late])
+    for e in (soon, late):
+        _report(client, world, e, a, "registered")
+    _runner(client, world, [_ent(client, world, "google")], vendor="google")
+    proj = world["project"]["id"]
+    db = SessionLocal()
+    try:
+        project = db.get(Project, proj)
+        project.fleet_policy = fleet_profiles.normalise_policy({
+            "local_only": False,
+            "reviewer_cross_vendor": False,
+            "allowed_harnesses": [],
+            "routing_mode": "custom_hierarchy",
+            "subscription_order": [late, soon],
+        })
+        db.commit()
+        item_id = _item()
+        item = items.get_item(db, item_id)
+        gate = routing.gate(db, item, a)
+        assert gate is not None and gate["allowed"] is True
+        assert gate["entitlement_id"] == late
+    finally:
+        db.close()
+    assert _claim(a, item_id) == item_id
+    (rec,) = [d for d in _decisions(item_id) if d["kind"] == "claim"]
+    assert rec["entitlement_id"] == late
+
+
+def test_unreachable_local_entitlement_refuses_spawn_start(client, world):
+    """When local is unreachable, `spawn_start` does not admit — not only the Capacity tab copy."""
+    from app.db import SessionLocal
+    from app.models import Agent
+
+    local = _ent(client, world, "ollama", kind="local")
+    a = _runner(client, world, [local], vendor="ollama")
+    _report(client, world, local, a, "registered")
+    db = SessionLocal()
+    try:
+        agent = db.get(Agent, a)
+        agent.last_seen_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        db.commit()
+    finally:
+        db.close()
+    out = _ok(client, world["key"], "report_entitlement_event",
+              {"id": local, "event": "spawn_start", "agent_id": a})
+    assert out["admitted"] is False
+    assert "unreachable" in out["reason"]
+
+
+def test_routing_mode_does_not_add_org_entitlement_write_routes(client):
+    """Custom hierarchy writes project policy only; the org entitlement registry is unchanged."""
+    spec = client.get("/openapi.json").json()
+    path = spec["paths"].get("/api/orgs/{org_id}/entitlements")
+    assert path is not None
+    assert set(path) == {"get", "post"}
+    item_path = spec["paths"].get("/api/orgs/{org_id}/entitlements/{entitlement_id}")
+    assert item_path is not None and set(item_path) == {"patch"}
+    for p, ops in spec["paths"].items():
+        if "entitlement" in p and p.startswith("/api/"):
+            assert ops.keys() <= {"get", "post", "patch"}, f"unexpected write on {p}: {ops.keys()}"
+
+
 def test_next_available_ignores_subscription_order(client, world):
     from app.db import SessionLocal
     from app.models import Entitlement, Project
