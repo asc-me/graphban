@@ -105,13 +105,47 @@ def test_one_budget_and_a_cut_says_what_went_unread(tmp_path):
     assert "30 characters unread" in text
 
 
-def test_this_repository_is_truncated_not_dropped():
-    """The real worktree: AGENTS.md alone is over the cap, so the cut is the common case."""
+def _skill(root, name, body, base=".claude/skills"):
+    _write(root / base / name / "SKILL.md", f"---\nname: {name}\n---\n{body}\n")
+
+
+def test_worker_skill_bodies_fit_when_agents_md_exceeds_the_cap(tmp_path):
+    ledger = "## Ledger loop\nCLAIM then HEARTBEAT then EVIDENCE on both database engines\n"
+    _write(tmp_path / "AGENTS.md",
+           "# guide\n## Intro\n" + "x" * (cli.INSTRUCTIONS_CAP + 500) + "\n" + ledger)
+    for n in sorted(cli.WORKER_SKILLS):
+        _skill(tmp_path, n, f"BODY-{n} " + "w" * 1500)
+    _skill(tmp_path, "graphban-wave", "PARENT " + "p" * (cli.INSTRUCTIONS_CAP))
+
+    text = cli.project_instructions(tmp_path)
+
+    assert "BODY-graphban-work " + "w" * 1500 in text
+    assert "BODY-graphban-prove " + "w" * 1500 in text
+    assert "CLAIM then HEARTBEAT then EVIDENCE on both database engines" in text
+    assert "characters unread" in text or "left unread" in text
+    parent = text[text.index("--- .claude/skills/graphban-wave/SKILL.md ---"):]
+    assert "unread" in parent
+
+
+def test_this_repository_shows_worker_skills():
     root = cli.Path(__file__).resolve().parents[2]
     text = cli.project_instructions(root)
-    assert "--- AGENTS.md ---" in text
-    assert "left unread" in text
-    assert "--- .claude/skills/" in text
+    work = (root / ".claude/skills/graphban-work/SKILL.md").read_text(encoding="utf-8")
+    assert work in text
+    assert "## Ledger loop" in text or "Ledger loop" in text
+    assert "--- .claude/skills/graphban-prove/SKILL.md ---" in text
+    # every file is present or named, never dropped
+    assert "--- AGENTS.md" in text
+    assert "--- .claude/skills/graphban-wave/SKILL.md ---" in text
+
+
+def test_this_repository_is_truncated_not_dropped():
+    """The real worktree: not everything fits, so a cut file says how much went unread."""
+    root = cli.Path(__file__).resolve().parents[2]
+    text = cli.project_instructions(root)
+    assert "--- AGENTS.md" in text
+    assert "left unread" in text or "characters unread" in text
+    assert "--- .claude/skills/graphban-delegation/SKILL.md ---" in text
 
 
 def test_run_hands_the_worktree_prompt_to_the_session():

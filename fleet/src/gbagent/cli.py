@@ -94,7 +94,13 @@ INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
 #: personal skills are theirs, and copying them into a child's prompt is the MCP leak again.
 SKILL_DIRS = (".claude/skills", ".grok/skills", ".agents/skills")
 #: One budget for all of it — the same order as `orient.MAX_RESULT_CHARS`.
-INSTRUCTIONS_CAP = 12_000
+INSTRUCTIONS_CAP = 24_000
+#: Skills a worker follows while building and reviewing. Parent skills (wave, delegation,
+#: answer, grill, prd, ship, unstick, watch-wave) are named when they do not fit.
+WORKER_SKILLS = frozenset({"graphban-orient", "graphban-work", "graphban-review",
+                           "graphban-scan", "graphban-prove"})
+#: AGENTS.md headings that carry the build loop a worker follows.
+LOOP_SECTIONS = frozenset({"Operating loop", "Ledger loop"})
 
 
 _SKILL_NAME = re.compile(r"(?m)^name:\s*[\"']?([^\"'\n]+)")
@@ -170,16 +176,24 @@ def _instruction_sources(root: Path) -> list[tuple[str, Path]]:
     return _one_copy_per_skill(found)
 
 
-def project_instructions(root: Path, cap: int = INSTRUCTIONS_CAP) -> str:
-    """The worktree's AGENTS.md, CLAUDE.md and project skills, as prompt text under `cap`.
+def _sections(text: str) -> list[tuple[str, str]]:
+    """Split markdown at `## ` headings: (heading, chunk) pairs; the preamble has heading ""."""
+    parts: list[tuple[str, list[str]]] = [("", [])]
+    for line in text.splitlines(keepends=True):
+        if line.startswith("## "):
+            parts.append((line[3:].strip(), []))
+        parts[-1][1].append(line)
+    return [(h, "".join(c)) for h, c in parts if "".join(c).strip()]
 
-    Absent is normal and returns "" — a repo with no instructions starts the run with none.
-    A file that does not fit is cut at the cap and SAYS so, with how much went unread; a file
-    after the cap is spent is named with its size. Dropping either silently would read as a
-    repo with no instructions, which is the one wrong conclusion this exists to prevent.
+
+def _units(root: Path) -> list[tuple[str, str, bool]]:
+    """(label, text, first) in prompt order. `first` units are budgeted before the rest.
+
+    First: the AGENTS.md sections a cheap child follows step by step (the operating and
+    ledger loops) and the worker skills. AGENTS.md is far over the cap on its own, so
+    spending the budget in file order named every skill unread.
     """
-    sections: list[str] = []
-    left = cap
+    units: list[tuple[str, str, bool]] = []
     for name, path in _instruction_sources(root):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -187,16 +201,51 @@ def project_instructions(root: Path, cap: int = INSTRUCTIONS_CAP) -> str:
             continue
         if not text.strip():
             continue
-        if left <= 0:
+        if path.name == "SKILL.md":
+            units.append((name, text, (_skill_name(path) or path.parent.name) in WORKER_SKILLS))
+        elif path.name == "AGENTS.md":
+            sections = _sections(text)
+            if any(h in LOOP_SECTIONS for h, _ in sections):
+                for h, chunk in sections:
+                    units.append((f"{name} § {h}" if h else name, chunk, h in LOOP_SECTIONS))
+            else:
+                units.append((name, text, False))
+        else:
+            units.append((name, text, False))
+    return units
+
+
+def project_instructions(root: Path, cap: int = INSTRUCTIONS_CAP) -> str:
+    """The worktree's AGENTS.md, CLAUDE.md and project skills, as prompt text under `cap`.
+
+    Absent is normal and returns "" — a repo with no instructions starts the run with none.
+    Worker skills and the loop sections of AGENTS.md are budgeted first; the rest takes what
+    is left, in file order. A unit that does not fit is cut at the budget and SAYS so, with
+    how much went unread; one after the budget is spent is named with its size. Dropping
+    either silently would read as a repo with no instructions, which is the one wrong
+    conclusion this exists to prevent. The prompt keeps file order.
+    """
+    units = _units(root)
+    left = cap
+    grant: dict[int, int] = {}
+    for first in (True, False):
+        for i, (_, text, is_first) in enumerate(units):
+            if is_first != first:
+                continue
+            grant[i] = min(len(text), max(left, 0))
+            left -= grant[i]
+    sections: list[str] = []
+    for i, (name, text, _) in enumerate(units):
+        if grant[i] == 0:
             sections.append(f"--- {name} ---\n[not included: the {cap}-character budget for "
                             f"project instructions was spent; {len(text)} characters unread. "
-                            f"read_file {name} if you need it.]")
+                            f"read_file {name.split(' § ')[0]} if you need it.]")
             continue
-        body = text[:left]
-        if len(text) > left:
-            body += (f"\n[truncated at the {cap}-character budget: {len(text) - left} of "
-                     f"{len(text)} characters left unread. read_file {name} for the rest.]")
-        left -= min(len(text), left)
+        body = text[:grant[i]]
+        if len(text) > grant[i]:
+            body += (f"\n[truncated at the {cap}-character budget: {len(text) - grant[i]} of "
+                     f"{len(text)} characters left unread. "
+                     f"read_file {name.split(' § ')[0]} for the rest.]")
         sections.append(f"--- {name} ---\n{body}")
     if not sections:
         return ""
