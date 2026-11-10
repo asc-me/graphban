@@ -115,3 +115,24 @@ def test_pack_loads_and_a_person_writes_each_param(client, library):
 def test_a_pack_without_the_rule_reads_the_default(monkeypatch):
     monkeypatch.setattr(T, "LIBRARY", {})
     assert T.path_classes(None, None) == T.PATH_CLASSES_DEFAULT
+
+
+def test_harness_task_class_reads_the_project_rule(client, library):
+    """Telemetry's task class agrees with the brief's for a project that sets the rule."""
+    from types import SimpleNamespace
+
+    from app.db import SessionLocal
+    from app.services import harness as H
+    item = SimpleNamespace(project_id="core", touchpoints=["db/migrations/0003.sql"])
+    db = SessionLocal()
+    try:
+        assert H.task_class(item, db) == "general"
+        user = db.query(User).first()
+        T.set_project_toggle(db, "core", T.PATH_CLASSES_RULE,
+                             {"params": {"migration": ["db/migrations/**"]}},
+                             actor=user, reason="this project's layout")
+        db.commit()
+        assert H.task_class(item, db) == "migration"
+        assert H.task_class(item) == "general"
+    finally:
+        db.close()

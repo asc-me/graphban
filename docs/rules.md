@@ -124,9 +124,6 @@ is behind is updated with `gh pr update-branch --rebase` under `squash` or `reba
 plain merge update under `merge`. The PR head must still be the reviewed commit, whatever the
 method. A server that predates the field, or an unreadable value, reads as `squash`.
 
-## Which pack version carries each rule (GRPH-1430)
-
-A rule absent from a box's pack reads as its default, never as off (`backend/tests/test_rule_pack_p74.py`).
 ## `plan.path_classes` — which paths the delegation brief calls frontend, migration, MCP tool or docs (GRPH-1496)
 
 A per-project library rule (stage Plan, level `checked`: the brief reads it, nothing is refused)
@@ -142,6 +139,10 @@ all four drive the `Task class:` line, which now names the glob that matched, fo
 reaches a box through the signed rule-pack feed (primitive `path_classes`, level `checked`,
 template `plan.path_classes`, stage Plan, default `on`, the four lists above); the feed lives
 outside this repo and needs that template added. Primitive API 1.9.0.
+
+## Which pack version carries each rule (GRPH-1430)
+
+A rule absent from a box's pack reads as its default, never as off (`backend/tests/test_rule_pack_p74.py`).
 
 A project can only *change* a rule once the box's pack carries it.
 
