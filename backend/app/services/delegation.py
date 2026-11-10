@@ -35,6 +35,7 @@ say "signed off" about the attempt that bounced.
 """
 from __future__ import annotations
 
+import fnmatch
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -95,38 +96,78 @@ def _aware(dt: datetime | None) -> datetime | None:
 
 # ---- the suggestions (D5, D6) ---------------------------------------------------------------
 
-def _is_web(path: str) -> bool:
-    p = path.strip().lstrip("./")
-    return p == "web" or p.startswith("web/")
+#: GRPH-1496: the path classes the lane and the task class read, as globs. The defaults are
+#: Graphban's own layout, so a project that never sets `plan.path_classes` reads what it always
+#: did. `*` matches across `/` (fnmatch), so `*alembic/versions*` is the old substring test.
+PATH_CLASSES_DEFAULT: dict[str, list[str]] = {
+    "frontend": ["web", "web/**"],
+    "migration": ["*alembic/versions*", "*models/__init__*"],
+    "mcp_tool": ["*mcp_server.py"],
+    "docs": ["*.md", "docs/**"],
+}
 
 
-def lane_for(touchpoints: list | None) -> dict:
-    """Lane from touchpoints only (D6): `web/**` alone is `frontend`; anything else is
-    `backend`; both is `mixed`. `basis` names the paths that decided it — for `mixed`, all
-    of them, because either half alone would have given a different answer."""
+def _glob_match(path: str, glob: str) -> bool:
+    return fnmatch.fnmatchcase(path, glob.replace("**", "*"))
+
+
+def _first_glob(path: str, globs: list[str]) -> str | None:
+    return next((g for g in globs if _glob_match(path, g)), None)
+
+
+def _norm(path: str) -> str:
+    return path.strip().lstrip("./")
+
+
+def _classes(classes: dict | None) -> dict[str, list[str]]:
+    out = {k: list(v) for k, v in PATH_CLASSES_DEFAULT.items()}
+    for k, v in (classes or {}).items():
+        if k in out and isinstance(v, list):
+            out[k] = [g for g in v if isinstance(g, str)]
+    return out
+
+
+def lane_for(touchpoints: list | None, classes: dict | None = None) -> dict:
+    """Lane from touchpoints only (D6): a path in the `frontend` class alone is `frontend`;
+    anything else is `backend`; both is `mixed`. `basis` names the paths that decided it — for
+    `mixed`, all of them, because either half alone would have given a different answer.
+    `matched` names the frontend globs that matched (GRPH-1496)."""
+    globs = _classes(classes)["frontend"]
     paths = [t for t in (touchpoints or []) if isinstance(t, str) and t.strip()]
-    web = [p for p in paths if _is_web(p)]
-    other = [p for p in paths if not _is_web(p)]
+    hits = {p: _first_glob(_norm(p), globs) for p in paths}
+    web = [p for p in paths if hits[p]]
+    other = [p for p in paths if not hits[p]]
+    matched = list(dict.fromkeys(hits[p] for p in web))
     if web and other:
-        return {"value": "mixed", "basis": web + other}
+        return {"value": "mixed", "basis": web + other, "matched": matched}
     if web:
-        return {"value": "frontend", "basis": web}
-    return {"value": "backend", "basis": other}
+        return {"value": "frontend", "basis": web, "matched": matched}
+    return {"value": "backend", "basis": other, "matched": []}
 
 
-def checklist_for(touchpoints: list | None) -> str | None:
-    """Which AGENTS.md task class the item falls under, from its touchpoints. None when
+def checklist_match(touchpoints: list | None, classes: dict | None = None
+                    ) -> tuple[str | None, list[str]]:
+    """The AGENTS.md task class and the globs that matched it (GRPH-1496). `(None, [])` when
     nothing matches — the brief says so rather than guessing a class."""
+    cls = _classes(classes)
     paths = [t for t in (touchpoints or []) if isinstance(t, str)]
-    if any("alembic/versions" in p or "models/__init__" in p for p in paths):
-        return "migration"
-    if any(p.endswith("mcp_server.py") for p in paths):
-        return "mcp_tool"
-    if paths and all(_is_web(p) for p in paths):
-        return "frontend"
-    if paths and all(p.endswith(".md") or p.startswith("docs/") for p in paths):
-        return "docs"
-    return None
+    for name in ("migration", "mcp_tool"):
+        hits = [g for g in (_first_glob(p, cls[name]) for p in paths) if g]
+        if hits:
+            return name, list(dict.fromkeys(hits))
+    if paths:
+        fe = [_first_glob(_norm(p), cls["frontend"]) for p in paths]
+        if all(fe):
+            return "frontend", list(dict.fromkeys(fe))
+        docs = [_first_glob(p, cls["docs"]) for p in paths]
+        if all(docs):
+            return "docs", list(dict.fromkeys(docs))
+    return None, []
+
+
+def checklist_for(touchpoints: list | None, classes: dict | None = None) -> str | None:
+    """Which AGENTS.md task class the item falls under, from its touchpoints."""
+    return checklist_match(touchpoints, classes)[0]
 
 
 def tier_for(previous: Delegation | None) -> dict:
@@ -268,7 +309,8 @@ def test_scope_line(mode: str, engines: list[str] | None = None) -> str:
 def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[str],
           checklist: str | None, lessons: list[dict], previous: dict | None,
           attempts: list[dict], test_scope: str | None = None,
-          test_engines: list[str] | None = None) -> str:
+          test_engines: list[str] | None = None,
+          checklist_matched: list[str] | None = None) -> str:
     """Prose for a spawn prompt, derived from the fields and nothing else (D16). Deliberately
     excludes the lane and tier suggestions so a pasted brief cannot become the default."""
     lines = [f"Item {item.key}: {item.title}"]
@@ -281,7 +323,8 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
     if blocked_by:
         lines.append("Blocked by: " + ", ".join(blocked_by))
     if checklist:
-        lines.append(f"Task class: {checklist} (follow that checklist in AGENTS.md)")
+        basis = f"matched {', '.join(checklist_matched)}; " if checklist_matched else ""
+        lines.append(f"Task class: {checklist} ({basis}follow that checklist in AGENTS.md)")
     if lessons:
         lines.append("Lessons: " + " | ".join(f"{l['id']}: {l['text']}" for l in lessons))
     if previous:
@@ -337,7 +380,9 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
                     "bounce_reason": item.bounce_reason if prev_row.outcome == "bounced" else ""}
     attempts = [_attempt(r) for r in history]
     summary = _summary(item.description)
-    checklist = checklist_for(touchpoints)
+    from app.services import rule_toggles
+    path_classes = rule_toggles.path_classes(db, item.project_id)
+    checklist, checklist_matched = checklist_match(touchpoints, path_classes)
     caps = capabilities_of(item)
     spend = item_spend(db, item.id)
     project = db.get(Project, item.project_id) if item.project_id else None
@@ -347,7 +392,6 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
         spend.update(period_spend(db, item.project_id, str(policy_caps["period"])))
     measured_lane = measured_for_lane(db, item, caps)
     mix = mix_counts(db, item.project_id)
-    from app.services import rule_toggles
     test_scope = rule_toggles.test_scope_mode(db, item.project_id)
     test_engines = rule_toggles.test_scope_engines(db, item.project_id)
     return {
@@ -359,7 +403,7 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
         "ready": bool(items_svc.claimable(item)) and prioritization.ready(ctx, item),
         "checklist": checklist,
         "lessons": lessons,
-        "lane": lane_for(touchpoints),
+        "lane": lane_for(touchpoints, path_classes),
         # GRPH-832. Beside `lane` and `checklist` because it is the same kind of answer — a
         # reading of the item with the evidence that produced it — and a planner choosing what
         # to hand out reads all three in one place.
@@ -372,7 +416,7 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
         "text": _text(item, summary=summary, touchpoints=touchpoints, blocked_by=blocked_by,
                       checklist=checklist, lessons=lessons, previous=previous,
                       attempts=attempts, test_scope=test_scope,
-                      test_engines=test_engines),
+                      test_engines=test_engines, checklist_matched=checklist_matched),
         "test_scope": test_scope,
         # PRD-41 D5 / D15: the set the resolver will score, inside the measured_for_lane cap.
         "capabilities": caps,

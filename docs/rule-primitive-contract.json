@@ -1,5 +1,5 @@
 {
-  "api_version": "1.8.0",
+  "api_version": "1.9.0",
   "primitives": [
     {
       "id": "done_predicates",
@@ -70,6 +70,32 @@
       "id": "human_only_clause",
       "level": "enforced",
       "params": []
+    },
+    {
+      "id": "path_classes",
+      "level": "checked",
+      "params": [
+        {
+          "name": "docs",
+          "required": false,
+          "type": "list"
+        },
+        {
+          "name": "frontend",
+          "required": false,
+          "type": "list"
+        },
+        {
+          "name": "mcp_tool",
+          "required": false,
+          "type": "list"
+        },
+        {
+          "name": "migration",
+          "required": false,
+          "type": "list"
+        }
+      ]
     },
     {
       "id": "reopen_on_red",

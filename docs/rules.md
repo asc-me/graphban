@@ -147,9 +147,26 @@ is behind is updated with `gh pr update-branch --rebase` under `squash` or `reba
 plain merge update under `merge`. The PR head must still be the reviewed commit, whatever the
 method. A server that predates the field, or an unreadable value, reads as `squash`.
 
+## `plan.path_classes` — which paths the delegation brief calls frontend, migration, MCP tool or docs (GRPH-1496)
+
+A per-project library rule (stage Plan, level `checked`: the brief reads it, nothing is refused)
+with four optional list params, one glob list per class: `frontend`, `migration`, `mcp_tool`,
+`docs`. `*` and `**` both match across `/`. The defaults are Graphban's own layout and reproduce
+the old matching exactly (`frontend` = `web`, `web/**`; `migration` = `*alembic/versions*`,
+`*models/__init__*`; `mcp_tool` = `*mcp_server.py`; `docs` = `*.md`, `docs/**`), so nothing
+changes on upgrade. An empty list means that class never matches.
+
+`frontend` drives the brief's `lane` (an item touching only `client/**` reads `frontend`), and
+all four drive the `Task class:` line, which now names the glob that matched, for example
+`Task class: migration (matched db/migrations/**; follow that checklist in AGENTS.md)`. The rule
+reaches a box through the signed rule-pack feed (primitive `path_classes`, level `checked`,
+template `plan.path_classes`, stage Plan, default `on`, the four lists above); the feed lives
+outside this repo and needs that template added. Primitive API 1.9.0.
+
 ## Which pack version carries each rule (GRPH-1430)
 
 A rule absent from a box's pack reads as its default, never as off (`backend/tests/test_rule_pack_p74.py`).
+
 A project can only *change* a rule once the box's pack carries it.
 
 | Rule | First pack | Needs primitive API | Needs server |
@@ -160,5 +177,6 @@ A project can only *change* a rule once the box's pack carries it.
 | `merge.done_predicates` | 0.3.0 | 1.7.0 | 2026.11.12 |
 | `build.generated_files` | 0.4.0 | 1.8.0 | the first release carrying GRPH-1494 |
 | `build.test_scope` `engines` | 0.4.0 | 1.8.0 | the first release carrying GRPH-1494 |
+| `plan.path_classes` | 0.5.0 | 1.9.0 | the first release carrying GRPH-1496 |
 
 `gitops.merge_method` is a gitops field, not a library rule, and needs no template.

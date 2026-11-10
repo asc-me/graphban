@@ -520,7 +520,7 @@ def derive(db: Session, row: Delegation) -> AttemptTelemetry | None:
     telemetry.lane = row.lane
     telemetry.tier_requested = row.requested_tier
     telemetry.tier_declared = row.declared_tier
-    telemetry.task_class = task_class(item)
+    telemetry.task_class = task_class(item, db)
     telemetry.size_band = size_band(item)
     telemetry.attempt_no = _attempt_no(db, row)
     telemetry.outcome = row.outcome
@@ -553,13 +553,17 @@ def derive(db: Session, row: Delegation) -> AttemptTelemetry | None:
     return telemetry
 
 
-def task_class(item: Item | None) -> str:
-    """The brief's checklist, which is the only task class the ledger already computes."""
+def task_class(item: Item | None, db: Session | None = None) -> str:
+    """The brief's checklist, which is the only task class the ledger already computes. Read
+    through the project's `plan.path_classes` (GRPH-1496) so telemetry's class agrees with the
+    brief's; without a session it reads the default classes."""
     from app.services import delegation as delegation_svc
+    from app.services import rule_toggles
 
     if item is None:
         return "general"
-    return delegation_svc.checklist_for(item.touchpoints) or "general"
+    classes = rule_toggles.path_classes(db, item.project_id) if db is not None else None
+    return delegation_svc.checklist_for(item.touchpoints, classes) or "general"
 
 
 def _capabilities_for_row(item: Item | None, row: AttemptTelemetry) -> list[str]:

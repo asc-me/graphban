@@ -4494,8 +4494,10 @@ def _capped(db: Session, project_id: str | None, cluster: dict, max_items: int) 
     """
     from app.services import delegation as delegation_svc
     from app.services import fleet_profiles as profiles_svc
+    from app.services import rule_toggles
 
-    lane = delegation_svc.lane_for(list(cluster.get("areas") or []))["value"]
+    lane = delegation_svc.lane_for(
+        list(cluster.get("areas") or []), rule_toggles.path_classes(db, project_id))["value"]
     lanes = [lane] + (["frontend"] if lane == "mixed" else [])
     ceilings = [c for c in (profiles_svc.cluster_ceiling(db, project_id, ln) for ln in lanes)
                 if c is not None]
