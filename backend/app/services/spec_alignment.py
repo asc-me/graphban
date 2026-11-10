@@ -7,9 +7,15 @@ aligns to the PRD it links, and `assess` is the only check.
     {"linked_prd": "<rendered key or null>", "prd_passed": false, "gaps": ["<heading>"],
      "functionally_complete": false, "approved_to_build": false}
 
-The requirements are the linked PRD baseline's `## ` headings. A gap is a heading whose text
-does not appear in the spec body, case and whitespace folded. No linked PRD, or a linked PRD
-with no baseline, is never approved to build: an absence is not a clean result.
+`assess` measures a body against every `## ` heading of the linked baseline. A gap is a
+heading whose text does not appear in the spec body, case and whitespace folded. No linked
+PRD, or a linked PRD with no baseline, is never approved to build: an absence is not a clean
+result.
+
+A design set is narrower. It answers the sections it gates, not the framing and the sections
+it does not list. A screen brief is that behavior, so the heading title does not have to be
+pasted into the brief. With no brief, the gated heading still has to appear in the set's own
+text. The compiled prompt's quote of the PRD never counts.
 
 This module imports no other service that reads documents, so `documents` and `design_sets`
 can both call it.
@@ -68,7 +74,13 @@ def for_design_set(db: Session, ds: DesignSet) -> dict:
     A compiled prompt also quotes the whole governing PRD under `## Governing PRD`. That quote
     is never matched: it carries every heading, so counting it would approve any set the moment
     it compiled (bounce of 865c6cb2). The rest of a prompt is exactly these inputs, so they are
-    read at their source rather than cut back out of the chunked prompt."""
+    read at their source rather than cut back out of the chunked prompt.
+
+    When the set names the sections it gates, those are its only requirements. A non-empty
+    screen brief states their behavior, and decompose then hands the section off instead of
+    blocking on heading strings the brief never repeats. With no brief, each gated heading
+    still has to appear in this text. A set that gates nothing is still measured against
+    every baseline heading."""
     bodies = [ds.constraints_body or ""] + [s.brief or "" for s in ds.screens]
     compiled = {d.screen for d in db.scalars(select(Document).where(
         Document.set_id == ds.id, Document.kind == "design_prompt"))}
@@ -81,7 +93,19 @@ def for_design_set(db: Session, ds: DesignSet) -> dict:
         bodies += [c.text or "" for c in db.scalars(select(DesignCorrection).where(
             DesignCorrection.design_set_id == ds.id, DesignCorrection.status == "open",
             DesignCorrection.screen.in_(compiled)))]
-    return assess(db, ds.prd_id, bodies)
+    align = assess(db, ds.prd_id, bodies)
+    gated = [str(s).strip() for s in (ds.sections or []) if str(s).strip()]
+    if not gated:
+        return align
+    stated = any((s.brief or "").strip() for s in ds.screens)
+    if stated:
+        gaps: list[str] = []
+    else:
+        hay = _fold("\n".join(b or "" for b in bodies))
+        gaps = [h for h in gated if _fold(h) not in hay]
+    complete = align["linked_prd"] is not None and not gaps
+    return {**align, "gaps": gaps, "functionally_complete": complete,
+            "approved_to_build": complete and align["prd_passed"]}
 
 
 def for_document(db: Session, doc: Document) -> dict:

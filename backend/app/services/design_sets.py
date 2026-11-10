@@ -1157,6 +1157,8 @@ def handoff(db: Session, ds: DesignSet | None, section: str) -> dict:
     if rev is None and ds.status not in ("stale", "frozen"):
         # GRPH-1368: nobody accepts a set any more. It is buildable when it aligns to a PRD
         # that has passed its gates; the handoff pins the hashes it was aligned at.
+        # A screen brief is that alignment for the sections the set gates. Missing heading
+        # strings are not a block once the brief states the behavior.
         align = spec_alignment.for_design_set(db, ds)
         if align["approved_to_build"]:
             lines = [f"## Design\n\nDesign set: {ds.id} (aligned to {align['linked_prd']})",

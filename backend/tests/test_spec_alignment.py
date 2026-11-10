@@ -95,6 +95,34 @@ def test_design_set_aligns_on_constraints_and_compiles_with_no_prior_accept(db, 
     assert got["gaps"] == [] and got["approved_to_build"] is True
 
 
+def test_a_brief_approves_gated_sections_without_pasted_headings(db, pid):
+    """The design states the behavior in the brief. The heading title is not a second copy
+    of that behavior, and an ungated heading is not this set's requirement."""
+    prd = prd_svc.create_prd(db, title="P", project_id=pid, body=BODY)
+    approve(db, prd)
+    sid = ds_svc.open_design(db, pid, prd.id)["id"]
+    ds_svc.put_set_constraints(
+        db, pid, sid, "Unrelated nonsense.", sections=["Tokens"],
+        screens=[{"screen": "home", "brief": "Name the organization. Finish does not wait."}])
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["prd_passed"] is True
+    assert got["gaps"] == [] and got["approved_to_build"] is True
+
+
+def test_a_gated_set_without_a_brief_still_needs_its_heading(db, pid):
+    """No brief, and the set's own text never says the section it gates. Compiling quotes
+    the PRD, and that quote still does not approve it."""
+    prd = prd_svc.create_prd(db, title="P", project_id=pid, body=BODY)
+    approve(db, prd)
+    sid = ds_svc.open_design(db, pid, prd.id)["id"]
+    ds_svc.put_set_constraints(
+        db, pid, sid, "Unrelated nonsense.", sections=["Tokens"],
+        screens=[{"screen": "home", "brief": "   "}])
+    ds_svc.compile_prompts(db, pid, sid)
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == ["Tokens"] and got["approved_to_build"] is False
+
+
 def test_an_unrelated_set_stays_unapproved_after_compile(db, pid):
     prd = prd_svc.create_prd(db, title="P", project_id=pid, body=BODY)
     approve(db, prd)
