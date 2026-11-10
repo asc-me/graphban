@@ -3600,6 +3600,22 @@ class EntitlementEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class OrgUtilizationReport(Base):
+    """One supervisor report for org-level capacity utilization (PRD-62 S5, GRPH-1480).
+
+    Append-only counts for the Observe Harness rollup. Absence on read is unknown, never zero.
+    """
+
+    __tablename__ = "org_utilization_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    #: `wave_ended_capacity` | `item_deferred_reset`
+    kind: Mapped[str] = mapped_column(String(24))
+    count: Mapped[int] = mapped_column(Integer)
+    agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
 
 class RoutingDecision(Base):
     """One capacity-routing decision about one item (PRD-62 S4): the attempt-record row that
