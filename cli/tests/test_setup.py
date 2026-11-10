@@ -1361,3 +1361,14 @@ def test_the_old_subcommand_flag_order_is_still_rejected():
     for argv in (["login", "--server", "https://x"], ["setup", "--project", "core"]):
         with pytest.raises(SystemExit):
             _parser().parse_args(argv)
+
+
+def test_graphban_work_names_the_lease_the_graph_and_prove():
+    """The work skill must warn that a silent long command drops the lease, send
+    changed paths to describe_code, call a receipt a test line, and hand
+    finishing to graphban-prove."""
+    body = " ".join(setup_mod.skill_source("graphban-work").read_text(encoding="utf-8").split())
+    assert "Heartbeat before any command that can run longer than the lease" in body
+    assert "`describe_code` those paths" in body
+    assert "A review-ready receipt is a test line" in body
+    assert "Finishing the item is `graphban-prove`" in body
