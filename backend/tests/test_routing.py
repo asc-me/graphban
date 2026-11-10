@@ -474,6 +474,26 @@ def test_custom_hierarchy_gate_chooses_policy_order_over_soonest_reset(client, w
     assert _claim(a, item_id) == item_id
     (rec,) = [d for d in _decisions(item_id) if d["kind"] == "claim"]
     assert rec["entitlement_id"] == late
+    assert f"chosen over {soon} by subscription policy order" in rec["reason"]
+    assert "not usable" not in rec["reason"]
+
+
+def test_default_hierarchy_still_records_soonest_reset_for_same_pair(client, world):
+    """Without custom hierarchy, the sooner reset wins and the reason says so."""
+    soon = _ent(client, world, "anthropic", kind="subscription",
+                reset=datetime.now(timezone.utc) + timedelta(hours=1))
+    late = _ent(client, world, "openai", kind="subscription",
+                reset=datetime.now(timezone.utc) + timedelta(days=3))
+    a = _runner(client, world, [soon, late])
+    for e in (soon, late):
+        _report(client, world, e, a, "registered")
+    _runner(client, world, [_ent(client, world, "google")], vendor="google")
+    item_id = _item()
+    assert _claim(a, item_id) == item_id
+    (rec,) = [d for d in _decisions(item_id) if d["kind"] == "claim"]
+    assert rec["entitlement_id"] == soon
+    assert f"chosen over {late} by soonest reset" in rec["reason"]
+    assert "subscription policy order" not in rec["reason"]
 
 
 def test_unreachable_local_entitlement_refuses_spawn_start(client, world):
