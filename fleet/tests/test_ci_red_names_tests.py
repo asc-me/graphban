@@ -1,7 +1,8 @@
-"""GRPH-1458: a red-CI blocker names the failing tests, read from the job log on the planner.
+"""GRPH-1458 / GRPH-1471: red review CI names failing tests and leaves a claimable ticket.
 
 Sabotage: drop the `propose._gh(repo, "api", ...)` log fetch in `failed_test_summary` and
-`test_blocker_names_both_failing_tests` and `test_reopen_note_names_both_failing_tests` fail.
+`test_review_ci_reopen_note_names_both_failing_tests` fail; set `status=blocked` in `_block_ci_red` and
+`test_red_ci_does_not_park_blocked_without_a_ticket` fails.
 """
 from __future__ import annotations
 
@@ -52,16 +53,32 @@ class _Planner:
         return {}
 
 
-def test_blocker_names_both_failing_tests(monkeypatch):
+def test_review_ci_reopen_note_names_both_failing_tests(monkeypatch):
     calls = _forge(monkeypatch, LOG)
     planner = _Planner()
     assert _block_ci_red(planner, "GRPH-1", HEAD, "fleet", "", repo=Path("."), branch="gb/x")
-    note = planner.calls[0][1]["blocker"]
+    args = planner.calls[0][1]
+    assert args["status"] == "next" and args["blocker"] == ""
+    note = args["evidence"][0]["detail"]
     assert "tests/x.py::t1 - AssertionError: one" in note
     assert "tests/y.py::t2 - ResumeFailed: Committer identity unknown" in note
     assert "2 failed, 40 passed" in note
     assert "\x1b" not in note
+    assert until.REVIEW_CI_RED in note
     assert any(a[:2] == ("api", "repos/{owner}/{repo}/actions/jobs/77/logs") for a in calls)
+
+
+def test_red_ci_does_not_park_blocked_without_a_ticket(monkeypatch):
+    """GRPH-1471: red CI must not leave a free-text blocked row with no fix ticket."""
+    _forge(monkeypatch, LOG)
+    planner = _Planner()
+    assert _block_ci_red(planner, "GRPH-1", HEAD, "fleet", "", repo=Path("."), branch="gb/x")
+    args = planner.calls[0][1]
+    assert args["status"] != "blocked"
+    if args["status"] == "blocked":
+        blocker = str(args.get("blocker") or "")
+        assert blocker.startswith("GRPH-"), "blocked must point at a linked fix item, not prose"
+    assert not any(t == "create_item" for t, _ in planner.calls)
 
 
 def test_unreadable_log_says_so(monkeypatch):
@@ -83,10 +100,9 @@ def test_summary_is_capped(monkeypatch):
     assert out.count("FAILED tests/a.py") <= 10
 
 
-def test_blocker_without_tests_is_the_old_text():
-    assert ci_red_blocker(HEAD, "fleet") == (
-        f"CI red at {HEAD[:12]}: fleet failed. Fix it on the branch, then move the "
-        "item back to next (gbfleet held review: a reviewer could not sign off).")
+def test_reopen_note_without_tests_names_the_job():
+    assert until.REVIEW_CI_RED in ci_red_blocker(HEAD, "fleet")
+    assert "fleet" in ci_red_blocker(HEAD, "fleet") and HEAD[:12] in ci_red_blocker(HEAD, "fleet")
     assert until.ci_red_blocker(HEAD, "fleet", "T").endswith("Failing tests:\nT")
 
 
