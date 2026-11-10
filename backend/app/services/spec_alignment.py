@@ -39,16 +39,29 @@ def _fold(text: str) -> str:
     return " ".join((text or "").lower().split())
 
 
-def _heading_stated(heading: str, hay: str) -> bool:
+# A dot, a slash, an ASCII hyphen, or a dash in U+2010–U+2015 joins a longer heading.
+# A bare "." does not: people write `2. API.`
+_HEADING_BEFORE = "(?<![\\w./\u2010-\u2015-])"
+_HEADING_AFTER = "(?![\\w/\u2010-\u2015-]|\\.\\d)"
+
+
+def _heading_stated(heading: str, hay: str, headings: list[str] | None = None) -> bool:
     """The folded heading appears in `hay` as itself, not inside a longer heading.
 
-    A hyphen or a dotted number is still the same heading (`Non-goals`, `1.2.3`). A colon
-    or a sentence period after it is not (`Tokens:`, `2. API.`).
+    A dot, slash, or dash on either side is still the same heading. A colon is not.
+    A sentence period is not either, unless the words after it are a longer baseline heading.
     """
     needle = _fold(heading)
     if not needle:
         return False
-    return re.search(r"(?<![\w-])" + re.escape(needle) + r"(?![\w-]|\.\d)", hay) is not None
+    longer = [_fold(other) for other in headings or []
+              if _fold(other) != needle and _fold(other).startswith(needle)]
+    pattern = re.compile(_HEADING_BEFORE + re.escape(needle) + _HEADING_AFTER)
+    for match in pattern.finditer(hay):
+        if any(hay.startswith(item, match.start()) for item in longer):
+            continue
+        return True
+    return False
 
 
 def requirements(body: str) -> list[str]:
@@ -120,7 +133,7 @@ def for_design_set(db: Session, ds: DesignSet) -> dict:
     stated = any((s.brief or "").strip() for s in ds.screens)
     hay = _fold("\n".join(b or "" for b in bodies))
     gaps = [name for name in gated
-            if name not in known or not (stated or _heading_stated(name, hay))]
+            if name not in known or not (stated or _heading_stated(name, hay, headings))]
     complete = align["linked_prd"] is not None and not gaps
     return {**align, "gaps": gaps, "functionally_complete": complete,
             "approved_to_build": complete and align["prd_passed"]}

@@ -174,6 +174,48 @@ def test_punctuation_does_not_make_a_shorter_heading_present(db, pid):
     assert got["gaps"] == [] and got["approved_to_build"] is True
 
 
+def test_a_dot_slash_or_dash_does_not_join_a_shorter_heading(db, pid):
+    en, em = "\u2013", "\u2014"
+    body = ("## 2. API\nShort.\n\n## 3. Data\nRows.\n\n## Login\nForm.\n\n"
+            "## Goals\nYes.\n\n## Tokens\nTeal.\n")
+    prd = prd_svc.create_prd(db, title="P", project_id=pid, body=body)
+    approve(db, prd)
+    sid = ds_svc.open_design(db, pid, prd.id)["id"]
+    ds_svc.put_set_constraints(
+        db, pid, sid,
+        f"See 1.2. API for the long one. See 1.3. Data. "
+        f"pre{en}login and pre{em}login. Non{en}goals. Goals/extra.",
+        sections=["2. API", "3. Data", "Login", "Goals"],
+        screens=[{"screen": "home"}])
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == ["2. API", "3. Data", "Login", "Goals"]
+    assert got["approved_to_build"] is False
+    ds_svc.put_set_constraints(
+        db, pid, sid,
+        "2. API. 3. Data is rows. Login is the form. Goals. Tokens: teal.",
+        sections=["2. API", "3. Data", "Login", "Goals", "Tokens"],
+        screens=[{"screen": "home"}])
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == [] and got["approved_to_build"] is True
+
+
+def test_a_sentence_period_counts_unless_it_begins_a_longer_heading(db, pid):
+    body = "## 1.2\nPoint.\n\n## 1.2. Overview\nLonger.\n"
+    prd = prd_svc.create_prd(db, title="P", project_id=pid, body=body)
+    approve(db, prd)
+    sid = ds_svc.open_design(db, pid, prd.id)["id"]
+    ds_svc.put_set_constraints(
+        db, pid, sid, "1.2. Overview is longer.", sections=["1.2"],
+        screens=[{"screen": "home"}])
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == ["1.2"] and got["approved_to_build"] is False
+    ds_svc.put_set_constraints(
+        db, pid, sid, "1.2. The short one.", sections=["1.2"],
+        screens=[{"screen": "home"}])
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == [] and got["approved_to_build"] is True
+
+
 def test_a_fenced_heading_is_not_a_section_a_brief_can_clear(db, pid):
     body = "## Tokens\nUse teal.\n\n```\n## Overview\nnot a heading\n```\n\n## Spacing\nEight.\n"
     prd = prd_svc.create_prd(db, title="P", project_id=pid, body=body)
