@@ -131,6 +131,13 @@ def test_stage_not_used_only_when_every_rule_is(db, monkeypatch):
     assert _stage(f, "learn")["state"] == "not_used"
 
 
+def _shipped_skill_names() -> list[str]:
+    """Skill directories this checkout's gban package ships, in manifest order."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2] / "cli" / "src" / "gban" / "skills"
+    return sorted(p.name for p in root.iterdir() if p.is_dir())
+
+
 def test_skills_are_one_collapsed_advisory_node(db):
     f = _flow_for(db, "prs_to_base")
     n = _rule(f, "agents.skills_pack")
@@ -141,7 +148,7 @@ def test_skills_are_one_collapsed_advisory_node(db):
     version = tomllib.loads(
         (Path(__file__).resolve().parents[2] / "cli" / "pyproject.toml").read_text())["project"]["version"]
     assert n["skills_version"] == version
-    assert len(n["skills"]) == 10
+    assert [s["name"] for s in n["skills"]] == _shipped_skill_names()
     base = f"https://github.com/asc-me/graphban/blob/cli-v{version}/cli/src/gban/skills"
     assert {"name": "graphban-work", "url": f"{base}/graphban-work/SKILL.md"} in n["skills"]
 
@@ -162,7 +169,8 @@ def test_flow_endpoint_serves_the_linked_skills(client, auth):
     r = client.get("/api/rules/flow?project_id=core", headers=auth)
     assert r.status_code == 200
     n = _rule(r.json(), "agents.skills_pack")
-    assert n["skills_version"] and len(n["skills"]) == 10
+    assert n["skills_version"]
+    assert [s["name"] for s in n["skills"]] == _shipped_skill_names()
     assert all(f"/blob/cli-v{n['skills_version']}/" in s["url"] for s in n["skills"])
 
 
