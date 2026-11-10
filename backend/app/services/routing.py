@@ -14,6 +14,8 @@ every stated one and is never invented (D5).
 **Claim shaping (D10).** When the only entitlement with headroom belongs to another runner, the
 item is soft-reserved for that entitlement's holders for `RESERVATION_TTL`; claimants without
 headroom of their own are not offered it, and the reservation lapses back to the ladder. No push.
+Once a reservation for an entitlement has lapsed or ended, that item is never reserved for
+that entitlement again — the item is open to every runner to claim normally.
 It is written only when exactly one buildable entitlement (one with headroom, a live holder and
 a review reserve) exists: with two, nobody needs the item held. And a reservation never refuses a
 claimant whose own entitlement passes the review reserve: it holds the item against the ladder's
@@ -244,6 +246,9 @@ def gate(db: Session, item: Item, agent_id: str, *, now: datetime | None = None)
                           f"{', '.join(e['id'] for e in buildable)}"}
     if buildable:
         best = buildable[0]
+        if _reservation_spent(db, item.id, best["id"], now=now):
+            return {"allowed": True, "entitlement_id": None,
+                    "reason": "no entitlement has headroom; next rung of the ladder"}
         db.add(RoutingDecision(
             item_id=item.id, kind="reservation", entitlement_id=best["id"],
             reason=_why(best, ranked), reserved_until=now + RESERVATION_TTL,
@@ -277,6 +282,18 @@ def live_reservation(db: Session, item_id: str, *, now: datetime | None = None
         RoutingDecision.item_id == item_id, RoutingDecision.kind == "reservation",
         RoutingDecision.ended_at.is_(None)).order_by(RoutingDecision.id.desc())).all()
     return next((r for r in rows if _aware(r.reserved_until) > now), None)
+
+
+def _reservation_spent(db: Session, item_id: str, entitlement_id: str, *, now: datetime
+                       ) -> bool:
+    """True when this item was already reserved for `entitlement_id` and that hold is over."""
+    rows = db.scalars(select(RoutingDecision).where(
+        RoutingDecision.item_id == item_id, RoutingDecision.kind == "reservation",
+        RoutingDecision.entitlement_id == entitlement_id)).all()
+    for row in rows:
+        if row.ended_at is not None or _aware(row.reserved_until) <= now:
+            return True
+    return False
 
 
 def held_back(db: Session, item: Item, agent_id: str) -> bool:
