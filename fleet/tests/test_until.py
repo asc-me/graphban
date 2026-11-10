@@ -276,6 +276,9 @@ def test_allowed_tools_stays_two_and_planner_holds_mint():
     # fall through to the remote default with a note that looks like a clean answer.
     assert "get_context" in PLANNER_TOOLS
     assert "get_context" not in ALLOWED_TOOLS
+    # GRPH-1472: the planner returns a red review to its author; the supervisor cannot.
+    assert "bounce" in PLANNER_TOOLS
+    assert "bounce" not in ALLOWED_TOOLS
 
 
 def test_a_key_that_cannot_mint_is_refused_at_start(
