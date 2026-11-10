@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { CapacityPanel } from "@/features/harness/CapacityPanel";
@@ -69,8 +69,65 @@ describe("CapacityPanel", () => {
     expect(roll).toHaveTextContent("Waves ended by capacity: not recorded");
     const row = screen.getByTestId("capacity-row");
     expect(row).toHaveTextContent("+2 unreported");
-    expect(row).toHaveTextContent("no token_budget stated");
+    expect(within(row).getByTestId("capacity-budget")).toHaveTextContent("no burn-down");
+    expect(within(row).getByTestId("capacity-projection")).toHaveTextContent("no token_budget stated");
     expect(row).toHaveTextContent("not stated");
+  });
+
+  it("draws a null day in daily_tokens as a gap, not a zero-height bar", async () => {
+    capacity.mockResolvedValueOnce({
+      ...base,
+      entitlements: [{
+        ...base.entitlements[0],
+        daily_tokens: [100, null, 50, null, null, 10, 20],
+        token_budget: 1000,
+        projected_exhaustion: { at: "2026-11-20T12:00:00Z", reason: "" },
+      }],
+    });
+    show();
+    const row = await screen.findByTestId("capacity-row");
+    expect(within(row).getAllByTestId("capacity-spark-gap")).toHaveLength(3);
+    const bars = within(row).getAllByTestId("capacity-spark-bar");
+    expect(bars).toHaveLength(4);
+    bars.forEach((bar) => expect(Number(bar.getAttribute("data-tokens"))).toBeGreaterThan(0));
+  });
+
+  it("shows projected_exhaustion.at when the server computed one", async () => {
+    capacity.mockResolvedValueOnce({
+      ...base,
+      entitlements: [{
+        ...base.entitlements[0],
+        token_budget: 500,
+        projected_exhaustion: { at: "2026-12-01T00:00:00Z", reason: "" },
+      }],
+    });
+    show();
+    const row = await screen.findByTestId("capacity-row");
+    expect(within(row).getByTestId("capacity-projection")).toHaveTextContent("runs out ~");
+  });
+
+  it("shows projected_exhaustion.reason when at is null", async () => {
+    capacity.mockResolvedValueOnce({
+      ...base,
+      entitlements: [{
+        ...base.entitlements[0],
+        token_budget: 500,
+        projected_exhaustion: { at: null, reason: "insufficient trailing spend" },
+      }],
+    });
+    show();
+    const row = await screen.findByTestId("capacity-row");
+    expect(within(row).getByTestId("capacity-projection")).toHaveTextContent("insufficient trailing spend");
+    expect(within(row).getByTestId("capacity-projection")).not.toHaveTextContent("runs out");
+  });
+
+  it("names an entitlement without token_budget as having no burn-down, not a flat zero line", async () => {
+    capacity.mockResolvedValueOnce(base);
+    show();
+    const row = await screen.findByTestId("capacity-row");
+    expect(within(row).getByTestId("capacity-budget")).toHaveTextContent("no burn-down");
+    expect(within(row).queryAllByTestId("capacity-spark-bar")).toHaveLength(0);
+    expect(within(row).getAllByTestId("capacity-spark-gap")).toHaveLength(7);
   });
 
   it("shows a share with unreported spend as a floor, with the count", async () => {

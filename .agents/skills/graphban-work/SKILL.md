@@ -15,6 +15,10 @@ Take one item, leave a receipt, hand it to review. Reading the repo is `graphban
 2. Fleet: `claim_cluster`. Solo: `claim_next`. `claimed: false` names who holds the area and when it frees. That is the answer. Take different work.
 3. `get_item_details` once. The `brief` suggests `lane` and `tier` with a basis. You still choose both if you hand it to a child.
 4. `heartbeat(id, status=<one line>, files=[the paths you are in])` on the lease interval. A heartbeat is not a `fleet_status` poll.
+   Heartbeat before any command that can run longer than the lease: a Postgres suite or `pnpm test` prints nothing, and a silent command drops the claim around 150 seconds.
+   After you change paths, `describe_code` those paths so the next child does not grep for them.
+   A review-ready receipt is a test line: an `update_item` evidence entry of kind `test` with passed and failed counts.
+   Finishing the item is `graphban-prove`.
 5. `update_item` as you go. Evidence appends. Touchpoints union: send the files you actually touched. An empty touchpoint list writes nothing. Status goes to `review`.
 6. Stopping unfinished: `release_item`. A blocker that is still true tomorrow is status `blocked` with `blocker` set. `backlog` is claimable and will be handed out again. A build claim released without `to_status` goes back to `next`.
 

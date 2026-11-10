@@ -85,13 +85,27 @@ def reviewer_ineligible(db: Session, org_id: str) -> set[str]:
     return out
 
 
+def _subscription_rank_map(db: Session, project_id: str | None) -> tuple[bool, dict[str, int]]:
+    """When custom hierarchy is in force, subscription entitlements sort by policy order first."""
+    if not project_id:
+        return False, {}
+    if fleet_profiles.routing_mode_of(db, project_id) != "custom_hierarchy":
+        return False, {}
+    policy = fleet_profiles.policy_of(db, project_id) or {}
+    order = policy.get("subscription_order")
+    if not isinstance(order, list) or not order:
+        return False, {}
+    return True, {eid: i for i, eid in enumerate(order)}
+
+
 def rank(db: Session, org_id: str, *, now: datetime | None = None,
-         ladder: list[str] | None = None) -> list[dict]:
+         ladder: list[str] | None = None, project_id: str | None = None) -> list[dict]:
     """The org's entitlements with headroom, best first: available before unknown, then the
     ladder rung (D6), then soonest stated reset. An entitlement on a rung the ladder omits, or
     an api_key whose budget is spent this period, is not returned."""
     ladder = list(fleet_profiles.DEFAULT_LADDER if ladder is None else ladder)
     now = now or datetime.now(timezone.utc)
+    custom, sub_rank = _subscription_rank_map(db, project_id)
     rows = db.scalars(select(Entitlement).where(Entitlement.org_id == org_id)
                       .order_by(Entitlement.created_at, Entitlement.id)).all()
     out = []
@@ -102,12 +116,19 @@ def rank(db: Session, org_id: str, *, now: datetime | None = None,
             continue
         state = headroom_svc.headroom(db, r, now=now)["state"]
         if state in USABLE and not _budget_spent(db, r, now):
+            sub_key = (sub_rank[r.id] if custom and rung == "subscription" and r.id in sub_rank
+                       else (len(sub_rank) if custom and rung == "subscription" else 0))
             out.append({"id": r.id, "vendor": r.vendor, "state": state, "rung": rung,
                         "rung_rank": ladder.index(rung),
+                        "subscription_rank": sub_key,
                         "reviewer_eligible": r.id not in ruled_out,
                         "next_reset_at": _aware(r.next_reset_at) if r.next_reset_at else None})
     far = datetime.max.replace(tzinfo=timezone.utc)
-    out.sort(key=lambda e: (e["state"] != "available", e["rung_rank"], e["next_reset_at"] or far))
+    if custom:
+        out.sort(key=lambda e: (e["state"] != "available", e["rung_rank"],
+                                e["subscription_rank"], e["next_reset_at"] or far))
+    else:
+        out.sort(key=lambda e: (e["state"] != "available", e["rung_rank"], e["next_reset_at"] or far))
     return out
 
 
@@ -191,7 +212,8 @@ def gate(db: Session, item: Item, agent_id: str, *, now: datetime | None = None)
     if not quotas.capacity_routing_on(db, org):
         return None
     ranked = rank(db, org.id, now=now,
-                  ladder=fleet_profiles.ladder_of(db, item.project_id, _owner(db, agent)))
+                  ladder=fleet_profiles.ladder_of(db, item.project_id, _owner(db, agent)),
+                  project_id=item.project_id)
     mine = [e for e in ranked if e["id"] in declared]
     live = live_reservation(db, item.id, now=now)
 
@@ -358,7 +380,7 @@ def axis(db: Session, project_id: str | None, agent_ids: list[str]) -> dict[str,
             continue
         ladder = tuple(fleet_profiles.ladder_of(db, project_id, _owner(db, agent)))
         if ladder not in by_ladder:
-            by_ladder[ladder] = rank(db, org.id, ladder=list(ladder))
+            by_ladder[ladder] = rank(db, org.id, ladder=list(ladder), project_id=project_id)
         ranked = by_ladder[ladder]
         mine = [e for e in ranked if e["id"] in declared]
         pick = next((e for e in mine if review_reserved(ranked, e["vendor"])), None)

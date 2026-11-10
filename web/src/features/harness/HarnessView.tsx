@@ -23,7 +23,7 @@ type TabId = "performance" | "guidance" | "changes" | "capacity";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "performance", label: "Performance" },
-  { id: "guidance", label: "Guidance" },
+  { id: "guidance", label: "Guidance for gbfleet" },
   { id: "changes", label: "Changes & probes" },
   { id: "capacity", label: "Capacity" },
 ];

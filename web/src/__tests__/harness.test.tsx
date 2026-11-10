@@ -478,15 +478,77 @@ describe("Harness tabs", () => {
     expect(within(guidanceTab).queryByTestId("harness-tab-badge")).toBeNull();
   });
 
-  it("switches to the Guidance tab and shows the routing table and grading rules", async () => {
+  it("switches to the Guidance tab and shows the routing matrix and grading rules", async () => {
     show();
     const user = userEvent.setup();
     await screen.findByTestId("harness-cell");
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[1]);
-    expect(await screen.findByTestId("guidance-routing-table")).toBeInTheDocument();
+    expect(await screen.findByTestId("guidance-matrix")).toBeInTheDocument();
     expect(screen.getByTestId("guidance-grading-rules")).toBeInTheDocument();
     expect(screen.getAllByTestId("guidance-rule")).toHaveLength(6);
+  });
+
+  it("guidance matrix has one cell per returned function and band with payload verdict", async () => {
+    const routing = [
+      { function: "B5", effort_band: "S", verdict: "below_floor", attempts: 3,
+        pick: "a:m1", evidence: "1/3 @ 0.33", fallback: null },
+      { function: "B5", effort_band: "M", verdict: "measured", attempts: 10,
+        pick: "gbagent:qwen3.6", evidence: "8/10 @ 0.8", fallback: "cursor:composer" },
+      { function: "H5", effort_band: "L", verdict: "measured", attempts: 8,
+        pick: "gbagent:qwen3.6", evidence: "6/8 @ 0.75", fallback: null },
+    ];
+    harnessGuidance.mockResolvedValueOnce(guidanceData({ routing }));
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    await user.click(screen.getAllByTestId("harness-tab")[1]);
+    const cells = await screen.findAllByTestId("guidance-matrix-cell");
+    const served = cells.filter((c) => c.getAttribute("data-empty") !== "true");
+    expect(served).toHaveLength(3);
+    for (const cell of served) {
+      const band = cell.getAttribute("data-band")!;
+      const fn = cell.getAttribute("data-function")!;
+      const row = routing.find((r) => r.function === fn && r.effort_band === band);
+      expect(within(cell).getByTestId("guidance-cell-verdict")).toHaveTextContent(row!.verdict);
+    }
+  });
+
+  it("guidance cell without confidence field does not render a confidence word", async () => {
+    harnessGuidance.mockResolvedValueOnce(guidanceData({
+      routing: [{
+        function: "B5", effort_band: "M", verdict: "measured", attempts: 10,
+        pick: "gbagent:qwen3.6", evidence: "8/10 @ 0.8", fallback: null,
+      }],
+    }));
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    await user.click(screen.getAllByTestId("harness-tab")[1]);
+    const cells = await screen.findAllByTestId("guidance-matrix-cell");
+    const cell = cells.find((c) => c.getAttribute("data-band") === "M" && c.getAttribute("data-empty") !== "true");
+    expect(cell).toBeTruthy();
+    expect(within(cell!).getByTestId("guidance-confidence-absent")).toBeInTheDocument();
+    for (const word of ["PREFER", "OK", "AVOID", "PROBE"]) {
+      expect(within(cell!).queryByText(word)).toBeNull();
+    }
+    expect(within(cell!).queryByTestId("guidance-cell-confidence")).toBeNull();
+  });
+
+  it("Copy on Guidance writes the fleet_status text", async () => {
+    const clipSpy = vi.spyOn(
+      await import("@/lib/clipboard"),
+      "copyText",
+    ).mockResolvedValue(true);
+    const body = '{"agents":[],"measured":[]}';
+    harnessGuidance.mockResolvedValueOnce(guidanceData({ fleet_status_text: body }));
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    await user.click(screen.getAllByTestId("harness-tab")[1]);
+    await user.click(await screen.findByTestId("guidance-fleet-status-copy"));
+    expect(clipSpy).toHaveBeenCalledWith(body);
+    clipSpy.mockRestore();
   });
 
   it("switches to the Changes tab and shows recommendations and the probe panel", async () => {
