@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -103,11 +103,12 @@ const eligible: Eligibility = {
 let lessonsPending = false;
 let releaseLessons: ((value: LessonList) => void) | null = null;
 
-const { lessonsSpy, lessonSpy, promoteSpy, recordSpy } = vi.hoisted(() => ({
+const { lessonsSpy, lessonSpy, promoteSpy, recordSpy, retireSpy } = vi.hoisted(() => ({
   lessonsSpy: vi.fn(async () => emptyList()),
   lessonSpy: vi.fn(async () => detail()),
   promoteSpy: vi.fn(async () => detail({ reach: "org" })),
   recordSpy: vi.fn(async () => detail()),
+  retireSpy: vi.fn(async () => ({ id: "sh_2", status: "retired" })),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -117,6 +118,7 @@ vi.mock("@/lib/api", () => ({
     lesson: lessonSpy,
     recordLessonOutcome: recordSpy,
     promoteOrgLesson: promoteSpy,
+    retireShard: retireSpy,
   },
 }));
 
@@ -459,8 +461,10 @@ describe("S9: outcome strip and queue machinery", () => {
   beforeEach(() => {
     lessonsSpy.mockReset();
     lessonSpy.mockReset();
+    retireSpy.mockReset();
     lessonsSpy.mockResolvedValue(emptyList());
     lessonSpy.mockResolvedValue(detail());
+    retireSpy.mockResolvedValue({ id: "sh_2", status: "retired" });
   });
 
   it("shows the honest empty on the outcome strip when history is empty", async () => {
@@ -514,6 +518,44 @@ describe("S9: outcome strip and queue machinery", () => {
     expect(screen.getByText(/Surfaced but did not catch/)).toBeInTheDocument();
     // Dropping lesson is no longer visible.
     expect(screen.queryByText(/Dropping lesson/)).not.toBeInTheDocument();
+  });
+
+  it("overlap sweep previews retirees and keeps the higher-scored lesson", async () => {
+    const keeper = row({
+      id: "sh_keep",
+      item_id: "CORE-9",
+      text: "Keeper lesson",
+      effectiveness: { score: 0.9, trend: "stable", drop_reasons: [] },
+      lesson_class: "correction",
+      caught_state: "caught",
+    });
+    const drop = row({
+      id: "sh_drop",
+      item_id: "CORE-9",
+      text: "Duplicate lesson",
+      effectiveness: { score: 0.1, trend: "stable", drop_reasons: [] },
+      lesson_class: "correction",
+      caught_state: "caught",
+    });
+    lessonsSpy.mockResolvedValue({
+      enums: ENUMS,
+      results: [keeper, drop],
+      total: 2,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+    });
+    renderAt("/lessons");
+    await userEvent.click(await screen.findByRole("button", { name: /Overlap/ }));
+    const sweep = await screen.findByTestId("lessons-sweep");
+    expect(sweep).toHaveTextContent(/near-duplicate/);
+    expect(within(sweep).getByRole("button", { name: /Keep one/ })).toBeInTheDocument();
+    await userEvent.click(within(sweep).getByRole("button", { name: "Preview" }));
+    expect(screen.getByRole("checkbox", { name: /Select sh_drop/ })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /Select sh_keep/ })).not.toBeChecked();
+    await userEvent.click(within(sweep).getByRole("button", { name: /Keep one/ }));
+    await waitFor(() => expect(retireSpy).toHaveBeenCalledWith("sh_drop", "sh_keep"));
+    expect(retireSpy).not.toHaveBeenCalledWith("sh_keep", expect.anything());
   });
 
   it("keyboard J/K moves focus and Enter opens the detail", async () => {

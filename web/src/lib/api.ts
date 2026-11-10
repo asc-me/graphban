@@ -751,8 +751,11 @@ export const api = {
     ),
   staleShards: (projectId: string) =>
     request<StaleShardRow[]>(`/memory/stale?project_id=${encodeURIComponent(projectId)}`),
-  retireShard: (id: string) =>
-    request<Shard>(`/memory/shards/${id}/retire`, { method: "POST" }),
+  retireShard: (id: string, into_shard_id?: string) =>
+    request<Shard>(`/memory/shards/${encodeURIComponent(id)}/retire`, {
+      method: "POST",
+      body: JSON.stringify(into_shard_id ? { into_shard_id } : {}),
+    }),
   setShardClass: (id: string, shard_class: ShardClass | "") =>
     request<Shard>(`/memory/shards/${id}`, { method: "PATCH", body: JSON.stringify({ shard_class }) }),
   keepShard: (id: string) =>

@@ -10,11 +10,13 @@ import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { useProjectCtx } from "@/features/ProjectContext";
+import { MemorySweepBar } from "@/features/memory/MemoryReviewView";
 import {
   useLesson,
   useLessons,
   usePromoteOrgLesson,
   useRecordLessonOutcome,
+  useRetireLessonInto,
 } from "@/lib/queries";
 import { projectPath, tagFromPath } from "@/lib/routes";
 import type {
@@ -49,11 +51,15 @@ function classifyRow(row: LessonListRow): QueueKey[] {
   return queues;
 }
 
+function overlapSourceKey(row: LessonListRow): string | null {
+  return row.item_id || row.source || null;
+}
+
 /** Overlap: lessons sharing the same originating item or source — a client-side heuristic. */
 function findOverlapIds(rows: LessonListRow[]): Set<string> {
   const bySource = new Map<string, string[]>();
   for (const r of rows) {
-    const key = r.item_id || r.source;
+    const key = overlapSourceKey(r);
     if (!key) continue;
     const arr = bySource.get(key) ?? [];
     arr.push(r.id);
@@ -64,6 +70,36 @@ function findOverlapIds(rows: LessonListRow[]): Set<string> {
     if (group.length > 1) group.forEach((id) => ids.add(id));
   }
   return ids;
+}
+
+type OverlapPlan = { keep: LessonListRow; retire: LessonListRow[] };
+
+function pickOverlapKeeper(group: LessonListRow[]): LessonListRow {
+  return group.reduce((best, r) => {
+    const bs = best.effectiveness?.score ?? -1;
+    const rs = r.effectiveness?.score ?? -1;
+    if (rs > bs) return r;
+    if (rs === bs && r.id < best.id) return r;
+    return best;
+  });
+}
+
+function buildOverlapPlan(rows: LessonListRow[]): OverlapPlan[] {
+  const bySource = new Map<string, LessonListRow[]>();
+  for (const r of rows) {
+    const key = overlapSourceKey(r);
+    if (!key) continue;
+    const arr = bySource.get(key) ?? [];
+    arr.push(r);
+    bySource.set(key, arr);
+  }
+  const plan: OverlapPlan[] = [];
+  for (const group of bySource.values()) {
+    if (group.length < 2) continue;
+    const keep = pickOverlapKeeper(group);
+    plan.push({ keep, retire: group.filter((r) => r.id !== keep.id) });
+  }
+  return plan;
 }
 
 // ── Main export ──────────────────────────────────────────────────────────────
@@ -80,6 +116,7 @@ export function LessonsView() {
 function LessonListPage() {
   const { activeId } = useProjectCtx();
   const catalogQ = useLessons(activeId);
+  const retireInto = useRetireLessonInto(activeId ?? "");
   const { data, isLoading, isError, refetch } = catalogQ;
   const loading = isLoading;
   const failed = isError;
@@ -90,6 +127,8 @@ function LessonListPage() {
   const [activeQueue, setActiveQueue] = React.useState<QueueKey>("dropping");
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [focusedIdx, setFocusedIdx] = React.useState(0);
+  const [sweepError, setSweepError] = React.useState<string | null>(null);
+  const sweepBusy = React.useRef(false);
 
   // Partition rows into queues.
   const overlapIds = React.useMemo(() => findOverlapIds(all), [all]);
@@ -106,10 +145,40 @@ function LessonListPage() {
   }, [all, overlapIds]);
 
   const rows = queueRows[activeQueue];
+  const overlapPlan = React.useMemo(() => buildOverlapPlan(all), [all]);
+  const overlapSweep = React.useMemo(() => {
+    if (activeQueue !== "overlap" || overlapPlan.length === 0) return null;
+    const retireCount = overlapPlan.reduce((n, p) => n + p.retire.length, 0);
+    const previewIds = overlapPlan.flatMap((p) => p.retire.map((r) => r.id));
+    return {
+      text: `${overlapPlan.length} near-duplicate ${overlapPlan.length === 1 ? "group" : "groups"} — ${retireCount} ${retireCount === 1 ? "lesson" : "lessons"} would retire into the keeper in each group.`,
+      action: "Keep one · the rest retire into it",
+      previewIds,
+      plan: overlapPlan,
+    };
+  }, [activeQueue, overlapPlan]);
   const queueCounts = React.useMemo(
     () => QUEUE_ORDER.map((k) => ({ key: k, count: queueRows[k].length })),
     [queueRows],
   );
+
+  const runOverlapRetire = React.useCallback(async () => {
+    if (!overlapSweep || sweepBusy.current) return;
+    sweepBusy.current = true;
+    setSweepError(null);
+    try {
+      const pairs = overlapSweep.plan.flatMap((p) =>
+        p.retire.map((r) => ({ id: r.id, intoId: p.keep.id })),
+      );
+      await Promise.all(pairs.map((p) => retireInto.mutateAsync(p)));
+      setSelected(new Set());
+      await refetch();
+    } catch (e) {
+      setSweepError(e instanceof Error ? e.message : "The retire sweep could not finish.");
+    } finally {
+      sweepBusy.current = false;
+    }
+  }, [overlapSweep, retireInto, refetch]);
 
   // Clamp focus when queue changes.
   React.useEffect(() => { setFocusedIdx(0); }, [activeQueue]);
@@ -242,6 +311,23 @@ function LessonListPage() {
         </div>
         <p className="text-[11.5px] text-faint">{QUEUE_META[activeQueue].hint}</p>
       </div>
+
+      {overlapSweep && (
+        <>
+          <MemorySweepBar
+            testId="lessons-sweep"
+            text={overlapSweep.text}
+            actionLabel={overlapSweep.action}
+            onPreview={() => setSelected(new Set(overlapSweep.previewIds))}
+            onAction={() => void runOverlapRetire()}
+          />
+          {sweepError && (
+            <p role="alert" className="border-b border-line px-5 py-2 text-[12px] text-st-blocked">
+              {sweepError}
+            </p>
+          )}
+        </>
+      )}
 
       {/* Bulk action bar */}
       {selected.size > 0 && (
