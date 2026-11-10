@@ -645,6 +645,7 @@ def test_the_skill_ships_in_the_wheel(tmp_path):
     assert any(n.endswith("skills/graphban-grill/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/graphban-wave/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/graphban-answer/SKILL.md") for n in names), names[:20]
+    assert any(n.endswith("skills/graphban-prove/SKILL.md") for n in names), names[:20]
 
 
 def test_graphban_wave_drains_one_prd_and_does_not_file_tasks():
@@ -1381,13 +1382,27 @@ def test_the_old_subcommand_flag_order_is_still_rejected():
             _parser().parse_args(argv)
 
 
+def test_graphban_prove_states_the_finish_bar(tmp_path):
+    """The finish bar lives in the shipped skill: heartbeat around the long suite, both
+    engines, a sabotage receipt that failed a test, a quoted live read, no builder `done`."""
+    body = " ".join(setup_mod.skill_source("graphban-prove").read_text(encoding="utf-8").split())
+    assert "Heartbeat immediately before" in body
+    assert "and again when that suite returns" in body
+    assert "SQLite suite" in body
+    assert "Postgres suite" in body
+    assert "`sabotage` receipt" in body
+    assert "`tests_failed`" in body
+    assert "above zero" in body
+    assert "Quote the sentence" in body
+    assert "An empty list is a finding" in body
+    assert "The builder does not set `done`" in body
+    names = _built_wheel_names(tmp_path)
+    assert any(n.endswith("skills/graphban-prove/SKILL.md") for n in names), names[:20]
+
+
 def test_graphban_unstick_names_the_stuck_drain(tmp_path):
     """The unstick skill names the item, the review row outside --prd, the lease
     timer and the empty-holdings child, and never starts a second until or signs off."""
-    import subprocess
-    import sys
-    import zipfile
-
     body = " ".join(setup_mod.skill_source("graphban-unstick").read_text(encoding="utf-8").split())
     assert "review-unsigned" in body
     assert "review row outside `--prd`" in body
@@ -1398,21 +1413,7 @@ def test_graphban_unstick_names_the_stuck_drain(tmp_path):
     for slug in ("graphban-wave", "watch-wave"):
         other = " ".join(setup_mod.skill_source(slug).read_text(encoding="utf-8").split())
         assert "graphban-unstick" in other, slug
-
-    root = Path(__file__).resolve().parents[1]
-    out = tmp_path / "dist"
-    done = None
-    for argv in ([sys.executable, "-m", "build", "--wheel", "--outdir", str(out), str(root)],
-                 ["uv", "build", "--wheel", "--out-dir", str(out), str(root)]):
-        try:
-            done = subprocess.run(argv, capture_output=True, text=True, timeout=300)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if done.returncode == 0:
-            break
-    if done is None or done.returncode != 0:
-        pytest.skip("no wheel builder available")
-    names = zipfile.ZipFile(next(out.glob("*.whl"))).namelist()
+    names = _built_wheel_names(tmp_path)
     assert any(n.endswith("skills/graphban-unstick/SKILL.md") for n in names), names[:20]
 
 
