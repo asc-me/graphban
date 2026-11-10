@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from gban import config, doctor as doctor_mod, machine as machine_mod, setup as setup_mod, stackmap, swamp as swamp_mod
+from gban import config, doctor as doctor_mod, machine as machine_mod, playbooks, setup as setup_mod, stackmap, swamp as swamp_mod
 from gban.client import (EXIT_NO_SESSION, EXIT_NO_SUPERVISOR, EXIT_REFUSED, EXIT_UNREACHABLE,
                        Client, NoSession,
                        Refused, Unreachable, authenticated, login, pair_poll,
@@ -51,6 +51,7 @@ def _parser() -> argparse.ArgumentParser:
         help=("sign in without typing a password here: prints a short code that a signed-in "
               "person approves in the web app's quick-start dialog"))
 
+    sub.add_parser("update", help="poll the deployment now and refresh the agent files")
     sub.add_parser("logout", help="end the session, here and on the server")
     doctor_cmd = sub.add_parser(
         "doctor", help="check both halves: the ledger, and the local fleet",
@@ -704,13 +705,34 @@ def cmd_keys(args) -> int:
     return 0
 
 
-COMMANDS = {"login": cmd_login, "logout": cmd_logout, "whoami": cmd_whoami,
+def cmd_update(args) -> int:
+    return 0  # the poll itself runs in main(), forced for this verb
+
+
+COMMANDS = {"update": cmd_update, "login": cmd_login, "logout": cmd_logout, "whoami": cmd_whoami,
             "doctor": cmd_doctor, "setup": cmd_setup, "fleet": cmd_fleet, "seats": cmd_seats,
             "agents": cmd_agents, "keys": cmd_keys, "swamp": cmd_swamp, "stack": cmd_stack}
 
 
+def _poll(args) -> None:
+    """The hourly poll every command rides. Never fails the command itself."""
+    if args.command == "logout":
+        return
+    url = config.resolve(args.server, config.URL_ENV, "url")
+    if not url:
+        return
+    try:
+        result = playbooks.poll(url, Path.cwd(), force=args.command == "update")
+    except Exception as exc:  # a poll must not break the verb the person typed
+        result = {"note": f"poll skipped: {exc}"}
+    if args.command == "update" or not args.as_json:
+        print(f"{PROG}: {result['note']}",
+              file=sys.stdout if args.command == "update" else sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    _poll(args)
     try:
         return COMMANDS[args.command](args)
     except NoSession as exc:
