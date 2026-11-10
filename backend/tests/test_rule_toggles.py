@@ -406,8 +406,9 @@ def test_registry_draws_a_library_rule_with_db_truth_and_a_toggle(client, org):
     assert entry["truth"] == "db" and entry["control"] == "toggle"
     assert entry["value"] is False and entry["source"] == "platform default"
     assert entry["enforcement"] == "enforced"
-    # Every non-library rule says it has no toggle.
-    assert all(x["control"] is None for x in r.json()["rules"] if x["id"] != RULE)
+    # Every non-library rule says it has no toggle (the memory write mode is a select).
+    assert all(x["control"] is None for x in r.json()["rules"]
+               if x["id"] not in (RULE, "memory.write_mode"))
 
 
 def test_an_off_toggle_is_drawn_not_used_never_hidden(client, org):

@@ -10,10 +10,10 @@ from sqlalchemy.orm import Session
 from app import tagging
 from app.config import settings
 from app.db import get_db
-from app.errors import Refused
+from app.errors import Refused, Validation
 from app.models import Membership, Project, User
 from app.schemas import (
-    GitopsPatch, GitopsView, MemberOut, ProjectCreate, ProjectOut, ProjectRetagIn,
+    GitopsPatch, GitopsView, MemberOut, MemoryWriteModeWrite, ProjectCreate, ProjectOut, ProjectRetagIn,
     ProjectSummaryOut, ProjectUpdate, UserOut,
 )
 from app.security import authz
@@ -21,6 +21,7 @@ from app.security.deps import get_current_user
 from app.services import code_sync
 from app.services import events as events_svc
 from app.services import gitops
+from app.services import memory as memory_svc
 from app.services import projects as projects_svc
 from app.services import quotas
 from app.services import setup as setup_svc
@@ -113,6 +114,14 @@ def update_project(
     if project is None:
         raise HTTPException(404, "project not found")
     changed = body.model_dump(exclude_unset=True)
+    mode_reason = changed.pop("memory_write_mode_reason", None)
+    if changed.get("memory_write_mode") is not None:
+        # Through the service so the change lands in the rule's history (GRPH-1497).
+        try:
+            memory_svc.set_write_mode(db, project, changed["memory_write_mode"], actor=user,
+                                      reason=mode_reason, require_reason=False)
+        except Validation as e:
+            raise HTTPException(422, str(e)) from e
     if "release_ref" in changed:
         # Null clears, so it cannot ride the skip-None loop below. Not gated on the box
         # being linked: that refusal belongs to the gitops PATCH, not to this field.
@@ -135,6 +144,26 @@ def update_project(
     events_svc.record_user(db, user, action="update_project", target_type="project",
                            target_id=project_id, project_id=project_id,
                            meta={"fields": sorted(changed.keys())})
+    return project
+
+
+@router.put("/{project_id}/memory-write-mode", response_model=ProjectOut)
+def set_memory_write_mode(
+    project_id: str,
+    body: MemoryWriteModeWrite,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """The Rules page's change of `memory.write_mode`: a person, with a reason."""
+    authz.require_writable(db, user.id, project_id)
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "project not found")
+    try:
+        memory_svc.set_write_mode(db, project, body.mode, actor=user, reason=body.reason)
+    except Validation as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+    db.refresh(project)
     return project
 
 

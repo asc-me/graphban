@@ -1298,6 +1298,8 @@ class ProjectUpdate(BaseModel):
     mcp_enabled: bool | None = None
     embed_model: str | None = None
     memory_write_mode: str | None = None
+    #: Optional here; recorded in the `memory.write_mode` rule history (GRPH-1497).
+    memory_write_mode_reason: str | None = None
     memory_auto_reject: bool | None = None
     memory_llm_judge: bool | None = None
     memory_candidate_expiry_days: int | None = None
@@ -1804,6 +1806,8 @@ class RuleOut(BaseModel):
     #: A library rule whose template the pack loader refused (PRD-P63 D12): why it is drawn
     #: UNMEASURED. None on every other rule.
     unmeasured_reason: str | None = None
+    #: Why a registered rule is not used by THIS project (GRPH-1497).
+    not_used_reason: str | None = None
 
 
 class RuleToggleValueOut(BaseModel):
@@ -1831,6 +1835,12 @@ class RuleTogglesOut(BaseModel):
     #: Why the installed pack is not in force (refused at startup), else None.
     library_reason: str | None = None
     toggles: list[RuleToggleOut]
+
+
+class MemoryWriteModeWrite(BaseModel):
+    model_config = {"extra": "forbid"}
+    mode: str
+    reason: str = ""
 
 
 class RuleToggleWrite(BaseModel):
