@@ -668,8 +668,10 @@ describe("Harness tabs", () => {
     await screen.findByTestId("harness-cell");
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[1]);
-    expect(await screen.findByTestId("guidance-as-served")).toBeInTheDocument();
+    const asServed = await screen.findByTestId("guidance-as-served");
+    expect(asServed).toBeInTheDocument();
     expect(screen.getByTestId("guidance-fleet-status")).toHaveTextContent('{"agents":[],"measured":[]}');
+    expect(within(asServed).getByText("Nothing here is hidden from the agents.")).toBeInTheDocument();
     expect(screen.getByTestId("guidance-generation-stamp")).toHaveTextContent("window 90d");
   });
 
