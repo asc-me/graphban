@@ -32,6 +32,17 @@ const RULE_NEXT = (
   + "entitlements, soonest reset wins; unknown follows; exhausted, broken, and unreachable are skipped."
 );
 
+/** Saved order first; any subscription not yet in policy sorts after. */
+function editableSubscriptionOrder(
+  savedOrder: string[] | null | undefined,
+  subscriptionIds: string[],
+): string[] {
+  if (!savedOrder?.length) return subscriptionIds;
+  const known = savedOrder.filter((id) => subscriptionIds.includes(id));
+  const added = subscriptionIds.filter((id) => !savedOrder.includes(id));
+  return [...known, ...added];
+}
+
 /**
  * PRD-76 — routing mode beside the fallback ladder: next available (S4 + D6) or a custom
  * subscription stack-rank on project policy. No replay, cheapest, or hold-until-reset controls.
@@ -59,10 +70,8 @@ export function RoutingMode({
 
   useEffect(() => {
     setMode(saved.routing_mode === "custom_hierarchy" ? "custom_hierarchy" : "next_available");
-    const ids = saved.subscription_order?.length
-      ? saved.subscription_order
-      : subscriptions.map((e) => e.id);
-    setOrder(ids.filter((id) => subscriptions.some((e) => e.id === id)));
+    const subscriptionIds = subscriptions.map((e) => e.id);
+    setOrder(editableSubscriptionOrder(saved.subscription_order, subscriptionIds));
   }, [saved.routing_mode, saved.subscription_order, subscriptions]);
 
   const dirty =
@@ -93,11 +102,7 @@ export function RoutingMode({
 
   const discard = () => {
     setMode(saved.routing_mode === "custom_hierarchy" ? "custom_hierarchy" : "next_available");
-    setOrder(
-      saved.subscription_order?.length
-        ? saved.subscription_order
-        : subscriptions.map((e) => e.id),
-    );
+    setOrder(editableSubscriptionOrder(saved.subscription_order, subscriptions.map((e) => e.id)));
   };
 
   return (
