@@ -3119,6 +3119,8 @@ export interface HarnessRoutingRow {
   evidence: string;
   fallback: string | null;
   layer?: string;
+  /** When absent, the UI must not invent PREFER/OK/AVOID/PROBE labels. */
+  confidence?: string | null;
 }
 
 export interface HarnessGuidance {
